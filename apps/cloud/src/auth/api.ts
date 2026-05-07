@@ -12,26 +12,18 @@ const AuthUser = Schema.Struct({
 
 const AuthOrganization = Schema.Struct({
   id: Schema.String,
+  handle: Schema.String,
   name: Schema.String,
 });
 
 const AuthMeResponse = Schema.Struct({
   user: AuthUser,
-  organization: Schema.NullOr(AuthOrganization),
-});
-
-const AuthOrganizationSummary = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
+  /** Memberships, with the org `handle` URL routes use. Sorted alphabetically. */
+  organizations: Schema.Array(AuthOrganization),
 });
 
 const AuthOrganizationsResponse = Schema.Struct({
-  organizations: Schema.Array(AuthOrganizationSummary),
-  activeOrganizationId: Schema.NullOr(Schema.String),
-});
-
-const SwitchOrganizationBody = Schema.Struct({
-  organizationId: Schema.String,
+  organizations: Schema.Array(AuthOrganization),
 });
 
 const CreateOrganizationBody = Schema.Struct({
@@ -40,6 +32,7 @@ const CreateOrganizationBody = Schema.Struct({
 
 const CreateOrganizationResponse = Schema.Struct({
   id: Schema.String,
+  handle: Schema.String,
   name: Schema.String,
 });
 
@@ -81,7 +74,6 @@ export const AUTH_PATHS = {
   login: "/api/auth/login",
   logout: "/api/auth/logout",
   callback: "/api/auth/callback",
-  switchOrganization: "/api/auth/switch-organization",
 } as const;
 
 const AuthErrors = [UserStoreError, WorkOSError] as const;
@@ -108,12 +100,6 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
   .add(
     HttpApiEndpoint.get("organizations", "/auth/organizations", {
       success: AuthOrganizationsResponse,
-      error: WorkOSError,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("switchOrganization", "/auth/switch-organization", {
-      payload: SwitchOrganizationBody,
       error: WorkOSError,
     }),
   )

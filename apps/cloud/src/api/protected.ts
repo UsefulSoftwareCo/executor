@@ -21,10 +21,21 @@ import { WorkOSAuth } from "../auth/workos";
 import { AutumnService } from "../services/autumn";
 import { DbService } from "../services/db";
 import { makeExecutionStack } from "../services/execution-stack";
+import { makeUserStore } from "../services/user-store";
 import { HttpResponseError } from "./error-response";
 import { RequestScopedServicesLive } from "./layers";
 import { ProtectedCloudApi, ProtectedCloudApiLive, RouterConfig } from "./protected-layers";
 import { requestScopedMiddleware } from "./request-scoped";
+
+// Pull the URL `:org` segment from a request path. The protected API mounts
+// under `/api/:org/...` — anything else is a programming error and surfaces as
+// a typed `no_organization` response so the framework's error pipeline can
+// render it.
+const orgHandleFromPath = (pathname: string): string | null => {
+  const parts = pathname.split("/").filter((part) => part.length > 0);
+  if (parts.length < 2 || parts[0] !== "api") return null;
+  return parts[1] ?? null;
+};
 
 // Pre-compute the per-plugin `Effect.provideService(extensionService,
 // executor[id])` chain. The plugin spec carries the Service tag so
@@ -72,19 +83,42 @@ const ExecutionStackMiddleware = HttpRouter.middleware<{
         const webRequest = yield* HttpServerRequest.toWeb(request);
         const workos = yield* WorkOSAuth;
         const session = yield* workos.authenticateRequest(webRequest);
-        if (!session || !session.organizationId) {
+        if (!session) {
           return yield* new HttpResponseError({
-            status: 403,
-            code: "no_organization",
-            message: "No organization in session",
+            status: 401,
+            code: "unauthorized",
+            message: "Unauthorized",
           });
         }
-        const org = yield* authorizeOrganization(session.userId, session.organizationId);
+        // The URL is the source of truth for active org. Pull the handle
+        // off the request path, resolve it to an org row, and verify
+        // membership against WorkOS — independent of `session.organizationId`.
+        const url = new URL(webRequest.url);
+        const handle = orgHandleFromPath(url.pathname);
+        if (!handle) {
+          return yield* new HttpResponseError({
+            status: 404,
+            code: "no_organization",
+            message: "Missing organization in URL",
+          });
+        }
+        const { db } = yield* DbService;
+        const resolved = yield* Effect.promise(() =>
+          makeUserStore(db).getOrganizationByHandle(handle),
+        );
+        if (!resolved) {
+          return yield* new HttpResponseError({
+            status: 404,
+            code: "no_organization",
+            message: `Organization "${handle}" not found`,
+          });
+        }
+        const org = yield* authorizeOrganization(session.userId, resolved.id);
         if (!org) {
           return yield* new HttpResponseError({
             status: 403,
             code: "no_organization",
-            message: "No organization in session",
+            message: "Not a member of this organization",
           });
         }
         const auth = AuthContext.of({
@@ -105,6 +139,16 @@ const ExecutionStackMiddleware = HttpRouter.middleware<{
   }),
 );
 
+// Layer that swaps the boot router with a `:org`-prefixed view, so every
+// route registered by `ProtectedCloudApiLive` mounts under `/api/:org/*`.
+// `HttpRouter.prefixed` returns a wrapper that delegates to the underlying
+// router state — the outer router-config layer still owns the actual
+// FindMyWay instance, so non-protected routes (auth, autumn, swagger) keep
+// their unprefixed paths.
+const PrefixedRouterLayer = Layer.effect(HttpRouter.HttpRouter)(
+  Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed("/api/:org")),
+);
+
 // `rsLive` is the per-request DB layer. Combining it into the auth
 // middleware collapses `requires: DbService | UserStoreService` to
 // never (so `.layer` is a real Layer instead of the "Need to combine"
@@ -118,6 +162,7 @@ export const makeProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreSe
   ).layer;
   return ProtectedCloudApiLive.pipe(
     Layer.provide(protectedMiddleware),
+    Layer.provide(PrefixedRouterLayer),
     Layer.provideMerge(HttpApiSwagger.layer(ProtectedCloudApi, { path: "/docs" })),
     Layer.provideMerge(RouterConfig),
   );

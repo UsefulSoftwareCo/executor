@@ -1,6 +1,6 @@
 import { useReducer, useState } from "react";
 import { Cause, Exit, Result } from "effect";
-import { Forbidden } from "../org/api";
+import { Forbidden } from "../../org/api";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -52,10 +52,10 @@ import {
   getDomainVerificationLink,
   deleteDomain,
   updateOrgName,
-} from "../web/org-atoms";
-import { useAuth } from "../web/auth";
+} from "../../web/org-atoms";
+import { useOrgRoute } from "../../web/org-route";
 
-export const Route = createFileRoute("/org")({
+export const Route = createFileRoute("/$org/-/settings")({
   component: OrgPage,
 });
 
@@ -110,9 +110,8 @@ function formatLastActive(lastActiveAt: string | null): string {
 }
 
 function OrgPage() {
-  const auth = useAuth();
-  const orgName =
-    auth.status === "authenticated" ? (auth.organization?.name ?? "Organization") : "Organization";
+  const { orgName: routeOrgName, orgHandle } = useOrgRoute();
+  const orgName = routeOrgName ?? "Organization";
   const membersResult = useAtomValue(orgMembersAtom);
   const rolesResult = useAtomValue(orgRolesAtom);
   const domainsResult = useAtomValue(orgDomainsAtom);
@@ -262,7 +261,7 @@ function OrgPage() {
               <p className="text-sm text-muted-foreground">
                 Join by domain is available on the Team plan.
               </p>
-              <Link to="/billing/plans">
+              <Link to="/$org/-/billing/plans" params={{ org: orgHandle }}>
                 <Button size="sm" variant="outline">
                   Upgrade
                 </Button>
@@ -322,7 +321,7 @@ function OrgPage() {
                 Invite member
               </Button>
             ) : (
-              <Link to="/billing/plans">
+              <Link to="/$org/-/billing/plans" params={{ org: orgHandle }}>
                 <Button size="sm" className="min-w-32">
                   Upgrade
                 </Button>
@@ -608,6 +607,7 @@ function DomainCard({ domain: d, onDelete }: { domain: DomainData; onDelete: () 
 }
 
 function InviteErrorAlert({ cause }: { cause: Cause.Cause<unknown> }) {
+  const { orgHandle } = useOrgRoute();
   const failure = Cause.findError(cause);
   const error = Result.isSuccess(failure) ? failure.success : null;
 
@@ -617,7 +617,7 @@ function InviteErrorAlert({ cause }: { cause: Cause.Cause<unknown> }) {
         <p className="text-sm text-destructive">
           You've reached your member limit. Upgrade to Team to invite more.
         </p>
-        <Link to="/billing/plans">
+        <Link to="/$org/-/billing/plans" params={{ org: orgHandle }}>
           <Button size="sm" variant="outline">
             Upgrade
           </Button>

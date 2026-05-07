@@ -1,18 +1,12 @@
 import React from "react";
 import * as Sentry from "@sentry/react";
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
-import { AutumnProvider } from "autumn-js/react";
+import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
-import { ExecutorProvider } from "@executor-js/react/api/provider";
-import { Skeleton } from "@executor-js/react/components/skeleton";
-import { Toaster } from "@executor-js/react/components/sonner";
-import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
-import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { AuthProvider, useAuth } from "../web/auth";
 import { LoginPage } from "../web/pages/login";
 import { OnboardingPage } from "../web/pages/onboarding";
-import { Shell } from "../web/shell";
+import { ShellSkeleton } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
 
 if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_SENTRY_DSN) {
@@ -90,67 +84,6 @@ function RootComponent() {
   );
 }
 
-function ShellSkeleton() {
-  return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Desktop sidebar skeleton */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <div className="flex h-12 shrink-0 items-center border-b border-sidebar-border px-4">
-          <Skeleton className="h-4 w-20" />
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <div className="mt-5 mb-2 px-2.5">
-            <Skeleton className="h-3 w-14" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Skeleton className="h-7 w-11/12 rounded-md" />
-            <Skeleton className="h-7 w-10/12 rounded-md" />
-            <Skeleton className="h-7 w-9/12 rounded-md" />
-          </div>
-        </nav>
-        <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <Skeleton className="size-7 rounded-full" />
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="h-3 w-16" />
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main content skeleton */}
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Mobile top bar */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
-          <Skeleton className="size-7 rounded-md" />
-          <Skeleton className="h-4 w-20" />
-          <div className="w-7 shrink-0" />
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-6 w-40" />
-              <Skeleton className="h-4 w-64" />
-            </div>
-            <Skeleton className="h-8 w-28 rounded-md" />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-24 w-full rounded-lg" />
-            ))}
-          </div>
-        </div>
-      </main>
-    </div>
-  );
-}
-
 function AuthGate() {
   const auth = useAuth();
 
@@ -162,18 +95,9 @@ function AuthGate() {
     return <LoginPage />;
   }
 
-  if (auth.organization == null) {
+  if (auth.organizations.length === 0) {
     return <OnboardingPage />;
   }
 
-  return (
-    <AutumnProvider pathPrefix="/api/autumn">
-      <ExecutorProvider fallback={<ShellSkeleton />}>
-        <ExecutorPluginsProvider plugins={clientPlugins}>
-          <Shell />
-          <Toaster />
-        </ExecutorPluginsProvider>
-      </ExecutorProvider>
-    </AutumnProvider>
-  );
+  return <Outlet />;
 }

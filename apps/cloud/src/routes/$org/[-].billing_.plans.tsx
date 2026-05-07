@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useAuth } from "../web/auth";
+import { useAuth } from "../../web/auth";
 import { useCustomer, useListPlans } from "autumn-js/react";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
@@ -16,10 +16,11 @@ import {
 } from "@executor-js/react/components/dialog";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
+import { useOrgRoute } from "../../web/org-route";
 
 type Plan = NonNullable<ReturnType<typeof useListPlans>["data"]>[number];
 
-export const Route = createFileRoute("/billing_/plans")({
+export const Route = createFileRoute("/$org/-/billing_/plans")({
   component: PlansPage,
 });
 
@@ -77,6 +78,7 @@ const ENTERPRISE_MAILTO = `mailto:rhys@executor.sh?subject=${encodeURIComponent(
 )}`;
 
 function PlansPage() {
+  const { orgHandle } = useOrgRoute();
   const { attach, openCustomerPortal, isLoading: customerLoading } = useCustomer();
   const { data: plans, isLoading: plansLoading, isFetching } = useListPlans();
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
@@ -92,7 +94,8 @@ function PlansPage() {
       <div className="mx-auto max-w-5xl px-6 py-10 lg:px-10 lg:py-14">
         <div className="mb-8">
           <Link
-            to="/billing"
+            to="/$org/-/billing"
+            params={{ org: orgHandle }}
             className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"
           >
             <svg viewBox="0 0 16 16" fill="none" className="size-3.5">
@@ -307,9 +310,9 @@ function PlansPage() {
 
 function SlackContactCta() {
   const auth = useAuth();
+  const { orgName } = useOrgRoute();
   const signedIn = auth.status === "authenticated" ? auth : null;
   const prefillEmail = signedIn?.user.email ?? "";
-  const orgName = signedIn?.organization?.name ?? "";
 
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState(prefillEmail);

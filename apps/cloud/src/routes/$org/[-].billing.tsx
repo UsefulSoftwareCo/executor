@@ -2,10 +2,11 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
+import { useOrgRoute } from "../../web/org-route";
 
 type Plan = NonNullable<ReturnType<typeof useListPlans>["data"]>[number];
 
-export const Route = createFileRoute("/billing")({
+export const Route = createFileRoute("/$org/-/billing")({
   component: BillingPage,
 });
 
@@ -15,6 +16,7 @@ const PLAN_TAGLINES: Record<string, string> = {
 };
 
 function BillingPage() {
+  const { orgHandle } = useOrgRoute();
   const { data: customer, openCustomerPortal, isLoading: customerLoading } = useCustomer();
   const { data: plans, isLoading: plansLoading } = useListPlans();
 
@@ -99,7 +101,8 @@ function BillingPage() {
               </Button>
             )}
             <Link
-              to="/billing/plans"
+              to="/$org/-/billing/plans"
+              params={{ org: orgHandle }}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
               Manage

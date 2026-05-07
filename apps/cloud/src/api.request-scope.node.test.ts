@@ -183,11 +183,12 @@ describe("makeApiLive (prod handler factory) request scoping", () => {
     }).handler;
 
     // Hit a protected route. ExecutionStackMiddleware short-circuits with
-    // 403 (no session cookie) but not before `requestScopedMiddleware`
-    // has built the per-request layer. We don't care about the response —
-    // only that the layer was built once per request.
-    await handler(new Request("http://test.local/scope"));
-    await handler(new Request("http://test.local/scope"));
+    // 401/404 (no session cookie / unknown org) but not before
+    // `requestScopedMiddleware` has built the per-request layer. We don't
+    // care about the response — only that the layer was built once per
+    // request. The protected API mounts under `/api/:org/...`.
+    await handler(new Request("http://test.local/api/test_org/scope"));
+    await handler(new Request("http://test.local/api/test_org/scope"));
 
     expect(counts.acquires).toBe(2);
     expect(counts.releases).toBe(2);

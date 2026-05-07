@@ -5,14 +5,16 @@
 // two test-only swaps:
 //
 //   - `OrgAuthLive` is replaced with `FakeOrgAuthLive`, which reads
-//     the scope id off `x-test-org-id` instead of the WorkOS cookie.
+//     the org handle from the URL `/api/:org/...` prefix instead of
+//     the WorkOS cookie.
 //   - `workos-vault` is configured with an in-memory `WorkOSVaultClient`
 //     so secret writes never reach WorkOS's real API.
 //
 // Tests get a `fetchForOrg(orgId)` they can hand to `FetchHttpClient`
 // and then call `HttpApiClient.make(ProtectedCloudApi)` against it.
 // Each test picks its own org id (usually a random UUID) so rows don't
-// collide across tests.
+// collide across tests. The harness seeds an organizations row whose
+// `handle` equals the org id so `resolveOrgContext(orgId)` succeeds.
 
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder, HttpApiClient, HttpApiSwagger } from "effect/unstable/httpapi";
@@ -38,9 +40,13 @@ import {
   RouterConfig,
 } from "../../api/protected-layers";
 import { DbService } from "../db";
+import { organizations } from "../schema";
 
 export const TEST_BASE_URL = "http://test.local";
-export const TEST_ORG_HEADER = "x-test-org-id";
+/**
+ * Optional header for tests that need to act as a specific user. The org
+ * id always comes from the URL prefix; only the user is opt-in.
+ */
 export const TEST_USER_HEADER = "x-test-user-id";
 
 // Mirrors apps/cloud/src/services/executor.ts#createScopedExecutor — the
@@ -89,16 +95,43 @@ const createTestScopedExecutor = (userId: string, orgId: string, orgName: string
     });
   });
 
+// Seed a test organization row whose handle equals the supplied id so the
+// production middleware resolution path (`resolveOrgContext(handle)`) works
+// against the test db. Uses `onConflictDoNothing` so repeated `asOrg(orgId,
+// …)` calls within a test don't fight each other. Lives inside the request
+// pipeline (so DbService is already provided) instead of at factory time
+// — bringing up its own DbService.Live in a Node test process leaks a
+// postgres.js socket that ECONNRESETs across test files.
+const seedTestOrg = (orgId: string) =>
+  Effect.gen(function* () {
+    const { db } = yield* DbService;
+    yield* Effect.promise(() =>
+      db
+        .insert(organizations)
+        .values({ id: orgId, handle: orgId, name: `Org ${orgId}` })
+        .onConflictDoNothing(),
+    );
+  });
+
 // ---------------------------------------------------------------------------
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
+// Pull the URL `:org` segment from a request path. The protected API mounts
+// under `/api/:org/...`. Returning `null` for a malformed prefix forces the
+// downstream handler to surface a typed error rather than panicking.
+const orgHandleFromPath = (pathname: string): string | null => {
+  const parts = pathname.split("/").filter((part) => part.length > 0);
+  if (parts.length < 2 || parts[0] !== "api") return null;
+  return parts[1] ?? null;
+};
+
 // Test version of the production `ExecutionStackMiddleware` — reads the
-// `x-test-org-id` (and optional `x-test-user-id`) header, builds a
-// test-scoped executor against the live postgres test db with a fake
-// WorkOS vault, and provides `AuthContext` + the executor services to the
-// handler. Mirrors prod's HttpRouter middleware but with test-mode
-// constructors.
+// org handle from the URL `/api/:org/...` prefix (matching production),
+// builds a test-scoped executor against the live postgres test db with a
+// fake WorkOS vault, and provides `AuthContext` + the executor services
+// to the handler. The optional `x-test-user-id` header overrides the
+// default per-org user.
 const TestExecutionStackMiddleware = HttpRouter.middleware<{
   provides:
     | AuthContext
@@ -115,11 +148,20 @@ const TestExecutionStackMiddleware = HttpRouter.middleware<{
     return (httpEffect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const orgId = request.headers[TEST_ORG_HEADER];
-        if (!orgId || typeof orgId !== "string") {
-          // oxlint-disable-next-line executor/no-effect-escape-hatch, executor/no-error-constructor -- boundary: test HTTP harness has no request context without x-test-org-id
-          return yield* Effect.die(new Error("missing x-test-org-id"));
+        const webRequest = yield* HttpServerRequest.toWeb(request);
+        const url = new URL(webRequest.url);
+        const orgId = orgHandleFromPath(url.pathname);
+        if (!orgId) {
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: test HTTP harness has no request context without /api/:org prefix
+          return yield* Effect.die(
+            // oxlint-disable-next-line executor/no-error-constructor -- boundary: test HTTP harness invariant on missing prefix
+            new Error(`missing /api/:org prefix in ${url.pathname}`),
+          );
         }
+        // Lazily seed the org row so production-mode `resolveOrgContext` (used
+        // anywhere that takes the URL handle as truth) finds it. The test
+        // harness can't pre-seed at factory time without leaking sockets.
+        yield* seedTestOrg(orgId);
         const userHeader = request.headers[TEST_USER_HEADER];
         const userId =
           typeof userHeader === "string" && userHeader.length > 0
@@ -150,9 +192,18 @@ const TestExecutionStackMiddleware = HttpRouter.middleware<{
   }),
 ).layer;
 
+// Mirror the production setup — the protected API mounts under `/api/:org`
+// via a prefixed router view. The outer `HttpRouter` from
+// `HttpServer.layerServices` is the underlying state; the prefix wrapper
+// rewrites added paths only.
+const PrefixedRouterLayer = Layer.effect(HttpRouter.HttpRouter)(
+  Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed("/api/:org")),
+);
+
 const TestApiLive = HttpApiBuilder.layer(ProtectedCloudApi).pipe(
   Layer.provide(ProtectedCloudApiHandlers),
   Layer.provide(TestExecutionStackMiddleware),
+  Layer.provide(PrefixedRouterLayer),
   Layer.provideMerge(HttpApiSwagger.layer(ProtectedCloudApi, { path: "/docs" })),
   Layer.provideMerge(RouterConfig),
   Layer.provideMerge(DbService.Live),
@@ -161,25 +212,43 @@ const TestApiLive = HttpApiBuilder.layer(ProtectedCloudApi).pipe(
 
 const handler = HttpRouter.toWebHandler(TestApiLive, { disableLogger: true }).handler;
 
+// Rewrite outgoing request URLs to `/api/${orgId}${path}` so the prefixed
+// router matches. Tests construct `HttpApiClient.make(...)` against
+// `TEST_BASE_URL` and call endpoint methods that build paths like
+// `/scopes/.../sources` — we splice the org segment in front before the
+// request reaches the in-process handler.
+const rewriteRequestForOrg = async (
+  base: Request,
+  orgId: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<Request> => {
+  const url = new URL(base.url);
+  if (!url.pathname.startsWith(`/api/${orgId}/`) && url.pathname !== `/api/${orgId}`) {
+    url.pathname = `/api/${orgId}${url.pathname.startsWith("/") ? "" : "/"}${url.pathname}`;
+  }
+  // Buffer the body — Node's `RequestInit` rejects stream bodies without
+  // `duplex: "half"`, and forwarding a Request through `new Request(url, {...})`
+  // is fragile across runtimes. ArrayBuffer survives the round-trip cleanly.
+  const body =
+    base.method === "GET" || base.method === "HEAD" ? undefined : await base.arrayBuffer();
+  return new Request(url.toString(), {
+    method: base.method,
+    headers: { ...Object.fromEntries(base.headers), ...extraHeaders },
+    body,
+  });
+};
+
 export const fetchForOrg = (orgId: string): typeof globalThis.fetch =>
-  ((input: RequestInfo | URL, init?: RequestInit) => {
+  (async (input: RequestInfo | URL, init?: RequestInit) => {
     const base = input instanceof Request ? input : new Request(input, init);
-    const req = new Request(base, {
-      headers: { ...Object.fromEntries(base.headers), [TEST_ORG_HEADER]: orgId },
-    });
+    const req = await rewriteRequestForOrg(base, orgId);
     return handler(req);
   }) as typeof globalThis.fetch;
 
 export const fetchForUser = (userId: string, orgId: string): typeof globalThis.fetch =>
-  ((input: RequestInfo | URL, init?: RequestInit) => {
+  (async (input: RequestInfo | URL, init?: RequestInit) => {
     const base = input instanceof Request ? input : new Request(input, init);
-    const req = new Request(base, {
-      headers: {
-        ...Object.fromEntries(base.headers),
-        [TEST_ORG_HEADER]: orgId,
-        [TEST_USER_HEADER]: userId,
-      },
-    });
+    const req = await rewriteRequestForOrg(base, orgId, { [TEST_USER_HEADER]: userId });
     return handler(req);
   }) as typeof globalThis.fetch;
 
