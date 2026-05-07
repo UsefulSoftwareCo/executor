@@ -1,6 +1,7 @@
 import { useReducer, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -136,84 +137,81 @@ type Action =
 const init: State = { step: "url", url: "" };
 
 function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case "set-url":
-      return { step: "url", url: action.url };
-
-    case "probe-start":
-      return { step: "probing", url: state.url };
-
-    case "probe-ok":
-      return { step: "probed", url: state.url, probe: action.probe };
-
-    case "probe-fail":
-      return {
+  return Match.value(action).pipe(
+    Match.discriminator("type")("set-url", (a): State => ({ step: "url", url: a.url })),
+    Match.discriminator("type")("probe-start", (): State => ({ step: "probing", url: state.url })),
+    Match.discriminator("type")(
+      "probe-ok",
+      (a): State => ({ step: "probed", url: state.url, probe: a.probe }),
+    ),
+    Match.discriminator("type")(
+      "probe-fail",
+      (a): State => ({
         step: "error",
         url: state.url,
         probe: null,
         tokens: null,
-        error: action.error,
-      };
-
-    case "oauth-start":
+        error: a.error,
+      }),
+    ),
+    Match.discriminator("type")("oauth-start", (): State => {
       if (state.step !== "probed" && state.step !== "error") return state;
       return {
         step: "oauth-starting",
         url: state.url,
         probe: state.step === "probed" ? state.probe : state.probe!,
       };
-
-    case "oauth-waiting":
+    }),
+    Match.discriminator("type")("oauth-waiting", (a): State => {
       if (state.step !== "oauth-starting") return state;
       return {
         step: "oauth-waiting",
         url: state.url,
         probe: state.probe,
-        sessionId: action.sessionId,
+        sessionId: a.sessionId,
       };
-
-    case "oauth-ok":
+    }),
+    Match.discriminator("type")("oauth-ok", (a): State => {
       if (state.step !== "oauth-waiting") return state;
       return {
         step: "oauth-done",
         url: state.url,
         probe: state.probe,
-        tokens: action.tokens,
+        tokens: a.tokens,
       };
-
-    case "oauth-fail":
+    }),
+    Match.discriminator("type")("oauth-fail", (a): State => {
       if (state.step !== "oauth-starting" && state.step !== "oauth-waiting") return state;
       return {
         step: "error",
         url: state.url,
         probe: state.probe,
         tokens: null,
-        error: action.error,
+        error: a.error,
       };
-
-    case "oauth-cancelled":
+    }),
+    Match.discriminator("type")("oauth-cancelled", (): State => {
       if (state.step !== "oauth-waiting") return state;
       return { step: "probed", url: state.url, probe: state.probe };
-
-    case "add-start": {
+    }),
+    Match.discriminator("type")("add-start", (): State => {
       const tokens =
         state.step === "oauth-done" ? state.tokens : state.step === "probed" ? null : null;
       const probe = "probe" in state ? state.probe : null;
       if (!probe) return state;
       return { step: "adding", url: state.url, probe, tokens };
-    }
-
-    case "add-fail":
+    }),
+    Match.discriminator("type")("add-fail", (a): State => {
       if (state.step !== "adding") return state;
       return {
         step: "error",
         url: state.url,
         probe: state.probe,
         tokens: state.tokens,
-        error: action.error,
+        error: a.error,
       };
-
-    case "retry": {
+    }),
+    Match.discriminator("type")("retry", (): State => {
       if (state.step !== "error") return state;
       return state.probe
         ? state.tokens
@@ -225,11 +223,9 @@ function reducer(state: State, action: Action): State {
             }
           : { step: "probed", url: state.url, probe: state.probe }
         : { step: "url", url: state.url };
-    }
-
-    default:
-      return state;
-  }
+    }),
+    Match.exhaustive,
+  );
 }
 
 // ---------------------------------------------------------------------------

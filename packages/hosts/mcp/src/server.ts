@@ -122,13 +122,15 @@ const elicitationRequestTag = (request: ElicitationRequest): ElicitationRequest[
 const requestedSchemaIsNonEmpty = (request: ElicitationRequest): boolean =>
   Match.value(request).pipe(
     Match.tag("FormElicitation", (req) => Object.keys(req.requestedSchema).length > 0),
-    Match.orElse(() => false),
+    Match.tag("UrlElicitation", () => false),
+    Match.exhaustive,
   );
 
 const elicitationRequestUrl = (request: ElicitationRequest): string | undefined =>
   Match.value(request).pipe(
-    Match.tag("UrlElicitation", (req) => req.url),
-    Match.orElse(() => undefined),
+    Match.tag("UrlElicitation", (req): string | undefined => req.url),
+    Match.tag("FormElicitation", (): string | undefined => undefined),
+    Match.exhaustive,
   );
 
 const pausedInteractionKind = (request: ElicitationRequest): ElicitationRequest["_tag"] =>
@@ -166,15 +168,18 @@ const makeMcpElicitationHandler =
     // If client doesn't support url mode, fall back to a form asking the user
     // to visit the URL manually and confirm when done.
     const params = Match.value(ctx.request).pipe(
-      Match.tag("UrlElicitation", (req) =>
-        !supportsUrl
-          ? {
-              message: `${req.message}\n\nPlease visit this URL:\n${req.url}\n\nClick accept once you have completed the flow.`,
-              requestedSchema: { type: "object" as const, properties: {} },
-            }
-          : elicitationRequestToParams(req),
+      Match.tag(
+        "UrlElicitation",
+        (req): ElicitInputParams =>
+          !supportsUrl
+            ? {
+                message: `${req.message}\n\nPlease visit this URL:\n${req.url}\n\nClick accept once you have completed the flow.`,
+                requestedSchema: { type: "object" as const, properties: {} },
+              }
+            : elicitationRequestToParams(req),
       ),
-      Match.orElse((req) => elicitationRequestToParams(req)),
+      Match.tag("FormElicitation", (req): ElicitInputParams => elicitationRequestToParams(req)),
+      Match.exhaustive,
     );
 
     return Effect.promise(async (): Promise<typeof ElicitationResponse.Type> => {

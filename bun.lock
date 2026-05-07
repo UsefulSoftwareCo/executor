@@ -312,6 +312,7 @@
       },
       "devDependencies": {
         "@effect/atom-react": "catalog:",
+        "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
@@ -322,10 +323,12 @@
       },
       "peerDependencies": {
         "@effect/atom-react": "catalog:",
+        "@effect/platform-node": "catalog:",
         "react": "catalog:",
       },
       "optionalPeers": [
         "@effect/atom-react",
+        "@effect/platform-node",
         "react",
       ],
     },

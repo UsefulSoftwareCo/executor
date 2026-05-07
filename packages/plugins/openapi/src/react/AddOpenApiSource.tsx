@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -149,18 +150,14 @@ type StrategySelection =
   | { readonly kind: "header"; readonly presetIndex: number }
   | { readonly kind: "oauth2"; readonly presetIndex: number };
 
-const serializeStrategy = (s: StrategySelection): string => {
-  switch (s.kind) {
-    case "none":
-      return "none";
-    case "custom":
-      return "custom";
-    case "header":
-      return `header:${s.presetIndex}`;
-    case "oauth2":
-      return `oauth2:${s.presetIndex}`;
-  }
-};
+const serializeStrategy = (s: StrategySelection): string =>
+  Match.value(s).pipe(
+    Match.when({ kind: "none" }, () => "none"),
+    Match.when({ kind: "custom" }, () => "custom"),
+    Match.when({ kind: "header" }, (sel) => `header:${sel.presetIndex}`),
+    Match.when({ kind: "oauth2" }, (sel) => `oauth2:${sel.presetIndex}`),
+    Match.exhaustive,
+  );
 
 const parseStrategy = (value: string): StrategySelection => {
   if (value === "none") return { kind: "none" };
@@ -434,31 +431,29 @@ export default function AddOpenApiSource(props: {
       setOauth2AuthState(null);
       setOauth2Error(null);
     }
-    switch (next.kind) {
-      case "none":
+    Match.value(next).pipe(
+      Match.when({ kind: "none" }, () => {
         setCustomHeaders([]);
-        return;
-      case "custom": {
+      }),
+      Match.when({ kind: "custom" }, () => {
         const userHeaders = customHeaders.filter((h) => !h.fromPreset);
         setCustomHeaders(userHeaders.length > 0 ? userHeaders : []);
-        return;
-      }
-      case "header": {
-        const preset = preview?.headerPresets[next.presetIndex];
+      }),
+      Match.when({ kind: "header" }, (n) => {
+        const preset = preview?.headerPresets[n.presetIndex];
         if (!preset) return;
         const userHeaders = customHeaders.filter((h) => !h.fromPreset);
         setCustomHeaders([...entriesFromSpecPreset(preset), ...userHeaders]);
-        return;
-      }
-      case "oauth2": {
+      }),
+      Match.when({ kind: "oauth2" }, (n) => {
         setCustomHeaders([]);
-        const preset = preview?.oauth2Presets[next.presetIndex];
+        const preset = preview?.oauth2Presets[n.presetIndex];
         if (preset) {
           setOauth2SelectedScopes(new Set(Object.keys(preset.scopes)));
         }
-        return;
-      }
-    }
+      }),
+      Match.exhaustive,
+    );
   };
 
   const handleHeadersChange = (next: HeaderState[]) => {

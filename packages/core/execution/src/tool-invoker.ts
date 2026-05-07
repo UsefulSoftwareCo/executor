@@ -1,4 +1,4 @@
-import { Effect, Predicate } from "effect";
+import { Effect, Match, Option, Predicate } from "effect";
 import * as Cause from "effect/Cause";
 import type {
   Executor,
@@ -40,19 +40,13 @@ const renderToolErrorMessage = (error: unknown): string =>
   messageFromErrorLike(error) ??
   (typeof error === "undefined" ? "Tool execution failed" : renderUnknownPrimitive(error));
 
-const renderUnknownPrimitive = (value: unknown): string => {
-  switch (typeof value) {
-    case "string":
-      return value;
-    case "number":
-    case "boolean":
-    case "bigint":
-    case "symbol":
-      return value.toString();
-    default:
-      return "Tool execution failed";
-  }
-};
+const renderUnknownPrimitive = (value: unknown): string =>
+  Match.value(value).pipe(
+    Match.when(Match.string, (s) => s),
+    Match.whenOr(Match.number, Match.boolean, Match.bigint, Match.symbol, (x) => x.toString()),
+    Match.option,
+    Option.getOrElse(() => "Tool execution failed"),
+  );
 
 type ToolResultEnvelope = {
   readonly error?: unknown;

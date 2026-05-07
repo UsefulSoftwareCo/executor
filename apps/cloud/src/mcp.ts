@@ -16,7 +16,7 @@
 
 import { env } from "cloudflare:workers";
 import { HttpEffect, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { Cause, Context, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Cause, Context, Effect, Layer, Match, Option, Predicate, Result, Schema } from "effect";
 
 import { createCachedRemoteJWKSet } from "./jwks-cache";
 import { captureCause } from "./observability";
@@ -309,10 +309,10 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
 
 const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
   const params = envelope.params ?? {};
-  switch (envelope.method) {
-    case "initialize":
-      return Option.match(decodeInitializeParams(params), {
-        onNone: () => ({}),
+  return Match.value(envelope.method).pipe(
+    Match.when("initialize", () =>
+      Option.match(decodeInitializeParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
         onSome: (init) => ({
           ...(init.protocolVersion && { "mcp.client.protocol_version": init.protocolVersion }),
           ...(init.clientInfo?.name && { "mcp.client.name": init.clientInfo.name }),
@@ -322,26 +322,29 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
             .sort()
             .join(","),
         }),
-      });
-    case "tools/call":
-      return Option.match(decodeNamedParams(params), {
-        onNone: () => ({}),
+      }),
+    ),
+    Match.when("tools/call", () =>
+      Option.match(decodeNamedParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
         onSome: ({ name }) => (name ? { "mcp.tool.name": name } : {}),
-      });
-    case "resources/read":
-    case "resources/subscribe":
-      return Option.match(decodeUriParams(params), {
-        onNone: () => ({}),
+      }),
+    ),
+    Match.whenOr("resources/read", "resources/subscribe", () =>
+      Option.match(decodeUriParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
         onSome: ({ uri }) => (uri ? { "mcp.resource.uri": uri } : {}),
-      });
-    case "prompts/get":
-      return Option.match(decodeNamedParams(params), {
-        onNone: () => ({}),
+      }),
+    ),
+    Match.when("prompts/get", () =>
+      Option.match(decodeNamedParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
         onSome: ({ name }) => (name ? { "mcp.prompt.name": name } : {}),
-      });
-    default:
-      return {};
-  }
+      }),
+    ),
+    Match.option,
+    Option.getOrElse(() => ({}) as Record<string, unknown>),
+  );
 };
 
 const replyAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
@@ -687,16 +690,16 @@ export const mcpApp: Effect.Effect<
     return unauthorized(authValue, PROTECTED_RESOURCE_METADATA_URL);
   }
   const token = authValue.token;
-  switch (request.method) {
-    case "POST":
-      return yield* dispatchPost(request, token);
-    case "GET":
-      return yield* dispatchGet(request, token);
-    case "DELETE":
-      return yield* dispatchDelete(request, token);
-    default:
-      return jsonRpcError(405, -32001, "Method not allowed");
+  const dispatchEffect = Match.value(request.method).pipe(
+    Match.when("POST", () => dispatchPost(request, token)),
+    Match.when("GET", () => dispatchGet(request, token)),
+    Match.when("DELETE", () => dispatchDelete(request, token)),
+    Match.option,
+  );
+  if (Option.isSome(dispatchEffect)) {
+    return yield* dispatchEffect.value;
   }
+  return jsonRpcError(405, -32001, "Method not allowed");
 }).pipe(
   Effect.withSpan("mcp.request"),
   Effect.catchCause((cause) =>

@@ -1,6 +1,6 @@
 import { WorkerTransport, type WorkerTransportOptions } from "agents/mcp";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Data, Effect, Exit } from "effect";
+import { Data, Effect, Exit, Match, Option } from "effect";
 
 export class McpWorkerTransportError extends Data.TaggedError("McpWorkerTransportError")<{
   readonly cause: unknown;
@@ -48,16 +48,17 @@ const closeExistingStandaloneSse = (transport: WorkerTransport): boolean => {
 const isStandaloneSseGet = (request: Request): boolean =>
   request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/event-stream");
 
-const jsonRpcRequestIdKey = (id: unknown): string | null => {
-  switch (typeof id) {
-    case "string":
-    case "number":
-    case "boolean":
-      return `${typeof id}:${String(id)}`;
-    default:
-      return null;
-  }
-};
+const jsonRpcRequestIdKey = (id: unknown): string | null =>
+  Match.value(id).pipe(
+    Match.whenOr(
+      Match.string,
+      Match.number,
+      Match.boolean,
+      (value) => `${typeof value}:${String(value)}`,
+    ),
+    Match.option,
+    Option.getOrNull,
+  );
 
 const extractJsonRpcRequestIdKeys = async (request: Request): Promise<ReadonlyArray<string>> => {
   if (request.method !== "POST") return [];

@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Match, Option } from "effect";
 import type { Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
@@ -105,16 +105,13 @@ const namespaceFromEndpoint = (endpoint: string): string => {
   }
 };
 
-const formatTypeRef = (ref: IntrospectionTypeRef): string => {
-  switch (ref.kind) {
-    case "NON_NULL":
-      return ref.ofType ? `${formatTypeRef(ref.ofType)}!` : "Unknown!";
-    case "LIST":
-      return ref.ofType ? `[${formatTypeRef(ref.ofType)}]` : "[Unknown]";
-    default:
-      return ref.name ?? "Unknown";
-  }
-};
+const formatTypeRef = (ref: IntrospectionTypeRef): string =>
+  Match.value(ref.kind).pipe(
+    Match.when("NON_NULL", () => (ref.ofType ? `${formatTypeRef(ref.ofType)}!` : "Unknown!")),
+    Match.when("LIST", () => (ref.ofType ? `[${formatTypeRef(ref.ofType)}]` : "[Unknown]")),
+    Match.option,
+    Option.getOrElse(() => ref.name ?? "Unknown"),
+  );
 
 const unwrapTypeName = (ref: IntrospectionTypeRef): string => {
   if (ref.name) return ref.name;

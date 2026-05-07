@@ -14,7 +14,7 @@
 //     better-auth's memory-adapter
 // ---------------------------------------------------------------------------
 
-import { Effect } from "effect";
+import { Effect, Match } from "effect";
 
 import type {
   CleanedWhere,
@@ -45,16 +45,13 @@ const compare = (a: unknown, b: unknown, op: "gt" | "gte" | "lt" | "lte"): boole
   }
   const lhs = a as Comparable;
   const rhs = b as Comparable;
-  switch (op) {
-    case "gt":
-      return lhs > rhs;
-    case "gte":
-      return lhs >= rhs;
-    case "lt":
-      return lhs < rhs;
-    case "lte":
-      return lhs <= rhs;
-  }
+  return Match.value(op).pipe(
+    Match.when("gt", () => lhs > rhs),
+    Match.when("gte", () => lhs >= rhs),
+    Match.when("lt", () => lhs < rhs),
+    Match.when("lte", () => lhs <= rhs),
+    Match.exhaustive,
+  );
 };
 
 const rowAs = <T>(row: Row): T => row as T;
@@ -72,43 +69,39 @@ const evalClause = (record: Row, clause: CleanedWhere): boolean => {
 
   const cmp = (a: unknown, b: unknown): boolean =>
     isInsensitive ? lowerStr(a) === lowerStr(b) : a === b;
-  switch (operator) {
-    case "in":
+  return Match.value(operator).pipe(
+    Match.when("in", () => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: sync test adapter predicate preserves invalid where-clause failure semantics
       if (!Array.isArray(value)) throw new Error("Value must be an array");
       return (value as unknown[]).some((v) => cmp(lhs, v));
-    case "not_in":
+    }),
+    Match.when("not_in", () => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: sync test adapter predicate preserves invalid where-clause failure semantics
       if (!Array.isArray(value)) throw new Error("Value must be an array");
       return !(value as unknown[]).some((v) => cmp(lhs, v));
-    case "contains": {
+    }),
+    Match.when("contains", () => {
       if (typeof lhs !== "string" || typeof value !== "string") return false;
       return isInsensitive ? lhs.toLowerCase().includes(value.toLowerCase()) : lhs.includes(value);
-    }
-    case "starts_with": {
+    }),
+    Match.when("starts_with", () => {
       if (typeof lhs !== "string" || typeof value !== "string") return false;
       return isInsensitive
         ? lhs.toLowerCase().startsWith(value.toLowerCase())
         : lhs.startsWith(value);
-    }
-    case "ends_with": {
+    }),
+    Match.when("ends_with", () => {
       if (typeof lhs !== "string" || typeof value !== "string") return false;
       return isInsensitive ? lhs.toLowerCase().endsWith(value.toLowerCase()) : lhs.endsWith(value);
-    }
-    case "ne":
-      return !cmp(lhs, value);
-    case "gt":
-      return value != null && compare(lhs, value, "gt");
-    case "gte":
-      return value != null && compare(lhs, value, "gte");
-    case "lt":
-      return value != null && compare(lhs, value, "lt");
-    case "lte":
-      return value != null && compare(lhs, value, "lte");
-    case "eq":
-    default:
-      return cmp(lhs, value);
-  }
+    }),
+    Match.when("ne", () => !cmp(lhs, value)),
+    Match.when("gt", () => value != null && compare(lhs, value, "gt")),
+    Match.when("gte", () => value != null && compare(lhs, value, "gte")),
+    Match.when("lt", () => value != null && compare(lhs, value, "lt")),
+    Match.when("lte", () => value != null && compare(lhs, value, "lte")),
+    Match.when("eq", () => cmp(lhs, value)),
+    Match.exhaustive,
+  );
 };
 
 // Split-group AND/OR grouping: clauses with `connector: "AND"` (or no

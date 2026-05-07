@@ -11,7 +11,7 @@
 //     generation, encode/decode all happen in storage-core
 // ---------------------------------------------------------------------------
 
-import { Effect, Predicate, Result, Schedule } from "effect";
+import { Effect, Match, Predicate, Result, Schedule } from "effect";
 import {
   and,
   asc,
@@ -131,72 +131,79 @@ const buildCond = (
       (typeof w.value === "string" ||
         (Array.isArray(w.value) && (w.value as unknown[]).every((v) => typeof v === "string")));
 
-    switch (w.operator) {
-      case "in":
-        if (!Array.isArray(w.value)) {
-          return yield* new StorageError({
-            message: "Value must be an array for `in`",
-            cause: w,
-          });
-        }
-        if (isInsensitive) {
-          const values = w.value as readonly string[];
-          if (values.length === 0) return sql`1 = 0`;
-          const lowered = values.map((v) => v.toLowerCase());
-          return sql`LOWER(${col}) IN ${lowered}`;
-        }
-        return inArray(col, w.value as unknown[]);
-      case "not_in":
-        if (!Array.isArray(w.value)) {
-          return yield* new StorageError({
-            message: "Value must be an array for `not_in`",
-            cause: w,
-          });
-        }
-        if (isInsensitive) {
-          const values = w.value as readonly string[];
-          if (values.length === 0) return sql`1 = 1`;
-          const lowered = values.map((v) => v.toLowerCase());
-          return sql`LOWER(${col}) NOT IN ${lowered}`;
-        }
-        return notInArray(col, w.value as unknown[]);
-      case "contains":
+    return yield* Match.value(w.operator).pipe(
+      Match.when("in", () =>
+        Effect.gen(function* () {
+          if (!Array.isArray(w.value)) {
+            return yield* new StorageError({
+              message: "Value must be an array for `in`",
+              cause: w,
+            });
+          }
+          if (isInsensitive) {
+            const values = w.value as readonly string[];
+            if (values.length === 0) return sql`1 = 0`;
+            const lowered = values.map((v) => v.toLowerCase());
+            return sql`LOWER(${col}) IN ${lowered}`;
+          }
+          return inArray(col, w.value as unknown[]);
+        }),
+      ),
+      Match.when("not_in", () =>
+        Effect.gen(function* () {
+          if (!Array.isArray(w.value)) {
+            return yield* new StorageError({
+              message: "Value must be an array for `not_in`",
+              cause: w,
+            });
+          }
+          if (isInsensitive) {
+            const values = w.value as readonly string[];
+            if (values.length === 0) return sql`1 = 1`;
+            const lowered = values.map((v) => v.toLowerCase());
+            return sql`LOWER(${col}) NOT IN ${lowered}`;
+          }
+          return notInArray(col, w.value as unknown[]);
+        }),
+      ),
+      Match.when("contains", () => {
         if (isInsensitive && typeof w.value === "string") {
-          return ilikeOrLike(col, `%${w.value}%`, provider);
+          return Effect.succeed(ilikeOrLike(col, `%${w.value}%`, provider));
         }
-        return like(col, `%${w.value}%`);
-      case "starts_with":
+        return Effect.succeed(like(col, `%${w.value}%`));
+      }),
+      Match.when("starts_with", () => {
         if (isInsensitive && typeof w.value === "string") {
-          return ilikeOrLike(col, `${w.value}%`, provider);
+          return Effect.succeed(ilikeOrLike(col, `${w.value}%`, provider));
         }
-        return like(col, `${w.value}%`);
-      case "ends_with":
+        return Effect.succeed(like(col, `${w.value}%`));
+      }),
+      Match.when("ends_with", () => {
         if (isInsensitive && typeof w.value === "string") {
-          return ilikeOrLike(col, `%${w.value}`, provider);
+          return Effect.succeed(ilikeOrLike(col, `%${w.value}`, provider));
         }
-        return like(col, `%${w.value}`);
-      case "lt":
-        return lt(col, w.value);
-      case "lte":
-        return lte(col, w.value);
-      case "gt":
-        return gt(col, w.value);
-      case "gte":
-        return gte(col, w.value);
-      case "ne":
-        if (w.value === null) return isNotNull(col);
+        return Effect.succeed(like(col, `%${w.value}`));
+      }),
+      Match.when("lt", () => Effect.succeed(lt(col, w.value))),
+      Match.when("lte", () => Effect.succeed(lte(col, w.value))),
+      Match.when("gt", () => Effect.succeed(gt(col, w.value))),
+      Match.when("gte", () => Effect.succeed(gte(col, w.value))),
+      Match.when("ne", () => {
+        if (w.value === null) return Effect.succeed(isNotNull(col));
         if (isInsensitive && typeof w.value === "string") {
-          return insensitiveNe(col, w.value);
+          return Effect.succeed(insensitiveNe(col, w.value));
         }
-        return ne(col, w.value);
-      case "eq":
-      default:
-        if (w.value === null) return isNull(col);
+        return Effect.succeed(ne(col, w.value));
+      }),
+      Match.when("eq", () => {
+        if (w.value === null) return Effect.succeed(isNull(col));
         if (isInsensitive && typeof w.value === "string") {
-          return insensitiveEq(col, w.value);
+          return Effect.succeed(insensitiveEq(col, w.value));
         }
-        return eq(col, w.value);
-    }
+        return Effect.succeed(eq(col, w.value));
+      }),
+      Match.exhaustive,
+    );
   });
 
 const compileWhere = (

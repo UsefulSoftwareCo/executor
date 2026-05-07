@@ -1,5 +1,5 @@
 import { useReducer, useState } from "react";
-import { Cause, Exit, Result } from "effect";
+import { Cause, Exit, Match, Result } from "effect";
 import { Forbidden } from "../org/api";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
@@ -81,18 +81,22 @@ type InviteAction =
   | { type: "reset" };
 
 function inviteReducer(state: InviteState, action: InviteAction): InviteState {
-  switch (action.type) {
-    case "setEmail":
-      return { ...state, email: action.email };
-    case "setRole":
-      return { ...state, roleSlug: action.roleSlug };
-    case "send":
-      return { ...state, status: "sending", failure: null };
-    case "error":
-      return { ...state, status: "error", failure: action.cause };
-    case "reset":
-      return initialInviteState;
-  }
+  return Match.value(action).pipe(
+    Match.discriminator("type")("setEmail", (a) => ({ ...state, email: a.email })),
+    Match.discriminator("type")("setRole", (a) => ({ ...state, roleSlug: a.roleSlug })),
+    Match.discriminator("type")("send", () => ({
+      ...state,
+      status: "sending" as const,
+      failure: null,
+    })),
+    Match.discriminator("type")("error", (a) => ({
+      ...state,
+      status: "error" as const,
+      failure: a.cause,
+    })),
+    Match.discriminator("type")("reset", () => initialInviteState),
+    Match.exhaustive,
+  );
 }
 
 function formatLastActive(lastActiveAt: string | null): string {

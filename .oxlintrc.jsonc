@@ -17,11 +17,13 @@
     "executor/no-instanceof-tagged-error": "error",
     "executor/no-json-parse": "error",
     "executor/no-manual-tag-check": "error",
+    "executor/no-match-orelse": "error",
     "executor/no-promise-catch": "error",
     "executor/no-promise-reject": "error",
     "executor/no-raw-fetch": "error",
     "executor/no-redundant-primitive-cast": "error",
     "executor/no-redundant-error-factory": "error",
+    "executor/no-switch-statement": "error",
     "executor/no-ts-nocheck": "error",
     "executor/no-try-catch-or-throw": "error",
     "executor/no-unknown-error-message": "error",
@@ -58,6 +60,7 @@
         "executor/no-json-parse": "off",
         "executor/no-promise-catch": "off",
         "executor/no-promise-reject": "off",
+        "executor/no-switch-statement": "off",
         "executor/no-try-catch-or-throw": "off",
         "executor/no-unknown-error-message": "off",
       },
@@ -77,6 +80,12 @@
       "files": ["packages/core/vite-plugin/src/**/*.{ts,tsx}"],
       "rules": {
         "executor/no-try-catch-or-throw": "off",
+      },
+    },
+    {
+      "files": ["packages/kernel/core/src/code-recovery.ts"],
+      "rules": {
+        "executor/no-switch-statement": "off",
       },
     },
     {

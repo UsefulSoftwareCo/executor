@@ -5,7 +5,7 @@
 // plugin in executor.ts.
 // ---------------------------------------------------------------------------
 
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Match } from "effect";
 import { join } from "node:path";
 import * as fs from "node:fs";
 import * as jsonc from "jsonc-parser";
@@ -84,40 +84,40 @@ const addSourceFromConfig = (
   // scope so a future `[user, org]` stack still sees them via org
   // fall-through.
   const scope = executor.scopes.at(-1)!.id;
-  switch (source.kind) {
-    case "openapi":
-      return executor.openapi
+  return Match.value(source).pipe(
+    Match.when({ kind: "openapi" }, (s) =>
+      executor.openapi
         .addSpec({
-          spec: source.spec,
+          spec: s.spec,
           scope,
-          baseUrl: source.baseUrl,
-          namespace: source.namespace,
-          headers: translateHeaders(source.headers),
+          baseUrl: s.baseUrl,
+          namespace: s.namespace,
+          headers: translateHeaders(s.headers),
         })
-        .pipe(Effect.asVoid);
-
-    case "graphql":
-      return executor.graphql
+        .pipe(Effect.asVoid),
+    ),
+    Match.when({ kind: "graphql" }, (s) =>
+      executor.graphql
         .addSource({
-          endpoint: source.endpoint,
+          endpoint: s.endpoint,
           scope,
-          namespace: source.namespace,
-          headers: translateHeaders(source.headers) as Record<string, string> | undefined,
+          namespace: s.namespace,
+          headers: translateHeaders(s.headers) as Record<string, string> | undefined,
         })
-        .pipe(Effect.asVoid);
-
-    case "mcp":
-      if (source.transport === "stdio") {
+        .pipe(Effect.asVoid),
+    ),
+    Match.when({ kind: "mcp" }, (s) => {
+      if (s.transport === "stdio") {
         return executor.mcp
           .addSource({
             transport: "stdio",
             scope,
-            name: source.name,
-            command: source.command,
-            args: source.args ? [...source.args] : undefined,
-            env: source.env,
-            cwd: source.cwd,
-            namespace: source.namespace,
+            name: s.name,
+            command: s.command,
+            args: s.args ? [...s.args] : undefined,
+            env: s.env,
+            cwd: s.cwd,
+            namespace: s.namespace,
           })
           .pipe(Effect.asVoid);
       }
@@ -125,15 +125,17 @@ const addSourceFromConfig = (
         .addSource({
           transport: "remote",
           scope,
-          name: source.name,
-          endpoint: source.endpoint,
-          remoteTransport: source.remoteTransport,
-          queryParams: source.queryParams,
-          headers: source.headers,
-          namespace: source.namespace,
+          name: s.name,
+          endpoint: s.endpoint,
+          remoteTransport: s.remoteTransport,
+          queryParams: s.queryParams,
+          headers: s.headers,
+          namespace: s.namespace,
         })
         .pipe(Effect.asVoid);
-  }
+    }),
+    Match.exhaustive,
+  );
 };
 
 /**
