@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { PlusIcon } from "lucide-react";
 import { SourceFavicon } from "./source-favicon";
 import { sourcesOptimisticAtom } from "../api/atoms";
+import { useNavTargets } from "../api/nav-targets";
 import { useScope } from "../hooks/use-scope";
 import { useSourcePlugins } from "@executor-js/sdk/client";
 import {
@@ -30,7 +30,7 @@ import {
 export function CommandPalette() {
   const sourcePlugins = useSourcePlugins();
   const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
+  const { goToSource, goToAddSource } = useNavTargets();
   const scopeId = useScope();
   const sourcesResult = useAtomValue(sourcesOptimisticAtom(scopeId));
 
@@ -98,37 +98,28 @@ export function CommandPalette() {
 
   const close = useCallback(() => setOpen(false), []);
 
-  const goToSource = useCallback(
+  const handleGoToSource = useCallback(
     (id: string) => {
       close();
-      void navigate({ to: "/sources/$namespace", params: { namespace: id } });
+      goToSource(id);
     },
-    [close, navigate],
+    [close, goToSource],
   );
 
   const goToAdd = useCallback(
     (pluginKey: string) => {
       close();
-      void navigate({
-        to: "/sources/add/$pluginKey",
-        params: { pluginKey },
-      });
+      goToAddSource(pluginKey);
     },
-    [close, navigate],
+    [close, goToAddSource],
   );
 
   const goToPreset = useCallback(
     (pluginKey: string, presetId: string, presetUrl?: string) => {
       close();
-      const search: Record<string, string> = { preset: presetId };
-      if (presetUrl) search.url = presetUrl;
-      void navigate({
-        to: "/sources/add/$pluginKey",
-        params: { pluginKey },
-        search,
-      });
+      goToAddSource(pluginKey, { preset: presetId, url: presetUrl });
     },
-    [close, navigate],
+    [close, goToAddSource],
   );
 
   return (
@@ -149,7 +140,7 @@ export function CommandPalette() {
                 <CommandItem
                   key={`source-${s.id}`}
                   value={`connected ${s.name} ${s.id} ${s.kind}`}
-                  onSelect={() => goToSource(s.id)}
+                  onSelect={() => handleGoToSource(s.id)}
                 >
                   <SourceFavicon url={s.url} />
                   <span className="flex-1 truncate">{s.name}</span>

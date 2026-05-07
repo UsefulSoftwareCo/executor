@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { effectivePolicyFromSorted } from "@executor-js/sdk";
 
 import { policiesOptimisticAtom, toolsAtom } from "../api/atoms";
+import { useNavTargets } from "../api/nav-targets";
 import { useScope } from "../hooks/use-scope";
 import { usePolicyActions } from "../hooks/use-policy-actions";
 import { ToolTree, type ToolSummary } from "../components/tool-tree";
@@ -14,6 +14,7 @@ import { Skeleton } from "../components/skeleton";
 
 export function ToolsPage() {
   const scopeId = useScope();
+  const { PoliciesLink } = useNavTargets();
   const tools = useAtomValue(toolsAtom(scopeId));
   const policies = useAtomValue(policiesOptimisticAtom(scopeId));
   const policyActions = usePolicyActions(scopeId);
@@ -77,7 +78,7 @@ export function ToolsPage() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button asChild variant="outline" size="sm">
-            <Link to="/policies">Manage policies</Link>
+            <PoliciesLink>Manage policies</PoliciesLink>
           </Button>
         </div>
       </div>

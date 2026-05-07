@@ -1,5 +1,4 @@
 import { Suspense, useCallback, useMemo, useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
@@ -7,6 +6,7 @@ import { PlusIcon } from "lucide-react";
 import type { SourceDetectionResult } from "@executor-js/sdk";
 import { useSourcePlugins, type SourcePlugin, type SourcePreset } from "@executor-js/sdk/client";
 import { detectSource, sourcesOptimisticAtom } from "../api/atoms";
+import { useNavTargets } from "../api/nav-targets";
 import { useScope } from "../hooks/use-scope";
 import { McpInstallCard } from "../components/mcp-install-card";
 import { Button } from "../components/button";
@@ -135,7 +135,7 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
   const sourcePlugins = useSourcePlugins();
   const scopeId = useScope();
   const doDetect = useAtomSet(detectSource, { mode: "promiseExit" });
-  const navigate = useNavigate();
+  const { goToAddSource, AddSourceLink } = useNavTargets();
 
   const [query, setQuery] = useState("");
   const [detecting, setDetecting] = useState(false);
@@ -180,16 +180,12 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
     const pluginKey = KIND_TO_PLUGIN_KEY[detected.kind];
     if (pluginKey) {
       closeAndReset();
-      void navigate({
-        to: "/sources/add/$pluginKey",
-        params: { pluginKey },
-        search: { url: trimmed, namespace: detected.namespace },
-      });
+      goToAddSource(pluginKey, { url: trimmed, namespace: detected.namespace });
     } else {
       setError(`Detected source type "${detected.kind}" but no plugin is available for it.`);
       setDetecting(false);
     }
-  }, [query, doDetect, navigate, scopeId, closeAndReset]);
+  }, [query, doDetect, goToAddSource, scopeId, closeAndReset]);
 
   return (
     <Dialog
@@ -237,15 +233,14 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
             <p className="text-xs font-medium text-foreground/80">Or add manually</p>
             <div className="flex flex-wrap gap-2">
               {sourcePlugins.map((p) => (
-                <Link
+                <AddSourceLink
                   key={p.key}
-                  to="/sources/add/$pluginKey"
-                  params={{ pluginKey: p.key }}
+                  pluginKey={p.key}
                   onClick={closeAndReset}
                   className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
                 >
                   {p.label}
-                </Link>
+                </AddSourceLink>
               ))}
             </div>
           </div>
@@ -296,6 +291,7 @@ function PresetGrid(props: {
    *  search/URL input. Empty string disables filtering. */
   searchQuery?: string;
 }) {
+  const { AddSourceLink } = useNavTargets();
   const allPresets = useMemo(() => {
     const entries: PresetEntry[] = [];
     for (const plugin of props.plugins) {
@@ -337,42 +333,37 @@ function PresetGrid(props: {
               </p>
             </div>
           ) : (
-            filtered.map(({ preset, pluginKey, pluginLabel }) => {
-              const search: Record<string, string> = { preset: preset.id };
-              if (preset.url) search.url = preset.url;
-              return (
-                <CardStackEntry key={`${pluginKey}-${preset.id}`} asChild>
-                  <Link
-                    to="/sources/add/$pluginKey"
-                    params={{ pluginKey }}
-                    search={search}
-                    onClick={props.onPick}
-                  >
-                    <CardStackEntryMedia>
-                      {preset.icon ? (
-                        <img
-                          src={preset.icon}
-                          alt=""
-                          className="size-5 object-contain"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <svg viewBox="0 0 16 16" className="size-3.5" fill="none">
-                          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
-                        </svg>
-                      )}
-                    </CardStackEntryMedia>
-                    <CardStackEntryContent>
-                      <CardStackEntryTitle>{preset.name}</CardStackEntryTitle>
-                      <CardStackEntryDescription>{preset.summary}</CardStackEntryDescription>
-                    </CardStackEntryContent>
-                    <CardStackEntryActions>
-                      <Badge variant="secondary">{pluginLabel}</Badge>
-                    </CardStackEntryActions>
-                  </Link>
-                </CardStackEntry>
-              );
-            })
+            filtered.map(({ preset, pluginKey, pluginLabel }) => (
+              <CardStackEntry key={`${pluginKey}-${preset.id}`} asChild>
+                <AddSourceLink
+                  pluginKey={pluginKey}
+                  search={{ preset: preset.id, url: preset.url }}
+                  onClick={props.onPick}
+                >
+                  <CardStackEntryMedia>
+                    {preset.icon ? (
+                      <img
+                        src={preset.icon}
+                        alt=""
+                        className="size-5 object-contain"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <svg viewBox="0 0 16 16" className="size-3.5" fill="none">
+                        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
+                      </svg>
+                    )}
+                  </CardStackEntryMedia>
+                  <CardStackEntryContent>
+                    <CardStackEntryTitle>{preset.name}</CardStackEntryTitle>
+                    <CardStackEntryDescription>{preset.summary}</CardStackEntryDescription>
+                  </CardStackEntryContent>
+                  <CardStackEntryActions>
+                    <Badge variant="secondary">{pluginLabel}</Badge>
+                  </CardStackEntryActions>
+                </AddSourceLink>
+              </CardStackEntry>
+            ))
           )}
         </CardStackContent>
       </CardStack>
@@ -393,6 +384,7 @@ function SourceGrid(props: {
     runtime?: boolean;
   }[];
 }) {
+  const { SourceLink } = useNavTargets();
   const sourcePlugins = useSourcePlugins();
   const pluginByKind = useMemo(() => {
     const out = new Map<string, SourcePlugin>();
@@ -409,7 +401,7 @@ function SourceGrid(props: {
           const SummaryComponent = plugin?.summary;
           return (
             <CardStackEntry key={s.id} asChild searchText={`${s.name} ${s.id} ${s.kind}`}>
-              <Link to="/sources/$namespace" params={{ namespace: s.id }}>
+              <SourceLink namespace={s.id}>
                 <CardStackEntryMedia>
                   <SourceFavicon url={s.url} size={32} />
                 </CardStackEntryMedia>
@@ -426,7 +418,7 @@ function SourceGrid(props: {
                   {s.runtime && <Badge className="bg-muted text-muted-foreground">built-in</Badge>}
                   <Badge variant="secondary">{s.kind}</Badge>
                 </CardStackEntryActions>
-              </Link>
+              </SourceLink>
             </CardStackEntry>
           );
         })}

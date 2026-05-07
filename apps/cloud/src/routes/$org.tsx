@@ -8,6 +8,7 @@ import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 
 import { findOrgByHandle, useAuth } from "../web/auth";
+import { CloudNavTargets } from "../web/nav-targets";
 import { OrgRouteProvider } from "../web/org-route";
 import { Shell, ShellSkeleton } from "../web/shell";
 
@@ -48,14 +49,16 @@ function OrgLayout() {
     <OrgRouteProvider
       value={{ orgId: matched.id, orgName: matched.name, orgHandle: matched.handle }}
     >
-      <AutumnProvider pathPrefix="/autumn">
-        <ExecutorProvider fallback={<ShellSkeleton />}>
-          <ExecutorPluginsProvider plugins={clientPlugins}>
-            <Shell />
-            <Toaster />
-          </ExecutorPluginsProvider>
-        </ExecutorProvider>
-      </AutumnProvider>
+      <CloudNavTargets>
+        <AutumnProvider pathPrefix="/autumn">
+          <ExecutorProvider fallback={<ShellSkeleton />}>
+            <ExecutorPluginsProvider plugins={clientPlugins}>
+              <Shell />
+              <Toaster />
+            </ExecutorPluginsProvider>
+          </ExecutorProvider>
+        </AutumnProvider>
+      </CloudNavTargets>
     </OrgRouteProvider>
   );
 }
