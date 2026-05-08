@@ -22,8 +22,8 @@ export class GoogleDiscoveryParameter extends Schema.Class<GoogleDiscoveryParame
   location: GoogleDiscoveryParameterLocation,
   required: Schema.Boolean,
   repeated: Schema.Boolean,
-  description: Schema.Option(Schema.String),
-  schema: Schema.Option(Schema.Unknown),
+  description: Schema.OptionFromOptional(Schema.String),
+  schema: Schema.OptionFromOptional(Schema.Unknown),
 }) {}
 
 export class GoogleDiscoveryMethodBinding extends Schema.Class<GoogleDiscoveryMethodBinding>(
@@ -39,22 +39,22 @@ export class GoogleDiscoveryManifestMethod extends Schema.Class<GoogleDiscoveryM
   "GoogleDiscoveryManifestMethod",
 )({
   toolPath: Schema.String,
-  description: Schema.Option(Schema.String),
+  description: Schema.OptionFromOptional(Schema.String),
   binding: GoogleDiscoveryMethodBinding,
-  inputSchema: Schema.Option(Schema.Unknown),
-  outputSchema: Schema.Option(Schema.Unknown),
+  inputSchema: Schema.OptionFromOptional(Schema.Unknown),
+  outputSchema: Schema.OptionFromOptional(Schema.Unknown),
   scopes: Schema.Array(Schema.String),
 }) {}
 
 export class GoogleDiscoveryManifest extends Schema.Class<GoogleDiscoveryManifest>(
   "GoogleDiscoveryManifest",
 )({
-  title: Schema.Option(Schema.String),
+  title: Schema.OptionFromOptional(Schema.String),
   service: Schema.String,
   version: Schema.String,
   rootUrl: Schema.String,
   servicePath: Schema.String,
-  oauthScopes: Schema.Option(Schema.Record(Schema.String, Schema.String)),
+  oauthScopes: Schema.OptionFromOptional(Schema.Record(Schema.String, Schema.String)),
   schemaDefinitions: Schema.Record(Schema.String, Schema.Unknown),
   methods: Schema.Array(GoogleDiscoveryManifestMethod),
 }) {}
