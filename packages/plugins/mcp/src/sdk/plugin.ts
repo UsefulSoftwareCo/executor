@@ -18,6 +18,7 @@ import {
   ConfiguredCredentialBinding,
   ConnectionId,
   type CredentialBindingRef,
+  type CredentialBindingValue,
   ScopeId,
   SecretId,
   SourceDetectionResult,
@@ -946,6 +947,102 @@ const authToConfig = (auth: McpConnectionAuthInput | undefined): McpAuthConfig |
   };
 };
 
+// ---------------------------------------------------------------------------
+// Storage-form → input-form reconstruction
+//
+// `toMcpConfigEntry` consumes the `McpSourceConfig` *input* shape — the
+// legacy form with `secretId` / `connectionId`, which `authToConfig` and
+// `plainStringMap` know how to render into the file. Stored remote data
+// is in slot form (`secretSlot`, `{kind: "binding", slot}`), so writing
+// the file from a stored row needs the slot → secret/connection lookups
+// realized first. Walk the source's `credential_binding` rows and rebuild
+// the input shape; any slot whose binding is missing is dropped.
+// ---------------------------------------------------------------------------
+
+const toCredentialInput = (
+  bySlot: Map<string, CredentialBindingValue>,
+  configured: ConfiguredMcpCredentialValue,
+): McpCredentialInput | undefined => {
+  if (typeof configured === "string") return configured;
+  const value = bySlot.get(configured.slot);
+  if (!value) return undefined;
+  if (value.kind === "secret") {
+    return {
+      secretId: value.secretId,
+      ...(configured.prefix ? { prefix: configured.prefix } : {}),
+    };
+  }
+  if (value.kind === "text") return value.text;
+  // headers / queryParams cannot reference connections — only auth can.
+  return undefined;
+};
+
+const toCredentialInputMap = (
+  bySlot: Map<string, CredentialBindingValue>,
+  values: Record<string, ConfiguredMcpCredentialValue> | undefined,
+): Record<string, McpCredentialInput> | undefined => {
+  if (!values) return undefined;
+  const out: Record<string, McpCredentialInput> = {};
+  for (const [name, configured] of Object.entries(values)) {
+    const input = toCredentialInput(bySlot, configured);
+    if (input !== undefined) out[name] = input;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+};
+
+const toAuthInput = (
+  bySlot: Map<string, CredentialBindingValue>,
+  auth: McpConnectionAuth,
+): McpConnectionAuthInput | undefined => {
+  if (auth.kind === "none") return { kind: "none" };
+  if (auth.kind === "header") {
+    const value = bySlot.get(auth.secretSlot);
+    if (value?.kind !== "secret") return undefined;
+    return {
+      kind: "header",
+      headerName: auth.headerName,
+      secretId: value.secretId,
+      prefix: auth.prefix,
+    };
+  }
+  const connection = bySlot.get(auth.connectionSlot);
+  if (connection?.kind !== "connection") return undefined;
+  return { kind: "oauth2", connectionId: connection.connectionId };
+};
+
+const inputFormFromStored = (
+  bindings: ReadonlyArray<CredentialBindingRef>,
+  stored: McpStoredSourceData,
+  scope: string,
+  sourceName: string,
+  namespace: string,
+): McpSourceConfig => {
+  if (stored.transport === "stdio") {
+    return {
+      transport: "stdio",
+      scope,
+      name: sourceName,
+      namespace,
+      command: stored.command,
+      args: stored.args ? [...stored.args] : undefined,
+      env: stored.env,
+      cwd: stored.cwd,
+    };
+  }
+  const bySlot = new Map(bindings.map((b) => [b.slotKey, b.value] as const));
+  return {
+    transport: "remote",
+    scope,
+    name: sourceName,
+    namespace,
+    endpoint: stored.endpoint,
+    remoteTransport: stored.remoteTransport,
+    headers: toCredentialInputMap(bySlot, stored.headers),
+    queryParams: toCredentialInputMap(bySlot, stored.queryParams),
+    auth: toAuthInput(bySlot, stored.auth),
+  };
+};
+
 const toMcpConfigEntry = (
   namespace: string,
   sourceName: string,
@@ -1489,6 +1586,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             ...(canonicalAuth ? { auth: canonicalAuth.auth } : {}),
             ...(canonicalQueryParams ? { queryParams: canonicalQueryParams.values } : {}),
           };
+          const sourceName = input.name?.trim() || existing.name;
 
           const affectedPrefixes = [
             ...(input.headers !== undefined ? ["header:"] : []),
@@ -1501,7 +1599,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               yield* ctx.storage.putSource({
                 namespace,
                 scope,
-                name: input.name?.trim() || existing.name,
+                name: sourceName,
                 config: updatedConfig,
               });
               if (affectedPrefixes.length > 0 || directBindings.length > 0) {
@@ -1519,6 +1617,24 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               }
             }),
           );
+
+          if (configFile) {
+            const bindings = yield* ctx.credentialBindings.listForSource({
+              pluginId: MCP_PLUGIN_ID,
+              sourceId: namespace,
+              sourceScope: ScopeId.make(scope),
+            });
+            const inputForm = inputFormFromStored(
+              bindings,
+              updatedConfig,
+              scope,
+              sourceName,
+              namespace,
+            );
+            yield* configFile
+              .upsertSource(toMcpConfigEntry(namespace, sourceName, inputForm))
+              .pipe(Effect.withSpan("mcp.plugin.config_file.upsert"));
+          }
         }).pipe(
           Effect.withSpan("mcp.plugin.update_source", {
             attributes: { "mcp.source.namespace": namespace },

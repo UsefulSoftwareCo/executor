@@ -455,6 +455,88 @@ describe("mcpPlugin", () => {
   );
 
   // -------------------------------------------------------------------------
+  // updateSource must persist auth changes to the config file too —
+  // otherwise the next boot replays the file's stale auth and silently
+  // overwrites the DB. Symmetric with addSource/removeSource which
+  // already write through.
+  // -------------------------------------------------------------------------
+
+  it.effect("updateSource writes auth changes back to the config file", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ op: "upsert" | "remove"; payload: unknown }> = [];
+      const stubSink = {
+        upsertSource: (source: unknown) =>
+          Effect.sync(() => {
+            calls.push({ op: "upsert", payload: source });
+          }),
+        removeSource: (namespace: string) =>
+          Effect.sync(() => {
+            calls.push({ op: "remove", payload: namespace });
+          }),
+      };
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [makeMemorySecretsPlugin()(), mcpPlugin({ configFile: stubSink })] as const,
+        }),
+      );
+
+      for (const id of ["sentry-token-old", "sentry-token-new"]) {
+        yield* executor.secrets.set({
+          id: SecretId.make(id),
+          scope: ScopeId.make("test-scope"),
+          name: id,
+          value: `value-${id}`,
+          provider: "memory",
+        });
+      }
+
+      yield* executor.mcp
+        .addSource({
+          transport: "remote",
+          scope: "test-scope",
+          name: "Sentry",
+          endpoint: "http://127.0.0.1:1/sentry-mcp",
+          namespace: "sentry",
+          credentialTargetScope: "test-scope",
+          auth: {
+            kind: "header",
+            headerName: "Authorization",
+            secretId: "sentry-token-old",
+            prefix: "Bearer ",
+          },
+        })
+        .pipe(Effect.result);
+
+      calls.length = 0; // ignore the addSource upsert; we're asserting on update
+
+      yield* executor.mcp.updateSource("sentry", "test-scope", {
+        credentialTargetScope: ScopeId.make("test-scope"),
+        auth: {
+          kind: "header",
+          headerName: "Authorization",
+          secretId: "sentry-token-new",
+          prefix: "Bearer ",
+        },
+      });
+
+      const upserts = calls.filter((c) => c.op === "upsert");
+      expect(upserts).toHaveLength(1);
+      expect(upserts[0]!.payload).toMatchObject({
+        kind: "mcp",
+        transport: "remote",
+        namespace: "sentry",
+        auth: {
+          kind: "header",
+          headerName: "Authorization",
+          secret: "secret-public-ref:sentry-token-new",
+          prefix: "Bearer ",
+        },
+      });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
   // Deferred OAuth — admin saves a source with `{kind: "oauth2",
   // connectionId}` before any user has signed in, so the row lands in
   // a "needs sign-in" state. Each user's McpSignInButton later mints a
