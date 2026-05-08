@@ -1,50 +1,16 @@
-import { useCallback } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { ConnectionId, ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/core";
 import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { connectionsAtom } from "@executor-js/react/api/atoms";
-import {
-  OAuthSignInButton,
-  oauthCallbackUrl,
-  oauthConnectionId,
-  useOAuthPopupFlow,
-  type OAuthCompletionPayload,
-} from "@executor-js/react/plugins/oauth-sign-in";
+import { SourceOAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import { slugifyNamespace } from "@executor-js/react/plugins/source-identity";
+import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js/react/plugins/credential-bindings";
 
 import { mcpSourceAtom, mcpSourceBindingsAtom, setMcpSourceBinding } from "./atoms";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
-import type {
-  ConfiguredMcpCredentialValue,
-  McpSourceBindingRef,
-  SecretBackedValue,
-} from "../sdk/types";
-
-const valuesForOAuth = (
-  values: Record<string, ConfiguredMcpCredentialValue> | undefined,
-  bindings: readonly McpSourceBindingRef[],
-): Record<string, SecretBackedValue> | undefined => {
-  const bySlot = new Map(bindings.map((binding) => [binding.slot, binding]));
-  const out: Record<string, SecretBackedValue> = {};
-  for (const [name, value] of Object.entries(values ?? {})) {
-    if (typeof value === "string") {
-      out[name] = value;
-      continue;
-    }
-    const binding = bySlot.get(value.slot);
-    if (binding?.value.kind === "secret") {
-      out[name] = value.prefix
-        ? { secretId: binding.value.secretId, prefix: value.prefix }
-        : { secretId: binding.value.secretId };
-    } else if (binding?.value.kind === "text") {
-      out[name] = binding.value.text;
-    }
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-};
 
 // ---------------------------------------------------------------------------
 // McpSignInButton — top-bar action on the source detail page.
@@ -66,9 +32,6 @@ export default function McpSignInButton(props: { sourceId: string }) {
   const bindingsResult = useAtomValue(mcpSourceBindingsAtom(scopeId, props.sourceId, sourceScope));
   const connectionsResult = useAtomValue(connectionsAtom(scopeId));
   const setBinding = useAtomSet(setMcpSourceBinding, { mode: "promise" });
-  const oauth = useOAuthPopupFlow({
-    popupName: "mcp-oauth",
-  });
 
   const remote = source && source.config.transport === "remote" ? source.config : null;
   const oauth2 = remote && remote.auth.kind === "oauth2" ? remote.auth : null;
@@ -87,25 +50,26 @@ export default function McpSignInButton(props: { sourceId: string }) {
     connectionId !== null &&
     connections.some((c) => c.id === connectionId);
 
-  const handleSignIn = useCallback(async () => {
-    if (!remote || !oauth2 || !source) return;
-    const namespaceSlug = slugifyNamespace(source.namespace) || "mcp";
-    await oauth.start({
-      payload: {
-        endpoint: remote.endpoint,
-        redirectUrl: oauthCallbackUrl(),
-        connectionId: oauthConnectionId({
-          pluginId: "mcp",
-          namespace: namespaceSlug,
-        }),
-        headers: valuesForOAuth(remote.headers, bindings ?? []),
-        queryParams: valuesForOAuth(remote.queryParams, bindings ?? []),
-        tokenScope: userScopeId,
-        strategy: { kind: "dynamic-dcr" },
-        pluginId: "mcp",
-        identityLabel: `${source.name.trim() || source.namespace || "MCP"} OAuth`,
-      },
-      onSuccess: async (result: OAuthCompletionPayload) => {
+  if (!remote || !oauth2 || !source) return null;
+  const namespaceSlug = slugifyNamespace(source.namespace) || "mcp";
+
+  return (
+    <SourceOAuthSignInButton
+      popupName="mcp-oauth"
+      pluginId="mcp"
+      namespace={namespaceSlug}
+      fallbackNamespace="mcp"
+      endpoint={remote.endpoint}
+      tokenScope={userScopeId}
+      connectionId={connectionId}
+      sourceLabel={`${source.name.trim() || source.namespace || "MCP"} OAuth`}
+      headers={secretBackedValuesFromConfiguredCredentialBindings(remote.headers, bindings ?? [])}
+      queryParams={secretBackedValuesFromConfiguredCredentialBindings(
+        remote.queryParams,
+        bindings ?? [],
+      )}
+      isConnected={isConnected}
+      onConnected={async (nextConnectionId) => {
         await setBinding({
           params: { scopeId },
           payload: {
@@ -113,33 +77,11 @@ export default function McpSignInButton(props: { sourceId: string }) {
             sourceScope,
             scope: userScopeId,
             slot: oauth2.connectionSlot,
-            value: { kind: "connection", connectionId: ConnectionId.make(result.connectionId) },
+            value: { kind: "connection", connectionId: nextConnectionId },
           },
           reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
         });
-      },
-    });
-  }, [
-    remote,
-    oauth2,
-    source,
-    bindings,
-    scopeId,
-    props.sourceId,
-    sourceScope,
-    setBinding,
-    oauth,
-    userScopeId,
-  ]);
-
-  if (!oauth2) return null;
-
-  return (
-    <OAuthSignInButton
-      busy={oauth.busy}
-      error={oauth.error}
-      isConnected={isConnected}
-      onSignIn={() => void handleSignIn()}
+      }}
       reconnectingLabel="Reconnecting…"
       signingInLabel="Signing in…"
     />

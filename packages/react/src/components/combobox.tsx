@@ -278,13 +278,16 @@ function FreeformCombobox(props: {
   readonly inputClassName?: string;
   readonly disabled?: boolean;
 }) {
-  const selectedValue = props.options.some((option) => option.value === props.value)
-    ? props.value
-    : null;
+  const valueOption = props.value.trim();
+  const options =
+    valueOption.length > 0 && !props.options.some((option) => option.value === valueOption)
+      ? [{ value: valueOption, label: valueOption }, ...props.options]
+      : props.options;
+  const selectedValue = options.some((option) => option.value === props.value) ? props.value : null;
 
   return (
     <Combobox
-      items={props.options.map((option) => option.value)}
+      items={options.map((option) => option.value)}
       inputValue={props.value}
       value={selectedValue}
       onInputValueChange={props.onValueChange}
@@ -302,7 +305,7 @@ function FreeformCombobox(props: {
       <ComboboxContent>
         <ComboboxEmpty>{props.emptyLabel ?? "No options"}</ComboboxEmpty>
         <ComboboxList>
-          {props.options.map((option) => (
+          {options.map((option) => (
             <ComboboxItem key={option.value} value={option.value}>
               <div className="min-w-0 flex-1">
                 <div className="truncate">{option.label ?? option.value}</div>

@@ -314,6 +314,28 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     }),
   );
 
+  it.effect("requires approval before adding a source through the runtime tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [openApiPlugin()] as const }),
+      );
+
+      const declined = yield* executor.tools
+        .invoke(
+          "openapi.addSource",
+          { scope: TEST_SCOPE, spec: specJson, namespace: "runtime_declined" },
+          { onElicitation: () => Effect.succeed({ action: "decline" as const }) },
+        )
+        .pipe(Effect.flip);
+
+      expect(Predicate.isTagged(declined, "ElicitationDeclinedError")).toBe(true);
+      expect(yield* executor.openapi.getSource("runtime_declined", TEST_SCOPE)).toBeNull();
+      expect((yield* executor.tools.list()).map((t) => t.id)).not.toContain(
+        "runtime_declined.items.listItems",
+      );
+    }),
+  );
+
   it.effect("adds an org source whose direct credentials are owned by the user scope", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;

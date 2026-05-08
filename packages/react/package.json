@@ -14,6 +14,8 @@
     "./globals.css": "./src/styles/globals.css"
   },
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit"
   },
@@ -49,6 +51,7 @@
     "vaul": "^1.1.2"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "hast-util-to-jsx-runtime": "^2.3.6",

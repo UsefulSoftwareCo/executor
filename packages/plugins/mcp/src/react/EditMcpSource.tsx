@@ -16,10 +16,13 @@ import {
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
   HttpCredentialsEditor,
-  httpCredentialsFromValues,
-  serializeHttpCredentials,
+  serializeScopedHttpCredentials,
   type HttpCredentialsState,
 } from "@executor-js/react/plugins/http-credentials";
+import {
+  httpCredentialsFromConfiguredCredentialBindings,
+  initialCredentialTargetScope,
+} from "@executor-js/react/plugins/credential-bindings";
 import { Button } from "@executor-js/react/components/button";
 import {
   CardStack,
@@ -29,41 +32,8 @@ import {
 import { Input } from "@executor-js/react/components/input";
 import { Badge } from "@executor-js/react/components/badge";
 import { ScopeId } from "@executor-js/sdk/core";
-import type {
-  ConfiguredMcpCredentialValue,
-  McpCredentialInput,
-  McpSourceBindingRef,
-  SecretBackedValue,
-} from "../sdk/types";
+import type { McpCredentialInput, McpSourceBindingRef } from "../sdk/types";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
-
-const valuesForEditor = (
-  values: Record<string, ConfiguredMcpCredentialValue> | undefined,
-  bindings: readonly McpSourceBindingRef[],
-): Record<string, SecretBackedValue> => {
-  const bySlot = new Map(bindings.map((binding) => [binding.slot, binding]));
-  const out: Record<string, SecretBackedValue> = {};
-  for (const [name, value] of Object.entries(values ?? {})) {
-    if (typeof value === "string") {
-      out[name] = value;
-      continue;
-    }
-    const binding = bySlot.get(value.slot);
-    if (binding?.value.kind === "secret") {
-      out[name] = value.prefix
-        ? { secretId: binding.value.secretId, prefix: value.prefix }
-        : { secretId: binding.value.secretId };
-    } else if (binding?.value.kind === "text") {
-      out[name] = binding.value.text;
-    }
-  }
-  return out;
-};
-
-const initialCredentialTargetScope = (
-  sourceScope: ScopeId,
-  bindings: readonly McpSourceBindingRef[],
-): ScopeId => bindings[0]?.scopeId ?? sourceScope;
 
 // ---------------------------------------------------------------------------
 // Remote edit form
@@ -91,9 +61,10 @@ function RemoteEditForm(props: {
   });
   const [endpoint, setEndpoint] = useState(props.initial.config.endpoint);
   const [credentials, setCredentials] = useState<HttpCredentialsState>(() =>
-    httpCredentialsFromValues({
-      headers: valuesForEditor(props.initial.config.headers, props.bindings),
-      queryParams: valuesForEditor(props.initial.config.queryParams, props.bindings),
+    httpCredentialsFromConfiguredCredentialBindings({
+      headers: props.initial.config.headers,
+      queryParams: props.initial.config.queryParams,
+      bindings: props.bindings,
     }),
   );
   const [saving, setSaving] = useState(false);
@@ -112,7 +83,10 @@ function RemoteEditForm(props: {
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    const { headers, queryParams } = serializeHttpCredentials(credentials);
+    const { headers, queryParams } = serializeScopedHttpCredentials(
+      credentials,
+      credentialTargetScope,
+    );
     const payload: {
       sourceScope: ScopeId;
       name?: string;
@@ -197,6 +171,8 @@ function RemoteEditForm(props: {
         existingSecrets={secretList}
         sourceName={identity.name}
         targetScope={credentialTargetScope}
+        credentialScopeOptions={credentialScopeOptions}
+        bindingScopeOptions={credentialScopeOptions}
       />
 
       {error && (

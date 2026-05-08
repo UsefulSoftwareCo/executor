@@ -9,6 +9,8 @@ import { useScope } from "../api/scope-context";
 import { Button } from "../components/button";
 import {
   OAUTH_POPUP_MESSAGE_TYPE,
+  ConnectionId,
+  ScopeId,
   type OAuthStrategy,
   type SecretBackedValue,
 } from "@executor-js/sdk";
@@ -271,5 +273,90 @@ export function OAuthSignInButton(props: {
             : (props.signInLabel ?? "Sign in")}
       </Button>
     </div>
+  );
+}
+
+export function SourceOAuthSignInButton(props: {
+  readonly popupName: string;
+  readonly pluginId: string;
+  readonly namespace: string;
+  readonly fallbackNamespace: string;
+  readonly endpoint: string;
+  readonly tokenScope: ScopeId;
+  readonly connectionId: string | null;
+  readonly sourceLabel: string;
+  readonly headers?: Record<string, SecretBackedValue>;
+  readonly queryParams?: Record<string, SecretBackedValue>;
+  readonly isConnected: boolean;
+  readonly onConnected: (connectionId: ConnectionId) => void | Promise<void>;
+  readonly reconnectingLabel?: string;
+  readonly signingInLabel?: string;
+}) {
+  const {
+    connectionId,
+    endpoint,
+    fallbackNamespace,
+    headers,
+    isConnected,
+    namespace,
+    onConnected,
+    pluginId,
+    popupName,
+    queryParams,
+    reconnectingLabel,
+    signingInLabel,
+    sourceLabel,
+    tokenScope,
+  } = props;
+  const oauth = useOAuthPopupFlow({
+    popupName,
+  });
+
+  const handleSignIn = useCallback(async () => {
+    await oauth.start({
+      payload: {
+        endpoint,
+        redirectUrl: oauthCallbackUrl(),
+        connectionId:
+          connectionId ??
+          oauthConnectionId({
+            pluginId,
+            namespace,
+            fallback: fallbackNamespace,
+          }),
+        headers,
+        queryParams,
+        tokenScope,
+        strategy: { kind: "dynamic-dcr" },
+        pluginId,
+        identityLabel: sourceLabel,
+      },
+      onSuccess: async (result: OAuthCompletionPayload) => {
+        await onConnected(ConnectionId.make(result.connectionId));
+      },
+    });
+  }, [
+    connectionId,
+    endpoint,
+    fallbackNamespace,
+    headers,
+    namespace,
+    oauth,
+    onConnected,
+    pluginId,
+    queryParams,
+    sourceLabel,
+    tokenScope,
+  ]);
+
+  return (
+    <OAuthSignInButton
+      busy={oauth.busy}
+      error={oauth.error}
+      isConnected={isConnected}
+      onSignIn={() => void handleSignIn()}
+      reconnectingLabel={reconnectingLabel}
+      signingInLabel={signingInLabel}
+    />
   );
 }

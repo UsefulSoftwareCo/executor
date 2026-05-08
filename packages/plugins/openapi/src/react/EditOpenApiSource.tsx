@@ -23,13 +23,19 @@ import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { Input } from "@executor-js/react/components/input";
 import { sourceWriteKeys as openApiWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/core";
-import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
   oauthCallbackUrl,
   useOAuthPopupFlow,
   type OAuthCompletionPayload,
 } from "@executor-js/react/plugins/oauth-sign-in";
+import {
+  effectiveCredentialBindingForScope,
+  exactCredentialBindingForScope,
+  isConnectionCredentialBindingValue,
+  isSecretCredentialBindingValue,
+} from "@executor-js/react/plugins/credential-bindings";
+import { SecretCredentialSlotBindings } from "@executor-js/react/plugins/credential-slot-bindings";
 
 import {
   openApiSourceAtom,
@@ -45,14 +51,10 @@ import {
   resolveOAuthUrl,
 } from "./AddOpenApiSource";
 import { oauth2ClientSecretSlot } from "../sdk/store";
-import {
-  OpenApiSourceBindingValue,
-  type OpenApiSourceBindingValue as OpenApiSourceBindingValueType,
-} from "../sdk/types";
+import { type OpenApiSourceBindingRef } from "../sdk/types";
 
 const ErrorMessage = Schema.Struct({ message: Schema.String });
 const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
-const isOpenApiSourceBindingValue = Schema.is(OpenApiSourceBindingValue);
 
 const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
   Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
@@ -98,50 +100,10 @@ const openApiOAuthConnectionId = (
     `openapi-oauth-${slugify(sourceId)}-${slugify(securitySchemeName)}-${shortHash(targetScope)}`,
   );
 
-const bindingSecretId = (sourceId: string, slot: string, scopeId: string): string =>
-  `source-binding-${slugify(sourceId)}-${slugify(slot)}-${slugify(scopeId)}`;
-
 const effectiveClientSecretSlot = (oauth2: {
   readonly securitySchemeName: string;
   readonly clientSecretSlot: string | null;
 }): string => oauth2.clientSecretSlot ?? oauth2ClientSecretSlot(oauth2.securitySchemeName);
-
-const exactBindingForScope = (
-  rows: readonly {
-    readonly slot: string;
-    readonly scopeId: ScopeId;
-    readonly value: unknown;
-  }[],
-  slot: string,
-  scopeId: ScopeId,
-) => rows.find((row) => row.slot === slot && row.scopeId === scopeId) ?? null;
-
-const scopeRank = (ranks: ReadonlyMap<string, number>, scopeId: ScopeId): number =>
-  ranks.get(scopeId) ?? Number.MAX_SAFE_INTEGER;
-
-const effectiveBindingForScope = (
-  rows: readonly {
-    readonly slot: string;
-    readonly scopeId: ScopeId;
-    readonly value: unknown;
-  }[],
-  slot: string,
-  targetScope: ScopeId,
-  ranks: ReadonlyMap<string, number>,
-) =>
-  rows.find(
-    (row) => row.slot === slot && scopeRank(ranks, row.scopeId) >= scopeRank(ranks, targetScope),
-  ) ?? null;
-
-const isSecretBindingValue = (
-  value: unknown,
-): value is Extract<OpenApiSourceBindingValueType, { readonly kind: "secret" }> =>
-  isOpenApiSourceBindingValue(value) && value.kind === "secret";
-
-const isConnectionBindingValue = (
-  value: unknown,
-): value is Extract<OpenApiSourceBindingValueType, { readonly kind: "connection" }> =>
-  isOpenApiSourceBindingValue(value) && value.kind === "connection";
 
 export default function EditOpenApiSource(props: {
   readonly sourceId: string;
@@ -185,7 +147,9 @@ export default function EditOpenApiSource(props: {
 
   const source =
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
-  const bindingRows = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : [];
+  const bindingRows: readonly OpenApiSourceBindingRef[] = AsyncResult.isSuccess(bindingsResult)
+    ? bindingsResult.value
+    : [];
   const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
   const oauth2RedirectUrl = oauthCallbackUrl(OPENAPI_OAUTH_CALLBACK_PATH);
 
@@ -414,27 +378,27 @@ export default function EditOpenApiSource(props: {
   const connectOAuth = async (targetScope: ScopeId) => {
     const oauth2 = source.config.oauth2;
     if (!oauth2) return;
-    const clientIdBinding = effectiveBindingForScope(
+    const clientIdBinding = effectiveCredentialBindingForScope(
       bindingRows,
       oauth2.clientIdSlot,
       targetScope,
       scopeRanks,
     );
     const clientSecretSlot = effectiveClientSecretSlot(oauth2);
-    const clientSecretBinding = effectiveBindingForScope(
+    const clientSecretBinding = effectiveCredentialBindingForScope(
       bindingRows,
       clientSecretSlot,
       targetScope,
       scopeRanks,
     );
-    if (!clientIdBinding || !isSecretBindingValue(clientIdBinding.value)) {
+    if (!clientIdBinding || !isSecretCredentialBindingValue(clientIdBinding.value)) {
       setError("Client ID must be bound before connecting");
       return;
     }
     const clientIdSecretId = clientIdBinding.value.secretId;
     if (
       oauth2.flow === "clientCredentials" &&
-      (!clientSecretBinding || !isSecretBindingValue(clientSecretBinding.value))
+      (!clientSecretBinding || !isSecretCredentialBindingValue(clientSecretBinding.value))
     ) {
       setError("Client secret must be bound before connecting");
       return;
@@ -442,17 +406,17 @@ export default function EditOpenApiSource(props: {
     const clientSecretValue =
       oauth2.flow === "clientCredentials" &&
       clientSecretBinding &&
-      isSecretBindingValue(clientSecretBinding.value)
+      isSecretCredentialBindingValue(clientSecretBinding.value)
         ? clientSecretBinding.value
         : null;
 
-    const existingConnection = exactBindingForScope(
+    const existingConnection = exactCredentialBindingForScope(
       bindingRows,
       oauth2.connectionSlot,
       targetScope,
     );
     const connectionId =
-      existingConnection && isConnectionBindingValue(existingConnection.value)
+      existingConnection && isConnectionCredentialBindingValue(existingConnection.value)
         ? existingConnection.value.connectionId
         : openApiOAuthConnectionId(props.sourceId, oauth2.securitySchemeName, targetScope);
 
@@ -540,7 +504,7 @@ export default function EditOpenApiSource(props: {
           issuerUrl,
           clientIdSecretId,
           clientSecretSecretId:
-            clientSecretBinding && isSecretBindingValue(clientSecretBinding.value)
+            clientSecretBinding && isSecretCredentialBindingValue(clientSecretBinding.value)
               ? clientSecretBinding.value.secretId
               : null,
           scopes: [...oauth2.scopes],
@@ -651,108 +615,19 @@ export default function EditOpenApiSource(props: {
             </CardStackEntryContent>
           </CardStackEntry>
 
-          {secretSlots
-            .filter((slot) => slot.kind === "secret")
-            .map((slot) => {
-              return (
-                <CardStackEntryField key={slot.slot} label={slot.label}>
-                  <div className="space-y-3">
-                    {secretBindingScopes.map((bindingScope) => {
-                      const exact = exactBindingForScope(
-                        bindingRows,
-                        slot.slot,
-                        bindingScope.scopeId,
-                      );
-                      const exactSecretId =
-                        exact && isSecretBindingValue(exact.value) ? exact.value.secretId : null;
-                      const inherited =
-                        bindingScope.label === "Personal"
-                          ? effectiveBindingForScope(
-                              bindingRows,
-                              slot.slot,
-                              bindingScope.scopeId,
-                              scopeRanks,
-                            )
-                          : null;
-                      const inheritedSecretId =
-                        inherited &&
-                        inherited.scopeId !== bindingScope.scopeId &&
-                        isSecretBindingValue(inherited.value)
-                          ? inherited.value.secretId
-                          : null;
-                      const inputKey = `${bindingScope.scopeId}:${slot.slot}`;
-                      const clearKey = `${bindingScope.scopeId}:${slot.slot}:clear`;
-                      const rowTitle =
-                        bindingScope.label === "Personal"
-                          ? "My override"
-                          : secretBindingScopes.length === 1
-                            ? "Source credential"
-                            : "Organization default";
-
-                      return (
-                        <div
-                          key={bindingScope.scopeId}
-                          className="space-y-2 rounded-md border border-border bg-background/40 p-3"
-                        >
-                          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                            <div>
-                              <div className="text-sm font-medium text-foreground">{rowTitle}</div>
-                            </div>
-                            {bindingScope.label === "Personal" &&
-                              !exactSecretId &&
-                              inheritedSecretId && (
-                                <span className="text-xs text-muted-foreground">
-                                  Using organization default
-                                </span>
-                              )}
-                          </div>
-                          <CreatableSecretPicker
-                            value={exactSecretId}
-                            onSelect={(secretId, secretScopeId) => {
-                              void setSecretBinding(
-                                bindingScope.scopeId,
-                                slot.slot,
-                                secretId,
-                                secretScopeId ?? bindingScope.scopeId,
-                              );
-                            }}
-                            secrets={secretList}
-                            placeholder="Select or create a secret"
-                            targetScope={bindingScope.scopeId}
-                            credentialScopeOptions={credentialScopeOptions}
-                            suggestedId={bindingSecretId(
-                              props.sourceId,
-                              slot.slot,
-                              bindingScope.scopeId,
-                            )}
-                            sourceName={source.name}
-                            secretLabel={slot.label}
-                          />
-                          <div className="flex flex-wrap items-center gap-2">
-                            {exactSecretId && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void clearBinding(bindingScope.scopeId, slot.slot)}
-                                disabled={busyKey === clearKey}
-                              >
-                                Clear
-                              </Button>
-                            )}
-                            {busyKey === inputKey && (
-                              <span className="text-xs text-muted-foreground">Saving…</span>
-                            )}
-                            {slot.hint && (
-                              <span className="text-xs text-muted-foreground">{slot.hint}</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardStackEntryField>
-              );
-            })}
+          <SecretCredentialSlotBindings
+            slots={secretSlots.filter((slot) => slot.kind === "secret")}
+            bindingScopes={secretBindingScopes}
+            bindingRows={bindingRows}
+            scopeRanks={scopeRanks}
+            secrets={secretList}
+            sourceId={props.sourceId}
+            sourceName={source.name}
+            credentialScopeOptions={credentialScopeOptions}
+            busyKey={busyKey}
+            onSetSecretBinding={setSecretBinding}
+            onClearBinding={clearBinding}
+          />
 
           {source.config.oauth2 && (
             <>
@@ -787,21 +662,23 @@ export default function EditOpenApiSource(props: {
               )}
               <CardStackEntryField label="OAuth Connection">
                 {(() => {
-                  const exact = exactBindingForScope(
+                  const exact = exactCredentialBindingForScope(
                     bindingRows,
                     source.config.oauth2!.connectionSlot,
                     activeOAuthTokenScopeId,
                   );
                   const binding =
                     exact ??
-                    effectiveBindingForScope(
+                    effectiveCredentialBindingForScope(
                       bindingRows,
                       source.config.oauth2!.connectionSlot,
                       activeOAuthTokenScopeId,
                       scopeRanks,
                     );
                   const connectionBinding =
-                    binding && isConnectionBindingValue(binding.value) ? binding.value : null;
+                    binding && isConnectionCredentialBindingValue(binding.value)
+                      ? binding.value
+                      : null;
                   const connection = connectionBinding
                     ? connections.find((entry) => entry.id === connectionBinding.connectionId)
                     : null;

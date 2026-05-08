@@ -8,10 +8,13 @@ import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
   HttpCredentialsEditor,
-  httpCredentialsFromValues,
-  serializeHttpCredentials,
+  serializeScopedHttpCredentials,
   type HttpCredentialsState,
 } from "@executor-js/react/plugins/http-credentials";
+import {
+  httpCredentialsFromConfiguredCredentialBindings,
+  initialCredentialTargetScope,
+} from "@executor-js/react/plugins/credential-bindings";
 import {
   SourceIdentityFields,
   useSourceIdentity,
@@ -32,43 +35,13 @@ import { Badge } from "@executor-js/react/components/badge";
 import { ScopeId } from "@executor-js/sdk/core";
 import {
   GRAPHQL_OAUTH_CONNECTION_SLOT,
-  type ConfiguredGraphqlCredentialValue,
   type GraphqlCredentialInput,
   type GraphqlSourceBindingRef,
-  type HeaderValue,
 } from "../sdk/types";
 import type { StoredGraphqlSource } from "../sdk/store";
 
 type EditableSource = StoredGraphqlSource;
 type AuthMode = "none" | "oauth2";
-
-const valuesForEditor = (
-  values: Record<string, ConfiguredGraphqlCredentialValue>,
-  bindings: readonly GraphqlSourceBindingRef[],
-): Record<string, HeaderValue> => {
-  const bySlot = new Map(bindings.map((binding) => [binding.slot, binding]));
-  const out: Record<string, HeaderValue> = {};
-  for (const [name, value] of Object.entries(values)) {
-    if (typeof value === "string") {
-      out[name] = value;
-      continue;
-    }
-    const binding = bySlot.get(value.slot);
-    if (binding?.value.kind === "secret") {
-      out[name] = value.prefix
-        ? { secretId: binding.value.secretId, prefix: value.prefix }
-        : { secretId: binding.value.secretId };
-    } else if (binding?.value.kind === "text") {
-      out[name] = binding.value.text;
-    }
-  }
-  return out;
-};
-
-const initialCredentialTargetScope = (
-  sourceScope: ScopeId,
-  bindings: readonly GraphqlSourceBindingRef[],
-): ScopeId => bindings[0]?.scopeId ?? sourceScope;
 
 // ---------------------------------------------------------------------------
 // Edit form
@@ -96,9 +69,10 @@ function EditForm(props: {
   });
   const [endpoint, setEndpoint] = useState(props.initial.endpoint);
   const [credentials, setCredentials] = useState<HttpCredentialsState>(() =>
-    httpCredentialsFromValues({
-      headers: valuesForEditor(props.initial.headers, props.bindings),
-      queryParams: valuesForEditor(props.initial.queryParams, props.bindings),
+    httpCredentialsFromConfiguredCredentialBindings({
+      headers: props.initial.headers,
+      queryParams: props.initial.queryParams,
+      bindings: props.bindings,
     }),
   );
   const [authMode, setAuthMode] = useState<AuthMode>(props.initial.auth.kind);
@@ -119,7 +93,10 @@ function EditForm(props: {
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    const { headers, queryParams } = serializeHttpCredentials(credentials);
+    const { headers, queryParams } = serializeScopedHttpCredentials(
+      credentials,
+      credentialTargetScope,
+    );
     const payload: {
       sourceScope: ScopeId;
       name?: string;
@@ -220,6 +197,8 @@ function EditForm(props: {
         existingSecrets={secretList}
         sourceName={identity.name}
         targetScope={credentialTargetScope}
+        credentialScopeOptions={credentialScopeOptions}
+        bindingScopeOptions={credentialScopeOptions}
       />
 
       {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}

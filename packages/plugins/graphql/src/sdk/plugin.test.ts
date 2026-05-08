@@ -1,10 +1,12 @@
 import { describe, it, expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import {
   ConnectionId,
   CreateConnectionInput,
   createExecutor,
+  definePlugin,
+  ElicitationResponse,
   makeTestConfig,
   RemoveSecretInput,
   Scope,
@@ -92,6 +94,31 @@ const introspectionResult: IntrospectionResult = {
 
 const introspectionJson = JSON.stringify({ data: introspectionResult });
 const serveGreetingServer = serveGraphqlTestServer({ schema: makeGreetingGraphqlSchema() });
+const declineAll = () => Effect.succeed(new ElicitationResponse({ action: "decline" }));
+
+const sampleDataPlugin = definePlugin(() => ({
+  id: "sample-read-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "sample",
+      kind: "in-memory",
+      name: "Sample",
+      tools: [
+        {
+          name: "read",
+          description: "Read sample data",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+          handler: () => Effect.succeed("sample-value"),
+        },
+      ],
+    },
+  ],
+}));
 
 describe("graphqlPlugin real protocol server", () => {
   it.effect("adds a source by introspecting the live GraphQL endpoint", () =>
@@ -376,6 +403,67 @@ describe("graphqlPlugin", () => {
 
       const tools = yield* executor.tools.list();
       expect(tools.filter((t) => t.sourceId === "via_static").length).toBe(2);
+    }),
+  );
+
+  it.effect("requires approval before a runtime-added query sends prior tool output", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [sampleDataPlugin(), graphqlPlugin()] as const }),
+      );
+
+      const trusted = yield* executor.tools.invoke(
+        "sample.read",
+        {},
+        { onElicitation: declineAll },
+      );
+      expect(trusted).toBe("sample-value");
+      const declined = yield* executor.tools
+        .invoke(
+          "graphql.addSource",
+          {
+            endpoint: server.endpoint,
+            scope: TEST_SCOPE,
+            introspectionJson,
+            namespace: "runtime_graphql",
+          },
+          { onElicitation: declineAll },
+        )
+        .pipe(Effect.flip);
+      expect(Predicate.isTagged(declined, "ElicitationDeclinedError")).toBe(true);
+
+      const requests = yield* server.requests;
+      expect(
+        requests.some((request) => request.payload.variables?.name === "sample-value"),
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("applies source headers to the introspection request after approval", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [graphqlPlugin()] as const }),
+      );
+
+      yield* executor.tools.invoke(
+        "graphql.addSource",
+        {
+          endpoint: server.endpoint,
+          scope: TEST_SCOPE,
+          namespace: "header_materialization",
+          headers: {
+            authorization: "Bearer sample-token",
+          },
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const requests = yield* server.requests;
+      expect(
+        requests.some((request) => request.headers.authorization === "Bearer sample-token"),
+      ).toBe(true);
     }),
   );
 

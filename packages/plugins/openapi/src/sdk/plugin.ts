@@ -1167,6 +1167,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           {
             name: "addSource",
             description: "Add an OpenAPI source and register its operations as tools",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Add an OpenAPI source",
+            },
             inputSchema: {
               type: "object",
               properties: {

@@ -976,6 +976,10 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           {
             name: "addSource",
             description: "Add a GraphQL endpoint and register its operations as tools",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Add a GraphQL source",
+            },
             inputSchema: {
               type: "object",
               properties: {

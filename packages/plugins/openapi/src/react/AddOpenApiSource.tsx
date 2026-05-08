@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -33,6 +33,7 @@ import {
   matchPresetKey,
   type HeaderState,
 } from "@executor-js/react/plugins/secret-header-auth";
+import { CredentialScopeDropdown } from "@executor-js/react/plugins/credential-target-scope";
 import {
   slugifyNamespace,
   SourceIdentityFieldRows,
@@ -65,13 +66,6 @@ import { Textarea } from "@executor-js/react/components/textarea";
 import { Checkbox } from "@executor-js/react/components/checkbox";
 import { SourceFavicon } from "@executor-js/react/components/source-favicon";
 import { RadioGroup, RadioGroupItem } from "@executor-js/react/components/radio-group";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@executor-js/react/components/select";
 import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
 import { addOpenApiSpecOptimistic, previewOpenApiSpec, setOpenApiSourceBinding } from "./atoms";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
@@ -209,44 +203,6 @@ const secretStorageDescription = (label: string): string =>
   label === "Personal"
     ? "Only you can use this secret."
     : "Everyone in the organization can use this secret.";
-
-function CredentialScopeDropdown(props: {
-  readonly value: ScopeId;
-  readonly options: readonly {
-    readonly scopeId: ScopeId;
-    readonly label: string;
-  }[];
-  readonly onChange: (scopeId: ScopeId) => void;
-  readonly label?: string;
-  readonly help?: ReactNode;
-}) {
-  const label = props.label ?? "Used by";
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-1.5">
-        <FieldLabel className="text-[11px]">{label}</FieldLabel>
-        <HelpTooltip label={label}>
-          {props.help ?? "Choose who uses this credential value."}
-        </HelpTooltip>
-      </div>
-      <Select
-        value={String(props.value)}
-        onValueChange={(value) => props.onChange(ScopeId.make(value))}
-      >
-        <SelectTrigger className="w-full">
-          <SelectValue placeholder={label} />
-        </SelectTrigger>
-        <SelectContent>
-          {props.options.map((option) => (
-            <SelectItem key={option.scopeId} value={option.scopeId}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Main component — single progressive form
@@ -1023,7 +979,6 @@ export default function AddOpenApiSource(props: {
                   onValueChange={setBaseUrl}
                   options={baseUrlOptions}
                   placeholder="https://api.example.com"
-                  emptyLabel="Use the custom URL you typed."
                   className="w-full"
                   inputClassName="font-mono text-sm"
                 />
