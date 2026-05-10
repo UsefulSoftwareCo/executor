@@ -1395,7 +1395,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           );
 
           const existing = yield* ctx.storage.getSource(namespace, scope);
-          const sourceName = manifest.server?.name ?? existing?.name ?? namespace;
+          const sourceName = existing?.name ?? manifest.server?.name ?? namespace;
 
           yield* ctx
             .transaction(
