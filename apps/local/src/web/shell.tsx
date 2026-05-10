@@ -9,6 +9,12 @@ import { useScope, useScopeInfo } from "@executor-js/react/api/scope-context";
 import { Button } from "@executor-js/react/components/button";
 import { SourceFavicon } from "@executor-js/react/components/source-favicon";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@executor-js/react/components/tooltip";
 import { useClientPlugins } from "@executor-js/sdk/client";
 
 // ── Env ─────────────────────────────────────────────────────────────────
@@ -280,33 +286,40 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
           No sources yet
         </div>
       ) : (
-        <div className="flex flex-col gap-px">
-          {value.map((s) => {
-            const detailPath = `/sources/${s.id}`;
-            const active =
-              props.pathname === detailPath || props.pathname.startsWith(`${detailPath}/`);
-            return (
-              <Link
-                key={s.id}
-                to="/sources/$namespace"
-                params={{ namespace: s.id }}
-                onClick={props.onNavigate}
-                className={[
-                  "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-colors",
-                  active
-                    ? "bg-sidebar-active text-foreground font-medium"
-                    : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
-                ].join(" ")}
-              >
-                <SourceFavicon url={s.url} />
-                <span className="flex-1 truncate">{s.name}</span>
-                <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
-                  {s.kind}
-                </span>
-              </Link>
-            );
-          })}
-        </div>
+        <TooltipProvider delayDuration={0}>
+          <div className="flex flex-col gap-px">
+            {value.map((s) => {
+              const detailPath = `/sources/${s.id}`;
+              const active =
+                props.pathname === detailPath || props.pathname.startsWith(`${detailPath}/`);
+              return (
+                <Link
+                  key={s.id}
+                  to="/sources/$namespace"
+                  params={{ namespace: s.id }}
+                  onClick={props.onNavigate}
+                  className={[
+                    "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-colors",
+                    active
+                      ? "bg-sidebar-active text-foreground font-medium"
+                      : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
+                  ].join(" ")}
+                >
+                  <SourceFavicon url={s.url} />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="flex-1 truncate">{s.name}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{s.name}</TooltipContent>
+                  </Tooltip>
+                  <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
+                    {s.kind}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        </TooltipProvider>
       ),
   });
 }
