@@ -973,6 +973,64 @@ const toMcpConfigEntry = (
   return entry;
 };
 
+/** Convert stored source data back to a config entry for config file sync.
+ *  Only plain string values are preserved in the config file; bindings are
+ *  stored in the database. */
+const storedDataToConfigEntry = (
+  namespace: string,
+  sourceName: string,
+  data: McpStoredSourceData,
+): SourceConfig => {
+  if (data.transport === "stdio") {
+    const entry: McpStdioConfigEntry = {
+      kind: "mcp",
+      transport: "stdio",
+      name: sourceName,
+      command: data.command,
+      args: data.args,
+      env: data.env,
+      cwd: data.cwd,
+      namespace,
+    };
+    return entry;
+  }
+  // For remote sources, extract only plain string values from headers/queryParams.
+  // ConfiguredCredentialBinding values are stored in the database, not the config file.
+  const extractPlainStrings = (
+    values: Record<string, ConfiguredMcpCredentialValue> | undefined,
+  ): Record<string, string> | undefined => {
+    if (!values) return undefined;
+    const plain: Record<string, string> = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (typeof value === "string") {
+        plain[key] = value;
+      }
+    }
+    return Object.keys(plain).length > 0 ? plain : undefined;
+  };
+  const entry: McpRemoteConfigEntry = {
+    kind: "mcp",
+    transport: "remote",
+    name: sourceName,
+    endpoint: data.endpoint,
+    remoteTransport: data.remoteTransport,
+    queryParams: extractPlainStrings(data.queryParams),
+    headers: extractPlainStrings(data.headers),
+    namespace,
+    auth: storedAuthToConfig(data.auth),
+  };
+  return entry;
+};
+
+/** Convert stored auth back to config auth format. */
+const storedAuthToConfig = (auth: McpConnectionAuth): McpAuthConfig | undefined => {
+  if (auth.kind === "none") return { kind: "none" };
+  // Header and OAuth2 auth use slots which reference bindings in the database.
+  // The config file cannot represent these directly, so we omit them.
+  // This is a limitation: auth configured via bindings won't appear in the config.
+  return undefined;
+};
+
 export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
   const allowStdio = options?.dangerouslyAllowStdioMCP ?? false;
   // Per-plugin-instance runtime holder. Captured by closures in
@@ -1491,12 +1549,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             ...(input.auth !== undefined ? ["auth:"] : []),
           ];
           const replacementTargetScope = targetScope ?? input.credentialTargetScope ?? scope;
+          const updatedName = input.name?.trim() || existing.name;
           yield* ctx.transaction(
             Effect.gen(function* () {
               yield* ctx.storage.putSource({
                 namespace,
                 scope,
-                name: input.name?.trim() || existing.name,
+                name: updatedName,
                 config: updatedConfig,
               });
               if (affectedPrefixes.length > 0 || directBindings.length > 0) {
@@ -1514,6 +1573,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               }
             }),
           );
+
+          // After database update, sync to config file
+          if (configFile) {
+            yield* configFile
+              .upsertSource(storedDataToConfigEntry(namespace, updatedName, updatedConfig))
+              .pipe(Effect.withSpan("mcp.plugin.config_file.upsert"));
+          }
         }).pipe(
           Effect.withSpan("mcp.plugin.update_source", {
             attributes: { "mcp.source.namespace": namespace },
