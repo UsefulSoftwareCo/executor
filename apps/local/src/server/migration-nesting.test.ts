@@ -85,17 +85,24 @@ describe("drizzle migration SQL structural lint", () => {
     it(`${f} keeps nested-function depth under ${MAX_NESTING}`, () => {
       const sql = readFileSync(join(MIGRATIONS_FOLDER, f), "utf-8");
       const worst = findDeepestNest(sql);
-      if (worst && worst.depth >= MAX_NESTING) {
-        const lineNo = sql.slice(0, worst.offset).split("\n").length;
-        throw new Error(
-          `${f}:${lineNo} — \`${worst.fn}(\` nests ${worst.depth} deep. ` +
-            `bun:sqlite's lemon parser stack overflows on the compiled macOS CLI ` +
-            `binary at ~40-deep, and the project's test matrix is Linux-only. ` +
-            `Refactor by precomputing into a temp table (see 0008's __slug_norm) ` +
-            `or split the expression into multiple shallow steps.`,
-        );
-      }
-      expect(worst === null || worst.depth < MAX_NESTING).toBe(true);
+      const summary =
+        worst === null
+          ? { ok: true as const }
+          : {
+              ok: worst.depth < MAX_NESTING,
+              file: f,
+              line: sql.slice(0, worst.offset).split("\n").length,
+              fn: worst.fn,
+              depth: worst.depth,
+            };
+      // The expectation is `summary.ok === true`. The full `summary` object is
+      // matched (not just `.ok`) so the failure diff prints file/line/fn/depth
+      // — bun:sqlite's lemon parser stack overflows on the compiled macOS CLI
+      // binary around depth 40, and the project's test matrix is Linux-only,
+      // so the diff is the breadcrumb that tells you which migration to
+      // refactor (precompute into a temp table à la 0008's __slug_norm, or
+      // split the expression into multiple shallow steps).
+      expect(summary).toEqual({ ...summary, ok: true });
     });
   }
 });
