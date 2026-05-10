@@ -1004,7 +1004,11 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             queryParams: config.queryParams,
             specFetchCredentials: config.specFetchCredentials,
             oauth2: config.oauth2,
-            credentialTargetScope: config.credentialTargetScope,
+            // Default to the source's own scope. refreshSource and editSource
+            // do the same; without this, config-sync's addSpec — which never
+            // passes the field — fails with "credentialTargetScope is
+            // required" the moment the jsonc declares any header secret.
+            credentialTargetScope: config.credentialTargetScope ?? config.scope,
           });
         });
 

@@ -549,6 +549,57 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     }),
   );
 
+  it.effect("addSpec without credentialTargetScope defaults to the source's scope", () =>
+    // Regression: config-sync calls addSpec without ever setting
+    // credentialTargetScope. Before the fix, any source with a
+    // header secret in executor.jsonc errored with
+    // "credentialTargetScope is required when adding direct OpenAPI
+    // credentials" the moment the daemon started.
+    Effect.gen(function* () {
+      const httpClient = yield* HttpClient.HttpClient;
+      const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [
+            openApiPlugin({ httpClientLayer: clientLayer }),
+            memorySecretsPlugin(),
+          ] as const,
+        }),
+      );
+
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("config-sync-token"),
+          scope: ScopeId.make(TEST_SCOPE),
+          name: "Config-sync token",
+          value: "secret-from-jsonc",
+        }),
+      );
+
+      yield* executor.openapi.addSpec({
+        spec: specJson,
+        scope: TEST_SCOPE,
+        namespace: "default_target_scope",
+        baseUrl: "",
+        headers: {
+          Authorization: { secretId: "config-sync-token", prefix: "Bearer " },
+        },
+      });
+
+      const bindings = yield* executor.openapi.listSourceBindings(
+        "default_target_scope",
+        TEST_SCOPE,
+      );
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]).toMatchObject({
+        scopeId: ScopeId.make(TEST_SCOPE),
+        slot: "header:authorization",
+        value: { kind: "secret", secretId: SecretId.make("config-sync-token") },
+      });
+    }),
+  );
+
   it.effect("fails clearly when a secret is missing", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
