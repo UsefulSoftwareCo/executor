@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
@@ -39,8 +40,9 @@ const formatRelativeTime = (iso: string): string => {
   return `${Math.floor(days / 365)}y ago`;
 };
 
-export const OnboardingPage = () => {
+export const CreateOrgPage = () => {
   const auth = useAuth();
+  const navigate = useNavigate();
   const invitationsResult = useAtomValue(pendingInvitationsAtom);
   const doAccept = useAtomSet(acceptInvitation, { mode: "promiseExit" });
 
@@ -75,7 +77,9 @@ export const OnboardingPage = () => {
 
   const form = useCreateOrganizationForm({
     defaultName: suggestedName,
-    onSuccess: () => {},
+    onSuccess: () => {
+      void navigate({ to: "/setup-mcp" });
+    },
   });
 
   const isLoading =
@@ -93,6 +97,9 @@ export const OnboardingPage = () => {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
         <header className="flex flex-col gap-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Step 1 of 2
+          </p>
           <h1 className="font-serif text-3xl">
             {isLoading
               ? "Loading"

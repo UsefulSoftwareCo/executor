@@ -10,9 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ToolsRouteImport } from './routes/tools'
+import { Route as SetupMcpRouteImport } from './routes/setup-mcp'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as OrgRouteImport } from './routes/org'
+import { Route as CreateOrgRouteImport } from './routes/create-org'
 import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as BillingRouteImport } from './routes/billing'
 import { Route as ApiKeysRouteImport } from './routes/api-keys'
@@ -24,6 +26,11 @@ import { Route as SourcesAddPluginKeyRouteImport } from './routes/sources.add.$p
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
   path: '/tools',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupMcpRoute = SetupMcpRouteImport.update({
+  id: '/setup-mcp',
+  path: '/setup-mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SecretsRoute = SecretsRouteImport.update({
@@ -39,6 +46,11 @@ const PoliciesRoute = PoliciesRouteImport.update({
 const OrgRoute = OrgRouteImport.update({
   id: '/org',
   path: '/org',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreateOrgRoute = CreateOrgRouteImport.update({
+  id: '/create-org',
+  path: '/create-org',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectionsRoute = ConnectionsRouteImport.update({
@@ -82,9 +94,11 @@ export interface FileRoutesByFullPath {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/connections': typeof ConnectionsRoute
+  '/create-org': typeof CreateOrgRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
+  '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing/plans': typeof BillingPlansRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
@@ -95,9 +109,11 @@ export interface FileRoutesByTo {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/connections': typeof ConnectionsRoute
+  '/create-org': typeof CreateOrgRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
+  '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing/plans': typeof BillingPlansRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
@@ -109,9 +125,11 @@ export interface FileRoutesById {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/connections': typeof ConnectionsRoute
+  '/create-org': typeof CreateOrgRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
+  '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing_/plans': typeof BillingPlansRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
@@ -124,9 +142,11 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/connections'
+    | '/create-org'
     | '/org'
     | '/policies'
     | '/secrets'
+    | '/setup-mcp'
     | '/tools'
     | '/billing/plans'
     | '/sources/$namespace'
@@ -137,9 +157,11 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/connections'
+    | '/create-org'
     | '/org'
     | '/policies'
     | '/secrets'
+    | '/setup-mcp'
     | '/tools'
     | '/billing/plans'
     | '/sources/$namespace'
@@ -150,9 +172,11 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/connections'
+    | '/create-org'
     | '/org'
     | '/policies'
     | '/secrets'
+    | '/setup-mcp'
     | '/tools'
     | '/billing_/plans'
     | '/sources/$namespace'
@@ -164,9 +188,11 @@ export interface RootRouteChildren {
   ApiKeysRoute: typeof ApiKeysRoute
   BillingRoute: typeof BillingRoute
   ConnectionsRoute: typeof ConnectionsRoute
+  CreateOrgRoute: typeof CreateOrgRoute
   OrgRoute: typeof OrgRoute
   PoliciesRoute: typeof PoliciesRoute
   SecretsRoute: typeof SecretsRoute
+  SetupMcpRoute: typeof SetupMcpRoute
   ToolsRoute: typeof ToolsRoute
   BillingPlansRoute: typeof BillingPlansRoute
   SourcesNamespaceRoute: typeof SourcesNamespaceRoute
@@ -180,6 +206,13 @@ declare module '@tanstack/react-router' {
       path: '/tools'
       fullPath: '/tools'
       preLoaderRoute: typeof ToolsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup-mcp': {
+      id: '/setup-mcp'
+      path: '/setup-mcp'
+      fullPath: '/setup-mcp'
+      preLoaderRoute: typeof SetupMcpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/secrets': {
@@ -201,6 +234,13 @@ declare module '@tanstack/react-router' {
       path: '/org'
       fullPath: '/org'
       preLoaderRoute: typeof OrgRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/create-org': {
+      id: '/create-org'
+      path: '/create-org'
+      fullPath: '/create-org'
+      preLoaderRoute: typeof CreateOrgRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connections': {
@@ -260,9 +300,11 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKeysRoute: ApiKeysRoute,
   BillingRoute: BillingRoute,
   ConnectionsRoute: ConnectionsRoute,
+  CreateOrgRoute: CreateOrgRoute,
   OrgRoute: OrgRoute,
   PoliciesRoute: PoliciesRoute,
   SecretsRoute: SecretsRoute,
+  SetupMcpRoute: SetupMcpRoute,
   ToolsRoute: ToolsRoute,
   BillingPlansRoute: BillingPlansRoute,
   SourcesNamespaceRoute: SourcesNamespaceRoute,

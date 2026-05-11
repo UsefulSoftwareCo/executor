@@ -1,6 +1,13 @@
 import React from "react";
 import * as Sentry from "@sentry/react";
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+import {
+  HeadContent,
+  Outlet,
+  Scripts,
+  createRootRoute,
+  useLocation,
+  useNavigate,
+} from "@tanstack/react-router";
 import { AutumnProvider } from "autumn-js/react";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
@@ -13,9 +20,10 @@ import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { AuthProvider, useAuth } from "../web/auth";
 import { SupportOptions } from "../web/components/support-options";
 import { LoginPage } from "../web/pages/login";
-import { OnboardingPage } from "../web/pages/onboarding";
 import { Shell } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
+
+const ONBOARDING_PATHS = new Set(["/create-org", "/setup-mcp"]);
 
 if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_SENTRY_DSN) {
   Sentry.init({
@@ -198,6 +206,18 @@ function ShellErrorFallback() {
 
 function AuthGate() {
   const auth = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isOnboardingRoute = ONBOARDING_PATHS.has(location.pathname);
+
+  const needsOrgRedirect =
+    auth.status === "authenticated" && auth.organization == null && !isOnboardingRoute;
+
+  React.useEffect(() => {
+    if (needsOrgRedirect) {
+      void navigate({ to: "/create-org", replace: true });
+    }
+  }, [needsOrgRedirect, navigate]);
 
   if (auth.status === "loading") {
     return <ShellSkeleton />;
@@ -207,8 +227,12 @@ function AuthGate() {
     return <LoginPage />;
   }
 
+  if (isOnboardingRoute) {
+    return <Outlet />;
+  }
+
   if (auth.organization == null) {
-    return <OnboardingPage />;
+    return <ShellSkeleton />;
   }
 
   return (
