@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@executor-js/react/components/dialog";
+import { SupportOptions } from "./components/support-options";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +37,19 @@ import {
   CreateOrganizationFields,
   useCreateOrganizationForm,
 } from "./components/create-organization-form";
+
+// ── Brand ────────────────────────────────────────────────────────────────
+
+function Brand(props: { onNavigate?: () => void }) {
+  return (
+    <Link to="/" onClick={props.onNavigate} className="flex items-center gap-1.5">
+      <span className="font-display text-base tracking-tight text-foreground">executor</span>
+      <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+        Beta
+      </span>
+    </Link>
+  );
+}
 
 // ── NavItem ──────────────────────────────────────────────────────────────
 
@@ -287,6 +301,10 @@ function UserFooter() {
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSeparator />
+            <DropdownMenuItem asChild className="text-xs">
+              <Link to="/api-keys">API keys</Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
               Signed in as
             </DropdownMenuLabel>
@@ -351,6 +369,50 @@ function UserFooter() {
   );
 }
 
+// ── SupportButton ────────────────────────────────────────────────────────
+
+function HelpIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" className={className} aria-hidden>
+      <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" />
+      <path
+        d="M6.25 6.25c.25-1 1-1.5 1.85-1.5 1 0 1.9.7 1.9 1.7 0 .8-.5 1.2-1.1 1.6-.55.4-.9.7-.9 1.45M8 11.25v.05"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function SupportButton() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={() => setOpen(true)}
+        className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground"
+      >
+        <HelpIcon className="size-3.5 text-muted-foreground" />
+        Get support
+      </Button>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle className="font-display text-xl">Get support</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed">
+            Reach out through any of the channels below.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="py-2">
+          <SupportOptions />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── SidebarContent ───────────────────────────────────────────────────────
 
 function SidebarContent(props: { pathname: string; onNavigate?: () => void; showBrand?: boolean }) {
@@ -365,9 +427,7 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
     <>
       {props.showBrand !== false && (
         <div className="flex h-12 shrink-0 items-center border-b border-sidebar-border px-4">
-          <Link to="/" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
-          </Link>
+          <Brand onNavigate={props.onNavigate} />
         </div>
       )}
 
@@ -395,6 +455,10 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
 
         <SourceList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
+
+      <div className="shrink-0 px-2 pb-2">
+        <SupportButton />
+      </div>
 
       <UserFooter />
     </>
@@ -443,11 +507,7 @@ export function Shell() {
           />
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
-              <Link to="/" className="flex items-center gap-1.5">
-                <span className="font-display text-base tracking-tight text-foreground">
-                  executor
-                </span>
-              </Link>
+              <Brand onNavigate={() => setMobileSidebarOpen(false)} />
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -496,9 +556,7 @@ export function Shell() {
               />
             </svg>
           </Button>
-          <Link to="/" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
-          </Link>
+          <Brand />
           <div className="w-8 shrink-0" />
         </div>
 

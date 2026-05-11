@@ -1,5 +1,13 @@
 import { Effect, Schema } from "effect";
-import { SecretBackedMap, SecretBackedValue } from "@executor-js/sdk/core";
+import {
+  ConfiguredCredentialValueSchema,
+  CredentialBindingValue,
+  credentialSlotKey,
+  ScopedSecretCredentialInput,
+  ScopeId,
+  SecretBackedMap,
+  SecretBackedValue,
+} from "@executor-js/sdk/core";
 
 export { SecretBackedMap, SecretBackedValue };
 
@@ -14,14 +22,28 @@ export type McpRemoteTransport = typeof McpRemoteTransport.Type;
 export const McpTransport = Schema.Literals(["streamable-http", "sse", "stdio", "auto"]);
 export type McpTransport = typeof McpTransport.Type;
 
+export const ConfiguredMcpCredentialValue = ConfiguredCredentialValueSchema;
+export type ConfiguredMcpCredentialValue = typeof ConfiguredMcpCredentialValue.Type;
+
+export const McpCredentialInput = Schema.Union([
+  ScopedSecretCredentialInput,
+  SecretBackedValue,
+  ConfiguredMcpCredentialValue,
+]);
+export type McpCredentialInput = typeof McpCredentialInput.Type;
+
+export const mcpHeaderSlot = (name: string): string => credentialSlotKey("header", name);
+export const mcpQueryParamSlot = (name: string): string => credentialSlotKey("query_param", name);
+export const MCP_HEADER_AUTH_SLOT = "auth:header";
+export const MCP_OAUTH_CONNECTION_SLOT = "auth:oauth2:connection";
+export const MCP_OAUTH_CLIENT_ID_SLOT = "auth:oauth2:client-id";
+export const MCP_OAUTH_CLIENT_SECRET_SLOT = "auth:oauth2:client-secret";
+
 // ---------------------------------------------------------------------------
 // Connection auth (only applies to remote sources)
 //
-// `oauth2` is a thin pointer to an SDK Connection (`ctx.connections`) —
-// the access/refresh secrets, expiry, DCR client info, and authorization-
-// server discovery URLs all live on the connection row. Scope shadowing
-// means the same `connectionId` resolves per-user via the executor's
-// innermost-wins lookup.
+// `oauth2` is a source-owned credential slot. Concrete per-user or
+// per-workspace connection ids live in core credential_binding rows.
 // ---------------------------------------------------------------------------
 
 /** JSON object loosely typed — used for opaque OAuth state we just round-trip. */
@@ -33,8 +55,27 @@ export const McpConnectionAuth = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("header"),
     headerName: Schema.String,
+    secretSlot: Schema.String,
+    prefix: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("oauth2"),
+    connectionSlot: Schema.String,
+    clientIdSlot: Schema.optional(Schema.String),
+    clientSecretSlot: Schema.optional(Schema.String),
+  }),
+]);
+export type McpConnectionAuth = typeof McpConnectionAuth.Type;
+
+export const McpConnectionAuthInput = Schema.Union([
+  McpConnectionAuth,
+  Schema.Struct({
+    kind: Schema.Literal("header"),
+    headerName: Schema.String,
     secretId: Schema.String,
     prefix: Schema.optional(Schema.String),
+    targetScope: Schema.optional(ScopeId),
+    secretScopeId: Schema.optional(ScopeId),
   }),
   Schema.Struct({
     kind: Schema.Literal("oauth2"),
@@ -43,7 +84,32 @@ export const McpConnectionAuth = Schema.Union([
     clientSecretSecretId: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 ]);
-export type McpConnectionAuth = typeof McpConnectionAuth.Type;
+export type McpConnectionAuthInput = typeof McpConnectionAuthInput.Type;
+
+export const McpSourceBindingValue = CredentialBindingValue;
+export type McpSourceBindingValue = typeof McpSourceBindingValue.Type;
+
+export const McpSourceBindingInputSchema = Schema.Struct({
+  sourceId: Schema.String,
+  sourceScope: ScopeId,
+  scope: ScopeId,
+  slot: Schema.String,
+  value: McpSourceBindingValue,
+});
+
+export class McpSourceBindingInput extends Schema.Class<McpSourceBindingInput>(
+  "McpSourceBindingInput",
+)(McpSourceBindingInputSchema.fields) {}
+
+export class McpSourceBindingRef extends Schema.Class<McpSourceBindingRef>("McpSourceBindingRef")({
+  sourceId: Schema.String,
+  sourceScopeId: ScopeId,
+  scopeId: ScopeId,
+  slot: Schema.String,
+  value: McpSourceBindingValue,
+  createdAt: Schema.Date,
+  updatedAt: Schema.Date,
+}) {}
 
 // ---------------------------------------------------------------------------
 // Stored source data — discriminated union on transport
@@ -62,9 +128,9 @@ export const McpRemoteSourceData = Schema.Struct({
     Schema.withConstructorDefault(Effect.succeed("auto" as const)),
   ),
   /** Extra query params appended to the endpoint URL */
-  queryParams: Schema.optional(SecretBackedMap),
+  queryParams: Schema.optional(Schema.Record(Schema.String, ConfiguredMcpCredentialValue)),
   /** Extra headers sent on every request */
-  headers: Schema.optional(SecretBackedMap),
+  headers: Schema.optional(Schema.Record(Schema.String, ConfiguredMcpCredentialValue)),
   /** Auth configuration */
   auth: McpConnectionAuth,
 });

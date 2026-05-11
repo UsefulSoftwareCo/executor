@@ -12,6 +12,7 @@ import * as jsonc from "jsonc-parser";
 
 import type { SourceConfig, ExecutorFileConfig, ConfigHeaderValue } from "@executor-js/config";
 import { SECRET_REF_PREFIX } from "@executor-js/config";
+import type { ScopeId } from "@executor-js/sdk";
 
 import type { LocalExecutor } from "./executor";
 
@@ -77,19 +78,15 @@ const loadConfigSync = (path: string): ExecutorFileConfig | null => {
 
 const addSourceFromConfig = (
   executor: LocalExecutor,
+  targetScope: ScopeId,
   source: SourceConfig,
 ): Effect.Effect<void, unknown> => {
-  // `executor.jsonc` is a single-scope artifact today — the file isn't
-  // aware of per-user tenancy. Pin replayed sources to the outermost
-  // scope so a future `[user, org]` stack still sees them via org
-  // fall-through.
-  const scope = executor.scopes.at(-1)!.id;
   return Match.value(source).pipe(
     Match.when({ kind: "openapi" }, (s) =>
       executor.openapi
         .addSpec({
           spec: s.spec,
-          scope,
+          scope: targetScope,
           baseUrl: s.baseUrl,
           namespace: s.namespace,
           headers: translateHeaders(s.headers),
@@ -100,7 +97,7 @@ const addSourceFromConfig = (
       executor.graphql
         .addSource({
           endpoint: s.endpoint,
-          scope,
+          scope: targetScope,
           namespace: s.namespace,
           headers: translateHeaders(s.headers) as Record<string, string> | undefined,
         })
@@ -111,7 +108,7 @@ const addSourceFromConfig = (
         return executor.mcp
           .addSource({
             transport: "stdio",
-            scope,
+            scope: targetScope,
             name: s.name,
             command: s.command,
             args: s.args ? [...s.args] : undefined,
@@ -124,7 +121,7 @@ const addSourceFromConfig = (
       return executor.mcp
         .addSource({
           transport: "remote",
-          scope,
+          scope: targetScope,
           name: s.name,
           endpoint: s.endpoint,
           remoteTransport: s.remoteTransport,
@@ -142,8 +139,13 @@ const addSourceFromConfig = (
  * Read executor.jsonc and replay all sources into the executor.
  * Each source is added independently — if one fails, the rest still load.
  */
-export const syncFromConfig = (executor: LocalExecutor, configPath: string): Effect.Effect<void> =>
+export const syncFromConfig = (input: {
+  readonly executor: LocalExecutor;
+  readonly configPath: string;
+  readonly targetScope: ScopeId;
+}): Effect.Effect<void> =>
   Effect.gen(function* () {
+    const { executor, configPath, targetScope } = input;
     const config = loadConfigSync(configPath);
     if (!config?.sources?.length) {
       console.log(`[config-sync] ${configPath} missing or empty, skipping`);
@@ -155,12 +157,17 @@ export const syncFromConfig = (executor: LocalExecutor, configPath: string): Eff
     const results = yield* Effect.forEach(
       config.sources,
       (source) =>
-        addSourceFromConfig(executor, source).pipe(
+        addSourceFromConfig(executor, targetScope, source).pipe(
           Effect.map(() => true as const),
           Effect.catchCause((cause) => {
             const ns =
               "namespace" in source ? source.namespace : "name" in source ? source.name : "unknown";
-            console.warn(`[config-sync] Failed to load source "${ns}":`, Cause.pretty(cause));
+            const squashed = Cause.squash(cause);
+            const message =
+              squashed && typeof squashed === "object" && "message" in squashed
+                ? String((squashed as { message: unknown }).message)
+                : Cause.pretty(cause);
+            console.warn(`[config-sync] Failed to load source "${ns}": ${message}`);
             return Effect.succeed(false as const);
           }),
         ),

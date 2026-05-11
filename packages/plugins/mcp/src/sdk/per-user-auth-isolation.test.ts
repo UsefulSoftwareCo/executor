@@ -27,6 +27,7 @@ import { z } from "zod";
 import {
   ConnectionId,
   CreateConnectionInput,
+  OAUTH2_PROVIDER_KEY,
   Scope,
   ScopeId,
   SecretId,
@@ -241,7 +242,7 @@ describe("per-user MCP auth isolation", () => {
           new CreateConnectionInput({
             id: ConnectionId.make(sharedConnId),
             scope: USER_A,
-            provider: "mcp:oauth2",
+            provider: OAUTH2_PROVIDER_KEY,
             identityLabel: "userA",
             accessToken: new TokenMaterial({
               secretId: SecretId.make(`${sharedConnId}.access_token`),
@@ -257,11 +258,13 @@ describe("per-user MCP auth isolation", () => {
 
         // User A installs the shared source at org scope. Discovery
         // uses user A's token (resolved via their innermost connection
-        // row); the source + bindings land at org scope so user B's
-        // stack [userB, org] can see them via fall-through.
+        // row); the source lands at org scope while the credential
+        // binding lands at user A's scope. User B's stack [userB, org]
+        // can see the source but not user A's binding.
         yield* execUserA.mcp.addSource({
           transport: "remote",
           scope: ORG,
+          credentialTargetScope: USER_A,
           name: "Shared MCP",
           endpoint: server.url,
           namespace: "iso_test",
@@ -360,6 +363,7 @@ describe("per-user MCP auth isolation", () => {
       yield* execUserA.mcp.addSource({
         transport: "remote",
         scope: ORG,
+        credentialTargetScope: USER_A,
         name: "Shared MCP (header)",
         endpoint: server.url,
         namespace: "iso_header",
@@ -423,6 +427,67 @@ describe("per-user MCP auth isolation", () => {
       for (const req of afterUserB) {
         expect(req.authorization).not.toBe("Bearer token-user-a-header");
       }
+    }),
+  );
+
+  it.effect("org header binding resolves the org secret when a user has the same secret id", () =>
+    Effect.gen(function* () {
+      const server = yield* serveMcpServer;
+      const { execUserA } = yield* makeLayeredMcpExecutors();
+      const secretId = SecretId.make("shared-mcp-token");
+
+      yield* execUserA.secrets.set(
+        new SetSecretInput({
+          id: secretId,
+          scope: ORG,
+          name: "Org MCP token",
+          value: "token-org-header",
+        }),
+      );
+
+      yield* execUserA.mcp.addSource({
+        transport: "remote",
+        scope: ORG,
+        credentialTargetScope: ORG,
+        name: "Shared MCP org header",
+        endpoint: server.url,
+        namespace: "org_header",
+        auth: {
+          kind: "header",
+          headerName: "Authorization",
+          secretId,
+          prefix: "Bearer ",
+        },
+      });
+
+      yield* execUserA.secrets.set(
+        new SetSecretInput({
+          id: secretId,
+          scope: USER_A,
+          name: "User colliding MCP token",
+          value: "token-user-header",
+        }),
+      );
+
+      const tools = yield* execUserA.tools.list();
+      const whoami = tools.find((t) => t.name === "whoami")!;
+      const beforeInvoke = server.recorded().length;
+      const result = yield* execUserA.tools.invoke(
+        whoami.id,
+        { marker: "org-header" },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(result).toMatchObject({
+        content: [{ type: "text", text: "ok:org-header" }],
+      });
+      const invokeRequests = server.recorded().slice(beforeInvoke);
+      expect(invokeRequests.some((req) => req.authorization === "Bearer token-org-header")).toBe(
+        true,
+      );
+      expect(invokeRequests.some((req) => req.authorization === "Bearer token-user-header")).toBe(
+        false,
+      );
     }),
   );
 });

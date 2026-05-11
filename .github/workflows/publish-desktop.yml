@@ -10,7 +10,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: publish-desktop-${{ github.ref }}
@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -45,12 +47,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Validate release tag
+        env:
+          RAW_RELEASE_TAG: ${{ inputs.tag }}
+        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG
+
+      - name: Checkout release tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+        shell: bash
+        run: |
+          auth_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --force --tags "$auth_remote" "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "$RELEASE_TAG"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -62,7 +78,7 @@ jobs:
 
       - name: Build web app
         run: bun run build
-        working-directory: apps/web
+        working-directory: apps/local
 
       - name: Download and extract CLI sidecar (unix)
         if: matrix.platform != 'win'
@@ -70,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p apps/desktop/resources
-          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern "${{ matrix.cli-asset }}" --dir /tmp/cli-download
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.cli-asset }}" --dir /tmp/cli-download
           cd /tmp/cli-download
           if [[ "${{ matrix.cli-asset }}" == *.tar.gz ]]; then
             tar -xzf "${{ matrix.cli-asset }}"
@@ -90,7 +106,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "apps/desktop/resources"
-          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern "${{ matrix.cli-asset }}" --dir "$env:TEMP/cli-download"
+          gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern "${{ matrix.cli-asset }}" --dir "$env:TEMP/cli-download"
           Expand-Archive -Path "$env:TEMP/cli-download/${{ matrix.cli-asset }}" -DestinationPath "$env:TEMP/cli-extract" -Force
           Copy-Item "$env:TEMP/cli-extract/executor.exe" "apps/desktop/resources/executor.exe"
           if (Test-Path "$env:TEMP/cli-extract/emscripten-module.wasm") {
@@ -100,6 +116,10 @@ jobs:
       - name: Build desktop app (TypeScript)
         run: bunx tsc -p tsconfig.json
         working-directory: apps/desktop
+
+      - name: Prepare Linux package output directory
+        if: matrix.platform == 'linux'
+        run: mkdir -p apps/desktop/dist/@executor-js
 
       - name: Build desktop distributables
         run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }}
@@ -119,8 +139,25 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
+      - name: Checkout validation script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Validate release tag
+        env:
+          RAW_RELEASE_TAG: ${{ inputs.tag }}
+        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -133,5 +170,5 @@ jobs:
         run: |
           find artifacts -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" \) | while read file; do
             echo "Uploading: $file"
-            gh release upload "${{ inputs.tag }}" "$file" --repo "${{ github.repository }}" --clobber || true
+            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber || true
           done

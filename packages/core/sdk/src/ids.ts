@@ -14,3 +14,6 @@ export type PolicyId = typeof PolicyId.Type;
 
 export const ConnectionId = Schema.String.pipe(Schema.brand("ConnectionId"));
 export type ConnectionId = typeof ConnectionId.Type;
+
+export const CredentialBindingId = Schema.String.pipe(Schema.brand("CredentialBindingId"));
+export type CredentialBindingId = typeof CredentialBindingId.Type;

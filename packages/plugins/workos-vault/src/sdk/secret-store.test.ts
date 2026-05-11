@@ -8,6 +8,7 @@ import {
   createExecutor,
   makeInMemoryBlobStore,
   makeTestConfig,
+  RemoveSecretInput,
   Scope,
   ScopeId,
   SecretId,
@@ -268,7 +269,12 @@ describe("WorkOS Vault secret provider", () => {
 
       expect(yield* executor.secrets.get("remove-me")).toBe("gone soon");
 
-      yield* executor.secrets.remove("remove-me");
+      yield* executor.secrets.remove(
+        new RemoveSecretInput({
+          id: SecretId.make("remove-me"),
+          targetScope: ScopeId.make("test-scope"),
+        }),
+      );
 
       expect(yield* executor.secrets.get("remove-me")).toBeNull();
       expect(yield* executor.secrets.list()).toHaveLength(0);
@@ -292,7 +298,12 @@ describe("WorkOS Vault secret provider", () => {
         }),
       );
 
-      yield* executor.secrets.remove(longSecretId);
+      yield* executor.secrets.remove(
+        new RemoveSecretInput({
+          id: longSecretId,
+          targetScope: ScopeId.make("test-scope"),
+        }),
+      );
 
       expect(yield* executor.secrets.list()).toHaveLength(0);
     }),
@@ -426,7 +437,12 @@ describe("WorkOS Vault secret provider — multi-scope isolation", () => {
       );
 
       // Inner caller removes. Should only drop the inner row.
-      yield* execInner.secrets.remove("api-token");
+      yield* execInner.secrets.remove(
+        new RemoveSecretInput({
+          id: SecretId.make("api-token"),
+          targetScope: innerId,
+        }),
+      );
 
       // The outer executor must still see its row and resolve its value.
       const outer = yield* execOuter.secrets.list();

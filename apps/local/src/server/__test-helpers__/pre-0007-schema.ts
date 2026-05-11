@@ -56,6 +56,38 @@ export const PRE_0007_SQL = `
     updated_at INTEGER NOT NULL
   );
 
+  CREATE TABLE secret (
+    id TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    owned_by_connection_id TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (scope_id, id)
+  );
+
+  CREATE INDEX secret_scope_id_idx ON secret (scope_id);
+  CREATE INDEX secret_provider_idx ON secret (provider);
+  CREATE INDEX secret_owned_by_connection_id_idx ON secret (owned_by_connection_id);
+
+  CREATE TABLE connection (
+    id TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    identity_label TEXT,
+    access_token_secret_id TEXT NOT NULL,
+    refresh_token_secret_id TEXT,
+    expires_at INTEGER,
+    scope TEXT,
+    provider_state TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (scope_id, id)
+  );
+
+  CREATE INDEX connection_scope_id_idx ON connection (scope_id);
+  CREATE INDEX connection_provider_idx ON connection (provider);
+
   CREATE TABLE mcp_source (
     id TEXT NOT NULL,
     scope_id TEXT NOT NULL,

@@ -26,6 +26,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 
 import {
   collectSchemas,
+  ConnectionId,
   createExecutor,
   definePlugin,
   makeInMemoryBlobStore,
@@ -40,7 +41,7 @@ import { serveTestHttpApp } from "@executor-js/sdk/testing";
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
 
 import { openApiPlugin } from "./plugin";
-import { OAuth2Auth } from "./types";
+import { OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
 
@@ -250,18 +251,18 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
           message: "Expected completed clientCredentials connection",
         });
       }
-      const auth = new OAuth2Auth({
+      const oauth2 = new OAuth2SourceConfig({
         kind: "oauth2",
-        connectionId: completedConnection.connectionId,
         securitySchemeName: "oauth2",
         flow: "clientCredentials",
         tokenUrl: tokenEndpoint.tokenUrl,
         authorizationUrl: null,
-        clientIdSecretId: "petstore_client_id",
-        clientSecretSecretId: "petstore_client_secret",
+        clientIdSlot: "oauth2:oauth2:client-id",
+        clientSecretSlot: "oauth2:oauth2:client-secret",
+        connectionSlot: "oauth2:oauth2:connection",
         scopes: ["data"],
       });
-      expect(auth.connectionId).toBe(connectionId);
+      expect(completedConnection.connectionId).toBe(connectionId);
 
       // Token endpoint call is RFC 6749 §4.4 compliant.
       const calls = yield* tokenEndpoint.calls;
@@ -271,14 +272,27 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
       expect(calls[0]!.clientSecret).toBe("secret-xyz");
       expect(calls[0]!.scope).toBe("data");
 
-      // Add the source with OAuth2Auth pointing at the completed connection.
+      // Add the source with source-owned OAuth structure, then bind the
+      // per-user connection into the configured slot.
       yield* userExec.openapi.addSpec({
         spec: specJson,
         scope: userScope.id,
         namespace: "petstore",
         baseUrl,
-        oauth2: auth,
+        oauth2,
       });
+      yield* userExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: userScope.id,
+          scope: userScope.id,
+          slot: oauth2.connectionSlot,
+          value: {
+            kind: "connection",
+            connectionId: ConnectionId.make(completedConnection.connectionId),
+          },
+        }),
+      );
       // Invoking the tool injects the freshly-minted bearer via
       // ctx.connections.accessToken.
       const result = (yield* userExec.tools.invoke(
@@ -296,27 +310,26 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
       // preserves per-user credential resolution: if each user has
       // their own `dealcloud_client_id`/`dealcloud_client_secret`
       // shadowed at their user scope, each user mints their own
-      // token. A single shared `oauth2.connectionId` *name* still
-      // lets every caller reach the right physical row via
-      // `findInnermostConnectionRow`.
+      // token. A single shared connection slot still lets every caller
+      // reach the right physical row through scoped credential bindings.
       const userConnections = yield* userExec.connections.list();
-      const connection = userConnections.find((c) => c.id === auth.connectionId);
+      const connection = userConnections.find((c) => c.id === completedConnection.connectionId);
       expect(connection).toBeDefined();
       expect(String(connection?.scopeId)).toBe("user-alice");
       expect(connection?.provider).toBe("oauth2");
       // Stable id derived from sourceId — no UUID-per-click churn.
-      expect(auth.connectionId).toBe("openapi-oauth2-app-petstore");
+      expect(completedConnection.connectionId).toBe("openapi-oauth2-app-petstore");
 
       // Access-token secret is owned by the connection and filtered
       // out of the user-facing secret list.
       const userSecretIds = new Set((yield* userExec.secrets.list()).map((s) => String(s.id)));
       expect(userSecretIds).toContain("petstore_client_id");
       expect(userSecretIds).toContain("petstore_client_secret");
-      expect(userSecretIds).not.toContain(`${auth.connectionId}.access_token`);
+      expect(userSecretIds).not.toContain(`${completedConnection.connectionId}.access_token`);
 
       // Admin scope sees neither alice's connection nor her token.
       const adminSecretIds = new Set((yield* adminExec.secrets.list()).map((s) => String(s.id)));
-      expect(adminSecretIds).not.toContain(`${auth.connectionId}.access_token`);
+      expect(adminSecretIds).not.toContain(`${completedConnection.connectionId}.access_token`);
     }),
   );
 });

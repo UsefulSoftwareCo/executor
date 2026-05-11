@@ -39,6 +39,12 @@
           "default": "./dist/core.js"
         }
       },
+      "./client": {
+        "import": {
+          "types": "./dist/react/plugin-client.d.ts",
+          "default": "./dist/client.js"
+        }
+      },
       "./testing": {
         "import": {
           "types": "./dist/testing/index.d.ts",

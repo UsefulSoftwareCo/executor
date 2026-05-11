@@ -11,6 +11,7 @@ import { useSecretProviderPlugins } from "@executor-js/sdk/client";
 import { SecretId, SecretInUseError, type ScopeId } from "@executor-js/sdk";
 import { SecretForm } from "../plugins/secret-form";
 import { useScope } from "../hooks/use-scope";
+import { useScopeStack } from "../api/scope-context";
 import {
   Dialog,
   DialogContent,
@@ -67,6 +68,7 @@ function AddSecretDialog(props: {
   description: string;
   storageOptions: readonly SecretStorageOption[];
   existingSecretIds: readonly string[];
+  scopeId: ScopeId;
 }) {
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -76,6 +78,7 @@ function AddSecretDialog(props: {
           description={props.description}
           storageOptions={props.storageOptions}
           existingSecretIds={props.existingSecretIds}
+          scopeId={props.scopeId}
           onClose={() => props.onOpenChange(false)}
         />
       )}
@@ -87,6 +90,7 @@ function AddSecretDialogContent(props: {
   description: string;
   storageOptions: readonly SecretStorageOption[];
   existingSecretIds: readonly string[];
+  scopeId: ScopeId;
   onClose: () => void;
 }) {
   const initialProvider = props.storageOptions[0]?.value ?? "auto";
@@ -95,6 +99,7 @@ function AddSecretDialogContent(props: {
     <SecretForm.Provider
       existingSecretIds={props.existingSecretIds}
       initialProvider={initialProvider}
+      scopeId={props.scopeId}
       onCreated={props.onClose}
     >
       <DialogContent className="sm:max-w-[440px]">
@@ -162,9 +167,10 @@ function SecretUsageFooter(props: { scopeId: ScopeId; secretId: SecretId }) {
 // ---------------------------------------------------------------------------
 
 function SecretRow(props: {
-  scopeId: ScopeId;
+  usageScopeId: ScopeId;
   showProvider: boolean;
-  secret: { id: string; name: string; provider?: string };
+  secret: { id: string; scopeId: ScopeId; name: string; provider?: string };
+  scopeLabel: string;
   onRemove: () => void;
 }) {
   const { secret, showProvider } = props;
@@ -184,10 +190,11 @@ function SecretRow(props: {
           </span>
         </CardStackEntryTitle>
         <Suspense fallback={null}>
-          <SecretUsageFooter scopeId={props.scopeId} secretId={SecretId.make(secret.id)} />
+          <SecretUsageFooter scopeId={props.usageScopeId} secretId={SecretId.make(secret.id)} />
         </Suspense>
       </CardStackEntryContent>
       <CardStackEntryActions>
+        <Badge variant="secondary">{props.scopeLabel}</Badge>
         {showProvider && secret.provider && <Badge variant="outline">{secret.provider}</Badge>}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -234,7 +241,14 @@ export function SecretsPage(props: {
   const secretProviderPlugins = useSecretProviderPlugins();
   const [addOpen, setAddOpen] = useState(false);
   const scopeId = useScope();
+  const scopeStack = useScopeStack();
   const secrets = useAtomValue(secretsOptimisticAtom(scopeId));
+  const scopeLabel = (secretScopeId: ScopeId): string => {
+    const index = scopeStack.findIndex((entry) => entry.id === secretScopeId);
+    if (index === 0) return "Personal";
+    if (index > 0) return scopeStack[index]?.name || "Organization";
+    return "Scoped";
+  };
   const existingSecretIds = useMemo(
     () =>
       AsyncResult.match(secrets, {
@@ -248,11 +262,11 @@ export function SecretsPage(props: {
     mode: "promiseExit",
   });
 
-  const handleRemove = async (secretId: string) => {
+  const handleRemove = async (secret: { readonly id: string; readonly scopeId: ScopeId }) => {
     const exit = await doRemove({
       params: {
-        scopeId,
-        secretId: SecretId.make(secretId),
+        scopeId: secret.scopeId,
+        secretId: SecretId.make(secret.id),
       },
       reactivityKeys: secretWriteKeys,
     });
@@ -349,19 +363,22 @@ export function SecretsPage(props: {
                   value.map(
                     (s: {
                       readonly id: string;
+                      readonly scopeId: ScopeId;
                       readonly name: string;
                       readonly provider: string;
                     }) => (
                       <SecretRow
-                        key={s.id}
-                        scopeId={scopeId}
+                        key={`${s.scopeId}:${s.id}`}
+                        usageScopeId={scopeId}
                         showProvider={showProviderInfo}
                         secret={{
                           id: s.id,
+                          scopeId: s.scopeId,
                           name: s.name,
                           provider: s.provider ? String(s.provider) : undefined,
                         }}
-                        onRemove={() => handleRemove(s.id)}
+                        scopeLabel={scopeLabel(s.scopeId)}
+                        onRemove={() => handleRemove(s)}
                       />
                     ),
                   )
@@ -377,6 +394,7 @@ export function SecretsPage(props: {
           description={addSecretDescription}
           storageOptions={storageOptions}
           existingSecretIds={existingSecretIds}
+          scopeId={scopeId}
         />
       </div>
     </div>

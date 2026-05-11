@@ -55,6 +55,7 @@ class DenoSpawnError extends Data.TaggedError("DenoSpawnError")<{
 
 const WorkerToolCallMessage = Schema.Struct({
   type: Schema.Literal("tool_call"),
+  nonce: Schema.String,
   requestId: Schema.String,
   toolPath: Schema.String,
   args: Schema.Unknown,
@@ -62,12 +63,14 @@ const WorkerToolCallMessage = Schema.Struct({
 
 const WorkerCompletedMessage = Schema.Struct({
   type: Schema.Literal("completed"),
+  nonce: Schema.String,
   result: Schema.Unknown,
   logs: Schema.optional(Schema.Array(Schema.String)),
 });
 
 const WorkerFailedMessage = Schema.Struct({
   type: Schema.Literal("failed"),
+  nonce: Schema.String,
   error: Schema.String,
   logs: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -126,9 +129,10 @@ const workerScriptPath = (): string => (cachedWorkerScriptPath ??= resolveWorker
 // ---------------------------------------------------------------------------
 
 type HostToWorkerMessage =
-  | { type: "start"; code: string }
+  | { type: "start"; code: string; nonce: string }
   | {
       type: "tool_result";
+      nonce: string;
       requestId: string;
       ok: boolean;
       value?: unknown;
@@ -159,6 +163,7 @@ const executeInDeno = (
   const recoveredBody = recoverExecutionBody(code);
   const denoExecutable = options.denoExecutable ?? defaultDenoExecutable();
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const nonce = crypto.randomUUID();
 
   return Effect.gen(function* () {
     const runSync = Effect.runSync;
@@ -189,9 +194,13 @@ const executeInDeno = (
               const line = rawLine.trim();
               if (!line.startsWith(IPC_PREFIX)) return;
 
-              const decoded = decodeWorkerMessage(JSON.parse(line.slice(IPC_PREFIX.length)));
-              if (Option.isSome(decoded)) {
-                runSync(Queue.offer(messages, decoded.value as WorkerToHostMessage));
+              try {
+                const decoded = decodeWorkerMessage(JSON.parse(line.slice(IPC_PREFIX.length)));
+                if (Option.isSome(decoded) && decoded.value.nonce === nonce) {
+                  runSync(Queue.offer(messages, decoded.value as WorkerToHostMessage));
+                }
+              } catch {
+                // Ignore malformed sandbox output. It is not trusted IPC.
               }
             },
             onStderr: () => {},
@@ -220,7 +229,7 @@ const executeInDeno = (
     });
 
     // Send code to the subprocess
-    writeMessage(worker.stdin, { type: "start", code: recoveredBody });
+    writeMessage(worker.stdin, { type: "start", code: recoveredBody, nonce });
 
     // Set up timeout — kills process and completes the deferred
     const timer = setTimeout(() => {
@@ -250,6 +259,7 @@ const executeInDeno = (
                   Effect.map(
                     (value): HostToWorkerMessage => ({
                       type: "tool_result",
+                      nonce,
                       requestId: msg.requestId,
                       ok: true,
                       value,
@@ -258,6 +268,7 @@ const executeInDeno = (
                   Effect.catchCause((cause) =>
                     Effect.succeed<HostToWorkerMessage>({
                       type: "tool_result",
+                      nonce,
                       requestId: msg.requestId,
                       ok: false,
                       error: causeMessage(cause),

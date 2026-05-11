@@ -5,14 +5,13 @@ import * as path from "node:path";
 import type { AnyPlugin } from "@executor-js/sdk";
 import { loadPluginsFromJsonc } from "./load-plugins";
 
-// Fixtures live under packages/core/config/__test-fixtures__/, which sits
-// directly inside the package directory so Node's `require.resolve` walks
-// up from a tmp jsonc and lands on
-// `__test-fixtures__/node_modules/@loader-fixture/...`. The hand-managed
-// node_modules entries declare a `./server` subpath whose default export
-// matches the loader's expectation: a function `(options) => Plugin`.
+// Fixtures are generated under
+// packages/core/config/__test-fixtures__/tmp/node_modules. The tmp jsonc
+// files live beside that directory, so Node's `require.resolve` walks up
+// from each config file and lands on these package-shaped test fixtures.
 const FIXTURES_ROOT = path.resolve(__dirname, "..", "__test-fixtures__");
 const TMP_ROOT = path.join(FIXTURES_ROOT, "tmp");
+const FIXTURE_PACKAGES_ROOT = path.join(TMP_ROOT, "node_modules", "@loader-fixture");
 
 // Single typed boundary for the loader's runtime-erased `AnyPlugin[]`:
 // fixture plugins are hand-rolled JS objects whose extra fields (id,
@@ -39,8 +38,55 @@ const writeJsonc = (name: string, body: string): string => {
   return file;
 };
 
+const writeFixturePackage = (name: string, server: string): void => {
+  const packageName = `@loader-fixture/${name}`;
+  const dir = path.join(FIXTURE_PACKAGES_ROOT, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify(
+      {
+        name: packageName,
+        version: "0.0.0",
+        private: true,
+        type: "module",
+        exports: {
+          "./server": "./server.js",
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(path.join(dir, "server.js"), server);
+};
+
+const writeFixturePackages = (): void => {
+  writeFixturePackage(
+    "plugin-alpha",
+    `export default (options) => ({
+  id: "alpha",
+  packageName: "@loader-fixture/plugin-alpha",
+  __optionsReceived: options ?? null,
+});
+`,
+  );
+  writeFixturePackage(
+    "plugin-beta",
+    `export default (options) => ({
+  id: "beta",
+  packageName: "@loader-fixture/plugin-beta",
+  __optionsReceived: options ?? null,
+});
+`,
+  );
+  writeFixturePackage("plugin-bad", `export default { not: "a function" };\n`);
+};
+
 beforeAll(() => {
+  fs.rmSync(TMP_ROOT, { recursive: true, force: true });
   fs.mkdirSync(TMP_ROOT, { recursive: true });
+  writeFixturePackages();
 });
 
 afterAll(() => {

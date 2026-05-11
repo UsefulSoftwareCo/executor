@@ -96,7 +96,11 @@ describe("sources.refresh (HTTP)", () => {
         yield* asOrg(org, (client) =>
           client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: { spec: `${server.baseUrl}/spec.json`, namespace },
+            payload: {
+              targetScope: ScopeId.make(org),
+              spec: `${server.baseUrl}/spec.json`,
+              namespace,
+            },
           }),
         );
 
@@ -154,7 +158,11 @@ describe("sources.refresh (HTTP)", () => {
       yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: { spec: specV1, namespace },
+          payload: {
+            targetScope: ScopeId.make(org),
+            spec: specV1,
+            namespace,
+          },
         }),
       );
 

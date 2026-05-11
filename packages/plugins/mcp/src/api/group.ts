@@ -5,6 +5,12 @@ import { InternalError } from "@executor-js/api";
 
 import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
 import { McpStoredSourceSchema } from "../sdk/stored-source";
+import {
+  McpConnectionAuthInput,
+  McpCredentialInput,
+  McpSourceBindingInputSchema,
+  McpSourceBindingRef,
+} from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Params
@@ -12,29 +18,17 @@ import { McpStoredSourceSchema } from "../sdk/stored-source";
 
 const ScopeParams = { scopeId: ScopeId };
 const SourceParams = { scopeId: ScopeId, namespace: Schema.String };
+const SourceBindingParams = {
+  scopeId: ScopeId,
+  namespace: Schema.String,
+  sourceScopeId: ScopeId,
+};
 
 // ---------------------------------------------------------------------------
 // Auth payload (only for remote)
 // ---------------------------------------------------------------------------
 
-const AuthPayload = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("none") }),
-  Schema.Struct({
-    kind: Schema.Literal("header"),
-    headerName: Schema.String,
-    secretId: Schema.String,
-    prefix: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("oauth2"),
-    /** Stable id of the SDK Connection minted by `completeOAuth`. The
-     *  backing access/refresh secrets live on the connection row; the
-     *  source only needs this pointer. */
-    connectionId: Schema.String,
-    clientIdSecretId: Schema.optional(Schema.String),
-    clientSecretSecretId: Schema.optional(Schema.NullOr(Schema.String)),
-  }),
-]);
+const AuthPayload = McpConnectionAuthInput;
 
 const StringMap = Schema.Record(Schema.String, Schema.String);
 // ---------------------------------------------------------------------------
@@ -42,17 +36,20 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 // ---------------------------------------------------------------------------
 
 const AddRemoteSourcePayload = Schema.Struct({
+  targetScope: ScopeId,
   transport: Schema.Literal("remote"),
   name: Schema.String,
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
   namespace: Schema.optional(Schema.String),
-  queryParams: Schema.optional(SecretBackedMap),
-  headers: Schema.optional(SecretBackedMap),
+  queryParams: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
+  headers: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
   auth: Schema.optional(AuthPayload),
+  credentialTargetScope: Schema.optional(ScopeId),
 });
 
 const AddStdioSourcePayload = Schema.Struct({
+  targetScope: ScopeId,
   transport: Schema.Literal("stdio"),
   name: Schema.String,
   command: Schema.String,
@@ -69,10 +66,12 @@ const AddSourcePayload = Schema.Union([AddRemoteSourcePayload, AddStdioSourcePay
 // ---------------------------------------------------------------------------
 
 const UpdateSourcePayload = Schema.Struct({
+  sourceScope: ScopeId,
   name: Schema.optional(Schema.String),
   endpoint: Schema.optional(Schema.String),
-  headers: Schema.optional(SecretBackedMap),
-  queryParams: Schema.optional(SecretBackedMap),
+  headers: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
+  credentialTargetScope: Schema.optional(ScopeId),
   auth: Schema.optional(AuthPayload),
 });
 
@@ -89,6 +88,7 @@ const ProbeEndpointPayload = Schema.Struct({
 const ProbeEndpointResponse = Schema.Struct({
   connected: Schema.Boolean,
   requiresOAuth: Schema.Boolean,
+  supportsDynamicRegistration: Schema.Boolean,
   name: Schema.String,
   namespace: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
@@ -97,6 +97,13 @@ const ProbeEndpointResponse = Schema.Struct({
 
 const NamespacePayload = Schema.Struct({
   namespace: Schema.String,
+});
+
+const RemoveBindingPayload = Schema.Struct({
+  sourceId: Schema.String,
+  sourceScope: ScopeId,
+  slot: Schema.String,
+  scope: ScopeId,
 });
 
 // ---------------------------------------------------------------------------
@@ -177,6 +184,33 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SourceParams,
       payload: UpdateSourcePayload,
       success: UpdateSourceResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "listSourceBindings",
+      "/scopes/:scopeId/mcp/sources/:namespace/base/:sourceScopeId/bindings",
+      {
+        params: SourceBindingParams,
+        success: Schema.Array(McpSourceBindingRef),
+        error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("setSourceBinding", "/scopes/:scopeId/mcp/source-bindings", {
+      params: ScopeParams,
+      payload: McpSourceBindingInputSchema,
+      success: McpSourceBindingRef,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("removeSourceBinding", "/scopes/:scopeId/mcp/source-bindings/remove", {
+      params: ScopeParams,
+      payload: RemoveBindingPayload,
+      success: Schema.Struct({ removed: Schema.Boolean }),
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   );

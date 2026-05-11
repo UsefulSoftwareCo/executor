@@ -20,10 +20,10 @@ export interface Source {
   /** Which plugin owns this source. */
   readonly pluginId: string;
   /** Whether the user can remove this source via
-   *  `executor.sources.remove(id)`. `false` for static / built-in
-   *  sources declared by plugins at startup. */
+   *  `executor.sources.remove({ id, targetScope })`. `false` for
+   *  static / built-in sources declared by plugins at startup. */
   readonly canRemove: boolean;
-  /** Whether the plugin supports `executor.sources.refresh(id)`. */
+  /** Whether the plugin supports `executor.sources.refresh({ id, targetScope })`. */
   readonly canRefresh: boolean;
   /** Whether the source has editable config (headers, base url, etc.).
    *  Editing is done via plugin-specific extension methods
@@ -35,6 +35,16 @@ export interface Source {
    *  `ctx.core.sources.register(...)`. UI differentiates built-in vs
    *  user-added with this. */
   readonly runtime: boolean;
+}
+
+export interface RemoveSourceInput {
+  readonly id: string;
+  readonly targetScope: string;
+}
+
+export interface RefreshSourceInput {
+  readonly id: string;
+  readonly targetScope: string;
 }
 
 export interface Tool {

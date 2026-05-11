@@ -14,7 +14,10 @@ import {
   type HeaderAuthPreset,
   type HeaderState,
   SecretHeaderAuthRow,
+  type SecretCredentialPreviewComponent,
+  type SecretCredentialRowCopy,
 } from "./secret-header-auth";
+import type { CredentialTargetScopeOption } from "./credential-target-scope";
 import type { SecretPickerSecret } from "./secret-picker";
 
 export interface HeadersListProps {
@@ -27,15 +30,22 @@ export interface HeadersListProps {
   readonly singleHeader?: boolean;
   /** Text shown in the empty state. */
   readonly emptyLabel?: ReactNode;
+  readonly addLabel?: ReactNode;
+  readonly addAriaLabel?: string;
+  readonly rowCopy?: Partial<SecretCredentialRowCopy>;
+  readonly rowPreviewComponent?: SecretCredentialPreviewComponent;
   /**
    * Display name of the source that owns these headers (e.g. "Axiom"). Used
    * to derive unique default secret labels/IDs like `axiom-authorization`.
    */
   readonly sourceName?: string;
-  /** When provided, inline-created secrets are written to this scope. */
-  readonly targetScope?: ScopeId;
-  /** Alias for `targetScope`, used by source flows that choose a write scope. */
-  readonly writeScope?: ScopeId;
+  /** Inline-created secrets are written to this explicit scope. */
+  readonly targetScope: ScopeId;
+  /** Scope choices shown only inside the inline "+ New secret" form. */
+  readonly credentialScopeOptions?: readonly CredentialTargetScopeOption[];
+  /** Scope choices for where this source credential is used. */
+  readonly bindingScopeOptions?: readonly CredentialTargetScopeOption[];
+  readonly restrictSecretsToTargetScope?: boolean;
 }
 
 export function HeadersList({
@@ -45,12 +55,26 @@ export function HeadersList({
   presets = defaultHeaderAuthPresets,
   singleHeader = false,
   emptyLabel = "No headers",
+  addLabel,
+  addAriaLabel = "Add header",
+  rowCopy,
+  rowPreviewComponent,
   sourceName,
   targetScope,
-  writeScope,
+  credentialScopeOptions,
+  bindingScopeOptions,
+  restrictSecretsToTargetScope,
 }: HeadersListProps) {
   const [picking, setPicking] = useState(false);
   const canAddMore = !singleHeader || headers.length === 0;
+  const addFirstPreset = () => {
+    const preset = presets[0];
+    if (presets.length === 1 && preset) {
+      addHeaderFromPreset(preset);
+      return;
+    }
+    setPicking(true);
+  };
 
   const addHeaderFromPreset = (preset: HeaderAuthPreset) => {
     onHeadersChange([
@@ -60,6 +84,7 @@ export function HeadersList({
         prefix: preset.prefix,
         presetKey: preset.key,
         secretId: null,
+        targetScope,
       },
     ]);
     setPicking(false);
@@ -72,6 +97,8 @@ export function HeadersList({
       secretId: string | null;
       prefix?: string;
       presetKey?: string;
+      targetScope?: ScopeId;
+      secretScope?: ScopeId;
     }>,
   ) => {
     onHeadersChange(headers.map((entry, i) => (i === index ? { ...entry, ...update } : entry)));
@@ -92,7 +119,11 @@ export function HeadersList({
           />
         ) : headers.length === 0 ? (
           canAddMore ? (
-            <AddHeaderRow leading={<span>{emptyLabel}</span>} onClick={() => setPicking(true)} />
+            <AddHeaderRow
+              leading={<span>{emptyLabel}</span>}
+              onClick={addFirstPreset}
+              ariaLabel={addAriaLabel}
+            />
           ) : (
             <CardStackEmpty>
               <span>{emptyLabel}</span>
@@ -107,15 +138,28 @@ export function HeadersList({
                 prefix={header.prefix}
                 presetKey={header.presetKey}
                 secretId={header.secretId}
+                secretScope={header.secretScope}
                 onChange={(update) => updateHeader(index, update)}
-                onSelectSecret={(secretId) => updateHeader(index, { secretId })}
+                onSelectSecret={(secretId, scopeId) =>
+                  updateHeader(index, {
+                    secretId,
+                    ...(scopeId ? { secretScope: scopeId } : {}),
+                  })
+                }
                 onRemove={singleHeader ? undefined : () => removeHeader(index)}
                 existingSecrets={existingSecrets}
                 sourceName={sourceName}
-                targetScope={targetScope ?? writeScope}
+                targetScope={header.targetScope ?? targetScope}
+                credentialScopeOptions={credentialScopeOptions}
+                bindingScopeOptions={bindingScopeOptions}
+                restrictSecretsToTargetScope={restrictSecretsToTargetScope}
+                copy={rowCopy}
+                previewComponent={rowPreviewComponent}
               />
             ))}
-            {canAddMore && <AddHeaderRow onClick={() => setPicking(true)} />}
+            {canAddMore && (
+              <AddHeaderRow leading={addLabel} onClick={addFirstPreset} ariaLabel={addAriaLabel} />
+            )}
           </>
         )}
       </CardStackContent>
@@ -126,9 +170,10 @@ export function HeadersList({
 interface AddHeaderRowProps {
   readonly onClick: () => void;
   readonly leading?: ReactNode;
+  readonly ariaLabel: string;
 }
 
-function AddHeaderRow({ onClick, leading }: AddHeaderRowProps) {
+function AddHeaderRow({ onClick, leading, ariaLabel }: AddHeaderRowProps) {
   return (
     // oxlint-disable-next-line react/forbid-elements
     <button
@@ -137,7 +182,7 @@ function AddHeaderRow({ onClick, leading }: AddHeaderRowProps) {
         event.stopPropagation();
         onClick();
       }}
-      aria-label="Add header"
+      aria-label={ariaLabel}
       className="flex w-full items-center justify-between gap-4 px-4 py-3 text-sm text-muted-foreground outline-none transition-[background-color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-accent/40 focus-visible:bg-accent/40"
     >
       <span className="min-w-0 flex-1 text-left">{leading}</span>

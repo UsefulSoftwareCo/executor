@@ -149,6 +149,6 @@ A non exhaustive list of references are:
 - [OpenCode](https://github.com/anomalyco/opencode) - Plugin system reference
 - [OpenClaw](https://github.com/openclaw/openclaw) - Plugin system reference
 - [Emdash](https://github.com/emdash-cms/emdash) - Plugin system reference
-- [Pi](https://github.com/badlogic/pi-mono) - Plugin systme reference
+- [Pi](https://github.com/badlogic/pi-mono) - Plugin system reference
 
 It's encouraged also that you can use this codebase as a reference to understand how it's implemented

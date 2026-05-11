@@ -12,6 +12,8 @@
     "plugins": [
       {
         "name": "@effect/language-service",
+        "ignoreEffectSuggestionsInTscExitCode": true,
+        "ignoreEffectWarningsInTscExitCode": true,
         "diagnosticSeverity": {
           "preferSchemaOverJson": "off"
         }

@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 import { cancelOAuth, startOAuth } from "../api/atoms";
-import { openOAuthPopup, type OAuthPopupResult } from "../api/oauth-popup";
-import { useScope } from "../api/scope-context";
+import { messageFromExit, messageFromUnknown, useReportHandledError } from "../api/error-reporting";
+import { openOAuthPopup, reserveOAuthPopup, type OAuthPopupResult } from "../api/oauth-popup";
 import { Button } from "../components/button";
 import {
   OAUTH_POPUP_MESSAGE_TYPE,
+  ConnectionId,
+  ScopeId,
   type OAuthStrategy,
   type SecretBackedValue,
 } from "@executor-js/sdk";
@@ -25,7 +28,7 @@ export type OAuthStartPayload = {
   readonly queryParams?: Record<string, SecretBackedValue>;
   readonly redirectUrl?: string;
   readonly connectionId: string;
-  readonly tokenScope?: string;
+  readonly tokenScope: string;
   readonly strategy: OAuthStrategy;
   readonly pluginId: string;
   readonly identityLabel?: string;
@@ -43,11 +46,18 @@ export type OAuthAuthorizationStartResult = {
   readonly authorizationUrl: string | null;
 };
 
+class OAuthAuthorizationStartError extends Data.TaggedError("OAuthAuthorizationStartError")<{
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
+
 export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload> = {
+  readonly tokenScope: string;
   readonly run: () => Promise<OAuthAuthorizationStartResult>;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
   readonly onError?: (error: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
+  readonly reportMetadata?: Record<string, string | number | boolean | null | undefined>;
 };
 
 export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
@@ -63,6 +73,12 @@ export function oauthConnectionId(input: {
   return `${input.pluginId}-oauth2-${namespace}`;
 }
 
+const oauthRouteParamsForTokenScope = (
+  tokenScope: string | ScopeId,
+): { readonly scopeId: ScopeId } => ({
+  scopeId: ScopeId.make(String(tokenScope)),
+});
+
 export function useOAuthPopupFlow<
   TPayload extends OAuthCompletionPayload = OAuthCompletionPayload,
 >(options: {
@@ -71,32 +87,37 @@ export function useOAuthPopupFlow<
   readonly noAuthorizationUrlMessage?: string;
   readonly popupBlockedMessage?: string;
   readonly popupClosedMessage?: string;
+  readonly detectPopupClosed?: boolean;
   readonly startErrorMessage?: string;
 }) {
   const {
     callbackPath,
+    detectPopupClosed = true,
     noAuthorizationUrlMessage,
     popupBlockedMessage,
     popupClosedMessage,
     popupName,
     startErrorMessage,
   } = options;
-  const scopeId = useScope();
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
   const doCancelOAuth = useAtomSet(cancelOAuth, { mode: "promiseExit" });
+  const reportHandledError = useReportHandledError();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
-  const sessionRef = useRef<string | null>(null);
+  const sessionRef = useRef<{
+    readonly sessionId: string;
+    readonly tokenScope: string;
+  } | null>(null);
 
   const cancelSession = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, tokenScope: string) => {
       void doCancelOAuth({
-        params: { scopeId },
-        payload: { sessionId },
+        params: oauthRouteParamsForTokenScope(tokenScope),
+        payload: { sessionId, tokenScope },
       });
     },
-    [doCancelOAuth, scopeId],
+    [doCancelOAuth],
   );
 
   const cancel = useCallback(() => {
@@ -104,7 +125,7 @@ export function useOAuthPopupFlow<
     cleanupRef.current?.();
     cleanupRef.current = null;
     sessionRef.current = null;
-    if (sessionId) cancelSession(sessionId);
+    if (sessionId) cancelSession(sessionId.sessionId, sessionId.tokenScope);
     setBusy(false);
   }, [cancelSession]);
 
@@ -114,7 +135,7 @@ export function useOAuthPopupFlow<
       cleanupRef.current?.();
       cleanupRef.current = null;
       sessionRef.current = null;
-      if (sessionId) cancelSession(sessionId);
+      if (sessionId) cancelSession(sessionId.sessionId, sessionId.tokenScope);
     },
     [cancelSession],
   );
@@ -124,14 +145,33 @@ export function useOAuthPopupFlow<
       cancel();
       setBusy(true);
       setError(null);
+      const reservedPopup = reserveOAuthPopup({ popupName });
+      if (!reservedPopup) {
+        const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
+        setBusy(false);
+        setError(message);
+        input.onError?.(message);
+        return;
+      }
       const startExit = await Effect.runPromiseExit(
         Effect.tryPromise({
           try: input.run,
-          catch: (cause) => cause,
+          catch: (cause) =>
+            new OAuthAuthorizationStartError({
+              cause,
+              message: messageFromUnknown(cause, startErrorMessage ?? "Failed to start sign-in"),
+            }),
         }),
       );
       if (Exit.isFailure(startExit)) {
-        const message = startErrorMessage ?? "Failed to start sign-in";
+        const message = messageFromExit(startExit, startErrorMessage ?? "Failed to start sign-in");
+        reportHandledError(startExit.cause, {
+          surface: "oauth",
+          action: "start",
+          message,
+          metadata: input.reportMetadata,
+        });
+        reservedPopup.popup.close();
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -141,19 +181,25 @@ export function useOAuthPopupFlow<
       if (response.authorizationUrl === null) {
         const message =
           noAuthorizationUrlMessage ?? "OAuth start did not produce an authorization URL";
+        reservedPopup.popup.close();
         setBusy(false);
         setError(message);
         input.onError?.(message);
         return;
       }
 
-      sessionRef.current = response.sessionId;
+      sessionRef.current = {
+        sessionId: response.sessionId,
+        tokenScope: input.tokenScope,
+      };
       input.onAuthorizationStarted?.(response);
       cleanupRef.current = openOAuthPopup<TPayload>({
         url: response.authorizationUrl,
         popupName,
         channelName: OAUTH_POPUP_MESSAGE_TYPE,
         expectedSessionId: response.sessionId,
+        reservedPopup,
+        closedPollMs: detectPopupClosed ? undefined : null,
         onResult: async (result: OAuthPopupResult<TPayload>) => {
           cleanupRef.current = null;
           sessionRef.current = null;
@@ -165,12 +211,18 @@ export function useOAuthPopupFlow<
             return;
           }
 
-          const persisted = await Promise.resolve(input.onSuccess(result)).then(
-            () => true,
-            () => false,
+          const persistenceError = await Promise.resolve(input.onSuccess(result)).then(
+            () => null,
+            (cause: unknown) => cause,
           );
-          if (!persisted) {
-            const message = "Failed to persist new connection";
+          if (persistenceError !== null) {
+            const message = messageFromUnknown(persistenceError, "Failed to save connection");
+            reportHandledError(persistenceError, {
+              surface: "oauth",
+              action: "persist_connection",
+              message,
+              metadata: input.reportMetadata,
+            });
             setBusy(false);
             setError(message);
             input.onError?.(message);
@@ -181,7 +233,9 @@ export function useOAuthPopupFlow<
         onClosed: () => {
           cleanupRef.current = null;
           sessionRef.current = null;
-          cancelSession(response.sessionId);
+          // `popup.closed` is advisory: COOP redirects can make a live popup
+          // appear closed to the opener. Keep server OAuth state alive for a
+          // callback or TTL cleanup; only explicit cancel deletes the session.
           const message =
             popupClosedMessage ??
             "Sign-in cancelled - popup was closed before completing the flow.";
@@ -192,7 +246,7 @@ export function useOAuthPopupFlow<
         onOpenFailed: () => {
           cleanupRef.current = null;
           sessionRef.current = null;
-          cancelSession(response.sessionId);
+          cancelSession(response.sessionId, input.tokenScope);
           const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
           setBusy(false);
           setError(message);
@@ -203,10 +257,12 @@ export function useOAuthPopupFlow<
     [
       cancel,
       cancelSession,
+      detectPopupClosed,
       noAuthorizationUrlMessage,
       popupBlockedMessage,
       popupClosedMessage,
       popupName,
+      reportHandledError,
       startErrorMessage,
     ],
   );
@@ -214,12 +270,18 @@ export function useOAuthPopupFlow<
   const start = useCallback(
     async (input: StartOAuthPopupInput<TPayload>) => {
       await openAuthorization({
+        tokenScope: input.payload.tokenScope,
         onSuccess: input.onSuccess,
         onError: input.onError,
         onAuthorizationStarted: input.onAuthorizationStarted,
+        reportMetadata: {
+          pluginId: input.payload.pluginId,
+          connectionId: input.payload.connectionId,
+          tokenScope: input.payload.tokenScope,
+        },
         run: () =>
           doStartOAuth({
-            params: { scopeId },
+            params: oauthRouteParamsForTokenScope(input.payload.tokenScope),
             payload: {
               ...input.payload,
               redirectUrl: input.payload.redirectUrl ?? oauthCallbackUrl(callbackPath),
@@ -227,11 +289,15 @@ export function useOAuthPopupFlow<
           }).then((exit) =>
             Exit.isSuccess(exit)
               ? exit.value
-              : Effect.runPromise(Effect.fail(startErrorMessage ?? "Failed to start sign-in")),
+              : Effect.runPromise(
+                  Effect.fail({
+                    message: messageFromExit(exit, startErrorMessage ?? "Failed to start sign-in"),
+                  }),
+                ),
           ),
       });
     },
-    [callbackPath, doStartOAuth, openAuthorization, scopeId, startErrorMessage],
+    [callbackPath, doStartOAuth, openAuthorization, startErrorMessage],
   );
 
   return {
@@ -267,5 +333,93 @@ export function OAuthSignInButton(props: {
             : (props.signInLabel ?? "Sign in")}
       </Button>
     </div>
+  );
+}
+
+export function SourceOAuthSignInButton(props: {
+  readonly popupName: string;
+  readonly pluginId: string;
+  readonly namespace: string;
+  readonly fallbackNamespace: string;
+  readonly endpoint: string;
+  readonly tokenScope: ScopeId;
+  readonly connectionId: string | null;
+  readonly sourceLabel: string;
+  readonly headers?: Record<string, SecretBackedValue>;
+  readonly queryParams?: Record<string, SecretBackedValue>;
+  readonly isConnected: boolean;
+  readonly onConnected: (connectionId: ConnectionId) => void | Promise<void>;
+  readonly detectPopupClosed?: boolean;
+  readonly reconnectingLabel?: string;
+  readonly signingInLabel?: string;
+}) {
+  const {
+    connectionId,
+    detectPopupClosed,
+    endpoint,
+    fallbackNamespace,
+    headers,
+    isConnected,
+    namespace,
+    onConnected,
+    pluginId,
+    popupName,
+    queryParams,
+    reconnectingLabel,
+    signingInLabel,
+    sourceLabel,
+    tokenScope,
+  } = props;
+  const oauth = useOAuthPopupFlow({
+    popupName,
+    detectPopupClosed,
+  });
+
+  const handleSignIn = useCallback(async () => {
+    await oauth.start({
+      payload: {
+        endpoint,
+        redirectUrl: oauthCallbackUrl(),
+        connectionId:
+          connectionId ??
+          oauthConnectionId({
+            pluginId,
+            namespace,
+            fallback: fallbackNamespace,
+          }),
+        headers,
+        queryParams,
+        tokenScope,
+        strategy: { kind: "dynamic-dcr" },
+        pluginId,
+        identityLabel: sourceLabel,
+      },
+      onSuccess: async (result: OAuthCompletionPayload) => {
+        await onConnected(ConnectionId.make(result.connectionId));
+      },
+    });
+  }, [
+    connectionId,
+    endpoint,
+    fallbackNamespace,
+    headers,
+    namespace,
+    oauth,
+    onConnected,
+    pluginId,
+    queryParams,
+    sourceLabel,
+    tokenScope,
+  ]);
+
+  return (
+    <OAuthSignInButton
+      busy={oauth.busy}
+      error={oauth.error}
+      isConnected={isConnected}
+      onSignIn={() => void handleSignIn()}
+      reconnectingLabel={reconnectingLabel}
+      signingInLabel={signingInLabel}
+    />
   );
 }

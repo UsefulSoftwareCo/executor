@@ -1,4 +1,16 @@
-import { Duration, Effect, Exit, Option, Predicate, Result, Scope, ScopedCache } from "effect";
+import {
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Option,
+  Predicate,
+  Result,
+  Scope,
+  ScopedCache,
+} from "effect";
+import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 
@@ -6,13 +18,17 @@ import { McpGroup } from "../api/group";
 import { McpExtensionService, McpHandlers } from "../api/handlers";
 
 import {
+  ConfiguredCredentialBinding,
+  ConnectionId,
+  type CredentialBindingRef,
   ScopeId,
+  SecretId,
   SourceDetectionResult,
-  Usage,
   definePlugin,
   resolveSecretBackedMap as resolveSharedSecretBackedMap,
   type PluginCtx,
   type StorageFailure,
+  StorageError,
   type ToolAnnotations,
 } from "@executor-js/sdk/core";
 
@@ -27,12 +43,24 @@ import { discoverTools } from "./discover";
 import { McpConnectionError, McpInvocationError, McpToolDiscoveryError } from "./errors";
 import { invokeMcpTool } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifest, type McpToolManifestEntry } from "./manifest";
-import { probeMcpEndpointShape } from "./probe-shape";
+import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
 import {
+  MCP_HEADER_AUTH_SLOT,
+  MCP_OAUTH_CLIENT_ID_SLOT,
+  MCP_OAUTH_CLIENT_SECRET_SLOT,
+  MCP_OAUTH_CONNECTION_SLOT,
   McpToolBinding,
+  McpSourceBindingInput,
+  McpSourceBindingRef,
+  mcpHeaderSlot,
+  mcpQueryParamSlot,
   type McpConnectionAuth,
+  type McpConnectionAuthInput,
+  type McpCredentialInput,
+  type McpSourceBindingValue,
   type SecretBackedValue,
   type McpStoredSourceData,
+  type ConfiguredMcpCredentialValue,
 } from "./types";
 
 import {
@@ -61,10 +89,15 @@ export interface McpRemoteSourceConfig extends McpSourceScopeField {
   readonly name: string;
   readonly endpoint: string;
   readonly remoteTransport?: "streamable-http" | "sse" | "auto";
-  readonly queryParams?: Record<string, SecretBackedValue>;
-  readonly headers?: Record<string, SecretBackedValue>;
+  readonly queryParams?: Record<string, McpCredentialInput>;
+  readonly headers?: Record<string, McpCredentialInput>;
   readonly namespace?: string;
-  readonly auth?: McpConnectionAuth;
+  readonly auth?: McpConnectionAuthInput;
+  /**
+   * Scope that owns any direct credentials supplied on this call. Required
+   * whenever headers/queryParams/auth carry direct secret or connection ids.
+   */
+  readonly credentialTargetScope?: string;
 }
 
 export interface McpStdioSourceConfig extends McpSourceScopeField {
@@ -90,6 +123,7 @@ export type McpSourceConfig = McpRemoteSourceConfig | McpStdioSourceConfig;
 export interface McpProbeResult {
   readonly connected: boolean;
   readonly requiresOAuth: boolean;
+  readonly supportsDynamicRegistration: boolean;
   readonly name: string;
   readonly namespace: string;
   readonly toolCount: number | null;
@@ -99,9 +133,10 @@ export interface McpProbeResult {
 export interface McpUpdateSourceInput {
   readonly name?: string;
   readonly endpoint?: string;
-  readonly headers?: Record<string, SecretBackedValue>;
-  readonly queryParams?: Record<string, SecretBackedValue>;
-  readonly auth?: McpConnectionAuth;
+  readonly headers?: Record<string, McpCredentialInput>;
+  readonly queryParams?: Record<string, McpCredentialInput>;
+  readonly credentialTargetScope?: string;
+  readonly auth?: McpConnectionAuthInput;
 }
 
 export interface McpProbeEndpointInput {
@@ -114,7 +149,14 @@ export interface McpProbeEndpointInput {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const toStoredSourceData = (config: McpSourceConfig): McpStoredSourceData => {
+const toStoredSourceData = (
+  config: McpSourceConfig,
+  remoteCredentials?: {
+    readonly headers: Record<string, ConfiguredMcpCredentialValue>;
+    readonly queryParams: Record<string, ConfiguredMcpCredentialValue>;
+    readonly auth: McpConnectionAuth;
+  },
+): McpStoredSourceData => {
   if (config.transport === "stdio") {
     return {
       transport: "stdio",
@@ -128,9 +170,9 @@ const toStoredSourceData = (config: McpSourceConfig): McpStoredSourceData => {
     transport: "remote",
     endpoint: config.endpoint,
     remoteTransport: config.remoteTransport ?? "auto",
-    queryParams: config.queryParams,
-    headers: config.headers,
-    auth: config.auth ?? { kind: "none" },
+    queryParams: remoteCredentials?.queryParams,
+    headers: remoteCredentials?.headers,
+    auth: remoteCredentials?.auth ?? { kind: "none" },
   };
 };
 
@@ -151,6 +193,280 @@ const toBinding = (entry: McpToolManifestEntry): McpToolBinding =>
     outputSchema: entry.outputSchema,
     annotations: entry.annotations,
   });
+
+const MCP_PLUGIN_ID = "mcp";
+
+/** Match `token` as a separator-bounded run inside a URL hostname or path,
+ *  used as a low-confidence detection hint when wire-shape detection fails.
+ *  Boundary chars are everything non-alphanumeric, so `/api/mcp`,
+ *  `mcp.example.com`, `mcp-server`, and `mcp_v1` all match while
+ *  `mcphost.com` and `/mcpstore` do not. */
+const urlMatchesToken = (url: URL, token: string): boolean => {
+  const re = new RegExp(`(?:^|[^a-z0-9])${token}(?:$|[^a-z0-9])`, "i");
+  return re.test(url.hostname) || re.test(url.pathname);
+};
+
+/** Translate a non-MCP probe outcome into a message a user can act on.
+ *  The technical `reason` (`401 without Bearer WWW-Authenticate — not an
+ *  MCP auth challenge`, etc.) stays in telemetry via the probe span; the
+ *  user gets a sentence pointing at their next step. Exported for tests. */
+export const userFacingProbeMessage = (
+  shape: Extract<McpShapeProbeResult, { kind: "not-mcp" } | { kind: "unreachable" }>,
+): string => {
+  if (shape.kind === "unreachable") {
+    return "Couldn't reach this URL. Check the address, your network, and that the server is running.";
+  }
+  return Match.value(shape.category).pipe(
+    Match.when(
+      "auth-required",
+      () =>
+        "This server requires authentication. Add credentials (Authorization header, query parameter, or API key) below and retry.",
+    ),
+    Match.when(
+      "wrong-shape",
+      () =>
+        "This URL doesn't appear to host an MCP server. Double-check the address, including the path.",
+    ),
+    Match.exhaustive,
+  );
+};
+
+const scopeRanks = (ctx: PluginCtx<McpBindingStore>): ReadonlyMap<string, number> =>
+  new Map(ctx.scopes.map((scope, index) => [String(scope.id), index]));
+
+const scopeRank = (ranks: ReadonlyMap<string, number>, scopeId: string): number =>
+  ranks.get(scopeId) ?? Infinity;
+
+const coreBindingToMcpBinding = (binding: CredentialBindingRef): McpSourceBindingRef =>
+  new McpSourceBindingRef({
+    sourceId: binding.sourceId,
+    sourceScopeId: binding.sourceScopeId,
+    scopeId: binding.scopeId,
+    slot: binding.slotKey,
+    value: binding.value,
+    createdAt: binding.createdAt,
+    updatedAt: binding.updatedAt,
+  });
+
+const listMcpSourceBindings = (
+  ctx: PluginCtx<McpBindingStore>,
+  sourceId: string,
+  sourceScope: string,
+): Effect.Effect<readonly McpSourceBindingRef[], StorageFailure> =>
+  Effect.gen(function* () {
+    const ranks = scopeRanks(ctx);
+    const sourceSourceRank = scopeRank(ranks, sourceScope);
+    if (sourceSourceRank === Infinity) return [];
+    const bindings = yield* ctx.credentialBindings.listForSource({
+      pluginId: MCP_PLUGIN_ID,
+      sourceId,
+      sourceScope: ScopeId.make(sourceScope),
+    });
+    return bindings
+      .filter((binding) => scopeRank(ranks, binding.scopeId) <= sourceSourceRank)
+      .map(coreBindingToMcpBinding);
+  });
+
+const resolveMcpSourceBinding = (
+  ctx: PluginCtx<McpBindingStore>,
+  sourceId: string,
+  sourceScope: string,
+  slot: string,
+): Effect.Effect<McpSourceBindingRef | null, StorageFailure> =>
+  Effect.gen(function* () {
+    const ranks = scopeRanks(ctx);
+    const sourceSourceRank = scopeRank(ranks, sourceScope);
+    if (sourceSourceRank === Infinity) return null;
+    const bindings = yield* ctx.credentialBindings.listForSource({
+      pluginId: MCP_PLUGIN_ID,
+      sourceId,
+      sourceScope: ScopeId.make(sourceScope),
+    });
+    const binding = bindings
+      .filter(
+        (candidate) =>
+          candidate.slotKey === slot && scopeRank(ranks, candidate.scopeId) <= sourceSourceRank,
+      )
+      .sort((a, b) => scopeRank(ranks, a.scopeId) - scopeRank(ranks, b.scopeId))[0];
+    return binding ? coreBindingToMcpBinding(binding) : null;
+  });
+
+const validateMcpBindingTarget = (
+  ctx: PluginCtx<McpBindingStore>,
+  input: {
+    readonly sourceScope: string;
+    readonly targetScope: string;
+    readonly sourceId: string;
+  },
+): Effect.Effect<void, StorageFailure> =>
+  Effect.gen(function* () {
+    const ranks = scopeRanks(ctx);
+    const sourceSourceRank = scopeRank(ranks, input.sourceScope);
+    const targetRank = scopeRank(ranks, input.targetScope);
+    const scopeList = `[${ctx.scopes.map((s) => s.id).join(", ")}]`;
+    if (sourceSourceRank === Infinity) {
+      return yield* new StorageError({
+        message:
+          `MCP source binding references source scope "${input.sourceScope}" ` +
+          `which is not in the executor's scope stack ${scopeList}.`,
+        cause: undefined,
+      });
+    }
+    if (targetRank === Infinity) {
+      return yield* new StorageError({
+        message:
+          `MCP source binding targets scope "${input.targetScope}" which is not ` +
+          `in the executor's scope stack ${scopeList}.`,
+        cause: undefined,
+      });
+    }
+    if (targetRank > sourceSourceRank) {
+      return yield* new StorageError({
+        message:
+          `MCP source bindings for "${input.sourceId}" cannot be written at ` +
+          `outer scope "${input.targetScope}" because the base source lives at ` +
+          `"${input.sourceScope}"`,
+        cause: undefined,
+      });
+    }
+  });
+
+const bindingTargetScope = (
+  targetScope: string | undefined,
+  bindings: readonly unknown[],
+): Effect.Effect<string | undefined, McpConnectionError> => {
+  if (bindings.length === 0) return Effect.succeed(undefined);
+  if (targetScope) return Effect.succeed(targetScope);
+  return Effect.fail(
+    new McpConnectionError({
+      transport: "remote",
+      message: "credentialTargetScope is required when adding direct MCP credentials",
+    }),
+  );
+};
+
+const targetScopeForBinding = (
+  fallbackTargetScope: string | undefined,
+  binding: { readonly targetScope?: string },
+): Effect.Effect<string, McpConnectionError> => {
+  const targetScope = binding.targetScope ?? fallbackTargetScope;
+  if (targetScope) return Effect.succeed(targetScope);
+  return Effect.fail(
+    new McpConnectionError({
+      transport: "remote",
+      message: "credentialTargetScope is required when adding direct MCP credentials",
+    }),
+  );
+};
+
+const canonicalizeCredentialMap = (
+  values: Record<string, McpCredentialInput> | undefined,
+  slotForName: (name: string) => string,
+): {
+  readonly values: Record<string, ConfiguredMcpCredentialValue>;
+  readonly bindings: ReadonlyArray<{
+    readonly slot: string;
+    readonly value: McpSourceBindingValue;
+    readonly targetScope?: string;
+  }>;
+} => {
+  const nextValues: Record<string, ConfiguredMcpCredentialValue> = {};
+  const bindings: Array<{ slot: string; value: McpSourceBindingValue; targetScope?: string }> = [];
+  for (const [name, value] of Object.entries(values ?? {})) {
+    if (typeof value === "string") {
+      nextValues[name] = value;
+      continue;
+    }
+    if ("kind" in value) {
+      nextValues[name] = value;
+      continue;
+    }
+    const slot = slotForName(name);
+    nextValues[name] = new ConfiguredCredentialBinding({
+      kind: "binding",
+      slot,
+      prefix: value.prefix,
+    });
+    bindings.push({
+      slot,
+      targetScope: "targetScope" in value ? value.targetScope : undefined,
+      value: {
+        kind: "secret",
+        secretId: SecretId.make(value.secretId),
+        ...("secretScopeId" in value && value.secretScopeId
+          ? { secretScopeId: value.secretScopeId }
+          : {}),
+      },
+    });
+  }
+  return { values: nextValues, bindings };
+};
+
+const canonicalizeAuth = (
+  auth: McpConnectionAuthInput | undefined,
+): {
+  readonly auth: McpConnectionAuth;
+  readonly bindings: ReadonlyArray<{
+    readonly slot: string;
+    readonly value: McpSourceBindingValue;
+    readonly targetScope?: string;
+  }>;
+} => {
+  if (!auth || auth.kind === "none") return { auth: { kind: "none" }, bindings: [] };
+  if (auth.kind === "header") {
+    if ("secretSlot" in auth) return { auth, bindings: [] };
+    return {
+      auth: {
+        kind: "header",
+        headerName: auth.headerName,
+        secretSlot: MCP_HEADER_AUTH_SLOT,
+        prefix: auth.prefix,
+      },
+      bindings: [
+        {
+          slot: MCP_HEADER_AUTH_SLOT,
+          targetScope: auth.targetScope,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(auth.secretId),
+            ...(auth.secretScopeId ? { secretScopeId: auth.secretScopeId } : {}),
+          },
+        },
+      ],
+    };
+  }
+  if ("connectionSlot" in auth) return { auth, bindings: [] };
+  const bindings: Array<{ slot: string; value: McpSourceBindingValue; targetScope?: string }> = [
+    {
+      slot: MCP_OAUTH_CONNECTION_SLOT,
+      value: {
+        kind: "connection",
+        connectionId: ConnectionId.make(auth.connectionId),
+      },
+    },
+  ];
+  if (auth.clientIdSecretId) {
+    bindings.push({
+      slot: MCP_OAUTH_CLIENT_ID_SLOT,
+      value: { kind: "secret", secretId: SecretId.make(auth.clientIdSecretId) },
+    });
+  }
+  if (auth.clientSecretSecretId) {
+    bindings.push({
+      slot: MCP_OAUTH_CLIENT_SECRET_SLOT,
+      value: { kind: "secret", secretId: SecretId.make(auth.clientSecretSecretId) },
+    });
+  }
+  return {
+    auth: {
+      kind: "oauth2",
+      connectionSlot: MCP_OAUTH_CONNECTION_SLOT,
+      ...(auth.clientIdSecretId ? { clientIdSlot: MCP_OAUTH_CLIENT_ID_SLOT } : {}),
+      ...(auth.clientSecretSecretId ? { clientSecretSlot: MCP_OAUTH_CLIENT_SECRET_SLOT } : {}),
+    },
+    bindings,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // MCP-SDK OAuth provider adapter — builds the `OAuthClientProvider` the
@@ -222,7 +538,7 @@ const resolveSecretBackedMap = (
   );
 
 const plainStringMap = (
-  values: Record<string, SecretBackedValue> | undefined,
+  values: Record<string, McpCredentialInput> | undefined,
 ): Record<string, string> | undefined => {
   if (!values) return undefined;
   const entries = Object.entries(values).filter(
@@ -231,11 +547,266 @@ const plainStringMap = (
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 };
 
+const resolveMcpBindingValueMap = (
+  ctx: PluginCtx<McpBindingStore>,
+  values: Record<string, ConfiguredMcpCredentialValue> | undefined,
+  params: {
+    readonly sourceId: string;
+    readonly sourceScope: string;
+    readonly targetScope?: string;
+    readonly missingLabel: string;
+  },
+): Effect.Effect<Record<string, string> | undefined, McpConnectionError | StorageFailure> =>
+  Effect.gen(function* () {
+    if (!values) return undefined;
+    const resolved: Record<string, string> = {};
+    for (const [name, value] of Object.entries(values)) {
+      if (typeof value === "string") {
+        resolved[name] = value;
+        continue;
+      }
+      const binding = yield* resolveMcpSourceBinding(
+        ctx,
+        params.sourceId,
+        params.sourceScope,
+        value.slot,
+      );
+      if (binding?.value.kind === "secret") {
+        const secret = yield* ctx.secrets.getAtScope(binding.value.secretId, binding.scopeId).pipe(
+          Effect.catchTag("SecretOwnedByConnectionError", () =>
+            Effect.fail(
+              new McpConnectionError({
+                transport: "remote",
+                message: `Failed to resolve secret for ${params.missingLabel} "${name}"`,
+              }),
+            ),
+          ),
+        );
+        if (secret === null) {
+          return yield* new McpConnectionError({
+            transport: "remote",
+            message: `Missing secret "${binding.value.secretId}" for ${params.missingLabel} "${name}"`,
+          });
+        }
+        resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
+        continue;
+      }
+      if (binding?.value.kind === "text") {
+        resolved[name] = value.prefix ? `${value.prefix}${binding.value.text}` : binding.value.text;
+        continue;
+      }
+      return yield* new McpConnectionError({
+        transport: "remote",
+        message: `Missing binding for ${params.missingLabel} "${name}"`,
+      });
+    }
+    return Object.keys(resolved).length > 0 ? resolved : undefined;
+  });
+
+const resolveMcpCredentialInputMap = (
+  ctx: PluginCtx<McpBindingStore>,
+  values: Record<string, McpCredentialInput> | undefined,
+  params: {
+    readonly sourceId: string;
+    readonly sourceScope: string;
+    readonly targetScope?: string;
+    readonly missingLabel: string;
+  },
+): Effect.Effect<Record<string, string> | undefined, McpConnectionError | StorageFailure> =>
+  Effect.gen(function* () {
+    if (!values) return undefined;
+    const resolved: Record<string, string> = {};
+    for (const [name, value] of Object.entries(values)) {
+      if (typeof value === "string") {
+        resolved[name] = value;
+        continue;
+      }
+      if ("kind" in value) {
+        const slotResolved = yield* resolveMcpBindingValueMap(
+          ctx,
+          { [name]: value },
+          {
+            sourceId: params.sourceId,
+            sourceScope: params.sourceScope,
+            missingLabel: params.missingLabel,
+          },
+        );
+        if (slotResolved?.[name] !== undefined) resolved[name] = slotResolved[name];
+        continue;
+      }
+      const secretScope =
+        "secretScopeId" in value
+          ? (value.secretScopeId ?? value.targetScope)
+          : (params.targetScope ?? params.sourceScope);
+      const secret = yield* ctx.secrets.getAtScope(SecretId.make(value.secretId), secretScope).pipe(
+        Effect.catchTag("SecretOwnedByConnectionError", () =>
+          Effect.fail(
+            new McpConnectionError({
+              transport: "remote",
+              message: `Failed to resolve secret for ${params.missingLabel} "${name}"`,
+            }),
+          ),
+        ),
+      );
+      if (secret === null) {
+        return yield* new McpConnectionError({
+          transport: "remote",
+          message: `Missing secret "${value.secretId}" for ${params.missingLabel} "${name}"`,
+        });
+      }
+      resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
+    }
+    return Object.keys(resolved).length > 0 ? resolved : undefined;
+  });
+
+const resolveMcpHeaderAuth = (
+  ctx: PluginCtx<McpBindingStore>,
+  sourceId: string,
+  sourceScope: string,
+  auth: McpConnectionAuth,
+): Effect.Effect<Record<string, string>, McpConnectionError | StorageFailure> =>
+  Effect.gen(function* () {
+    if (auth.kind !== "header") return {};
+    const binding = yield* resolveMcpSourceBinding(ctx, sourceId, sourceScope, auth.secretSlot);
+    if (binding?.value.kind === "secret") {
+      const secret = yield* ctx.secrets.getAtScope(binding.value.secretId, binding.scopeId).pipe(
+        Effect.catchTag("SecretOwnedByConnectionError", () =>
+          Effect.fail(
+            new McpConnectionError({
+              transport: "remote",
+              message: `Failed to resolve header auth binding "${auth.secretSlot}"`,
+            }),
+          ),
+        ),
+      );
+      if (secret === null) {
+        return yield* new McpConnectionError({
+          transport: "remote",
+          message: `Missing secret for header auth binding "${auth.secretSlot}"`,
+        });
+      }
+      return { [auth.headerName]: auth.prefix ? `${auth.prefix}${secret}` : secret };
+    }
+    if (binding?.value.kind === "text") {
+      return {
+        [auth.headerName]: auth.prefix ? `${auth.prefix}${binding.value.text}` : binding.value.text,
+      };
+    }
+    return yield* new McpConnectionError({
+      transport: "remote",
+      message: `Missing header auth binding "${auth.secretSlot}"`,
+    });
+  });
+
+const resolveMcpStoredOauthProvider = (
+  ctx: PluginCtx<McpBindingStore>,
+  sourceId: string,
+  sourceScope: string,
+  auth: McpConnectionAuth,
+): Effect.Effect<OAuthClientProvider | undefined, McpConnectionError | StorageFailure> =>
+  Effect.gen(function* () {
+    if (auth.kind !== "oauth2") return undefined;
+    const binding = yield* resolveMcpSourceBinding(ctx, sourceId, sourceScope, auth.connectionSlot);
+    if (binding?.value.kind !== "connection") {
+      return yield* new McpConnectionError({
+        transport: "remote",
+        message: `Missing OAuth connection binding for MCP source "${sourceId}"`,
+      });
+    }
+    const connectionId = binding.value.connectionId;
+    const accessToken = yield* ctx.connections
+      .accessTokenAtScope(connectionId, binding.scopeId)
+      .pipe(
+        Effect.mapError(
+          ({ message }) =>
+            new McpConnectionError({
+              transport: "remote",
+              message: `Failed to resolve OAuth connection "${connectionId}": ${message}`,
+            }),
+        ),
+      );
+    return makeOAuthProvider(accessToken);
+  });
+
+const resolveMcpInputAuth = (
+  ctx: PluginCtx<McpBindingStore>,
+  sourceId: string,
+  sourceScope: string,
+  targetScope: string | undefined,
+  auth: McpConnectionAuthInput | undefined,
+): Effect.Effect<
+  { readonly headers: Record<string, string>; readonly authProvider?: OAuthClientProvider },
+  McpConnectionError | StorageFailure
+> =>
+  Effect.gen(function* () {
+    if (!auth || auth.kind === "none") return { headers: {} };
+    if (auth.kind === "header") {
+      if ("secretSlot" in auth) {
+        const headers = yield* resolveMcpHeaderAuth(ctx, sourceId, sourceScope, auth);
+        return { headers };
+      }
+      const secretScope = auth.secretScopeId ?? auth.targetScope ?? targetScope ?? sourceScope;
+      const secret = yield* ctx.secrets.getAtScope(SecretId.make(auth.secretId), secretScope).pipe(
+        Effect.catchTag("SecretOwnedByConnectionError", () =>
+          Effect.fail(
+            new McpConnectionError({
+              transport: "remote",
+              message: `Failed to resolve secret "${auth.secretId}"`,
+            }),
+          ),
+        ),
+      );
+      if (secret === null) {
+        return yield* new McpConnectionError({
+          transport: "remote",
+          message: `Failed to resolve secret "${auth.secretId}"`,
+        });
+      }
+      return {
+        headers: { [auth.headerName]: auth.prefix ? `${auth.prefix}${secret}` : secret },
+      };
+    }
+    const connection =
+      "connectionId" in auth
+        ? { id: ConnectionId.make(auth.connectionId), scope: targetScope ?? sourceScope }
+        : yield* Effect.gen(function* () {
+            const binding = yield* resolveMcpSourceBinding(
+              ctx,
+              sourceId,
+              sourceScope,
+              auth.connectionSlot,
+            );
+            return binding?.value.kind === "connection"
+              ? { id: binding.value.connectionId, scope: binding.scopeId }
+              : null;
+          });
+    if (connection === null) {
+      return yield* new McpConnectionError({
+        transport: "remote",
+        message: `Missing OAuth connection binding for MCP source "${sourceId}"`,
+      });
+    }
+    const accessToken = yield* ctx.connections
+      .accessTokenAtScope(connection.id, connection.scope)
+      .pipe(
+        Effect.mapError(
+          ({ message }) =>
+            new McpConnectionError({
+              transport: "remote",
+              message: `Failed to resolve OAuth connection "${connection.id}": ${message}`,
+            }),
+        ),
+      );
+    return { headers: {}, authProvider: makeOAuthProvider(accessToken) };
+  });
+
 // ---------------------------------------------------------------------------
 // Shared connector resolution — reads secrets, builds stdio/remote input
 // ---------------------------------------------------------------------------
 
 const resolveConnectorInput = (
+  sourceId: string,
+  sourceScope: string,
   sd: McpStoredSourceData,
   ctx: PluginCtx<McpBindingStore>,
   allowStdio: boolean,
@@ -260,47 +831,23 @@ const resolveConnectorInput = (
   }
 
   return Effect.gen(function* () {
-    const resolvedHeaders = yield* resolveSecretBackedMap(sd.headers, ctx);
-    const resolvedQueryParams = yield* resolveSecretBackedMap(sd.queryParams, ctx);
+    const resolvedHeaders = yield* resolveMcpBindingValueMap(ctx, sd.headers, {
+      sourceId,
+      sourceScope,
+      missingLabel: "header",
+    });
+    const resolvedQueryParams = yield* resolveMcpBindingValueMap(ctx, sd.queryParams, {
+      sourceId,
+      sourceScope,
+      missingLabel: "query parameter",
+    });
     const headers: Record<string, string> = { ...(resolvedHeaders ?? {}) };
-    let authProvider: OAuthClientProvider | undefined;
 
     const auth = sd.auth;
     if (auth.kind === "header") {
-      const val = yield* ctx.secrets.get(auth.secretId).pipe(
-        Effect.mapError((err) =>
-          Predicate.isTagged("SecretOwnedByConnectionError")(err)
-            ? new McpConnectionError({
-                transport: "remote",
-                message: `Failed to resolve secret "${auth.secretId}"`,
-              })
-            : err,
-        ),
-      );
-      if (val === null) {
-        return yield* new McpConnectionError({
-          transport: "remote",
-          message: `Failed to resolve secret "${auth.secretId}"`,
-        });
-      }
-      headers[auth.headerName] = auth.prefix ? `${auth.prefix}${val}` : val;
-    } else if (auth.kind === "oauth2") {
-      // `accessToken(id)` handles refresh internally — by the time we
-      // hand the value to the MCP transport it's guaranteed fresh.
-      // The canonical `"oauth2"` ConnectionProvider registered by
-      // core owns the refresh lifecycle; we just wrap the current
-      // token for the SDK's transport.
-      const accessToken = yield* ctx.connections.accessToken(auth.connectionId).pipe(
-        Effect.mapError(
-          ({ message }) =>
-            new McpConnectionError({
-              transport: "remote",
-              message: `Failed to resolve OAuth connection "${auth.connectionId}": ${message}`,
-            }),
-        ),
-      );
-      authProvider = makeOAuthProvider(accessToken);
+      Object.assign(headers, yield* resolveMcpHeaderAuth(ctx, sourceId, sourceScope, auth));
     }
+    const authProvider = yield* resolveMcpStoredOauthProvider(ctx, sourceId, sourceScope, auth);
 
     return {
       transport: "remote" as const,
@@ -375,6 +922,7 @@ export interface McpPluginOptions {
    * `process.env`. Only enable for trusted single-user contexts.
    */
   readonly dangerouslyAllowStdioMCP?: boolean;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   /** If provided, source add/remove is mirrored to executor.jsonc
    *  (best-effort — file errors are logged, not raised). */
   readonly configFile?: ConfigFileSink;
@@ -382,10 +930,11 @@ export interface McpPluginOptions {
 
 const secretRef = (id: string): string => `${SECRET_REF_PREFIX}${id}`;
 
-const authToConfig = (auth: McpConnectionAuth | undefined): McpAuthConfig | undefined => {
+const authToConfig = (auth: McpConnectionAuthInput | undefined): McpAuthConfig | undefined => {
   if (!auth) return undefined;
   if (auth.kind === "none") return { kind: "none" };
   if (auth.kind === "header") {
+    if (!("secretId" in auth)) return undefined;
     return {
       kind: "header",
       headerName: auth.headerName,
@@ -393,6 +942,7 @@ const authToConfig = (auth: McpConnectionAuth | undefined): McpAuthConfig | unde
       prefix: auth.prefix,
     };
   }
+  if (!("connectionId" in auth)) return undefined;
   return {
     kind: "oauth2",
     connectionId: auth.connectionId,
@@ -462,6 +1012,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     storage: (deps): McpBindingStore => makeMcpStore(deps),
 
     extension: (ctx) => {
+      const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
       const probeEndpoint = (input: string | McpProbeEndpointInput) =>
         Effect.gen(function* () {
           const endpoint = typeof input === "string" ? input : input.endpoint;
@@ -505,6 +1056,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return {
               connected: true,
               requiresOAuth: false,
+              supportsDynamicRegistration: false,
               name: result.manifest.server?.name ?? name,
               namespace,
               toolCount: result.manifest.tools.length,
@@ -519,16 +1071,14 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           // probe and be misclassified as MCP. The shape probe rejects
           // anything whose initialize response isn't 2xx or 401+Bearer.
           const shape = yield* probeMcpEndpointShape(trimmed, {
+            httpClientLayer,
             headers: probeHeaders,
             queryParams: probeQueryParams,
           });
           if (shape.kind !== "mcp") {
             return yield* new McpConnectionError({
               transport: "remote",
-              message:
-                shape.kind === "not-mcp"
-                  ? `Endpoint does not look like an MCP server: ${shape.reason}`
-                  : `Could not reach endpoint: ${shape.reason}`,
+              message: userFacingProbeMessage(shape),
             });
           }
 
@@ -539,15 +1089,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               queryParams: probeQueryParams,
             })
             .pipe(
-              Effect.map(() => true),
-              Effect.catch(() => Effect.succeed(false)),
+              Effect.map((oauth) => ({ ok: true as const, oauth })),
+              Effect.catch(() => Effect.succeed({ ok: false as const, oauth: null })),
               Effect.withSpan("mcp.plugin.probe_oauth"),
             );
 
-          if (probeResult) {
+          if (probeResult.ok) {
             return {
               connected: false,
               requiresOAuth: true,
+              supportsDynamicRegistration: probeResult.oauth.supportsDynamicRegistration,
               name,
               namespace,
               toolCount: null,
@@ -557,7 +1108,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           return yield* new McpConnectionError({
             transport: "remote",
-            message: "MCP server requires authentication but OAuth discovery failed",
+            message:
+              "This server requires authentication, but OAuth metadata wasn't found. Add credentials (Authorization header, query parameter, or API key) below and retry.",
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
@@ -570,7 +1122,46 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       const addSource = (config: McpSourceConfig) =>
         Effect.gen(function* () {
           const namespace = normalizeNamespace(config);
-          const sd = toStoredSourceData(config);
+          const canonicalRemote =
+            config.transport === "remote"
+              ? {
+                  headers: canonicalizeCredentialMap(config.headers, mcpHeaderSlot),
+                  queryParams: canonicalizeCredentialMap(config.queryParams, mcpQueryParamSlot),
+                  auth: canonicalizeAuth(config.auth),
+                }
+              : null;
+          const directBindings = canonicalRemote
+            ? [
+                ...canonicalRemote.headers.bindings,
+                ...canonicalRemote.queryParams.bindings,
+                ...canonicalRemote.auth.bindings,
+              ]
+            : [];
+          for (const binding of directBindings) {
+            const bindingTargetScope = yield* targetScopeForBinding(
+              config.transport === "remote" ? config.credentialTargetScope : undefined,
+              binding,
+            );
+            yield* validateMcpBindingTarget(ctx, {
+              sourceId: namespace,
+              sourceScope: config.scope,
+              targetScope: bindingTargetScope,
+            });
+          }
+          const targetScope =
+            config.transport === "remote" && directBindings[0]
+              ? yield* targetScopeForBinding(config.credentialTargetScope, directBindings[0])
+              : undefined;
+          const sd = toStoredSourceData(
+            config,
+            canonicalRemote
+              ? {
+                  headers: canonicalRemote.headers.values,
+                  queryParams: canonicalRemote.queryParams.values,
+                  auth: canonicalRemote.auth.auth,
+                }
+              : undefined,
+          );
 
           // Stdio sources are gated — a resolver failure there is a
           // config error the admin must fix before the source makes
@@ -579,7 +1170,47 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           // connection awaiting per-user sign-in, header secret
           // awaiting upload) but the source row should still land so
           // it shows up in the list and exposes a Sign-in affordance.
-          const resolved = yield* resolveConnectorInput(sd, ctx, allowStdio).pipe(
+          const resolved = yield* (
+            config.transport === "remote"
+              ? Effect.gen(function* () {
+                  const resolvedHeaders = yield* resolveMcpCredentialInputMap(ctx, config.headers, {
+                    sourceId: namespace,
+                    sourceScope: config.scope,
+                    targetScope,
+                    missingLabel: "header",
+                  });
+                  const resolvedQueryParams = yield* resolveMcpCredentialInputMap(
+                    ctx,
+                    config.queryParams,
+                    {
+                      sourceId: namespace,
+                      sourceScope: config.scope,
+                      targetScope,
+                      missingLabel: "query parameter",
+                    },
+                  );
+                  const resolvedAuth = yield* resolveMcpInputAuth(
+                    ctx,
+                    namespace,
+                    config.scope,
+                    targetScope,
+                    config.auth,
+                  );
+                  const headers = {
+                    ...(resolvedHeaders ?? {}),
+                    ...resolvedAuth.headers,
+                  };
+                  return {
+                    transport: "remote" as const,
+                    endpoint: config.endpoint,
+                    remoteTransport: config.remoteTransport ?? "auto",
+                    queryParams: resolvedQueryParams,
+                    headers: Object.keys(headers).length > 0 ? headers : undefined,
+                    authProvider: resolvedAuth.authProvider,
+                  };
+                })
+              : resolveConnectorInput(namespace, config.scope, sd, ctx, allowStdio)
+          ).pipe(
             Effect.result,
             Effect.withSpan("mcp.plugin.resolve_connector", {
               attributes: {
@@ -662,6 +1293,23 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                     outputSchema: e.outputSchema,
                   })),
                 });
+
+                if (directBindings.length > 0) {
+                  for (const binding of directBindings) {
+                    const bindingTargetScope = yield* targetScopeForBinding(
+                      config.transport === "remote" ? config.credentialTargetScope : undefined,
+                      binding,
+                    );
+                    yield* ctx.credentialBindings.set({
+                      targetScope: ScopeId.make(bindingTargetScope),
+                      pluginId: MCP_PLUGIN_ID,
+                      sourceId: namespace,
+                      sourceScope: ScopeId.make(config.scope),
+                      slotKey: binding.slot,
+                      value: binding.value,
+                    });
+                  }
+                }
               }),
             )
             .pipe(
@@ -697,9 +1345,14 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           yield* ctx
             .transaction(
               Effect.gen(function* () {
+                yield* ctx.credentialBindings.removeForSource({
+                  pluginId: MCP_PLUGIN_ID,
+                  sourceId: namespace,
+                  sourceScope: ScopeId.make(scope),
+                });
                 yield* ctx.storage.removeBindingsByNamespace(namespace, scope);
                 yield* ctx.storage.removeSource(namespace, scope);
-                yield* ctx.core.sources.unregister(namespace);
+                yield* ctx.core.sources.unregister({ id: namespace, targetScope: scope });
               }),
             )
             .pipe(Effect.withSpan("mcp.plugin.persist_remove"));
@@ -728,7 +1381,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             });
           }
 
-          const ci = yield* resolveConnectorInput(sd, ctx, allowStdio).pipe(
+          const ci = yield* resolveConnectorInput(namespace, scope, sd, ctx, allowStdio).pipe(
             Effect.withSpan("mcp.plugin.resolve_connector", {
               attributes: {
                 "mcp.source.namespace": namespace,
@@ -756,7 +1409,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             .transaction(
               Effect.gen(function* () {
                 yield* ctx.storage.removeBindingsByNamespace(namespace, scope);
-                yield* ctx.core.sources.unregister(namespace);
+                yield* ctx.core.sources.unregister({ id: namespace, targetScope: scope });
 
                 yield* ctx.storage.putBindings(
                   namespace,
@@ -805,21 +1458,70 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           const existing = yield* ctx.storage.getSource(namespace, scope);
           if (!existing || existing.config.transport !== "remote") return;
 
+          const canonicalHeaders =
+            input.headers !== undefined
+              ? canonicalizeCredentialMap(input.headers, mcpHeaderSlot)
+              : null;
+          const canonicalQueryParams =
+            input.queryParams !== undefined
+              ? canonicalizeCredentialMap(input.queryParams, mcpQueryParamSlot)
+              : null;
+          const canonicalAuth = input.auth !== undefined ? canonicalizeAuth(input.auth) : null;
+          const directBindings = [
+            ...(canonicalHeaders?.bindings ?? []),
+            ...(canonicalQueryParams?.bindings ?? []),
+            ...(canonicalAuth?.bindings ?? []),
+          ];
+          const targetScope = yield* bindingTargetScope(
+            input.credentialTargetScope,
+            directBindings,
+          );
+          if (targetScope) {
+            yield* validateMcpBindingTarget(ctx, {
+              sourceId: namespace,
+              sourceScope: scope,
+              targetScope,
+            });
+          }
+
           const remote = existing.config;
           const updatedConfig: McpStoredSourceData = {
             ...remote,
             ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
-            ...(input.headers !== undefined ? { headers: input.headers } : {}),
-            ...(input.auth !== undefined ? { auth: input.auth } : {}),
-            ...(input.queryParams !== undefined ? { queryParams: input.queryParams } : {}),
+            ...(canonicalHeaders ? { headers: canonicalHeaders.values } : {}),
+            ...(canonicalAuth ? { auth: canonicalAuth.auth } : {}),
+            ...(canonicalQueryParams ? { queryParams: canonicalQueryParams.values } : {}),
           };
 
-          yield* ctx.storage.putSource({
-            namespace,
-            scope,
-            name: input.name?.trim() || existing.name,
-            config: updatedConfig,
-          });
+          const affectedPrefixes = [
+            ...(input.headers !== undefined ? ["header:"] : []),
+            ...(input.queryParams !== undefined ? ["query_param:"] : []),
+            ...(input.auth !== undefined ? ["auth:"] : []),
+          ];
+          const replacementTargetScope = targetScope ?? input.credentialTargetScope ?? scope;
+          yield* ctx.transaction(
+            Effect.gen(function* () {
+              yield* ctx.storage.putSource({
+                namespace,
+                scope,
+                name: input.name?.trim() || existing.name,
+                config: updatedConfig,
+              });
+              if (affectedPrefixes.length > 0 || directBindings.length > 0) {
+                yield* ctx.credentialBindings.replaceForSource({
+                  targetScope: ScopeId.make(replacementTargetScope),
+                  pluginId: MCP_PLUGIN_ID,
+                  sourceId: namespace,
+                  sourceScope: ScopeId.make(scope),
+                  slotPrefixes: affectedPrefixes,
+                  bindings: directBindings.map((binding) => ({
+                    slotKey: binding.slot,
+                    value: binding.value,
+                  })),
+                });
+              }
+            }),
+          );
         }).pipe(
           Effect.withSpan("mcp.plugin.update_source", {
             attributes: { "mcp.source.namespace": namespace },
@@ -840,6 +1542,40 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         refreshSource,
         getSource,
         updateSource,
+        listSourceBindings: (sourceId: string, sourceScope: string) =>
+          listMcpSourceBindings(ctx, sourceId, sourceScope),
+        setSourceBinding: (input: McpSourceBindingInput) =>
+          Effect.gen(function* () {
+            yield* validateMcpBindingTarget(ctx, {
+              sourceId: input.sourceId,
+              sourceScope: input.sourceScope,
+              targetScope: input.scope,
+            });
+            const binding = yield* ctx.credentialBindings.set({
+              targetScope: input.scope,
+              pluginId: MCP_PLUGIN_ID,
+              sourceId: input.sourceId,
+              sourceScope: input.sourceScope,
+              slotKey: input.slot,
+              value: input.value,
+            });
+            return coreBindingToMcpBinding(binding);
+          }),
+        removeSourceBinding: (sourceId: string, sourceScope: string, slot: string, scope: string) =>
+          Effect.gen(function* () {
+            yield* validateMcpBindingTarget(ctx, {
+              sourceId,
+              sourceScope,
+              targetScope: scope,
+            });
+            yield* ctx.credentialBindings.remove({
+              targetScope: ScopeId.make(scope),
+              pluginId: MCP_PLUGIN_ID,
+              sourceId,
+              sourceScope: ScopeId.make(sourceScope),
+              slotKey: slot,
+            });
+          }),
       };
     },
 
@@ -882,9 +1618,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           toolName: entry.binding.toolName,
           args,
           sourceData: sd,
+          sourceId: entry.namespace,
+          sourceScope: toolScope,
           invokerScope: ctx.scopes[0]!.id,
           resolveConnector: () =>
-            resolveConnectorInput(sd, ctx, allowStdio).pipe(
+            resolveConnectorInput(entry.namespace, toolScope, sd, ctx, allowStdio).pipe(
               Effect.catchTags({
                 StorageError: () =>
                   Effect.fail(
@@ -924,6 +1662,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
     detect: ({ ctx, url }) =>
       Effect.gen(function* () {
+        const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
         const trimmed = url.trim();
         if (!trimmed) return null;
 
@@ -957,30 +1696,41 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }
 
-        // host publishes RFC 9728 + 8414 metadata) would be classified
-        // as MCP whenever the cross-plugin detector fans out to us.
-        const shape = yield* probeMcpEndpointShape(trimmed);
-        if (shape.kind !== "mcp") return null;
+        // The shape probe inspects the JSON-RPC `initialize` response
+        // and only classifies as MCP when the wire shape is
+        // unambiguous (2xx + JSON-RPC body, 2xx SSE, or 401 + Bearer +
+        // JSON-RPC error envelope). That body-shape gate is what
+        // separates real MCP servers — including those that
+        // authenticate with static API keys and publish no OAuth
+        // metadata — from unrelated OAuth-protected services whose
+        // host happens to expose RFC 9728/8414 documents.
+        const shape = yield* probeMcpEndpointShape(trimmed, { httpClientLayer });
+        if (shape.kind === "mcp") {
+          return new SourceDetectionResult({
+            kind: "mcp",
+            confidence: "high",
+            endpoint: trimmed,
+            name,
+            namespace,
+          });
+        }
 
-        // Confirm OAuth metadata is actually reachable. The shape
-        // probe already found a Bearer challenge; the core OAuth
-        // service's probe verifies the AS metadata resolves so we
-        // don't classify endpoints that challenge but have no
-        // discovery.
-        const probeOk = yield* ctx.oauth.probe({ endpoint: trimmed }).pipe(
-          Effect.map(() => true),
-          Effect.catch(() => Effect.succeed(false)),
-          Effect.withSpan("mcp.plugin.probe_oauth"),
-        );
-        if (!probeOk) return null;
+        // Low-confidence URL-token fallback. When wire-shape detection
+        // can't confirm MCP (server unreachable, behind unusual auth,
+        // returns a non-canonical body, etc.) but the URL itself is a
+        // strong hint, surface a candidate so the user can still pick
+        // it from the detect dropdown rather than getting nothing.
+        if (urlMatchesToken(parsed.value, "mcp")) {
+          return new SourceDetectionResult({
+            kind: "mcp",
+            confidence: "low",
+            endpoint: trimmed,
+            name,
+            namespace,
+          });
+        }
 
-        return new SourceDetectionResult({
-          kind: "mcp",
-          confidence: "high",
-          endpoint: trimmed,
-          name,
-          namespace,
-        });
+        return null;
       }).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.withSpan("mcp.plugin.detect", {
@@ -1026,70 +1776,22 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
     removeSource: ({ ctx, sourceId, scope }) =>
       Effect.gen(function* () {
-        yield* ctx.storage.removeBindingsByNamespace(sourceId, scope);
-        yield* ctx.storage.removeSource(sourceId, scope);
-      }),
-
-    // Aggregate usages across the four places mcp can hold a secret ref:
-    // header-auth secret, oauth2 client_id_secret, oauth2 client_secret,
-    // and the per-entry rows in mcp_source_header / mcp_source_query_param.
-    usagesForSecret: ({ ctx, args }) =>
-      Effect.gen(function* () {
-        const sources = yield* ctx.storage.findSourcesBySecret(args.secretId);
-        const childRows = yield* ctx.storage.findChildRowsBySecret(args.secretId);
-
-        const sourceKeys = new Set<string>();
-        for (const s of sources) {
-          sourceKeys.add(`${s.scope_id}:${s.namespace}`);
-        }
-        for (const r of childRows) {
-          sourceKeys.add(`${r.scope_id}:${r.source_id}`);
-        }
-        const names = yield* ctx.storage.lookupSourceNames([...sourceKeys]);
-
-        const out: Usage[] = [];
-        for (const s of sources) {
-          out.push(
-            new Usage({
-              pluginId: "mcp",
-              scopeId: ScopeId.make(s.scope_id),
-              ownerKind: "mcp-source",
-              ownerId: s.namespace,
-              ownerName: names.get(`${s.scope_id}:${s.namespace}`) ?? s.name,
-              slot: s.slot,
-            }),
-          );
-        }
-        for (const r of childRows) {
-          out.push(
-            new Usage({
-              pluginId: "mcp",
-              scopeId: ScopeId.make(r.scope_id),
-              ownerKind: `mcp-source-${r.kind.replace(/_/g, "-")}`,
-              ownerId: r.source_id,
-              ownerName: names.get(`${r.scope_id}:${r.source_id}`) ?? null,
-              slot: `${r.kind}:${r.name}`,
-            }),
-          );
-        }
-        return out;
-      }),
-
-    usagesForConnection: ({ ctx, args }) =>
-      Effect.gen(function* () {
-        const sources = yield* ctx.storage.findSourcesByConnection(args.connectionId);
-        return sources.map(
-          (s) =>
-            new Usage({
-              pluginId: "mcp",
-              scopeId: ScopeId.make(s.scope_id),
-              ownerKind: "mcp-source",
-              ownerId: s.namespace,
-              ownerName: s.name,
-              slot: s.slot,
-            }),
+        yield* ctx.transaction(
+          Effect.gen(function* () {
+            yield* ctx.credentialBindings.removeForSource({
+              pluginId: MCP_PLUGIN_ID,
+              sourceId,
+              sourceScope: ScopeId.make(scope),
+            });
+            yield* ctx.storage.removeBindingsByNamespace(sourceId, scope);
+            yield* ctx.storage.removeSource(sourceId, scope);
+          }),
         );
       }),
+
+    usagesForSecret: () => Effect.succeed([]),
+
+    usagesForConnection: () => Effect.succeed([]),
 
     refreshSource: () => Effect.void,
 
@@ -1162,4 +1864,17 @@ export interface McpPluginExtension {
     scope: string,
     input: McpUpdateSourceInput,
   ) => Effect.Effect<void, McpExtensionFailure>;
+  readonly listSourceBindings: (
+    sourceId: string,
+    sourceScope: string,
+  ) => Effect.Effect<readonly McpSourceBindingRef[], StorageFailure>;
+  readonly setSourceBinding: (
+    input: McpSourceBindingInput,
+  ) => Effect.Effect<McpSourceBindingRef, StorageFailure>;
+  readonly removeSourceBinding: (
+    sourceId: string,
+    sourceScope: string,
+    slot: string,
+    scope: string,
+  ) => Effect.Effect<void, StorageFailure>;
 }

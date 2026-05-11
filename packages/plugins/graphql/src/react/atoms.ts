@@ -16,6 +16,17 @@ export const graphqlSourceAtom = (scopeId: ScopeId, namespace: string) =>
     reactivityKeys: [ReactivityKey.sources, ReactivityKey.tools],
   });
 
+export const graphqlSourceBindingsAtom = (
+  scopeId: ScopeId,
+  namespace: string,
+  sourceScopeId: ScopeId,
+) =>
+  GraphqlClient.query("graphql", "listSourceBindings", {
+    params: { scopeId, namespace, sourceScopeId },
+    timeToLive: "15 seconds",
+    reactivityKeys: [ReactivityKey.sources, ReactivityKey.secrets, ReactivityKey.connections],
+  });
+
 // ---------------------------------------------------------------------------
 // Mutation atoms
 // ---------------------------------------------------------------------------
@@ -30,7 +41,7 @@ export const addGraphqlSourceOptimistic = Atom.family((scopeId: ScopeId) =>
           const id = arg.payload.namespace ?? `pending-${Math.random().toString(36).slice(2)}`;
           const source = {
             id,
-            scopeId,
+            scopeId: arg.payload.targetScope,
             kind: "graphql",
             pluginId: "graphql",
             name: arg.payload.name ?? id,
@@ -50,3 +61,7 @@ export const addGraphqlSourceOptimistic = Atom.family((scopeId: ScopeId) =>
 );
 
 export const updateGraphqlSource = GraphqlClient.mutation("graphql", "updateSource");
+
+export const setGraphqlSourceBinding = GraphqlClient.mutation("graphql", "setSourceBinding");
+
+export const removeGraphqlSourceBinding = GraphqlClient.mutation("graphql", "removeSourceBinding");

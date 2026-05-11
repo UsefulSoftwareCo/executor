@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { generateKeyBetween } from "fractional-indexing";
 import { ChevronDownIcon } from "lucide-react";
-import { PolicyId, type ToolPolicyAction } from "@executor-js/sdk";
+import { PolicyId, ScopeId, type ToolPolicyAction } from "@executor-js/sdk";
 
 import {
   createPolicyOptimistic,
@@ -13,7 +13,7 @@ import {
   updatePolicyOptimistic,
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
-import { useScope } from "../hooks/use-scope";
+import { useScope, useScopeStack } from "../hooks/use-scope";
 import { badgeVariants } from "../components/badge";
 import { cn } from "../lib/utils";
 import {
@@ -103,7 +103,10 @@ const isValidPattern = (pattern: string): boolean => {
 // ---------------------------------------------------------------------------
 
 function AddPolicyForm(props: {
-  onSubmit: (input: { pattern: string; action: ToolPolicyAction }) => void;
+  onSubmit: (input: { targetScope: ScopeId; pattern: string; action: ToolPolicyAction }) => void;
+  scopeOptions: readonly { readonly id: ScopeId; readonly label: string }[];
+  targetScope: ScopeId;
+  onTargetScopeChange: (scopeId: ScopeId) => void;
   busy: boolean;
 }) {
   const [pattern, setPattern] = useState("");
@@ -116,7 +119,7 @@ function AddPolicyForm(props: {
       onSubmit={(e) => {
         e.preventDefault();
         if (!valid) return;
-        props.onSubmit({ pattern, action });
+        props.onSubmit({ targetScope: props.targetScope, pattern, action });
         setPattern("");
         setAction("require_approval");
       }}
@@ -155,6 +158,26 @@ function AddPolicyForm(props: {
           </SelectContent>
         </Select>
       </div>
+      {props.scopeOptions.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs font-medium text-foreground/80">Target</Label>
+          <Select
+            value={props.targetScope}
+            onValueChange={(value) => props.onTargetScopeChange(ScopeId.make(value))}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {props.scopeOptions.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex items-center justify-end">
         <Button type="submit" disabled={!valid || props.busy} size="sm">
           Add policy
@@ -171,6 +194,8 @@ function AddPolicyForm(props: {
 function PolicyRow(props: {
   policy: {
     id: string;
+    scopeId: ScopeId;
+    scopeLabel: string;
     pattern: string;
     action: ToolPolicyAction;
   };
@@ -186,6 +211,9 @@ function PolicyRow(props: {
       <CardStackEntryContent>
         <CardStackEntryTitle className="flex items-center gap-2 font-mono text-sm">
           <span className="truncate">{props.policy.pattern}</span>
+          <span className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] leading-none text-muted-foreground">
+            {props.policy.scopeLabel}
+          </span>
         </CardStackEntryTitle>
       </CardStackEntryContent>
       <CardStackEntryActions>
@@ -252,6 +280,7 @@ function PolicyRow(props: {
 
 export function PoliciesPage() {
   const scopeId = useScope();
+  const scopeStack = useScopeStack();
   const policies = useAtomValue(policiesOptimisticAtom(scopeId));
   const doCreate = useAtomSet(createPolicyOptimistic(scopeId), {
     mode: "promiseExit",
@@ -263,12 +292,35 @@ export function PoliciesPage() {
     mode: "promise",
   });
   const [busy, setBusy] = useState(false);
+  const [targetScope, setTargetScope] = useState<ScopeId>(scopeId);
 
-  const handleCreate = async (input: { pattern: string; action: ToolPolicyAction }) => {
+  const scopeOptions =
+    scopeStack.length > 0
+      ? scopeStack.map((entry, index) => ({
+          id: entry.id,
+          label: index === 0 ? "Personal" : entry.name,
+        }))
+      : [{ id: scopeId, label: "Current scope" }];
+  const scopeRank = (id: ScopeId): number => {
+    const index = scopeOptions.findIndex((option) => option.id === id);
+    return index === -1 ? Number.POSITIVE_INFINITY : index;
+  };
+  const scopeLabel = (id: ScopeId): string =>
+    scopeOptions.find((option) => option.id === id)?.label ?? String(id);
+
+  const handleCreate = async (input: {
+    targetScope: ScopeId;
+    pattern: string;
+    action: ToolPolicyAction;
+  }) => {
     setBusy(true);
     const exit = await doCreate({
       params: { scopeId },
-      payload: { pattern: input.pattern, action: input.action },
+      payload: {
+        targetScope: input.targetScope,
+        pattern: input.pattern,
+        action: input.action,
+      },
       reactivityKeys: policyWriteKeys,
     });
     if (Exit.isFailure(exit)) {
@@ -278,25 +330,28 @@ export function PoliciesPage() {
     setBusy(false);
   };
 
-  const handleUpdate = async (id: string, action: ToolPolicyAction) => {
+  const handleUpdate = async (
+    policy: { id: string; scopeId: ScopeId },
+    action: ToolPolicyAction,
+  ) => {
     await doUpdate({
-      params: { scopeId, policyId: PolicyId.make(id) },
-      payload: { action },
+      params: { scopeId, policyId: PolicyId.make(policy.id) },
+      payload: { targetScope: policy.scopeId, action },
       reactivityKeys: policyWriteKeys,
     });
   };
 
-  const handleRemove = async (id: string) => {
+  const handleRemove = async (policy: { id: string; scopeId: ScopeId }) => {
     await doRemove({
-      params: { scopeId, policyId: PolicyId.make(id) },
+      params: { scopeId: policy.scopeId, policyId: PolicyId.make(policy.id) },
       reactivityKeys: policyWriteKeys,
     });
   };
 
-  const handleMove = async (id: string, position: string) => {
+  const handleMove = async (policy: { id: string; scopeId: ScopeId }, position: string) => {
     await doUpdate({
-      params: { scopeId, policyId: PolicyId.make(id) },
-      payload: { position },
+      params: { scopeId, policyId: PolicyId.make(policy.id) },
+      payload: { targetScope: policy.scopeId, position },
       reactivityKeys: policyWriteKeys,
     });
   };
@@ -317,7 +372,13 @@ export function PoliciesPage() {
         </div>
 
         <div className="mb-8">
-          <AddPolicyForm onSubmit={handleCreate} busy={busy} />
+          <AddPolicyForm
+            onSubmit={handleCreate}
+            scopeOptions={scopeOptions}
+            targetScope={targetScope}
+            onTargetScopeChange={setTargetScope}
+            busy={busy}
+          />
         </div>
 
         {AsyncResult.match(policies, {
@@ -338,24 +399,31 @@ export function PoliciesPage() {
             // and `generateKeyBetween` never sees duplicate neighbor keys
             // (which would throw). Optimistic placeholders carry
             // `position: ""` so they sort to the top.
-            const sorted = [...value].sort((a, b) =>
-              comparePolicy(a.position, a.id, b.position, b.id),
-            );
+            const sorted = [...value].sort((a, b) => {
+              const scopeOrder = scopeRank(a.scopeId) - scopeRank(b.scopeId);
+              return scopeOrder === 0
+                ? comparePolicy(a.position, a.id, b.position, b.id)
+                : scopeOrder;
+            });
             // Reorder math runs against committed rows only — placeholder
             // rows (empty `position`) aren't valid keys for
             // `generateKeyBetween` and aren't reorderable until the server
             // confirms.
-            const committed = sorted.filter((p) => p.position !== "");
-            const committedIndex = (id: string): number => committed.findIndex((p) => p.id === id);
-            const positionAbove = (id: string): string => {
-              const j = committedIndex(id);
+            const committedForScope = (ownerScope: ScopeId) =>
+              sorted.filter((p) => p.scopeId === ownerScope && p.position !== "");
+            const committedIndex = (id: string, ownerScope: ScopeId): number =>
+              committedForScope(ownerScope).findIndex((p) => p.id === id);
+            const positionAbove = (id: string, ownerScope: ScopeId): string => {
+              const committed = committedForScope(ownerScope);
+              const j = committedIndex(id, ownerScope);
               if (j <= 0) return generateKeyBetween(null, committed[0]!.position);
               return j === 1
                 ? generateKeyBetween(null, committed[0]!.position)
                 : generateKeyBetween(committed[j - 2]!.position, committed[j - 1]!.position);
             };
-            const positionBelow = (id: string): string => {
-              const j = committedIndex(id);
+            const positionBelow = (id: string, ownerScope: ScopeId): string => {
+              const committed = committedForScope(ownerScope);
+              const j = committedIndex(id, ownerScope);
               if (j === -1 || j >= committed.length - 1)
                 return generateKeyBetween(committed[committed.length - 1]!.position, null);
               return j === committed.length - 2
@@ -377,7 +445,8 @@ export function PoliciesPage() {
                     </CardStackEntry>
                   ) : (
                     sorted.map((p) => {
-                      const j = committedIndex(p.id);
+                      const committed = committedForScope(p.scopeId);
+                      const j = committedIndex(p.id, p.scopeId);
                       // Pending placeholder or only one committed row → no
                       // reorder affordance.
                       const reorderable = j !== -1 && committed.length > 1;
@@ -386,15 +455,29 @@ export function PoliciesPage() {
                           key={p.id}
                           policy={{
                             id: p.id,
+                            scopeId: p.scopeId,
+                            scopeLabel: scopeLabel(p.scopeId),
                             pattern: p.pattern,
                             action: p.action,
                           }}
                           isFirst={!reorderable || j === 0}
                           isLast={!reorderable || j === committed.length - 1}
-                          onRemove={() => handleRemove(p.id)}
-                          onChangeAction={(action) => handleUpdate(p.id, action)}
-                          onMoveUp={() => handleMove(p.id, positionAbove(p.id))}
-                          onMoveDown={() => handleMove(p.id, positionBelow(p.id))}
+                          onRemove={() => handleRemove({ id: p.id, scopeId: p.scopeId })}
+                          onChangeAction={(action) =>
+                            handleUpdate({ id: p.id, scopeId: p.scopeId }, action)
+                          }
+                          onMoveUp={() =>
+                            handleMove(
+                              { id: p.id, scopeId: p.scopeId },
+                              positionAbove(p.id, p.scopeId),
+                            )
+                          }
+                          onMoveDown={() =>
+                            handleMove(
+                              { id: p.id, scopeId: p.scopeId },
+                              positionBelow(p.id, p.scopeId),
+                            )
+                          }
                         />
                       );
                     })

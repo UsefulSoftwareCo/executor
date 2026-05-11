@@ -55,8 +55,11 @@ export interface OnePasswordStore {
     OnePasswordConfig | null,
     StorageError | OnePasswordError
   >;
-  readonly saveConfig: (config: OnePasswordConfig) => Effect.Effect<void, StorageError>;
-  readonly deleteConfig: () => Effect.Effect<void, StorageError>;
+  readonly saveConfig: (
+    config: OnePasswordConfig,
+    targetScope: string,
+  ) => Effect.Effect<void, StorageError>;
+  readonly deleteConfig: (targetScope: string) => Effect.Effect<void, StorageError>;
 }
 
 const decodeConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(OnePasswordConfig));
@@ -69,13 +72,7 @@ const blobStorageError =
       cause,
     });
 
-export const makeOnePasswordStore = (
-  blobs: PluginBlobStore,
-  /** Scope id that owns the single 1Password config blob. Default is the
-   *  outermost scope (org/workspace) so the config is visible across
-   *  every per-user scope via the blob store's fall-through read. */
-  writeScope: string,
-): OnePasswordStore => ({
+export const makeOnePasswordStore = (blobs: PluginBlobStore): OnePasswordStore => ({
   getConfig: () =>
     blobs.get(CONFIG_KEY).pipe(
       Effect.mapError(blobStorageError("read")),
@@ -93,7 +90,7 @@ export const makeOnePasswordStore = (
       }),
     ),
 
-  saveConfig: (config) =>
+  saveConfig: (config, targetScope) =>
     blobs
       .put(
         CONFIG_KEY,
@@ -102,13 +99,13 @@ export const makeOnePasswordStore = (
           vaultId: config.vaultId,
           name: config.name,
         }),
-        { scope: writeScope },
+        { scope: targetScope },
       )
       .pipe(Effect.mapError(blobStorageError("write"))),
 
-  deleteConfig: () =>
+  deleteConfig: (targetScope) =>
     blobs
-      .delete(CONFIG_KEY, { scope: writeScope })
+      .delete(CONFIG_KEY, { scope: targetScope })
       .pipe(Effect.mapError(blobStorageError("delete"))),
 });
 
@@ -162,6 +159,15 @@ const getServiceFromConfig = (
     Effect.flatMap((resolved) => makeOnePasswordService(resolved, { timeoutMs, preferSdk })),
   );
 
+const configuredVaultUri = (config: OnePasswordConfig, secretId: string): string | null => {
+  if (!secretId.startsWith("op://")) {
+    return `op://${config.vaultId}/${secretId}/${CREDENTIAL_FIELD}`;
+  }
+  const match = secretId.match(/^op:\/\/([^/]+)\/.+/);
+  if (!match || match[1] !== config.vaultId) return null;
+  return secretId;
+};
+
 // ---------------------------------------------------------------------------
 // SecretProvider — read-only, resolves op:// URIs or vaultId-based lookups
 // ---------------------------------------------------------------------------
@@ -173,6 +179,7 @@ const makeProvider = (
 ): SecretProvider => ({
   key: "onepassword",
   writable: false,
+  allowFallback: false,
 
   // 1Password vaults are named in the stored config; the executor-scope
   // arg isn't used for routing here. A future refactor could let the
@@ -182,9 +189,8 @@ const makeProvider = (
       Effect.flatMap((config) => {
         if (!config) return Effect.succeed(null as string | null);
 
-        const uri = secretId.startsWith("op://")
-          ? secretId
-          : `op://${config.vaultId}/${secretId}/${CREDENTIAL_FIELD}`;
+        const uri = configuredVaultUri(config, secretId);
+        if (uri === null) return Effect.succeed(null as string | null);
 
         return getServiceFromConfig(config, ctx, timeoutMs, preferSdk).pipe(
           Effect.flatMap((svc) => svc.resolveSecret(uri)),
@@ -217,11 +223,12 @@ const makeOnePasswordExtension = (
   preferSdk: boolean | undefined,
 ) => {
   return {
-    configure: (config: OnePasswordConfig) => ctx.storage.saveConfig(config),
+    configure: (config: OnePasswordConfig, targetScope: string) =>
+      ctx.storage.saveConfig(config, targetScope),
 
     getConfig: () => ctx.storage.getConfig(),
 
-    removeConfig: () => ctx.storage.deleteConfig(),
+    removeConfig: (targetScope: string) => ctx.storage.deleteConfig(targetScope),
 
     status: () =>
       Effect.gen(function* () {
@@ -263,8 +270,15 @@ const makeOnePasswordExtension = (
             message: "1Password is not configured",
           });
         }
+        const scopedUri = configuredVaultUri(config, uri);
+        if (scopedUri === null) {
+          return yield* new OnePasswordError({
+            operation: "resolve",
+            message: "1Password secret URI is outside the configured vault",
+          });
+        }
         const svc = yield* getServiceFromConfig(config, ctx, timeoutMs, preferSdk);
-        return yield* svc.resolveSecret(uri);
+        return yield* svc.resolveSecret(scopedUri);
       }),
   };
 };
@@ -289,7 +303,7 @@ export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOption
   return {
     id: "onepassword" as const,
     packageName: "@executor-js/plugin-onepassword",
-    storage: ({ blobs, scopes }) => makeOnePasswordStore(blobs, scopes.at(-1)!.id),
+    storage: ({ blobs }) => makeOnePasswordStore(blobs),
 
     extension: (ctx) => makeOnePasswordExtension(ctx, timeoutMs, preferSdk),
 

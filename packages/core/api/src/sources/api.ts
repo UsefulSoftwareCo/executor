@@ -49,7 +49,7 @@ const ToolMetadataResponse = Schema.Struct({
 });
 
 const DetectRequest = Schema.Struct({
-  url: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(2_048)),
 });
 
 const DetectResultResponse = Schema.Struct({

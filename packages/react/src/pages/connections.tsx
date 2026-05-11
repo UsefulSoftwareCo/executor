@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ConnectionId, ConnectionInUseError, type ScopeId } from "@executor-js/sdk";
+import { ConnectionId, ConnectionInUseError, ScopeId } from "@executor-js/sdk";
 import { toast } from "sonner";
 
 import {
@@ -40,9 +40,7 @@ import {
 // Friendly labels for the internal provider keys minted by plugins.
 // Falls through to the raw key so new providers still render something.
 const providerDisplayNames: Record<string, string> = {
-  "mcp:oauth2": "MCP",
-  "openapi:oauth2": "OpenAPI",
-  "google-discovery:oauth2": "Google",
+  oauth2: "OAuth2",
 };
 
 const displayProvider = (provider: string): string => providerDisplayNames[provider] ?? provider;
@@ -165,9 +163,9 @@ export function ConnectionsPage() {
   const connections = useAtomValue(connectionsOptimisticAtom(scopeId));
   const doRemove = useAtomSet(removeConnectionOptimistic(scopeId), { mode: "promiseExit" });
 
-  const handleRemove = async (connectionId: string) => {
+  const handleRemove = async (connection: { readonly id: string; readonly scopeId: ScopeId }) => {
     const exit = await doRemove({
-      params: { scopeId, connectionId: ConnectionId.make(connectionId) },
+      params: { scopeId: connection.scopeId, connectionId: ConnectionId.make(connection.id) },
       reactivityKeys: connectionWriteKeys,
     });
     if (Exit.isFailure(exit)) {
@@ -241,7 +239,9 @@ export function ConnectionsPage() {
                           identityLabel: c.identityLabel,
                         }}
                         scopeStack={scopeStack}
-                        onRemove={() => handleRemove(c.id)}
+                        onRemove={() =>
+                          handleRemove({ id: c.id, scopeId: ScopeId.make(c.scopeId) })
+                        }
                       />
                     ),
                   )

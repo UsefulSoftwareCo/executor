@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
+import { Context, Data, Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -14,7 +14,6 @@ import {
   readLegacySecrets,
   type LegacySecret,
 } from "./db-upgrade";
-import { migrateLegacyConnections } from "./migrate-connections";
 
 import { Scope, ScopeId, type AnyPlugin, collectSchemas, createExecutor } from "@executor-js/sdk";
 import { makeSqliteAdapter, makeSqliteBlobStore } from "@executor-js/storage-file";
@@ -46,6 +45,7 @@ const MIGRATIONS_FOLDER = resolveMigrationsFolder();
 
 interface ResolvedDb {
   readonly path: string;
+  readonly dataDir: string;
   readonly legacySecrets: readonly LegacySecret[];
 }
 
@@ -68,7 +68,7 @@ const resolveDbPath = (): ResolvedDb => {
           : "."),
     );
   }
-  return { path: dbPath, legacySecrets };
+  return { path: dbPath, dataDir, legacySecrets };
 };
 
 // Hash suffix disambiguates same-basename folders so two projects with
@@ -97,6 +97,23 @@ class LocalExecutorTag extends Context.Service<LocalExecutorTag, LocalExecutorBu
 ) {}
 
 export type LocalExecutor = LocalExecutorBundle["executor"];
+
+export class LocalDatabaseSchemaTooNew extends Data.TaggedError("LocalDatabaseSchemaTooNew")<{
+  readonly message: string;
+  readonly dbPath: string;
+  readonly appliedMigrationCount: number;
+  readonly knownMigrationCount: number;
+}> {}
+
+export class LocalDatabaseMigrationHistoryMismatch extends Data.TaggedError(
+  "LocalDatabaseMigrationHistoryMismatch",
+)<{
+  readonly message: string;
+  readonly dbPath: string;
+  readonly migrationIndex: number;
+  readonly appliedHash: string | undefined;
+  readonly knownHash: string | undefined;
+}> {}
 
 class LocalExecutorDisposeError extends Data.TaggedError("LocalExecutorDisposeError")<{
   readonly operation: "createHandle" | "disposeExecutor" | "disposeRuntime";
@@ -128,8 +145,108 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
+export const drizzleMigrationsTableExists = (sqlite: Database): boolean => {
+  const row = sqlite
+    .query<{ name: string }, [string]>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get("__drizzle_migrations");
+
+  return row != null;
+};
+
+export const readAppliedDrizzleMigrationHashes = (sqlite: Database): ReadonlyArray<string> => {
+  if (!drizzleMigrationsTableExists(sqlite)) return [];
+
+  // Drizzle inserts one row per applied migration. `id` is the stable
+  // application order; `created_at` comes from migration metadata and can tie.
+  return sqlite
+    .query<{ hash: string }, []>("SELECT hash FROM __drizzle_migrations ORDER BY id ASC")
+    .all()
+    .map((row) => row.hash);
+};
+
+const DrizzleJournal = Schema.Struct({
+  entries: Schema.Array(
+    Schema.Struct({
+      idx: Schema.Number,
+      tag: Schema.String,
+    }),
+  ),
+});
+
+const decodeDrizzleJournal = Schema.decodeUnknownSync(Schema.fromJsonString(DrizzleJournal));
+
+export const readBundledDrizzleMigrationHashes = (
+  migrationsFolder: string,
+): ReadonlyArray<string> => {
+  // Keep this in sync with drizzle-orm/src/migrator.ts: Drizzle hashes the raw
+  // migration file contents before splitting on statement breakpoints.
+  const journal = decodeDrizzleJournal(
+    fs.readFileSync(join(migrationsFolder, "meta", "_journal.json")).toString(),
+  );
+
+  return [...journal.entries]
+    .sort((left, right) => left.idx - right.idx)
+    .map((entry) => {
+      const query = fs.readFileSync(join(migrationsFolder, `${entry.tag}.sql`)).toString();
+      return createHash("sha256").update(query).digest("hex");
+    });
+};
+
+const schemaTooNewMessage = (dataDir: string): string =>
+  [
+    `This Executor binary is older than the schema in ${dataDir}.`,
+    "The database was likely opened by a newer Executor build.",
+    "Use a newer Executor binary or set EXECUTOR_DATA_DIR to a different data directory.",
+  ].join("\n");
+
+const migrationHistoryMismatchMessage = (dataDir: string): string =>
+  [
+    `The migration history in ${dataDir} does not match this Executor build.`,
+    "The database may have been created by a different development branch, manually modified, or corrupted.",
+    "Use the matching Executor build, set EXECUTOR_DATA_DIR to a different data directory, or restore a backup.",
+  ].join("\n");
+
+export const checkDrizzleMigrationCompatibility = (input: {
+  readonly sqlite: Database;
+  readonly dbPath: string;
+  readonly dataDir: string;
+  readonly migrationsFolder: string;
+}): Effect.Effect<void, LocalDatabaseSchemaTooNew | LocalDatabaseMigrationHistoryMismatch> =>
+  Effect.gen(function* () {
+    // Before running migrations, ensure the DB history is a prefix of the
+    // migrations bundled with this binary. This catches newer or divergent schemas
+    // before startup reaches arbitrary schema-dependent queries.
+    if (!drizzleMigrationsTableExists(input.sqlite)) return;
+
+    const applied = readAppliedDrizzleMigrationHashes(input.sqlite);
+    const bundled = readBundledDrizzleMigrationHashes(input.migrationsFolder);
+
+    if (applied.length > bundled.length) {
+      return yield* new LocalDatabaseSchemaTooNew({
+        message: schemaTooNewMessage(input.dataDir),
+        dbPath: input.dbPath,
+        appliedMigrationCount: applied.length,
+        knownMigrationCount: bundled.length,
+      });
+    }
+
+    for (let index = 0; index < applied.length; index += 1) {
+      if (applied[index] !== bundled[index]) {
+        return yield* new LocalDatabaseMigrationHistoryMismatch({
+          message: migrationHistoryMismatchMessage(input.dataDir),
+          dbPath: input.dbPath,
+          migrationIndex: index,
+          appliedHash: applied[index],
+          knownHash: bundled[index],
+        });
+      }
+    }
+  });
+
 const createLocalExecutorLayer = () => {
-  const { path: dbPath, legacySecrets } = resolveDbPath();
+  const { path: dbPath, dataDir, legacySecrets } = resolveDbPath();
 
   return Layer.effect(LocalExecutorTag)(
     Effect.gen(function* () {
@@ -137,6 +254,12 @@ const createLocalExecutorLayer = () => {
         Effect.sync(() => new Database(dbPath)),
         (conn) => Effect.sync(() => conn.close()),
       );
+      yield* checkDrizzleMigrationCompatibility({
+        sqlite,
+        dbPath,
+        dataDir,
+        migrationsFolder: MIGRATIONS_FOLDER,
+      });
       sqlite.exec("PRAGMA journal_mode = WAL");
 
       const db = drizzle(sqlite, { schema: executorSchema });
@@ -151,10 +274,6 @@ const createLocalExecutorLayer = () => {
       if (legacySecrets.length > 0) {
         importLegacySecrets(sqlite, scopeId, legacySecrets);
       }
-      // Upgrade pre-connection openapi/mcp/google-discovery rows onto the
-      // new Connection pointer shape. Idempotent + no-op when there's
-      // nothing to migrate.
-      yield* Effect.promise(() => migrateLegacyConnections(sqlite));
       const configPath = resolveConfigPath(cwd);
       const configFile = makeFileConfigSink({
         path: configPath,
@@ -200,13 +319,14 @@ const createLocalExecutorLayer = () => {
         blobs,
         plugins,
         onElicitation: "accept-all",
+        oauthEndpointUrlPolicy: { allowHttp: true },
       });
 
       // Sync sources from executor.jsonc (idempotent — plugins upsert).
       // Runs after plugins are wired so sources added here round-trip
       // back through configFile — harmless because the file already
       // contains them.
-      yield* syncFromConfig(executor, configPath);
+      yield* syncFromConfig({ executor, configPath, targetScope: scope.id });
 
       return { executor, plugins };
     }),

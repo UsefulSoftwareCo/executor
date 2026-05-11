@@ -2,11 +2,12 @@
 // OAuth legacy → Connection backfill (local)
 // ---------------------------------------------------------------------------
 //
-// Runs at boot time right after `migrate()`. For every row still on the
-// pre-refactor inline-OAuth shape (openapi_source, mcp_source,
-// google_discovery_source), mints a Connection row, re-parents the
-// referenced secret(s) to it, and rewrites the source's stored auth to
-// the new pointer shape.
+// Explicit one-shot helper for rows still on the pre-refactor inline-OAuth
+// shape (openapi_source, mcp_source, google_discovery_source). It mints a
+// Connection row, re-parents the referenced secret(s), and rewrites the
+// source's stored auth to the new pointer shape. Normal runtime startup must
+// not call this helper; runtime code assumes Drizzle migrations have already
+// produced the final model.
 //
 // Self-contained: the only plugin imports are current-shape parsing
 // helpers. Each legacy shape is defined inline — this file is the last
@@ -16,8 +17,13 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { Effect, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { parse as parseOpenApi, resolveSpecText, OAuth2Auth } from "@executor-js/plugin-openapi";
+import {
+  parse as parseOpenApi,
+  resolveSpecText,
+  OAuth2SourceConfig,
+} from "@executor-js/plugin-openapi";
 import { McpConnectionAuth } from "@executor-js/plugin-mcp";
+import { discoverAuthorizationServerMetadata, OAUTH2_PROVIDER_KEY } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -26,6 +32,27 @@ import { McpConnectionAuth } from "@executor-js/plugin-mcp";
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const isString = (v: unknown): v is string => typeof v === "string";
+const stringArray = (value: unknown): readonly string[] =>
+  Array.isArray(value) ? value.filter((scope): scope is string => typeof scope === "string") : [];
+
+const originOrNull = (value: string | null): string | null => {
+  if (!value || !URL.canParse(value)) return null;
+  return new URL(value).origin;
+};
+
+const slotPart = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "default";
+
+const openApiOauth2ClientIdSlot = (securitySchemeName: string): string =>
+  `oauth2:${slotPart(securitySchemeName)}:client-id`;
+const openApiOauth2ClientSecretSlot = (securitySchemeName: string): string =>
+  `oauth2:${slotPart(securitySchemeName)}:client-secret`;
+const openApiOauth2ConnectionSlot = (securitySchemeName: string): string =>
+  `oauth2:${slotPart(securitySchemeName)}:connection`;
 
 const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
 const JsonObjectFromString = Schema.fromJsonString(JsonObject);
@@ -38,11 +65,9 @@ const decodeUnknownOptionAs = <A>(schema: Schema.Decoder<A>) => {
 
 const decodeJsonObjectString = Schema.decodeUnknownOption(JsonObjectFromString);
 
-const formatBoundaryError = (error: unknown): string => {
-  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: sqlite transaction throws expose only an unknown JS error value for logging
-  if (error instanceof Error) return error.message;
-  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: fallback log formatting for unknown sqlite transaction failures
-  return String(error);
+const failUnmigratableConnection = (message: string): never => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: one-shot Promise migration must abort when legacy OAuth cannot be represented
+  throw new Error(message);
 };
 
 /** Pre-flight: bail unless the drizzle migration that added the Connection
@@ -180,6 +205,47 @@ const insertConnectionRow = (
   stmt.run(...values);
 };
 
+const insertCredentialBinding = (
+  sqlite: Database,
+  params: {
+    pluginId: string;
+    scopeId: string;
+    sourceId: string;
+    slotKey: string;
+    kind: "secret" | "connection";
+    secretId?: string;
+    connectionId?: string;
+  },
+): void => {
+  if (!tableExists(sqlite, "credential_binding")) return;
+  const now = Date.now();
+  sqlite
+    .prepare(
+      `INSERT OR REPLACE INTO credential_binding (
+         id, scope_id, plugin_id, source_id, source_scope_id, slot_key,
+         kind, text_value, secret_id, connection_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+    )
+    .run(
+      JSON.stringify([params.pluginId, params.scopeId, params.sourceId, params.slotKey]),
+      params.scopeId,
+      params.pluginId,
+      params.sourceId,
+      params.scopeId,
+      params.slotKey,
+      params.kind,
+      params.secretId ?? null,
+      params.connectionId ?? null,
+      now,
+      now,
+    );
+};
+
+const insertOpenApiCredentialBinding = (
+  sqlite: Database,
+  params: Omit<Parameters<typeof insertCredentialBinding>[1], "pluginId">,
+): void => insertCredentialBinding(sqlite, { pluginId: "openapi", ...params });
+
 // ---------------------------------------------------------------------------
 // OpenAPI — legacy shape
 // ---------------------------------------------------------------------------
@@ -201,7 +267,7 @@ class LegacyOpenApiOAuth2 extends Schema.Class<LegacyOpenApiOAuth2>("LegacyOpenA
   scopes: Schema.Array(Schema.String),
 }) {}
 
-const decodeOpenApiCurrent = Schema.decodeUnknownOption(OAuth2Auth);
+const decodeOpenApiCurrent = Schema.decodeUnknownOption(OAuth2SourceConfig);
 const decodeOpenApiLegacy = decodeUnknownOptionAs<LegacyOpenApiOAuth2>(LegacyOpenApiOAuth2);
 
 const extractAuthorizationUrl = async (
@@ -293,29 +359,53 @@ const migrateOpenApi = async (sqlite: Database): Promise<void> => {
       legacy.flow,
     );
     if (legacy.flow === "authorizationCode" && authorizationUrl === null) {
-      console.warn(
-        `[migrate-connections] skip openapi ${row.scope_id}/${row.id}: authorizationCode flow but authorizationUrl unavailable`,
+      failUnmigratableConnection(
+        `[migrate-connections] openapi ${row.scope_id}/${row.id}: authorizationCode flow but authorizationUrl unavailable`,
       );
-      continue;
+    }
+    if (legacy.flow === "clientCredentials" && legacy.clientSecretSecretId === null) {
+      failUnmigratableConnection(
+        `[migrate-connections] openapi ${row.scope_id}/${row.id}: clientCredentials flow without client secret`,
+      );
     }
 
     const connectionId = `openapi-oauth2-${randomUUID()}`;
-    const providerState = {
-      flow: legacy.flow,
-      tokenUrl: legacy.tokenUrl,
-      clientIdSecretId: legacy.clientIdSecretId,
-      clientSecretSecretId: legacy.clientSecretSecretId,
-      scopes: legacy.scopes,
-    };
+    const providerState =
+      legacy.flow === "authorizationCode"
+        ? {
+            kind: "authorization-code" as const,
+            tokenEndpoint: legacy.tokenUrl,
+            issuerUrl: originOrNull(authorizationUrl),
+            clientIdSecretId: legacy.clientIdSecretId,
+            clientSecretSecretId: legacy.clientSecretSecretId,
+            clientAuth: "body" as const,
+            scopes: legacy.scopes,
+            scope: legacy.scope,
+          }
+        : {
+            kind: "client-credentials" as const,
+            tokenEndpoint: legacy.tokenUrl,
+            clientIdSecretId: legacy.clientIdSecretId,
+            clientSecretSecretId: legacy.clientSecretSecretId,
+            scopes: legacy.scopes,
+            clientAuth: "body" as const,
+            scope: legacy.scope,
+          };
+    const clientIdSlot = openApiOauth2ClientIdSlot(legacy.securitySchemeName);
+    const clientSecretSlot =
+      legacy.clientSecretSecretId === null
+        ? null
+        : openApiOauth2ClientSecretSlot(legacy.securitySchemeName);
+    const connectionSlot = openApiOauth2ConnectionSlot(legacy.securitySchemeName);
     const oauth2Pointer = {
       kind: "oauth2" as const,
-      connectionId,
       securitySchemeName: legacy.securitySchemeName,
       flow: legacy.flow,
       tokenUrl: legacy.tokenUrl,
       authorizationUrl,
-      clientIdSecretId: legacy.clientIdSecretId,
-      clientSecretSecretId: legacy.clientSecretSecretId,
+      clientIdSlot,
+      clientSecretSlot,
+      connectionSlot,
       scopes: legacy.scopes,
     };
 
@@ -330,7 +420,7 @@ const migrateOpenApi = async (sqlite: Database): Promise<void> => {
       insertConnectionRow(sqlite, {
         id: connectionId,
         scopeId: row.scope_id,
-        provider: "openapi:oauth2",
+        provider: OAUTH2_PROVIDER_KEY,
         identityLabel: row.name,
         accessTokenSecretId: legacy.accessTokenSecretId,
         refreshTokenSecretId: legacy.refreshTokenSecretId,
@@ -341,6 +431,29 @@ const migrateOpenApi = async (sqlite: Database): Promise<void> => {
       const err = rewireSecrets(sqlite, row.scope_id, connectionId, secretIds, secretNames);
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: bun:sqlite transaction callback must throw to roll back
       if (err) throw new Error(err);
+      insertOpenApiCredentialBinding(sqlite, {
+        scopeId: row.scope_id,
+        sourceId: row.id,
+        slotKey: clientIdSlot,
+        kind: "secret",
+        secretId: legacy.clientIdSecretId,
+      });
+      if (legacy.clientSecretSecretId !== null && clientSecretSlot !== null) {
+        insertOpenApiCredentialBinding(sqlite, {
+          scopeId: row.scope_id,
+          sourceId: row.id,
+          slotKey: clientSecretSlot,
+          kind: "secret",
+          secretId: legacy.clientSecretSecretId,
+        });
+      }
+      insertOpenApiCredentialBinding(sqlite, {
+        scopeId: row.scope_id,
+        sourceId: row.id,
+        slotKey: connectionSlot,
+        kind: "connection",
+        connectionId,
+      });
       if (hasInvocationConfig) {
         const nextInvocation = { ...invocation, oauth2: oauth2Pointer };
         updateSource.run(
@@ -353,15 +466,8 @@ const migrateOpenApi = async (sqlite: Database): Promise<void> => {
         updateSource.run(JSON.stringify(oauth2Pointer), row.scope_id, row.id);
       }
     });
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: bun:sqlite transaction reports rollback failures by throwing
-    try {
-      txn();
-      console.log(`[migrate-connections] openapi ${row.scope_id}/${row.id} -> ${connectionId}`);
-    } catch (err) {
-      console.warn(
-        `[migrate-connections] fail openapi ${row.scope_id}/${row.id}: ${formatBoundaryError(err)}`,
-      );
-    }
+    txn();
+    console.log(`[migrate-connections] openapi ${row.scope_id}/${row.id} -> ${connectionId}`);
   }
 };
 
@@ -383,7 +489,15 @@ const LegacyMcpOAuth2 = Schema.Struct({
     Schema.optional,
     Schema.withDecodingDefaultType(Effect.succeed(null)),
   ),
+  tokenEndpoint: Schema.NullOr(Schema.String).pipe(
+    Schema.optional,
+    Schema.withDecodingDefaultType(Effect.succeed(null)),
+  ),
   authorizationServerUrl: Schema.NullOr(Schema.String).pipe(
+    Schema.optional,
+    Schema.withDecodingDefaultType(Effect.succeed(null)),
+  ),
+  authorizationServerMetadata: Schema.NullOr(JsonObject).pipe(
     Schema.optional,
     Schema.withDecodingDefaultType(Effect.succeed(null)),
   ),
@@ -397,6 +511,21 @@ const decodeMcpCurrent = Schema.decodeUnknownOption(McpConnectionAuth);
 type LegacyMcpOAuth2Type = typeof LegacyMcpOAuth2.Type;
 const decodeMcpLegacy = decodeUnknownOptionAs<LegacyMcpOAuth2Type>(LegacyMcpOAuth2);
 
+const resolveMcpTokenEndpoint = async (legacy: LegacyMcpOAuth2Type): Promise<string | null> => {
+  if (legacy.tokenEndpoint) return legacy.tokenEndpoint;
+  const metadata = legacy.authorizationServerMetadata;
+  if (metadata && isString(metadata.token_endpoint)) return metadata.token_endpoint;
+  if (!legacy.authorizationServerUrl) return null;
+  const discovered = await Effect.runPromise(
+    discoverAuthorizationServerMetadata(legacy.authorizationServerUrl).pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.result,
+    ),
+  );
+  if (Result.isFailure(discovered)) return null;
+  return discovered.success?.metadata.token_endpoint ?? null;
+};
+
 type McpRow = {
   scope_id: string;
   id: string;
@@ -404,28 +533,24 @@ type McpRow = {
   config: string;
 };
 
-const migrateMcp = (sqlite: Database): void => {
+const migrateMcp = async (sqlite: Database): Promise<void> => {
   if (!tableExists(sqlite, "mcp_source")) return;
   const rows = sqlite
     .prepare("SELECT scope_id, id, name, config FROM mcp_source")
     .all() as ReadonlyArray<McpRow>;
   if (rows.length === 0) return;
 
-  // Post-0009 mcp_source has dedicated auth_kind / auth_connection_id
-  // columns. The auth ETL inside drizzle migration 0009 only fires for
-  // rows whose config.auth carries `connectionId` — i.e., already
-  // post-Connection shape. Truly-legacy rows (inline OAuth shape with
-  // accessTokenSecretId) survive unchanged and fall to this script.
-  // Detect them, mint a Connection, rewire owned secrets, then write
-  // the result to the new columns (not back into config.auth, which
-  // 0009 stripped).
-  const hasAuthColumns = columnExists(sqlite, "mcp_source", "auth_kind");
+  // Drizzle migrations normalize current MCP auth first, then this
+  // one-shot backfill handles older inline OAuth rows that still have
+  // accessTokenSecretId in config.auth. The final model is auth slots
+  // on mcp_source plus a core credential_binding row for the connection.
+  const hasAuthSlotColumns = columnExists(sqlite, "mcp_source", "auth_connection_slot");
   const updateConfig = sqlite.prepare(
     "UPDATE mcp_source SET config = ? WHERE scope_id = ? AND id = ?",
   );
-  const updateConfigAndAuth = hasAuthColumns
+  const updateConfigAndAuth = hasAuthSlotColumns
     ? sqlite.prepare(
-        "UPDATE mcp_source SET config = ?, auth_kind = 'oauth2', auth_connection_id = ? WHERE scope_id = ? AND id = ?",
+        "UPDATE mcp_source SET config = ?, auth_kind = 'oauth2', auth_connection_slot = 'auth:oauth2:connection' WHERE scope_id = ? AND id = ?",
       )
     : null;
 
@@ -445,25 +570,39 @@ const migrateMcp = (sqlite: Database): void => {
 
     const endpoint = typeof config.endpoint === "string" ? config.endpoint : null;
     if (!endpoint) {
-      console.warn(`[migrate-connections] skip mcp ${row.scope_id}/${row.id}: endpoint missing`);
-      continue;
+      failUnmigratableConnection(
+        `[migrate-connections] mcp ${row.scope_id}/${row.id}: endpoint missing`,
+      );
     }
+    const tokenEndpoint = await resolveMcpTokenEndpoint(legacy);
+    if (!tokenEndpoint) {
+      failUnmigratableConnection(
+        `[migrate-connections] mcp ${row.scope_id}/${row.id}: token endpoint unavailable`,
+      );
+    }
+    const clientInformation = legacy.clientInformation ?? {};
+    const metadata = legacy.authorizationServerMetadata ?? {};
     const connectionId = `mcp-oauth2-${row.id}`;
     const providerState = {
-      endpoint,
-      tokenType: legacy.tokenType,
-      clientInformation: legacy.clientInformation,
+      kind: "dynamic-dcr" as const,
+      tokenEndpoint,
+      issuerUrl: isString(metadata.issuer) ? metadata.issuer : null,
       authorizationServerUrl: legacy.authorizationServerUrl,
-      authorizationServerMetadata: null,
-      resourceMetadataUrl: legacy.resourceMetadataUrl,
-      resourceMetadata: null,
+      authorizationServerMetadataUrl: null,
+      idTokenSigningAlgValuesSupported: stringArray(metadata.id_token_signing_alg_values_supported),
+      clientId: isString(clientInformation.client_id) ? clientInformation.client_id : "",
+      clientSecretSecretId: null,
+      clientAuth:
+        clientInformation.token_endpoint_auth_method === "client_secret_basic" ? "basic" : "body",
+      scopes: [],
+      scope: legacy.scope,
+      resource: endpoint,
     };
-    // Strip auth from config — post-0009 the canonical home is the
-    // auth_* columns. Pre-0009 we still write the pointer back into
-    // config.auth so the older code path keeps working.
+    // Strip auth from config. The canonical home is mcp_source's
+    // auth slot columns plus credential_binding.
     const { auth: _unused, ...configWithoutAuth } = config;
     void _unused;
-    const nextConfig = hasAuthColumns
+    const nextConfig = hasAuthSlotColumns
       ? configWithoutAuth
       : { ...config, auth: { kind: "oauth2" as const, connectionId } };
 
@@ -478,7 +617,7 @@ const migrateMcp = (sqlite: Database): void => {
       insertConnectionRow(sqlite, {
         id: connectionId,
         scopeId: row.scope_id,
-        provider: "mcp:oauth2",
+        provider: OAUTH2_PROVIDER_KEY,
         identityLabel: row.name,
         accessTokenSecretId: legacy.accessTokenSecretId,
         refreshTokenSecretId: legacy.refreshTokenSecretId,
@@ -490,20 +629,21 @@ const migrateMcp = (sqlite: Database): void => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: bun:sqlite transaction callback must throw to roll back
       if (err) throw new Error(err);
       if (updateConfigAndAuth) {
-        updateConfigAndAuth.run(JSON.stringify(nextConfig), connectionId, row.scope_id, row.id);
+        updateConfigAndAuth.run(JSON.stringify(nextConfig), row.scope_id, row.id);
+        insertCredentialBinding(sqlite, {
+          pluginId: "mcp",
+          scopeId: row.scope_id,
+          sourceId: row.id,
+          slotKey: "auth:oauth2:connection",
+          kind: "connection",
+          connectionId,
+        });
       } else {
         updateConfig.run(JSON.stringify(nextConfig), row.scope_id, row.id);
       }
     });
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: bun:sqlite transaction reports rollback failures by throwing
-    try {
-      txn();
-      console.log(`[migrate-connections] mcp ${row.scope_id}/${row.id} -> ${connectionId}`);
-    } catch (err) {
-      console.warn(
-        `[migrate-connections] fail mcp ${row.scope_id}/${row.id}: ${formatBoundaryError(err)}`,
-      );
-    }
+    txn();
+    console.log(`[migrate-connections] mcp ${row.scope_id}/${row.id} -> ${connectionId}`);
   }
 };
 
@@ -573,9 +713,14 @@ const migrateGoogleDiscovery = (sqlite: Database): void => {
 
     const connectionId = `google-discovery-oauth2-${randomUUID()}`;
     const providerState = {
+      kind: "authorization-code" as const,
+      tokenEndpoint: "https://oauth2.googleapis.com/token",
+      issuerUrl: "https://accounts.google.com",
       clientIdSecretId: legacy.clientIdSecretId,
       clientSecretSecretId: legacy.clientSecretSecretId,
+      clientAuth: "body" as const,
       scopes: legacy.scopes,
+      scope: legacy.scope,
     };
     const authPointer = {
       kind: "oauth2" as const,
@@ -597,7 +742,7 @@ const migrateGoogleDiscovery = (sqlite: Database): void => {
       insertConnectionRow(sqlite, {
         id: connectionId,
         scopeId: row.scope_id,
-        provider: "google-discovery:oauth2",
+        provider: OAUTH2_PROVIDER_KEY,
         identityLabel: row.name,
         accessTokenSecretId: legacy.accessTokenSecretId,
         refreshTokenSecretId: legacy.refreshTokenSecretId,
@@ -610,17 +755,10 @@ const migrateGoogleDiscovery = (sqlite: Database): void => {
       if (err) throw new Error(err);
       updateSource.run(JSON.stringify(nextConfig), Date.now(), row.scope_id, row.id);
     });
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: bun:sqlite transaction reports rollback failures by throwing
-    try {
-      txn();
-      console.log(
-        `[migrate-connections] google-discovery ${row.scope_id}/${row.id} -> ${connectionId}`,
-      );
-    } catch (err) {
-      console.warn(
-        `[migrate-connections] fail google-discovery ${row.scope_id}/${row.id}: ${formatBoundaryError(err)}`,
-      );
-    }
+    txn();
+    console.log(
+      `[migrate-connections] google-discovery ${row.scope_id}/${row.id} -> ${connectionId}`,
+    );
   }
 };
 
@@ -632,11 +770,12 @@ const migrateGoogleDiscovery = (sqlite: Database): void => {
  * Scan openapi_source, mcp_source, and google_discovery_source; migrate
  * any row still on its plugin's legacy inline-OAuth shape to a fresh
  * Connection row + pointer. Idempotent — rows already on the current
- * shape are skipped. Logs one line per migrated row.
+ * shape are skipped. Legacy rows that cannot be represented in the new
+ * model fail the migration instead of being silently left behind.
  */
 export const migrateLegacyConnections = async (sqlite: Database): Promise<void> => {
   if (!connectionsReady(sqlite)) return;
   await migrateOpenApi(sqlite);
-  migrateMcp(sqlite);
+  await migrateMcp(sqlite);
   migrateGoogleDiscovery(sqlite);
 };

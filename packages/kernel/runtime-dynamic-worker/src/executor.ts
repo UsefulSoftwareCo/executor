@@ -90,7 +90,6 @@ const normalizeErrorObject = (error: Error) => ({
   __type: "Error" as const,
   name: error.name,
   message: error.message,
-  ...(typeof error.stack === "string" && error.stack.length > 0 ? { stack: error.stack } : {}),
 });
 
 const isNormalizedErrorObject = (
@@ -260,9 +259,13 @@ const isPlainObject = (value: object): boolean => {
   return proto === Object.prototype || proto === null;
 };
 
-const rehydrateBinary = (value: unknown): unknown => {
+const rehydrateBinary = (value: unknown, seen = new WeakSet<object>()): unknown => {
   if (value === null || typeof value !== "object") return value;
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+  if (seen.has(value)) {
+    throw new Error("Tool RPC payload contains a circular reference");
+  }
+  seen.add(value);
   if (isBinaryEnvelope(value)) {
     if (value.kind === "file" && typeof value.name === "string") {
       return new File([value.buffer], value.name, {
@@ -272,20 +275,24 @@ const rehydrateBinary = (value: unknown): unknown => {
     }
     return new Blob([value.buffer], { type: value.type });
   }
-  if (Array.isArray(value)) return value.map(rehydrateBinary);
+  if (Array.isArray(value)) return value.map((item) => rehydrateBinary(item, seen));
   if (!isPlainObject(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = rehydrateBinary(v);
+    out[k] = rehydrateBinary(v, seen);
   }
   return out;
 };
 
 // Async because `Blob.arrayBuffer()` is async. Used on tool results before
 // the dispatcher hands them back to the sandbox.
-const encodeBinary = async (value: unknown): Promise<unknown> => {
+const encodeBinary = async (value: unknown, seen = new WeakSet<object>()): Promise<unknown> => {
   if (value === null || typeof value !== "object") return value;
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+  if (seen.has(value)) {
+    throw new Error("Tool RPC payload contains a circular reference");
+  }
+  seen.add(value);
   if (typeof File !== "undefined" && value instanceof File) {
     return {
       __executorBinary: 1 as const,
@@ -304,11 +311,11 @@ const encodeBinary = async (value: unknown): Promise<unknown> => {
       buffer: await value.arrayBuffer(),
     };
   }
-  if (Array.isArray(value)) return Promise.all(value.map(encodeBinary));
+  if (Array.isArray(value)) return Promise.all(value.map((item) => encodeBinary(item, seen)));
   if (!isPlainObject(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = await encodeBinary(v);
+    out[k] = await encodeBinary(v, seen);
   }
   return out;
 };
@@ -347,9 +354,12 @@ export class ToolDispatcher extends RpcTarget {
   }
 
   async call(path: string, args: unknown): Promise<WorkerRpcResponse> {
-    const decodedArgs = rehydrateBinary(args);
     return this.#runPromise(
-      this.#invoker.invoke({ path, args: decodedArgs }).pipe(
+      Effect.try({
+        try: () => rehydrateBinary(args),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.flatMap((decodedArgs) => this.#invoker.invoke({ path, args: decodedArgs })),
         Effect.flatMap((value) =>
           Effect.tryPromise({
             try: (): Promise<WorkerRpcResponse> =>

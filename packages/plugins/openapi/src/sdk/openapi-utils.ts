@@ -7,6 +7,7 @@
 import { Option } from "effect";
 import type { OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import type { ParsedDocument } from "./parse";
+import type { ServerVariable } from "./types";
 
 // ---------------------------------------------------------------------------
 // Type aliases — collapse V3 / V3_1 unions into single names
@@ -63,9 +64,36 @@ export const substituteUrlVariables = (url: string, values: Record<string, strin
   return out;
 };
 
+export const OPENAPI_MAX_SERVER_VARIABLE_OPTIONS = 64;
+
 type ServerLike = {
   url: string;
-  variables: import("effect/Option").Option<Record<string, { default: string } | string>>;
+  variables: import("effect/Option").Option<Record<string, ServerVariable | string>>;
+};
+
+export const expandServerUrlOptions = (
+  server: ServerLike,
+  limit = OPENAPI_MAX_SERVER_VARIABLE_OPTIONS,
+): readonly string[] => {
+  if (!Option.isSome(server.variables)) return [server.url];
+  let urls: readonly string[] = [server.url];
+  for (const [name, variable] of Object.entries(server.variables.value)) {
+    const enumValues =
+      typeof variable === "string" ? [] : Option.getOrElse(variable.enum, () => []);
+    const values =
+      enumValues.length > 0
+        ? enumValues
+        : [typeof variable === "string" ? variable : variable.default];
+    const next: string[] = [];
+    for (const url of urls) {
+      for (const value of values) {
+        next.push(url.replaceAll(`{${name}}`, value));
+        if (next.length >= limit) return next;
+      }
+    }
+    urls = next;
+  }
+  return urls;
 };
 
 export const resolveBaseUrl = (servers: readonly ServerLike[]): string => {

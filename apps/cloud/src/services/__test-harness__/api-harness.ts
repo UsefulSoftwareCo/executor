@@ -61,7 +61,10 @@ const defaultUserFor = (orgId: string) => `default_user_${orgId}`;
 // ---------------------------------------------------------------------------
 
 const fakeVault = makeTestWorkOSVaultClient();
-const testPlugins = executorConfig.plugins({ workosVaultClient: fakeVault });
+const testPlugins = executorConfig.plugins({
+  workosVaultClient: fakeVault,
+});
+const testHttpClientLayer = FetchHttpClient.layer;
 
 const createTestScopedExecutor = (userId: string, orgId: string, orgName: string) =>
   Effect.gen(function* () {
@@ -85,6 +88,7 @@ const createTestScopedExecutor = (userId: string, orgId: string, orgName: string
       adapter,
       blobs,
       plugins,
+      httpClientLayer: testHttpClientLayer,
       onElicitation: "accept-all",
     });
   });

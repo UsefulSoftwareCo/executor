@@ -12,6 +12,12 @@
 
 import type { DBSchema, InferDBFieldsOutput } from "@executor-js/storage-core";
 
+export const credentialBindingKinds = ["text", "secret", "connection"] as [
+  "text",
+  "secret",
+  "connection",
+];
+
 export const coreSchema = {
   source: {
     fields: {
@@ -121,9 +127,8 @@ export const coreSchema = {
     fields: {
       id: { type: "string", required: true },
       scope_id: { type: "string", required: true, index: true },
-      /** Routing key into `plugin.connectionProviders`. Typical shape
-       *  is `${pluginId}:${kind}` (e.g. `openapi:oauth2`, `mcp:oauth2`,
-       *  `google-discovery:google`). Mirrors `secret.provider`. */
+      /** Routing key into `plugin.connectionProviders`. OAuth2 connections
+       *  use the shared `oauth2` provider. Mirrors `secret.provider`. */
       provider: { type: "string", required: true, index: true },
       /** Display label shown in the Connections UI. Usually the account
        *  email / handle / org name the user signed in as. */
@@ -161,6 +166,26 @@ export const coreSchema = {
       payload: { type: "json", required: true },
       expires_at: { type: "number", required: true, bigint: true },
       created_at: { type: "date", required: true },
+    },
+  },
+  // Shared credential slot bindings. Plugins keep source-specific semantics
+  // local, but credential ownership and resolution use one scoped shape.
+  credential_binding: {
+    fields: {
+      id: { type: "string", required: true },
+      scope_id: { type: "string", required: true, index: true },
+      plugin_id: { type: "string", required: true, index: true },
+      source_id: { type: "string", required: true, index: true },
+      source_scope_id: { type: "string", required: true, index: true },
+      slot_key: { type: "string", required: true, index: true },
+      /** "text" | "secret" | "connection". */
+      kind: { type: credentialBindingKinds, required: true, index: true },
+      text_value: { type: "string", required: false },
+      secret_id: { type: "string", required: false, index: true },
+      secret_scope_id: { type: "string", required: false, index: true },
+      connection_id: { type: "string", required: false, index: true },
+      created_at: { type: "date", required: true },
+      updated_at: { type: "date", required: true },
     },
   },
   // User-authored overrides for tool permissions. Each row is one rule:
@@ -215,6 +240,30 @@ export type SecretRow = InferDBFieldsOutput<CoreSchema["secret"]["fields"]> &
   Record<string, unknown>;
 
 export type ConnectionRow = InferDBFieldsOutput<CoreSchema["connection"]["fields"]> &
+  Record<string, unknown>;
+
+type CredentialBindingRowFields = InferDBFieldsOutput<CoreSchema["credential_binding"]["fields"]>;
+type CredentialBindingRowBase = Omit<
+  CredentialBindingRowFields,
+  "kind" | "text_value" | "secret_id" | "secret_scope_id" | "connection_id"
+>;
+
+export type CredentialBindingRow = CredentialBindingRowBase &
+  (
+    | {
+        kind: "text";
+        text_value: string;
+      }
+    | {
+        kind: "secret";
+        secret_id: string;
+        secret_scope_id?: string;
+      }
+    | {
+        kind: "connection";
+        connection_id: string;
+      }
+  ) &
   Record<string, unknown>;
 
 export type ToolPolicyRow = InferDBFieldsOutput<CoreSchema["tool_policy"]["fields"]> &

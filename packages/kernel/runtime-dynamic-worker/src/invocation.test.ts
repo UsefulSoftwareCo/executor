@@ -97,6 +97,22 @@ describe("ToolDispatcher", () => {
     expect(result).toEqual({ ok: true, result: undefined });
   });
 
+  it("returns a failure envelope for circular RPC args", async () => {
+    const invoker = makeInvoker(({ args }) => args);
+    const dispatcher = new ToolDispatcher(invoker, Effect.runPromise);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    const result = await dispatcher.call("test.tool", cyclic);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        message: "Tool RPC payload contains a circular reference",
+      },
+    });
+  });
+
   it("passes the tool path correctly", async () => {
     let capturedPath = "";
     const invoker = makeInvoker(({ path }) => {
@@ -241,6 +257,37 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.error).toBe("not authorized");
   });
 
+  it("does not expose host error stack details to sandbox error handlers", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = {
+      invoke: () => {
+        const error = new Error("not authorized");
+        error.stack = "secret host stack";
+        return Effect.fail(error);
+      },
+    } satisfies SandboxToolInvoker;
+
+    const result = await Effect.runPromise(
+      executor.execute(
+        `async () => {
+          try {
+            await tools.secret.read({});
+          } catch (error) {
+            return {
+              message: error && error.message,
+              stack: error && error.stack,
+            };
+          }
+        }`,
+        invoker,
+      ),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toMatchObject({ message: "not authorized" });
+    expect((result.result as { stack?: string }).stack).not.toContain("secret host stack");
+  });
+
   it("surfaces object-shaped tool errors in execution result", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const invoker = {
@@ -298,6 +345,39 @@ describe("makeDynamicWorkerExecutor", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.result).toBe(30);
+  });
+
+  it("returns an execution error for circular tool args", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = makeInvoker(() => null);
+
+    const result = await Effect.runPromise(
+      executor.execute(
+        `async () => {
+          const payload = {};
+          payload.self = payload;
+          return await tools.cycles.send(payload);
+        }`,
+        invoker,
+      ),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe("Tool RPC payload contains a circular reference");
+  });
+
+  it("returns an execution error for circular tool results", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const invoker = makeInvoker(() => cyclic);
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.cycles.read({})", invoker),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBe("Tool RPC payload contains a circular reference");
   });
 
   it("respects timeout", async () => {

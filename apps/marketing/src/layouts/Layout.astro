@@ -7,8 +7,8 @@ interface Props {
 }
 
 const {
-  title = 'Executor — The Integration Layer for AI Agents',
-  description = 'A unified execution environment that gives AI agents typed, sandboxed access to every tool and API. OpenAPI, GraphQL, MCP, and more — one catalog, zero CLI sprawl.'
+  title = 'Executor — The gateway to connect your agent to everything',
+  description = 'One place every agent plugs into every tool you already use. Wire it up once, bring the whole team.'
 } = Astro.props
 ---
 
@@ -20,48 +20,16 @@ const {
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="light" />
     <meta name="description" content={description} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <title>{title}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=Geist:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   </head>
-  <body class="bg-surface text-ink antialiased selection:bg-teal/20 selection:text-teal">
+  <body class="antialiased">
     <slot />
-
-    <script>
-      import posthog from 'posthog-js'
-
-      const key = import.meta.env.PUBLIC_POSTHOG_KEY
-      if (key) {
-        const analyticsPath = (import.meta.env.PUBLIC_ANALYTICS_PATH ?? 'a').replace(/^\/+|\/+$/g, '')
-        posthog.init(key, {
-          api_host:
-            import.meta.env.PUBLIC_POSTHOG_HOST ?? `${window.location.origin}/api/${analyticsPath}`,
-          ui_host: 'https://us.posthog.com',
-          defaults: '2025-05-24',
-          person_profiles: 'identified_only',
-        })
-      }
-    </script>
-
-    <script>
-      // Scroll-triggered reveals
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('visible');
-              observer.unobserve(entry.target);
-            }
-          });
-        },
-        { threshold: 0.15, rootMargin: '0px 0px -40px 0px' }
-      );
-      document.querySelectorAll('.reveal').forEach((el) => observer.observe(el));
-    </script>
   </body>
 </html>

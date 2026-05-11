@@ -123,6 +123,7 @@ export const OAuthProviderState = Schema.Union([
      *  issued one) is a separate secret row. */
     clientId: Schema.String,
     clientSecretSecretId: Schema.NullOr(Schema.String),
+    clientSecretSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
     clientAuth: Schema.Literals(["body", "basic"]),
     scopes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultType(Effect.succeed([]))),
     scopeSeparator: Schema.optional(Schema.String),
@@ -136,7 +137,9 @@ export const OAuthProviderState = Schema.Union([
     tokenEndpoint: Schema.String,
     issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
     clientIdSecretId: Schema.String,
+    clientIdSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
     clientSecretSecretId: Schema.NullOr(Schema.String),
+    clientSecretSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
     clientAuth: Schema.Literals(["body", "basic"]),
     scopes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultType(Effect.succeed([]))),
     scopeSeparator: Schema.optional(Schema.String),
@@ -147,7 +150,9 @@ export const OAuthProviderState = Schema.Union([
     kind: Schema.Literal("client-credentials"),
     tokenEndpoint: Schema.String,
     clientIdSecretId: Schema.String,
+    clientIdSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
     clientSecretSecretId: Schema.String,
+    clientSecretSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
     scopes: Schema.Array(Schema.String),
     scopeSeparator: Schema.optional(Schema.String),
     clientAuth: Schema.Literals(["body", "basic"]),
@@ -158,9 +163,7 @@ export type OAuthProviderState = typeof OAuthProviderState.Type;
 
 /** The canonical refresh handler key. Every OAuth2-minted connection
  *  registers under this single value; the handler switches on
- *  `providerState.kind`. Historical per-plugin keys (`mcp:oauth2`,
- *  `openapi:oauth2`, `google-discovery:google`) are aliased to this
- *  during migration. */
+ *  `providerState.kind`. */
 export const OAUTH2_PROVIDER_KEY = "oauth2" as const;
 
 // ---------------------------------------------------------------------------
@@ -243,6 +246,9 @@ export interface OAuthStartResult {
 export interface OAuthCompleteInput {
   /** RFC 6749 `state` parameter — maps to a session row id. */
   readonly state: string;
+  /** Optional scope check for route-scoped completions. Browser callback
+   *  completions omit this because the callback URL has no scope path. */
+  readonly tokenScope?: string;
   readonly code?: string;
   /** RFC 6749 `error` parameter — set when the AS redirected back with
    *  a failure. The service surfaces this as a tagged error. */
@@ -264,22 +270,26 @@ export interface OAuthCompleteResult {
 // capable plugin group `.addError(OAuthStartError)` etc. and the HTTP
 // edge renders them with the annotated status.
 
-export class OAuthProbeError extends Schema.TaggedErrorClass<OAuthProbeError>()("OAuthProbeError", {
-  message: Schema.String,
-}) {
-  static annotations = { httpApiStatus: 400 };
-}
+export class OAuthProbeError extends Schema.TaggedErrorClass<OAuthProbeError>()(
+  "OAuthProbeError",
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
 
-export class OAuthStartError extends Schema.TaggedErrorClass<OAuthStartError>()("OAuthStartError", {
-  message: Schema.String,
-  /** RFC 6749 §5.2 / RFC 7591 §3.2.2 error code propagated up from the
-   *  authorization server (e.g. `invalid_client_metadata`). UI surfaces
-   *  it as the structured "AS rejected the registration" reason. */
-  error: Schema.optional(Schema.String),
-  errorDescription: Schema.optional(Schema.String),
-}) {
-  static annotations = { httpApiStatus: 400 };
-}
+export class OAuthStartError extends Schema.TaggedErrorClass<OAuthStartError>()(
+  "OAuthStartError",
+  {
+    message: Schema.String,
+    /** RFC 6749 §5.2 / RFC 7591 §3.2.2 error code propagated up from the
+     *  authorization server (e.g. `invalid_client_metadata`). UI surfaces
+     *  it as the structured "AS rejected the registration" reason. */
+    error: Schema.optional(Schema.String),
+    errorDescription: Schema.optional(Schema.String),
+  },
+  { httpApiStatus: 400 },
+) {}
 
 export class OAuthCompleteError extends Schema.TaggedErrorClass<OAuthCompleteError>()(
   "OAuthCompleteError",
@@ -290,18 +300,16 @@ export class OAuthCompleteError extends Schema.TaggedErrorClass<OAuthCompleteErr
      *  re-auth required) from transient ones. */
     code: Schema.optional(Schema.String),
   },
-) {
-  static annotations = { httpApiStatus: 400 };
-}
+  { httpApiStatus: 400 },
+) {}
 
 export class OAuthSessionNotFoundError extends Schema.TaggedErrorClass<OAuthSessionNotFoundError>()(
   "OAuthSessionNotFoundError",
   {
     sessionId: Schema.String,
   },
-) {
-  static annotations = { httpApiStatus: 404 };
-}
+  { httpApiStatus: 404 },
+) {}
 
 // ---------------------------------------------------------------------------
 // Contract — what `ctx.oauth` exposes. Implementation lives in
@@ -321,7 +329,7 @@ export interface OAuthService {
   >;
   /** Drop an in-flight session without completing — used when the
    *  user cancels the popup or the source is deleted mid-onboarding. */
-  readonly cancel: (sessionId: string, tokenScope?: string) => Effect.Effect<void, StorageFailure>;
+  readonly cancel: (sessionId: string, tokenScope: string) => Effect.Effect<void, StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------

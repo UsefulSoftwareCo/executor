@@ -13,9 +13,7 @@ on:
         type: string
 
 permissions:
-  actions: write
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: publish-executor-package-${{ github.ref }}
@@ -24,18 +22,35 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Validate release tag
+        env:
+          RAW_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG
+
+      - name: Checkout release tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+        run: |
+          auth_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --force --tags "$auth_remote" "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "$RELEASE_TAG"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -57,7 +72,6 @@ jobs:
       - name: Publish package and create release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           export GITHUB_REF_TYPE=tag
           export GITHUB_REF_NAME="$RELEASE_TAG"
@@ -67,5 +81,4 @@ jobs:
       - name: Trigger desktop build
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: gh workflow run publish-desktop.yml -f tag="$RELEASE_TAG"

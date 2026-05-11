@@ -274,16 +274,30 @@ const buildHeaderPresets = (
         labelParts.push(scheme.name);
       } else if (scheme.type === "apiKey") {
         labelParts.push(`${scheme.name} (${Option.getOrElse(scheme.in, () => "unknown")})`);
+      } else if (scheme.type === "oauth2" || scheme.type === "openIdConnect") {
+        return [];
       } else {
         labelParts.push(scheme.name);
       }
     }
 
     if (Object.keys(headers).length === 0 && resolved.length > 0) {
-      return [new HeaderPreset({ label: labelParts.join(" + "), headers: {}, secretHeaders: [] })];
+      return [
+        new HeaderPreset({
+          label: labelParts.join(" + "),
+          headers: {},
+          secretHeaders: [],
+        }),
+      ];
     }
 
-    return [new HeaderPreset({ label: labelParts.join(" + "), headers, secretHeaders })];
+    return [
+      new HeaderPreset({
+        label: labelParts.join(" + "),
+        headers,
+        secretHeaders,
+      }),
+    ];
   });
 };
 

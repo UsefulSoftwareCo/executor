@@ -58,6 +58,7 @@ export const usePolicyActions = (scopeId: ScopeId): PolicyAction => {
         readonly pattern: string;
         readonly action: ToolPolicyAction;
         readonly position: string;
+        readonly scopeId: ScopeId;
       }>;
     return [...policies.value].sort((a, b) => {
       if (a.position < b.position) return -1;
@@ -98,7 +99,7 @@ export const usePolicyActions = (scopeId: ScopeId): PolicyAction => {
         if (existing.action === action) return;
         await doUpdate({
           params: { scopeId, policyId: PolicyId.make(existing.id) },
-          payload: { action },
+          payload: { targetScope: existing.scopeId, action },
           reactivityKeys: policyWriteKeys,
         });
         return;
@@ -106,7 +107,10 @@ export const usePolicyActions = (scopeId: ScopeId): PolicyAction => {
       const position = computePosition(pattern);
       await doCreate({
         params: { scopeId },
-        payload: position === undefined ? { pattern, action } : { pattern, action, position },
+        payload:
+          position === undefined
+            ? { targetScope: scopeId, pattern, action }
+            : { targetScope: scopeId, pattern, action, position },
         reactivityKeys: policyWriteKeys,
       });
     },
@@ -118,11 +122,11 @@ export const usePolicyActions = (scopeId: ScopeId): PolicyAction => {
       const existing = findExact(pattern);
       if (!existing) return;
       await doRemove({
-        params: { scopeId, policyId: PolicyId.make(existing.id) },
+        params: { scopeId: existing.scopeId, policyId: PolicyId.make(existing.id) },
         reactivityKeys: policyWriteKeys,
       });
     },
-    [scopeId, doRemove, findExact],
+    [doRemove, findExact],
   );
 
   return { set, clear, busy };

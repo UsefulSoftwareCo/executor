@@ -39,6 +39,12 @@
           "default": "./dist/core.js"
         }
       },
+      "./client": {
+        "import": {
+          "types": "./dist/react/plugin-client.d.ts",
+          "default": "./dist/client.js"
+        }
+      },
       "./testing": {
         "import": {
           "types": "./dist/testing/index.d.ts",
@@ -55,6 +61,7 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",

@@ -23,6 +23,29 @@ const isLocal =
     window.location.hostname === "127.0.0.1" ||
     window.location.hostname.endsWith(".localhost"));
 
+export const shellQuoteWord = (value: string): string => {
+  if (/^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+};
+
+export const buildMcpInstallCommand = (input: {
+  readonly mode: TransportMode;
+  readonly isDev: boolean;
+  readonly origin: string | null;
+  readonly scopeDir?: string;
+}): string => {
+  if (input.mode === "http") {
+    const endpoint = input.origin ? `${input.origin}/mcp` : "<this-server>/mcp";
+    return `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`;
+  }
+
+  const innerArgs = input.isDev ? ["bun", "run", "dev:cli", "mcp"] : ["executor", "mcp"];
+  if (input.scopeDir) {
+    innerArgs.push("--scope", input.scopeDir);
+  }
+  return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
+};
+
 export function McpInstallCard(props: { className?: string }) {
   const showStdio = isLocal;
   const [mode, setMode] = useState<TransportMode>(showStdio ? "stdio" : "http");
@@ -33,16 +56,12 @@ export function McpInstallCard(props: { className?: string }) {
     setOrigin(window.location.origin);
   }, []);
 
-  const scopeFlag = scopeInfo.dir ? ` --scope ${JSON.stringify(scopeInfo.dir)}` : "";
-
-  const command =
-    mode === "stdio"
-      ? isDev
-        ? `npx add-mcp "bun run dev:cli mcp${scopeFlag}" --name "executor"`
-        : `npx add-mcp "executor mcp${scopeFlag}" --name "executor"`
-      : origin
-        ? `npx add-mcp "${origin}/mcp" --transport http --name "executor"`
-        : 'npx add-mcp "<this-server>/mcp" --transport http --name "executor"';
+  const command = buildMcpInstallCommand({
+    mode,
+    isDev,
+    origin,
+    scopeDir: scopeInfo.dir,
+  });
 
   const subtitle =
     mode === "stdio"

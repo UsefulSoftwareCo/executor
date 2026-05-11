@@ -17,4 +17,18 @@ export {
   type McpStoredSource,
 } from "./binding-store";
 
-export { McpConnectionAuth } from "./types";
+export {
+  ConfiguredMcpCredentialValue,
+  MCP_HEADER_AUTH_SLOT,
+  MCP_OAUTH_CLIENT_ID_SLOT,
+  MCP_OAUTH_CLIENT_SECRET_SLOT,
+  MCP_OAUTH_CONNECTION_SLOT,
+  McpConnectionAuth,
+  McpConnectionAuthInput,
+  McpCredentialInput,
+  McpSourceBindingInput,
+  McpSourceBindingRef,
+  mcpHeaderSlot,
+  mcpQueryParamSlot,
+  type McpSourceBindingValue,
+} from "./types";

@@ -3,7 +3,8 @@ import { Effect, Predicate, Result } from "effect";
 import { generateKeyBetween } from "fractional-indexing";
 
 import type { ToolPolicyRow } from "./core-schema";
-import { PolicyId } from "./ids";
+import { PolicyId, ScopeId } from "./ids";
+import { Scope } from "./scope";
 import { createExecutor } from "./executor";
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import {
@@ -138,17 +139,28 @@ describe("resolveToolPolicy", () => {
     expect(result?.pattern).toBe("vercel.dns.*");
   });
 
-  it("walks innermost scope first", () => {
+  it("does not allow an inner approve to weaken an outer block", () => {
     // Scope rank comes from the executor's scope stack: 0 = innermost,
-    // 1 = next, etc. An inner-scope rule wins even when its position
-    // would otherwise put it after the outer rule.
+    // 1 = next, etc. Each scope contributes its first local match, then
+    // the most restrictive action wins across scopes.
     const policies = [
       ROW("outer", "vercel.*", "block", "a0", "org"),
       ROW("inner", "vercel.dns.create", "approve", "a0", "user"),
     ];
     const rank = (row: Pick<ToolPolicyRow, "scope_id">) => (row.scope_id === "user" ? 0 : 1);
     const result = resolveToolPolicy("vercel.dns.create", policies, rank);
-    expect(result?.action).toBe("approve");
+    expect(result?.action).toBe("block");
+    expect(result?.policyId).toBe("outer");
+  });
+
+  it("allows an inner scope to strengthen an outer approve", () => {
+    const policies = [
+      ROW("outer", "vercel.*", "approve", "a0", "org"),
+      ROW("inner", "vercel.dns.create", "require_approval", "a0", "user"),
+    ];
+    const rank = (row: Pick<ToolPolicyRow, "scope_id">) => (row.scope_id === "user" ? 0 : 1);
+    const result = resolveToolPolicy("vercel.dns.create", policies, rank);
+    expect(result?.action).toBe("require_approval");
     expect(result?.policyId).toBe("inner");
   });
 
@@ -224,6 +236,19 @@ describe("effectivePolicyFromSorted", () => {
     expect(result.action).toBe("approve");
     expect(result.source).toBe("user");
   });
+
+  it("chooses the most restrictive first match across scopes", () => {
+    const result = effectivePolicyFromSorted(
+      "vercel.dns.create",
+      [
+        { ...POL("inner", "vercel.dns.create", "approve"), scopeId: ScopeId.make("user") },
+        { ...POL("outer", "vercel.*", "block"), scopeId: ScopeId.make("org") },
+      ],
+      false,
+    );
+    expect(result.action).toBe("block");
+    expect(result.policyId).toBe(PolicyId.make("outer"));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -268,12 +293,12 @@ const policyTestPlugin = definePlugin(() => ({
     return Effect.succeed(out);
   },
   extension: (ctx) => ({
-    seed: () =>
+    seed: (scope = "test-scope") =>
       ctx.transaction(
         Effect.gen(function* () {
           yield* ctx.core.sources.register({
             id: "vercel",
-            scope: "test-scope",
+            scope,
             kind: "test",
             name: "Vercel",
             tools: [
@@ -283,7 +308,7 @@ const policyTestPlugin = definePlugin(() => ({
           });
           yield* ctx.core.sources.register({
             id: "github",
-            scope: "test-scope",
+            scope,
             kind: "test",
             name: "GitHub",
             tools: [{ name: "list", description: "list repos" }],
@@ -315,12 +340,12 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const first = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "require_approval",
       });
       const second = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.delete",
         action: "block",
       });
@@ -333,12 +358,59 @@ describe("executor.policies", () => {
     }),
   );
 
+  it.effect("create stores rules at the requested target scope in a stacked context", () =>
+    Effect.gen(function* () {
+      const userScope = ScopeId.make("policy-user");
+      const orgScope = ScopeId.make("policy-org");
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: [
+            new Scope({ id: userScope, name: "user", createdAt: new Date() }),
+            new Scope({ id: orgScope, name: "org", createdAt: new Date() }),
+          ],
+          plugins: [policyTestPlugin()] as const,
+        }),
+      );
+
+      yield* executor.policies.create({
+        targetScope: String(orgScope),
+        pattern: "vercel.*",
+        action: "require_approval",
+      });
+      yield* executor.policies.create({
+        targetScope: String(userScope),
+        pattern: "github.*",
+        action: "approve",
+      });
+
+      const rules = yield* executor.policies.list();
+      expect(rules.map((rule) => [rule.scopeId, rule.pattern])).toEqual([
+        [userScope, "github.*"],
+        [orgScope, "vercel.*"],
+      ]);
+    }),
+  );
+
+  it.effect("rejects target scopes outside the context stack", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const result = yield* Effect.result(
+        executor.policies.create({
+          targetScope: "other-scope",
+          pattern: "vercel.*",
+          action: "block",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    }),
+  );
+
   it.effect("rejects malformed patterns", () =>
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const result = yield* Effect.result(
         executor.policies.create({
-          scope: "test-scope",
+          targetScope: "test-scope",
           pattern: "vercel..bad",
           action: "block",
         }),
@@ -351,12 +423,13 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const created = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "require_approval",
       });
       yield* executor.policies.update({
         id: created.id,
+        targetScope: "test-scope",
         action: "block",
       });
       const rules = yield* executor.policies.list();
@@ -368,12 +441,13 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const created = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "require_approval",
       });
       yield* executor.policies.update({
         id: created.id,
+        targetScope: "test-scope",
         action: "block",
       });
       const rules = yield* executor.policies.list();
@@ -385,12 +459,12 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const a = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "a.*",
         action: "approve",
       });
       const b = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "b.*",
         action: "approve",
       });
@@ -402,6 +476,7 @@ describe("executor.policies", () => {
       // generateKeyBetween(null, b.position) is what the UI would do.
       yield* executor.policies.update({
         id: a.id,
+        targetScope: "test-scope",
         position: generateKeyBetween(null, b.position),
       });
       const after = yield* executor.policies.list();
@@ -415,7 +490,7 @@ describe("executor.policies", () => {
       const created: string[] = [];
       for (const pattern of ["a.*", "b.*", "c.*", "d.*"]) {
         const row = yield* executor.policies.create({
-          scope: "test-scope",
+          targetScope: "test-scope",
           pattern,
           action: "approve",
         });
@@ -436,11 +511,11 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       const created = yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "block",
       });
-      yield* executor.policies.remove(created.id);
+      yield* executor.policies.remove({ id: created.id, targetScope: "test-scope" });
       const rules = yield* executor.policies.list();
       expect(rules).toEqual([]);
     }),
@@ -450,7 +525,7 @@ describe("executor.policies", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "block",
       });
@@ -466,7 +541,7 @@ describe("blocked tools", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.delete",
         action: "block",
       });
@@ -480,7 +555,7 @@ describe("blocked tools", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.delete",
         action: "block",
       });
@@ -494,7 +569,7 @@ describe("blocked tools", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.*",
         action: "block",
       });
@@ -506,6 +581,45 @@ describe("blocked tools", () => {
       expect(result.failure.pattern).toBe("vercel.*");
     }),
   );
+
+  it.effect("outer block still applies when an inner scope approves", () =>
+    Effect.gen(function* () {
+      const userScope = ScopeId.make("policy-user");
+      const orgScope = ScopeId.make("policy-org");
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: [
+            new Scope({ id: userScope, name: "user", createdAt: new Date() }),
+            new Scope({ id: orgScope, name: "org", createdAt: new Date() }),
+          ],
+          plugins: [policyTestPlugin()] as const,
+        }),
+      );
+      yield* executor.ptest.seed(String(orgScope));
+
+      yield* executor.policies.create({
+        targetScope: String(orgScope),
+        pattern: "vercel.deploy",
+        action: "block",
+      });
+      yield* executor.policies.create({
+        targetScope: String(userScope),
+        pattern: "vercel.deploy",
+        action: "approve",
+      });
+
+      const policy = yield* executor.policies.resolve("vercel.deploy");
+      expect(policy?.action).toBe("block");
+
+      const tools = yield* executor.tools.list();
+      expect(tools.map((tool) => tool.id)).not.toContain("vercel.deploy");
+
+      const result = yield* Effect.result(executor.tools.invoke("vercel.deploy", {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+    }),
+  );
 });
 
 describe("approve / require_approval interaction with annotations", () => {
@@ -513,7 +627,7 @@ describe("approve / require_approval interaction with annotations", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.delete",
         action: "approve",
       });
@@ -534,7 +648,7 @@ describe("approve / require_approval interaction with annotations", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.deploy",
         action: "require_approval",
       });
@@ -554,7 +668,7 @@ describe("approve / require_approval interaction with annotations", () => {
     Effect.gen(function* () {
       const executor = yield* setupExecutor();
       yield* executor.policies.create({
-        scope: "test-scope",
+        targetScope: "test-scope",
         pattern: "vercel.deploy",
         action: "require_approval",
       });

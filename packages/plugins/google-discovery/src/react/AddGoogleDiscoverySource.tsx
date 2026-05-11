@@ -5,10 +5,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { useScope } from "@executor-js/react/api/scope-context";
+import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import type { SecretPickerSecret } from "@executor-js/react/plugins/secret-picker";
 import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
+import type { ScopeId } from "@executor-js/sdk";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 import {
@@ -72,6 +73,7 @@ function SecretBackedField(props: {
   onSelect: (secretId: string | null) => void;
   secretList: readonly SecretPickerSecret[];
   placeholder: string;
+  targetScope: ScopeId;
   clearable?: boolean;
 }) {
   const { label, secretId, onSelect, secretList, placeholder, clearable = true } = props;
@@ -87,6 +89,7 @@ function SecretBackedField(props: {
             placeholder={placeholder}
             suggestedId={props.suggestedSecretId}
             secretLabel={label}
+            targetScope={props.targetScope}
           />
         </div>
         {clearable && secretId && (
@@ -214,6 +217,7 @@ export default function AddGoogleDiscoverySource(props: {
     "google";
 
   const scopeId = useScope();
+  const userScopeId = useUserScope();
   const doProbe = useAtomSet(probeGoogleDiscovery, { mode: "promiseExit" });
   const doAdd = useAtomSet(addGoogleDiscoverySourceOptimistic(scopeId), {
     mode: "promiseExit",
@@ -300,6 +304,7 @@ export default function AddGoogleDiscoverySource(props: {
           pluginId: "google-discovery",
           namespace: resolvedNamespace,
         }),
+        tokenScope: userScopeId,
         identityLabel: `${identity.name.trim() || probe.title || probe.name} OAuth`,
         strategy: googleDiscoveryOAuthStrategy({
           clientIdSecretId,
@@ -328,6 +333,7 @@ export default function AddGoogleDiscoverySource(props: {
     clientSecretSecretId,
     resolvedNamespace,
     oauth,
+    userScopeId,
   ]);
 
   const handleCancelOAuth = useCallback(() => {
@@ -506,6 +512,7 @@ export default function AddGoogleDiscoverySource(props: {
               onSelect={setClientIdSecretId}
               secretList={secretList}
               placeholder="Pick or create a secret"
+              targetScope={userScopeId}
               clearable={false}
             />
             <SecretBackedField
@@ -515,6 +522,7 @@ export default function AddGoogleDiscoverySource(props: {
               onSelect={setClientSecretSecretId}
               secretList={secretList}
               placeholder="Optional for confidential clients"
+              targetScope={userScopeId}
             />
             <Collapsible open={showScopes} onOpenChange={setShowScopes} className="space-y-2">
               <div className="flex items-start justify-between gap-3">

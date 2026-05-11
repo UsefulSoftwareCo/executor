@@ -12,7 +12,6 @@ import * as Exit from "effect/Exit";
 
 import { setSecret } from "../api/atoms";
 import { secretWriteKeys } from "../api/reactivity-keys";
-import { useScope } from "../api/scope-context";
 import { SecretId, type ScopeId } from "@executor-js/sdk";
 import { Button, type buttonVariants } from "../components/button";
 import { Field, FieldError, FieldLabel } from "../components/field";
@@ -26,6 +25,7 @@ import {
 } from "../components/select";
 import type { VariantProps } from "class-variance-authority";
 
+import { secretValueInputType } from "./secret-input";
 import { getUniqueSecretId, isSecretIdTaken } from "./secret-id";
 
 // ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ interface SecretFormProviderProps {
   readonly suggestedName?: string;
   readonly fallbackId?: string;
   readonly initialProvider?: string;
-  readonly scopeId?: ScopeId;
+  readonly scopeId: ScopeId;
   readonly onCreated: (secretId: string) => void;
   readonly children: ReactNode;
 }
@@ -102,17 +102,15 @@ function SecretFormProvider(props: SecretFormProviderProps) {
     suggestedName = "",
     fallbackId = "secret",
     initialProvider = "auto",
-    scopeId: scopeIdProp,
+    scopeId,
     onCreated,
     children,
   } = props;
 
-  const defaultScope = useScope();
-  const scopeId = scopeIdProp ?? defaultScope;
   const doSet = useAtomSet(setSecret, { mode: "promiseExit" });
 
   const [state, setState] = useState<SecretFormState>(() => ({
-    name: "",
+    name: suggestedName,
     value: "",
     idOverride: null,
     provider: initialProvider,
@@ -218,28 +216,30 @@ function IdField(props: { placeholder?: string }) {
   );
 }
 
-function ValueField(props: { revealable?: boolean; placeholder?: string }) {
+function ValueField(props: { revealable?: boolean; placeholder?: string; autoFocus?: boolean }) {
   const { state, actions } = useSecretForm();
   const inputId = useId();
   const revealable = props.revealable ?? false;
+  const revealed = revealable && state.revealed;
   const errored = state.status.kind === "error";
 
   return (
     <Field>
       <FieldLabel htmlFor={inputId}>Value</FieldLabel>
-      <div className="relative">
+      <div className="relative" data-ph-block>
         <Input
           id={inputId}
-          type={revealable ? "text" : "password"}
+          type={secretValueInputType({ revealable, revealed })}
           value={state.value}
           onChange={(e) => actions.setValue((e.target as HTMLInputElement).value)}
           placeholder={props.placeholder ?? "ghp_xxxxxxxxxxxxxxxxxxxx"}
+          autoFocus={props.autoFocus}
+          autoComplete="new-password"
           className={revealable ? "pr-9 font-mono" : "font-mono"}
           style={
-            revealable && !state.revealed
-              ? ({ WebkitTextSecurity: "disc" } as CSSProperties)
-              : undefined
+            revealable && !revealed ? ({ WebkitTextSecurity: "disc" } as CSSProperties) : undefined
           }
+          data-ph-block
         />
         {revealable && (
           <Button

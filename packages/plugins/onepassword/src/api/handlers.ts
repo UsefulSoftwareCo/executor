@@ -50,19 +50,19 @@ export const OnePasswordHandlers = HttpApiBuilder.group(
           }),
         ),
       )
-      .handle("configure", ({ payload }) =>
+      .handle("configure", ({ params: path, payload }) =>
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.configure(payload);
+            yield* ext.configure(payload, path.scopeId);
           }),
         ),
       )
-      .handle("removeConfig", () =>
+      .handle("removeConfig", ({ params: path }) =>
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.removeConfig();
+            yield* ext.removeConfig(path.scopeId);
           }),
         ),
       )

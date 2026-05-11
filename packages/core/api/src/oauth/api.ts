@@ -64,7 +64,7 @@ const StartPayload = Schema.Struct({
    *  row can be stamped atomically with the flow start. */
   connectionId: Schema.String,
   /** Scope where the resulting Connection + its backing secrets land. */
-  tokenScope: Schema.optional(Schema.String),
+  tokenScope: Schema.String,
   strategy: OAuthStrategySchema,
   /** Which plugin is initiating the flow. Persisted on the session +
    *  stamped on the minted Connection's identity-label prefix. */
@@ -104,6 +104,8 @@ const CompleteResponse = Schema.Struct({
 
 const CancelPayload = Schema.Struct({
   sessionId: Schema.String,
+  /** Scope that owns the pending OAuth session. Must match start.tokenScope. */
+  tokenScope: Schema.String,
 });
 
 const CancelResponse = Schema.Struct({

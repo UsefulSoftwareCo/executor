@@ -1,45 +1,28 @@
 @import "tailwindcss";
 
 @source "../**/*.astro";
+@source "../**/*.tsx";
+@source "../../../../packages/react/src/components/dialog.tsx";
+@source "../../../../packages/react/src/components/copy-button.tsx";
+@source "../../../../packages/react/src/components/button.tsx";
 
 @theme {
-  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Instrument Serif", Georgia, serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --color-surface: #0c0f0e;
-  --color-surface-raised: #141917;
-  --color-surface-overlay: #1a1f1d;
+  /* Clean minimal palette */
+  --color-surface: #fafaf7;
+  --color-surface-2: #f3f3ee;
+  --color-ink: #0d0d10;
+  --color-ink-2: #4a4a4e;
+  --color-ink-3: #8a8a8e;
+  --color-rule: rgba(13, 13, 16, 0.07);
+  --color-rule-strong: rgba(13, 13, 16, 0.14);
 
-  --color-ink: #e4e8e6;
-  --color-ink-muted: #8a9490;
-  --color-ink-faint: #4a5552;
-
-  --color-teal: #3dd8b5;
-  --color-teal-dim: #2aaa8e;
-  --color-teal-faint: rgba(61, 216, 181, 0.08);
-  --color-teal-glow: rgba(61, 216, 181, 0.15);
-
-  --color-rule: rgba(255, 255, 255, 0.06);
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --color-surface: #fafbfb;
-    --color-surface-raised: #f0f2f1;
-    --color-surface-overlay: #e5e8e7;
-
-    --color-ink: #1a1f1d;
-    --color-ink-muted: #5a6560;
-    --color-ink-faint: #9ca5a0;
-
-    --color-teal: #0d9b7a;
-    --color-teal-dim: #0a8068;
-    --color-teal-faint: rgba(13, 155, 122, 0.06);
-    --color-teal-glow: rgba(13, 155, 122, 0.1);
-
-    --color-rule: rgba(0, 0, 0, 0.08);
-  }
+  --color-accent: #635bff;
+  --color-accent-hover: #5048e6;
 }
 
 html {
@@ -47,160 +30,195 @@ html {
 }
 
 body {
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 256px 256px;
-  color-scheme: light dark;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: var(--color-surface);
+  letter-spacing: -0.011em;
 }
 
-@media (prefers-color-scheme: light) {
-  body {
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.015'/%3E%3C/svg%3E");
-  }
+::selection {
+  background: var(--color-ink);
+  color: var(--color-surface);
 }
 
-/* Staggered fade-in for page load */
+/* ─── Faint hero background: off-white surface ─── */
+.bg-soft {
+  position: relative;
+  background-color: var(--color-surface);
+  isolation: isolate;
+}
+/* Pattern utility: mask the SVG, tint via background color */
+.pattern-bg {
+  position: absolute;
+  inset: 0;
+  background: var(--color-ink);
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
+  pointer-events: none;
+  z-index: 1;
+}
+.pattern-graph {
+  --pattern-graph: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='100'%20height='100'%20viewBox='0%200%20100%20100'%3E%3Cg%20fill-rule='evenodd'%3E%3Cg%20fill='%23000'%3E%3Cpath%20opacity='.5'%20d='M96%2095h4v1h-4v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4h-9v4h-1v-4H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15v-9H0v-1h15V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h9V0h1v15h4v1h-4v9h4v1h-4v9h4v1h-4v9h4v1h-4v9h4v1h-4v9h4v1h-4v9h4v1h-4v9h4v1h-4v9zm-1%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-9-10h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm9-10v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-9-10h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm9-10v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-9-10h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm9-10v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-10%200v-9h-9v9h9zm-9-10h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9zm10%200h9v-9h-9v9z'/%3E%3Cpath%20d='M6%205V0H5v5H0v1h5v94h1V6h94V5H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  -webkit-mask-image: var(--pattern-graph);
+  mask-image: var(--pattern-graph);
+  -webkit-mask-size: 100px 100px;
+  mask-size: 100px 100px;
+  opacity: 0.08;
+}
+
+/* Soft fade overlay — paint the surface color back over the pattern's bottom */
+.pattern-fade-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 0%, transparent 50%, var(--color-surface) 100%);
+  z-index: 0;
+}
+
+/* Italic serif accent — pairs with sharp Geist display */
+.serif-italic {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--color-accent);
+}
+
+/* Page-load reveals */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(24px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
-
 .rise {
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.rise-d1 {
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
+.rise-1 {
+  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
 }
-.rise-d2 {
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.16s both;
+.rise-2 {
+  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.13s both;
 }
-.rise-d3 {
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.24s both;
+.rise-3 {
+  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.21s both;
 }
-.rise-d4 {
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.32s both;
-}
-
-/* Typing cursor blink for code block */
-@keyframes blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
+.rise-4 {
+  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
 }
 
-.cursor-blink {
-  animation: blink 1s step-end infinite;
+/* Hairline-bordered surface for the beam panel — minimal elevation */
+.surface-card {
+  background: white;
+  border: 1px solid var(--color-rule);
+  border-radius: 14px;
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.03),
+    0 8px 24px -16px rgba(13, 13, 16, 0.08);
 }
 
-/* Smooth scroll-triggered reveals via IntersectionObserver */
-.reveal {
-  opacity: 0;
-  transform: translateY(20px);
-  transition:
-    opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+/* Buttons */
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-surface);
+  border-radius: 8px;
+  padding: 0.65rem 1.1rem;
+  font-weight: 500;
+  font-size: 0.9rem;
+  letter-spacing: -0.005em;
+  transition: background 0.15s ease;
 }
-.reveal.visible {
-  opacity: 1;
-  transform: translateY(0);
+.btn-primary:hover {
+  background: #1f1f24;
 }
 
-/* Thin scrollbar for catalog */
-.scrollbar-thin {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
-}
-.scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
-}
-.scrollbar-thin::-webkit-scrollbar-track {
+.btn-link {
+  color: var(--color-ink-2);
+  font-weight: 500;
+  font-size: 0.9rem;
+  letter-spacing: -0.005em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: color 0.15s ease;
   background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
 }
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
-}
-
-@media (prefers-color-scheme: light) {
-  .scrollbar-thin {
-    scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.12);
-  }
+.btn-link:hover {
+  color: var(--color-ink);
 }
 
+.copy-icons {
+  position: relative;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  margin-left: 0.15rem;
+}
+.copy-icons > svg {
+  position: absolute;
+  inset: 0;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+.copy-icon-check {
+  opacity: 0;
+  transform: scale(0.8);
+  color: var(--color-accent);
+}
+.copy-btn[data-copied="true"] .copy-icon-copy {
+  opacity: 0;
+  transform: scale(0.8);
+}
+.copy-btn[data-copied="true"] .copy-icon-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Legal pages */
 .legal-prose {
   color: color-mix(in srgb, var(--color-ink) 85%, transparent);
   line-height: 1.75;
   font-size: 15.5px;
 }
-
 .legal-prose > :first-child {
   margin-top: 0;
 }
-
-.legal-prose > :first-child::first-letter {
-  font-family: var(--font-display);
-  font-size: 3.4em;
-  float: left;
-  line-height: 0.85;
-  padding: 0.32rem 0.6rem 0 0;
-  color: var(--color-teal);
-}
-
 .legal-prose h2 {
-  position: relative;
   margin-top: 3rem;
   margin-bottom: 0.85rem;
   padding-top: 1.6rem;
-  color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: 1.05rem;
   font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: -0.005em;
   border-top: 1px solid var(--color-rule);
 }
-
-.legal-prose > h2:first-of-type {
-  margin-top: 2.4rem;
-}
-
 .legal-prose h3 {
   margin-top: 1.6rem;
   margin-bottom: 0.5rem;
-  color: var(--color-ink);
   font-size: 0.95rem;
   font-weight: 600;
 }
-
 .legal-prose p,
 .legal-prose ul {
   margin: 0.85rem 0;
 }
-
 .legal-prose ul {
   list-style: none;
   padding-left: 0;
 }
-
 .legal-prose li {
   position: relative;
-  margin: 0.5rem 0;
   padding-left: 1.25rem;
 }
-
 .legal-prose li::before {
   content: "";
   position: absolute;
@@ -209,25 +227,15 @@ body {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--color-teal);
+  background: var(--color-accent);
   opacity: 0.7;
 }
-
 .legal-prose a {
-  color: var(--color-teal);
+  color: var(--color-accent);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--color-teal) 35%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   text-underline-offset: 3px;
-  transition:
-    color 0.15s ease,
-    text-decoration-color 0.15s ease;
 }
-
-.legal-prose a:hover {
-  color: var(--color-teal-dim);
-  text-decoration-color: var(--color-teal-dim);
-}
-
 .legal-prose strong {
   color: var(--color-ink);
   font-weight: 600;

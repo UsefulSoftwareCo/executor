@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { createExecutor, makeTestConfig } from "@executor-js/sdk";
+import { ScopeId, createExecutor, makeTestConfig } from "@executor-js/sdk";
 
 import { onepasswordPlugin } from "./plugin";
 import { OnePasswordConfig, DesktopAppAuth } from "./types";
@@ -39,14 +39,14 @@ describe("onepassword plugin", () => {
         name: "Personal",
       });
 
-      yield* executor.onepassword.configure(config);
+      yield* executor.onepassword.configure(config, ScopeId.make("test-scope"));
 
       const loaded = yield* executor.onepassword.getConfig();
       expect(loaded?.vaultId).toBe("vault-123");
       expect(loaded?.name).toBe("Personal");
       expect(loaded?.auth.kind).toBe("desktop-app");
 
-      yield* executor.onepassword.removeConfig();
+      yield* executor.onepassword.removeConfig(ScopeId.make("test-scope"));
       const afterRemove = yield* executor.onepassword.getConfig();
       expect(afterRemove).toBeNull();
     }),

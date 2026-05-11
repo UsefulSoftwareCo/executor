@@ -794,7 +794,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
         // `HttpApiGroup` name ("approve") becomes part of the sandbox path,
         // so the invocation reads `tools.approveapi.approve.approveThing`.
         const code = [
-          `await tools.openapi.addSource({ spec: ${JSON.stringify(specJson)}, namespace: "approveapi" });`,
+          `await tools.openapi.addSource({ scope: ${JSON.stringify(orgId)}, spec: ${JSON.stringify(specJson)}, namespace: "approveapi" });`,
           `return await tools.approveapi.approve.approveThing({});`,
         ].join("\n");
         const result = yield* Effect.promise(() =>

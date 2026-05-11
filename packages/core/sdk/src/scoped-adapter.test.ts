@@ -220,6 +220,24 @@ describe("scopeAdapter — read isolation", () => {
     }),
   );
 
+  it.effect("caller-supplied out-of-stack scope_id does not widen to all visible rows", () =>
+    Effect.gen(function* () {
+      const db = setup(["a"]);
+      yield* db.create({
+        model: "thing",
+        data: { id: "t-visible", scope_id: "a", value: "visible" },
+        forceAllowId: true,
+      });
+
+      const rows = yield* db.findMany({
+        model: "thing",
+        where: [{ field: "scope_id", value: "c" }],
+      });
+
+      expect(rows).toEqual([]);
+    }),
+  );
+
   it.effect("unscoped tables pass through untouched (no scope filter, no guard)", () =>
     Effect.gen(function* () {
       const db = setup(["a"]);

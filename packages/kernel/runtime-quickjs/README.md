@@ -35,7 +35,7 @@ const engine = createExecutionEngine({
 
 | Option              | Default    | Description                       |
 | ------------------- | ---------- | --------------------------------- |
-| `timeoutMs`         | `5_000`    | Max wall-clock time per execution |
+| `timeoutMs`         | `300_000`  | Max wall-clock time per execution |
 | `memoryLimitBytes`  | `64 * 1MB` | Max memory the VM can allocate    |
 | `maxStackSizeBytes` | `1 * 1MB`  | Max call-stack depth              |
 

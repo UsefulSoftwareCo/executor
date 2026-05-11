@@ -16,6 +16,17 @@ export const mcpSourceAtom = (scopeId: ScopeId, namespace: string) =>
     reactivityKeys: [ReactivityKey.sources, ReactivityKey.tools],
   });
 
+export const mcpSourceBindingsAtom = (
+  scopeId: ScopeId,
+  namespace: string,
+  sourceScopeId: ScopeId,
+) =>
+  McpClient.query("mcp", "listSourceBindings", {
+    params: { scopeId, namespace, sourceScopeId },
+    timeToLive: "15 seconds",
+    reactivityKeys: [ReactivityKey.sources, ReactivityKey.secrets, ReactivityKey.connections],
+  });
+
 // ---------------------------------------------------------------------------
 // Mutation atoms
 // ---------------------------------------------------------------------------
@@ -30,7 +41,7 @@ export const addMcpSourceOptimistic = Atom.family((scopeId: ScopeId) =>
           const id = arg.payload.namespace ?? `pending-${Math.random().toString(36).slice(2)}`;
           const source = {
             id,
-            scopeId,
+            scopeId: arg.payload.targetScope,
             kind: "mcp",
             pluginId: "mcp",
             name: arg.payload.name ?? id,
@@ -51,3 +62,5 @@ export const addMcpSourceOptimistic = Atom.family((scopeId: ScopeId) =>
 export const removeMcpSource = McpClient.mutation("mcp", "removeSource");
 export const refreshMcpSource = McpClient.mutation("mcp", "refreshSource");
 export const updateMcpSource = McpClient.mutation("mcp", "updateSource");
+export const setMcpSourceBinding = McpClient.mutation("mcp", "setSourceBinding");
+export const removeMcpSourceBinding = McpClient.mutation("mcp", "removeSourceBinding");

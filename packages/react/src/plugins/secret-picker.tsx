@@ -2,6 +2,7 @@ import { useState, type ChangeEvent, type FocusEvent } from "react";
 import { PlusIcon } from "lucide-react";
 
 import { Input } from "../components/input";
+import { Badge } from "../components/badge";
 import {
   Command,
   CommandEmpty,
@@ -11,9 +12,11 @@ import {
   CommandSeparator,
 } from "../components/command";
 import { Popover, PopoverAnchor, PopoverContent } from "../components/popover";
+import { useScopeStack } from "../api/scope-context";
 
 export interface SecretPickerSecret {
   readonly id: string;
+  readonly scopeId: string;
   readonly name: string;
   readonly provider?: string;
 }
@@ -32,17 +35,38 @@ const providerLabel = (key: string | undefined): string => {
 
 export function SecretPicker(props: {
   readonly value: string | null;
-  readonly onSelect: (secretId: string) => void;
+  readonly valueScopeId?: string;
+  readonly onSelect: (secretId: string, scopeId: string) => void;
   readonly secrets: readonly SecretPickerSecret[];
   readonly placeholder?: string;
   /** When provided, renders a "+ New secret" row at the top of the dropdown. */
   readonly onCreateNew?: () => void;
 }) {
-  const { value, onSelect, secrets, placeholder = "Search secrets…", onCreateNew } = props;
+  const {
+    value,
+    valueScopeId,
+    onSelect,
+    secrets,
+    placeholder = "Search secrets…",
+    onCreateNew,
+  } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const scopeStack = useScopeStack();
+  const scopeLabel = (scopeId: string): string => {
+    const index = scopeStack.findIndex((entry) => String(entry.id) === scopeId);
+    if (index === 0) return "Personal";
+    if (index > 0) return scopeStack[index]?.name || "Organization";
+    return "Scoped";
+  };
 
-  const selected = secrets.find((secret) => secret.id === value) ?? null;
+  const selected =
+    secrets.find(
+      (secret) =>
+        secret.id === value && (valueScopeId === undefined || secret.scopeId === valueScopeId),
+    ) ??
+    secrets.find((secret) => secret.id === value) ??
+    null;
 
   const grouped = new Map<string, SecretPickerSecret[]>();
   for (const secret of secrets) {
@@ -131,15 +155,18 @@ export function SecretPicker(props: {
                   <CommandGroup key={label} heading={showGroupHeadings ? label : undefined}>
                     {filtered.map((secret) => (
                       <CommandItem
-                        key={secret.id}
-                        value={`${secret.name} ${secret.id}`}
+                        key={`${secret.scopeId}:${secret.id}`}
+                        value={`${secret.name} ${secret.id} ${secret.scopeId}`}
                         onSelect={() => {
-                          onSelect(secret.id);
+                          onSelect(secret.id, secret.scopeId);
                           setOpen(false);
                           setQuery("");
                         }}
                       >
-                        <span className="truncate">{secret.name}</span>
+                        <span className="min-w-0 flex-1 truncate">{secret.name}</span>
+                        <Badge variant="outline" className="ml-2 shrink-0 text-[10px]">
+                          {scopeLabel(secret.scopeId)}
+                        </Badge>
                       </CommandItem>
                     ))}
                   </CommandGroup>

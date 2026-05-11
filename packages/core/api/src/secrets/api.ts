@@ -65,6 +65,13 @@ export const SecretsApi = HttpApiGroup.make("secrets")
     }),
   )
   .add(
+    HttpApiEndpoint.get("listAll", "/scopes/:scopeId/secrets/all", {
+      params: ScopeParams,
+      success: Schema.Array(SecretRefResponse),
+      error: InternalError,
+    }),
+  )
+  .add(
     HttpApiEndpoint.get("status", "/scopes/:scopeId/secrets/:secretId/status", {
       params: SecretParams,
       success: SecretStatusResponse,

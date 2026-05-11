@@ -58,9 +58,10 @@ export class SourceNotFoundError extends Schema.TaggedErrorClass<SourceNotFoundE
   { sourceId: Schema.String },
 ) {}
 
-/** `executor.sources.remove(id)` was called on a source with
- *  `canRemove: false` — typically a static source declared by a plugin
- *  at startup. Removing static sources is a bug in the caller. */
+/** `executor.sources.remove({ id, targetScope })` was called on a
+ *  source with `canRemove: false` — typically a static source declared
+ *  by a plugin at startup. Removing static sources is a bug in the
+ *  caller. */
 export class SourceRemovalNotAllowedError extends Schema.TaggedErrorClass<SourceRemovalNotAllowedError>()(
   "SourceRemovalNotAllowedError",
   { sourceId: Schema.String },
@@ -83,7 +84,7 @@ export class SecretResolutionError extends Schema.TaggedErrorClass<SecretResolut
   },
 ) {}
 
-/** Raised when `secrets.remove(id)` is called on a secret whose row has
+/** Raised when `secrets.remove({ id, targetScope })` is called on a secret whose row has
  *  `owned_by_connection_id` set. The connection owns the lifecycle —
  *  callers must go through `connections.remove(connectionId)` to
  *  delete it along with its siblings. */
@@ -95,7 +96,7 @@ export class SecretOwnedByConnectionError extends Schema.TaggedErrorClass<Secret
   },
 ) {}
 
-/** Raised when `secrets.remove(id)` is called on a secret that's still
+/** Raised when `secrets.remove({ id, targetScope })` is called on a secret that's still
  *  referenced by one or more sources / bindings across plugins. The UI's
  *  "Used by" list tells the user which sources to detach first. App-
  *  level RESTRICT — the codebase doesn't enforce DB-level FKs because

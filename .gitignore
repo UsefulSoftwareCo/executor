@@ -67,6 +67,7 @@ executor.jsonc
 
 # reference repos (pulled via `bun run pull:references`)
 .reference/
+.worktrees/
 
 .mcp.json
 .codex/
@@ -79,3 +80,4 @@ executor.jsonc
 MISTAKES.md
 DESIRES.md
 LEARNINGS.md
+.alchemy/

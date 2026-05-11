@@ -48,6 +48,10 @@ export interface SecretProvider {
     readonly { readonly id: string; readonly name: string }[],
     StorageFailure
   >;
+  /** Whether the provider may be asked during id-only fallback resolution.
+   *  Providers whose own auth depends on `ctx.secrets.get` should opt out to
+   *  avoid recursive fallback through themselves. */
+  readonly allowFallback?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,4 +93,11 @@ export class SetSecretInput extends Schema.Class<SetSecretInput>("SetSecretInput
   /** Optional provider routing. If unset the executor picks the first
    *  writable provider in registration order. */
   provider: Schema.optional(Schema.String),
+}) {}
+
+export class RemoveSecretInput extends Schema.Class<RemoveSecretInput>("RemoveSecretInput")({
+  id: SecretId,
+  /** Scope id whose secret row/value should be removed. Must be one of
+   *  the executor's configured scopes. */
+  targetScope: ScopeId,
 }) {}

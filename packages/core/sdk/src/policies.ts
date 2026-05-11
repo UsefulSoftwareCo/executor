@@ -4,7 +4,7 @@
 // `executor.policies` CRUD surface. Plugins consume the same surface.
 // ---------------------------------------------------------------------------
 
-import { Schema } from "effect";
+import { Match, Schema } from "effect";
 
 import type { ToolPolicyAction, ToolPolicyRow } from "./core-schema";
 import { PolicyId, ScopeId } from "./ids";
@@ -29,7 +29,7 @@ export interface ToolPolicy {
 }
 
 export interface CreateToolPolicyInput {
-  readonly scope: string;
+  readonly targetScope: string;
   readonly pattern: string;
   readonly action: ToolPolicyAction;
   /** Optional explicit position. Defaults to a key above the current
@@ -39,9 +39,15 @@ export interface CreateToolPolicyInput {
 
 export interface UpdateToolPolicyInput {
   readonly id: string;
+  readonly targetScope: string;
   readonly pattern?: string;
   readonly action?: ToolPolicyAction;
   readonly position?: string;
+}
+
+export interface RemoveToolPolicyInput {
+  readonly id: string;
+  readonly targetScope: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,11 +128,11 @@ export const isValidPattern = (pattern: string): boolean => {
 };
 
 // ---------------------------------------------------------------------------
-// Resolution — given a tool id and the policy rows visible across the
-// executor's scope stack, return the first matching rule under the
-// (innermost-scope-first, position-ascending) ordering. Caller passes a
-// `scopeRank` function so the resolver doesn't need to know the executor's
-// scope stack shape.
+// Resolution — each scope contributes its first matching rule by local
+// position. The final answer is the most restrictive matched action across
+// those scopes, so an inner preference cannot weaken an outer guardrail.
+// Caller passes a `scopeRank` function so the resolver doesn't need to know
+// the executor's scope stack shape.
 // ---------------------------------------------------------------------------
 
 // Lex compare on fractional-indexing key, then id as a stable tiebreak.
@@ -146,6 +152,24 @@ export const comparePolicyRow = (
   return ia < ib ? -1 : ia > ib ? 1 : 0;
 };
 
+const actionRestrictionRank = (action: ToolPolicyAction): number =>
+  Match.value(action).pipe(
+    Match.when("block", () => 3),
+    Match.when("require_approval", () => 2),
+    Match.when("approve", () => 1),
+    Match.exhaustive,
+  );
+
+const moreRestrictive = <T extends { readonly action: ToolPolicyAction }>(
+  current: T | undefined,
+  candidate: T,
+): T => {
+  if (!current) return candidate;
+  const currentRank = actionRestrictionRank(current.action);
+  const candidateRank = actionRestrictionRank(candidate.action);
+  return candidateRank > currentRank ? candidate : current;
+};
+
 export const resolveToolPolicy = (
   toolId: string,
   policies: readonly ToolPolicyRow[],
@@ -158,16 +182,22 @@ export const resolveToolPolicy = (
     if (sa !== sb) return sa - sb;
     return comparePolicyRow(a, b);
   });
+  const firstMatchByScope = new Map<string, PolicyMatch>();
   for (const row of sorted) {
+    if (firstMatchByScope.has(row.scope_id)) continue;
     if (matchPattern(row.pattern, toolId)) {
-      return {
+      firstMatchByScope.set(row.scope_id, {
         action: row.action as ToolPolicyAction,
         pattern: row.pattern,
         policyId: row.id,
-      };
+      });
     }
   }
-  return undefined;
+  let selected: PolicyMatch | undefined;
+  for (const match of firstMatchByScope.values()) {
+    selected = moreRestrictive(selected, match);
+  }
+  return selected;
 };
 
 // ---------------------------------------------------------------------------
@@ -208,20 +238,28 @@ export const resolveEffectivePolicy = (
 
 export const effectivePolicyFromSorted = (
   toolId: string,
-  sortedPolicies: readonly Pick<ToolPolicy, "pattern" | "action" | "id">[],
+  sortedPolicies: readonly (Pick<ToolPolicy, "pattern" | "action" | "id"> &
+    Partial<Pick<ToolPolicy, "scopeId">>)[],
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
+  const firstMatchByScope = new Map<string, EffectivePolicy>();
   for (const p of sortedPolicies) {
+    const scopeKey = "scopeId" in p && p.scopeId ? String(p.scopeId) : "__flat__";
+    if (firstMatchByScope.has(scopeKey)) continue;
     if (matchPattern(p.pattern, toolId)) {
-      return {
+      firstMatchByScope.set(scopeKey, {
         action: p.action,
         source: "user",
         pattern: p.pattern,
         policyId: p.id,
-      };
+      });
     }
   }
-  return liftPlugin(defaultRequiresApproval);
+  let selected: EffectivePolicy | undefined;
+  for (const match of firstMatchByScope.values()) {
+    selected = moreRestrictive(selected, match);
+  }
+  return selected ?? liftPlugin(defaultRequiresApproval);
 };
 
 // ---------------------------------------------------------------------------

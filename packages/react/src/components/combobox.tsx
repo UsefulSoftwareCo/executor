@@ -45,18 +45,23 @@ function ComboboxClear({ className, ...props }: ComboboxPrimitive.Clear.Props) {
 
 function ComboboxInput({
   className,
+  inputClassName,
   children,
   disabled = false,
   showTrigger = true,
   showClear = false,
   ...props
 }: ComboboxPrimitive.Input.Props & {
+  inputClassName?: string;
   showTrigger?: boolean;
   showClear?: boolean;
 }) {
   return (
     <InputGroup className={cn("w-auto", className)}>
-      <ComboboxPrimitive.Input render={<InputGroupInput disabled={disabled} />} {...props} />
+      <ComboboxPrimitive.Input
+        render={<InputGroupInput disabled={disabled} className={inputClassName} />}
+        {...props}
+      />
       <InputGroupAddon align="inline-end">
         {showTrigger && (
           <InputGroupButton
@@ -257,6 +262,67 @@ function useComboboxAnchor() {
   return React.useRef<HTMLDivElement | null>(null);
 }
 
+export interface FreeformComboboxOption {
+  readonly value: string;
+  readonly label?: React.ReactNode;
+  readonly description?: React.ReactNode;
+}
+
+function FreeformCombobox(props: {
+  readonly value: string;
+  readonly onValueChange: (value: string) => void;
+  readonly options: readonly FreeformComboboxOption[];
+  readonly placeholder?: string;
+  readonly emptyLabel?: React.ReactNode;
+  readonly className?: string;
+  readonly inputClassName?: string;
+  readonly disabled?: boolean;
+}) {
+  const valueOption = props.value.trim();
+  const options =
+    valueOption.length > 0 && !props.options.some((option) => option.value === valueOption)
+      ? [{ value: valueOption, label: valueOption }, ...props.options]
+      : props.options;
+  const selectedValue = options.some((option) => option.value === props.value) ? props.value : null;
+
+  return (
+    <Combobox
+      items={options.map((option) => option.value)}
+      inputValue={props.value}
+      value={selectedValue}
+      onInputValueChange={props.onValueChange}
+      onValueChange={(value) => {
+        if (value !== null) props.onValueChange(value);
+      }}
+    >
+      <ComboboxInput
+        placeholder={props.placeholder}
+        className={props.className}
+        inputClassName={props.inputClassName}
+        disabled={props.disabled}
+        showClear={props.value.length > 0}
+      />
+      <ComboboxContent>
+        <ComboboxEmpty>{props.emptyLabel ?? "No options"}</ComboboxEmpty>
+        <ComboboxList>
+          {options.map((option) => (
+            <ComboboxItem key={option.value} value={option.value}>
+              <div className="min-w-0 flex-1">
+                <div className="truncate">{option.label ?? option.value}</div>
+                {option.description && (
+                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                    {option.description}
+                  </div>
+                )}
+              </div>
+            </ComboboxItem>
+          ))}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  );
+}
+
 export {
   Combobox,
   ComboboxInput,
@@ -273,5 +339,6 @@ export {
   ComboboxChipsInput,
   ComboboxTrigger,
   ComboboxValue,
+  FreeformCombobox,
   useComboboxAnchor,
 };

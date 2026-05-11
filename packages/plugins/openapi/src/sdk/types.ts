@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { ConnectionId, ScopeId, SecretBackedValue, SecretId } from "@executor-js/sdk/core";
+import {
+  ConnectionId,
+  ScopeId,
+  ScopedSecretCredentialInput,
+  SecretBackedValue,
+  SecretId,
+} from "@executor-js/sdk/core";
 
 // ---------------------------------------------------------------------------
 // Branded IDs
@@ -146,10 +152,18 @@ export class ConfiguredHeaderBinding extends Schema.Class<ConfiguredHeaderBindin
 export const ConfiguredHeaderValue = Schema.Union([Schema.String, ConfiguredHeaderBinding]);
 export type ConfiguredHeaderValue = typeof ConfiguredHeaderValue.Type;
 
+export const OpenApiCredentialInput = Schema.Union([
+  ScopedSecretCredentialInput,
+  HeaderValue,
+  ConfiguredHeaderValue,
+]);
+export type OpenApiCredentialInput = typeof OpenApiCredentialInput.Type;
+
 export const OpenApiSourceBindingValue = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("secret"),
     secretId: SecretId,
+    secretScopeId: Schema.optional(ScopeId),
   }),
   Schema.Struct({
     kind: Schema.Literal("connection"),
@@ -187,13 +201,14 @@ export class OpenApiSourceBindingRef extends Schema.Class<OpenApiSourceBindingRe
 }) {}
 
 // ---------------------------------------------------------------------------
-// OAuth2 auth — points at the Connection that owns live tokens, and also
-// carries enough API-level config to kick off a fresh sign-in from the
-// source detail UI without needing the connection to still exist.
+// OAuth2 source config — carries source-owned slots and API-level config to
+// kick off a fresh sign-in from the source detail UI without needing any
+// one user's live connection to still exist.
 //
 // Split of responsibilities:
 //   - The Source owns: the OAuth config (tokenUrl, authorizationUrl,
-//     client credential secret ids, scopes, flow, securitySchemeName).
+//     client credential slots, connection slot, scopes, flow,
+//     securitySchemeName).
 //     Values are a property of the target API, identical for every user
 //     signing into this source. Source-owned = reconnect works even if
 //     the connection row has been removed.
@@ -202,51 +217,16 @@ export class OpenApiSourceBindingRef extends Schema.Class<OpenApiSourceBindingRe
 //     `providerState` caches the refresh-relevant bits of the config
 //     so the refresh loop never reaches back into source storage.
 //
-// This is a deliberate small duplication (scopes + tokenUrl +
-// clientIdSecretId + clientSecretSecretId appear on both). The values
-// are static per source so the two copies can't drift.
+// This is a deliberate small duplication (scopes + tokenUrl and the static
+// client credential ids referenced by slots appear in source bindings and
+// connection providerState). The values are static per source so the two
+// copies can't drift under normal reconnect flows.
 // ---------------------------------------------------------------------------
 
 export const OAuth2Flow = Schema.Literals(["authorizationCode", "clientCredentials"]);
 export type OAuth2Flow = typeof OAuth2Flow.Type;
 
-export class OAuth2Auth extends Schema.Class<OAuth2Auth>("OpenApiOAuth2Auth")({
-  kind: Schema.Literal("oauth2"),
-  /** Id of the Connection that owns this sign-in. Points at the core
-   *  `connection` table; resolve via `ctx.connections.get(id)` or
-   *  `ctx.connections.accessToken(id)`. Updated when the user signs in
-   *  again from the source detail UI (a fresh connection is minted and
-   *  this pointer is rewritten). */
-  connectionId: Schema.String,
-  /** Key into `components.securitySchemes` this auth came from. Kept here
-   *  so a spec with multiple OAuth2 schemes can wire each one to its own
-   *  connection. */
-  securitySchemeName: Schema.String,
-  /** OAuth2 grant type used for this source. Determines which flow the
-   *  sign-in button runs (authorizationCode opens a browser popup;
-   *  clientCredentials is server-to-server). */
-  flow: OAuth2Flow,
-  /** Absolute token endpoint URL. */
-  tokenUrl: Schema.String,
-  /** Absolute authorization endpoint URL. Only used for authorizationCode
-   *  flows; clientCredentials has no user consent step. */
-  authorizationUrl: Schema.NullOr(Schema.String),
-  /** Expected issuer for ID token validation. Defaults to authorization origin. */
-  issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
-  /** Secret id holding the OAuth client_id. */
-  clientIdSecretId: Schema.String,
-  /** Secret id holding the OAuth client_secret. Optional for public
-   *  clients (PKCE-only authorizationCode). */
-  clientSecretSecretId: Schema.NullOr(Schema.String),
-  /** OAuth scopes requested on sign-in. Stored as a static list so the
-   *  sign-in button can re-request the same capabilities without having
-   *  to re-derive them from the OpenAPI spec. */
-  scopes: Schema.Array(Schema.String),
-}) {}
-
-export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
-  "OpenApiOAuth2SourceConfig",
-)({
+export const OAuth2SourceConfigSchema = Schema.Struct({
   kind: Schema.Literal("oauth2"),
   securitySchemeName: Schema.String,
   flow: OAuth2Flow,
@@ -257,19 +237,11 @@ export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
   clientSecretSlot: Schema.NullOr(Schema.String),
   connectionSlot: Schema.String,
   scopes: Schema.Array(Schema.String),
-}) {}
+});
 
-export class InvocationConfig extends Schema.Class<InvocationConfig>("InvocationConfig")({
-  baseUrl: Schema.String,
-  /** Headers applied to every request. Values can reference secrets. */
-  headers: Schema.optional(Schema.Record(Schema.String, HeaderValue)),
-  /**
-   * Optional OAuth2 auth — if set, the invoker resolves/refreshes the
-   * access token and injects `Authorization: Bearer <token>` on every
-   * request. Coexists with `headers` but wins for the Authorization header.
-   */
-  oauth2: Schema.OptionFromOptional(OAuth2Auth),
-}) {}
+export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
+  "OpenApiOAuth2SourceConfig",
+)(OAuth2SourceConfigSchema.fields) {}
 
 export class InvocationResult extends Schema.Class<InvocationResult>("InvocationResult")({
   status: Schema.Number,

@@ -27,10 +27,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import { ScopeId } from "@executor-js/sdk";
 
-import { asUser, testUserOrgScopeId } from "./__test-harness__/api-harness";
+import { asOrg, asUser, testUserOrgScopeId } from "./__test-harness__/api-harness";
 
 // ---------------------------------------------------------------------------
 // Fake OAuth + MCP server
@@ -263,6 +263,67 @@ afterAll(async () => {
 
 describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
   it.effect(
+    "start rejects a redirectUrl on a different origin before discovery",
+    () =>
+      Effect.gen(function* () {
+        const org = `org_${crypto.randomUUID()}`;
+        const scopeId = ScopeId.make(org);
+        const start = Date.now();
+
+        const result = yield* asOrg(org, (client) =>
+          client.oauth.start({
+            params: { scopeId },
+            payload: {
+              endpoint: "https://example.test/api",
+              redirectUrl: "https://other.example/cb",
+              connectionId: "conn-foreign-redirect",
+              tokenScope: String(scopeId),
+              pluginId: "mcp",
+              strategy: { kind: "dynamic-dcr" },
+            },
+          }),
+        ).pipe(Effect.result);
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(Date.now() - start).toBeLessThan(1000);
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "start rejects non-http redirectUrl schemes",
+    () =>
+      Effect.gen(function* () {
+        const org = `org_${crypto.randomUUID()}`;
+        const scopeId = ScopeId.make(org);
+
+        for (const redirectUrl of [
+          "javascript:alert(1)",
+          "data:text/html,<script>alert(1)</script>",
+        ]) {
+          const start = Date.now();
+          const result = yield* asOrg(org, (client) =>
+            client.oauth.start({
+              params: { scopeId },
+              payload: {
+                endpoint: "https://example.test/api",
+                redirectUrl,
+                connectionId: `conn-${crypto.randomUUID().slice(0, 8)}`,
+                tokenScope: String(scopeId),
+                pluginId: "mcp",
+                strategy: { kind: "dynamic-dcr" },
+              },
+            }),
+          ).pipe(Effect.result);
+
+          expect(Result.isFailure(result)).toBe(true);
+          expect(Date.now() - start).toBeLessThan(1000);
+        }
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
     "startOAuth → authorize → completeOAuth writes tokens at the invoker scope",
     () =>
       Effect.gen(function* () {
@@ -280,6 +341,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
               endpoint: `${fake.url}/mcp`,
               redirectUrl,
               connectionId,
+              tokenScope: String(userScope),
               strategy: { kind: "dynamic-dcr" },
               pluginId: "mcp",
             },
@@ -328,6 +390,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
               endpoint,
               redirectUrl,
               connectionId,
+              tokenScope: String(scopeA),
               strategy: { kind: "dynamic-dcr" },
               pluginId: "mcp",
             },
@@ -351,6 +414,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
               endpoint,
               redirectUrl,
               connectionId,
+              tokenScope: String(scopeB),
               strategy: { kind: "dynamic-dcr" },
               pluginId: "mcp",
             },

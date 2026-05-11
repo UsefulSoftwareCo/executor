@@ -33,6 +33,7 @@ import {
   createExecutor,
   definePlugin,
 } from "@executor-js/sdk";
+import { FetchHttpClient } from "effect/unstable/http";
 import { makePostgresAdapter, makePostgresBlobStore } from "@executor-js/storage-postgres";
 import { makeTestWorkOSVaultClient } from "@executor-js/plugin-workos-vault/testing";
 import executorConfig from "../executor.config";
@@ -117,6 +118,7 @@ const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildO
       adapter,
       blobs,
       plugins,
+      httpClientLayer: FetchHttpClient.layer,
       onElicitation: "accept-all",
     });
   });

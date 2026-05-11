@@ -2,13 +2,14 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Context, Effect } from "effect";
 
 import { addGroup, capture } from "@executor-js/api";
+import { ScopeId } from "@executor-js/sdk/core";
 import type {
   McpPluginExtension,
   McpProbeEndpointInput,
   McpSourceConfig,
   McpUpdateSourceInput,
 } from "../sdk/plugin";
-import type { SecretBackedValue } from "../sdk/types";
+import type { McpCredentialInput } from "../sdk/types";
 import { McpStoredSourceSchema } from "../sdk/stored-source";
 import { McpGroup } from "./group";
 
@@ -65,10 +66,11 @@ const toSourceConfig = (
     name: string;
     endpoint: string;
     remoteTransport?: "streamable-http" | "sse" | "auto";
-    queryParams?: Record<string, SecretBackedValue>;
-    headers?: Record<string, SecretBackedValue>;
+    queryParams?: Record<string, McpCredentialInput>;
+    headers?: Record<string, McpCredentialInput>;
     namespace?: string;
     auth?: { kind: string } & Record<string, unknown>;
+    credentialTargetScope?: string;
   };
 
   return {
@@ -81,6 +83,7 @@ const toSourceConfig = (
     headers: p.headers,
     namespace: p.namespace,
     auth: p.auth as McpSourceConfig extends { auth?: infer A } ? A : never,
+    credentialTargetScope: p.credentialTargetScope,
   };
 };
 
@@ -107,12 +110,12 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
         }),
       ),
     )
-    .handle("addSource", ({ params: path, payload }) =>
+    .handle("addSource", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
           return yield* ext.addSource(
-            toSourceConfig(payload as Parameters<typeof toSourceConfig>[0], path.scopeId),
+            toSourceConfig(payload as Parameters<typeof toSourceConfig>[0], payload.targetScope),
           );
         }),
       ),
@@ -142,6 +145,7 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
           return source
             ? new McpStoredSourceSchema({
                 namespace: source.namespace,
+                scope: ScopeId.make(source.scope),
                 name: source.name,
                 config: source.config,
               })
@@ -153,14 +157,45 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          yield* ext.updateSource(path.namespace, path.scopeId, {
+          yield* ext.updateSource(path.namespace, payload.sourceScope, {
             name: payload.name,
             endpoint: payload.endpoint,
             headers: payload.headers,
             queryParams: payload.queryParams,
+            credentialTargetScope: payload.credentialTargetScope,
             auth: payload.auth as McpUpdateSourceInput["auth"],
           });
           return { updated: true };
+        }),
+      ),
+    )
+    .handle("listSourceBindings", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          return yield* ext.listSourceBindings(path.namespace, path.sourceScopeId);
+        }),
+      ),
+    )
+    .handle("setSourceBinding", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          return yield* ext.setSourceBinding(payload);
+        }),
+      ),
+    )
+    .handle("removeSourceBinding", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          yield* ext.removeSourceBinding(
+            payload.sourceId,
+            payload.sourceScope,
+            payload.slot,
+            payload.scope,
+          );
+          return { removed: true };
         }),
       ),
     ),

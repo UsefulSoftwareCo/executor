@@ -38,7 +38,7 @@ export { typedAdapter } from "@executor-js/storage-core";
 export { StorageError, UniqueViolationError } from "@executor-js/storage-core";
 
 // IDs (branded)
-export { ScopeId, ToolId, SecretId, PolicyId, ConnectionId } from "./ids";
+export { ScopeId, ToolId, SecretId, PolicyId, ConnectionId, CredentialBindingId } from "./ids";
 
 // Scope
 export { Scope } from "./scope";
@@ -68,6 +68,8 @@ export {
 export {
   ToolSchema,
   SourceDetectionResult,
+  type RefreshSourceInput,
+  type RemoveSourceInput,
   type Source,
   type Tool,
   type ToolListFilter,
@@ -86,6 +88,7 @@ export {
   type DefinitionRow,
   type SecretRow,
   type ConnectionRow,
+  type CredentialBindingRow,
   type ToolPolicyRow,
   type ToolPolicyAction,
   type DefinitionsInput,
@@ -104,13 +107,14 @@ export {
   type ToolPolicy,
   type CreateToolPolicyInput,
   type UpdateToolPolicyInput,
+  type RemoveToolPolicyInput,
   type PolicyMatch,
   type EffectivePolicy,
   type PolicySource,
 } from "./policies";
 
 // Secrets
-export { SecretRef, SetSecretInput, type SecretProvider } from "./secrets";
+export { SecretRef, SetSecretInput, RemoveSecretInput, type SecretProvider } from "./secrets";
 
 export {
   SecretBackedMap,
@@ -120,6 +124,30 @@ export {
   type ResolveSecretBackedMapOptions,
 } from "./secret-backed-value";
 
+export {
+  CredentialBindingKind,
+  CredentialBindingValue,
+  ConfiguredCredentialBinding,
+  ConfiguredCredentialValue,
+  ConfiguredCredentialValueSchema,
+  ScopedSecretCredentialInput,
+  CredentialBindingRef,
+  SetCredentialBindingInput,
+  CredentialBindingSourceInput,
+  CredentialBindingSlotInput,
+  RemoveCredentialBindingInput,
+  ReplaceCredentialBindingValue,
+  ReplaceCredentialBindingsInput,
+  CredentialBindingResolutionStatus,
+  ResolvedCredentialSlot,
+  credentialBindingId,
+  credentialSlotKey,
+  credentialSlotPart,
+  credentialBindingRowToRef,
+  credentialBindingValueFromRow,
+  type CredentialBindingsFacade,
+} from "./credential-bindings";
+
 // Usage tracking — secret/connection refs across plugins
 export { Usage, type UsagesForSecretInput, type UsagesForConnectionInput } from "./usages";
 
@@ -128,6 +156,7 @@ export {
   ConnectionRef,
   ConnectionProviderState,
   CreateConnectionInput,
+  RemoveConnectionInput,
   UpdateConnectionTokensInput,
   TokenMaterial,
   ConnectionRefreshError,
@@ -187,11 +216,13 @@ export {
   OAuth2Error,
   OAUTH2_DEFAULT_TIMEOUT_MS,
   OAUTH2_REFRESH_SKEW_MS,
+  assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
   createPkceCodeChallenge,
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
   exchangeClientCredentials,
+  isSupportedOAuthEndpointUrl,
   refreshAccessToken,
   shouldRefreshToken,
   type OAuth2TokenResponse,
@@ -204,6 +235,13 @@ export {
 
 export { makeOAuth2Service, type OAuthServiceDeps } from "./oauth-service";
 export type { ScopedDBAdapter, ScopedTypedAdapter } from "./scoped-adapter";
+
+export {
+  HostedOutboundRequestBlocked,
+  makeHostedHttpClientLayer,
+  validateHostedOutboundUrl,
+  type HostedHttpClientOptions,
+} from "./hosted-http-client";
 
 export {
   OAuthDiscoveryError,

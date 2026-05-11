@@ -64,6 +64,55 @@
       "when": 1778004191000,
       "tag": "0008_normalize_plugin_secret_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1778128200000,
+      "tag": "0009_scoped_credentials_cutover",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778177700000,
+      "tag": "0010_repair_mcp_connection_binding_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778178300000,
+      "tag": "0011_repair_openapi_connection_binding_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1778179000000,
+      "tag": "0012_repair_openapi_secret_binding_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1778179800000,
+      "tag": "0013_cleanup_orphan_oauth_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1778192434062,
+      "tag": "0014_repair_openapi_oauth_cutover_residue",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1778192434063,
+      "tag": "0015_add_credential_binding_secret_scope",
+      "breakpoints": true
     }
   ]
 }

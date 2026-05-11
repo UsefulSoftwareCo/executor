@@ -2,7 +2,7 @@
 // MCP plugin storage — four tables:
 //   - mcp_source: per-source structural data (transport, endpoint,
 //     stdio command/args/env, etc.) plus the auth flattened into
-//     columns so secret/connection refs are queryable. The non-ref
+//     columns so source-owned credential slots are queryable. The non-ref
 //     structural data still lives in `config` as JSON because it's
 //     plugin-private and varies by transport (`remote` vs `stdio`
 //     have different shapes).
@@ -18,13 +18,18 @@
 
 import { Effect, Option, Schema } from "effect";
 
-import { defineSchema, type StorageDeps, type StorageFailure } from "@executor-js/sdk/core";
+import {
+  ConfiguredCredentialBinding,
+  defineSchema,
+  type StorageDeps,
+  type StorageFailure,
+} from "@executor-js/sdk/core";
 
 import {
   McpToolBinding,
   McpStoredSourceData,
   type McpConnectionAuth,
-  type SecretBackedValue,
+  type ConfiguredMcpCredentialValue,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -42,8 +47,8 @@ export const mcpSchema = defineSchema({
       // endpoint, remoteTransport. For stdio: transport, command,
       // args, env, cwd.
       config: { type: "json", required: true },
-      // Flattened McpConnectionAuth. Exactly one of the kind-tagged
-      // groups is populated for non-`none` auths.
+      // Flattened McpConnectionAuth. The stored source only names slots;
+      // concrete per-user/per-workspace values live in core credential_binding.
       auth_kind: {
         type: ["none", "header", "oauth2"],
         required: true,
@@ -51,19 +56,17 @@ export const mcpSchema = defineSchema({
       },
       // Header-auth fields.
       auth_header_name: { type: "string", required: false },
-      auth_secret_id: { type: "string", required: false, index: true },
-      auth_secret_prefix: { type: "string", required: false },
+      auth_header_slot: { type: "string", required: false },
+      auth_header_prefix: { type: "string", required: false },
       // OAuth2 auth fields.
-      auth_connection_id: { type: "string", required: false, index: true },
-      auth_client_id_secret_id: {
+      auth_connection_slot: { type: "string", required: false },
+      auth_client_id_slot: {
         type: "string",
         required: false,
-        index: true,
       },
-      auth_client_secret_secret_id: {
+      auth_client_secret_slot: {
         type: "string",
         required: false,
-        index: true,
       },
       created_at: { type: "date", required: true },
     },
@@ -74,10 +77,10 @@ export const mcpSchema = defineSchema({
       scope_id: { type: "string", required: true, index: true },
       source_id: { type: "string", required: true, index: true },
       name: { type: "string", required: true },
-      kind: { type: ["text", "secret"], required: true },
+      kind: { type: ["text", "binding"], required: true },
       text_value: { type: "string", required: false },
-      secret_id: { type: "string", required: false, index: true },
-      secret_prefix: { type: "string", required: false },
+      slot_key: { type: "string", required: false },
+      prefix: { type: "string", required: false },
     },
   },
   mcp_source_query_param: {
@@ -86,10 +89,10 @@ export const mcpSchema = defineSchema({
       scope_id: { type: "string", required: true, index: true },
       source_id: { type: "string", required: true, index: true },
       name: { type: "string", required: true },
-      kind: { type: ["text", "secret"], required: true },
+      kind: { type: ["text", "binding"], required: true },
       text_value: { type: "string", required: false },
-      secret_id: { type: "string", required: false, index: true },
-      secret_prefix: { type: "string", required: false },
+      slot_key: { type: "string", required: false },
+      prefix: { type: "string", required: false },
     },
   },
   mcp_binding: {
@@ -122,22 +125,16 @@ const coerceJson = (value: unknown): unknown => {
   return Option.getOrElse(decodeJson(value), () => value);
 };
 
-const hasStringFields = <const Fields extends readonly string[]>(
-  row: Record<string, unknown>,
-  fields: Fields,
-): row is Record<Fields[number], string> & Record<string, unknown> =>
-  fields.every((field) => typeof row[field] === "string");
-
 // --- auth column packing/unpacking ------------------------------------------
 
 interface AuthColumns {
   readonly auth_kind: "none" | "header" | "oauth2";
   readonly auth_header_name?: string;
-  readonly auth_secret_id?: string;
-  readonly auth_secret_prefix?: string;
-  readonly auth_connection_id?: string;
-  readonly auth_client_id_secret_id?: string;
-  readonly auth_client_secret_secret_id?: string;
+  readonly auth_header_slot?: string;
+  readonly auth_header_prefix?: string;
+  readonly auth_connection_slot?: string;
+  readonly auth_client_id_slot?: string;
+  readonly auth_client_secret_slot?: string;
 }
 
 const authToColumns = (auth: McpConnectionAuth): AuthColumns => {
@@ -145,16 +142,16 @@ const authToColumns = (auth: McpConnectionAuth): AuthColumns => {
     return {
       auth_kind: "header",
       auth_header_name: auth.headerName,
-      auth_secret_id: auth.secretId,
-      auth_secret_prefix: auth.prefix,
+      auth_header_slot: auth.secretSlot,
+      auth_header_prefix: auth.prefix,
     };
   }
   if (auth.kind === "oauth2") {
     return {
       auth_kind: "oauth2",
-      auth_connection_id: auth.connectionId,
-      auth_client_id_secret_id: auth.clientIdSecretId,
-      auth_client_secret_secret_id: auth.clientSecretSecretId ?? undefined,
+      auth_connection_slot: auth.connectionSlot,
+      auth_client_id_slot: auth.clientIdSlot,
+      auth_client_secret_slot: auth.clientSecretSlot,
     };
   }
   return { auth_kind: "none" };
@@ -162,47 +159,47 @@ const authToColumns = (auth: McpConnectionAuth): AuthColumns => {
 
 const columnsToAuth = (row: Record<string, unknown>): McpConnectionAuth => {
   const kind = row.auth_kind;
-  if (kind === "header" && typeof row.auth_secret_id === "string") {
-    const prefix = row.auth_secret_prefix as string | null | undefined;
+  if (kind === "header" && typeof row.auth_header_slot === "string") {
+    const prefix = row.auth_header_prefix as string | null | undefined;
     return {
       kind: "header",
       headerName: (row.auth_header_name as string | null) ?? "",
-      secretId: row.auth_secret_id,
+      secretSlot: row.auth_header_slot,
       ...(prefix ? { prefix } : {}),
     };
   }
-  if (kind === "oauth2" && typeof row.auth_connection_id === "string") {
-    const cid = row.auth_client_id_secret_id as string | null | undefined;
-    const csec = row.auth_client_secret_secret_id as string | null | undefined;
+  if (kind === "oauth2" && typeof row.auth_connection_slot === "string") {
+    const cid = row.auth_client_id_slot as string | null | undefined;
+    const csec = row.auth_client_secret_slot as string | null | undefined;
     return {
       kind: "oauth2",
-      connectionId: row.auth_connection_id,
-      ...(cid ? { clientIdSecretId: cid } : {}),
-      ...(csec !== undefined && csec !== null ? { clientSecretSecretId: csec } : {}),
+      connectionSlot: row.auth_connection_slot,
+      ...(cid ? { clientIdSlot: cid } : {}),
+      ...(csec ? { clientSecretSlot: csec } : {}),
     };
   }
   return { kind: "none" };
 };
 
-// --- SecretBackedMap <-> child rows (mcp_source_header / query_param) -------
+// --- ConfiguredCredentialValue map <-> child rows ---------------------------
 
-interface SecretBackedRow {
+interface ConfiguredCredentialRow {
   readonly id: string;
   readonly scope_id: string;
   readonly source_id: string;
   readonly name: string;
-  readonly kind: "text" | "secret";
+  readonly kind: "text" | "binding";
   readonly text_value?: string;
-  readonly secret_id?: string;
-  readonly secret_prefix?: string;
+  readonly slot_key?: string;
+  readonly prefix?: string;
   readonly [k: string]: unknown;
 }
 
 const valueMapToRows = (
   sourceId: string,
   scope: string,
-  values: Record<string, SecretBackedValue> | undefined,
-): readonly SecretBackedRow[] => {
+  values: Record<string, ConfiguredMcpCredentialValue> | undefined,
+): readonly ConfiguredCredentialRow[] => {
   if (!values) return [];
   return Object.entries(values).map(([name, value]) => {
     const id = JSON.stringify([sourceId, name]);
@@ -221,23 +218,25 @@ const valueMapToRows = (
       scope_id: scope,
       source_id: sourceId,
       name,
-      kind: "secret",
-      secret_id: value.secretId,
-      secret_prefix: value.prefix,
+      kind: "binding",
+      slot_key: value.slot,
+      prefix: value.prefix,
     };
   });
 };
 
 const rowsToValueMap = (
   rows: readonly Record<string, unknown>[],
-): Record<string, SecretBackedValue> => {
-  const out: Record<string, SecretBackedValue> = {};
+): Record<string, ConfiguredMcpCredentialValue> => {
+  const out: Record<string, ConfiguredMcpCredentialValue> = {};
   for (const row of rows) {
     if (typeof row.name !== "string") continue;
     const name = row.name;
-    if (row.kind === "secret" && typeof row.secret_id === "string") {
-      const prefix = row.secret_prefix as string | undefined | null;
-      out[name] = prefix ? { secretId: row.secret_id, prefix } : { secretId: row.secret_id };
+    if (row.kind === "binding" && typeof row.slot_key === "string") {
+      const prefix = row.prefix as string | undefined | null;
+      out[name] = prefix
+        ? new ConfiguredCredentialBinding({ kind: "binding", slot: row.slot_key, prefix })
+        : new ConfiguredCredentialBinding({ kind: "binding", slot: row.slot_key });
     } else if (row.kind === "text" && typeof row.text_value === "string") {
       out[name] = row.text_value;
     }
@@ -323,51 +322,6 @@ export interface McpBindingStore {
   ) => Effect.Effect<McpStoredSourceData | null, StorageFailure>;
   readonly putSource: (source: McpStoredSource) => Effect.Effect<void, StorageFailure>;
   readonly removeSource: (namespace: string, scope: string) => Effect.Effect<void, StorageFailure>;
-
-  // ---------------------------------------------------------------------
-  // Usage lookups — back `usagesForSecret` / `usagesForConnection`.
-  // ---------------------------------------------------------------------
-
-  /** Source rows whose flattened auth columns reference the given
-   *  secret id. The `slot` field on each result tags which column
-   *  matched so the caller can produce a precise Usage.slot. */
-  readonly findSourcesBySecret: (secretId: string) => Effect.Effect<
-    readonly {
-      readonly namespace: string;
-      readonly scope_id: string;
-      readonly name: string;
-      readonly slot: string;
-    }[],
-    StorageFailure
-  >;
-
-  /** Source rows whose oauth2 auth points at the given connection id. */
-  readonly findSourcesByConnection: (connectionId: string) => Effect.Effect<
-    readonly {
-      readonly namespace: string;
-      readonly scope_id: string;
-      readonly name: string;
-      readonly slot: string;
-    }[],
-    StorageFailure
-  >;
-
-  /** Header / query_param child rows that reference the given secret id. */
-  readonly findChildRowsBySecret: (secretId: string) => Effect.Effect<
-    readonly {
-      readonly kind: "header" | "query_param";
-      readonly source_id: string;
-      readonly scope_id: string;
-      readonly name: string;
-    }[],
-    StorageFailure
-  >;
-
-  /** Resolve display names for `(scope_id, source_id)` pairs in one
-   *  round trip. Keys: `${scope_id}:${source_id}`. */
-  readonly lookupSourceNames: (
-    keys: readonly string[],
-  ) => Effect.Effect<ReadonlyMap<string, string>, StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,108 +495,6 @@ export const makeMcpStore = ({ adapter: db }: StorageDeps<McpSchema>): McpBindin
             { field: "scope_id", value: scope },
           ],
         });
-      }),
-
-    findSourcesBySecret: (secretId) =>
-      Effect.gen(function* () {
-        // Three places a secret id can land on an mcp_source row: the
-        // header-auth secret, and the two oauth2 client_*_secret_id
-        // columns. Run all three lookups in parallel and dedupe by
-        // (scope_id, id).
-        const [byHeader, byClientId, byClientSecret] = yield* Effect.all(
-          [
-            db.findMany({
-              model: "mcp_source",
-              where: [{ field: "auth_secret_id", value: secretId }],
-            }),
-            db.findMany({
-              model: "mcp_source",
-              where: [{ field: "auth_client_id_secret_id", value: secretId }],
-            }),
-            db.findMany({
-              model: "mcp_source",
-              where: [{ field: "auth_client_secret_secret_id", value: secretId }],
-            }),
-          ],
-          { concurrency: "unbounded" },
-        );
-        const dedup = new Map<string, Record<string, unknown>>();
-        for (const r of [...byHeader, ...byClientId, ...byClientSecret]) {
-          dedup.set(`${r.scope_id}:${r.id}`, r);
-        }
-        return [...dedup.values()]
-          .filter((row) => hasStringFields(row, ["id", "scope_id", "name"]))
-          .map((row) => ({
-            namespace: row.id,
-            scope_id: row.scope_id,
-            name: row.name,
-            slot: (byHeader as readonly Record<string, unknown>[]).includes(row)
-              ? "auth.header"
-              : (byClientId as readonly Record<string, unknown>[]).includes(row)
-                ? "auth.oauth2.client_id"
-                : "auth.oauth2.client_secret",
-          }));
-      }),
-
-    findSourcesByConnection: (connectionId) =>
-      db
-        .findMany({
-          model: "mcp_source",
-          where: [{ field: "auth_connection_id", value: connectionId }],
-        })
-        .pipe(
-          Effect.map((rows) =>
-            rows.map((r) => ({
-              namespace: r.id,
-              scope_id: r.scope_id,
-              name: r.name,
-              slot: "auth.oauth2.connection",
-            })),
-          ),
-        ),
-
-    findChildRowsBySecret: (secretId) =>
-      Effect.gen(function* () {
-        const [headers, params] = yield* Effect.all(
-          [
-            db.findMany({
-              model: "mcp_source_header",
-              where: [{ field: "secret_id", value: secretId }],
-            }),
-            db.findMany({
-              model: "mcp_source_query_param",
-              where: [{ field: "secret_id", value: secretId }],
-            }),
-          ],
-          { concurrency: "unbounded" },
-        );
-        return [
-          ...headers.map((r) => ({
-            kind: "header" as const,
-            source_id: r.source_id,
-            scope_id: r.scope_id,
-            name: r.name,
-          })),
-          ...params.map((r) => ({
-            kind: "query_param" as const,
-            source_id: r.source_id,
-            scope_id: r.scope_id,
-            name: r.name,
-          })),
-        ];
-      }),
-
-    lookupSourceNames: (keys) =>
-      Effect.gen(function* () {
-        if (keys.length === 0) return new Map<string, string>();
-        const rows = yield* db.findMany({ model: "mcp_source" });
-        const requested = new Set(keys);
-        const out = new Map<string, string>();
-        for (const r of rows) {
-          const key = `${r.scope_id}:${r.id}`;
-          if (requested.has(key)) out.set(key, r.name);
-        }
-        return out;
       }),
   };
 

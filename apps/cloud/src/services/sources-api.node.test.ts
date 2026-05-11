@@ -308,7 +308,11 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           const result = yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: { spec: MINIMAL_OPENAPI_SPEC, namespace },
+            payload: {
+              targetScope: ScopeId.make(org),
+              spec: MINIMAL_OPENAPI_SPEC,
+              namespace,
+            },
           });
           expect(result.namespace).toBe(namespace);
           expect(result.toolCount).toBeGreaterThan(0);
@@ -330,7 +334,11 @@ describe("sources api (HTTP)", () => {
       yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: { spec: MINIMAL_OPENAPI_SPEC, namespace },
+          payload: {
+            targetScope: ScopeId.make(org),
+            spec: MINIMAL_OPENAPI_SPEC,
+            namespace,
+          },
         }),
       );
 
@@ -365,6 +373,26 @@ describe("sources api (HTTP)", () => {
     }),
   );
 
+  it.effect("openapi.addSpec accepts a public HTTP baseUrl in local mode", () =>
+    Effect.gen(function* () {
+      const org = `org_${crypto.randomUUID()}`;
+
+      const result = yield* asOrg(org, (client) =>
+        client.openapi.addSpec({
+          params: { scopeId: ScopeId.make(org) },
+          payload: {
+            targetScope: ScopeId.make(org),
+            spec: MINIMAL_OPENAPI_SPEC,
+            namespace: `ns_${crypto.randomUUID().replace(/-/g, "_")}`,
+            baseUrl: "http://example.com",
+          },
+        }),
+      );
+
+      expect(result.toolCount).toBe(1);
+    }),
+  );
+
   it.effect("added OpenAPI source can be listed, inspected, and invoked through execution", () =>
     Effect.gen(function* () {
       const server = yield* Effect.acquireRelease(
@@ -379,6 +407,7 @@ describe("sources api (HTTP)", () => {
         client.openapi.addSpec({
           params: { scopeId },
           payload: {
+            targetScope: scopeId,
             spec: invocableOpenApiSpec(server.baseUrl),
             namespace,
           },
@@ -439,6 +468,7 @@ describe("sources api (HTTP)", () => {
           .addSource({
             params: { scopeId },
             payload: {
+              targetScope: scopeId,
               transport: "remote",
               name: "Broken MCP",
               endpoint: "http://127.0.0.1:1/mcp",
@@ -484,6 +514,7 @@ describe("sources api (HTTP)", () => {
         client.graphql.addSource({
           params: { scopeId },
           payload: {
+            targetScope: scopeId,
             endpoint: server.endpoint,
             namespace,
             name: "Cloud GraphQL",
@@ -546,6 +577,7 @@ describe("sources api (HTTP)", () => {
         client.mcp.addSource({
           params: { scopeId },
           payload: {
+            targetScope: scopeId,
             transport: "remote",
             name: "Cloud MCP",
             endpoint: server.endpoint,
@@ -608,7 +640,11 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: { spec: MINIMAL_OPENAPI_SPEC, namespace },
+            payload: {
+              targetScope: ScopeId.make(org),
+              spec: MINIMAL_OPENAPI_SPEC,
+              namespace,
+            },
           });
           yield* client.sources.remove({
             params: { scopeId: ScopeId.make(org), sourceId: namespace },
@@ -662,11 +698,19 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: { spec: MINIMAL_OPENAPI_SPEC, namespace },
+            payload: {
+              targetScope: ScopeId.make(org),
+              spec: MINIMAL_OPENAPI_SPEC,
+              namespace,
+            },
           });
           yield* client.openapi.updateSource({
             params: { scopeId: ScopeId.make(org), namespace },
-            payload: { name: "Renamed API", baseUrl: "https://override.example.com" },
+            payload: {
+              sourceScope: ScopeId.make(org),
+              name: "Renamed API",
+              baseUrl: "https://override.example.com",
+            },
           });
         }),
       );
@@ -692,6 +736,7 @@ describe("sources api (HTTP)", () => {
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgId) },
           payload: {
+            targetScope: ScopeId.make(orgId),
             spec: MINIMAL_OPENAPI_SPEC,
             namespace,
             headers: {
@@ -785,6 +830,7 @@ describe("sources api (HTTP)", () => {
           value: {
             kind: "secret",
             secretId: SecretId.make("alice_pat"),
+            secretScopeId: ScopeId.make(aliceScope),
           },
         }),
       );
@@ -813,6 +859,7 @@ describe("sources api (HTTP)", () => {
           value: {
             kind: "secret",
             secretId: SecretId.make("bob_pat"),
+            secretScopeId: ScopeId.make(bobScope),
           },
         }),
       );
@@ -842,7 +889,11 @@ describe("sources api (HTTP)", () => {
         const result = yield* asOrg(org, (client) =>
           client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: { spec: CLOUDFLARE_SPEC, namespace },
+            payload: {
+              targetScope: ScopeId.make(org),
+              spec: CLOUDFLARE_SPEC,
+              namespace,
+            },
           }),
         );
         expect(result.namespace).toBe(namespace);

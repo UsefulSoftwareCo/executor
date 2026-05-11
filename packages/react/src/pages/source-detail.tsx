@@ -61,6 +61,7 @@ export function SourceDetailPage(props: { namespace: string }) {
   }, [namespace]);
 
   const sourceData = AsyncResult.isSuccess(source) ? source.value : null;
+  const sourceOwnerScopeId = sourceData?.scopeId ?? scopeId;
   const canRefresh = sourceData ? (sourceData.canRefresh ?? true) : false;
   const canRemove = sourceData ? (sourceData.canRemove ?? true) : false;
   const canEdit = sourceData ? (sourceData.canEdit ?? false) : false;
@@ -117,9 +118,10 @@ export function SourceDetailPage(props: { namespace: string }) {
   );
 
   const handleDelete = async () => {
+    if (!sourceData) return;
     setDeleting(true);
     const exit = await doRemove({
-      params: { scopeId, sourceId: namespace },
+      params: { scopeId: sourceOwnerScopeId, sourceId: namespace },
       reactivityKeys: sourceWriteKeys,
     });
     if (Exit.isFailure(exit)) {
@@ -131,9 +133,10 @@ export function SourceDetailPage(props: { namespace: string }) {
   };
 
   const handleRefresh = async () => {
+    if (!sourceData) return;
     setRefreshing(true);
     await doRefresh({
-      params: { scopeId, sourceId: namespace },
+      params: { scopeId: sourceOwnerScopeId, sourceId: namespace },
       reactivityKeys: sourceWriteKeys,
     });
     setRefreshing(false);
@@ -163,12 +166,6 @@ export function SourceDetailPage(props: { namespace: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {editPlugin?.signIn && !editing && !confirmDelete && (
-            <Suspense fallback={null}>
-              <editPlugin.signIn sourceId={namespace} />
-            </Suspense>
-          )}
-
           {canEdit && editPlugin && !editing && !confirmDelete && (
             <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
               Edit

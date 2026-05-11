@@ -63,3 +63,54 @@ describe("startServer static/SPA routing", () => {
     expect(await response.text()).toContain("index-shell");
   });
 });
+
+describe("startServer network bind auth", () => {
+  it("refuses non-loopback binds without a token or password", async () => {
+    await expect(
+      startServer({
+        port: 0,
+        hostname: "0.0.0.0",
+        clientDir,
+        handlers: {
+          api: {
+            handler: async () => new Response("ok"),
+            dispose: async () => {},
+          },
+          mcp: {
+            handleRequest: async () => new Response("ok"),
+            close: async () => {},
+          },
+        },
+      }),
+    ).rejects.toThrow("non-loopback host without an auth token or password");
+  });
+
+  it("requires the configured token when auth is enabled", async () => {
+    server = await startServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      clientDir,
+      authToken: "test-token",
+      handlers: {
+        api: {
+          handler: async () => new Response("ok"),
+          dispose: async () => {},
+        },
+        mcp: {
+          handleRequest: async () => new Response("ok"),
+          close: async () => {},
+        },
+      },
+    });
+
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const unauthorized = await fetch(`${baseUrl}/api/health`);
+    expect(unauthorized.status).toBe(401);
+
+    const authorized = await fetch(`${baseUrl}/api/health`, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    expect(authorized.status).toBe(200);
+    expect(await authorized.text()).toBe("ok");
+  });
+});

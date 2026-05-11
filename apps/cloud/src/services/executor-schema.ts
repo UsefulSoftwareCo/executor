@@ -9,6 +9,8 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 
+export { blobTable as blob } from "@executor-js/storage-postgres";
+
 export const source = pgTable(
   "source",
   {
@@ -134,6 +136,37 @@ export const oauth2_session = pgTable(
   ],
 );
 
+export const credential_binding = pgTable(
+  "credential_binding",
+  {
+    id: text("id").notNull(),
+    scope_id: text("scope_id").notNull(),
+    plugin_id: text("plugin_id").notNull(),
+    source_id: text("source_id").notNull(),
+    source_scope_id: text("source_scope_id").notNull(),
+    slot_key: text("slot_key").notNull(),
+    kind: text("kind").notNull(),
+    text_value: text("text_value"),
+    secret_id: text("secret_id"),
+    secret_scope_id: text("secret_scope_id"),
+    connection_id: text("connection_id"),
+    created_at: timestamp("created_at").notNull(),
+    updated_at: timestamp("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.scope_id, table.id] }),
+    index("credential_binding_scope_id_idx").on(table.scope_id),
+    index("credential_binding_plugin_id_idx").on(table.plugin_id),
+    index("credential_binding_source_id_idx").on(table.source_id),
+    index("credential_binding_source_scope_id_idx").on(table.source_scope_id),
+    index("credential_binding_slot_key_idx").on(table.slot_key),
+    index("credential_binding_kind_idx").on(table.kind),
+    index("credential_binding_secret_id_idx").on(table.secret_id),
+    index("credential_binding_secret_scope_id_idx").on(table.secret_scope_id),
+    index("credential_binding_connection_id_idx").on(table.connection_id),
+  ],
+);
+
 export const tool_policy = pgTable(
   "tool_policy",
   {
@@ -160,7 +193,6 @@ export const openapi_source = pgTable(
     spec: text("spec").notNull(),
     source_url: text("source_url"),
     base_url: text("base_url"),
-    headers: jsonb("headers"),
     oauth2: jsonb("oauth2"),
   },
   (table) => [
@@ -184,28 +216,22 @@ export const openapi_operation = pgTable(
   ],
 );
 
-export const openapi_source_binding = pgTable(
-  "openapi_source_binding",
+export const openapi_source_header = pgTable(
+  "openapi_source_header",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
+    scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
-    source_scope_id: text("source_scope_id").notNull(),
-    target_scope_id: text("target_scope_id").notNull(),
-    slot: text("slot").notNull(),
-    kind: text("kind", { enum: ["secret", "connection", "text"] }).notNull(),
-    secret_id: text("secret_id"),
-    connection_id: text("connection_id"),
+    name: text("name").notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    created_at: timestamp("created_at").notNull(),
-    updated_at: timestamp("updated_at").notNull(),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
-    index("openapi_source_binding_source_id_idx").on(table.source_id),
-    index("openapi_source_binding_source_scope_id_idx").on(table.source_scope_id),
-    index("openapi_source_binding_target_scope_id_idx").on(table.target_scope_id),
-    index("openapi_source_binding_slot_idx").on(table.slot),
-    index("openapi_source_binding_secret_id_idx").on(table.secret_id),
-    index("openapi_source_binding_connection_id_idx").on(table.connection_id),
+    primaryKey({ columns: [table.scope_id, table.id] }),
+    index("openapi_source_header_scope_id_idx").on(table.scope_id),
+    index("openapi_source_header_source_id_idx").on(table.source_id),
   ],
 );
 
@@ -216,16 +242,15 @@ export const openapi_source_query_param = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("openapi_source_query_param_scope_id_idx").on(table.scope_id),
     index("openapi_source_query_param_source_id_idx").on(table.source_id),
-    index("openapi_source_query_param_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -236,16 +261,15 @@ export const openapi_source_spec_fetch_header = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("openapi_source_spec_fetch_header_scope_id_idx").on(table.scope_id),
     index("openapi_source_spec_fetch_header_source_id_idx").on(table.source_id),
-    index("openapi_source_spec_fetch_header_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -256,16 +280,15 @@ export const openapi_source_spec_fetch_query_param = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("openapi_source_spec_fetch_query_param_scope_id_idx").on(table.scope_id),
     index("openapi_source_spec_fetch_query_param_source_id_idx").on(table.source_id),
-    index("openapi_source_spec_fetch_query_param_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -280,20 +303,16 @@ export const mcp_source = pgTable(
       .default("none")
       .notNull(),
     auth_header_name: text("auth_header_name"),
-    auth_secret_id: text("auth_secret_id"),
-    auth_secret_prefix: text("auth_secret_prefix"),
-    auth_connection_id: text("auth_connection_id"),
-    auth_client_id_secret_id: text("auth_client_id_secret_id"),
-    auth_client_secret_secret_id: text("auth_client_secret_secret_id"),
+    auth_header_slot: text("auth_header_slot"),
+    auth_header_prefix: text("auth_header_prefix"),
+    auth_connection_slot: text("auth_connection_slot"),
+    auth_client_id_slot: text("auth_client_id_slot"),
+    auth_client_secret_slot: text("auth_client_secret_slot"),
     created_at: timestamp("created_at").notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("mcp_source_scope_id_idx").on(table.scope_id),
-    index("mcp_source_auth_secret_id_idx").on(table.auth_secret_id),
-    index("mcp_source_auth_connection_id_idx").on(table.auth_connection_id),
-    index("mcp_source_auth_client_id_secret_id_idx").on(table.auth_client_id_secret_id),
-    index("mcp_source_auth_client_secret_secret_id_idx").on(table.auth_client_secret_secret_id),
   ],
 );
 
@@ -304,16 +323,15 @@ export const mcp_source_header = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("mcp_source_header_scope_id_idx").on(table.scope_id),
     index("mcp_source_header_source_id_idx").on(table.source_id),
-    index("mcp_source_header_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -324,16 +342,15 @@ export const mcp_source_query_param = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("mcp_source_query_param_scope_id_idx").on(table.scope_id),
     index("mcp_source_query_param_source_id_idx").on(table.source_id),
-    index("mcp_source_query_param_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -363,12 +380,11 @@ export const graphql_source = pgTable(
     auth_kind: text("auth_kind", { enum: ["none", "oauth2"] })
       .default("none")
       .notNull(),
-    auth_connection_id: text("auth_connection_id"),
+    auth_connection_slot: text("auth_connection_slot"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("graphql_source_scope_id_idx").on(table.scope_id),
-    index("graphql_source_auth_connection_id_idx").on(table.auth_connection_id),
   ],
 );
 
@@ -379,16 +395,15 @@ export const graphql_source_header = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("graphql_source_header_scope_id_idx").on(table.scope_id),
     index("graphql_source_header_source_id_idx").on(table.source_id),
-    index("graphql_source_header_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -399,16 +414,15 @@ export const graphql_source_query_param = pgTable(
     scope_id: text("scope_id").notNull(),
     source_id: text("source_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "secret"] }).notNull(),
+    kind: text("kind", { enum: ["text", "binding"] }).notNull(),
     text_value: text("text_value"),
-    secret_id: text("secret_id"),
-    secret_prefix: text("secret_prefix"),
+    slot_key: text("slot_key"),
+    prefix: text("prefix"),
   },
   (table) => [
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("graphql_source_query_param_scope_id_idx").on(table.scope_id),
     index("graphql_source_query_param_source_id_idx").on(table.source_id),
-    index("graphql_source_query_param_secret_id_idx").on(table.secret_id),
   ],
 );
 
@@ -440,14 +454,4 @@ export const workos_vault_metadata = pgTable(
     primaryKey({ columns: [table.scope_id, table.id] }),
     index("workos_vault_metadata_scope_id_idx").on(table.scope_id),
   ],
-);
-
-export const blob = pgTable(
-  "blob",
-  {
-    namespace: text("namespace").notNull(),
-    key: text("key").notNull(),
-    value: text("value").notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.namespace, table.key] })],
 );

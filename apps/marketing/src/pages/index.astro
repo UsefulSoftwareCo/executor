@@ -1,971 +1,330 @@
 ---
-export const prerender = true
-import Layout from '../layouts/Layout.astro'
+import Layout from "../layouts/Layout.astro";
+import { AnimatedBeamDemo } from "../components/animated-beam-demo";
+import { SelfHostContactModal } from "../components/self-host-contact-modal";
 ---
 
 <Layout>
-  <!-- ─── NAV ─── -->
-  <nav class="fixed top-0 w-full z-50 bg-surface/80 backdrop-blur-lg">
-    <div class="max-w-[1200px] mx-auto px-6 sm:px-10 h-14 flex items-center justify-between">
-      <a href="/" class="font-display text-xl italic text-ink tracking-tight hover:text-teal transition-colors">executor</a>
-      <div class="flex items-center gap-6 sm:gap-8">
-        <a href="#roadmap" class="hidden sm:block text-[13px] text-ink-muted hover:text-ink transition-colors">Roadmap</a>
-        <a href="https://github.com/RhysSullivan/executor" class="hidden sm:block text-[13px] text-ink-muted hover:text-ink transition-colors">GitHub</a>
-        <a href="/cloud" class="text-[13px] font-medium text-surface bg-teal hover:bg-teal-dim px-4 py-1.5 rounded-md transition-colors">
-          Try Cloud
-        </a>
-      </div>
+  <main class="bg-soft min-h-dvh relative antialiased">
+    {/* Pattern + fade — span the top 100vh, behind everything */}
+    <div
+      class="pattern-bg pattern-graph"
+      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 1; pointer-events: none;"
+    >
     </div>
-  </nav>
+    <div
+      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 2; pointer-events: none; background: linear-gradient(180deg, transparent 0%, transparent 65%, var(--color-surface) 100%);"
+    >
+    </div>
 
-  <!-- ─── HERO ─── -->
-  <section class="relative min-h-screen flex flex-col justify-center pt-14 overflow-hidden">
-    <div class="absolute top-[15%] right-[10%] w-[500px] h-[500px] bg-teal/[0.04] rounded-full blur-[150px] pointer-events-none"></div>
-
-    <div class="max-w-[1200px] mx-auto px-6 sm:px-10 w-full">
-      <!-- Text centered -->
-      <div class="text-center max-w-2xl mx-auto mt-10 mb-16">
-        <h1 class="rise-d1 font-display text-[clamp(3rem,7vw,5.5rem)] leading-[0.95] tracking-tight mb-8">
-          <span class="text-ink">Your missing<br /></span><span class="italic text-teal">integration&nbsp;layer</span>
-        </h1>
-
-        <p class="rise-d2 text-[17px] leading-[1.7] text-ink-muted mb-10">
-          One catalog. Every agent. Shared auth, policies, and tools across
-          Cursor, Claude Code, OpenCode&mdash;or your own.
-        </p>
-
-        <div class="rise-d3 flex flex-wrap items-center justify-center gap-3">
-          <a href="/cloud" class="inline-flex items-center gap-2 text-[14px] font-medium text-surface bg-teal hover:bg-teal-dim pl-5 pr-3 py-2.5 rounded-md transition-colors">
-            Try Cloud
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>
+    <div class="relative z-10">
+      {/* NAV */}
+      <nav>
+        <div
+          class="max-w-[1200px] mx-auto px-6 sm:px-10 h-14 flex items-center justify-between"
+        >
+          <a href="/" class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="w-5 h-5" />
+            <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink"
+              >executor</span
+            >
           </a>
-          <a href="#get-started" class="inline-flex items-center gap-2 text-[14px] font-medium text-ink-muted hover:text-ink border border-rule hover:border-ink-faint px-5 py-2.5 rounded-md transition-colors">
-            Run it locally
-          </a>
-        </div>
-      </div>
-
-      <!-- URL input bar -->
-      <div class="rise-d4 mb-4" id="detect-bar">
-        <div class="relative">
-          <div class="flex items-center gap-3 bg-surface-raised border border-rule rounded-xl px-5 py-3.5 focus-within:border-teal/30 transition-colors">
-            <svg class="w-4 h-4 text-ink-faint shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.414-5.874a4.5 4.5 0 00-6.364 0l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
-            <input
-              id="detect-input"
-              type="url"
-              placeholder="Paste any API URL to detect tools..."
-              class="flex-1 bg-transparent text-[14px] text-ink placeholder:text-ink-faint outline-none font-mono"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <button id="detect-btn" class="text-[12px] font-medium text-surface bg-teal hover:bg-teal-dim px-4 py-1.5 rounded-md transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">
-              Detect
-            </button>
-          </div>
-          <div id="detect-status" class="hidden absolute left-0 right-0 -bottom-7 text-[11px] font-mono text-center"></div>
-          <div id="detect-examples" class="mt-3 flex flex-wrap items-center gap-2 justify-center">
-            <span class="text-[11px] text-ink-faint">Try:</span>
-            <button class="detect-example text-[11px] font-mono text-teal/60 hover:text-teal border border-rule hover:border-teal/20 rounded px-2 py-1 transition-colors" data-url="https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json">GitHub REST</button>
-            <button class="detect-example text-[11px] font-mono text-teal/60 hover:text-teal border border-rule hover:border-teal/20 rounded px-2 py-1 transition-colors" data-url="https://api.linear.app/graphql">Linear GraphQL</button>
-            <button class="detect-example text-[11px] font-mono text-teal/60 hover:text-teal border border-rule hover:border-teal/20 rounded px-2 py-1 transition-colors" data-url="https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest">Google Calendar</button>
-            <button class="detect-example text-[11px] font-mono text-teal/60 hover:text-teal border border-rule hover:border-teal/20 rounded px-2 py-1 transition-colors" data-url="https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json">Stripe</button>
+          <div class="flex items-center gap-5">
+            <a
+              href="https://github.com/RhysSullivan/executor"
+              class="text-[14px] font-medium text-ink-2 hover:text-ink transition-colors"
+              >GitHub</a
+            >
+            <a href="/cloud" class="btn-primary">Try Cloud →</a>
           </div>
         </div>
-      </div>
+      </nav>
 
-      <!-- Full-width interactive catalog UI -->
-      <div class="rise-d4 relative" id="hero-catalog">
-        <div class="absolute -inset-px rounded-xl bg-gradient-to-b from-teal/10 via-transparent to-transparent pointer-events-none"></div>
-        <div class="relative bg-surface-raised border border-rule rounded-xl overflow-hidden text-[13px]">
-
-          <!-- Top bar -->
-          <div class="flex items-center justify-between px-5 py-3 border-b border-rule">
-            <div class="flex items-center gap-3">
-              <span class="font-display italic text-ink text-sm">executor</span>
-              <span class="text-ink-faint">/</span>
-              <span class="text-ink-muted">Sources</span>
-              <span class="text-ink-faint">/</span>
-              <span class="text-ink" data-breadcrumb>GitHub</span>
-            </div>
-            <div class="flex items-center gap-4">
-              <span class="font-mono text-[11px] text-teal" data-total-tools>482 tools indexed</span>
-            </div>
-          </div>
-
-          <!-- Content: sidebar + main -->
-          <div class="flex">
-
-            <!-- Sidebar: sources -->
-            <div class="w-[200px] shrink-0 border-r border-rule p-3 space-y-1 hidden sm:block">
-              <div class="text-[10px] font-mono text-ink-faint uppercase tracking-[0.1em] mb-2.5 px-2">Connected</div>
-              <button data-source="github" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors bg-teal/[0.08] border border-teal/15">
-                <div class="w-5 h-5 rounded bg-orange-400/15 flex items-center justify-center text-[9px] text-orange-400 font-mono font-medium shrink-0">G</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink text-[12px] truncate">GitHub</div>
-                  <div class="text-[10px] text-ink-faint">347 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">openapi</span>
-              </button>
-              <button data-source="slack" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay">
-                <div class="w-5 h-5 rounded bg-blue-400/15 flex items-center justify-center text-[9px] text-blue-400 font-mono font-medium shrink-0">S</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink-muted text-[12px] truncate">Slack</div>
-                  <div class="text-[10px] text-ink-faint">42 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">openapi</span>
-              </button>
-              <button data-source="calendar" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay">
-                <div class="w-5 h-5 rounded bg-green-400/15 flex items-center justify-center text-[9px] text-green-400 font-mono font-medium shrink-0">C</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink-muted text-[12px] truncate">Calendar</div>
-                  <div class="text-[10px] text-ink-faint">18 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">google</span>
-              </button>
-              <button data-source="linear" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay">
-                <div class="w-5 h-5 rounded bg-purple-400/15 flex items-center justify-center text-[9px] text-purple-400 font-mono font-medium shrink-0">L</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink-muted text-[12px] truncate">Linear</div>
-                  <div class="text-[10px] text-ink-faint">56 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">graphql</span>
-              </button>
-              <button data-source="resend" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay">
-                <div class="w-5 h-5 rounded bg-red-400/15 flex items-center justify-center text-[9px] text-red-400 font-mono font-medium shrink-0">R</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink-muted text-[12px] truncate">Resend</div>
-                  <div class="text-[10px] text-ink-faint">19 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">openapi</span>
-              </button>
-              <button data-source="axiom" class="catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay">
-                <div class="w-5 h-5 rounded bg-cyan-400/15 flex items-center justify-center text-[9px] text-cyan-400 font-mono font-medium shrink-0">A</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-ink-muted text-[12px] truncate">Axiom</div>
-                  <div class="text-[10px] text-ink-faint">17 tools</div>
-                </div>
-                <span class="text-[9px] font-mono text-ink-faint shrink-0">mcp</span>
-              </button>
-            </div>
-
-            <!-- Main: tool tree -->
-            <div class="flex-1 min-w-0 flex flex-col">
-              <!-- Search -->
-              <div class="px-4 py-3 border-b border-rule shrink-0">
-                <div class="flex items-center gap-2 px-3 py-2 rounded-md border border-rule bg-surface text-ink-faint text-[12px]">
-                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-                  <span data-search-label>Search 347 tools...</span>
-                </div>
-              </div>
-
-              <!-- Scrollable tool tree with bottom fade -->
-              <div class="relative flex-1 min-h-0">
-                <div class="overflow-y-auto h-[340px] scrollbar-thin" data-tool-list>
-                  <!-- Populated by JS -->
-                </div>
-                <div class="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-surface-raised to-transparent pointer-events-none transition-opacity duration-300" data-fade></div>
+      {/* HERO — centered, tight */}
+      <section class="relative">
+        <div class="relative z-10 px-6 sm:px-10 pt-28 pb-32 sm:pt-36 sm:pb-44">
+          <div class="max-w-[920px] mx-auto text-center">
+            <h1
+              class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-12 mx-auto max-w-[18ch] text-balance"
+            >
+              Connect any agent to <span class="serif-italic">everything</span>.
+            </h1>
+            <div class="rise-2 max-w-[760px] mx-auto mb-12">
+              <div class="surface-card p-6 sm:p-7">
+                <AnimatedBeamDemo client:load variant="stripe" />
               </div>
             </div>
-
-          </div>
-        </div>
-      </div>
-
-      <script>
-        const sources = {
-          github: {
-            name: 'GitHub', count: 347, tools: [
-              { name: 'issues.list', desc: 'List repository issues', policy: 'read', method: 'GET' },
-              { name: 'issues.create', desc: 'Create a new issue', policy: 'write', method: 'POST' },
-              { name: 'issues.get', desc: 'Get a single issue', policy: 'read', method: 'GET' },
-              { name: 'issues.update', desc: 'Update an issue', policy: 'write', method: 'PATCH' },
-              { name: 'issues.lock', desc: 'Lock an issue conversation', policy: 'write', method: 'PUT' },
-              { name: 'issues.comments.list', desc: 'List issue comments', policy: 'read', method: 'GET' },
-              { name: 'issues.comments.create', desc: 'Create an issue comment', policy: 'write', method: 'POST' },
-              { name: 'issues.labels.list', desc: 'List labels on an issue', policy: 'read', method: 'GET' },
-              { name: 'issues.labels.add', desc: 'Add labels to an issue', policy: 'write', method: 'POST' },
-              { name: 'pulls.list', desc: 'List pull requests', policy: 'read', method: 'GET' },
-              { name: 'pulls.get', desc: 'Get a pull request', policy: 'read', method: 'GET' },
-              { name: 'pulls.create', desc: 'Create a pull request', policy: 'write', method: 'POST' },
-              { name: 'pulls.merge', desc: 'Merge a pull request', policy: 'destructive', method: 'PUT' },
-              { name: 'pulls.reviews.list', desc: 'List reviews on a PR', policy: 'read', method: 'GET' },
-              { name: 'pulls.reviews.create', desc: 'Create a PR review', policy: 'write', method: 'POST' },
-              { name: 'repos.get', desc: 'Get a repository', policy: 'read', method: 'GET' },
-              { name: 'repos.list', desc: 'List user repositories', policy: 'read', method: 'GET' },
-              { name: 'repos.create', desc: 'Create a repository', policy: 'write', method: 'POST' },
-              { name: 'repos.delete', desc: 'Delete a repository', policy: 'destructive', method: 'DELETE' },
-              { name: 'actions.workflows.list', desc: 'List repository workflows', policy: 'read', method: 'GET' },
-              { name: 'actions.workflows.dispatch', desc: 'Trigger a workflow run', policy: 'write', method: 'POST' },
-              { name: 'actions.runs.list', desc: 'List workflow runs', policy: 'read', method: 'GET' },
-              { name: 'actions.runs.cancel', desc: 'Cancel a workflow run', policy: 'destructive', method: 'POST' },
-            ]
-          },
-          slack: {
-            name: 'Slack', count: 42, tools: [
-              { name: 'chat.postMessage', desc: 'Send a message to a channel', policy: 'write', method: 'POST' },
-              { name: 'chat.update', desc: 'Update an existing message', policy: 'write', method: 'POST' },
-              { name: 'chat.delete', desc: 'Delete a message', policy: 'destructive', method: 'POST' },
-              { name: 'conversations.list', desc: 'List all channels', policy: 'read', method: 'GET' },
-              { name: 'conversations.history', desc: 'Fetch message history', policy: 'read', method: 'GET' },
-              { name: 'conversations.create', desc: 'Create a new channel', policy: 'write', method: 'POST' },
-              { name: 'conversations.archive', desc: 'Archive a channel', policy: 'destructive', method: 'POST' },
-              { name: 'conversations.members', desc: 'List channel members', policy: 'read', method: 'GET' },
-              { name: 'users.list', desc: 'List all users in workspace', policy: 'read', method: 'GET' },
-              { name: 'users.info', desc: 'Get user profile info', policy: 'read', method: 'GET' },
-              { name: 'reactions.add', desc: 'Add a reaction to a message', policy: 'write', method: 'POST' },
-              { name: 'reactions.remove', desc: 'Remove a reaction', policy: 'write', method: 'POST' },
-              { name: 'files.upload', desc: 'Upload a file to a channel', policy: 'write', method: 'POST' },
-              { name: 'files.list', desc: 'List files in workspace', policy: 'read', method: 'GET' },
-            ]
-          },
-          calendar: {
-            name: 'Google Calendar', count: 18, tools: [
-              { name: 'events.list', desc: 'List upcoming events', policy: 'read', method: 'GET' },
-              { name: 'events.get', desc: 'Get a single event', policy: 'read', method: 'GET' },
-              { name: 'events.insert', desc: 'Create a new event', policy: 'write', method: 'POST' },
-              { name: 'events.update', desc: 'Update an existing event', policy: 'write', method: 'PATCH' },
-              { name: 'events.delete', desc: 'Delete an event', policy: 'destructive', method: 'DELETE' },
-              { name: 'events.move', desc: 'Move event to another calendar', policy: 'write', method: 'POST' },
-              { name: 'calendars.get', desc: 'Get calendar metadata', policy: 'read', method: 'GET' },
-              { name: 'calendars.insert', desc: 'Create a secondary calendar', policy: 'write', method: 'POST' },
-              { name: 'calendars.delete', desc: 'Delete a calendar', policy: 'destructive', method: 'DELETE' },
-              { name: 'calendarList.list', desc: 'List calendars on user list', policy: 'read', method: 'GET' },
-              { name: 'freebusy.query', desc: 'Check availability', policy: 'read', method: 'POST' },
-              { name: 'acl.list', desc: 'List access control rules', policy: 'read', method: 'GET' },
-              { name: 'acl.insert', desc: 'Add an access control rule', policy: 'write', method: 'POST' },
-            ]
-          },
-          linear: {
-            name: 'Linear', count: 56, tools: [
-              { name: 'issues.list', desc: 'List issues with filters', policy: 'read', method: 'query' },
-              { name: 'issues.get', desc: 'Get a single issue', policy: 'read', method: 'query' },
-              { name: 'issues.create', desc: 'Create a new issue', policy: 'write', method: 'mutation' },
-              { name: 'issues.update', desc: 'Update issue status or fields', policy: 'write', method: 'mutation' },
-              { name: 'issues.delete', desc: 'Delete an issue permanently', policy: 'destructive', method: 'mutation' },
-              { name: 'issues.archive', desc: 'Archive an issue', policy: 'write', method: 'mutation' },
-              { name: 'projects.list', desc: 'List all projects', policy: 'read', method: 'query' },
-              { name: 'projects.create', desc: 'Create a new project', policy: 'write', method: 'mutation' },
-              { name: 'projects.update', desc: 'Update project details', policy: 'write', method: 'mutation' },
-              { name: 'comments.list', desc: 'List comments on an issue', policy: 'read', method: 'query' },
-              { name: 'comments.create', desc: 'Add a comment to an issue', policy: 'write', method: 'mutation' },
-              { name: 'cycles.list', desc: 'List all cycles', policy: 'read', method: 'query' },
-              { name: 'teams.list', desc: 'List all teams', policy: 'read', method: 'query' },
-              { name: 'labels.list', desc: 'List all labels', policy: 'read', method: 'query' },
-            ]
-          },
-          resend: {
-            name: 'Resend', count: 19, tools: [
-              { name: 'emails.send', desc: 'Send a transactional email', policy: 'write', method: 'POST' },
-              { name: 'emails.get', desc: 'Get email delivery status', policy: 'read', method: 'GET' },
-              { name: 'emails.batch', desc: 'Send a batch of emails', policy: 'write', method: 'POST' },
-              { name: 'domains.list', desc: 'List verified domains', policy: 'read', method: 'GET' },
-              { name: 'domains.get', desc: 'Get domain details', policy: 'read', method: 'GET' },
-              { name: 'domains.create', desc: 'Add a new domain', policy: 'write', method: 'POST' },
-              { name: 'domains.verify', desc: 'Verify a domain', policy: 'write', method: 'POST' },
-              { name: 'domains.delete', desc: 'Remove a domain', policy: 'destructive', method: 'DELETE' },
-              { name: 'apiKeys.list', desc: 'List API keys', policy: 'read', method: 'GET' },
-              { name: 'apiKeys.create', desc: 'Create an API key', policy: 'write', method: 'POST' },
-              { name: 'contacts.list', desc: 'List contacts in audience', policy: 'read', method: 'GET' },
-              { name: 'contacts.create', desc: 'Create a new contact', policy: 'write', method: 'POST' },
-              { name: 'contacts.remove', desc: 'Remove a contact', policy: 'destructive', method: 'DELETE' },
-            ]
-          },
-          axiom: {
-            name: 'Axiom', count: 17, tools: [
-              { name: 'datasets.query', desc: 'Query datasets using APL', policy: 'read', method: 'tool' },
-              { name: 'datasets.list', desc: 'List all available datasets', policy: 'read', method: 'tool' },
-              { name: 'datasets.fields', desc: 'List all fields in a dataset', policy: 'read', method: 'tool' },
-              { name: 'datasets.info', desc: 'Get dataset metadata and stats', policy: 'read', method: 'tool' },
-              { name: 'datasets.create', desc: 'Create a new dataset', policy: 'write', method: 'tool' },
-              { name: 'datasets.trim', desc: 'Trim data from a dataset', policy: 'destructive', method: 'tool' },
-              { name: 'monitors.list', desc: 'List all monitors', policy: 'read', method: 'tool' },
-              { name: 'monitors.check', desc: 'Check monitor statuses', policy: 'read', method: 'tool' },
-              { name: 'monitors.create', desc: 'Create a new monitor', policy: 'write', method: 'tool' },
-              { name: 'dashboards.list', desc: 'List all dashboards', policy: 'read', method: 'tool' },
-              { name: 'dashboards.get', desc: 'Get dashboard by ID', policy: 'read', method: 'tool' },
-              { name: 'dashboards.create', desc: 'Create a new dashboard', policy: 'write', method: 'tool' },
-              { name: 'dashboards.delete', desc: 'Delete a dashboard by UID', policy: 'destructive', method: 'tool' },
-              { name: 'annotations.list', desc: 'List all annotations', policy: 'read', method: 'tool' },
-              { name: 'annotations.create', desc: 'Create an annotation', policy: 'write', method: 'tool' },
-            ]
-          },
-        };
-
-        const policyColors = {
-          read: 'text-teal/60 bg-teal/[0.06]',
-          write: 'text-amber-300/60 bg-amber-300/[0.06]',
-          destructive: 'text-red-400/60 bg-red-400/[0.06]',
-        };
-
-        const methodColors = {
-          GET: 'text-teal/60',
-          POST: 'text-amber-300/60',
-          PUT: 'text-amber-300/60',
-          PATCH: 'text-amber-300/60',
-          DELETE: 'text-red-400/60',
-          query: 'text-teal/60',
-          mutation: 'text-amber-300/60',
-          tool: 'text-ink-faint',
-        };
-
-        // Tailwind safelist (must appear in markup for detection):
-        // text-teal/60 bg-teal/[0.06] text-amber-300/60 bg-amber-300/[0.06] text-red-400/60 bg-red-400/[0.06]
-
-        const catalog = document.getElementById('hero-catalog');
-        const toolList = catalog.querySelector('[data-tool-list]');
-        const fadeEl = catalog.querySelector('[data-fade]');
-        const breadcrumb = catalog.querySelector('[data-breadcrumb]');
-        const totalTools = catalog.querySelector('[data-total-tools]');
-        const searchLabel = catalog.querySelector('[data-search-label]');
-
-        function updateFade() {
-          const atBottom = toolList.scrollHeight - toolList.scrollTop - toolList.clientHeight < 8;
-          const noOverflow = toolList.scrollHeight <= toolList.clientHeight;
-          fadeEl.style.opacity = (atBottom || noOverflow) ? '0' : '1';
-        }
-        toolList.addEventListener('scroll', updateFade);
-        function renderSource(key) {
-          const src = sources[key];
-          breadcrumb.textContent = src.name;
-          searchLabel.textContent = `Search ${src.count} tools...`;
-
-          const totalCount = Object.values(sources).reduce((s, v) => s + v.count, 0);
-          totalTools.textContent = `${totalCount} tools indexed`;
-
-          catalog.querySelectorAll('.catalog-source').forEach(btn => {
-            const isActive = btn.dataset.source === key;
-            if (isActive) {
-              btn.className = btn.className
-                .replace('border-transparent', 'border-teal/15')
-                .replace('hover:bg-surface-overlay', 'bg-teal/[0.08]');
-              btn.querySelector('.min-w-0 > div:first-child').className = 'text-ink text-[12px] truncate';
-            } else {
-              btn.className = btn.className
-                .replace('border-teal/15', 'border-transparent')
-                .replace('bg-teal/[0.08]', 'hover:bg-surface-overlay');
-              btn.querySelector('.min-w-0 > div:first-child').className = 'text-ink-muted text-[12px] truncate';
-            }
-          });
-
-          // Build tree from dot-separated tool names
-          const tree = {};
-          for (const tool of src.tools) {
-            const parts = tool.name.split('.');
-            let node = tree;
-            for (let i = 0; i < parts.length - 1; i++) {
-              if (!node[parts[i]]) node[parts[i]] = { _children: {} };
-              node = node[parts[i]]._children;
-            }
-            const leaf = parts[parts.length - 1];
-            node[leaf] = { _tool: tool };
-          }
-
-          function renderTree(node, depth = 0) {
-            let html = '';
-            const keys = Object.keys(node);
-            keys.forEach((key, idx) => {
-              const entry = node[key];
-              const isLast = idx === keys.length - 1;
-              const indent = depth * 20;
-              const connector = isLast ? '└' : '├';
-
-              if (entry._tool) {
-                // Leaf: actual tool
-                const tool = entry._tool;
-                const colors = policyColors[tool.policy];
-                const mColor = methodColors[tool.method] || 'text-ink-faint';
-                html += `<div class="flex items-center gap-3 py-1.5 pr-4 hover:bg-surface-overlay/50 transition-colors" style="padding-left:${16 + indent}px">
-                  <span class="text-ink-faint font-mono text-[11px] w-3 shrink-0 select-none">${depth > 0 ? connector : '·'}</span>
-                  <span class="font-mono text-[12px] text-ink flex-1 min-w-0 truncate">${key}</span>
-                  <span class="text-[10px] font-mono ${colors} rounded px-1.5 py-0.5 shrink-0">${tool.policy}</span>
-                  <span class="text-[10px] font-mono ${mColor} shrink-0 w-14 text-right">${tool.method}</span>
-                </div>`;
-              } else {
-                // Branch: namespace group
-                const childCount = Object.keys(entry._children).length;
-                html += `<div class="flex items-center gap-3 py-1.5 pr-4" style="padding-left:${16 + indent}px">
-                  <span class="text-ink-faint font-mono text-[11px] w-3 shrink-0 select-none">${depth > 0 ? connector : '▸'}</span>
-                  <span class="font-mono text-[12px] text-ink-muted">${key}</span>
-                  <span class="text-[10px] text-ink-faint">${childCount}</span>
-                </div>`;
-                html += renderTree(entry._children, depth + 1);
-              }
-            });
-            return html;
-          }
-
-          toolList.innerHTML = renderTree(tree);
-          toolList.scrollTop = 0;
-          updateFade();
-        }
-
-        catalog.querySelectorAll('.catalog-source').forEach(btn => {
-          btn.addEventListener('click', () => renderSource(btn.dataset.source));
-        });
-
-        renderSource('github');
-
-        // ── Live detection ──
-        const detectInput = document.getElementById('detect-input');
-        const detectBtn = document.getElementById('detect-btn');
-        const detectStatus = document.getElementById('detect-status');
-        const detectExamples = document.getElementById('detect-examples');
-
-        const kindColors = {
-          openapi: { bg: 'bg-emerald-400/15', text: 'text-emerald-400', letter: 'O' },
-          graphql: { bg: 'bg-pink-400/15', text: 'text-pink-400', letter: 'Q' },
-          mcp: { bg: 'bg-cyan-400/15', text: 'text-cyan-400', letter: 'M' },
-          googleDiscovery: { bg: 'bg-yellow-400/15', text: 'text-yellow-400', letter: 'G' },
-        };
-
-        // Tailwind safelist for dynamic classes:
-        // bg-emerald-400/15 text-emerald-400 bg-pink-400/15 text-pink-400 bg-yellow-400/15 text-yellow-400
-
-        const kindLabels = { openapi: 'openapi', graphql: 'graphql', mcp: 'mcp', googleDiscovery: 'google' };
-
-        let detectedCount = 0;
-
-        async function detectUrl(url) {
-          detectBtn.disabled = true;
-          detectBtn.textContent = 'Detecting...';
-          detectStatus.className = 'absolute left-0 right-0 -bottom-7 text-[11px] font-mono text-center text-ink-muted';
-          detectStatus.textContent = 'Probing URL...';
-
-          try {
-            const res = await fetch('/api/detect', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url }),
-            });
-            const data = await res.json();
-
-            if (!res.ok) {
-              detectStatus.className = 'absolute left-0 right-0 -bottom-7 text-[11px] font-mono text-center text-red-400/70';
-              detectStatus.textContent = data.error || 'Detection failed';
-              return;
-            }
-
-            // Add detected source to the catalog
-            detectedCount++;
-            const key = `detected_${detectedCount}`;
-            const colors = kindColors[data.kind] || kindColors.openapi;
-            const kindLabel = kindLabels[data.kind] || data.kind;
-
-            sources[key] = {
-              name: data.name,
-              count: data.count,
-              tools: data.tools.map(t => ({
-                name: t.name,
-                desc: t.desc,
-                policy: t.policy,
-                method: t.method,
-              })),
-            };
-
-            // Add sidebar button
-            const sidebar = catalog.querySelector('.space-y-1');
-            const btn = document.createElement('button');
-            btn.dataset.source = key;
-            btn.className = 'catalog-source w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-left transition-colors border border-transparent hover:bg-surface-overlay';
-            btn.innerHTML = `
-              <div class="w-5 h-5 rounded ${colors.bg} flex items-center justify-center text-[9px] ${colors.text} font-mono font-medium shrink-0">${data.name.charAt(0).toUpperCase()}</div>
-              <div class="flex-1 min-w-0">
-                <div class="text-ink-muted text-[12px] truncate">${data.name}</div>
-                <div class="text-[10px] text-ink-faint">${data.count} tools</div>
-              </div>
-              <span class="text-[9px] font-mono text-ink-faint shrink-0">${kindLabel}</span>
-            `;
-            btn.addEventListener('click', () => renderSource(key));
-            sidebar.appendChild(btn);
-
-            renderSource(key);
-
-            detectStatus.className = 'absolute left-0 right-0 -bottom-7 text-[11px] font-mono text-center text-teal';
-            detectStatus.textContent = `${data.kind} detected — ${data.count} tools found`;
-            detectExamples.classList.add('hidden');
-
-            // Clear input
-            detectInput.value = '';
-          } catch (err) {
-            detectStatus.className = 'absolute left-0 right-0 -bottom-7 text-[11px] font-mono text-center text-red-400/70';
-            detectStatus.textContent = 'Network error — could not reach detection API';
-          } finally {
-            detectBtn.disabled = false;
-            detectBtn.textContent = 'Detect';
-          }
-        }
-
-        detectBtn.addEventListener('click', () => {
-          const url = detectInput.value.trim();
-          if (url) detectUrl(url);
-        });
-
-        detectInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            const url = detectInput.value.trim();
-            if (url) detectUrl(url);
-          }
-        });
-
-        // Example buttons
-        document.querySelectorAll('.detect-example').forEach(btn => {
-          btn.addEventListener('click', () => {
-            detectInput.value = btn.dataset.url;
-            detectUrl(btn.dataset.url);
-          });
-        });
-      </script>
-    </div>
-
-    <div class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-ink-faint">
-      <span class="text-[10px] font-mono uppercase tracking-[0.2em]">Scroll</span>
-      <div class="w-px h-8 bg-gradient-to-b from-ink-faint/60 to-transparent"></div>
-    </div>
-  </section>
-
-  <!-- ─── THE EVOLUTION: VISUAL DIAGRAM ─── -->
-  <section class="py-32 sm:py-40 relative">
-    <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-      <div class="reveal mb-20">
-        <span class="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-faint mb-4 block">The problem</span>
-        <h2 class="font-display text-[clamp(2rem,4.5vw,3.5rem)] leading-[1.05] tracking-tight">
-          Agents got smarter.<br /><span class="italic text-ink-muted">Their tooling didn't.</span>
-        </h2>
-      </div>
-
-      <!-- Visual evolution: 3 columns showing the architecture change -->
-      <div class="reveal grid md:grid-cols-3 gap-6 md:gap-4">
-
-        <!-- Era 1: Direct tool calls -->
-        <div class="rounded-xl border border-rule bg-surface-raised p-6 sm:p-8 flex flex-col">
-          <span class="font-mono text-[11px] text-ink-faint uppercase tracking-[0.15em] mb-6">Era 1 &middot; Tool calling</span>
-
-          <!-- Diagram -->
-          <div class="flex-1 flex flex-col items-center gap-3 my-6">
-            <div class="w-full rounded-lg border border-rule bg-surface px-4 py-3 text-center text-[13px] font-mono text-ink">Agent</div>
-            <!-- Fan-out arrows -->
-            <svg class="w-full h-12 text-red-400/50" viewBox="0 0 200 48" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="100" y1="0" x2="20" y2="48" />
-              <line x1="100" y1="0" x2="60" y2="48" />
-              <line x1="100" y1="0" x2="100" y2="48" />
-              <line x1="100" y1="0" x2="140" y2="48" />
-              <line x1="100" y1="0" x2="180" y2="48" />
-            </svg>
-            <div class="w-full grid grid-cols-5 gap-1">
-              <div class="rounded border border-red-400/20 bg-red-400/5 px-1 py-2 text-center text-[9px] font-mono text-red-400/60">tool</div>
-              <div class="rounded border border-red-400/20 bg-red-400/5 px-1 py-2 text-center text-[9px] font-mono text-red-400/60">tool</div>
-              <div class="rounded border border-red-400/20 bg-red-400/5 px-1 py-2 text-center text-[9px] font-mono text-red-400/60">tool</div>
-              <div class="rounded border border-red-400/20 bg-red-400/5 px-1 py-2 text-center text-[9px] font-mono text-red-400/60">tool</div>
-              <div class="rounded border border-red-400/20 bg-red-400/5 px-1 py-2 text-center text-[9px] font-mono text-red-400/60">tool</div>
+            <p
+              class="rise-3 text-[18px] leading-[1.55] text-ink-2 mx-auto max-w-[44ch] mb-9 text-pretty"
+            >
+              One gateway. Every tool. Every team.
+            </p>
+            <div
+              class="rise-4 flex flex-wrap items-center justify-center gap-5"
+            >
+              <a href="/cloud" class="btn-primary">Try Cloud →</a>
+              <button
+                type="button"
+                class="btn-link copy-btn"
+                data-copy="npx executor web"
+                aria-label="Copy npx executor web to clipboard"
+              >
+                <span class="font-mono text-[13px] text-ink-3">$</span>
+                <span>npm i -g executor && executor web</span>
+                <span class="copy-icons text-ink-3" aria-hidden="true">
+                  <svg
+                    class="copy-icon-copy"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><rect x="9" y="9" width="13" height="13" rx="2" ry="2"
+                    ></rect><path
+                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                    ></path></svg
+                  >
+                  <svg
+                    class="copy-icon-check"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><polyline points="20 6 9 17 4 12"></polyline></svg
+                  >
+                </span>
+              </button>
             </div>
           </div>
-
-          <p class="text-[13px] text-ink-faint mt-auto">Every schema dumped into context. Tokens wasted. Poor performance.</p>
         </div>
+      </section>
 
-        <!-- Era 2: Bash -->
-        <div class="rounded-xl border border-rule bg-surface-raised p-6 sm:p-8 flex flex-col">
-          <span class="font-mono text-[11px] text-ink-faint uppercase tracking-[0.15em] mb-6">Era 2 &middot; Bash</span>
+      {/* ─── FOUNDER NOTE ─── */}
+      <section class="py-20 sm:py-28 border-t border-rule">
+        <div class="max-w-[680px] mx-auto px-6 sm:px-10">
+          <h2
+            class="text-[clamp(2rem,3.6vw,2.6rem)] font-semibold tracking-[-0.02em] leading-[1.08] text-ink mb-10 text-balance"
+          >
+            What is <span class="serif-italic">Executor</span>?
+          </h2>
 
-          <div class="flex-1 flex flex-col items-center gap-3 my-6">
-            <div class="w-full rounded-lg border border-rule bg-surface px-4 py-3 text-center text-[13px] font-mono text-ink">Agent</div>
-            <svg class="w-full h-8 text-amber-400/50" viewBox="0 0 200 32" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="100" y1="0" x2="100" y2="32" />
-            </svg>
-            <div class="w-full rounded-lg border border-amber-400/30 bg-amber-400/5 px-4 py-3 text-center text-[13px] font-mono text-amber-400/80">bash</div>
-            <svg class="w-full h-8 text-amber-400/50" viewBox="0 0 200 32" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="60" y1="0" x2="20" y2="32" />
-              <line x1="100" y1="0" x2="100" y2="32" />
-              <line x1="140" y1="0" x2="180" y2="32" />
-            </svg>
-            <div class="w-full grid grid-cols-3 gap-1.5">
-              <div class="rounded border border-amber-400/20 bg-amber-400/5 px-1 py-2 text-center text-[9px] font-mono text-amber-400/60">CLI</div>
-              <div class="rounded border border-amber-400/20 bg-amber-400/5 px-1 py-2 text-center text-[9px] font-mono text-amber-400/60">CLI</div>
-              <div class="rounded border border-amber-400/20 bg-amber-400/5 px-1 py-2 text-center text-[9px] font-mono text-amber-400/60">CLI</div>
-            </div>
-          </div>
-
-          <p class="text-[13px] text-ink-faint mt-auto">Better, but a poor permission model that pushes users to dangerously-skip-permissions — or requires a VM.</p>
-        </div>
-
-        <!-- Era 3: Executor -->
-        <div class="rounded-xl border border-teal/20 bg-surface-raised p-6 sm:p-8 flex flex-col relative overflow-hidden">
-          <div class="absolute inset-0 bg-gradient-to-b from-teal/[0.03] to-transparent pointer-events-none"></div>
-          <span class="relative font-mono text-[11px] text-teal uppercase tracking-[0.15em] mb-6">Era 3 &middot; Executor</span>
-
-          <div class="relative flex-1 flex flex-col items-center gap-3 my-6">
-            <!-- Multiple agents -->
-            <div class="w-full grid grid-cols-3 gap-1.5">
-              <div class="rounded-lg border border-rule bg-surface px-2 py-2.5 text-center text-[10px] font-mono text-ink">Cursor</div>
-              <div class="rounded-lg border border-rule bg-surface px-2 py-2.5 text-center text-[10px] font-mono text-ink">Claude</div>
-              <div class="rounded-lg border border-rule bg-surface px-2 py-2.5 text-center text-[10px] font-mono text-ink">Custom</div>
-            </div>
-            <svg class="w-full h-8 text-teal/50" viewBox="0 0 200 32" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="33" y1="0" x2="100" y2="32" />
-              <line x1="100" y1="0" x2="100" y2="32" />
-              <line x1="167" y1="0" x2="100" y2="32" />
-            </svg>
-            <!-- Executor box with features -->
-            <div class="w-full rounded-lg border border-teal/30 bg-teal/[0.06] px-4 py-3">
-              <div class="text-center text-[13px] font-mono text-teal mb-2">executor</div>
-              <div class="flex justify-center gap-2">
-                <span class="text-[9px] font-mono text-teal/60 border border-teal/15 rounded px-1.5 py-0.5">auth</span>
-                <span class="text-[9px] font-mono text-teal/60 border border-teal/15 rounded px-1.5 py-0.5">policies</span>
-                <span class="text-[9px] font-mono text-teal/60 border border-teal/15 rounded px-1.5 py-0.5">catalog</span>
-              </div>
-            </div>
-            <svg class="w-full h-8 text-teal/50" viewBox="0 0 200 32" fill="none" stroke="currentColor" stroke-width="1.5">
-              <line x1="50" y1="0" x2="20" y2="32" />
-              <line x1="75" y1="0" x2="60" y2="32" />
-              <line x1="100" y1="0" x2="100" y2="32" />
-              <line x1="125" y1="0" x2="140" y2="32" />
-              <line x1="150" y1="0" x2="180" y2="32" />
-            </svg>
-            <div class="w-full grid grid-cols-5 gap-1">
-              <div class="rounded border border-teal/20 bg-teal/5 px-1 py-2 text-center text-[8px] font-mono text-teal/60">REST</div>
-              <div class="rounded border border-teal/20 bg-teal/5 px-1 py-2 text-center text-[8px] font-mono text-teal/60">GraphQL</div>
-              <div class="rounded border border-teal/20 bg-teal/5 px-1 py-2 text-center text-[8px] font-mono text-teal/60">MCP</div>
-              <div class="rounded border border-teal/20 bg-teal/5 px-1 py-2 text-center text-[8px] font-mono text-teal/60">gRPC</div>
-              <div class="rounded border border-teal/15 bg-teal/[0.02] px-1 py-2 text-center text-[8px] font-mono text-teal/40 italic">any</div>
-            </div>
-          </div>
-
-          <p class="relative text-[13px] text-teal/70 mt-auto">Typed, sandboxed, shared across all agents.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ─── WHAT YOU GET: icon grid ─── -->
-  <section class="py-32 sm:py-40 relative">
-    <div class="absolute inset-0 border-t border-b border-rule"></div>
-
-    <div class="relative max-w-[1200px] mx-auto px-6 sm:px-10">
-      <div class="reveal mb-16">
-        <span class="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-faint mb-4 block">The stack</span>
-        <h2 class="font-display text-[clamp(2rem,4.5vw,3.5rem)] leading-[1.05] tracking-tight">
-          Everything in<br /><span class="italic text-teal">one place</span>
-        </h2>
-      </div>
-
-      <div class="reveal grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-rule rounded-xl overflow-hidden">
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" /></svg>
-          <div class="text-[14px] font-medium mb-1">Unified catalog</div>
-          <p class="text-[13px] text-ink-muted">Every integration indexed into one typed, discoverable catalog.</p>
-        </div>
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" /></svg>
-          <div class="text-[14px] font-medium mb-1">Shared auth</div>
-          <p class="text-[13px] text-ink-muted">Sign in once. Every agent shares your credentials.</p>
-        </div>
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
-          <div class="text-[14px] font-medium mb-1">Policies</div>
-          <p class="text-[13px] text-ink-muted">Auto-approve reads. Pause on writes. Wildcard rules.</p>
-        </div>
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg>
-          <div class="text-[14px] font-medium mb-1">Any agent via MCP</div>
-          <p class="text-[13px] text-ink-muted">Executor is an MCP server. Point any agent at it.</p>
-        </div>
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" /></svg>
-          <div class="text-[14px] font-medium mb-1">Local-first</div>
-          <p class="text-[13px] text-ink-muted">Secrets in your keychain. Nothing leaves your machine.</p>
-        </div>
-        <div class="bg-surface p-8">
-          <svg class="w-6 h-6 text-teal mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-          <div class="text-[14px] font-medium mb-1">Intent-based discovery</div>
-          <p class="text-[13px] text-ink-muted">Agents search by what they need, not memorized paths.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-
-  <!-- ─── ROADMAP ─── -->
-  <section id="roadmap" class="py-32 sm:py-40 relative">
-    <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-      <div class="reveal mb-16">
-        <span class="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-faint mb-4 block">Roadmap</span>
-        <h2 class="font-display text-[clamp(2rem,4.5vw,3.5rem)] leading-[1.05] tracking-tight">
-          What's <span class="italic text-teal">next</span>
-        </h2>
-      </div>
-
-      <div class="reveal grid md:grid-cols-3 gap-6">
-        <!-- Now -->
-        <div class="rounded-xl border border-teal/20 p-6 sm:p-8 relative overflow-hidden">
-          <div class="absolute inset-0 bg-gradient-to-b from-teal/[0.03] to-transparent pointer-events-none"></div>
-          <div class="relative">
-            <div class="flex items-center gap-2 mb-5">
-              <div class="w-2 h-2 rounded-full bg-teal shadow-[0_0_6px_rgba(61,216,181,0.4)]"></div>
-              <span class="font-mono text-[11px] text-teal uppercase tracking-[0.15em]">Now</span>
-            </div>
-            <ul class="space-y-3 text-[14px]">
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Core SDK &amp; CLI</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">MCP bridge</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Policy engine</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Local web UI</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Desktop app</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Team management &amp; SaaS</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Soon -->
-        <div class="rounded-xl border border-rule p-6 sm:p-8">
-          <div class="flex items-center gap-2 mb-5">
-            <div class="w-2 h-2 rounded-full bg-ink-faint"></div>
-            <span class="font-mono text-[11px] text-ink-muted uppercase tracking-[0.15em]">Soon</span>
-          </div>
-          <ul class="space-y-3 text-[14px]">
-            <li class="text-ink-muted">Skills</li>
-            <li class="text-ink-muted">Generative UI</li>
-            <li class="text-ink-muted">Workflows</li>
-            <li class="text-ink-muted">Workspaces</li>
-          </ul>
-        </div>
-
-        <!-- Later -->
-        <div class="rounded-xl border border-rule/50 p-6 sm:p-8">
-          <div class="flex items-center gap-2 mb-5">
-            <div class="w-2 h-2 rounded-full bg-ink-faint/40"></div>
-            <span class="font-mono text-[11px] text-ink-faint uppercase tracking-[0.15em]">Later</span>
-          </div>
-          <ul class="space-y-3 text-[14px]">
-            <li class="text-ink-faint">Customer-managed integrations</li>
-            <li class="text-ink-faint">Workflow primitives (webhooks, crons)</li>
-            <li class="text-ink-faint">Virtual filesystems &amp; KV stores</li>
-            <li class="text-ink-faint">npm ecosystem support</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ─── GET STARTED: dual path ─── -->
-  <section id="get-started" class="py-32 sm:py-40 relative">
-    <div class="absolute inset-0 border-t border-rule"></div>
-
-    <div class="relative max-w-[1200px] mx-auto px-6 sm:px-10">
-      <div class="reveal max-w-2xl mx-auto text-center mb-16">
-        <span class="text-[11px] font-mono uppercase tracking-[0.2em] text-ink-faint mb-4 block">Get started</span>
-        <h2 class="font-display text-[clamp(2rem,5vw,4rem)] leading-[1.05] tracking-tight mb-5">
-          Pick your <span class="italic text-teal">path</span>
-        </h2>
-        <p class="text-[15px] leading-[1.6] text-ink-muted">
-          Hosted Executor for teams, or open source on your own machine.
-        </p>
-      </div>
-
-      <!-- Dual-path cards -->
-      <div class="reveal grid md:grid-cols-2 gap-6 items-stretch" id="install">
-
-        <!-- Cloud (recommended) -->
-        <div class="relative rounded-xl border border-teal/25 bg-surface-raised p-6 sm:p-8 flex flex-col justify-between overflow-hidden">
-          <div class="absolute inset-0 bg-gradient-to-b from-teal/[0.04] to-transparent pointer-events-none"></div>
-          <div class="relative">
-            <div class="flex items-center justify-between mb-5">
-              <span class="font-mono text-[11px] text-teal uppercase tracking-[0.15em]">Cloud</span>
-              <span class="text-[10px] font-mono text-teal border border-teal/25 rounded px-2 py-0.5 uppercase tracking-[0.1em]">Recommended for teams</span>
-            </div>
-
-            <h3 class="font-display text-[clamp(1.5rem,2.6vw,2rem)] leading-[1.1] tracking-tight text-ink mb-3">
-              Run it with <span class="italic text-teal">your team</span>
-            </h3>
-            <p class="text-[14px] leading-[1.6] text-ink-muted mb-6">
-              A managed Executor for your whole org. Shared sources, shared auth, shared policies &mdash; onboard a teammate in seconds.
+          <div
+            class="space-y-5 text-[16.5px] leading-[1.65] text-ink-2 text-pretty"
+          >
+            <p>
+              Executor is a tool/source discovery and execution layer for
+              agent-callable tools.
+            </p>
+            <p>
+              Executor doesn't care what you add. MCP, OpenAPI, GraphQL, custom
+              sources, under the hood they all become a tool name, an input
+              schema, and an output schema. Once they're in that shape, you can
+              call them however you want. Today that's implemented as a
+              code-mode MCP, but it could just as well be the Executor CLI, or a
+              native client you drop in.
+            </p>
+            <p>
+              Because every tool looks the same, your agent can call them from
+              gen-UI dashboards it writes on the fly, call them as one off
+              scripts in a chat, or use them in reusable workflows.
             </p>
 
-            <ul role="list" class="space-y-2.5 text-[13px] mb-8">
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Free for up to 3 members</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Org-wide catalog &amp; policy engine</span>
-              </li>
-              <li class="flex items-start gap-2.5">
-                <svg class="w-4 h-4 text-teal mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                <span class="text-ink-muted">Zero infra &mdash; sign in and go</span>
-              </li>
-            </ul>
-          </div>
-
-          <div class="relative">
-            <a href="/cloud" class="inline-flex w-full items-center justify-center gap-2 text-[14px] font-medium text-surface bg-teal hover:bg-teal-dim pl-5 pr-3 py-3 rounded-md transition-colors">
-              Try Cloud
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>
-            </a>
-          </div>
-        </div>
-
-        <!-- Local (open source) -->
-        <div class="rounded-xl border border-rule bg-surface-raised p-6 sm:p-8 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-5">
-              <span class="font-mono text-[11px] text-ink-faint uppercase tracking-[0.15em]">Local</span>
-              <span class="text-[10px] font-mono text-ink-faint border border-rule rounded px-2 py-0.5 uppercase tracking-[0.1em]">Open source</span>
-            </div>
-
-            <h3 class="font-display text-[clamp(1.5rem,2.6vw,2rem)] leading-[1.1] tracking-tight text-ink mb-3">
-              Run it on <span class="italic text-ink-muted">your laptop</span>
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Teams
             </h3>
-            <p class="text-[14px] leading-[1.6] text-ink-muted mb-6">
-              The same Executor, MIT-licensed, running entirely on your machine. Secrets stay in your keychain. Nothing leaves your laptop.
+            <p>
+              Set your sources up once and your whole team has them. It supports
+              per-user credentials and shared ones. No more onboarding ritual,
+              no more toggling MCPs on and off mid-task. Your agents should be
+              able to reach your company's resources in a way that isn't scary.
             </p>
 
-            <!-- MCP installation steps -->
-            <div class="space-y-4">
-              <div>
-                <p class="text-[11px] font-medium text-ink-muted uppercase tracking-wider mb-2">1. Install</p>
-                <div class="flex border border-rule border-b-0 rounded-t-lg overflow-hidden bg-surface">
-                  <button data-pm="npm" class="pm-tab pm-tab-active flex-1 text-[12px] font-medium py-2 border-b-2 transition-colors">npm</button>
-                  <button data-pm="bun" class="pm-tab flex-1 text-[12px] font-medium py-2 border-b-2 border-transparent text-ink-faint hover:text-ink transition-colors">bun</button>
-                  <button data-pm="pnpm" class="pm-tab flex-1 text-[12px] font-medium py-2 border-b-2 border-transparent text-ink-faint hover:text-ink transition-colors">pnpm</button>
-                </div>
-                <div class="install-cmd relative bg-surface border border-rule rounded-b-lg px-4 py-2.5 font-mono text-[13px]">
-                  <span class="text-ink-faint select-none">$ </span><span class="cmd-text text-ink">npm install -g executor</span>
-                  <button class="copy-btn absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink transition-colors p-1" aria-label="Copy">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" /></svg>
-                  </button>
-                </div>
-              </div>
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Sandboxing
+            </h3>
+            <p>
+              Tool calls run in a JavaScript sandbox. The agent has access to
+              secrets.
+            </p>
 
-              <div>
-                <p class="text-[11px] font-medium text-ink-muted uppercase tracking-wider mb-2">2. Add to your agent</p>
-                <div class="flex border border-rule border-b-0 rounded-t-lg overflow-hidden bg-surface">
-                  <button data-runner="npx" class="runner-tab runner-tab-active flex-1 text-[12px] font-medium py-2 border-b-2 transition-colors">npx</button>
-                  <button data-runner="bunx" class="runner-tab flex-1 text-[12px] font-medium py-2 border-b-2 border-transparent text-ink-faint hover:text-ink transition-colors">bunx</button>
-                  <button data-runner="pnpx" class="runner-tab flex-1 text-[12px] font-medium py-2 border-b-2 border-transparent text-ink-faint hover:text-ink transition-colors">pnpx</button>
-                </div>
-                <div class="relative bg-surface border border-rule rounded-b-lg px-4 py-2.5 font-mono text-[13px]">
-                  <span class="text-ink-faint select-none">$ </span><span class="runner-cmd-text text-ink">npx add-mcp "executor mcp" --name "executor"</span>
-                  <button class="copy-btn absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink transition-colors p-1" aria-label="Copy">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" /></svg>
-                  </button>
-                </div>
-              </div>
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Destructive actions
+            </h3>
+            <p>
+              Executor preserves the semantics of whatever it imported from: GET
+              vs DELETE for OpenAPI, <code
+                class="font-mono text-[14px] text-ink bg-surface-2 border border-rule px-1.5 py-0.5 rounded"
+                >destructiveHint</code
+              > for MCP, mutations for GraphQL. That tells the agent what it can auto-run
+              and what should pull you back into the loop, so it can work autonomously
+              without taking you out of it.
+            </p>
 
-              <div>
-                <p class="text-[11px] font-medium text-ink-muted uppercase tracking-wider mb-2">3. Open the dashboard</p>
-                <div class="relative bg-surface border border-rule rounded-lg px-4 py-2.5 font-mono text-[13px]">
-                  <span class="text-ink-faint select-none">$ </span><span class="text-ink">executor web</span>
-                  <button class="copy-btn absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink transition-colors p-1" aria-label="Copy">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" /></svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+            <p class="pt-5">
+              It's all open source, built on the same SDK we publish to npm.
+              There's two ways to try it, either the local version via the
+              `executor` cli, or the cloud version.
+            </p>
 
-          <div class="mt-8">
-            <a href="https://github.com/RhysSullivan/executor" class="inline-flex w-full items-center justify-center gap-2 text-[14px] font-medium text-ink-muted hover:text-ink border border-rule hover:border-ink-faint px-5 py-3 rounded-md transition-colors">
-              <svg class="w-4 h-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-              View on GitHub
-            </a>
+            <p class="text-ink-3 text-[14.5px] pt-3">— Rhys</p>
           </div>
         </div>
-      </div>
+      </section>
+
+      {/* ─── GET STARTED ─── */}
+      <section id="install" class="py-24 sm:py-32 border-t border-rule">
+        <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
+          <div class="mb-14 mx-auto text-center max-w-2xl">
+            <div
+              class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4"
+            >
+              Get started
+            </div>
+            <h2
+              class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink mx-auto max-w-[20ch] text-balance"
+            >
+              Pick your <span class="serif-italic">path</span>.
+            </h2>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-6 max-w-[1100px] mx-auto">
+            {/* Cloud */}
+            <div
+              class="surface-card p-8 flex flex-col"
+              style="border-color: rgba(99,91,255,0.25)"
+            >
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em]"
+                  style="color: var(--color-accent)">Recommended</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Cloud
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                Hosted Executor. Auth, sync, policies, and the whole team online
+                in five minutes. Free tier to start.
+              </p>
+              <a href="/cloud" class="btn-primary self-start">Try Cloud →</a>
+            </div>
+
+            {/* Local */}
+            <div class="surface-card p-8 flex flex-col">
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3"
+                  >Open source</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Local
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                Run on your own machine. Keychain-backed secrets. Zero data
+                leaves your laptop. MIT licensed.
+              </p>
+              <div
+                class="font-mono text-[13px] text-ink bg-surface-2 border border-rule px-3 py-2 rounded-md self-start"
+                style="background: var(--color-surface-2)"
+              >
+                <span class="text-ink-3">$</span> npm i -g executor && executor web
+              </div>
+            </div>
+
+            {/* Self-Hosted */}
+            <div class="surface-card p-8 flex flex-col">
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3"
+                  >Bring your own infra</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Self-Hosted
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                We're looking for early adopters to give feedback and use the
+                self hosted product. If you're a company interested in self
+                hosting get in touch.
+              </p>
+              <SelfHostContactModal client:load />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FOOTER ─── */}
+      <footer class="border-t border-rule py-10">
+        <div
+          class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6"
+        >
+          <div class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="w-4 h-4 opacity-80" />
+            <span class="text-[13px] font-medium text-ink-2">executor</span>
+            <span class="text-[12px] text-ink-3 ml-2"
+              >© {new Date().getFullYear()}</span
+            >
+          </div>
+          <div class="flex items-center gap-6 text-[13px] text-ink-2">
+            <a
+              href="https://github.com/RhysSullivan/executor"
+              class="hover:text-ink transition-colors">GitHub</a
+            >
+            <a href="/privacy" class="hover:text-ink transition-colors"
+              >Privacy</a
+            >
+            <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
+          </div>
+        </div>
+      </footer>
     </div>
-  </section>
-
-  <script>
-    // Package manager tabs
-    const cmds: Record<string, string> = {
-      npm: 'npm install -g executor',
-      bun: 'bun add -g executor',
-      pnpm: 'pnpm add -g executor',
-    };
-    const tabs = document.querySelectorAll<HTMLButtonElement>('.pm-tab');
-    const cmdText = document.querySelector('.cmd-text');
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        tabs.forEach(t => {
-          t.classList.remove('pm-tab-active', 'text-teal', 'border-teal');
-          t.classList.add('border-transparent', 'text-ink-faint');
-        });
-        tab.classList.add('pm-tab-active', 'text-teal', 'border-teal');
-        tab.classList.remove('border-transparent', 'text-ink-faint');
-        if (cmdText) cmdText.textContent = cmds[tab.dataset.pm!] || cmds.npm;
-      });
-    });
-    // Set initial active state
-    const initial = document.querySelector('.pm-tab-active');
-    if (initial) {
-      initial.classList.add('text-teal', 'border-teal');
-    }
-
-    // Runner tabs (npx/bunx/pnpx)
-    const runnerCmds: Record<string, string> = {
-      npx: 'npx add-mcp "executor mcp" --name "executor"',
-      bunx: 'bunx add-mcp "executor mcp" --name "executor"',
-      pnpx: 'pnpx add-mcp "executor mcp" --name "executor"',
-    };
-    const runnerTabs = document.querySelectorAll<HTMLButtonElement>('.runner-tab');
-    const runnerCmdText = document.querySelector('.runner-cmd-text');
-    runnerTabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        runnerTabs.forEach(t => {
-          t.classList.remove('runner-tab-active', 'text-teal', 'border-teal');
-          t.classList.add('border-transparent', 'text-ink-faint');
-        });
-        tab.classList.add('runner-tab-active', 'text-teal', 'border-teal');
-        tab.classList.remove('border-transparent', 'text-ink-faint');
-        if (runnerCmdText) runnerCmdText.textContent = runnerCmds[tab.dataset.runner!] || runnerCmds.npx;
-      });
-    });
-    const initialRunner = document.querySelector('.runner-tab-active');
-    if (initialRunner) {
-      initialRunner.classList.add('text-teal', 'border-teal');
-    }
-
-    // Copy buttons
-    document.querySelectorAll<HTMLButtonElement>('.copy-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const block = btn.closest('div');
-        const cmdEl = block?.querySelector('.cmd-text') || block?.querySelector('.runner-cmd-text') || block?.querySelector('.text-ink');
-        const text = cmdEl?.textContent?.trim();
-        if (!text) return;
-        navigator.clipboard.writeText(text);
-        const svg = btn.querySelector('svg')!;
-        const orig = svg.innerHTML;
-        svg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />';
-        setTimeout(() => { svg.innerHTML = orig; }, 1500);
-      });
-    });
-  </script>
-
-  <!-- ─── FOOTER ─── -->
-  <footer class="border-t border-rule py-10">
-    <div class="max-w-[1200px] mx-auto px-6 sm:px-10 flex items-center justify-between">
-      <span class="font-display italic text-ink-faint text-sm">executor</span>
-      <div class="flex items-center gap-5 text-[13px]">
-        <a href="/privacy" class="text-ink-faint hover:text-ink transition-colors">Privacy</a>
-        <a href="/terms" class="text-ink-faint hover:text-ink transition-colors">Terms</a>
-        <a href="https://github.com/RhysSullivan/executor" class="text-ink-faint hover:text-ink transition-colors">GitHub</a>
-      </div>
-    </div>
-  </footer>
+  </main>
 </Layout>
+
+<script>
+  document
+    .querySelectorAll<HTMLButtonElement>("button[data-copy]")
+    .forEach((btn) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      btn.addEventListener("click", async () => {
+        const text = btn.dataset.copy ?? "";
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.dataset.copied = "true";
+        } catch {
+          btn.dataset.copied = "false";
+        }
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          delete btn.dataset.copied;
+        }, 1500);
+      });
+    });
+</script>

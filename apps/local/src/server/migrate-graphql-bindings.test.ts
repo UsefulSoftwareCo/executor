@@ -1,8 +1,7 @@
 // End-to-end test for the graphql portion of
-// `0007_normalize_plugin_secret_refs.sql`: seed a DB at the
-// pre-migration (0006) shape with json-blob headers/query_params/auth,
-// run the migration, assert that the JSON unpacks into the new
-// normalized columns / child tables and that the JSON columns are gone.
+// GraphQL credential migrations: seed a DB at the pre-migration shape
+// with json-blob headers/query_params/auth, run all migrations, and
+// assert the final slot model plus shared credential_binding rows.
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { Database } from "bun:sqlite";
@@ -21,7 +20,7 @@ const NullableString = Schema.NullOr(Schema.String);
 
 const GraphqlAuthRow = Schema.Struct({
   auth_kind: Schema.String,
-  auth_connection_id: NullableString,
+  auth_connection_slot: NullableString,
 });
 
 const TableInfoRow = Schema.Struct({
@@ -32,13 +31,24 @@ const GraphqlHeaderRow = Schema.Struct({
   name: Schema.String,
   kind: Schema.String,
   text_value: NullableString,
-  secret_id: NullableString,
-  secret_prefix: NullableString,
+  slot_key: NullableString,
+  prefix: NullableString,
 });
 
 const GraphqlQueryParamRow = Schema.Struct({
   kind: Schema.String,
-  secret_id: Schema.String,
+  slot_key: Schema.String,
+});
+
+const BindingRow = Schema.Struct({
+  scope_id: Schema.String,
+  plugin_id: Schema.String,
+  source_id: Schema.String,
+  source_scope_id: Schema.String,
+  slot_key: Schema.String,
+  kind: Schema.String,
+  secret_id: NullableString,
+  connection_id: NullableString,
 });
 
 const CountRow = Schema.Struct({
@@ -56,6 +66,7 @@ const decodeAuthRow = Schema.decodeUnknownSync(GraphqlAuthRow);
 const decodeTableInfoRows = Schema.decodeUnknownSync(Schema.Array(TableInfoRow));
 const decodeHeaderRows = Schema.decodeUnknownSync(Schema.Array(GraphqlHeaderRow));
 const decodeQueryParamRow = Schema.decodeUnknownSync(GraphqlQueryParamRow);
+const decodeBindingRows = Schema.decodeUnknownSync(Schema.Array(BindingRow));
 const decodeCountRow = Schema.decodeUnknownSync(CountRow);
 const decodeHeaderIdRows = Schema.decodeUnknownSync(Schema.Array(GraphqlHeaderIdRow));
 
@@ -69,8 +80,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("0007_normalize_plugin_secret_refs (graphql)", () => {
-  it("flattens auth json into auth_kind/auth_connection_id columns", () => {
+describe("graphql credential migrations", () => {
+  it("moves auth json connection refs into a connection slot binding", () => {
     const dbPath = join(dir, "test.sqlite");
     const db = new Database(dbPath);
     db.exec(PRE_0007_SQL);
@@ -94,20 +105,40 @@ describe("0007_normalize_plugin_secret_refs (graphql)", () => {
     const after = new Database(dbPath, { readonly: true });
     const row = decodeAuthRow(
       after
-        .prepare("SELECT auth_kind, auth_connection_id FROM graphql_source WHERE id = ?")
+        .prepare("SELECT auth_kind, auth_connection_slot FROM graphql_source WHERE id = ?")
         .get("github"),
     );
     expect(row.auth_kind).toBe("oauth2");
-    expect(row.auth_connection_id).toBe("conn-1");
+    expect(row.auth_connection_slot).toBe("auth:oauth2:connection");
+    const bindings = decodeBindingRows(
+      after
+        .prepare(
+          "SELECT scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id FROM credential_binding WHERE plugin_id = ? ORDER BY slot_key",
+        )
+        .all("graphql"),
+    );
+    expect(bindings).toEqual([
+      {
+        scope_id: "default-scope",
+        plugin_id: "graphql",
+        source_id: "github",
+        source_scope_id: "default-scope",
+        slot_key: "auth:oauth2:connection",
+        kind: "connection",
+        secret_id: null,
+        connection_id: "conn-1",
+      },
+    ]);
     // Old json column is gone.
     const cols = decodeTableInfoRows(after.prepare("PRAGMA table_info('graphql_source')").all());
     expect(cols.some((c) => c.name === "auth")).toBe(false);
     expect(cols.some((c) => c.name === "headers")).toBe(false);
     expect(cols.some((c) => c.name === "query_params")).toBe(false);
+    expect(cols.some((c) => c.name === "auth_connection_id")).toBe(false);
     after.close();
   });
 
-  it("explodes header/query_param json into child rows", () => {
+  it("explodes header/query_param json into slots and credential bindings", () => {
     const dbPath = join(dir, "test.sqlite");
     const db = new Database(dbPath);
     db.exec(PRE_0007_SQL);
@@ -146,7 +177,7 @@ describe("0007_normalize_plugin_secret_refs (graphql)", () => {
     const headerRows = decodeHeaderRows(
       after
         .prepare(
-          "SELECT name, kind, text_value, secret_id, secret_prefix FROM graphql_source_header WHERE source_id = ? ORDER BY name",
+          "SELECT name, kind, text_value, slot_key, prefix FROM graphql_source_header WHERE source_id = ? ORDER BY name",
         )
         .all("example"),
     );
@@ -156,28 +187,97 @@ describe("0007_normalize_plugin_secret_refs (graphql)", () => {
     expect(byName.get("X-Static")).toMatchObject({
       kind: "text",
       text_value: "literal-value",
-      secret_id: null,
+      slot_key: null,
     });
     expect(byName.get("Authorization")).toMatchObject({
-      kind: "secret",
+      kind: "binding",
       text_value: null,
-      secret_id: "sec-token",
-      secret_prefix: null,
+      slot_key: "header:authorization",
+      prefix: null,
     });
     expect(byName.get("X-Bearer")).toMatchObject({
-      kind: "secret",
-      secret_id: "sec-bearer",
-      secret_prefix: "Bearer ",
+      kind: "binding",
+      slot_key: "header:x-bearer",
+      prefix: "Bearer ",
     });
 
     const paramRow = decodeQueryParamRow(
       after
-        .prepare("SELECT kind, secret_id FROM graphql_source_query_param WHERE source_id = ?")
+        .prepare("SELECT kind, slot_key FROM graphql_source_query_param WHERE source_id = ?")
         .get("example"),
     );
-    expect(paramRow).toMatchObject({ kind: "secret", secret_id: "sec-key" });
+    expect(paramRow).toMatchObject({ kind: "binding", slot_key: "query_param:api-key" });
+
+    const bindings = decodeBindingRows(
+      after
+        .prepare(
+          "SELECT scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id FROM credential_binding WHERE plugin_id = ? ORDER BY slot_key",
+        )
+        .all("graphql"),
+    );
+    expect(bindings.map((binding) => [binding.slot_key, binding.secret_id])).toEqual([
+      ["header:authorization", "sec-token"],
+      ["header:x-bearer", "sec-bearer"],
+      ["query_param:api-key", "sec-key"],
+    ]);
 
     after.close();
+  });
+
+  it("fails instead of silently collapsing colliding legacy query parameter slots", () => {
+    const dbPath = join(dir, "test.sqlite");
+    const db = new Database(dbPath);
+    db.exec(PRE_0007_SQL);
+    stampPriorMigrationsApplied(db);
+
+    db.prepare(
+      "INSERT INTO graphql_source (scope_id, id, name, endpoint, query_params, auth) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      "default-scope",
+      "collision",
+      "Collision",
+      "https://example.com/graphql",
+      JSON.stringify({
+        api_key: { secretId: "sec-underscore" },
+        "api-key": { secretId: "sec-dash" },
+      }),
+      JSON.stringify({ kind: "none" }),
+    );
+
+    db.close();
+
+    const sqlite = new Database(dbPath);
+    const drizzleDb = drizzle(sqlite);
+    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
+    sqlite.close();
+  });
+
+  it("fails instead of silently collapsing colliding legacy header slots", () => {
+    const dbPath = join(dir, "test.sqlite");
+    const db = new Database(dbPath);
+    db.exec(PRE_0007_SQL);
+    stampPriorMigrationsApplied(db);
+
+    db.prepare(
+      "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers, auth) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      "default-scope",
+      "collision",
+      "Collision",
+      "https://example.com/graphql",
+      JSON.stringify({
+        x_token: { secretId: "sec-underscore" },
+        "x-token": { secretId: "sec-dash" },
+      }),
+      JSON.stringify({ kind: "none" }),
+    );
+
+    db.close();
+
+    const sqlite = new Database(dbPath);
+    const drizzleDb = drizzle(sqlite);
+    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
+    sqlite.close();
   });
 
   it("handles graphql_source rows with null json (empty config)", () => {
@@ -200,11 +300,11 @@ describe("0007_normalize_plugin_secret_refs (graphql)", () => {
     const after = new Database(dbPath, { readonly: true });
     const row = decodeAuthRow(
       after
-        .prepare("SELECT auth_kind, auth_connection_id FROM graphql_source WHERE id = ?")
+        .prepare("SELECT auth_kind, auth_connection_slot FROM graphql_source WHERE id = ?")
         .get("bare"),
     );
     expect(row.auth_kind).toBe("none");
-    expect(row.auth_connection_id).toBeNull();
+    expect(row.auth_connection_slot).toBeNull();
 
     const headerCount = decodeCountRow(
       after

@@ -7,6 +7,7 @@
  * Or import:      import { startServer } from "@executor-js/local/serve"
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
 import { getServerHandlers } from "./server/main";
@@ -16,6 +17,21 @@ import { getServerHandlers } from "./server/main";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"];
+const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+const normalizeCredential = (value: string | undefined): string | null => {
+  const normalized = value?.trim();
+  return normalized && normalized.length > 0 ? normalized : null;
+};
+
+const safeEqual = (actual: string, expected: string): boolean => {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+};
+
+const isLoopbackBindHost = (hostname: string): boolean =>
+  LOOPBACK_BIND_HOSTS.has(hostname.trim().toLowerCase());
 
 const makeIsAllowedHost =
   (allowed: ReadonlySet<string>) =>
@@ -25,6 +41,39 @@ const makeIsAllowedHost =
     const hostname = host.replace(/:\d+$/, "");
     return allowed.has(hostname);
   };
+
+const hasBearerToken = (request: Request, token: string): boolean => {
+  const authorization = request.headers.get("authorization");
+  const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  return (
+    (bearer !== undefined && safeEqual(bearer, token)) ||
+    safeEqual(request.headers.get("x-executor-token") ?? "", token)
+  );
+};
+
+const hasBasicPassword = (request: Request, password: string): boolean => {
+  const authorization = request.headers.get("authorization");
+  const encoded = authorization?.match(/^Basic\s+(.+)$/i)?.[1]?.trim();
+  if (!encoded) return false;
+
+  let decoded: string;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Basic auth decoding accepts untrusted header bytes
+  try {
+    decoded = Buffer.from(encoded, "base64").toString("utf8");
+  } catch {
+    return false;
+  }
+
+  const separator = decoded.indexOf(":");
+  const actualPassword = separator >= 0 ? decoded.slice(separator + 1) : decoded;
+  return safeEqual(actualPassword, password);
+};
+
+const makeIsAuthorized =
+  (auth: { token: string | null; password: string | null }) =>
+  (request: Request): boolean =>
+    (auth.token !== null && hasBearerToken(request, auth.token)) ||
+    (auth.password !== null && hasBasicPassword(request, auth.password));
 
 // ---------------------------------------------------------------------------
 // Static files
@@ -88,6 +137,10 @@ export interface StartServerOptions {
   hostname?: string;
   /** Extra hostnames permitted in the Host header, on top of localhost/127.0.0.1. */
   allowedHosts?: ReadonlyArray<string>;
+  /** Bearer token required for requests. Required for non-loopback bind addresses. */
+  authToken?: string;
+  /** Basic auth password required for requests. Required for non-loopback bind addresses. */
+  authPassword?: string;
   /** Test hook for supplying API/MCP handlers without loading the local server graph. */
   handlers?: ServerHandlers;
 }
@@ -102,6 +155,17 @@ type ServerHandlers = Awaited<ReturnType<typeof getServerHandlers>>;
 export async function startServer(opts: StartServerOptions = {}): Promise<ServerInstance> {
   const port = opts.port ?? parseInt(process.env.PORT ?? "4788", 10);
   const hostname = opts.hostname ?? "127.0.0.1";
+  const auth = {
+    token: normalizeCredential(opts.authToken),
+    password: normalizeCredential(opts.authPassword),
+  };
+  const isNetworkBind = !isLoopbackBindHost(hostname);
+  const requiresAuth = auth.token !== null || auth.password !== null;
+  if (isNetworkBind && !requiresAuth) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: startServer is a Promise API and rejects invalid bind options
+    throw new Error("Refusing to listen on a non-loopback host without an auth token or password.");
+  }
+  const isAuthorized = makeIsAuthorized(auth);
   const allowedHostSet = new Set<string>([...DEFAULT_ALLOWED_HOSTS, ...(opts.allowedHosts ?? [])]);
   const isAllowedHost = makeIsAllowedHost(allowedHostSet);
   const clientDir = opts.clientDir ?? resolve(import.meta.dirname, "../dist");
@@ -132,6 +196,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
     async fetch(req) {
       if (!isAllowedHost(req)) {
         return new Response("Forbidden", { status: 403 });
+      }
+
+      if (requiresAuth && !isAuthorized(req)) {
+        return new Response("Unauthorized", {
+          status: 401,
+          headers: { "www-authenticate": 'Bearer realm="executor", Basic realm="executor"' },
+        });
       }
 
       const url = new URL(req.url);

@@ -9,23 +9,28 @@ import {
 } from "effect/unstable/httpapi";
 import { HttpClient, HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 import {
   createExecutor,
+  definePlugin,
   type DBAdapter,
   makeTestConfig,
+  RemoveSecretInput,
   Scope,
   ScopeId,
   SecretId,
   SetSecretInput,
   type InvokeOptions,
+  type SecretProvider,
   type Where,
 } from "@executor-js/sdk";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 const TEST_SCOPE = "test-scope";
 import { openApiPlugin } from "./plugin";
-import { OAuth2Auth, OpenApiSourceBindingInput } from "./types";
+import { ConfiguredHeaderBinding, OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
 import { makeOpenApiTestServer } from "../testing";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
@@ -147,6 +152,41 @@ const TestLayer = HttpRouter.serve(ApiLive, { disableListenLog: true, disableLog
   Layer.provideMerge(NodeHttpServer.layerTest),
 );
 
+const serveSpecRequiringHeader = () => {
+  const state = { requests: 0, lastToken: null as string | null };
+  const server = http.createServer((req, res) => {
+    state.requests++;
+    state.lastToken = req.headers["x-spec-token"]?.toString() ?? null;
+    if (state.lastToken !== "org-token") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "missing token" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(specJson);
+  });
+
+  return new Promise<{
+    readonly specUrl: string;
+    readonly requestCount: () => number;
+    readonly lastToken: () => string | null;
+    readonly close: () => Promise<void>;
+  }>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        specUrl: `http://127.0.0.1:${port}/spec.json`,
+        requestCount: () => state.requests,
+        lastToken: () => state.lastToken,
+        close: () =>
+          new Promise((closeResolve) => {
+            server.close(() => closeResolve());
+          }),
+      });
+    });
+  });
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -243,6 +283,115 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
+      const userScope = ScopeId.make("static-user");
+      const orgScope = ScopeId.make("static-org");
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: [
+            new Scope({ id: userScope, name: "user", createdAt: new Date() }),
+            new Scope({ id: orgScope, name: "org", createdAt: new Date() }),
+          ],
+          plugins: [
+            openApiPlugin({ httpClientLayer: clientLayer }),
+            memorySecretsPlugin(),
+          ] as const,
+        }),
+      );
+
+      const result = (yield* executor.tools.invoke(
+        "openapi.addSource",
+        { scope: String(orgScope), spec: specJson, namespace: "runtime" },
+        autoApprove,
+      )) as { sourceId: string; toolCount: number };
+
+      expect(result).toEqual({ sourceId: "runtime", toolCount: 4 });
+      expect(yield* executor.openapi.getSource("runtime", String(userScope))).toBeNull();
+      expect((yield* executor.openapi.getSource("runtime", String(orgScope)))?.scope).toBe(
+        orgScope,
+      );
+      expect((yield* executor.tools.list()).map((t) => t.id)).toContain("runtime.items.listItems");
+    }),
+  );
+
+  it.effect("requires approval before adding a source through the runtime tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [openApiPlugin()] as const }),
+      );
+
+      const declined = yield* executor.tools
+        .invoke(
+          "openapi.addSource",
+          { scope: TEST_SCOPE, spec: specJson, namespace: "runtime_declined" },
+          { onElicitation: () => Effect.succeed({ action: "decline" as const }) },
+        )
+        .pipe(Effect.flip);
+
+      expect(Predicate.isTagged(declined, "ElicitationDeclinedError")).toBe(true);
+      expect(yield* executor.openapi.getSource("runtime_declined", TEST_SCOPE)).toBeNull();
+      expect((yield* executor.tools.list()).map((t) => t.id)).not.toContain(
+        "runtime_declined.items.listItems",
+      );
+    }),
+  );
+
+  it.effect("adds an org source whose direct credentials are owned by the user scope", () =>
+    Effect.gen(function* () {
+      const httpClient = yield* HttpClient.HttpClient;
+      const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
+      const userScope = ScopeId.make("openapi-user");
+      const orgScope = ScopeId.make("openapi-org");
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: [
+            new Scope({ id: userScope, name: "user", createdAt: new Date() }),
+            new Scope({ id: orgScope, name: "org", createdAt: new Date() }),
+          ],
+          plugins: [
+            openApiPlugin({ httpClientLayer: clientLayer }),
+            memorySecretsPlugin(),
+          ] as const,
+        }),
+      );
+
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("user-query-token"),
+          scope: userScope,
+          name: "User query token",
+          value: "user-token",
+        }),
+      );
+
+      const input = {
+        spec: specJson,
+        scope: String(orgScope),
+        namespace: "org_direct_user_credential",
+        queryParams: { token: { secretId: "user-query-token" } },
+        credentialTargetScope: String(userScope),
+      };
+
+      yield* executor.openapi.addSpec(input);
+
+      const bindings = yield* executor.openapi.listSourceBindings(
+        "org_direct_user_credential",
+        String(orgScope),
+      );
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]).toMatchObject({
+        scopeId: userScope,
+        slot: "query_param:token",
+        value: { kind: "secret", secretId: SecretId.make("user-query-token") },
+      });
+    }),
+  );
+
+  it.effect("updateSource removes bindings for credential slots no longer present", () =>
+    Effect.gen(function* () {
+      const httpClient = yield* HttpClient.HttpClient;
+      const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -253,14 +402,102 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         }),
       );
 
-      const result = (yield* executor.tools.invoke(
-        "openapi.addSource",
-        { spec: specJson, namespace: "runtime" },
-        autoApprove,
-      )) as { sourceId: string; toolCount: number };
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("old-token"),
+          scope: ScopeId.make(TEST_SCOPE),
+          name: "Old token",
+          value: "old-secret",
+        }),
+      );
 
-      expect(result).toEqual({ sourceId: "runtime", toolCount: 4 });
-      expect((yield* executor.tools.list()).map((t) => t.id)).toContain("runtime.items.listItems");
+      yield* executor.openapi.addSpec({
+        spec: specJson,
+        scope: TEST_SCOPE,
+        namespace: "stale_binding",
+        baseUrl: "",
+        credentialTargetScope: TEST_SCOPE,
+        headers: {
+          "X-Old": { secretId: "old-token" },
+        },
+      });
+
+      yield* executor.openapi.updateSource("stale_binding", TEST_SCOPE, {
+        headers: {},
+      });
+
+      const bindings = yield* executor.openapi.listSourceBindings("stale_binding", TEST_SCOPE);
+      expect(bindings).toEqual([]);
+    }),
+  );
+
+  it.effect("updateSource removes stale OAuth2 bindings when the OAuth template changes", () =>
+    Effect.gen(function* () {
+      const httpClient = yield* HttpClient.HttpClient;
+      const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [
+            openApiPlugin({ httpClientLayer: clientLayer }),
+            memorySecretsPlugin(),
+          ] as const,
+        }),
+      );
+
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("old-client-id"),
+          scope: ScopeId.make(TEST_SCOPE),
+          name: "Old client ID",
+          value: "client-id",
+        }),
+      );
+
+      const oldOAuth = new OAuth2SourceConfig({
+        kind: "oauth2",
+        securitySchemeName: "old",
+        flow: "authorizationCode",
+        tokenUrl: "https://auth.example.com/token",
+        authorizationUrl: "https://auth.example.com/authorize",
+        clientIdSlot: "oauth2:old:client-id",
+        clientSecretSlot: null,
+        connectionSlot: "oauth2:old:connection",
+        scopes: ["read"],
+      });
+      yield* executor.openapi.addSpec({
+        spec: specJson,
+        scope: TEST_SCOPE,
+        namespace: "stale_oauth",
+        baseUrl: "",
+        oauth2: oldOAuth,
+      });
+      yield* executor.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "stale_oauth",
+          sourceScope: ScopeId.make(TEST_SCOPE),
+          scope: ScopeId.make(TEST_SCOPE),
+          slot: oldOAuth.clientIdSlot,
+          value: { kind: "secret", secretId: SecretId.make("old-client-id") },
+        }),
+      );
+
+      yield* executor.openapi.updateSource("stale_oauth", TEST_SCOPE, {
+        oauth2: new OAuth2SourceConfig({
+          kind: "oauth2",
+          securitySchemeName: "new",
+          flow: "authorizationCode",
+          tokenUrl: "https://auth.example.com/token",
+          authorizationUrl: "https://auth.example.com/authorize",
+          clientIdSlot: "oauth2:new:client-id",
+          clientSecretSlot: null,
+          connectionSlot: "oauth2:new:connection",
+          scopes: ["read"],
+        }),
+      });
+
+      const bindings = yield* executor.openapi.listSourceBindings("stale_oauth", TEST_SCOPE);
+      expect(bindings.some((binding) => binding.slot === oldOAuth.clientIdSlot)).toBe(false);
     }),
   );
 
@@ -292,6 +529,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         scope: TEST_SCOPE,
         namespace: "authed",
         baseUrl: "",
+        credentialTargetScope: TEST_SCOPE,
         headers: {
           Authorization: { secretId: "test-api-token", prefix: "Bearer " },
           "X-Static": "hello",
@@ -311,7 +549,12 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     }),
   );
 
-  it.effect("fails clearly when a secret is missing", () =>
+  it.effect("addSpec without credentialTargetScope defaults to the source's scope", () =>
+    // Regression: config-sync calls addSpec without ever setting
+    // credentialTargetScope. Before the fix, any source with a
+    // header secret in executor.jsonc errored with
+    // "credentialTargetScope is required when adding direct OpenAPI
+    // credentials" the moment the daemon started.
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
@@ -325,15 +568,97 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         }),
       );
 
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("config-sync-token"),
+          scope: ScopeId.make(TEST_SCOPE),
+          name: "Config-sync token",
+          value: "secret-from-jsonc",
+        }),
+      );
+
+      yield* executor.openapi.addSpec({
+        spec: specJson,
+        scope: TEST_SCOPE,
+        namespace: "default_target_scope",
+        baseUrl: "",
+        headers: {
+          Authorization: { secretId: "config-sync-token", prefix: "Bearer " },
+        },
+      });
+
+      const bindings = yield* executor.openapi.listSourceBindings(
+        "default_target_scope",
+        TEST_SCOPE,
+      );
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]).toMatchObject({
+        scopeId: ScopeId.make(TEST_SCOPE),
+        slot: "header:authorization",
+        value: { kind: "secret", secretId: SecretId.make("config-sync-token") },
+      });
+    }),
+  );
+
+  it.effect("fails clearly when a secret is missing", () =>
+    Effect.gen(function* () {
+      const httpClient = yield* HttpClient.HttpClient;
+      const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
+      const secretStore = new Map<string, string>();
+      const key = (scope: string, id: string) => `${scope}\u0000${id}`;
+      const provider: SecretProvider = {
+        key: "memory",
+        writable: true,
+        get: (id, scope) => Effect.sync(() => secretStore.get(key(scope, id)) ?? null),
+        set: (id, value, scope) =>
+          Effect.sync(() => {
+            secretStore.set(key(scope, id), value);
+          }),
+        delete: (id, scope) => Effect.sync(() => secretStore.delete(key(scope, id))),
+      };
+      const staleSecretPlugin = definePlugin(() => ({
+        id: "stale-secret" as const,
+        storage: () => ({}),
+        secretProviders: [provider],
+      }));
+
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [openApiPlugin({ httpClientLayer: clientLayer }), staleSecretPlugin()] as const,
+        }),
+      );
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("missing-token"),
+          scope: ScopeId.make(TEST_SCOPE),
+          name: "Missing token",
+          value: "initial-value",
+        }),
+      );
+
       yield* executor.openapi.addSpec({
         spec: specJson,
         scope: TEST_SCOPE,
         namespace: "noauth",
         baseUrl: "",
         headers: {
-          Authorization: { secretId: "missing-token", prefix: "Bearer " },
+          Authorization: new ConfiguredHeaderBinding({
+            kind: "binding",
+            slot: "header:authorization",
+            prefix: "Bearer ",
+          }),
         },
       });
+      yield* executor.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "noauth",
+          sourceScope: ScopeId.make(TEST_SCOPE),
+          scope: ScopeId.make(TEST_SCOPE),
+          slot: "header:authorization",
+          value: { kind: "secret", secretId: SecretId.make("missing-token") },
+        }),
+      );
+      secretStore.delete(key(TEST_SCOPE, "missing-token"));
 
       const error = yield* Effect.flip(
         executor.tools.invoke("noauth.items.listItems", {}, autoApprove),
@@ -670,7 +995,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     }),
   );
 
-  it.effect("updateSource on user shadow does not mutate the org row", () =>
+  it.effect("updateSource on user shadow cannot override the inherited base URL", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
@@ -696,26 +1021,164 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         spec: specJson,
         scope: String(USER_SCOPE),
         namespace: "shared",
-        baseUrl: "https://user.example.com",
         name: "User Source",
       });
 
-      yield* executor.openapi.updateSource("shared", String(USER_SCOPE), {
-        name: "User Renamed",
-        baseUrl: "https://user-new.example.com",
-      });
+      const updateResult = yield* executor.openapi
+        .updateSource("shared", String(USER_SCOPE), {
+          name: "User Renamed",
+          baseUrl: "https://user-new.example.com",
+        })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => error,
+            onSuccess: () => null,
+          }),
+        );
 
       const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
       const orgView = yield* executor.openapi.getSource("shared", String(ORG_SCOPE));
 
-      expect(userView?.name).toBe("User Renamed");
-      expect(userView?.config.baseUrl).toBe("https://user-new.example.com");
+      expect(updateResult).toMatchObject({ _tag: "OpenApiOAuthError" });
+      expect(userView?.name).toBe("User Source");
+      expect(userView?.config.baseUrl).toBe("https://org.example.com");
       expect(orgView?.name).toBe("Org Source");
       expect(orgView?.config.baseUrl).toBe("https://org.example.com");
     }),
   );
 
-  it.effect("addSpec persists a source with deferred OAuth2Auth (no live connection yet)", () =>
+  it.effect("addSpec on user shadow cannot override the inherited base URL", () =>
+    Effect.gen(function* () {
+      const server = yield* makeOpenApiTestServer({ spec });
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: stackedScopes,
+          plugins: [
+            openApiPlugin({ httpClientLayer: server.httpClientLayer }),
+            memorySecretsPlugin(),
+          ] as const,
+        }),
+      );
+
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("org-api-token"),
+          scope: ORG_SCOPE,
+          name: "Org API token",
+          value: "org-secret",
+        }),
+      );
+
+      yield* executor.openapi.addSpec({
+        spec: server.specJson,
+        scope: String(ORG_SCOPE),
+        namespace: "shadow_auth",
+        baseUrl: "https://org.example.com",
+        credentialTargetScope: String(ORG_SCOPE),
+        headers: {
+          Authorization: { secretId: "org-api-token", prefix: "Bearer " },
+        },
+      });
+
+      const addResult = yield* executor.openapi
+        .addSpec({
+          spec: server.specJson,
+          scope: String(USER_SCOPE),
+          namespace: "shadow_auth",
+          baseUrl: server.baseUrl,
+          name: "User Shadow",
+        })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => error,
+            onSuccess: () => null,
+          }),
+        );
+
+      expect(addResult).toMatchObject({ _tag: "OpenApiOAuthError" });
+    }),
+  );
+
+  it.effect(
+    "refreshing a user shadow uses inherited spec-fetch credentials without copying them",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* Effect.acquireRelease(
+            Effect.promise(() => serveSpecRequiringHeader()),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const config = makeTestConfig({
+            scopes: stackedScopes,
+            plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
+          });
+          const executor = yield* createExecutor(config);
+
+          yield* executor.secrets.set(
+            new SetSecretInput({
+              id: SecretId.make("org-spec-token"),
+              scope: ORG_SCOPE,
+              name: "Org spec token",
+              value: "org-token",
+            }),
+          );
+
+          yield* executor.openapi.addSpec({
+            spec: server.specUrl,
+            scope: String(ORG_SCOPE),
+            namespace: "shared_spec_fetch",
+            credentialTargetScope: String(ORG_SCOPE),
+            specFetchCredentials: {
+              headers: {
+                "X-Spec-Token": { secretId: "org-spec-token" },
+              },
+            },
+          });
+          yield* executor.openapi.addSpec({
+            spec: specJson,
+            scope: String(USER_SCOPE),
+            namespace: "shared_spec_fetch",
+            name: "User Shadow",
+          });
+
+          const userRowsBefore = yield* config.adapter.findMany({
+            model: "openapi_source_spec_fetch_header",
+            where: [
+              { field: "scope_id", value: String(USER_SCOPE) },
+              { field: "source_id", value: "shared_spec_fetch" },
+            ],
+          });
+          expect(userRowsBefore).toEqual([]);
+
+          const requestsBefore = server.requestCount();
+          yield* executor.sources.refresh({
+            id: "shared_spec_fetch",
+            targetScope: String(USER_SCOPE),
+          });
+
+          expect(server.requestCount()).toBeGreaterThan(requestsBefore);
+          expect(server.lastToken()).toBe("org-token");
+          const orgRowsAfter = yield* config.adapter.findMany({
+            model: "openapi_source_spec_fetch_header",
+            where: [
+              { field: "scope_id", value: String(ORG_SCOPE) },
+              { field: "source_id", value: "shared_spec_fetch" },
+            ],
+          });
+          const userRowsAfter = yield* config.adapter.findMany({
+            model: "openapi_source_spec_fetch_header",
+            where: [
+              { field: "scope_id", value: String(USER_SCOPE) },
+              { field: "source_id", value: "shared_spec_fetch" },
+            ],
+          });
+          expect(orgRowsAfter).toHaveLength(1);
+          expect(userRowsAfter).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect("addSpec persists OAuth2 source slots with no live connection yet", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
@@ -741,15 +1204,15 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         }),
       );
 
-      const deferredAuth = new OAuth2Auth({
+      const deferredAuth = new OAuth2SourceConfig({
         kind: "oauth2",
-        connectionId: "openapi-oauth2-pending-deferred",
         securitySchemeName: "oauth2",
         flow: "authorizationCode",
         tokenUrl: "https://auth.example.com/token",
         authorizationUrl: "https://auth.example.com/authorize",
-        clientIdSecretId: "acme-client-id",
-        clientSecretSecretId: null,
+        clientIdSlot: "oauth2:oauth2:client-id",
+        clientSecretSlot: null,
+        connectionSlot: "oauth2:oauth2:connection",
         scopes: ["read:items"],
       });
 
@@ -769,6 +1232,16 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       expect(stored?.config.oauth2?.connectionSlot).toBe("oauth2:oauth2:connection");
       expect(stored?.config.oauth2?.clientIdSlot).toBe("oauth2:oauth2:client-id");
 
+      yield* executor.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "deferred",
+          sourceScope: ScopeId.make(TEST_SCOPE),
+          scope: ScopeId.make(TEST_SCOPE),
+          slot: stored!.config.oauth2!.clientIdSlot,
+          value: { kind: "secret", secretId: SecretId.make("acme-client-id") },
+        }),
+      );
+
       const clientIdBinding = yield* executor.openapi
         .listSourceBindings("deferred", TEST_SCOPE)
         .pipe(
@@ -781,6 +1254,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       expect(clientIdBinding?.value).toEqual({
         kind: "secret",
         secretId: SecretId.make("acme-client-id"),
+        secretScopeId: ScopeId.make(TEST_SCOPE),
       });
 
       const connectionBinding = yield* executor.openapi
@@ -792,10 +1266,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
               null,
           ),
         );
-      expect(connectionBinding?.value).toEqual({
-        kind: "connection",
-        connectionId: "openapi-oauth2-pending-deferred",
-      });
+      expect(connectionBinding).toBeNull();
 
       // Tools should be listed even without a live connection; invocation
       // is what requires the token, not registration.
@@ -805,12 +1276,11 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
   );
 
   // -------------------------------------------------------------------------
-  // Usage tracking — once openapi normalizes its bindings, query_params,
-  // and specFetchCredentials, `usagesForSecret` and `usagesForConnection`
-  // should surface every reference and `secrets.remove` should RESTRICT.
+  // Usage tracking — OpenAPI credential slots are core credential_binding
+  // rows, so usages/removal restrictions come from one shared path.
   // -------------------------------------------------------------------------
 
-  it.effect("usagesForSecret aggregates bindings and child rows", () =>
+  it.effect("usagesForSecret aggregates header and query-param slot bindings", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -828,12 +1298,13 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         }),
       );
 
-      // Add a source whose query_params reference the secret directly.
+      // Add a source whose query params are canonicalized to a credential slot.
       yield* executor.openapi.addSpec({
         spec: specJson,
         scope: TEST_SCOPE,
         namespace: "with_secret",
         baseUrl: "http://example.com",
+        credentialTargetScope: TEST_SCOPE,
         queryParams: { token: { secretId: "api-key" } },
       });
 
@@ -851,7 +1322,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       const usages = yield* executor.secrets.usages(SecretId.make("api-key"));
       expect(usages.length).toBe(2);
       const slots = usages.map((u) => u.slot).sort();
-      expect(slots).toEqual(["binding:header:authorization", "query_param:token"]);
+      expect(slots).toEqual(["header:authorization", "query_param:token"]);
       expect(usages.every((u) => u.pluginId === "openapi")).toBe(true);
     }),
   );
@@ -889,7 +1360,14 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         }),
       );
 
-      const failure = yield* executor.secrets.remove(SecretId.make("locked")).pipe(Effect.flip);
+      const failure = yield* executor.secrets
+        .remove(
+          new RemoveSecretInput({
+            id: SecretId.make("locked"),
+            targetScope: ScopeId.make(TEST_SCOPE),
+          }),
+        )
+        .pipe(Effect.flip);
       expect(Predicate.isTagged(failure, "SecretInUseError")).toBe(true);
 
       // Detach the binding, then remove succeeds.
@@ -899,7 +1377,12 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         "header:authorization",
         ScopeId.make(TEST_SCOPE),
       );
-      yield* executor.secrets.remove(SecretId.make("locked"));
+      yield* executor.secrets.remove(
+        new RemoveSecretInput({
+          id: SecretId.make("locked"),
+          targetScope: ScopeId.make(TEST_SCOPE),
+        }),
+      );
     }),
   );
 });

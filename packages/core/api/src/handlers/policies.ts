@@ -27,12 +27,12 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
         }),
       ),
     )
-    .handle("create", ({ params: path, payload }) =>
+    .handle("create", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const created = yield* executor.policies.create({
-            scope: path.scopeId,
+            targetScope: payload.targetScope,
             pattern: payload.pattern,
             action: payload.action,
             position: payload.position,
@@ -47,6 +47,7 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
           const executor = yield* ExecutorService;
           const updated = yield* executor.policies.update({
             id: path.policyId,
+            targetScope: payload.targetScope,
             pattern: payload.pattern,
             action: payload.action,
             position: payload.position,
@@ -59,7 +60,7 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          yield* executor.policies.remove(path.policyId);
+          yield* executor.policies.remove({ id: path.policyId, targetScope: path.scopeId });
           return { removed: true };
         }),
       ),

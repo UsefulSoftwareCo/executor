@@ -7,10 +7,7 @@ on:
       - main
 
 permissions:
-  actions: write
-  contents: write
-  id-token: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,12 +16,18 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      pull-requests: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -54,7 +57,13 @@ jobs:
           title: Version Packages
           createGithubReleases: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT (RELEASE_PAT) so the auto-opened Version Packages PR
+          # triggers downstream workflows (pkg-pr-new, CI). PRs authored
+          # by the default GITHUB_TOKEN do not trigger other workflows by
+          # GitHub design. Falls back to GITHUB_TOKEN when the secret is
+          # not set, so the workflow keeps working in forks / before the
+          # secret is configured.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Publish @executor-js library packages
         if: steps.changesets.outputs.hasChangesets == 'false'
@@ -76,7 +85,10 @@ jobs:
             previous_version=""
           fi
 
+          release_tag="v$version"
           if [ -n "$previous_version" ] && [ "$previous_version" != "$version" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif ! git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -84,27 +96,37 @@ jobs:
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Validate release tag
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.detect_release.outputs.changed == 'true'
+        id: validate_release
+        env:
+          RELEASE_VERSION: ${{ steps.detect_release.outputs.version }}
+        run: bun run scripts/validate-release-ref.ts --version-env RELEASE_VERSION --output tag
+
       - name: Create and push release tag
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.detect_release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+          RELEASE_TAG: ${{ steps.validate_release.outputs.tag }}
         run: |
-          tag="v${{ steps.detect_release.outputs.version }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists."
+          auth_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --tags "$auth_remote" "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$tag"
-          git push origin "$tag"
+          git tag "$RELEASE_TAG"
+          git push "$auth_remote" "$RELEASE_TAG"
 
       - name: Trigger CLI publish
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.detect_release.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate_release.outputs.tag }}
         run: |
-          tag="v${{ steps.detect_release.outputs.version }}"
-          gh workflow run publish-executor-package.yml --ref "$tag" -f tag="$tag"
+          gh workflow run publish-executor-package.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
 
       # Desktop build downloads CLI binaries from the release, so it must
       # run after CLI publish completes. Trigger it from the CLI workflow

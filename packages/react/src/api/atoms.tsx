@@ -67,6 +67,13 @@ export const secretsAtom = (scopeId: ScopeId) =>
     reactivityKeys: [ReactivityKey.secrets],
   });
 
+export const allSecretsAtom = (scopeId: ScopeId) =>
+  ExecutorApiClient.query("secrets", "listAll", {
+    params: { scopeId },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.secrets],
+  });
+
 export const secretStatusAtom = (scopeId: ScopeId, secretId: SecretId) =>
   ExecutorApiClient.query("secrets", "status", {
     params: { scopeId, secretId },
@@ -178,7 +185,11 @@ export const removeConnectionOptimistic = Atom.family((scopeId: ScopeId) =>
     Atom.optimisticFn({
       reducer: (current, arg) =>
         AsyncResult.map(current, (rows) =>
-          rows.filter((connection) => connection.id !== arg.params.connectionId),
+          rows.filter(
+            (connection) =>
+              connection.id !== arg.params.connectionId ||
+              connection.scopeId !== arg.params.scopeId,
+          ),
         ),
       fn: removeConnection,
     }),
@@ -225,7 +236,7 @@ export const createPolicyOptimistic = Atom.family((scopeId: ScopeId) =>
         AsyncResult.map(current, (rows) => [
           {
             id: PolicyId.make(`pending-${Math.random().toString(36).slice(2)}`),
-            scopeId,
+            scopeId: arg.payload.targetScope,
             pattern: arg.payload.pattern,
             action: arg.payload.action,
             // Empty string sorts before any fractional-indexing key, so

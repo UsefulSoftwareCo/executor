@@ -259,6 +259,7 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       blobs,
       plugins,
       onElicitation: "accept-all",
+      oauthEndpointUrlPolicy: { allowHttp: true },
     }),
   );
 
@@ -377,6 +378,7 @@ describe("local mcp oauth (real OAuth + MCP server)", () => {
             endpoint: `${fake.url}/mcp`,
             redirectUrl,
             connectionId,
+            tokenScope: String(scopeId),
             strategy: { kind: "dynamic-dcr" },
             pluginId: "mcp",
           },

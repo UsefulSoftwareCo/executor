@@ -9,24 +9,27 @@ import { ScopeId, SecretId } from "@executor-js/sdk";
 import { asOrg, fetchForOrg, TEST_BASE_URL } from "./__test-harness__/api-harness";
 
 describe("secrets api (HTTP)", () => {
-  it.effect("set → list → status round-trips a new secret without exposing plaintext", () =>
+  it.effect("set → list → status returns secret metadata", () =>
     Effect.gen(function* () {
       const org = `org_${crypto.randomUUID()}`;
       const id = `sec_${crypto.randomUUID().slice(0, 8)}`;
 
+      const secretValue = "sk-test-abc";
       const setRef = yield* asOrg(org, (client) =>
         client.secrets.set({
           params: { scopeId: ScopeId.make(org) },
-          payload: { id: SecretId.make(id), name: "My API Token", value: "sk-test-abc" },
+          payload: { id: SecretId.make(id), name: "My API Token", value: secretValue },
         }),
       );
       expect(setRef.id).toBe(id);
       expect(setRef.scopeId).toBe(org);
+      expect(JSON.stringify(setRef)).not.toContain(secretValue);
 
       const list = yield* asOrg(org, (client) =>
         client.secrets.list({ params: { scopeId: ScopeId.make(org) } }),
       );
       expect(list.find((s) => s.id === id)?.name).toBe("My API Token");
+      expect(JSON.stringify(list)).not.toContain(secretValue);
 
       const status = yield* asOrg(org, (client) =>
         client.secrets.status({
@@ -37,7 +40,7 @@ describe("secrets api (HTTP)", () => {
     }),
   );
 
-  it.effect("does not expose a plaintext resolve endpoint", () =>
+  it.effect("resolve is not available through the public API", () =>
     Effect.gen(function* () {
       const org = `org_${crypto.randomUUID()}`;
       const id = `sec_${crypto.randomUUID().slice(0, 8)}`;

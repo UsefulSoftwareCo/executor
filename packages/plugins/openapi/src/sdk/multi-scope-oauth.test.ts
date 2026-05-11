@@ -28,6 +28,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 
 import {
   collectSchemas,
+  ConnectionId,
   createExecutor,
   definePlugin,
   makeInMemoryBlobStore,
@@ -42,13 +43,31 @@ import { serveTestHttpApp } from "@executor-js/sdk/testing";
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
 
 import { openApiPlugin } from "./plugin";
-import { OAuth2Auth } from "./types";
+import { OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
 
 class TestInvariantError extends Data.TaggedError("TestInvariantError")<{
   readonly message: string;
 }> {}
+
+const makeOauth2SourceConfig = (params: {
+  readonly flow: "authorizationCode" | "clientCredentials";
+  readonly tokenUrl: string;
+  readonly authorizationUrl: string | null;
+  readonly scopes: readonly string[];
+}): OAuth2SourceConfig =>
+  new OAuth2SourceConfig({
+    kind: "oauth2",
+    securitySchemeName: "oauth2",
+    flow: params.flow,
+    tokenUrl: params.tokenUrl,
+    authorizationUrl: params.authorizationUrl,
+    clientIdSlot: "oauth2:oauth2:client-id",
+    clientSecretSlot: "oauth2:oauth2:client-secret",
+    connectionSlot: "oauth2:oauth2:connection",
+    scopes: [...params.scopes],
+  });
 
 // ---------------------------------------------------------------------------
 // Test API — a single endpoint that echoes the Authorization header so the
@@ -297,46 +316,49 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // below that `adminConnectionIds` doesn't include either one
       // proves admin's stack can't reach either user's row.
       expect(aliceAuth.connectionId).toBe(bobAuth.connectionId);
-      const aliceOAuth2Auth = new OAuth2Auth({
-        kind: "oauth2",
-        connectionId: aliceAuth.connectionId,
-        securitySchemeName: "oauth2",
+      const oauth2 = makeOauth2SourceConfig({
         flow: "authorizationCode",
         tokenUrl: tokenEndpoint.tokenUrl,
         authorizationUrl: "https://auth.example.com/authorize",
-        clientIdSecretId: "petstore_client_id",
-        clientSecretSecretId: "petstore_client_secret",
-        scopes: ["read"],
-      });
-      const bobOAuth2Auth = new OAuth2Auth({
-        kind: "oauth2",
-        connectionId: bobAuth.connectionId,
-        securitySchemeName: "oauth2",
-        flow: "authorizationCode",
-        tokenUrl: tokenEndpoint.tokenUrl,
-        authorizationUrl: "https://auth.example.com/authorize",
-        clientIdSecretId: "petstore_client_id",
-        clientSecretSecretId: "petstore_client_secret",
         scopes: ["read"],
       });
 
       // -------------------------------------------------------------
-      // 3. Each user adds the spec with the auth they just minted.
+      // 3. Each user adds the spec with source-owned OAuth structure,
+      //    then binds their own connection into the configured slot.
       // -------------------------------------------------------------
       yield* aliceExec.openapi.addSpec({
         spec: specJson,
         scope: String(aliceScope.id),
         namespace: "petstore",
         baseUrl,
-        oauth2: aliceOAuth2Auth,
+        oauth2,
       });
+      yield* aliceExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: aliceScope.id,
+          scope: aliceScope.id,
+          slot: oauth2.connectionSlot,
+          value: { kind: "connection", connectionId: ConnectionId.make(aliceAuth.connectionId) },
+        }),
+      );
       yield* bobExec.openapi.addSpec({
         spec: specJson,
         scope: String(bobScope.id),
         namespace: "petstore",
         baseUrl,
-        oauth2: bobOAuth2Auth,
+        oauth2,
       });
+      yield* bobExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: bobScope.id,
+          scope: bobScope.id,
+          slot: oauth2.connectionSlot,
+          value: { kind: "connection", connectionId: ConnectionId.make(bobAuth.connectionId) },
+        }),
+      );
 
       // -------------------------------------------------------------
       // 4. Invoke through each exec — Authorization must carry that
@@ -558,31 +580,37 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
           if (!started.completedConnection) {
             return yield* new TestInvariantError({ message: "expected clientCredentials flow" });
           }
-          return new OAuth2Auth({
-            kind: "oauth2",
-            connectionId: started.completedConnection.connectionId,
-            securitySchemeName: input.securitySchemeName,
-            flow: "clientCredentials",
-            tokenUrl: input.tokenUrl,
-            authorizationUrl: null,
-            clientIdSecretId: input.clientIdSecretId,
-            clientSecretSecretId: input.clientSecretSecretId,
-            scopes: input.scopes,
-          });
+          return started.completedConnection.connectionId;
         });
 
-      // Admin adds the org-scoped source with an initial oauth2
-      // pointer — same shape the onboarding UI writes via `addSpec`.
-      // Admin's scope stack is [org] so their sign-in resolves the
-      // org-level creds and writes the connection at org.
+      const oauth2 = makeOauth2SourceConfig({
+        flow: "clientCredentials",
+        tokenUrl: tokenEndpoint.tokenUrl,
+        authorizationUrl: null,
+        scopes: startInput.scopes,
+      });
+
+      // Admin adds the org-scoped source with source-owned OAuth structure.
+      // Admin's scope stack is [org] so their sign-in resolves the org-level
+      // creds and writes the connection at org, then the connection binding
+      // is explicitly attached to the source slot.
       const adminAuth = yield* startClientCredentials(adminExec, orgScope.id, startInput);
       yield* adminExec.openapi.addSpec({
         spec: specJson,
         scope: String(orgScope.id),
         namespace: "petstore",
         baseUrl,
-        oauth2: adminAuth,
+        oauth2,
       });
+      yield* adminExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: orgScope.id,
+          scope: orgScope.id,
+          slot: oauth2.connectionSlot,
+          value: { kind: "connection", connectionId: ConnectionId.make(adminAuth) },
+        }),
+      );
 
       // Alice signs in → resolves her shadowed user-scope creds
       // (`alice-client`), mints her own token, writes at user-alice.
@@ -590,6 +618,24 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // Bob signs in → no user-scope shadow, falls through to the
       // org defaults (`org-client`), writes at user-bob.
       const bobAuth = yield* startClientCredentials(bobExec, bobScope.id, startInput);
+      yield* aliceExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: orgScope.id,
+          scope: aliceScope.id,
+          slot: oauth2.connectionSlot,
+          value: { kind: "connection", connectionId: ConnectionId.make(aliceAuth) },
+        }),
+      );
+      yield* bobExec.openapi.setSourceBinding(
+        new OpenApiSourceBindingInput({
+          sourceId: "petstore",
+          sourceScope: orgScope.id,
+          scope: bobScope.id,
+          slot: oauth2.connectionSlot,
+          value: { kind: "connection", connectionId: ConnectionId.make(bobAuth) },
+        }),
+      );
 
       // ---- Regression assertions ----
 
@@ -598,14 +644,14 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // UUID-per-click churn, and the id does not have to be tied to
       // the source namespace.
       const stableId = startInput.connectionId;
-      expect(adminAuth.connectionId).toBe(stableId);
-      expect(aliceAuth.connectionId).toBe(stableId);
-      expect(bobAuth.connectionId).toBe(stableId);
+      expect(adminAuth).toBe(stableId);
+      expect(aliceAuth).toBe(stableId);
+      expect(bobAuth).toBe(stableId);
 
       // (2) Each user's physical row lives at their own scope. The
-      // id *string* collides across scopes intentionally — that's
-      // what lets a single `source.oauth2.connectionId` resolve
-      // per-caller via `findInnermostConnectionRow`.
+      // id *string* collides across scopes intentionally — the source
+      // carries a shared connection slot, and each caller resolves their
+      // own scoped binding for that slot.
       const aliceConn = (yield* aliceExec.connections.list()).find(
         (c) => c.id === stableId && String(c.scopeId) === "user-alice",
       );
@@ -628,9 +674,6 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // (4) Each user's invocation resolves their OWN row and gets
       // their OWN token — not whatever the last signer happened to
       // mint. This is the core multi-user regression.
-      yield* aliceExec.openapi.updateSource("petstore", String(orgScope.id), {
-        oauth2: aliceAuth,
-      });
       const aliceResult = (yield* aliceExec.tools.invoke(
         "petstore.items.echoHeaders",
         {},

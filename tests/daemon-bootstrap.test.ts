@@ -6,6 +6,7 @@ import {
   buildDaemonSpawnSpec,
   canAutoStartLocalDaemonForHost,
   chooseDaemonPort,
+  isDevCliEntrypoint,
   parseDaemonBaseUrl,
 } from "../apps/cli/src/daemon";
 
@@ -31,6 +32,14 @@ describe("daemon bootstrap helpers", () => {
     expect(canAutoStartLocalDaemonForHost("127.0.0.1")).toBe(true);
     expect(canAutoStartLocalDaemonForHost("::1")).toBe(true);
     expect(canAutoStartLocalDaemonForHost("api.example.com")).toBe(false);
+  });
+
+  it("treats source entrypoints as dev mode but excludes bun embedded paths", () => {
+    expect(isDevCliEntrypoint("/repo/apps/cli/src/main.ts")).toBe(true);
+    expect(isDevCliEntrypoint("/repo/apps/cli/src/main.js")).toBe(true);
+    expect(isDevCliEntrypoint("/$bunfs/root/main.js")).toBe(false);
+    expect(isDevCliEntrypoint("/usr/local/bin/executor")).toBe(false);
+    expect(isDevCliEntrypoint(undefined)).toBe(false);
   });
 
   it("builds bun-run spec in dev mode", () => {

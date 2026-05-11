@@ -5,7 +5,6 @@ import { googleDiscoveryPresets } from "../sdk/presets";
 const importAdd = () => import("./AddGoogleDiscoverySource");
 const importEdit = () => import("./EditGoogleDiscoverySource");
 const importSummary = () => import("./GoogleDiscoverySourceSummary");
-const importSignIn = () => import("./GoogleDiscoverySignInButton");
 
 export const googleDiscoverySourcePlugin: SourcePlugin = {
   key: "googleDiscovery",
@@ -13,12 +12,10 @@ export const googleDiscoverySourcePlugin: SourcePlugin = {
   add: lazy(importAdd),
   edit: lazy(importEdit),
   summary: lazy(importSummary),
-  signIn: lazy(importSignIn),
   presets: googleDiscoveryPresets,
   preload: () => {
     void importAdd();
     void importEdit();
     void importSummary();
-    void importSignIn();
   },
 };

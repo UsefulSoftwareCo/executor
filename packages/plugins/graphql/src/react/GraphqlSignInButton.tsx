@@ -1,76 +1,75 @@
-import { useCallback } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAtom } from "@executor-js/react/api/atoms";
-import { useScope } from "@executor-js/react/api/scope-context";
-import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import {
-  OAuthSignInButton,
-  oauthCallbackUrl,
-  oauthConnectionId,
-  useOAuthPopupFlow,
-  type OAuthCompletionPayload,
-} from "@executor-js/react/plugins/oauth-sign-in";
+import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
+import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { SourceOAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import { slugifyNamespace } from "@executor-js/react/plugins/source-identity";
+import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js/react/plugins/credential-bindings";
+import { ScopeId } from "@executor-js/sdk/core";
 
-import { graphqlSourceAtom, updateGraphqlSource } from "./atoms";
+import { graphqlSourceAtom, graphqlSourceBindingsAtom, setGraphqlSourceBinding } from "./atoms";
+import { GraphqlSourceBindingInput } from "../sdk/types";
 
 export default function GraphqlSignInButton(props: { sourceId: string }) {
   const scopeId = useScope();
+  const userScopeId = useUserScope();
   const sourceResult = useAtomValue(graphqlSourceAtom(scopeId, props.sourceId));
-  const connectionsResult = useAtomValue(connectionsAtom(scopeId));
-  const doUpdate = useAtomSet(updateGraphqlSource, { mode: "promise" });
-  const oauth = useOAuthPopupFlow({
-    popupName: "graphql-oauth",
-  });
-
   const source =
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
+  const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
+  const bindingsResult = useAtomValue(
+    graphqlSourceBindingsAtom(userScopeId, props.sourceId, sourceScope),
+  );
+  const connectionsResult = useAtomValue(connectionsAtom(userScopeId));
+  const setBinding = useAtomSet(setGraphqlSourceBinding, { mode: "promise" });
+
   const oauth2 = source?.auth.kind === "oauth2" ? source.auth : null;
+  const bindings = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : null;
+  const connectionBinding = bindings?.find(
+    (binding) => oauth2 !== null && binding.slot === oauth2.connectionSlot,
+  );
+  const boundConnectionId =
+    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
   const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : null;
   const isConnected =
-    oauth2 !== null &&
+    boundConnectionId !== null &&
     connections !== null &&
-    connections.some((c: { readonly id: string }) => c.id === oauth2.connectionId);
+    connections.some((c: { readonly id: string }) => c.id === boundConnectionId);
 
-  const handleSignIn = useCallback(async () => {
-    if (!source || !oauth2) return;
-    const namespaceSlug = slugifyNamespace(source.namespace) || "graphql";
-    await oauth.start({
-      payload: {
-        endpoint: source.endpoint,
-        ...(Object.keys(source.headers).length > 0 ? { headers: source.headers } : {}),
-        ...(Object.keys(source.queryParams).length > 0 ? { queryParams: source.queryParams } : {}),
-        redirectUrl: oauthCallbackUrl(),
-        connectionId: oauthConnectionId({
-          pluginId: "graphql",
-          namespace: namespaceSlug,
-        }),
-        strategy: { kind: "dynamic-dcr" },
-        pluginId: "graphql",
-        identityLabel: `${source.name.trim() || source.namespace || "GraphQL"} OAuth`,
-      },
-      onSuccess: async (result: OAuthCompletionPayload) => {
-        await doUpdate({
-          params: { scopeId, namespace: props.sourceId },
-          payload: {
-            auth: { kind: "oauth2", connectionId: result.connectionId },
-          },
-          reactivityKeys: sourceWriteKeys,
-        });
-      },
-    });
-  }, [source, oauth2, scopeId, props.sourceId, doUpdate, oauth]);
-
-  if (!oauth2) return null;
+  if (!source || !oauth2) return null;
+  const namespaceSlug = slugifyNamespace(source.namespace) || "graphql";
 
   return (
-    <OAuthSignInButton
-      busy={oauth.busy}
-      error={oauth.error}
+    <SourceOAuthSignInButton
+      popupName="graphql-oauth"
+      pluginId="graphql"
+      namespace={namespaceSlug}
+      fallbackNamespace="graphql"
+      endpoint={source.endpoint}
+      tokenScope={userScopeId}
+      connectionId={boundConnectionId}
+      sourceLabel={`${source.name.trim() || source.namespace || "GraphQL"} OAuth`}
+      headers={secretBackedValuesFromConfiguredCredentialBindings(source.headers, bindings ?? [])}
+      queryParams={secretBackedValuesFromConfiguredCredentialBindings(
+        source.queryParams,
+        bindings ?? [],
+      )}
       isConnected={isConnected}
-      onSignIn={() => void handleSignIn()}
+      onConnected={async (connectionId) => {
+        await setBinding({
+          params: { scopeId: userScopeId },
+          payload: new GraphqlSourceBindingInput({
+            sourceId: props.sourceId,
+            sourceScope,
+            scope: userScopeId,
+            slot: oauth2.connectionSlot,
+            value: { kind: "connection", connectionId },
+          }),
+          reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
+        });
+      }}
     />
   );
 }

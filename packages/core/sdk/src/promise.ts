@@ -14,10 +14,18 @@ export {
 // these to type arguments they pass in (e.g. SetSecretInput, filters).
 export { ScopeId, ToolId, SecretId, PolicyId } from "./ids";
 export { Scope } from "./scope";
-export { SecretRef, SetSecretInput } from "./secrets";
+export { RemoveConnectionInput } from "./connections";
+export { RemoveSecretInput, SecretRef, SetSecretInput } from "./secrets";
+export type {
+  CreateToolPolicyInput,
+  RemoveToolPolicyInput,
+  UpdateToolPolicyInput,
+} from "./policies";
 export {
   ToolSchema,
   SourceDetectionResult,
+  type RefreshSourceInput,
+  type RemoveSourceInput,
   type Source,
   type Tool,
   type ToolListFilter,

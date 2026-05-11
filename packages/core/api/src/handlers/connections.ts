@@ -2,7 +2,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
 
 import { capture } from "@executor-js/api";
-import type { ConnectionRef } from "@executor-js/sdk";
+import { RemoveConnectionInput, type ConnectionRef } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -33,7 +33,12 @@ export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connection
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          yield* executor.connections.remove(path.connectionId);
+          yield* executor.connections.remove(
+            new RemoveConnectionInput({
+              id: path.connectionId,
+              targetScope: path.scopeId,
+            }),
+          );
           return { removed: true };
         }),
       ),

@@ -1,4 +1,4 @@
-import { Context, Duration, Effect } from "effect";
+import { Context, Duration, Effect, Semaphore } from "effect";
 import * as op from "@1password/op-js";
 
 import { OnePasswordError } from "./errors";
@@ -138,26 +138,34 @@ export const makeNativeSdkService = (
 // CLI backend — uses @1password/op-js (shells out to `op` CLI)
 // ---------------------------------------------------------------------------
 
+const cliAuthLock = Semaphore.makeUnsafe(1);
+
 export const makeCliService = (
   auth: ResolvedAuth,
 ): Effect.Effect<OnePasswordService, OnePasswordError> =>
   Effect.sync(() => {
-    // Configure auth
-    if (auth.kind === "service-account") {
-      op.setServiceAccount(auth.token);
-    } else {
-      op.setGlobalFlags({ account: auth.accountName });
-    }
-
     const wrapSync = <A>(fn: () => A, operation: string): Effect.Effect<A, OnePasswordError> =>
-      Effect.try({
-        try: fn,
-        catch: () =>
-          new OnePasswordError({
-            operation,
-            message: `1Password CLI ${operation} failed`,
+      cliAuthLock
+        .withPermits(1)(
+          Effect.try({
+            try: () => {
+              if (auth.kind === "service-account") {
+                op.setGlobalFlags({});
+                op.setServiceAccount(auth.token);
+              } else {
+                op.setServiceAccount("");
+                op.setGlobalFlags({ account: auth.accountName });
+              }
+              return fn();
+            },
+            catch: () =>
+              new OnePasswordError({
+                operation,
+                message: `1Password CLI ${operation} failed`,
+              }),
           }),
-      }).pipe(Effect.withSpan(`onepassword.cli.${operation}`));
+        )
+        .pipe(Effect.withSpan(`onepassword.cli.${operation}`));
 
     return OnePasswordServiceTag.of({
       resolveSecret: (uri) => wrapSync(() => op.read.parse(uri), "secret resolution"),

@@ -15,7 +15,6 @@ import { Layer } from "effect";
 
 import { WorkOSAuth } from "../auth/workos";
 import { AutumnService } from "../services/autumn";
-import { SlackService } from "../services/slack";
 
 /**
  * Services that are independent of how the DB or tracer is provisioned —
@@ -23,8 +22,4 @@ import { SlackService } from "../services/slack";
  * session DO (long-lived DB + isolate-local tracer SDK) merge this with
  * their own `DbLive` + `UserStoreLive` + telemetry layer.
  */
-export const CoreSharedServices = Layer.mergeAll(
-  WorkOSAuth.Default,
-  AutumnService.Default,
-  SlackService.Default,
-);
+export const CoreSharedServices = Layer.mergeAll(WorkOSAuth.Default, AutumnService.Default);

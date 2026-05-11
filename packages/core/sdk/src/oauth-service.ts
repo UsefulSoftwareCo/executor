@@ -35,7 +35,7 @@
 // every strategy because refresh semantics are strategy-independent.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Match, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Match, Option, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { StorageFailure, TypedAdapter } from "@executor-js/storage-core";
@@ -85,6 +85,7 @@ import {
   exchangeAuthorizationCode,
   exchangeClientCredentials,
   type OAuth2Error,
+  type OAuthEndpointUrlPolicy,
   refreshAccessToken,
 } from "./oauth-helpers";
 import type { ScopedDBAdapter } from "./scoped-adapter";
@@ -122,7 +123,13 @@ const AuthorizationCodeSessionPayload = Schema.Struct({
     Schema.withDecodingDefaultType(Effect.succeed(null)),
   ),
   clientIdSecretId: Schema.String,
+  clientIdSecretScopeId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultType(Effect.succeed(null)),
+  ),
   clientSecretSecretId: Schema.NullOr(Schema.String),
+  clientSecretSecretScopeId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultType(Effect.succeed(null)),
+  ),
   scopes: Schema.Array(Schema.String),
   scopeSeparator: Schema.optional(Schema.String),
   clientAuth: Schema.Literals(["body", "basic"]),
@@ -151,97 +158,8 @@ const coerceJson = (value: unknown): unknown => {
   return decodeUnknownJsonOption(value).pipe(Option.getOrElse(() => value));
 };
 
-const stringArray = (value: unknown): readonly string[] =>
-  Array.isArray(value) ? value.filter((scope): scope is string => typeof scope === "string") : [];
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object";
-
-const originOrNull = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor is the platform parser; invalid legacy issuer values decode to null
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-};
-
-const decodeProviderState = (value: unknown): OAuthProviderState => {
-  const raw = coerceJson(value);
-  const record = isRecord(raw) ? raw : null;
-
-  if (record && !("kind" in record) && "flow" in record && "tokenUrl" in record) {
-    const flow = record.flow;
-    if (flow === "authorizationCode") {
-      return decodeProviderStateSync({
-        kind: "authorization-code",
-        tokenEndpoint: record.tokenUrl,
-        issuerUrl: originOrNull(record.authorizationEndpoint),
-        clientIdSecretId: record.clientIdSecretId,
-        clientSecretSecretId: record.clientSecretSecretId ?? null,
-        clientAuth: "body",
-        scope: stringArray(record.scopes).join(" ") || null,
-      });
-    }
-    if (flow === "clientCredentials") {
-      return decodeProviderStateSync({
-        kind: "client-credentials",
-        tokenEndpoint: record.tokenUrl,
-        clientIdSecretId: record.clientIdSecretId,
-        clientSecretSecretId: record.clientSecretSecretId,
-        scopes: stringArray(record.scopes),
-        clientAuth: "body",
-        scope: stringArray(record.scopes).join(" ") || null,
-      });
-    }
-  }
-
-  if (record && !("kind" in record) && "clientIdSecretId" in record && "scopes" in record) {
-    const scopes = stringArray(record.scopes);
-    return decodeProviderStateSync({
-      kind: "authorization-code",
-      tokenEndpoint: "https://oauth2.googleapis.com/token",
-      issuerUrl: "https://accounts.google.com",
-      clientIdSecretId: record.clientIdSecretId,
-      clientSecretSecretId: record.clientSecretSecretId ?? null,
-      clientAuth: "body",
-      scope: scopes.join(" ") || null,
-    });
-  }
-
-  if (record && !("kind" in record) && "clientInformation" in record && "endpoint" in record) {
-    const clientInformation = isRecord(record.clientInformation) ? record.clientInformation : null;
-    const authorizationServerMetadata = isRecord(record.authorizationServerMetadata)
-      ? record.authorizationServerMetadata
-      : null;
-    return decodeProviderStateSync({
-      kind: "dynamic-dcr",
-      tokenEndpoint:
-        typeof record.tokenEndpoint === "string"
-          ? record.tokenEndpoint
-          : typeof authorizationServerMetadata?.token_endpoint === "string"
-            ? authorizationServerMetadata.token_endpoint
-            : "",
-      issuerUrl:
-        typeof authorizationServerMetadata?.issuer === "string"
-          ? authorizationServerMetadata.issuer
-          : null,
-      authorizationServerUrl:
-        typeof record.authorizationServerUrl === "string" ? record.authorizationServerUrl : null,
-      authorizationServerMetadataUrl:
-        typeof record.authorizationServerMetadataUrl === "string"
-          ? record.authorizationServerMetadataUrl
-          : null,
-      clientId: typeof clientInformation?.client_id === "string" ? clientInformation.client_id : "",
-      clientSecretSecretId: null,
-      clientAuth: "body",
-      scope: null,
-    });
-  }
-
-  return decodeProviderStateSync(raw);
-};
+const decodeProviderState = (value: unknown): OAuthProviderState =>
+  decodeProviderStateSync(coerceJson(value));
 
 // ---------------------------------------------------------------------------
 // Service dependencies — the executor wires these up when it constructs
@@ -261,6 +179,16 @@ export interface OAuthServiceDeps {
   /** Resolves client-id / client-secret refs at start + refresh time.
    *  A `null` return means "secret row is gone" and aborts the flow. */
   readonly secretsGet: (id: string) => Effect.Effect<string | null, StorageFailure>;
+  readonly secretsGetResolved?: (
+    id: string,
+  ) => Effect.Effect<
+    { readonly value: string; readonly scopeId: string | null } | null,
+    StorageFailure
+  >;
+  readonly secretsGetAtScope?: (
+    id: string,
+    scope: string,
+  ) => Effect.Effect<string | null, StorageFailure>;
   readonly secretsSet: (input: SetSecretInput) => Effect.Effect<SecretRef, StorageFailure>;
   /** Mints the Connection row + backing secret rows. Called from
    *  `complete` (and from `start` for `client-credentials`). */
@@ -272,6 +200,9 @@ export interface OAuthServiceDeps {
   readonly newSessionId?: () => string;
   /** `Date.now()` substitute — tests override to drive TTL behavior. */
   readonly now?: () => number;
+  /** Outbound HTTP client used for OAuth metadata/DCR probes. */
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 }
 
 const defaultSessionId = (): string => {
@@ -314,6 +245,21 @@ export const makeOAuth2Service = (
 ): { readonly service: OAuthService; readonly connectionProvider: ConnectionProvider } => {
   const now = deps.now ?? (() => Date.now());
   const newSessionId = deps.newSessionId ?? defaultSessionId;
+  const httpClientLayer = deps.httpClientLayer;
+  const endpointUrlPolicy = deps.endpointUrlPolicy;
+  const secretsGetResolved =
+    deps.secretsGetResolved ??
+    ((id: string) =>
+      deps
+        .secretsGet(id)
+        .pipe(Effect.map((value) => (value === null ? null : { value, scopeId: null }))));
+  const getSecretFromRecordedScope = (params: {
+    readonly secretId: string;
+    readonly scopeId: string | null;
+  }) =>
+    params.scopeId && deps.secretsGetAtScope
+      ? deps.secretsGetAtScope(params.secretId, params.scopeId)
+      : deps.secretsGet(params.secretId);
 
   // -------------------------------------------------------------------
   // probe
@@ -321,6 +267,7 @@ export const makeOAuth2Service = (
   const probe = (input: OAuthProbeInput): Effect.Effect<OAuthProbeResult, OAuthProbeError> =>
     Effect.gen(function* () {
       const resource = yield* discoverProtectedResourceMetadata(input.endpoint, {
+        httpClientLayer,
         resourceHeaders: input.headers,
         resourceQueryParams: input.queryParams,
       }).pipe(
@@ -346,9 +293,9 @@ export const makeOAuth2Service = (
       })();
 
       const authServer = authorizationServerUrl
-        ? yield* discoverAuthorizationServerMetadata(authorizationServerUrl).pipe(
-            Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)),
-          )
+        ? yield* discoverAuthorizationServerMetadata(authorizationServerUrl, {
+            httpClientLayer,
+          }).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)))
         : null;
 
       // Dynamic registration is only viable when the AS advertises a
@@ -401,7 +348,7 @@ export const makeOAuth2Service = (
           response.headers["www-authenticate"] ?? response.headers["WWW-Authenticate"];
         return !!wwwAuth && /^\s*bearer\b/i.test(wwwAuth);
       }).pipe(
-        Effect.provide(FetchHttpClient.layer),
+        Effect.provide(httpClientLayer ?? FetchHttpClient.layer),
         Effect.catch(() => Effect.succeed(false)),
       );
 
@@ -433,8 +380,10 @@ export const makeOAuth2Service = (
           scopes: strategy.scopes,
         },
         {
+          httpClientLayer,
           resourceHeaders: input.headers,
           resourceQueryParams: input.queryParams,
+          endpointUrlPolicy,
         },
       ).pipe(
         Effect.catchTag("OAuthDiscoveryError", ({ message, error, errorDescription }) =>
@@ -466,6 +415,7 @@ export const makeOAuth2Service = (
         state: sessionId,
         codeChallenge,
         resource: started.state.resource,
+        endpointUrlPolicy,
       });
 
       const payload: OAuthSessionPayload = {
@@ -508,7 +458,7 @@ export const makeOAuth2Service = (
     strategy: OAuthAuthorizationCodeStrategy,
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
-      const clientId = yield* deps.secretsGet(strategy.clientIdSecretId).pipe(
+      const clientIdRef = yield* secretsGetResolved(strategy.clientIdSecretId).pipe(
         Effect.mapError(
           (err) =>
             // Storage failure propagates; null returns aren't errors — the
@@ -516,7 +466,7 @@ export const makeOAuth2Service = (
             err,
         ),
       );
-      if (clientId === null) {
+      if (clientIdRef === null) {
         return yield* new OAuthStartError({
           message: `client_id secret "${strategy.clientIdSecretId}" not found`,
         });
@@ -528,13 +478,14 @@ export const makeOAuth2Service = (
 
       const authorizationUrl = buildAuthorizationUrl({
         authorizationUrl: strategy.authorizationEndpoint,
-        clientId,
+        clientId: clientIdRef.value,
         redirectUrl: input.redirectUrl,
         scopes: strategy.scopes,
         state: sessionId,
         codeChallenge,
         scopeSeparator: strategy.scopeSeparator,
         extraParams: strategy.extraAuthorizationParams,
+        endpointUrlPolicy,
       });
 
       const payload: OAuthSessionPayload = {
@@ -545,7 +496,11 @@ export const makeOAuth2Service = (
         tokenEndpoint: strategy.tokenEndpoint,
         issuerUrl: strategy.issuerUrl ?? new URL(strategy.authorizationEndpoint).origin,
         clientIdSecretId: strategy.clientIdSecretId,
-        clientSecretSecretId: strategy.clientSecretSecretId,
+        clientIdSecretScopeId: clientIdRef.scopeId,
+        clientSecretSecretId: strategy.clientSecretSecretId ?? null,
+        clientSecretSecretScopeId: strategy.clientSecretSecretId
+          ? ((yield* secretsGetResolved(strategy.clientSecretSecretId))?.scopeId ?? null)
+          : null,
         scopes: [...strategy.scopes],
         scopeSeparator: strategy.scopeSeparator,
         clientAuth: strategy.clientAuth ?? "body",
@@ -570,9 +525,9 @@ export const makeOAuth2Service = (
     strategy: OAuthClientCredentialsStrategy,
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
-      const clientId = yield* deps.secretsGet(strategy.clientIdSecretId);
-      const clientSecret = yield* deps.secretsGet(strategy.clientSecretSecretId);
-      if (clientId === null || clientSecret === null) {
+      const clientIdRef = yield* secretsGetResolved(strategy.clientIdSecretId);
+      const clientSecretRef = yield* secretsGetResolved(strategy.clientSecretSecretId);
+      if (clientIdRef === null || clientSecretRef === null) {
         return yield* new OAuthStartError({
           message: "client_id / client_secret secret not found",
         });
@@ -580,11 +535,12 @@ export const makeOAuth2Service = (
 
       const tokens = yield* exchangeClientCredentials({
         tokenUrl: strategy.tokenEndpoint,
-        clientId,
-        clientSecret,
+        clientId: clientIdRef.value,
+        clientSecret: clientSecretRef.value,
         scopes: strategy.scopes,
         scopeSeparator: strategy.scopeSeparator,
         clientAuth: strategy.clientAuth ?? "body",
+        endpointUrlPolicy,
       }).pipe(
         Effect.mapError(
           ({ message }: OAuth2Error) =>
@@ -601,7 +557,9 @@ export const makeOAuth2Service = (
         kind: "client-credentials",
         tokenEndpoint: strategy.tokenEndpoint,
         clientIdSecretId: strategy.clientIdSecretId,
+        clientIdSecretScopeId: clientIdRef.scopeId,
         clientSecretSecretId: strategy.clientSecretSecretId,
+        clientSecretSecretScopeId: clientSecretRef.scopeId,
         scopes: [...(strategy.scopes ?? [])],
         scopeSeparator: strategy.scopeSeparator,
         clientAuth: strategy.clientAuth ?? "body",
@@ -710,6 +668,9 @@ export const makeOAuth2Service = (
         where: [{ field: "id", value: input.state }],
       });
       if (!row) {
+        return yield* new OAuthSessionNotFoundError({ sessionId: input.state });
+      }
+      if (input.tokenScope !== undefined && row.token_scope !== input.tokenScope) {
         return yield* new OAuthSessionNotFoundError({ sessionId: input.state });
       }
 
@@ -827,6 +788,7 @@ export const makeOAuth2Service = (
                   .token_endpoint_auth_method === "client_secret_basic"
                   ? "basic"
                   : "body",
+              clientSecretSecretScopeId: dynamicClientSecretSecretId ? tokenScope : null,
               scopes: [...payload.scopes],
               scope: exchangeResult.tokens.scope ?? null,
               resource: payload.resource,
@@ -836,7 +798,9 @@ export const makeOAuth2Service = (
               tokenEndpoint: payload.tokenEndpoint,
               issuerUrl: payload.issuerUrl,
               clientIdSecretId: payload.clientIdSecretId,
+              clientIdSecretScopeId: payload.clientIdSecretScopeId,
               clientSecretSecretId: payload.clientSecretSecretId,
+              clientSecretSecretScopeId: payload.clientSecretSecretScopeId,
               clientAuth: payload.clientAuth,
               scopes: [...payload.scopes],
               scopeSeparator: payload.scopeSeparator,
@@ -939,6 +903,7 @@ export const makeOAuth2Service = (
         idTokenSigningAlgValuesSupported: md.id_token_signing_alg_values_supported,
         clientAuth: ci.token_endpoint_auth_method === "client_secret_basic" ? "basic" : "body",
         resource: payload.resource ?? undefined,
+        endpointUrlPolicy,
       }).pipe(
         Effect.mapError(
           ({ message, error }: OAuth2Error) =>
@@ -960,14 +925,22 @@ export const makeOAuth2Service = (
     redirectUrl: string,
   ): Effect.Effect<ExchangeResult, OAuthCompleteError | StorageFailure> =>
     Effect.gen(function* () {
-      const clientId = yield* deps.secretsGet(payload.clientIdSecretId);
+      const clientId = payload.clientIdSecretScopeId
+        ? yield* getSecretFromRecordedScope({
+            secretId: payload.clientIdSecretId,
+            scopeId: payload.clientIdSecretScopeId,
+          })
+        : yield* deps.secretsGet(payload.clientIdSecretId);
       if (clientId === null) {
         return yield* new OAuthCompleteError({
           message: `client_id secret "${payload.clientIdSecretId}" not found`,
         });
       }
       const clientSecret = payload.clientSecretSecretId
-        ? yield* deps.secretsGet(payload.clientSecretSecretId)
+        ? yield* getSecretFromRecordedScope({
+            secretId: payload.clientSecretSecretId,
+            scopeId: payload.clientSecretSecretScopeId,
+          })
         : null;
       if (payload.clientSecretSecretId && clientSecret === null) {
         return yield* new OAuthCompleteError({
@@ -984,6 +957,7 @@ export const makeOAuth2Service = (
         codeVerifier: payload.codeVerifier,
         code,
         clientAuth: payload.clientAuth,
+        endpointUrlPolicy,
       }).pipe(
         Effect.mapError(
           ({ message, error }: OAuth2Error) =>
@@ -999,18 +973,13 @@ export const makeOAuth2Service = (
       };
     });
 
-  const cancel = (sessionId: string): Effect.Effect<void, StorageFailure> =>
+  const cancel = (sessionId: string, tokenScope: string): Effect.Effect<void, StorageFailure> =>
     Effect.gen(function* () {
-      const row = yield* deps.adapter.findOne({
-        model: "oauth2_session",
-        where: [{ field: "id", value: sessionId }],
-      });
-      if (!row) return;
       yield* deps.adapter.delete({
         model: "oauth2_session",
         where: [
           { field: "id", value: sessionId },
-          { field: "scope_id", value: row.scope_id },
+          { field: "scope_id", value: tokenScope },
         ],
       });
     });
@@ -1054,7 +1023,10 @@ export const makeOAuth2Service = (
           Match.when({ kind: "dynamic-dcr" }, (s) =>
             Effect.gen(function* () {
               const csec = s.clientSecretSecretId
-                ? yield* deps.secretsGet(s.clientSecretSecretId).pipe(
+                ? yield* getSecretFromRecordedScope({
+                    secretId: s.clientSecretSecretId,
+                    scopeId: s.clientSecretSecretScopeId ?? null,
+                  }).pipe(
                     Effect.catchTags({
                       StorageError: ({ message, cause }) =>
                         Effect.fail(
@@ -1087,7 +1059,10 @@ export const makeOAuth2Service = (
           ),
           Match.whenOr({ kind: "authorization-code" }, { kind: "client-credentials" }, (s) =>
             Effect.gen(function* () {
-              const cid = yield* deps.secretsGet(s.clientIdSecretId).pipe(
+              const cid = yield* getSecretFromRecordedScope({
+                secretId: s.clientIdSecretId,
+                scopeId: s.clientIdSecretScopeId ?? null,
+              }).pipe(
                 Effect.catchTags({
                   StorageError: ({ message, cause }) =>
                     Effect.fail(
@@ -1115,7 +1090,10 @@ export const makeOAuth2Service = (
                 });
               }
               const csec = s.clientSecretSecretId
-                ? yield* deps.secretsGet(s.clientSecretSecretId).pipe(
+                ? yield* getSecretFromRecordedScope({
+                    secretId: s.clientSecretSecretId,
+                    scopeId: s.clientSecretSecretScopeId ?? null,
+                  }).pipe(
                     Effect.catchTags({
                       StorageError: ({ message, cause }) =>
                         Effect.fail(
@@ -1151,31 +1129,6 @@ export const makeOAuth2Service = (
 
         const tokenEndpoint = yield* (() => {
           if (state.tokenEndpoint) return Effect.succeed(state.tokenEndpoint);
-          if (state.kind === "dynamic-dcr" && state.authorizationServerUrl) {
-            return discoverAuthorizationServerMetadata(state.authorizationServerUrl).pipe(
-              Effect.flatMap((metadata) =>
-                metadata?.metadata.token_endpoint
-                  ? Effect.succeed(metadata.metadata.token_endpoint)
-                  : Effect.fail(
-                      new ConnectionRefreshError({
-                        connectionId: input.connectionId,
-                        message: "oauth2 legacy MCP providerState is missing token endpoint",
-                        reauthRequired: true,
-                      }),
-                    ),
-              ),
-              Effect.catchTag("OAuthDiscoveryError", (cause) =>
-                Effect.fail(
-                  new ConnectionRefreshError({
-                    connectionId: input.connectionId,
-                    message: "Failed to discover token endpoint for legacy MCP OAuth connection",
-                    reauthRequired: true,
-                    cause,
-                  }),
-                ),
-              ),
-            );
-          }
           return Effect.fail(
             new ConnectionRefreshError({
               connectionId: input.connectionId,
@@ -1194,6 +1147,7 @@ export const makeOAuth2Service = (
                 scopes: state.scopes,
                 scopeSeparator: state.scopeSeparator,
                 clientAuth: state.clientAuth,
+                endpointUrlPolicy,
               })
             : refreshAccessToken({
                 tokenUrl: tokenEndpoint,
@@ -1215,6 +1169,7 @@ export const makeOAuth2Service = (
                 clientAuth: state.clientAuth,
                 idTokenSigningAlgValuesSupported:
                   state.kind === "dynamic-dcr" ? state.idTokenSigningAlgValuesSupported : undefined,
+                endpointUrlPolicy,
                 resource:
                   state.kind === "dynamic-dcr" || state.kind === "authorization-code"
                     ? (state.resource ?? undefined)

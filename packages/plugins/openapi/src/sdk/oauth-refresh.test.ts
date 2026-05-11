@@ -38,6 +38,7 @@ import {
   Scope,
   SetSecretInput,
   TokenMaterial,
+  OAUTH2_PROVIDER_KEY,
   collectSchemas,
   createExecutor,
   definePlugin,
@@ -49,7 +50,7 @@ import { serveTestHttpApp } from "@executor-js/sdk/testing";
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
 
 import { openApiPlugin } from "./plugin";
-import { OAuth2Auth } from "./types";
+import { OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
 
@@ -214,7 +215,7 @@ const seedExpiredConnection = (
       new CreateConnectionInput({
         id: ConnectionId.make(connectionId),
         scope: scopeId,
-        provider: "openapi:oauth2",
+        provider: OAUTH2_PROVIDER_KEY,
         identityLabel: "Alice",
         accessToken: new TokenMaterial({
           secretId: SecretId.make(`${connectionId}.access_token`),
@@ -229,26 +230,45 @@ const seedExpiredConnection = (
         expiresAt: Date.now() - 10_000,
         oauthScope: "read",
         providerState: {
-          flow: "authorizationCode",
-          tokenUrl,
+          kind: "authorization-code",
+          tokenEndpoint: tokenUrl,
+          issuerUrl: null,
           clientIdSecretId: "client_id",
           clientSecretSecretId: "client_secret",
+          clientAuth: "body",
           scopes: ["read"],
+          scope: "read",
         },
       }),
     );
-    return new OAuth2Auth({
+    return new OAuth2SourceConfig({
       kind: "oauth2",
-      connectionId,
       securitySchemeName: "oauth2",
       flow: "authorizationCode",
       tokenUrl,
       authorizationUrl: "https://auth.example.com/authorize",
-      clientIdSecretId: "client_id",
-      clientSecretSecretId: "client_secret",
+      clientIdSlot: "oauth2:oauth2:client-id",
+      clientSecretSlot: "oauth2:oauth2:client-secret",
+      connectionSlot: "oauth2:oauth2:connection",
       scopes: ["read"],
     });
   });
+
+const bindOAuthConnection = (
+  executor: ExecutorValue,
+  scopeId: ScopeId,
+  connectionId: string,
+  oauth2: OAuth2SourceConfig,
+) =>
+  executor.openapi.setSourceBinding(
+    new OpenApiSourceBindingInput({
+      sourceId: "petstore",
+      sourceScope: scopeId,
+      scope: scopeId,
+      slot: oauth2.connectionSlot,
+      value: { kind: "connection", connectionId: ConnectionId.make(connectionId) },
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -281,6 +301,7 @@ layer(TestLayer)("OpenAPI oauth refresh", (it) => {
         baseUrl,
         oauth2: auth,
       });
+      yield* bindOAuthConnection(executor, scopeId, "conn-refresh-ok", auth);
 
       const result = (yield* executor.tools.invoke(
         "petstore.items.echoHeaders",
@@ -332,6 +353,7 @@ layer(TestLayer)("OpenAPI oauth refresh", (it) => {
         baseUrl,
         oauth2: auth,
       });
+      yield* bindOAuthConnection(executor, scopeId, "conn-refresh-concurrent", auth);
 
       const invokes = yield* Effect.all(
         [1, 2, 3, 4, 5].map(() =>
@@ -383,6 +405,7 @@ layer(TestLayer)("OpenAPI oauth refresh", (it) => {
         baseUrl,
         oauth2: auth,
       });
+      yield* bindOAuthConnection(executor, scopeId, "conn-refresh-dead", auth);
 
       // Tool invocation currently wraps connection errors in a
       // generic Error (see openapi invokeTool), so we assert against
@@ -396,7 +419,7 @@ layer(TestLayer)("OpenAPI oauth refresh", (it) => {
             : Effect.fail(error),
         ),
       );
-      expect(flipped.provider).toBe("openapi:oauth2");
+      expect(flipped.provider).toBe(OAUTH2_PROVIDER_KEY);
       expect(flipped.message).toMatch(/OAuth refresh failed: .*revoked/i);
     }),
   );

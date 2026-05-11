@@ -53,19 +53,13 @@ export const isServerError = (error: unknown): boolean => toHttpResponseError(er
 
 export const toErrorResponse = (error: unknown): Response => {
   const mapped = toHttpResponseError(error);
-  if (mapped.status >= 500) captureCause(error);
+  if (mapped.status >= 500) captureCause(mapped);
   return Response.json({ error: mapped.message, code: mapped.code }, { status: mapped.status });
 };
 
 export const toErrorServerResponse = (error: unknown): HttpServerResponse.HttpServerResponse => {
   const mapped = toHttpResponseError(error);
-  if (mapped.status >= 500) {
-    console.error(
-      "[api] toErrorServerResponse error:",
-      Cause.isCause(error) ? Cause.pretty(error) : error,
-    );
-    captureCause(error);
-  }
+  if (mapped.status >= 500) captureCause(mapped);
   return HttpServerResponse.jsonUnsafe(
     { error: mapped.message, code: mapped.code },
     { status: mapped.status },

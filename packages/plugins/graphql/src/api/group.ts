@@ -4,16 +4,24 @@ import { ScopeId } from "@executor-js/sdk/core";
 import { InternalError } from "@executor-js/api";
 
 import { GraphqlIntrospectionError, GraphqlExtractionError } from "../sdk/errors";
-import { GraphqlSourceAuth, HeaderValue } from "../sdk/types";
+import {
+  ConfiguredGraphqlCredentialValue,
+  GraphqlCredentialInput,
+  GraphqlSourceAuth,
+  GraphqlSourceAuthInput,
+  GraphqlSourceBindingInputSchema,
+  GraphqlSourceBindingRef,
+} from "../sdk/types";
 
 // StoredGraphqlSource shape as an HTTP response schema. Kept local to the
 // api layer because the sdk-side `StoredGraphqlSource` is a plain interface.
 export const StoredSourceSchema = Schema.Struct({
   namespace: Schema.String,
+  scope: ScopeId,
   name: Schema.String,
   endpoint: Schema.String,
-  headers: Schema.Record(Schema.String, HeaderValue),
-  queryParams: Schema.Record(Schema.String, HeaderValue),
+  headers: Schema.Record(Schema.String, ConfiguredGraphqlCredentialValue),
+  queryParams: Schema.Record(Schema.String, ConfiguredGraphqlCredentialValue),
   auth: GraphqlSourceAuth,
 });
 
@@ -30,30 +38,47 @@ const SourceParams = {
   namespace: Schema.String,
 };
 
+const SourceBindingParams = {
+  scopeId: ScopeId,
+  namespace: Schema.String,
+  sourceScopeId: ScopeId,
+};
+
 // ---------------------------------------------------------------------------
 // Payloads
 // ---------------------------------------------------------------------------
 
 const AddSourcePayload = Schema.Struct({
+  targetScope: ScopeId,
   endpoint: Schema.String,
   name: Schema.optional(Schema.String),
   introspectionJson: Schema.optional(Schema.String),
   namespace: Schema.optional(Schema.String),
-  headers: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  queryParams: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  auth: Schema.optional(GraphqlSourceAuth),
+  headers: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+  credentialTargetScope: Schema.optional(ScopeId),
+  auth: Schema.optional(GraphqlSourceAuthInput),
 });
 
 const UpdateSourcePayload = Schema.Struct({
+  sourceScope: ScopeId,
   name: Schema.optional(Schema.String),
   endpoint: Schema.optional(Schema.String),
-  headers: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  queryParams: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  auth: Schema.optional(GraphqlSourceAuth),
+  headers: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+  credentialTargetScope: Schema.optional(ScopeId),
+  auth: Schema.optional(GraphqlSourceAuthInput),
 });
 
 const UpdateSourceResponse = Schema.Struct({
   updated: Schema.Boolean,
+});
+
+const RemoveBindingPayload = Schema.Struct({
+  sourceId: Schema.String,
+  sourceScope: ScopeId,
+  slot: Schema.String,
+  scope: ScopeId,
 });
 
 // ---------------------------------------------------------------------------
@@ -110,6 +135,33 @@ export const GraphqlGroup = HttpApiGroup.make("graphql")
       params: SourceParams,
       payload: UpdateSourcePayload,
       success: UpdateSourceResponse,
+      error: GraphqlErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "listSourceBindings",
+      "/scopes/:scopeId/graphql/sources/:namespace/base/:sourceScopeId/bindings",
+      {
+        params: SourceBindingParams,
+        success: Schema.Array(GraphqlSourceBindingRef),
+        error: GraphqlErrors,
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("setSourceBinding", "/scopes/:scopeId/graphql/source-bindings", {
+      params: ScopeParams,
+      payload: GraphqlSourceBindingInputSchema,
+      success: GraphqlSourceBindingRef,
+      error: GraphqlErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("removeSourceBinding", "/scopes/:scopeId/graphql/source-bindings/remove", {
+      params: ScopeParams,
+      payload: RemoveBindingPayload,
+      success: Schema.Struct({ removed: Schema.Boolean }),
       error: GraphqlErrors,
     }),
   );

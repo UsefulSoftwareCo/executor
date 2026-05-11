@@ -20,6 +20,32 @@ export function displayNameFromUrl(url: string): string | null {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+export function domainLabelFromUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  return parse(trimmed).domainWithoutSuffix ?? null;
+}
+
+export function pascalCaseDomainLabel(label: string): string | null {
+  const words = label
+    .split(/[^a-z0-9]+/i)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  if (words.length === 0) return null;
+  return words
+    .map((word) => {
+      const normalized = word.toLowerCase();
+      return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    })
+    .join("");
+}
+
+export function sourceDisplayNameFromUrl(url: string, sourceKind: string): string | null {
+  const label = domainLabelFromUrl(url);
+  const displayLabel = label ? pascalCaseDomainLabel(label) : null;
+  return displayLabel ? `${displayLabel} ${sourceKind}` : null;
+}
+
 // ---------------------------------------------------------------------------
 // Hook — owns the name + namespace state with namespace auto-derivation
 // ---------------------------------------------------------------------------
@@ -108,33 +134,57 @@ export function SourceIdentityFields({
     namespaceHint ??
     (namespaceReadOnly
       ? "The namespace is part of the source's identity and cannot be changed."
-      : "Prefix for the tool names. Auto-derived from the display name.");
+      : undefined);
 
   return (
     <CardStack>
       <CardStackContent className="border-t-0">
-        <CardStackEntryField label={nameLabel}>
-          <Input
-            value={identity.name}
-            onChange={(e) => identity.setName((e.target as HTMLInputElement).value)}
-            placeholder={namePlaceholder}
-            className="text-sm"
-          />
-        </CardStackEntryField>
-        <CardStackEntryField
-          label="Namespace"
-          description={namespaceReadOnly ? undefined : "(optional)"}
-          hint={effectiveNamespaceHint}
-        >
-          <Input
-            value={identity.namespace}
-            onChange={(e) => identity.setNamespace((e.target as HTMLInputElement).value)}
-            placeholder={namespacePlaceholder}
-            className="font-mono text-sm"
-            disabled={namespaceReadOnly}
-          />
-        </CardStackEntryField>
+        <SourceIdentityFieldRows
+          identity={identity}
+          namePlaceholder={namePlaceholder}
+          namespacePlaceholder={namespacePlaceholder}
+          nameLabel={nameLabel}
+          namespaceHint={effectiveNamespaceHint}
+          namespaceReadOnly={namespaceReadOnly}
+        />
       </CardStackContent>
     </CardStack>
+  );
+}
+
+export function SourceIdentityFieldRows({
+  identity,
+  namePlaceholder = "e.g. Sentry API",
+  namespacePlaceholder = "sentry_api",
+  nameLabel = "Display Name",
+  namespaceHint,
+  namespaceReadOnly = false,
+}: SourceIdentityFieldsProps) {
+  const effectiveNamespaceHint =
+    namespaceHint ??
+    (namespaceReadOnly
+      ? "The namespace is part of the source's identity and cannot be changed."
+      : undefined);
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2">
+      <CardStackEntryField label={nameLabel}>
+        <Input
+          value={identity.name}
+          onChange={(e) => identity.setName((e.target as HTMLInputElement).value)}
+          placeholder={namePlaceholder}
+          className="text-sm"
+        />
+      </CardStackEntryField>
+      <CardStackEntryField label="Namespace" hint={effectiveNamespaceHint}>
+        <Input
+          value={identity.namespace}
+          onChange={(e) => identity.setNamespace((e.target as HTMLInputElement).value)}
+          placeholder={namespacePlaceholder}
+          className="font-mono text-sm"
+          disabled={namespaceReadOnly}
+        />
+      </CardStackEntryField>
+    </div>
   );
 }

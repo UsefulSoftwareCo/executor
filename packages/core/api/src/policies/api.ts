@@ -26,12 +26,14 @@ const ToolPolicyResponse = Schema.Struct({
 });
 
 const CreateToolPolicyPayload = Schema.Struct({
+  targetScope: ScopeId,
   pattern: Schema.String,
   action: ToolPolicyActionSchema,
   position: Schema.optional(Schema.String),
 });
 
 const UpdateToolPolicyPayload = Schema.Struct({
+  targetScope: ScopeId,
   pattern: Schema.optional(Schema.String),
   action: Schema.optional(ToolPolicyActionSchema),
   position: Schema.optional(Schema.String),

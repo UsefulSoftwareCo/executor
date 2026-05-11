@@ -72,6 +72,14 @@ const toPopupErrorMessage = (error: unknown): string => {
   return "Authentication failed";
 };
 
+const requireMatchingTokenScope = (
+  routeScope: string,
+  tokenScope: string,
+): Effect.Effect<void, OAuthStartError> =>
+  routeScope === tokenScope
+    ? Effect.void
+    : Effect.fail(new OAuthStartError({ message: "OAuth token scope must match route scope" }));
+
 export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handlers) =>
   handlers
     .handle("probe", ({ payload }) =>
@@ -96,11 +104,11 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
         }),
       ),
     )
-    .handle("start", ({ payload }) =>
+    .handle("start", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
+          yield* requireMatchingTokenScope(path.scopeId, payload.tokenScope);
           const executor = yield* ExecutorService;
-          const tokenScope = payload.tokenScope ?? String(executor.scopes[0]!.id);
           const headers = yield* resolveOAuthSecretBackedMap(
             executor,
             payload.headers,
@@ -117,7 +125,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             queryParams,
             redirectUrl: payload.redirectUrl,
             connectionId: payload.connectionId,
-            tokenScope,
+            tokenScope: payload.tokenScope,
             strategy: payload.strategy as OAuthStrategy,
             pluginId: payload.pluginId,
             identityLabel: payload.identityLabel,
@@ -125,23 +133,27 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
         }),
       ),
     )
-    .handle("complete", ({ payload }) =>
+    .handle("complete", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           return yield* executor.oauth.complete({
             state: payload.state,
+            tokenScope: path.scopeId,
             code: payload.code,
             error: payload.error,
           });
         }),
       ),
     )
-    .handle("cancel", ({ payload }) =>
+    .handle("cancel", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
+          if (path.scopeId !== payload.tokenScope) {
+            return yield* new OAuthSessionNotFoundError({ sessionId: payload.sessionId });
+          }
           const executor = yield* ExecutorService;
-          yield* executor.oauth.cancel(payload.sessionId);
+          yield* executor.oauth.cancel(payload.sessionId, payload.tokenScope);
           return { cancelled: true };
         }),
       ),

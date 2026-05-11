@@ -177,3 +177,11 @@ export class UpdateConnectionTokensInput extends Schema.Class<UpdateConnectionTo
   providerState: Schema.optional(Schema.NullOr(ConnectionProviderState)),
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
 }) {}
+
+export class RemoveConnectionInput extends Schema.Class<RemoveConnectionInput>(
+  "RemoveConnectionInput",
+)({
+  id: ConnectionId,
+  /** Scope id whose connection row and owned token secrets should be removed. */
+  targetScope: ScopeId,
+}) {}

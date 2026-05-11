@@ -64,6 +64,7 @@ import {
   buildDaemonSpawnSpec,
   chooseDaemonPort,
   canAutoStartLocalDaemonForHost,
+  isDevCliEntrypoint,
   parseDaemonBaseUrl,
   spawnDetached,
   waitForReachable,
@@ -97,6 +98,8 @@ import {
   inspectToolPath,
   normalizeCliErrorText,
   parseJsonObjectInput,
+  sanitizeCliOutputText,
+  shellQuoteArg,
 } from "./tooling";
 
 // Embedded web UI — baked into compiled binaries via `with { type: "file" }`
@@ -157,7 +160,7 @@ const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
   );
 
 const script = process.argv[1];
-const isDevMode = script?.endsWith(".ts") || script?.endsWith(".js");
+const isDevMode = isDevCliEntrypoint(script);
 const cliPrefix = isDevMode ? `bun run ${script}` : "executor";
 
 const toError = (cause: unknown): Error =>
@@ -459,8 +462,9 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
             console.log(`\nRequested schema:\n${JSON.stringify(requestedSchema, null, 2)}`);
           }
           const template = buildResumeContentTemplate(requestedSchema);
+          const contentArg = shellQuoteArg(JSON.stringify(template));
           console.log("\nResume commands:");
-          console.log(`  ${commandPrefix} --action accept --content '${JSON.stringify(template)}'`);
+          console.log(`  ${commandPrefix} --action accept --content ${contentArg}`);
           console.log(`  ${commandPrefix} --action decline`);
           console.log(`  ${commandPrefix} --action cancel`);
         } else {
@@ -496,6 +500,8 @@ const runForegroundSession = (input: {
   port: number;
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
+  authToken: string | undefined;
+  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
     const server = yield* Effect.promise(() =>
@@ -503,6 +509,8 @@ const runForegroundSession = (input: {
         port: input.port,
         hostname: input.hostname,
         allowedHosts: input.allowedHosts,
+        authToken: input.authToken,
+        authPassword: input.authPassword,
         embeddedWebUI,
       }),
     );
@@ -521,6 +529,11 @@ const runForegroundSession = (input: {
       if (input.allowedHosts.length > 0) {
         console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
       }
+      if (input.authPassword) {
+        console.log("   Basic authentication is enabled.");
+      } else if (input.authToken) {
+        console.log("   Token authentication is enabled.");
+      }
     }
     console.log(`\nPress Ctrl+C to stop.`);
 
@@ -532,6 +545,8 @@ const runDaemonSession = (input: {
   port: number;
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
+  authToken: string | undefined;
+  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
     const daemonHost = canonicalDaemonHost(input.hostname);
@@ -559,6 +574,8 @@ const runDaemonSession = (input: {
         port: input.port,
         hostname: input.hostname,
         allowedHosts: input.allowedHosts,
+        authToken: input.authToken,
+        authPassword: input.authPassword,
         embeddedWebUI,
       }),
     );
@@ -582,6 +599,11 @@ const runDaemonSession = (input: {
     });
 
     console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
+    if (input.authPassword) {
+      console.log("Basic authentication is enabled.");
+    } else if (input.authToken) {
+      console.log("Token authentication is enabled.");
+    }
 
     try {
       yield* waitForShutdownSignal();
@@ -871,7 +893,7 @@ const printCallBrowseHelp = (input: {
     if (input.exactTool) {
       console.log(`\nCallable path: ${input.exactTool.id}`);
       if (input.exactTool.description) {
-        console.log(input.exactTool.description);
+        console.log(sanitizeCliOutputText(input.exactTool.description));
       }
     }
 
@@ -927,13 +949,13 @@ const printCallLeafHelp = (input: {
     console.log(`Usage:\n  ${callPath}\n  ${callPath} '{"k":"v"}'`);
     console.log(`\nTool: ${input.tool.id}`);
     if (input.tool.description) {
-      console.log(input.tool.description);
+      console.log(sanitizeCliOutputText(input.tool.description));
     }
     if (input.schema?.inputTypeScript) {
-      console.log(`\nInput:\n${input.schema.inputTypeScript}`);
+      console.log(`\nInput:\n${sanitizeCliOutputText(input.schema.inputTypeScript)}`);
     }
     if (input.schema?.outputTypeScript) {
-      console.log(`\nOutput:\n${input.schema.outputTypeScript}`);
+      console.log(`\nOutput:\n${sanitizeCliOutputText(input.schema.outputTypeScript)}`);
     }
   });
 
@@ -1275,12 +1297,24 @@ const webCommand = Command.make(
           "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
         ),
       ),
+    authToken: Options.string("auth-token")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Bearer token required for requests.")),
+    authPassword: Options.string("auth-password")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Basic auth password required for requests.")),
     scope,
   },
-  ({ port, scope, hostname, allowedHost }) =>
+  ({ port, scope, hostname, allowedHost, authToken, authPassword }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runForegroundSession({ port, hostname, allowedHosts: allowedHost });
+      yield* runForegroundSession({
+        port,
+        hostname,
+        allowedHosts: allowedHost,
+        authToken: Option.getOrUndefined(authToken),
+        authPassword: Option.getOrUndefined(authPassword),
+      });
     }),
 ).pipe(Command.withDescription("Start a foreground web session"));
 
@@ -1298,6 +1332,12 @@ const daemonRunCommand = Command.make(
           "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
         ),
       ),
+    authToken: Options.string("auth-token")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Bearer token required for requests.")),
+    authPassword: Options.string("auth-password")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Basic auth password required for requests.")),
     foreground: Options.boolean("foreground")
       .pipe(Options.withDefault(false))
       .pipe(
@@ -1307,11 +1347,17 @@ const daemonRunCommand = Command.make(
       ),
     scope,
   },
-  ({ port, scope, hostname, allowedHost, foreground }) =>
+  ({ port, scope, hostname, allowedHost, authToken, authPassword, foreground }) =>
     Effect.gen(function* () {
       applyScope(scope);
       if (foreground) {
-        yield* runDaemonSession({ port, hostname, allowedHosts: allowedHost });
+        yield* runDaemonSession({
+          port,
+          hostname,
+          allowedHosts: allowedHost,
+          authToken: Option.getOrUndefined(authToken),
+          authPassword: Option.getOrUndefined(authPassword),
+        });
       } else {
         yield* runBackgroundDaemonStart({ port, hostname, allowedHosts: allowedHost });
       }

@@ -40,7 +40,9 @@ export default defineExecutorConfig({
   plugins: ({ workosCredentials, workosVaultClient }: CloudPluginDeps = {}) =>
     [
       openApiPlugin(),
-      mcpPlugin({ dangerouslyAllowStdioMCP: false }),
+      mcpPlugin({
+        dangerouslyAllowStdioMCP: false,
+      }),
       graphqlPlugin(),
       workosVaultPlugin({
         credentials: workosCredentials ?? { apiKey: "", clientId: "" },

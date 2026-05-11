@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Effect } from "effect";
 import {
+  RemoveSecretInput,
   ScopeId,
   SecretId,
   SetSecretInput,
@@ -63,7 +64,14 @@ describe("keychain plugin", () => {
         expect(resolved).toBe("keychain-test-value");
       }).pipe(
         Effect.ensuring(
-          executor.secrets.remove(testId).pipe(Effect.orElseSucceed(() => undefined)),
+          executor.secrets
+            .remove(
+              new RemoveSecretInput({
+                id: testId,
+                targetScope: ScopeId.make("test-scope"),
+              }),
+            )
+            .pipe(Effect.orElseSucceed(() => undefined)),
         ),
       );
     }),

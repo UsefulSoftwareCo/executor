@@ -231,7 +231,7 @@ const registerManifest = (
 ) =>
   Effect.gen(function* () {
     yield* ctx.storage.removeBindingsBySource(namespace, scope);
-    yield* ctx.core.sources.unregister(namespace).pipe(Effect.ignore);
+    yield* ctx.core.sources.unregister({ id: namespace, targetScope: scope }).pipe(Effect.ignore);
 
     yield* ctx.core.sources.register({
       id: namespace,
@@ -349,7 +349,9 @@ const makeGoogleDiscoveryPluginExtension = (ctx: PluginCtx<GoogleDiscoveryStore>
       Effect.gen(function* () {
         yield* ctx.storage.removeBindingsBySource(namespace, scope);
         yield* ctx.storage.removeSource(namespace, scope);
-        yield* ctx.core.sources.unregister(namespace).pipe(Effect.ignore);
+        yield* ctx.core.sources
+          .unregister({ id: namespace, targetScope: scope })
+          .pipe(Effect.ignore);
       }),
     ),
 

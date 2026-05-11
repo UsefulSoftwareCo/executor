@@ -10,7 +10,13 @@
 
 import { Effect } from "effect";
 
-import { Scope, ScopeId, collectSchemas, createExecutor } from "@executor-js/sdk";
+import {
+  Scope,
+  ScopeId,
+  collectSchemas,
+  createExecutor,
+  makeHostedHttpClientLayer,
+} from "@executor-js/sdk";
 import { makePostgresAdapter, makePostgresBlobStore } from "@executor-js/storage-postgres";
 
 import { env } from "cloudflare:workers";
@@ -43,10 +49,10 @@ const orgPlugins = (): CloudPlugins =>
 // distinct scope row; future workspace scopes can slot in between without
 // conflicting with a hypothetical global user scope.
 //
-// OAuth tokens land at `ctx.scopes[0]` (the user-org scope) by default, so
-// a member's access/refresh tokens can't leak to other members via
-// `secrets.list`, while source rows and org-wide credentials live on the
-// outer scope.
+// OAuth token writes require an explicit `tokenScope`. User sign-in UI passes
+// the user-org scope so a member's access/refresh tokens cannot leak to other
+// members via `secrets.list`, while source rows and org-wide credentials live
+// on the outer scope.
 // ---------------------------------------------------------------------------
 
 export const createScopedExecutor = (
@@ -58,6 +64,9 @@ export const createScopedExecutor = (
     const { db } = yield* DbService;
 
     const plugins = orgPlugins();
+    const httpClientLayer = makeHostedHttpClientLayer({
+      allowLocalNetwork: env.NODE_ENV === "test",
+    });
     const schema = collectSchemas(plugins);
     const adapter = makePostgresAdapter({ db, schema });
     const blobs = makePostgresBlobStore({ db });
@@ -82,6 +91,7 @@ export const createScopedExecutor = (
       adapter,
       blobs,
       plugins,
+      httpClientLayer,
       onElicitation: "accept-all",
     });
   });

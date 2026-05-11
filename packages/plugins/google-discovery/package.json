@@ -37,6 +37,12 @@
           "types": "./dist/sdk/index.d.ts",
           "default": "./dist/core.js"
         }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/react/plugin-client.d.ts",
+          "default": "./dist/client.js"
+        }
       }
     }
   },
@@ -54,6 +60,7 @@
   },
   "devDependencies": {
     "@effect/atom-react": "catalog:",
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@executor-js/react": "workspace:*",
     "@types/node": "catalog:",

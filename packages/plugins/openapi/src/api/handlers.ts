@@ -6,7 +6,8 @@ import type {
   ConfiguredHeaderValue,
   OpenApiPluginExtension,
   HeaderValue,
-  OpenApiSpecFetchCredentials,
+  OpenApiCredentialInput,
+  OpenApiSpecFetchCredentialsInput,
   OpenApiUpdateSourceInput,
 } from "../sdk/plugin";
 import { OpenApiSourceBindingInput } from "../sdk/types";
@@ -54,29 +55,30 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           return yield* ext.previewSpec({
             spec: payload.spec,
             specFetchCredentials: payload.specFetchCredentials as
-              | OpenApiSpecFetchCredentials
+              | OpenApiSpecFetchCredentialsInput
               | undefined,
           });
         }),
       ),
     )
-    .handle("addSpec", ({ params: path, payload }) =>
+    .handle("addSpec", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* OpenApiExtensionService;
           const result = yield* ext.addSpec({
             spec: payload.spec,
             specFetchCredentials: payload.specFetchCredentials as
-              | OpenApiSpecFetchCredentials
+              | OpenApiSpecFetchCredentialsInput
               | undefined,
-            scope: path.scopeId,
+            scope: payload.targetScope,
             name: payload.name,
             baseUrl: payload.baseUrl,
             namespace: payload.namespace,
+            credentialTargetScope: payload.credentialTargetScope,
             headers: payload.headers as
               | Record<string, HeaderValue | ConfiguredHeaderValue>
               | undefined,
-            queryParams: payload.queryParams as Record<string, HeaderValue> | undefined,
+            queryParams: payload.queryParams as Record<string, OpenApiCredentialInput> | undefined,
             oauth2: payload.oauth2,
           });
           return {
@@ -94,6 +96,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           return source
             ? new StoredSourceSchema({
                 namespace: source.namespace,
+                scope: source.scope,
                 name: source.name,
                 config: source.config,
               })
@@ -105,13 +108,14 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
       capture(
         Effect.gen(function* () {
           const ext = yield* OpenApiExtensionService;
-          yield* ext.updateSource(path.namespace, path.scopeId, {
+          yield* ext.updateSource(path.namespace, payload.sourceScope, {
             name: payload.name,
             baseUrl: payload.baseUrl,
             headers: payload.headers as
               | Record<string, HeaderValue | ConfiguredHeaderValue>
               | undefined,
-            queryParams: payload.queryParams as Record<string, HeaderValue> | undefined,
+            queryParams: payload.queryParams as Record<string, OpenApiCredentialInput> | undefined,
+            credentialTargetScope: payload.credentialTargetScope,
             oauth2: payload.oauth2,
           } as OpenApiUpdateSourceInput);
           return { updated: true };

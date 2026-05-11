@@ -63,17 +63,24 @@ describe("previewSpec OAuth2 extraction", () => {
       expect(flow.authorizationUrl).toBe("https://example.com/oauth/authorize");
       expect(flow.tokenUrl).toBe("https://example.com/oauth/token");
       expect(Option.getOrElse(flow.refreshUrl, () => "")).toBe("https://example.com/oauth/refresh");
-      expect(flow.scopes).toEqual({ read: "Read access", write: "Write access" });
+      expect(flow.scopes).toEqual({
+        read: "Read access",
+        write: "Write access",
+      });
 
       // A preset should be generated for this flow.
       expect(preview.oauth2Presets).toHaveLength(1);
+      expect(preview.headerPresets).toHaveLength(0);
       const preset = preview.oauth2Presets[0]!;
       expect(preset.flow).toBe("authorizationCode");
       expect(preset.securitySchemeName).toBe("oauth_app");
       expect(preset.tokenUrl).toBe("https://example.com/oauth/token");
       expect(preset.label).toContain("Authorization Code");
       expect(preset.label).toContain("oauth_app");
-      expect(preset.scopes).toEqual({ read: "Read access", write: "Write access" });
+      expect(preset.scopes).toEqual({
+        read: "Read access",
+        write: "Write access",
+      });
     }),
   );
 

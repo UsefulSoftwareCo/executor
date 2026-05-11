@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Exit, Predicate, Result } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
 import type { DBAdapter, Where } from "@executor-js/storage-core";
@@ -9,7 +10,7 @@ import { CreateConnectionInput, TokenMaterial } from "./connections";
 import { collectSchemas, createExecutor } from "./executor";
 import { ElicitationResponse, FormElicitation, UrlElicitation } from "./elicitation";
 import { defineSchema, definePlugin } from "./plugin";
-import { SetSecretInput } from "./secrets";
+import { RemoveSecretInput, SetSecretInput } from "./secrets";
 import { makeTestConfig } from "./testing";
 import type { SecretProvider } from "./secrets";
 import { ConnectionId, ScopeId, SecretId } from "./ids";
@@ -230,6 +231,75 @@ const opaqueRouteSecretsPlugin = definePlugin(() => ({
   secretProviders: [opaqueRouteProvider],
 }));
 
+const providerOnlySecretPlugin = definePlugin(() => ({
+  id: "provider-only-secret" as const,
+  storage: () => ({}),
+  secretProviders: [
+    {
+      key: "provider-only",
+      writable: false,
+      get: (id: string) => Effect.succeed(id === "provider-token" ? "provider-value" : null),
+      list: () => Effect.succeed([{ id: "provider-token", name: "Provider token" }]),
+    } satisfies SecretProvider,
+  ],
+}));
+
+const fallbackOrderingPlugin = (laterCalls: { count: number }) =>
+  definePlugin(() => ({
+    id: "fallback-ordering" as const,
+    storage: () => ({}),
+    secretProviders: [
+      {
+        key: "first-fallback",
+        writable: false,
+        get: (id: string) => Effect.succeed(id === "token" ? "first-value" : null),
+        list: () => Effect.succeed([{ id: "token", name: "token" }]),
+      },
+      {
+        key: "later-fallback",
+        writable: false,
+        get: () =>
+          Effect.sync(() => {
+            laterCalls.count += 1;
+            return "later-value";
+          }),
+        list: () => Effect.succeed([{ id: "token", name: "token" }]),
+      },
+    ] satisfies readonly SecretProvider[],
+  }));
+
+const fallbackDisabledPlugin = definePlugin(() => ({
+  id: "fallback-disabled" as const,
+  storage: () => ({}),
+  secretProviders: [
+    {
+      key: "fallback-disabled-provider",
+      writable: false,
+      allowFallback: false,
+      get: (id: string) => Effect.succeed(id === "token" ? "disabled-value" : null),
+      list: () => Effect.succeed([{ id: "token", name: "token" }]),
+    },
+  ] satisfies readonly SecretProvider[],
+}));
+
+const duplicateToolsPlugin = definePlugin(() => ({
+  id: "duplicateTools" as const,
+  storage: () => ({}),
+  extension: (ctx) => ({
+    register: () =>
+      ctx.core.sources.register({
+        id: "dup-source",
+        scope: ctx.scopes[0]!.id,
+        kind: "test",
+        name: "Duplicate source",
+        tools: [
+          { name: "same", description: "first" },
+          { name: "same", description: "last" },
+        ],
+      }),
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -310,6 +380,20 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("bounds annotation resolution groups", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [testPlugin()] as const }));
+      for (let index = 0; index < 70; index++) {
+        yield* executor.test.addThing(`thing${index}`, "hello");
+      }
+      testAnnotationResolveCount = 0;
+
+      yield* executor.tools.list();
+
+      expect(testAnnotationResolveCount).toBe(64);
+    }),
+  );
+
   it.effect("invokes a dynamic tool through plugin.invokeTool", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [testPlugin()] as const }));
@@ -328,6 +412,7 @@ describe("createExecutor", () => {
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [testPlugin()] as const }));
       yield* executor.test.addThing("thing1", "hello");
+      let approvalMessage = "";
 
       // requiresApproval: true → declined → ElicitationDeclinedError
       const declined = yield* executor.tools
@@ -335,11 +420,16 @@ describe("createExecutor", () => {
           "thing1.write",
           { value: "updated" },
           {
-            onElicitation: () => Effect.succeed(new ElicitationResponse({ action: "decline" })),
+            onElicitation: (ctx) =>
+              Effect.sync(() => {
+                approvalMessage = ctx.request.message;
+                return new ElicitationResponse({ action: "decline" });
+              }),
           },
         )
         .pipe(Effect.flip);
       expect(Predicate.isTagged(declined, "ElicitationDeclinedError")).toBe(true);
+      expect(approvalMessage).toContain('"value": "updated"');
 
       // auto-accept → succeeds
       const accepted = yield* executor.tools.invoke(
@@ -412,10 +502,81 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("bounds source detection fan-out and results", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const detector = (id: string, confidence: "high" | "medium" | "low") =>
+        definePlugin(() => ({
+          id,
+          storage: () => ({}),
+          detect: () =>
+            Effect.sync(() => {
+              calls.push(id);
+              return new SourceDetectionResult({
+                kind: id,
+                confidence,
+                endpoint: `https://example.com/${id}`,
+                name: id,
+                namespace: id,
+              });
+            }),
+        }));
+
+      const executor = yield* createExecutor({
+        ...makeTestConfig({
+          plugins: [
+            detector("first", "low")(),
+            detector("second", "high")(),
+            detector("third", "medium")(),
+          ] as const,
+        }),
+        sourceDetection: { maxDetectors: 2, maxResults: 1 },
+      });
+
+      const results = yield* executor.sources.detect("https://example.com/source");
+
+      expect(calls).toEqual(["first", "second"]);
+      expect(results.map((result) => result.kind)).toEqual(["second"]);
+    }),
+  );
+
+  it.effect("applies hosted outbound policy before source detection plugins run", () =>
+    Effect.gen(function* () {
+      let called = false;
+      const detector = definePlugin(() => ({
+        id: "detector" as const,
+        storage: () => ({}),
+        detect: () =>
+          Effect.sync(() => {
+            called = true;
+            return new SourceDetectionResult({
+              kind: "detector",
+              confidence: "high",
+              endpoint: "http://127.0.0.1/source",
+              name: "detector",
+              namespace: "detector",
+            });
+          }),
+      }));
+
+      const executor = yield* createExecutor({
+        ...makeTestConfig({ plugins: [detector()] as const }),
+        httpClientLayer: FetchHttpClient.layer,
+      });
+
+      const results = yield* executor.sources.detect("http://127.0.0.1/source");
+
+      expect(results).toEqual([]);
+      expect(called).toBe(false);
+    }),
+  );
+
   it.effect("rejects remove of a static source", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [testPlugin()] as const }));
-      const err = yield* executor.sources.remove("test.control").pipe(Effect.flip);
+      const err = yield* executor.sources
+        .remove({ id: "test.control", targetScope: "test-scope" })
+        .pipe(Effect.flip);
       expect(Predicate.isTagged(err, "SourceRemovalNotAllowedError")).toBe(true);
     }),
   );
@@ -895,7 +1056,12 @@ describe("createExecutor", () => {
             Effect.gen(function* () {
               const old = yield* ctx.secrets.get(id);
               if (old !== null) {
-                yield* ctx.secrets.remove(id);
+                yield* ctx.secrets.remove(
+                  new RemoveSecretInput({
+                    id: SecretId.make(id),
+                    targetScope: ctx.scopes[0]!.id,
+                  }),
+                );
               }
               yield* ctx.secrets.set(
                 new SetSecretInput({
@@ -1166,6 +1332,55 @@ describe("tenant isolation (SDK)", () => {
     }),
   );
 
+  it.effect("secrets.listAll keeps exact-scope rows that secrets.list dedupes", () =>
+    Effect.gen(function* () {
+      const plugins = [tenantPlugin()] as const;
+      const schema = collectSchemas(plugins);
+      const adapter = makeMemoryAdapter({ schema });
+      const blobs = makeInMemoryBlobStore();
+
+      const innerScope = ScopeId.make("user-org:u1:o1");
+      const outerScope = ScopeId.make("o1");
+
+      const exec = yield* createExecutor({
+        scopes: [
+          new Scope({ id: innerScope, name: "inner", createdAt: new Date() }),
+          new Scope({ id: outerScope, name: "outer", createdAt: new Date() }),
+        ],
+        adapter,
+        blobs,
+        plugins,
+        onElicitation: "accept-all",
+      });
+
+      yield* exec.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("token"),
+          scope: outerScope,
+          name: "org token",
+          value: "org-value",
+        }),
+      );
+      yield* exec.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("token"),
+          scope: innerScope,
+          name: "user token",
+          value: "user-value",
+        }),
+      );
+
+      const runtimeList = yield* exec.secrets.list();
+      const managementList = yield* exec.secrets.listAll();
+
+      expect(runtimeList.filter((ref) => ref.id === "token")).toHaveLength(1);
+      expect(managementList.filter((ref) => ref.id === "token").map((ref) => ref.scopeId)).toEqual([
+        innerScope,
+        outerScope,
+      ]);
+    }),
+  );
+
   it.effect("secrets.list hides routing rows when the provider reports no backing value", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
@@ -1209,6 +1424,66 @@ describe("tenant isolation (SDK)", () => {
 
       expect(refs.map((ref) => ref.id)).toContain("opaque-secret");
       expect(status).toBe("resolved");
+    }),
+  );
+
+  it.effect(
+    "secrets.list surfaces provider-enumerated entries; status still gates on routed rows",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [providerOnlySecretPlugin()] as const }),
+        );
+
+        const refs = yield* executor.secrets.list();
+        const status = yield* executor.secrets.status("provider-token");
+        const value = yield* executor.secrets.get("provider-token");
+
+        const entry = refs.find((ref) => ref.id === "provider-token");
+        expect(entry?.provider).toBe("provider-only");
+        expect(entry?.name).toBe("Provider token");
+        expect(status).toBe("missing");
+        expect(value).toBe("provider-value");
+      }),
+  );
+
+  it.effect("secrets.get short-circuits provider fallback in registration order", () =>
+    Effect.gen(function* () {
+      const laterCalls = { count: 0 };
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [fallbackOrderingPlugin(laterCalls)()] as const }),
+      );
+
+      const value = yield* executor.secrets.get("token");
+
+      expect(value).toBe("first-value");
+      expect(laterCalls.count).toBe(0);
+    }),
+  );
+
+  it.effect("secrets.get skips providers that disable fallback lookup", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [fallbackDisabledPlugin()] as const }),
+      );
+
+      const value = yield* executor.secrets.get("token");
+
+      expect(value).toBeNull();
+    }),
+  );
+
+  it.effect("source registration deduplicates duplicate tool ids before bulk insert", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [duplicateToolsPlugin()] as const }),
+      );
+
+      yield* executor.duplicateTools.register();
+
+      const tools = yield* executor.tools.list();
+      expect(tools.filter((tool) => tool.id === "dup-source.same")).toHaveLength(1);
+      expect(tools.find((tool) => tool.id === "dup-source.same")?.description).toBe("last");
     }),
   );
 });
@@ -1486,7 +1761,12 @@ describe("cross-scope read precedence + remove isolation (SDK)", () => {
       );
 
       // Inner caller removes — should only drop the inner override.
-      yield* execInner.secrets.remove("api-token");
+      yield* execInner.secrets.remove(
+        new RemoveSecretInput({
+          id: SecretId.make("api-token"),
+          targetScope: innerId,
+        }),
+      );
 
       // Outer-only executor must still see its org-scope row.
       const outerRefs = yield* execOuter.secrets.list();
@@ -1499,14 +1779,14 @@ describe("cross-scope read precedence + remove isolation (SDK)", () => {
     "sources.remove at the inner scope does not wipe the outer-scope source with same id",
     () =>
       Effect.gen(function* () {
-        const { execOuter, execInner } = yield* makeLayeredExecutors();
+        const { execOuter, execInner, innerId } = yield* makeLayeredExecutors();
 
         yield* execOuter.tenant.addSource("shared");
         yield* execInner.tenant.addSource("shared");
 
         // Inner caller removes "shared" via the public API. The outer
         // executor's source row must survive.
-        yield* execInner.sources.remove("shared");
+        yield* execInner.sources.remove({ id: "shared", targetScope: innerId });
 
         const outerSources = yield* execOuter.sources.list();
         expect(outerSources.map((s) => s.id)).toContain("shared");
@@ -1515,7 +1795,7 @@ describe("cross-scope read precedence + remove isolation (SDK)", () => {
 
   it.effect("ctx.core.sources.unregister at the inner scope does not wipe outer-scope row", () =>
     Effect.gen(function* () {
-      const { execOuter, execInner } = yield* makeLayeredExecutors();
+      const { execOuter, execInner, innerId } = yield* makeLayeredExecutors();
 
       yield* execOuter.tenant.addSource("shared");
       yield* execInner.tenant.addSource("shared");
@@ -1525,7 +1805,7 @@ describe("cross-scope read precedence + remove isolation (SDK)", () => {
       // `sources.remove` — which routes through the same deleteSourceById
       // helper — but the real regression is the findOne-before-delete
       // picking the wrong scope's row. The outer row must survive.
-      yield* execInner.sources.remove("shared");
+      yield* execInner.sources.remove({ id: "shared", targetScope: innerId });
 
       const outerSources = yield* execOuter.sources.list();
       expect(outerSources.filter((s) => s.id === "shared")).toHaveLength(1);

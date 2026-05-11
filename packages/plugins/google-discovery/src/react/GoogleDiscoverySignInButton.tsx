@@ -3,7 +3,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAtom } from "@executor-js/react/api/atoms";
-import { useScope } from "@executor-js/react/api/scope-context";
+import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   OAuthSignInButton,
@@ -29,6 +29,7 @@ const signInWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
 
 export default function GoogleDiscoverySignInButton(props: { sourceId: string }) {
   const scopeId = useScope();
+  const userScopeId = useUserScope();
   const sourceResult = useAtomValue(googleDiscoverySourceAtom(scopeId, props.sourceId));
   const connectionsResult = useAtomValue(connectionsAtom(scopeId));
   const doUpdate = useAtomSet(updateGoogleDiscoverySource, { mode: "promise" });
@@ -56,6 +57,7 @@ export default function GoogleDiscoverySignInButton(props: { sourceId: string })
         endpoint: source.config.discoveryUrl,
         redirectUrl: oauthCallbackUrl(),
         connectionId: oauth2.connectionId,
+        tokenScope: userScopeId,
         identityLabel: `${source.name.trim() || props.sourceId} OAuth`,
         strategy: googleDiscoveryOAuthStrategy({
           clientIdSecretId: oauth2.clientIdSecretId,
@@ -80,7 +82,7 @@ export default function GoogleDiscoverySignInButton(props: { sourceId: string })
         });
       },
     });
-  }, [oauth2, source, scopeId, props.sourceId, doUpdate, oauth]);
+  }, [oauth2, source, scopeId, props.sourceId, doUpdate, oauth, userScopeId]);
 
   if (!oauth2) return null;
 

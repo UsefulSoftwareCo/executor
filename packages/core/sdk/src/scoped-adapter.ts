@@ -5,9 +5,10 @@
 // the wrapper doesn't invent columns that aren't there.
 //
 // Writes are explicit: the caller must include `scope_id` in every
-// create/update payload for scoped tables. The adapter does not pick a
-// default. A missing `scope_id` on a scoped write, or a value outside
-// the allowed `scopes` array, is a `StorageError`.
+// create/createMany payload for scoped tables, and every update/delete
+// must include a single `scope_id` equality in `where`. The adapter does
+// not pick a default. A missing `scope_id`, or a value outside the allowed
+// `scopes` array, is a `StorageError`.
 //
 // The SDK's `createExecutor` wraps the root adapter (and every tx
 // handle passed back into transaction callbacks) with this before
@@ -77,18 +78,19 @@ const withScopeRead = (where: readonly Where[] | undefined, ctx: ScopeContext): 
 
   // Honor a caller-supplied scope filter IF it names a single scope
   // that lives in the executor's stack. This turns a stack-wide read
-  // (default) into a single-scope read — and, for delete/update, pins
-  // mutations to the named scope instead of letting the `IN (stack)`
-  // injection silently widen them. An out-of-stack value is treated
-  // as an isolation bypass attempt and discarded; the stack-wide
-  // filter applies instead, so the caller sees nothing outside their
-  // stack regardless of what they asked for.
+  // (default) into a single-scope read. An out-of-stack value is an
+  // empty intersection with the current scope stack, so return an
+  // always-false scope predicate instead of widening back to all
+  // visible rows.
   if (
     callerScope &&
     typeof callerScope.value === "string" &&
     ctx.scopes.includes(callerScope.value)
   ) {
     return [...base, { field: SCOPE_FIELD, value: callerScope.value }];
+  }
+  if (callerScope) {
+    return [...base, { field: SCOPE_FIELD, value: [], operator: "in" }];
   }
 
   const scope: Where =
@@ -119,6 +121,36 @@ const assertScopedWrite = (
       new StorageError({
         message:
           `Write to scoped table "${model}" targets scope "${value}" ` +
+          `which is not in the executor's scope stack ` +
+          `[${ctx.scopes.join(", ")}].`,
+        cause: undefined,
+      }),
+    );
+  }
+  return Effect.void;
+};
+
+const assertScopedMutationWhere = (
+  model: string,
+  where: readonly Where[] | undefined,
+  ctx: ScopeContext,
+): Effect.Effect<void, StorageError> => {
+  const callerScope = (where ?? []).find((w) => w.field === SCOPE_FIELD);
+  if (!callerScope || typeof callerScope.value !== "string" || callerScope.value.length === 0) {
+    return Effect.fail(
+      new StorageError({
+        message:
+          `Mutation on scoped table "${model}" missing required \`scope_id\` in where. ` +
+          `Callers must name the target scope explicitly.`,
+        cause: undefined,
+      }),
+    );
+  }
+  if (!ctx.scopes.includes(callerScope.value)) {
+    return Effect.fail(
+      new StorageError({
+        message:
+          `Mutation on scoped table "${model}" targets scope "${callerScope.value}" ` +
           `which is not in the executor's scope stack ` +
           `[${ctx.scopes.join(", ")}].`,
         cause: undefined,
@@ -172,15 +204,12 @@ const wrapTxMethods = (
     update: (data) =>
       isScoped(data.model)
         ? Effect.flatMap(
-            // If the caller sets `scope_id` in the update payload, it
-            // must be one of the allowed scopes. If they don't, we leave
-            // the row's existing scope_id in place — updates are scoped
-            // by the where filter's IN clause, so you can only mutate
-            // rows you can read. That's sufficient for isolation; we
-            // don't need to force-stamp on update.
-            (data.update as Record<string, unknown>)[SCOPE_FIELD] !== undefined
-              ? assertScopedWrite(data.model, data.update as Record<string, unknown>, ctx)
-              : Effect.void,
+            Effect.all([
+              assertScopedMutationWhere(data.model, data.where, ctx),
+              (data.update as Record<string, unknown>)[SCOPE_FIELD] !== undefined
+                ? assertScopedWrite(data.model, data.update as Record<string, unknown>, ctx)
+                : Effect.void,
+            ]),
             () =>
               inner.update({
                 ...data,
@@ -191,9 +220,12 @@ const wrapTxMethods = (
     updateMany: (data) =>
       isScoped(data.model)
         ? Effect.flatMap(
-            (data.update as Record<string, unknown>)[SCOPE_FIELD] !== undefined
-              ? assertScopedWrite(data.model, data.update as Record<string, unknown>, ctx)
-              : Effect.void,
+            Effect.all([
+              assertScopedMutationWhere(data.model, data.where, ctx),
+              (data.update as Record<string, unknown>)[SCOPE_FIELD] !== undefined
+                ? assertScopedWrite(data.model, data.update as Record<string, unknown>, ctx)
+                : Effect.void,
+            ]),
             () =>
               inner.updateMany({
                 ...data,
@@ -203,14 +235,24 @@ const wrapTxMethods = (
         : inner.updateMany(data),
     delete: (data) =>
       isScoped(data.model)
-        ? inner.delete({ ...data, where: withScopeRead(data.where, ctx) })
+        ? Effect.flatMap(assertScopedMutationWhere(data.model, data.where, ctx), () =>
+            inner.delete({ ...data, where: withScopeRead(data.where, ctx) }),
+          )
         : inner.delete(data),
     deleteMany: (data) =>
       isScoped(data.model)
-        ? inner.deleteMany({ ...data, where: withScopeRead(data.where, ctx) })
+        ? Effect.flatMap(assertScopedMutationWhere(data.model, data.where, ctx), () =>
+            inner.deleteMany({ ...data, where: withScopeRead(data.where, ctx) }),
+          )
         : inner.deleteMany(data),
   };
 };
+
+export const scopeTransactionAdapter = (
+  inner: DBTransactionAdapter,
+  ctx: ScopeContext,
+  schema: DBSchema,
+): DBTransactionAdapter => wrapTxMethods(inner, ctx, collectScopedModels(schema));
 
 export const scopeAdapter = (
   inner: DBAdapter,

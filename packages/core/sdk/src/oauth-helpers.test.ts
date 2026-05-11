@@ -17,6 +17,7 @@ import {
   createPkceCodeChallenge,
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
+  exchangeClientCredentials,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -156,6 +157,11 @@ describe("buildAuthorizationUrl", () => {
     expect(url.searchParams.get("scope")).toBe("read,write");
   });
 
+  it("omits scope when no scopes are requested", () => {
+    const url = new URL(buildAuthorizationUrl({ ...baseInput, scopes: [] }));
+    expect(url.searchParams.has("scope")).toBe(false);
+  });
+
   it("merges Google-style extra params without dropping them", () => {
     const url = new URL(
       buildAuthorizationUrl({
@@ -198,6 +204,32 @@ describe("buildAuthorizationUrl", () => {
     const url = new URL(buildAuthorizationUrl(baseInput));
     expect(url.searchParams.has("resource")).toBe(false);
   });
+
+  it("rejects unsupported authorization URL schemes", () => {
+    expect(() =>
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "javascript:alert(1)",
+      }),
+    ).toThrow(/Authorization URL must use https: or loopback http:/);
+    expect(() =>
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "http://example.com/authorize",
+      }),
+    ).toThrow(/Authorization URL must use https: or loopback http:/);
+  });
+
+  it("allows HTTP authorization URLs when the caller opts into local HTTP", () => {
+    const url = new URL(
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "http://example.com/authorize",
+        endpointUrlPolicy: { allowHttp: true },
+      }),
+    );
+    expect(url.origin + url.pathname).toBe("http://example.com/authorize");
+  });
 });
 
 describe("exchangeAuthorizationCode", () => {
@@ -225,6 +257,23 @@ describe("exchangeAuthorizationCode", () => {
         expect(call.body.get("code")).toBe("abc");
       }),
     ),
+  );
+
+  it.effect("rejects unsupported token URL schemes before exchange", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        exchangeAuthorizationCode({
+          tokenUrl: "http://example.com/token",
+          clientId: "cid",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) return;
+      expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
+    }),
   );
 
   it.effect("omits client_secret when none is provided (public clients with PKCE)", () =>
@@ -485,6 +534,79 @@ describe("exchangeAuthorizationCode", () => {
           expect(JSON.stringify(exit.cause)).toContain("Code expired");
         }),
     ),
+  );
+
+  it.effect("includes HTTP status and body preview for non-OAuth token endpoint errors", () =>
+    withTokenEndpoint(
+      () => HttpServerResponse.text("route not found", { status: 404 }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          expect(failure).toContain("HTTP 404");
+          expect(failure).toContain("route not found");
+        }),
+    ),
+  );
+
+  it.effect("preserves provider error codes while redacting token endpoint secrets", () =>
+    withTokenEndpoint(
+      () =>
+        json(400, {
+          error: {
+            code: "invalid_client_id",
+            message: "Invalid client_id",
+          },
+          client_secret: "do-not-log",
+        }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://cb",
+              codeVerifier: "v",
+              code: "c",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const failure = JSON.stringify(exit.cause);
+          expect(failure).toContain("invalid_client_id");
+          expect(failure).toContain("Invalid client_id");
+          expect(failure).toContain("client_secret");
+          expect(failure).toContain("[redacted]");
+          expect(failure).not.toContain("do-not-log");
+        }),
+    ),
+  );
+});
+
+describe("exchangeClientCredentials", () => {
+  it.effect("rejects unsupported token URL schemes before exchange", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        exchangeClientCredentials({
+          tokenUrl: "http://example.com/token",
+          clientId: "cid",
+          clientSecret: "secret",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) return;
+      expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
+    }),
   );
 });
 
