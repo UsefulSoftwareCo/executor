@@ -18,6 +18,7 @@
       "outputs": []
     },
     "dev": {
+      "dependsOn": ["@executor-js/vite-plugin#build"],
       "cache": false,
       "persistent": true
     }
