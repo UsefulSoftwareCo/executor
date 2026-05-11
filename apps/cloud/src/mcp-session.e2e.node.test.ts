@@ -15,7 +15,7 @@
 // before prod does.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -44,11 +44,9 @@ import { DbService } from "./services/db";
 // eliciting test drive the real engine + sandbox rather than a stub engine.
 // ---------------------------------------------------------------------------
 
-const EMPTY_INPUT_SCHEMA = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
+const EMPTY_INPUT_SCHEMA = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+);
 
 const elicitingTestPlugin = definePlugin(() => ({
   id: "eliciting-test" as const,

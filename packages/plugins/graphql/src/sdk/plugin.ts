@@ -10,6 +10,7 @@ import {
   ConfiguredCredentialBinding,
   type CredentialBindingRef,
   definePlugin,
+  tool,
   ScopeId,
   SecretId,
   SourceDetectionResult,
@@ -110,6 +111,13 @@ const StaticAddSourceInputSchema = Schema.Struct({
   credentialTargetScope: Schema.optional(Schema.String),
   auth: Schema.optional(GraphqlSourceAuthInputSchema),
 });
+
+const StaticAddSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticAddSourceInputSchema),
+);
+const StaticAddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ toolCount: Schema.Number })),
+);
 
 // ---------------------------------------------------------------------------
 // Plugin extension
@@ -977,44 +985,20 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
     staticSources: (self) => [
       {
         id: "graphql",
-        kind: "control",
+        kind: "executor",
         name: "GraphQL",
         tools: [
-          {
+          tool({
             name: "addSource",
             description: "Add a GraphQL endpoint and register its operations as tools",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add a GraphQL source",
             },
-            inputSchema: {
-              type: "object",
-              properties: {
-                scope: { type: "string" },
-                endpoint: { type: "string" },
-                name: { type: "string" },
-                introspectionJson: { type: "string" },
-                namespace: { type: "string" },
-                headers: { type: "object" },
-                queryParams: { type: "object" },
-                credentialTargetScope: { type: "string" },
-                auth: { type: "object" },
-              },
-              required: ["scope", "endpoint"],
-            },
-            outputSchema: {
-              type: "object",
-              properties: {
-                toolCount: { type: "number" },
-              },
-              required: ["toolCount"],
-            },
-            handler: ({ args }) =>
-              Effect.gen(function* () {
-                const input = yield* Schema.decodeUnknownEffect(StaticAddSourceInputSchema)(args);
-                return yield* self.addSource(input);
-              }),
-          },
+            inputSchema: StaticAddSourceInputStandardSchema,
+            outputSchema: StaticAddSourceOutputStandardSchema,
+            execute: (input) => self.addSource(input),
+          }),
         ],
       },
     ],

@@ -103,6 +103,7 @@ import type {
   PluginExtensions,
   StaticSourceDecl,
   StaticToolDecl,
+  StaticToolSchema,
   StorageDeps,
 } from "./plugin";
 import type { Scope } from "./scope";
@@ -457,10 +458,31 @@ const staticDeclToTool = (
   pluginId,
   name: tool.name,
   description: tool.description,
-  inputSchema: tool.inputSchema,
-  outputSchema: tool.outputSchema,
+  inputSchema: toToolJsonSchema(tool.inputSchema),
+  outputSchema: toToolJsonSchema(tool.outputSchema, "output"),
   annotations: tool.annotations,
 });
+
+const toToolJsonSchema = (
+  schema: StaticToolSchema | undefined,
+  direction: "input" | "output" = "input",
+): unknown => {
+  if (schema == null) return undefined;
+  return schema["~standard"].jsonSchema[direction]({
+    target: "draft-2020-12",
+  });
+};
+
+const EXECUTOR_SOURCE_ID = "executor";
+const EXECUTOR_SOURCE: StaticSourceDecl = {
+  id: EXECUTOR_SOURCE_ID,
+  kind: "built-in",
+  name: "Executor",
+  canRemove: false,
+  canRefresh: false,
+  canEdit: false,
+  tools: [],
+};
 
 // ---------------------------------------------------------------------------
 // Dynamic-row writers — used by ctx.core.sources.register. Static sources
@@ -2719,18 +2741,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
       }
 
       // Resolve static declarations to the in-memory pools. NO DB WRITES.
+      // Plugin-owned executor tools are intentionally mounted under the
+      // single `executor` namespace so source inventory is about configured
+      // integrations, not plugin management surfaces:
+      //   openapi.addSource -> executor.openapi.addSource
       const decls = plugin.staticSources ? plugin.staticSources(extension) : [];
       for (const source of decls) {
-        if (staticSources.has(source.id)) {
-          return yield* new StorageError({
-            message: `Duplicate static source id: ${source.id} (plugin ${plugin.id})`,
-            cause: undefined,
-          });
+        const mountUnderExecutor = source.kind === "executor" && source.id === plugin.id;
+        const mountedSource = mountUnderExecutor ? EXECUTOR_SOURCE : source;
+
+        if (mountUnderExecutor) {
+          if (!staticSources.has(EXECUTOR_SOURCE_ID)) {
+            staticSources.set(EXECUTOR_SOURCE_ID, {
+              source: EXECUTOR_SOURCE,
+              pluginId: EXECUTOR_SOURCE_ID,
+            });
+          }
+        } else {
+          if (staticSources.has(source.id)) {
+            return yield* new StorageError({
+              message: `Duplicate static source id: ${source.id} (plugin ${plugin.id})`,
+              cause: undefined,
+            });
+          }
+          staticSources.set(source.id, { source, pluginId: plugin.id });
         }
-        staticSources.set(source.id, { source, pluginId: plugin.id });
 
         for (const tool of source.tools) {
-          const fqid = `${source.id}.${tool.name}`;
+          const mountedTool = mountUnderExecutor
+            ? {
+                ...tool,
+                name: `${plugin.id}.${tool.name}`,
+              }
+            : tool;
+          const fqid = `${mountedSource.id}.${mountedTool.name}`;
           if (staticTools.has(fqid)) {
             return yield* new StorageError({
               message: `Duplicate static tool id: ${fqid} (plugin ${plugin.id})`,
@@ -2738,8 +2782,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
             });
           }
           staticTools.set(fqid, {
-            source,
-            tool,
+            source: mountedSource,
+            tool: mountedTool,
             pluginId: plugin.id,
             ctx,
           });
@@ -3028,8 +3072,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
             name: staticEntry.tool.name,
             description: staticEntry.tool.description,
             sourceId: undefined,
-            rawInput: staticEntry.tool.inputSchema,
-            rawOutput: staticEntry.tool.outputSchema,
+            rawInput: toToolJsonSchema(staticEntry.tool.inputSchema),
+            rawOutput: toToolJsonSchema(staticEntry.tool.outputSchema, "output"),
           });
         }
         // Innermost-wins lookup: the scope-wrapped adapter returns rows

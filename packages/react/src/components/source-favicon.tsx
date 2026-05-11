@@ -14,9 +14,22 @@ export function sourceFaviconUrl(url: string | undefined, size: number): string 
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`;
 }
 
-export function SourceFavicon({ url, size = 16 }: { url?: string; size?: number }) {
+export function sourceLocalIconUrl(sourceId: string | undefined): string | null {
+  if (sourceId !== "executor") return null;
+  return "/favicon-32.png";
+}
+
+export function SourceFavicon({
+  sourceId,
+  url,
+  size = 16,
+}: {
+  sourceId?: string;
+  url?: string;
+  size?: number;
+}) {
   const [failed, setFailed] = useState(false);
-  const src = failed ? null : sourceFaviconUrl(url, size);
+  const src = failed ? null : (sourceLocalIconUrl(sourceId) ?? sourceFaviconUrl(url, size));
 
   if (!src) {
     return (

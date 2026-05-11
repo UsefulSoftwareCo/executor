@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Exit, Predicate, Result } from "effect";
+import { Data, Effect, Exit, Predicate, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
@@ -9,7 +9,7 @@ import { makeInMemoryBlobStore } from "./blob";
 import { CreateConnectionInput, TokenMaterial } from "./connections";
 import { collectSchemas, createExecutor } from "./executor";
 import { ElicitationResponse, FormElicitation, UrlElicitation } from "./elicitation";
-import { defineSchema, definePlugin } from "./plugin";
+import { defineSchema, definePlugin, tool } from "./plugin";
 import { RemoveSecretInput, SetSecretInput } from "./secrets";
 import { makeTestConfig } from "./testing";
 import type { SecretProvider } from "./secrets";
@@ -45,7 +45,7 @@ const recordFindMany = (adapter: DBAdapter, calls: FindManyCall[]): DBAdapter =>
 });
 
 // ---------------------------------------------------------------------------
-// Tiny test plugin — declares a static source with two control tools, a
+// Tiny test plugin — declares a static source with two built-in tools, a
 // plugin schema for a per-row key/value table, and a dynamic invokeTool
 // handler. Exercises everything createExecutor has to wire up.
 // ---------------------------------------------------------------------------
@@ -837,21 +837,19 @@ describe("createExecutor", () => {
             kind: "control",
             name: "Preview Ctl",
             tools: [
-              {
+              tool({
                 name: "createContact",
                 description: "create",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string" },
-                    age: { type: "number" },
-                  },
-                  required: ["name", "age"],
-                  additionalProperties: false,
-                },
-                outputSchema: { type: "string" },
-                handler: ({ args }) => Effect.succeed(args),
-              },
+                inputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(
+                    Schema.Struct({ name: Schema.String, age: Schema.Finite }),
+                  ),
+                ),
+                outputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(Schema.String),
+                ),
+                execute: (input) => Effect.succeed(input),
+              }),
             ],
           },
         ],
@@ -1147,12 +1145,12 @@ const tenantPlugin = definePlugin(() => ({
       kind: "control" as const,
       name: "Tenant Ctl",
       tools: [
-        {
+        tool({
           name: "noop",
           description: "noop",
-          inputSchema: { type: "object", additionalProperties: false },
-          handler: () => Effect.succeed(null),
-        },
+          inputSchema: Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(Schema.Struct({}))),
+          execute: () => Effect.succeed(null),
+        }),
       ],
     },
   ],

@@ -280,13 +280,16 @@ export {
   type StorageDeps,
   type StaticSourceDecl,
   type StaticToolDecl,
+  type StaticToolExecuteContext,
   type StaticToolHandlerInput,
+  type StaticToolInput,
   type InvokeToolInput,
   type SourceLifecycleInput,
   type SecretListEntry,
   type Elicit,
   definePlugin,
   defineSchema,
+  tool,
 } from "./plugin";
 
 // Executor

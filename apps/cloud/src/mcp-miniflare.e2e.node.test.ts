@@ -14,7 +14,7 @@
 //
 // Elicitation coverage uses the openapi plugin: a tiny Effect HttpApi
 // upstream is stood up in-process, its generated spec is handed to
-// `tools.openapi.addSource`, and the cloud engine invokes a POST operation.
+// `tools.executor.openapi.addSource`, and the cloud engine invokes a POST operation.
 // `requiresApproval: true` fires the executor's approval elicitation, which
 // round-trips back to the SDK Client's `ElicitRequestSchema` handler.
 // ---------------------------------------------------------------------------
@@ -455,7 +455,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
             method: "POST",
             headers: {
               accept: "application/json, text/event-stream",
-              authorization: "Bearer bogus",
+              authorization: "Bearer bogus.bogus.bogus",
               "content-type": "application/json",
             },
             body: JSON.stringify({
@@ -794,7 +794,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
         // `HttpApiGroup` name ("approve") becomes part of the sandbox path,
         // so the invocation reads `tools.approveapi.approve.approveThing`.
         const code = [
-          `await tools.openapi.addSource({ scope: ${JSON.stringify(orgId)}, spec: ${JSON.stringify(specJson)}, namespace: "approveapi" });`,
+          `await tools.executor.openapi.addSource({ scope: ${JSON.stringify(orgId)}, spec: ${JSON.stringify(specJson)}, namespace: "approveapi" });`,
           `return await tools.approveapi.approve.approveThing({});`,
         ].join("\n");
         const result = yield* Effect.promise(() =>

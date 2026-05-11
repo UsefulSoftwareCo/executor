@@ -298,7 +298,7 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
                     : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
                 ].join(" ")}
               >
-                <SourceFavicon url={s.url} />
+                <SourceFavicon sourceId={s.id} url={s.url} />
                 <span className="flex-1 truncate">{s.name}</span>
                 <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
                   {s.kind}

@@ -1,15 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { createExecutor, definePlugin, makeTestConfig } from "@executor-js/sdk";
 
 import { buildExecuteDescription } from "./description";
 
-const EmptyInputSchema = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
+const EmptyInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+);
 
 // Two plugins registering static sources whose ids are distinct from their
 // pluginIds/names. If `buildExecuteDescription` ever renders the wrong field

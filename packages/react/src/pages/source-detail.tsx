@@ -157,7 +157,9 @@ export function SourceDetailPage(props: { namespace: string }) {
           {sourceData?.runtime && (
             <Badge className="bg-muted text-muted-foreground">built-in</Badge>
           )}
-          <Badge variant="secondary">{sourceData?.kind ?? "source"}</Badge>
+          {(!sourceData?.runtime || sourceData.kind !== "built-in") && (
+            <Badge variant="secondary">{sourceData?.kind ?? "source"}</Badge>
+          )}
           {AsyncResult.isSuccess(tools) && !editing && (
             <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">
               {sourceTools.length} {sourceTools.length === 1 ? "tool" : "tools"}

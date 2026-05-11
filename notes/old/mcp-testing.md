@@ -90,7 +90,7 @@ Pattern used in `mcp-miniflare.e2e.node.test.ts`:
 5. SDK Client advertises `capabilities: { elicitation: { form: {} } }` and
    registers `client.setRequestHandler(ElicitRequestSchema, ...)` that returns
    `{ action: "accept", content: {} }`.
-6. Call `execute` with code that (a) calls `tools.openapi.addSource({ spec,
+6. Call `execute` with code that (a) calls `tools.executor.openapi.addSource({ spec,
 namespace })`, (b) invokes the POST operation.
 
 **Tool id format inside the `execute` sandbox.**

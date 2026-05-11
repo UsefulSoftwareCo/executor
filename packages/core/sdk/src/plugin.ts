@@ -1,6 +1,8 @@
-import type { Context, Effect, Layer } from "effect";
+import { Effect } from "effect";
+import type { Context, Layer } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import type { HttpApiGroup } from "effect/unstable/httpapi";
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
 import type { DBSchema, StorageFailure } from "@executor-js/storage-core";
 
 import type { PluginBlobStore } from "./blob";
@@ -249,11 +251,21 @@ export interface StaticToolHandlerInput<TStore = unknown> {
   readonly elicit: Elicit;
 }
 
+export interface StaticToolExecuteContext<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  /** Suspend the fiber to request user input. The handler passed to
+   *  `createExecutor({ onElicitation })` is called. */
+  readonly elicit: Elicit;
+}
+
+export type StaticToolSchema<Input = unknown, Output = Input> = StandardSchemaV1<Input, Output> &
+  StandardJSONSchemaV1<Input, Output>;
+
 export interface StaticToolDecl<TStore = unknown> {
   readonly name: string;
   readonly description: string;
-  readonly inputSchema?: unknown;
-  readonly outputSchema?: unknown;
+  readonly inputSchema?: StaticToolSchema;
+  readonly outputSchema?: StaticToolSchema;
   /** Default-policy annotations — `requiresApproval`, `approvalDescription`,
    *  `mayElicit`. Enforced by the executor before the handler runs.
    *  Inline because static tools have no plugin storage to resolve from;
@@ -262,13 +274,68 @@ export interface StaticToolDecl<TStore = unknown> {
   readonly handler: (input: StaticToolHandlerInput<TStore>) => Effect.Effect<unknown, unknown>;
 }
 
+const decodeStaticToolArgs = (
+  schema: StaticToolSchema | undefined,
+  args: unknown,
+): Effect.Effect<unknown, unknown> => {
+  if (schema == null) return Effect.succeed(args);
+  return Effect.promise(() => Promise.resolve(schema["~standard"].validate(args))).pipe(
+    Effect.flatMap((result) =>
+      "value" in result ? Effect.succeed(result.value) : Effect.fail(result),
+    ),
+  );
+};
+
+export interface StaticToolInput<
+  TStore = unknown,
+  TInputSchema extends StaticToolSchema | undefined = StaticToolSchema | undefined,
+> {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema?: TInputSchema;
+  readonly outputSchema?: StaticToolSchema;
+  /** Default-policy annotations — `requiresApproval`, `approvalDescription`,
+   *  `mayElicit`. Enforced by the executor before the handler runs. */
+  readonly annotations?: ToolAnnotations;
+  readonly execute: (
+    args: TInputSchema extends StaticToolSchema
+      ? StandardSchemaV1.InferOutput<TInputSchema>
+      : unknown,
+    context: StaticToolExecuteContext<TStore>,
+  ) => Effect.Effect<unknown, unknown>;
+}
+
+export const tool = <
+  TStore = unknown,
+  TInputSchema extends StaticToolSchema | undefined = StaticToolSchema | undefined,
+>(
+  input: StaticToolInput<TStore, TInputSchema>,
+): StaticToolDecl<TStore> => ({
+  name: input.name,
+  description: input.description,
+  inputSchema: input.inputSchema,
+  outputSchema: input.outputSchema,
+  annotations: input.annotations,
+  handler: ({ args, ctx, elicit }) =>
+    decodeStaticToolArgs(input.inputSchema, args).pipe(
+      Effect.flatMap((decoded) =>
+        input.execute(
+          decoded as TInputSchema extends StaticToolSchema
+            ? StandardSchemaV1.InferOutput<TInputSchema>
+            : unknown,
+          { ctx, elicit },
+        ),
+      ),
+    ),
+});
+
 export interface StaticSourceDecl<TStore = unknown> {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
   readonly url?: string;
-  /** Static sources default to `canRemove: false` — they represent
-   *  plugin-provided control surfaces and shouldn't be user-removable.
+  /** Static sources default to `canRemove: false` because they are
+   *  plugin-provided surfaces and shouldn't usually be user-removable.
    *  Override only if you really want that. */
   readonly canRemove?: boolean;
   readonly canRefresh?: boolean;

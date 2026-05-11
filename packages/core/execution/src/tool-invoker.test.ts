@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 
 import {
   ElicitationResponse,
@@ -14,30 +14,17 @@ import { describeTool, makeExecutorToolInvoker, searchTools } from "./tool-invok
 
 const codeExecutor = makeQuickJsExecutor();
 
-const RepoInputSchema = {
-  type: "object",
-  properties: {
-    owner: { type: "string" },
-    repo: { type: "string" },
-  },
-  required: ["owner", "repo"],
-  additionalProperties: false,
-} as const;
+const RepoInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ owner: Schema.String, repo: Schema.String })),
+);
 
-const ContactInputSchema = {
-  type: "object",
-  properties: {
-    email: { type: "string" },
-  },
-  required: ["email"],
-  additionalProperties: false,
-} as const;
+const ContactInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ email: Schema.String })),
+);
 
-const EmptyInputSchema = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
+const EmptyInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+);
 
 const acceptAll = () => Effect.succeed(new ElicitationResponse({ action: "accept" }));
 

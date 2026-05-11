@@ -59,6 +59,7 @@
   },
   "dependencies": {
     "@executor-js/storage-core": "workspace:*",
+    "@standard-schema/spec": "^1.1.0",
     "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "oauth4webapi": "^3.8.5"

@@ -48,7 +48,7 @@ Open `http://127.0.0.1:4788`, go to **Add Source**, paste a URL, and Executor wi
 ### Via the CLI
 
 ```bash
-executor call openapi addSource '{
+executor call executor openapi addSource '{
   "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
   "namespace": "petstore",
   "baseUrl": "https://petstore3.swagger.io/api/v3"

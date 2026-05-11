@@ -411,7 +411,7 @@ function SourceGrid(props: {
             <CardStackEntry key={s.id} asChild searchText={`${s.name} ${s.id} ${s.kind}`}>
               <Link to="/sources/$namespace" params={{ namespace: s.id }}>
                 <CardStackEntryMedia>
-                  <SourceFavicon url={s.url} size={32} />
+                  <SourceFavicon sourceId={s.id} url={s.url} size={32} />
                 </CardStackEntryMedia>
                 <CardStackEntryContent>
                   <CardStackEntryTitle>{s.name}</CardStackEntryTitle>
@@ -423,8 +423,11 @@ function SourceGrid(props: {
                       <SummaryComponent sourceId={s.id} />
                     </Suspense>
                   )}
-                  {s.runtime && <Badge className="bg-muted text-muted-foreground">built-in</Badge>}
-                  <Badge variant="secondary">{s.kind}</Badge>
+                  {s.runtime ? (
+                    <Badge className="bg-muted text-muted-foreground">built-in</Badge>
+                  ) : (
+                    <Badge variant="secondary">{s.kind}</Badge>
+                  )}
                 </CardStackEntryActions>
               </Link>
             </CardStackEntry>

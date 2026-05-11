@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { createExecutor } from "./promise";
-import { definePlugin, defineSchema } from "./plugin";
-import { Effect } from "effect";
+import { definePlugin, defineSchema, tool } from "./plugin";
+import { Effect, Schema } from "effect";
 
 // A minimal static-tool plugin built on the Effect surface, consumed
 // through the Promise façade. Exercises the proxy's ability to promisify
@@ -17,18 +17,14 @@ const echoPlugin = definePlugin(() => ({
       kind: "control" as const,
       name: "Echo Ctl",
       tools: [
-        {
+        tool({
           name: "say",
           description: "Echo the input",
-          inputSchema: {
-            type: "object",
-            properties: { message: { type: "string" } },
-            required: ["message"],
-            additionalProperties: false,
-          },
-          handler: ({ args }: { args: unknown }) =>
-            Effect.succeed((args as { message: string }).message),
-        },
+          inputSchema: Schema.toStandardSchemaV1(
+            Schema.toStandardJSONSchemaV1(Schema.Struct({ message: Schema.String })),
+          ),
+          execute: (input) => Effect.succeed(input.message),
+        }),
       ],
     },
   ],
@@ -80,13 +76,15 @@ describe("promise/createExecutor", () => {
           kind: "control" as const,
           name: "Ap Ctl",
           tools: [
-            {
+            tool({
               name: "go",
               description: "Requires approval",
               annotations: { requiresApproval: true } as const,
-              inputSchema: { type: "object", additionalProperties: false },
-              handler: () => Effect.succeed("ran"),
-            },
+              inputSchema: Schema.toStandardSchemaV1(
+                Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+              ),
+              execute: () => Effect.succeed("ran"),
+            }),
           ],
         },
       ],

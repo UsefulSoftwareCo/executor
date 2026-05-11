@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { sourceFaviconUrl } from "./source-favicon";
+import { sourceFaviconUrl, sourceLocalIconUrl } from "./source-favicon";
 
 describe("SourceFavicon", () => {
   it("uses the favicon service that handles provider-specific icon locations", () => {
@@ -18,5 +18,10 @@ describe("SourceFavicon", () => {
     expect(sourceFaviconUrl("https://api.github.com/private", 20)).toBe(
       "https://www.google.com/s2/favicons?domain=github.com&sz=40",
     );
+  });
+
+  it("uses the Executor favicon for the built-in executor source", () => {
+    expect(sourceLocalIconUrl("executor")).toBe("/favicon-32.png");
+    expect(sourceLocalIconUrl("openapi")).toBeNull();
   });
 });

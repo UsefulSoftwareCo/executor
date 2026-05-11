@@ -283,8 +283,8 @@ describe("graphqlPlugin", () => {
       const ids = tools.map((t) => t.id);
       expect(ids).toContain("test_api.query.hello");
       expect(ids).toContain("test_api.mutation.setGreeting");
-      // static control tool also present
-      expect(ids).toContain("graphql.addSource");
+      // static executor tool also present under the executor namespace
+      expect(ids).toContain("executor.graphql.addSource");
 
       const queryTool = tools.find((t) => t.id === "test_api.query.hello");
       expect(queryTool?.description).toBe("Say hello");
@@ -320,7 +320,7 @@ describe("graphqlPlugin", () => {
     }),
   );
 
-  it.effect("lists sources with the static control source", () =>
+  it.effect("lists sources with the executor built-in source", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({ plugins: [graphqlPlugin()] as const }),
@@ -341,7 +341,8 @@ describe("graphqlPlugin", () => {
       expect(dynamic!.canEdit).toBe(true);
       expect(dynamic!.runtime).toBe(false);
 
-      const control = sources.find((s) => s.id === "graphql");
+      expect(sources.find((s) => s.id === "graphql")).toBeUndefined();
+      const control = sources.find((s) => s.id === "executor");
       expect(control).toBeDefined();
       expect(control!.runtime).toBe(true);
     }),
@@ -401,7 +402,7 @@ describe("graphqlPlugin", () => {
     }),
   );
 
-  it.effect("static graphql.addSource delegates to extension", () =>
+  it.effect("static executor.graphql.addSource delegates to extension", () =>
     Effect.gen(function* () {
       const userScope = ScopeId.make("static-user");
       const orgScope = ScopeId.make("static-org");
@@ -416,7 +417,7 @@ describe("graphqlPlugin", () => {
       );
 
       const result = yield* executor.tools.invoke(
-        "graphql.addSource",
+        "executor.graphql.addSource",
         {
           scope: String(orgScope),
           endpoint: "http://localhost:4000/graphql",
@@ -436,6 +437,22 @@ describe("graphqlPlugin", () => {
     }),
   );
 
+  it.effect("describes static addSource parameters from Standard Schema", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [graphqlPlugin()] }));
+
+      const schema = yield* executor.tools.schema("executor.graphql.addSource");
+
+      expect(schema).not.toBeNull();
+      expect(schema!.inputTypeScript).toContain("scope: string");
+      expect(schema!.inputTypeScript).toContain("endpoint: string");
+      expect(
+        (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
+      ).toHaveProperty("credentialTargetScope");
+      expect(schema!.inputTypeScript).not.toBe("Record<string, unknown>");
+    }),
+  );
+
   it.effect("requires approval before a runtime-added query sends prior tool output", () =>
     Effect.gen(function* () {
       const server = yield* serveGreetingServer;
@@ -451,7 +468,7 @@ describe("graphqlPlugin", () => {
       expect(trusted).toBe("sample-value");
       const declined = yield* executor.tools
         .invoke(
-          "graphql.addSource",
+          "executor.graphql.addSource",
           {
             endpoint: server.endpoint,
             scope: TEST_SCOPE,
@@ -478,7 +495,7 @@ describe("graphqlPlugin", () => {
       );
 
       yield* executor.tools.invoke(
-        "graphql.addSource",
+        "executor.graphql.addSource",
         {
           endpoint: server.endpoint,
           scope: TEST_SCOPE,

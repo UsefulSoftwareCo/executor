@@ -212,7 +212,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     }),
   );
 
-  it.effect("registers static openapi control tools", () =>
+  it.effect("registers static openapi executor tools", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
@@ -228,12 +228,12 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
 
       const tools = yield* executor.tools.list();
       const ids = tools.map((t) => t.id);
-      expect(ids).toContain("openapi.previewSpec");
-      expect(ids).toContain("openapi.addSource");
+      expect(ids).toContain("executor.openapi.previewSpec");
+      expect(ids).toContain("executor.openapi.addSource");
     }),
   );
 
-  it.effect("lists openapi as a static runtime source", () =>
+  it.effect("lists executor as the static runtime source", () =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
       const clientLayer = Layer.succeed(HttpClient.HttpClient, httpClient);
@@ -248,7 +248,8 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       );
 
       const sources = yield* executor.sources.list();
-      const control = sources.find((s) => s.id === "openapi");
+      expect(sources.find((s) => s.id === "openapi")).toBeUndefined();
+      const control = sources.find((s) => s.id === "executor");
       expect(control).toBeDefined();
       expect(control!.runtime).toBe(true);
       expect(control!.canRemove).toBe(false);
@@ -270,12 +271,32 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       );
 
       const result = (yield* executor.tools.invoke(
-        "openapi.previewSpec",
+        "executor.openapi.previewSpec",
         { spec: specJson },
         autoApprove,
       )) as { operationCount: number };
 
       expect(result.operationCount).toBeGreaterThanOrEqual(2);
+    }),
+  );
+
+  it.effect("describes static addSource parameters from Standard Schema", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
+        }),
+      );
+
+      const schema = yield* executor.tools.schema("executor.openapi.addSource");
+
+      expect(schema).not.toBeNull();
+      expect(schema!.inputTypeScript).toContain("scope: string");
+      expect(schema!.inputTypeScript).toContain("spec: string");
+      expect(
+        (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
+      ).toHaveProperty("credentialTargetScope");
+      expect(schema!.inputTypeScript).not.toBe("Record<string, unknown>");
     }),
   );
 
@@ -300,7 +321,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
       );
 
       const result = (yield* executor.tools.invoke(
-        "openapi.addSource",
+        "executor.openapi.addSource",
         { scope: String(orgScope), spec: specJson, namespace: "runtime" },
         autoApprove,
       )) as { sourceId: string; toolCount: number };
@@ -322,7 +343,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
 
       const declined = yield* executor.tools
         .invoke(
-          "openapi.addSource",
+          "executor.openapi.addSource",
           { scope: TEST_SCOPE, spec: specJson, namespace: "runtime_declined" },
           { onElicitation: () => Effect.succeed({ action: "decline" as const }) },
         )
@@ -825,7 +846,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
 
       const remaining = yield* executor.tools.list();
       const ids = remaining.map((t) => t.id).sort();
-      expect(ids).toEqual(["openapi.addSource", "openapi.previewSpec"]);
+      expect(ids).toEqual(["executor.openapi.addSource", "executor.openapi.previewSpec"]);
     }),
   );
 

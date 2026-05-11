@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
@@ -38,6 +39,11 @@ function executorApiPlugin(): Plugin {
   return {
     name: "executor-api",
     configureServer(server) {
+      server.watcher.on("change", (path) => {
+        if (path.includes("/src/server/") || path.endsWith("/executor.config.ts")) {
+          handlers = null;
+        }
+      });
       server.middlewares.use(async (req, res, next) => {
         const rawUrl = req.url ?? "/";
         const isApi = rawUrl.startsWith("/api/") || rawUrl === "/api";
@@ -120,6 +126,9 @@ export default defineConfig({
       // polling is slower but reliable.
       usePolling: true,
       interval: 200,
+    },
+    fs: {
+      allow: [resolve(import.meta.dirname, "../..")],
     },
   },
   plugins: [

@@ -11,6 +11,7 @@ import {
   SourceDetectionResult,
   StorageError,
   definePlugin,
+  tool,
   resolveSecretBackedMap,
   type CredentialBindingRef,
   type PluginCtx,
@@ -172,7 +173,6 @@ const PreviewSpecInputSchema = Schema.Struct({
     }),
   ),
 });
-type PreviewSpecInput = typeof PreviewSpecInputSchema.Type;
 
 const OpenApiHeaderInputSchema = Schema.Union([HeaderValueSchema, ConfiguredHeaderValueSchema]);
 const OpenApiOAuthInputSchema = OAuth2SourceConfig;
@@ -194,7 +194,21 @@ const AddSourceInputSchema = Schema.Struct({
     }),
   ),
 });
-type AddSourceInput = typeof AddSourceInputSchema.Type;
+
+const AddSourceOutputSchema = Schema.Struct({
+  sourceId: Schema.String,
+  toolCount: Schema.Number,
+});
+
+const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(PreviewSpecInputSchema),
+);
+const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddSourceInputSchema),
+);
+const AddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddSourceOutputSchema),
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1175,60 +1189,26 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     staticSources: (self) => [
       {
         id: "openapi",
-        kind: "control",
+        kind: "executor",
         name: "OpenAPI",
         tools: [
-          {
+          tool({
             name: "previewSpec",
             description: "Preview an OpenAPI document before adding it as a source",
-            inputSchema: {
-              type: "object",
-              properties: {
-                spec: { type: "string" },
-                specFetchCredentials: { type: "object" },
-              },
-              required: ["spec"],
-            },
-            handler: ({ args }) => self.previewSpec(args as PreviewSpecInput),
-          },
-          {
+            inputSchema: PreviewSpecInputStandardSchema,
+            execute: (input) => self.previewSpec(input),
+          }),
+          tool({
             name: "addSource",
             description: "Add an OpenAPI source and register its operations as tools",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI source",
             },
-            inputSchema: {
-              type: "object",
-              properties: {
-                scope: { type: "string" },
-                spec: { type: "string" },
-                name: { type: "string" },
-                baseUrl: { type: "string" },
-                namespace: { type: "string" },
-                headers: { type: "object" },
-                queryParams: { type: "object" },
-                oauth2: { type: "object" },
-                credentialTargetScope: { type: "string" },
-                specFetchCredentials: { type: "object" },
-              },
-              required: ["scope", "spec"],
-            },
-            outputSchema: {
-              type: "object",
-              properties: {
-                sourceId: { type: "string" },
-                toolCount: { type: "number" },
-              },
-              required: ["sourceId", "toolCount"],
-            },
-            handler: ({ args }) =>
-              Effect.gen(function* () {
-                const input: AddSourceInput =
-                  yield* Schema.decodeUnknownEffect(AddSourceInputSchema)(args);
-                return yield* self.addSpec(input);
-              }),
-          },
+            inputSchema: AddSourceInputStandardSchema,
+            outputSchema: AddSourceOutputStandardSchema,
+            execute: (input) => self.addSpec(input),
+          }),
         ],
       },
     ],

@@ -676,13 +676,13 @@ describe("sources api (HTTP)", () => {
   it.effect("sources.remove on a static source is rejected", () =>
     Effect.gen(function* () {
       // `canRemove: false` is reserved for static (plugin-declared)
-      // sources. The openapi plugin declares one with id "openapi"
-      // for its control tools.
+      // sources. Plugin-owned executor tools are mounted under the
+      // built-in executor source.
       const org = `org_${crypto.randomUUID()}`;
 
       const result = yield* asOrg(org, (client) =>
         client.sources
-          .remove({ params: { scopeId: ScopeId.make(org), sourceId: "openapi" } })
+          .remove({ params: { scopeId: ScopeId.make(org), sourceId: "executor" } })
           .pipe(Effect.result),
       );
       expect(Result.isFailure(result)).toBe(true);
