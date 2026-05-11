@@ -42,9 +42,7 @@ export const SetupMcpPage = () => {
             </span>
             {endpoint && <CopyButton value={endpoint} />}
           </div>
-          <p className="text-xs text-muted-foreground">
-            Paste this into your MCP client config.
-          </p>
+          <p className="text-xs text-muted-foreground">Paste this into your MCP client config.</p>
         </section>
 
         <div className="relative flex items-center">
