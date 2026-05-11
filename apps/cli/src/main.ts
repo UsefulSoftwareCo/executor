@@ -1115,6 +1115,12 @@ const resolveToolInvocation = (input: {
   rawPathParts: ReadonlyArray<string>;
 }): Effect.Effect<{ path: string; args: Record<string, unknown> }, Error> =>
   Effect.gen(function* () {
+    if (!Array.isArray(input.rawPathParts)) {
+      return yield* Effect.fail(
+        new Error("Invalid tool invocation: path parts were not parsed as an array"),
+      );
+    }
+
     const maybeJsonArg = input.rawPathParts.at(-1)?.trim();
     const hasInlineJsonArg = maybeJsonArg !== undefined && maybeJsonArg.startsWith("{");
     const pathParts = hasInlineJsonArg ? input.rawPathParts.slice(0, -1) : input.rawPathParts;
@@ -1144,7 +1150,7 @@ const resolveToolInvocation = (input: {
 const callCommand = Command.make(
   "call",
   {
-    pathParts: Args.variadic(Args.string("tool-path-segment")),
+    pathParts: Args.string("tool-path-segment").pipe(Args.variadic({})),
     baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
