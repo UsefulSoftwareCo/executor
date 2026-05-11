@@ -10,6 +10,20 @@ import { WorkOSError, tryPromiseService, withServiceLogging } from "./errors";
 const COOKIE_NAME = "wos-session";
 const INVALID_COOKIE_PASSWORD_MESSAGE = "WORKOS_COOKIE_PASSWORD must be at least 32 characters";
 
+type RawWorkOS = WorkOS & {
+  readonly get: (
+    path: string,
+    options?: { readonly query?: Record<string, unknown> },
+  ) => Promise<{
+    readonly data: unknown;
+  }>;
+  readonly post: (
+    path: string,
+    entity: unknown,
+    options?: { readonly idempotencyKey?: string },
+  ) => Promise<{ readonly data: unknown }>;
+};
+
 class WorkOSAuthConfigurationError extends Data.TaggedError("WorkOSAuthConfigurationError")<{
   readonly message: string;
 }> {}
@@ -156,6 +170,36 @@ const make = Effect.gen(function* () {
         if (!sessionData) return null;
         return yield* authenticateSealedSession(sessionData);
       }),
+
+    /**
+     * Validate an AuthKit API key. The SDK version installed here exposes
+     * organization-owned key types, while WorkOS's API also returns user-owned
+     * keys. Keep this boundary unknown and decode the precise app shape in
+     * auth/api-keys.ts.
+     */
+    validateApiKey: (value: string) =>
+      use((wos) => wos.apiKeys.validateApiKey({ value }) as Promise<unknown>),
+
+    listUserApiKeys: (userId: string, organizationId: string) =>
+      use(async (wos) => {
+        const raw = wos as RawWorkOS;
+        const response = await raw.get(`/user_management/users/${userId}/api_keys`, {
+          query: { organization_id: organizationId },
+        });
+        return response.data;
+      }),
+
+    createUserApiKey: (params: { userId: string; organizationId: string; name: string }) =>
+      use(async (wos) => {
+        const raw = wos as RawWorkOS;
+        const response = await raw.post(`/user_management/users/${params.userId}/api_keys`, {
+          name: params.name,
+          organization_id: params.organizationId,
+        });
+        return response.data;
+      }),
+
+    deleteApiKey: (id: string) => use((wos) => wos.apiKeys.deleteApiKey(id)),
 
     /** List organization memberships with user details. */
     listOrgMembers: (organizationId: string) =>

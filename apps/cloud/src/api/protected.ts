@@ -15,6 +15,7 @@ import {
 
 import { cloudPlugins, type CloudPlugins } from "./cloud-plugins";
 import { AuthContext } from "../auth/middleware";
+import { ApiKeyService } from "../auth/api-keys";
 import { authorizeOrganization } from "../auth/authorize-organization";
 import { UserStoreService } from "../auth/context";
 import { WorkOSAuth } from "../auth/workos";
@@ -30,6 +31,105 @@ import { requestScopedMiddleware } from "./request-scoped";
 // executor[id])` chain. The plugin spec carries the Service tag so
 // this file doesn't import each plugin's `*/api` directly.
 const provideExecutorExtensions = providePluginExtensions(cloudPlugins);
+const BEARER_PREFIX = "Bearer ";
+
+export const resolveApiKeyIdentity = (request: Request) =>
+  Effect.gen(function* () {
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader) return null;
+
+    if (!authHeader.startsWith(BEARER_PREFIX)) {
+      return yield* new HttpResponseError({
+        status: 401,
+        code: "invalid_authorization_header",
+        message: "Authorization header must use Bearer authentication",
+      });
+    }
+
+    const value = authHeader.slice(BEARER_PREFIX.length).trim();
+    if (!value) {
+      return yield* new HttpResponseError({
+        status: 401,
+        code: "invalid_api_key",
+        message: "Invalid API key",
+      });
+    }
+
+    const apiKeys = yield* ApiKeyService;
+    const principal = yield* apiKeys.validate(value).pipe(
+      Effect.catchTag("ApiKeyValidationError", () =>
+        Effect.fail(
+          new HttpResponseError({
+            status: 503,
+            code: "api_key_validation_unavailable",
+            message: "API key validation is temporarily unavailable",
+          }),
+        ),
+      ),
+    );
+
+    if (!principal) {
+      return yield* new HttpResponseError({
+        status: 401,
+        code: "invalid_api_key",
+        message: "Invalid API key",
+      });
+    }
+
+    const org = yield* authorizeOrganization(principal.accountId, principal.organizationId);
+    if (!org) {
+      return yield* new HttpResponseError({
+        status: 403,
+        code: "no_organization",
+        message: "No organization in API key",
+      });
+    }
+
+    return {
+      accountId: principal.accountId,
+      organizationId: org.id,
+      organizationName: org.name,
+      email: "",
+      name: null,
+      avatarUrl: null,
+    };
+  });
+
+export const resolveSessionIdentity = (request: Request) =>
+  Effect.gen(function* () {
+    const workos = yield* WorkOSAuth;
+    const session = yield* workos.authenticateRequest(request);
+    if (!session || !session.organizationId) {
+      return yield* new HttpResponseError({
+        status: 403,
+        code: "no_organization",
+        message: "No organization in session",
+      });
+    }
+    const org = yield* authorizeOrganization(session.userId, session.organizationId);
+    if (!org) {
+      return yield* new HttpResponseError({
+        status: 403,
+        code: "no_organization",
+        message: "No organization in session",
+      });
+    }
+    return {
+      accountId: session.userId,
+      organizationId: org.id,
+      organizationName: org.name,
+      email: session.email,
+      name: `${session.firstName ?? ""} ${session.lastName ?? ""}`.trim() || null,
+      avatarUrl: session.avatarUrl ?? null,
+    };
+  });
+
+export const resolveProtectedIdentity = (request: Request) =>
+  Effect.gen(function* () {
+    const apiKeyIdentity = yield* resolveApiKeyIdentity(request);
+    if (apiKeyIdentity) return apiKeyIdentity;
+    return yield* resolveSessionIdentity(request);
+  });
 
 // One `HttpRouter` middleware that:
 //   1. authenticates the WorkOS sealed session,
@@ -65,36 +165,24 @@ const ExecutionStackMiddleware = HttpRouter.middleware<{
     | PluginExtensionServices<CloudPlugins>;
 }>()(
   Effect.gen(function* () {
-    const longLived = yield* Effect.context<WorkOSAuth | AutumnService>();
+    const longLived = yield* Effect.context<WorkOSAuth | AutumnService | ApiKeyService>();
     return (httpEffect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const webRequest = yield* HttpServerRequest.toWeb(request);
-        const workos = yield* WorkOSAuth;
-        const session = yield* workos.authenticateRequest(webRequest);
-        if (!session || !session.organizationId) {
-          return yield* new HttpResponseError({
-            status: 403,
-            code: "no_organization",
-            message: "No organization in session",
-          });
-        }
-        const org = yield* authorizeOrganization(session.userId, session.organizationId);
-        if (!org) {
-          return yield* new HttpResponseError({
-            status: 403,
-            code: "no_organization",
-            message: "No organization in session",
-          });
-        }
+        const identity = yield* resolveProtectedIdentity(webRequest);
         const auth = AuthContext.of({
-          accountId: session.userId,
-          organizationId: org.id,
-          email: session.email,
-          name: `${session.firstName ?? ""} ${session.lastName ?? ""}`.trim() || null,
-          avatarUrl: session.avatarUrl ?? null,
+          accountId: identity.accountId,
+          organizationId: identity.organizationId,
+          email: identity.email,
+          name: identity.name,
+          avatarUrl: identity.avatarUrl,
         });
-        const { executor, engine } = yield* makeExecutionStack(auth.accountId, org.id, org.name);
+        const { executor, engine } = yield* makeExecutionStack(
+          auth.accountId,
+          identity.organizationId,
+          identity.organizationName,
+        );
         return yield* httpEffect.pipe(
           Effect.provideService(AuthContext, auth),
           Effect.provideService(ExecutorService, executor),
@@ -118,6 +206,7 @@ export const makeProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreSe
   ).layer;
   return ProtectedCloudApiLive.pipe(
     Layer.provide(protectedMiddleware),
+    Layer.provideMerge(ApiKeyService.WorkOS),
     Layer.provideMerge(HttpApiSwagger.layer(ProtectedCloudApi, { path: "/docs" })),
     Layer.provideMerge(RouterConfig),
   );

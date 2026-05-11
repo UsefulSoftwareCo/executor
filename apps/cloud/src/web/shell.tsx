@@ -301,6 +301,10 @@ function UserFooter() {
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSeparator />
+            <DropdownMenuItem asChild className="text-xs">
+              <Link to="/api-keys">API keys</Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
               Signed in as
             </DropdownMenuLabel>

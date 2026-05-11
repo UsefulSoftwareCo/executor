@@ -2134,18 +2134,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
         }
 
         if (input.value.kind === "secret") {
+          const secretId = input.value.secretId;
           const secretScope = input.value.secretScopeId ?? input.targetScope;
           yield* assertScopeInStack("credential binding secretScope", secretScope);
           if (scopePrecedence.get(secretScope)! < scopePrecedence.get(input.targetScope)!) {
             return yield* new StorageError({
               message:
-                `Cannot bind secret "${input.value.secretId}" from scope "${secretScope}" ` +
+                `Cannot bind secret "${secretId}" from scope "${secretScope}" ` +
                 `to target scope "${input.targetScope}": shared bindings cannot reference inner-scope secrets.`,
               cause: undefined,
             });
           }
           const secret = yield* findSecretRowAtScope({
-            secretId: input.value.secretId,
+            secretId,
             scopeId: secretScope,
           });
           if (!secret) {
@@ -2162,7 +2163,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
                 const entries = yield* provider
                   .list()
                   .pipe(Effect.catch(() => Effect.succeed([] as const)));
-                const found = entries.find((e) => e.id === input.value.secretId);
+                const found = entries.find((e) => e.id === secretId);
                 if (found) name = found.name;
               }
               if (name === undefined) {
@@ -2170,16 +2171,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
                 // or no list() at all). Probe with get() — cheap for most
                 // backends — and use the id as the display name.
                 const value = yield* provider
-                  .get(input.value.secretId, secretScope)
+                  .get(secretId, secretScope)
                   .pipe(Effect.catch(() => Effect.succeed(null as string | null)));
-                if (value !== null) name = input.value.secretId;
+                if (value !== null) name = secretId;
               }
               if (name === undefined) continue;
               const now = new Date();
               yield* core.create({
                 model: "secret",
                 data: {
-                  id: input.value.secretId,
+                  id: secretId,
                   scope_id: secretScope,
                   name,
                   provider: key,
@@ -2194,7 +2195,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = []>
               const providerKeys = [...secretProviders.keys()];
               return yield* new StorageError({
                 message:
-                  `Cannot bind secret "${input.value.secretId}" at scope "${secretScope}": ` +
+                  `Cannot bind secret "${secretId}" at scope "${secretScope}": ` +
                   `no registered secret provider has an item with this id ` +
                   `(checked: ${providerKeys.join(", ") || "none"}). ` +
                   `If this id points to a 1Password item, the item may have been deleted, ` +

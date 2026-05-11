@@ -4,12 +4,14 @@ import { Duration, Effect } from "effect";
 import { setCookie, deleteCookie } from "@tanstack/react-start/server";
 
 import { AUTH_PATHS, CloudAuthApi, CloudAuthPublicApi } from "./api";
-import { SessionContext } from "./middleware";
+import { NoOrganization, SessionContext } from "./middleware";
 import { UserStoreService } from "./context";
 import { authorizeOrganization } from "./authorize-organization";
 import { env } from "cloudflare:workers";
+import { ApiKeyManagementError } from "./api-key-errors";
 import { WorkOSError } from "./errors";
 import { WorkOSAuth } from "./workos";
+import { ApiKeyService } from "./api-keys";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -48,6 +50,7 @@ const DELETE_COOKIE_OPTIONS = {
 };
 
 const MAX_ORGANIZATIONS_PER_USER = 3;
+const MAX_API_KEY_NAME_LENGTH = 80;
 
 const randomState = (): string => {
   const bytes = new Uint8Array(32);
@@ -63,6 +66,16 @@ const timingSafeEqual = (a: string, b: string): boolean => {
   }
   return diff === 0;
 };
+
+const requireSessionOrganization = Effect.gen(function* () {
+  const session = yield* SessionContext;
+  if (!session.organizationId) {
+    return yield* new NoOrganization();
+  }
+  const org = yield* authorizeOrganization(session.accountId, session.organizationId);
+  if (!org) return yield* new NoOrganization();
+  return { session, org };
+});
 
 const setResponseCookie = (
   response: HttpServerResponse.HttpServerResponse,
@@ -375,6 +388,47 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           setCookie("wos-session", refreshed, COOKIE_OPTIONS);
           return { id: org.id, name: org.name };
+        }),
+      )
+      .handle("listApiKeys", () =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireSessionOrganization;
+          const apiKeys = yield* ApiKeyService;
+          const keys = yield* apiKeys.listUserKeys({
+            accountId: session.accountId,
+            organizationId: org.id,
+          });
+          return { apiKeys: keys };
+        }),
+      )
+      .handle("createApiKey", ({ payload }) =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireSessionOrganization;
+          const name = payload.name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
+          if (!name) {
+            return yield* new ApiKeyManagementError({ cause: "missing_name" });
+          }
+
+          const apiKeys = yield* ApiKeyService;
+          return yield* apiKeys.createUserKey({
+            accountId: session.accountId,
+            organizationId: org.id,
+            name,
+          });
+        }),
+      )
+      .handle("revokeApiKey", ({ params }) =>
+        Effect.gen(function* () {
+          const { session, org } = yield* requireSessionOrganization;
+          const apiKeys = yield* ApiKeyService;
+          const ownedKeys = yield* apiKeys.listUserKeys({
+            accountId: session.accountId,
+            organizationId: org.id,
+          });
+          if (!ownedKeys.some((key) => key.id === params.apiKeyId)) {
+            return yield* new ApiKeyManagementError({ cause: "api_key_not_found" });
+          }
+          yield* apiKeys.revokeUserKey({ keyId: params.apiKeyId });
         }),
       ),
 );

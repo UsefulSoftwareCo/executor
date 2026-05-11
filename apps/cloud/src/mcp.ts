@@ -26,6 +26,7 @@ import {
   verifyWorkOSMcpAccessToken,
   type VerifiedToken,
 } from "./mcp-auth";
+import { ApiKeyService } from "./auth/api-keys";
 import { authorizeOrganization } from "./auth/authorize-organization";
 import { UserStoreService } from "./auth/context";
 import { CoreSharedServices } from "./api/core-shared-services";
@@ -148,41 +149,89 @@ export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
     ),
 });
 
-export const McpAuthLive = Layer.succeed(McpAuth)({
-  verifyBearer: Effect.fn("mcp.auth.verify_bearer")(function* (request) {
-    const authHeader = request.headers.get("authorization");
-    if (!authHeader?.startsWith(BEARER_PREFIX)) {
-      yield* Effect.annotateCurrentSpan({ "mcp.auth.outcome": "missing_bearer" });
-      return mcpUnauthorized("missing_bearer");
-    }
-    const verified = yield* verifyJwt(authHeader.slice(BEARER_PREFIX.length)).pipe(
-      Effect.catchTag("McpJwtVerificationError", (error) => {
-        if (error.reason === "system") return Effect.fail(error);
-        return Effect.gen(function* () {
-          yield* Effect.annotateCurrentSpan({
-            "mcp.auth.outcome": "invalid",
-            "mcp.auth.invalid_reason": error.reason,
-          });
-          return mcpUnauthorized(
-            "invalid_token",
-            error.reason === "expired" ? "The access token expired" : "The access token is invalid",
-          );
+const looksLikeJwt = (token: string): boolean => token.split(".").length === 3;
+
+export const McpAuthLive = Layer.effect(
+  McpAuth,
+  Effect.gen(function* () {
+    const apiKeys = yield* ApiKeyService;
+
+    const verifyApiKey = Effect.fn("mcp.auth.verify_api_key")(function* (token: string) {
+      const principal = yield* apiKeys.validate(token).pipe(
+        Effect.catchTag("ApiKeyValidationError", (error) =>
+          Effect.fail(
+            new McpJwtVerificationError({
+              cause: error.cause,
+              reason: "system",
+            }),
+          ),
+        ),
+      );
+      if (!principal) {
+        yield* Effect.annotateCurrentSpan({
+          "mcp.auth.outcome": "invalid",
+          "mcp.auth.invalid_reason": "api_key",
         });
-      }),
-    );
-    if (!verified) return mcpUnauthorized("invalid_token", "The access token is invalid");
-    if (Predicate.isTagged(verified, "Unauthorized")) return verified;
-    if (!verified.accountId) {
-      yield* Effect.annotateCurrentSpan({ "mcp.auth.outcome": "missing_subject" });
-      return mcpUnauthorized("invalid_token", "The access token is invalid");
-    }
-    yield* Effect.annotateCurrentSpan({
-      "mcp.auth.outcome": "verified",
-      "mcp.auth.has_organization": !!verified.organizationId,
+        return mcpUnauthorized("invalid_token", "The API key is invalid");
+      }
+
+      yield* Effect.annotateCurrentSpan({
+        "mcp.auth.outcome": "verified",
+        "mcp.auth.credential_type": "api_key",
+        "mcp.auth.has_organization": true,
+      });
+      return mcpAuthorized({
+        accountId: principal.accountId,
+        organizationId: principal.organizationId,
+      });
     });
-    return mcpAuthorized(verified);
+
+    const verifyJwtBearer = Effect.fn("mcp.auth.verify_jwt_bearer")(function* (token: string) {
+      const verified = yield* verifyJwt(token).pipe(
+        Effect.catchTag("McpJwtVerificationError", (error) => {
+          if (error.reason === "system") return Effect.fail(error);
+          return Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan({
+              "mcp.auth.outcome": "invalid",
+              "mcp.auth.invalid_reason": error.reason,
+            });
+            return mcpUnauthorized(
+              "invalid_token",
+              error.reason === "expired"
+                ? "The access token expired"
+                : "The access token is invalid",
+            );
+          });
+        }),
+      );
+      if (!verified) return mcpUnauthorized("invalid_token", "The access token is invalid");
+      if (Predicate.isTagged(verified, "Unauthorized")) return verified;
+      if (!verified.accountId) {
+        yield* Effect.annotateCurrentSpan({ "mcp.auth.outcome": "missing_subject" });
+        return mcpUnauthorized("invalid_token", "The access token is invalid");
+      }
+      yield* Effect.annotateCurrentSpan({
+        "mcp.auth.outcome": "verified",
+        "mcp.auth.credential_type": "jwt",
+        "mcp.auth.has_organization": !!verified.organizationId,
+      });
+      return mcpAuthorized(verified);
+    });
+
+    return {
+      verifyBearer: Effect.fn("mcp.auth.verify_bearer")(function* (request) {
+        const authHeader = request.headers.get("authorization");
+        if (!authHeader?.startsWith(BEARER_PREFIX)) {
+          yield* Effect.annotateCurrentSpan({ "mcp.auth.outcome": "missing_bearer" });
+          return mcpUnauthorized("missing_bearer");
+        }
+        const token = authHeader.slice(BEARER_PREFIX.length).trim();
+        if (!token) return mcpUnauthorized("invalid_token", "The bearer token is invalid");
+        return yield* looksLikeJwt(token) ? verifyJwtBearer(token) : verifyApiKey(token);
+      }),
+    };
   }),
-});
+);
 
 // ---------------------------------------------------------------------------
 // Client fingerprint capture
@@ -708,7 +757,17 @@ export const mcpApp: Effect.Effect<
 );
 
 const rawMcpFetch = HttpEffect.toWebHandler(
-  mcpApp.pipe(Effect.provide(Layer.mergeAll(McpAuthLive, McpOrganizationAuthLive, TelemetryLive))),
+  mcpApp.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        McpAuthLive.pipe(
+          Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices))),
+        ),
+        McpOrganizationAuthLive,
+        TelemetryLive,
+      ),
+    ),
+  ),
 );
 
 /**

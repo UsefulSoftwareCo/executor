@@ -767,6 +767,7 @@ describe("credential bindings", () => {
           adapter,
           blobs,
           plugins,
+          onElicitation: "accept-all",
         });
         yield* orgExecutor.credentialTest.registerSource(scopes.org.id);
 
@@ -775,6 +776,7 @@ describe("credential bindings", () => {
           adapter,
           blobs,
           plugins,
+          onElicitation: "accept-all",
         });
 
         const binding = yield* userExecutor.credentialBindings.set({

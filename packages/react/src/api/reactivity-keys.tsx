@@ -28,6 +28,7 @@ export const ReactivityKey = {
   orgMembers: "org:members",
   orgDomains: "org:domains",
   orgInfo: "org:info",
+  apiKeys: "api-keys",
   auth: "auth",
 } as const;
 
@@ -59,6 +60,9 @@ export const orgDomainWriteKeys = [ReactivityKey.orgDomains] as const;
 
 /** Cloud-only: org info mutations (name, etc.) — also touches scope/auth. */
 export const orgInfoWriteKeys = [ReactivityKey.orgInfo, ReactivityKey.auth] as const;
+
+/** Cloud-only: user API key mutations. */
+export const apiKeyWriteKeys = [ReactivityKey.apiKeys] as const;
 
 /** Cloud-only: auth mutations (org switch/create) — invalidate everything user-visible. */
 export const authWriteKeys = [

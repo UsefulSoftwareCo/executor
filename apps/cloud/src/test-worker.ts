@@ -28,10 +28,12 @@ import {
   mcpApp,
   mcpUnauthorized,
 } from "./mcp";
+import { ApiKeyService } from "./auth/api-keys";
 import { McpJwtVerificationError } from "./mcp-auth";
 import { organizations } from "./services/schema";
 import { parseTestBearer } from "./test-bearer";
 import { DoTelemetryLive } from "./services/telemetry";
+import { CoreSharedServices } from "./api/core-shared-services";
 
 export { McpSessionDO } from "./mcp-session";
 
@@ -115,7 +117,15 @@ const testMcpFetch = HttpEffect.toWebHandler(
 
 const realAuthMcpFetch = HttpEffect.toWebHandler(
   mcpApp.pipe(
-    Effect.provide(Layer.mergeAll(McpAuthLive, McpOrganizationAuthLive, DoTelemetryLive)),
+    Effect.provide(
+      Layer.mergeAll(
+        McpAuthLive.pipe(
+          Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices))),
+        ),
+        McpOrganizationAuthLive,
+        DoTelemetryLive,
+      ),
+    ),
   ),
 );
 
