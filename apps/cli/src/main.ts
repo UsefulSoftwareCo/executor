@@ -1144,7 +1144,7 @@ const resolveToolInvocation = (input: {
 const callCommand = Command.make(
   "call",
   {
-    pathParts: Args.variadic(Args.string("tool-path-segment")),
+    pathParts: Args.string("tool-path-segment").pipe(Args.variadic()),
     baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
