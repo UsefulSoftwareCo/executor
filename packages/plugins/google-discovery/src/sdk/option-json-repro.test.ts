@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import { Effect, FileSystem, Option, Schema } from "effect";
+import { Effect, Exit, FileSystem, Option, Schema } from "effect";
 
 const Broken = Schema.Struct({ description: Schema.Option(Schema.String) });
 const Fixed = Schema.Struct({ description: Schema.OptionFromOptional(Schema.String) });
@@ -59,7 +59,7 @@ describe("Schema.Option round-trips through Effect-native JSON I/O", () => {
         // Step 6: decode the unknown back through the schema → fails,
         // because the wire shape isn't an Option instance.
         const result = yield* Effect.exit(Schema.decodeUnknownEffect(Broken)(parsed));
-        expect(result._tag).toBe("Failure");
+        expect(Exit.isFailure(result)).toBe(true);
       }),
     ),
   );
