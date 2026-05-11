@@ -4,6 +4,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import YAML from "yaml";
 
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
+import { isGoogleDiscovery, convertGoogleDiscoveryToOpenApi } from "./discovery";
 
 export type ParsedDocument = OpenAPIV3.Document | OpenAPIV3_1.Document;
 
@@ -120,6 +121,10 @@ const parseTextToObject = (text: string): Effect.Effect<OpenAPI.Document, OpenAp
       return yield* new OpenApiParseError({
         message: "OpenAPI document must parse to an object",
       });
+    }
+
+    if (isGoogleDiscovery(parsed)) {
+      return convertGoogleDiscoveryToOpenApi(parsed) as OpenAPI.Document;
     }
 
     return parsed as OpenAPI.Document;

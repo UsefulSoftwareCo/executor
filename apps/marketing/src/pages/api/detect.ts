@@ -3,7 +3,6 @@ import { Effect } from "effect";
 import { createExecutor, makeTestConfig, type Tool } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
-import { googleDiscoveryHttpPlugin } from "@executor-js/plugin-google-discovery/api";
 
 export const prerender = false;
 

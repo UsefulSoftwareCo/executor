@@ -24,7 +24,6 @@ const allPresets = [
   ...openApiPresets.map((p) => ({ ...p, plugin: "openapi" as const })),
   ...mcpPresets.map((p) => ({ ...p, plugin: "mcp" as const })),
   ...graphqlPresets.map((p) => ({ ...p, plugin: "graphql" as const })),
-  ...googleDiscoveryPresets.map((p) => ({ ...p, plugin: "google-discovery" as const })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -203,7 +202,6 @@ describe("public preset URLs are detected by the correct plugin", () => {
             openapi: "openapi",
             mcp: "mcp",
             graphql: "graphql",
-            "google-discovery": "googleDiscovery",
           };
           const best = results[0]!;
           expect(best.kind).toBe(expectedKinds[preset.plugin]);

@@ -12,7 +12,6 @@
       "@executor-js/config",
       "@executor-js/cli",
       "@executor-js/plugin-file-secrets",
-      "@executor-js/plugin-google-discovery",
       "@executor-js/plugin-graphql",
       "@executor-js/plugin-keychain",
       "@executor-js/plugin-mcp",

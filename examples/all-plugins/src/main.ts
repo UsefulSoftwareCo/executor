@@ -31,7 +31,6 @@ import {
 import { makeMemoryAdapter } from "@executor-js/storage-core/testing/memory";
 
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
-import { googleDiscoveryPlugin } from "@executor-js/plugin-google-discovery";
 import { graphqlPlugin } from "@executor-js/plugin-graphql";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { mcpPlugin } from "@executor-js/plugin-mcp";
@@ -65,7 +64,6 @@ const plugins = [
   // register tools dynamically when the user adds a spec / connects
   // to a server / runs discovery.
   graphqlPlugin(),
-  googleDiscoveryPlugin(),
   mcpPlugin({ dangerouslyAllowStdioMCP: false }),
   openApiPlugin(),
 

@@ -41,9 +41,6 @@ const config: KnipConfig = {
     "packages/plugins/file-secrets": {
       includeEntryExports: true,
     },
-    "packages/plugins/google-discovery": {
-      includeEntryExports: true,
-    },
     "packages/plugins/onepassword": {
       includeEntryExports: true,
       ignoreDependencies: ["@executor-js/react"],

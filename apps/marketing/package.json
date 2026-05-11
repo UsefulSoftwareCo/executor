@@ -16,7 +16,6 @@
   "dependencies": {
     "@astrojs/cloudflare": "^13.0.0",
     "@astrojs/react": "^5.0.4",
-    "@executor-js/plugin-google-discovery": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/react": "workspace:*",
