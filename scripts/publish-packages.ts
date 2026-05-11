@@ -287,12 +287,7 @@ const publishPackage = async (
     throw new Error(`Missing dist/ in ${pkgDir}. Did you run 'bun run build:packages'?`);
   }
 
-  if (await packageAlreadyPublished(name, version)) {
-    console.log(`[skip] ${name}@${version} already on npm`);
-    return;
-  }
-
-  console.log(`[publish] ${name}@${version} (${channel})${dryRun ? " [dry-run]" : ""}`);
+  console.log(`[pack] ${name}@${version} (${channel})${dryRun ? " [dry-run]" : ""}`);
 
   // Clean any stale tarballs from previous runs so our readdir finds exactly
   // the archive produced by the pack below.
@@ -325,6 +320,15 @@ const publishPackage = async (
   if (dryRun) {
     return;
   }
+
+  // Skip publishing already-shipped versions. The pack still ran above so
+  // smoke tests / pkg-pr-new previews always have a fresh tarball.
+  if (await packageAlreadyPublished(name, version)) {
+    console.log(`[skip] ${name}@${version} already on npm`);
+    return;
+  }
+
+  console.log(`[publish] ${name}@${version} (${channel})`);
 
   const args = ["publish", tarball, "--access", "public", "--tag", channel];
   if (process.env.GITHUB_ACTIONS === "true") {

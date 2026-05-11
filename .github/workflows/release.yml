@@ -65,6 +65,10 @@ jobs:
           # secret is configured.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
+      - name: Smoke test packed @executor-js library packages
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: bun run release:smoke:packages
+
       - name: Publish @executor-js library packages
         if: steps.changesets.outputs.hasChangesets == 'false'
         run: bun run release:publish:packages

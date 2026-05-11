@@ -57,6 +57,7 @@
     "release:publish:packages": "bun run scripts/publish-packages.ts",
     "release:publish:packages:dry-run": "bun run scripts/publish-packages.ts --dry-run",
     "release:publish:packages:prepare": "bun run scripts/publish-packages.ts --prepare-only",
+    "release:smoke:packages": "bun run scripts/smoke-test-packed.ts",
     "clean": "bun run scripts/clean.ts",
     "prepare": "effect-language-service patch && effect-tsgo patch"
   },
