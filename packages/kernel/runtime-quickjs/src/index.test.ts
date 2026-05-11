@@ -160,6 +160,22 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it.effect("applies a memory limit by default", () =>
+    Effect.gen(function* () {
+      const defaultExecutor = makeQuickJsExecutor({ timeoutMs: 5_000 });
+
+      const result = yield* defaultExecutor.execute(
+        `
+        return new ArrayBuffer(128 * 1024 * 1024).byteLength;
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.result).toBeNull();
+      expect(result.error).toBeDefined();
+    }),
+  );
+
   it.effect("passes tool result into next tool call", () =>
     Effect.gen(function* () {
       const invoker = makeTestInvoker({

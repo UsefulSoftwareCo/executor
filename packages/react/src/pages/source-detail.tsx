@@ -166,12 +166,6 @@ export function SourceDetailPage(props: { namespace: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {editPlugin?.signIn && !editing && !confirmDelete && (
-            <Suspense fallback={null}>
-              <editPlugin.signIn sourceId={namespace} />
-            </Suspense>
-          )}
-
           {canEdit && editPlugin && !editing && !confirmDelete && (
             <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
               Edit

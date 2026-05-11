@@ -25,12 +25,9 @@ import {
   CredentialTargetScopeSelector,
   type CredentialTargetScopeOption,
 } from "./credential-target-scope";
+import { secretsForCredentialTarget } from "./secret-credential-scope";
 
-export const secretsForCredentialTarget = (
-  secrets: readonly SecretPickerSecret[],
-  targetScope: ScopeId,
-): readonly SecretPickerSecret[] =>
-  secrets.filter((secret) => secret.scopeId === String(targetScope));
+export { secretsForCredentialTarget };
 
 export interface HeaderAuthPreset {
   readonly key: string;

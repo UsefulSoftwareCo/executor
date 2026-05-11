@@ -9,6 +9,7 @@ import {
   Scope,
   ScopeId,
   SecretId,
+  SetSecretInput,
   TokenMaterial,
   createExecutor,
   definePlugin,
@@ -174,6 +175,114 @@ describe("core API explicit target scopes", () => {
         where: [{ field: "id", value: connectionId }],
       })) as ReadonlyArray<{ readonly scope_id: string }>;
       expect(rows.map((row) => row.scope_id).sort()).toEqual([String(userScope)]);
+    }),
+  );
+
+  it.effect("OAuth start requires the route scope to match the requested token scope", () =>
+    Effect.gen(function* () {
+      const userScope = ScopeId.make("api-user");
+      const orgScope = ScopeId.make("api-org");
+      const config = makeTestConfig({
+        scopes: [scope(userScope, "user"), scope(orgScope, "org")],
+        plugins: [memorySecretsPlugin(), connectionProviderPlugin()] as const,
+      });
+      const executor = yield* createExecutor(config);
+      const web = yield* webHandlerFor(executor);
+      const context = handlerContextFor(executor);
+
+      const response = yield* Effect.promise(() =>
+        web.handler(
+          new Request(`http://localhost/scopes/${userScope}/oauth/start`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              endpoint: "https://api.example.com",
+              redirectUrl: "https://app.example.com/oauth/callback",
+              connectionId: "example-oauth",
+              tokenScope: orgScope,
+              pluginId: "test-connection-provider",
+              strategy: {
+                kind: "authorization-code",
+                authorizationEndpoint: "https://auth.example.com/oauth/authorize",
+                tokenEndpoint: "https://auth.example.com/oauth/token",
+                clientIdSecretId: "client-id",
+                clientSecretSecretId: null,
+                scopes: [],
+              },
+            }),
+          }),
+          context,
+        ),
+      );
+
+      expect(response.status).toBe(400);
+      const sessions = yield* config.adapter.findMany({ model: "oauth2_session" });
+      expect(sessions).toEqual([]);
+    }),
+  );
+
+  it.effect("OAuth complete requires the route scope to match the pending session scope", () =>
+    Effect.gen(function* () {
+      const userScope = ScopeId.make("api-user");
+      const orgScope = ScopeId.make("api-org");
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          scopes: [scope(userScope, "user"), scope(orgScope, "org")],
+          plugins: [memorySecretsPlugin(), connectionProviderPlugin()] as const,
+        }),
+      );
+      const web = yield* webHandlerFor(executor);
+      const context = handlerContextFor(executor);
+
+      yield* executor.secrets.set(
+        new SetSecretInput({
+          id: SecretId.make("client-id"),
+          scope: userScope,
+          name: "Client ID",
+          value: "client-id-value",
+        }),
+      );
+      const started = yield* executor.oauth.start({
+        endpoint: "https://api.example.com",
+        redirectUrl: "https://app.example.com/oauth/callback",
+        connectionId: "example-oauth",
+        tokenScope: String(userScope),
+        pluginId: "test-connection-provider",
+        strategy: {
+          kind: "authorization-code",
+          authorizationEndpoint: "https://auth.example.com/oauth/authorize",
+          tokenEndpoint: "https://auth.example.com/oauth/token",
+          clientIdSecretId: "client-id",
+          clientSecretSecretId: null,
+          scopes: [],
+        },
+      });
+
+      const response = yield* Effect.promise(() =>
+        web.handler(
+          new Request(`http://localhost/scopes/${orgScope}/oauth/complete`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ state: started.sessionId, code: "code" }),
+          }),
+          context,
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      const row = yield* executor.oauth
+        .complete({
+          state: started.sessionId,
+          tokenScope: String(orgScope),
+          error: "cancelled",
+        })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => error,
+            onSuccess: () => null,
+          }),
+        );
+      expect(row).toMatchObject({ _tag: "OAuthSessionNotFoundError" });
     }),
   );
 });

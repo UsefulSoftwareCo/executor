@@ -42,7 +42,7 @@ import { discoverTools } from "./discover";
 import { McpConnectionError, McpInvocationError, McpToolDiscoveryError } from "./errors";
 import { invokeMcpTool } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifest, type McpToolManifestEntry } from "./manifest";
-import { probeMcpEndpointShape } from "./probe-shape";
+import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
 import {
   MCP_HEADER_AUTH_SLOT,
   MCP_OAUTH_CLIENT_ID_SLOT,
@@ -122,6 +122,7 @@ export type McpSourceConfig = McpRemoteSourceConfig | McpStdioSourceConfig;
 export interface McpProbeResult {
   readonly connected: boolean;
   readonly requiresOAuth: boolean;
+  readonly supportsDynamicRegistration: boolean;
   readonly name: string;
   readonly namespace: string;
   readonly toolCount: number | null;
@@ -193,6 +194,34 @@ const toBinding = (entry: McpToolManifestEntry): McpToolBinding =>
   });
 
 const MCP_PLUGIN_ID = "mcp";
+
+/** Match `token` as a separator-bounded run inside a URL hostname or path,
+ *  used as a low-confidence detection hint when wire-shape detection fails.
+ *  Boundary chars are everything non-alphanumeric, so `/api/mcp`,
+ *  `mcp.example.com`, `mcp-server`, and `mcp_v1` all match while
+ *  `mcphost.com` and `/mcpstore` do not. */
+const urlMatchesToken = (url: URL, token: string): boolean => {
+  const re = new RegExp(`(?:^|[^a-z0-9])${token}(?:$|[^a-z0-9])`, "i");
+  return re.test(url.hostname) || re.test(url.pathname);
+};
+
+/** Translate a non-MCP probe outcome into a message a user can act on.
+ *  The technical `reason` (`401 without Bearer WWW-Authenticate — not an
+ *  MCP auth challenge`, etc.) stays in telemetry via the probe span; the
+ *  user gets a sentence pointing at their next step. Exported for tests. */
+export const userFacingProbeMessage = (
+  shape: Extract<McpShapeProbeResult, { kind: "not-mcp" } | { kind: "unreachable" }>,
+): string => {
+  if (shape.kind === "unreachable") {
+    return "Couldn't reach this URL. Check the address, your network, and that the server is running.";
+  }
+  switch (shape.category) {
+    case "auth-required":
+      return "This server requires authentication. Add credentials (Authorization header, query parameter, or API key) below and retry.";
+    case "wrong-shape":
+      return "This URL doesn't appear to host an MCP server. Double-check the address, including the path.";
+  }
+};
 
 const scopeRanks = (ctx: PluginCtx<McpBindingStore>): ReadonlyMap<string, number> =>
   new Map(ctx.scopes.map((scope, index) => [String(scope.id), index]));
@@ -1019,6 +1048,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return {
               connected: true,
               requiresOAuth: false,
+              supportsDynamicRegistration: false,
               name: result.manifest.server?.name ?? name,
               namespace,
               toolCount: result.manifest.tools.length,
@@ -1040,10 +1070,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           if (shape.kind !== "mcp") {
             return yield* new McpConnectionError({
               transport: "remote",
-              message:
-                shape.kind === "not-mcp"
-                  ? `Endpoint does not look like an MCP server: ${shape.reason}`
-                  : `Could not reach endpoint: ${shape.reason}`,
+              message: userFacingProbeMessage(shape),
             });
           }
 
@@ -1054,15 +1081,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               queryParams: probeQueryParams,
             })
             .pipe(
-              Effect.map(() => true),
-              Effect.catch(() => Effect.succeed(false)),
+              Effect.map((oauth) => ({ ok: true as const, oauth })),
+              Effect.catch(() => Effect.succeed({ ok: false as const, oauth: null })),
               Effect.withSpan("mcp.plugin.probe_oauth"),
             );
 
-          if (probeResult) {
+          if (probeResult.ok) {
             return {
               connected: false,
               requiresOAuth: true,
+              supportsDynamicRegistration: probeResult.oauth.supportsDynamicRegistration,
               name,
               namespace,
               toolCount: null,
@@ -1072,7 +1100,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           return yield* new McpConnectionError({
             transport: "remote",
-            message: "MCP server requires authentication but OAuth discovery failed",
+            message:
+              "This server requires authentication, but OAuth metadata wasn't found. Add credentials (Authorization header, query parameter, or API key) below and retry.",
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
@@ -1581,6 +1610,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           toolName: entry.binding.toolName,
           args,
           sourceData: sd,
+          sourceId: entry.namespace,
+          sourceScope: toolScope,
           invokerScope: ctx.scopes[0]!.id,
           resolveConnector: () =>
             resolveConnectorInput(entry.namespace, toolScope, sd, ctx, allowStdio).pipe(
@@ -1657,30 +1688,41 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }
 
-        // host publishes RFC 9728 + 8414 metadata) would be classified
-        // as MCP whenever the cross-plugin detector fans out to us.
+        // The shape probe inspects the JSON-RPC `initialize` response
+        // and only classifies as MCP when the wire shape is
+        // unambiguous (2xx + JSON-RPC body, 2xx SSE, or 401 + Bearer +
+        // JSON-RPC error envelope). That body-shape gate is what
+        // separates real MCP servers — including those that
+        // authenticate with static API keys and publish no OAuth
+        // metadata — from unrelated OAuth-protected services whose
+        // host happens to expose RFC 9728/8414 documents.
         const shape = yield* probeMcpEndpointShape(trimmed, { httpClientLayer });
-        if (shape.kind !== "mcp") return null;
+        if (shape.kind === "mcp") {
+          return new SourceDetectionResult({
+            kind: "mcp",
+            confidence: "high",
+            endpoint: trimmed,
+            name,
+            namespace,
+          });
+        }
 
-        // Confirm OAuth metadata is actually reachable. The shape
-        // probe already found a Bearer challenge; the core OAuth
-        // service's probe verifies the AS metadata resolves so we
-        // don't classify endpoints that challenge but have no
-        // discovery.
-        const probeOk = yield* ctx.oauth.probe({ endpoint: trimmed }).pipe(
-          Effect.map(() => true),
-          Effect.catch(() => Effect.succeed(false)),
-          Effect.withSpan("mcp.plugin.probe_oauth"),
-        );
-        if (!probeOk) return null;
+        // Low-confidence URL-token fallback. When wire-shape detection
+        // can't confirm MCP (server unreachable, behind unusual auth,
+        // returns a non-canonical body, etc.) but the URL itself is a
+        // strong hint, surface a candidate so the user can still pick
+        // it from the detect dropdown rather than getting nothing.
+        if (urlMatchesToken(parsed.value, "mcp")) {
+          return new SourceDetectionResult({
+            kind: "mcp",
+            confidence: "low",
+            endpoint: trimmed,
+            name,
+            namespace,
+          });
+        }
 
-        return new SourceDetectionResult({
-          kind: "mcp",
-          confidence: "high",
-          endpoint: trimmed,
-          name,
-          namespace,
-        });
+        return null;
       }).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.withSpan("mcp.plugin.detect", {

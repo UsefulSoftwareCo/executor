@@ -7,7 +7,7 @@ import { OpenApiParseError, OpenApiExtractionError, OpenApiOAuthError } from "..
 import { SpecPreview } from "../sdk/preview";
 import { StoredSourceSchema } from "../sdk/store";
 import {
-  OAuth2SourceConfig,
+  OAuth2SourceConfigSchema,
   OpenApiSourceBindingInputSchema,
   OpenApiSourceBindingRef,
 } from "../sdk/types";
@@ -74,7 +74,7 @@ const AddSpecPayload = Schema.Struct({
   namespace: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, OpenApiCredentialInputPayload)),
   queryParams: Schema.optional(Schema.Record(Schema.String, OpenApiCredentialInputPayload)),
-  oauth2: Schema.optional(OAuth2SourceConfig),
+  oauth2: Schema.optional(OAuth2SourceConfigSchema),
 });
 
 const PreviewSpecPayload = Schema.Struct({
@@ -91,7 +91,7 @@ const UpdateSourcePayload = Schema.Struct({
   credentialTargetScope: Schema.optional(ScopeId),
   // Set after a successful re-authenticate to refresh the source's
   // stored OAuth2 metadata.
-  oauth2: Schema.optional(OAuth2SourceConfig),
+  oauth2: Schema.optional(OAuth2SourceConfigSchema),
 });
 
 const UpdateSourceResponse = Schema.Struct({

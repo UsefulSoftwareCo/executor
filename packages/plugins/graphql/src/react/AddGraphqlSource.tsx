@@ -16,7 +16,6 @@ import {
 import {
   sourceDisplayNameFromUrl,
   slugifyNamespace,
-  SourceIdentityFieldRows,
   useSourceIdentity,
 } from "@executor-js/react/plugins/source-identity";
 import {
@@ -33,16 +32,11 @@ import {
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import { Button } from "@executor-js/react/components/button";
 import { FilterTabs } from "@executor-js/react/components/filter-tabs";
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntryField,
-} from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
-import { Input } from "@executor-js/react/components/input";
 import { Spinner } from "@executor-js/react/components/spinner";
 import { addGraphqlSourceOptimistic } from "./atoms";
 import { initialGraphqlCredentials } from "./defaults";
+import { GraphqlSourceFields } from "./GraphqlSourceFields";
 import type { GraphqlCredentialInput } from "../sdk/types";
 
 const ErrorMessage = Schema.Struct({ message: Schema.String });
@@ -181,22 +175,7 @@ export default function AddGraphqlSource(props: {
     <div className="flex flex-1 flex-col gap-6">
       <h1 className="text-xl font-semibold text-foreground">Add GraphQL Source</h1>
 
-      <CardStack>
-        <CardStackContent className="border-t-0">
-          <CardStackEntryField
-            label="Endpoint"
-            hint="The endpoint will be introspected to discover available queries and mutations."
-          >
-            <Input
-              value={endpoint}
-              onChange={(e) => setEndpoint((e.target as HTMLInputElement).value)}
-              placeholder="https://api.example.com/graphql"
-              className="font-mono text-sm"
-            />
-          </CardStackEntryField>
-          <SourceIdentityFieldRows identity={identity} namePlaceholder="e.g. Shopify API" />
-        </CardStackContent>
-      </CardStack>
+      <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
 
       <HttpCredentialsEditor
         credentials={credentials}

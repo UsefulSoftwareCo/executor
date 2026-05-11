@@ -259,6 +259,7 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       blobs,
       plugins,
       onElicitation: "accept-all",
+      oauthEndpointUrlPolicy: { allowHttp: true },
     }),
   );
 

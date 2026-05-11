@@ -26,16 +26,23 @@ export const CredentialBindingValue = Schema.Union([
 ]);
 export type CredentialBindingValue = typeof CredentialBindingValue.Type;
 
-export class ConfiguredCredentialBinding extends Schema.Class<ConfiguredCredentialBinding>(
-  "ConfiguredCredentialBinding",
-)({
+export const ConfiguredCredentialBindingSchema = Schema.Struct({
   kind: Schema.Literal("binding"),
   slot: Schema.String,
   prefix: Schema.optional(Schema.String),
-}) {}
+});
+
+export class ConfiguredCredentialBinding extends Schema.Class<ConfiguredCredentialBinding>(
+  "ConfiguredCredentialBinding",
+)(ConfiguredCredentialBindingSchema.fields) {}
 
 export const ConfiguredCredentialValue = Schema.Union([Schema.String, ConfiguredCredentialBinding]);
 export type ConfiguredCredentialValue = typeof ConfiguredCredentialValue.Type;
+
+export const ConfiguredCredentialValueSchema = Schema.Union([
+  Schema.String,
+  ConfiguredCredentialBindingSchema,
+]);
 
 export const ScopedSecretCredentialInput = Schema.Struct({
   secretId: Schema.String,

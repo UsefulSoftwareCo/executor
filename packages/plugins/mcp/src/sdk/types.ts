@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import {
-  ConfiguredCredentialValue as ConfiguredCredentialValueSchema,
+  ConfiguredCredentialValueSchema,
   CredentialBindingValue,
   credentialSlotKey,
   ScopedSecretCredentialInput,
@@ -89,15 +89,17 @@ export type McpConnectionAuthInput = typeof McpConnectionAuthInput.Type;
 export const McpSourceBindingValue = CredentialBindingValue;
 export type McpSourceBindingValue = typeof McpSourceBindingValue.Type;
 
-export class McpSourceBindingInput extends Schema.Class<McpSourceBindingInput>(
-  "McpSourceBindingInput",
-)({
+export const McpSourceBindingInputSchema = Schema.Struct({
   sourceId: Schema.String,
   sourceScope: ScopeId,
   scope: ScopeId,
   slot: Schema.String,
   value: McpSourceBindingValue,
-}) {}
+});
+
+export class McpSourceBindingInput extends Schema.Class<McpSourceBindingInput>(
+  "McpSourceBindingInput",
+)(McpSourceBindingInputSchema.fields) {}
 
 export class McpSourceBindingRef extends Schema.Class<McpSourceBindingRef>("McpSourceBindingRef")({
   sourceId: Schema.String,

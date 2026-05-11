@@ -4,12 +4,14 @@ import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { AutumnProvider } from "autumn-js/react";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
+import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { Skeleton } from "@executor-js/react/components/skeleton";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { AuthProvider, useAuth } from "../web/auth";
+import { SupportOptions } from "../web/components/support-options";
 import { LoginPage } from "../web/pages/login";
 import { OnboardingPage } from "../web/pages/onboarding";
 import { Shell } from "../web/shell";
@@ -37,8 +39,29 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
     ui_host: "https://us.posthog.com",
     defaults: "2025-05-24",
     person_profiles: "identified_only",
+    disable_session_recording: false,
+    session_recording: {
+      maskAllInputs: true,
+      maskTextSelector: "[data-ph-mask]",
+      blockSelector: "[data-ph-block]",
+    },
   });
 }
+
+const captureFrontendError: FrontendErrorReporter = (error, context) => {
+  Sentry.captureException(error, (scope) => {
+    scope.setTag("executor.ui.surface", context.surface);
+    scope.setTag("executor.ui.action", context.action);
+    scope.setTag("executor.ui.severity", context.severity ?? "error");
+    scope.setContext("executor.ui", {
+      surface: context.surface,
+      action: context.action,
+      message: context.message,
+      metadata: context.metadata,
+    });
+    return scope;
+  });
+};
 
 export const Route = createRootRoute({
   head: () => ({
@@ -151,6 +174,28 @@ function ShellSkeleton() {
   );
 }
 
+function ShellErrorFallback() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6 py-10">
+      <section className="w-full max-w-md text-center">
+        <div className="mx-auto mb-5 flex size-11 items-center justify-center rounded-full border border-border bg-muted">
+          <span className="text-lg font-semibold text-muted-foreground">!</span>
+        </div>
+        <h1 className="text-xl font-semibold text-foreground">Something went wrong</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          We&apos;ve tracked it. Give refreshing a try, and get in touch if support is needed.
+        </p>
+        <p className="mt-6 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Get support
+        </p>
+        <div className="mt-3">
+          <SupportOptions />
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function AuthGate() {
   const auth = useAuth();
 
@@ -168,12 +213,14 @@ function AuthGate() {
 
   return (
     <AutumnProvider pathPrefix="/api/autumn">
-      <ExecutorProvider fallback={<ShellSkeleton />}>
-        <ExecutorPluginsProvider plugins={clientPlugins}>
-          <Shell />
-          <Toaster />
-        </ExecutorPluginsProvider>
-      </ExecutorProvider>
+      <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
+        <ExecutorProvider fallback={<ShellSkeleton />} onHandledError={captureFrontendError}>
+          <ExecutorPluginsProvider plugins={clientPlugins}>
+            <Shell />
+            <Toaster />
+          </ExecutorPluginsProvider>
+        </ExecutorProvider>
+      </Sentry.ErrorBoundary>
     </AutumnProvider>
   );
 }

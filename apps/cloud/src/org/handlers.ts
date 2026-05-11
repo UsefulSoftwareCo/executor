@@ -8,6 +8,7 @@ import { WorkOSAuth } from "../auth/workos";
 import { AutumnService } from "../services/autumn";
 import { OrgHttpApi } from "./compose";
 import { Forbidden } from "./api";
+import { getMemberLimitForPlan, selectActiveMemberLimitPlan } from "./member-limits";
 
 const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
@@ -52,17 +53,6 @@ const assertDomainInSessionOrg = (domainId: string) =>
     }
   });
 
-// Per-plan member limits live in code, not Autumn. Members aren't billable
-// usage — they're a permission attached to the plan. We still ask Autumn
-// which plan the org is on (Autumn is the billing source of truth), but
-// the cap itself is a constant here. `null` = unlimited.
-const MEMBER_LIMITS: Record<string, number | null> = {
-  free: 3,
-  "free-pay-as-you-go": 3,
-  team: null,
-};
-const DEFAULT_MEMBER_LIMIT = 3;
-
 // Compute live seat usage from WorkOS truth (active+pending memberships +
 // pending invitations) and look up the per-plan cap from MEMBER_LIMITS.
 // Recomputed on every call — no event-counting drift.
@@ -74,8 +64,8 @@ const getMemberSeats = (organizationId: string) =>
     const customer = yield* autumn.use((client) =>
       client.customers.getOrCreate({ customerId: organizationId }),
     );
-    const planId = customer.subscriptions[0]?.planId ?? "free";
-    const limit = planId in MEMBER_LIMITS ? MEMBER_LIMITS[planId] : DEFAULT_MEMBER_LIMIT;
+    const planId = selectActiveMemberLimitPlan(customer.subscriptions);
+    const limit = getMemberLimitForPlan(planId);
 
     const memberships = yield* workos.listOrgMembers(organizationId);
     const invitations = yield* workos.listPendingInvitations(organizationId);
@@ -258,7 +248,7 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
               featureId: "domain-verification",
             }),
           )
-          .pipe(Effect.orElseSucceed(() => ({ allowed: true })));
+          .pipe(Effect.orElseSucceed(() => ({ allowed: false })));
 
         if (!check.allowed) {
           return yield* new Forbidden();

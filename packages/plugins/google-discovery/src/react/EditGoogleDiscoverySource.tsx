@@ -5,6 +5,7 @@ import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 
 import { googleDiscoverySourceAtom } from "./atoms";
+import GoogleDiscoverySignInButton from "./GoogleDiscoverySignInButton";
 
 export default function EditGoogleDiscoverySource({
   sourceId,
@@ -63,9 +64,12 @@ export default function EditGoogleDiscoverySource({
             <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">
               Authentication
             </p>
-            <p className="text-sm font-medium text-foreground capitalize">
-              {authKind === "oauth2" ? "OAuth 2.0" : authKind}
-            </p>
+            <div className="flex min-h-9 items-center justify-between gap-3">
+              <p className="text-sm font-medium text-foreground capitalize">
+                {authKind === "oauth2" ? "OAuth 2.0" : authKind}
+              </p>
+              {authKind === "oauth2" && <GoogleDiscoverySignInButton sourceId={sourceId} />}
+            </div>
           </div>
         </div>
       )}

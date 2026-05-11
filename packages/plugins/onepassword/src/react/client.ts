@@ -3,5 +3,5 @@ import { getBaseUrl } from "@executor-js/react/api/base-url";
 import { OnePasswordGroup } from "../api/group";
 
 export const OnePasswordClient = createPluginAtomClient(OnePasswordGroup, {
-  baseUrl: getBaseUrl(),
+  baseUrl: getBaseUrl,
 });

@@ -70,10 +70,11 @@ describe("buildExecuteDescription", () => {
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
       // The namespaces section header.
       expect(description).toContain("## Available namespaces");
-      // Each source renders with its ACTUAL id (not pluginId / name / UUID).
-      expect(description).toContain("`github` — GitHub");
-      expect(description).toContain("`slack` — Slack Workspace");
-      // And the plugin ids must NOT leak into the namespace list.
+      // Each source renders with its ACTUAL id, without display labels or plugin ids.
+      expect(description).toContain("- `github`");
+      expect(description).toContain("- `slack`");
+      expect(description).not.toContain("GitHub");
+      expect(description).not.toContain("Slack Workspace");
       expect(description).not.toContain("`github-plugin`");
       expect(description).not.toContain("`slack-plugin`");
 

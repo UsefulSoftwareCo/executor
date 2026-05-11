@@ -226,9 +226,7 @@ export class OpenApiSourceBindingRef extends Schema.Class<OpenApiSourceBindingRe
 export const OAuth2Flow = Schema.Literals(["authorizationCode", "clientCredentials"]);
 export type OAuth2Flow = typeof OAuth2Flow.Type;
 
-export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
-  "OpenApiOAuth2SourceConfig",
-)({
+export const OAuth2SourceConfigSchema = Schema.Struct({
   kind: Schema.Literal("oauth2"),
   securitySchemeName: Schema.String,
   flow: OAuth2Flow,
@@ -239,7 +237,11 @@ export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
   clientSecretSlot: Schema.NullOr(Schema.String),
   connectionSlot: Schema.String,
   scopes: Schema.Array(Schema.String),
-}) {}
+});
+
+export class OAuth2SourceConfig extends Schema.Class<OAuth2SourceConfig>(
+  "OpenApiOAuth2SourceConfig",
+)(OAuth2SourceConfigSchema.fields) {}
 
 export class InvocationResult extends Schema.Class<InvocationResult>("InvocationResult")({
   status: Schema.Number,

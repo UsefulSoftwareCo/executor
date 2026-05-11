@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ScopeId } from "@executor-js/sdk";
 
-import { secretsForCredentialTarget } from "./secret-header-auth";
+import { secretsForCredentialTarget } from "./secret-credential-scope";
+import { secretValueInputType } from "./secret-input";
 
 describe("secretsForCredentialTarget", () => {
   it("only exposes secrets owned by the target credential scope", () => {
@@ -14,5 +15,13 @@ describe("secretsForCredentialTarget", () => {
         ScopeId.make("org"),
       ).map((secret) => secret.id),
     ).toEqual(["shared-token"]);
+  });
+});
+
+describe("secretValueInputType", () => {
+  it("uses password inputs until a value is revealed", () => {
+    expect(secretValueInputType({ revealable: true, revealed: false })).toBe("password");
+    expect(secretValueInputType({ revealable: false, revealed: false })).toBe("password");
+    expect(secretValueInputType({ revealable: true, revealed: true })).toBe("text");
   });
 });

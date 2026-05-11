@@ -9,11 +9,14 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 
 if (!process.env.VITE_PUBLIC_ANALYTICS_PATH) {
   process.env.VITE_PUBLIC_ANALYTICS_PATH = randomBytes(4).toString("hex");
 }
 console.log(`[build] VITE_PUBLIC_ANALYTICS_PATH=${process.env.VITE_PUBLIC_ANALYTICS_PATH}`);
+
+rmSync(new URL("../dist/", import.meta.url), { force: true, recursive: true });
 
 const steps = ["turbo run build --filter @executor-js/vite-plugin", "vite build"];
 

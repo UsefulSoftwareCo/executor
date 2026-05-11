@@ -3,37 +3,21 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAtom, sourceAtom } from "@executor-js/react/api/atoms";
 import { Badge } from "@executor-js/react/components/badge";
-import { Button } from "@executor-js/react/components/button";
 import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
 import { ScopeId } from "@executor-js/sdk/core";
+import {
+  SourceCredentialNotice,
+  SourceCredentialStatusBadge,
+  missingSourceCredentialLabels,
+  type SourceCredentialSlot,
+} from "@executor-js/react/plugins/source-credential-status";
 
 import { openApiSourceAtom, openApiSourceBindingsAtom } from "./atoms";
-import { effectiveBindingForScope, missingCredentialLabels } from "../sdk/credential-status";
-
-function ConnectedBadge() {
-  return (
-    <Badge
-      variant="outline"
-      className="border-green-500/30 bg-green-500/5 text-[10px] text-green-700 dark:text-green-400"
-    >
-      Connected
-    </Badge>
-  );
-}
+import { effectiveBindingForScope } from "../sdk/credential-status";
+import { oauth2ClientSecretSlot, type StoredSourceSchemaType } from "../sdk/store";
 
 function OAuthBadge() {
   return <Badge variant="secondary">OAuth</Badge>;
-}
-
-function NeedsCredentialsBadge() {
-  return (
-    <Badge
-      variant="outline"
-      className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300"
-    >
-      Needs credentials
-    </Badge>
-  );
 }
 
 function CheckingCredentialsBadge() {
@@ -46,6 +30,36 @@ function CheckingCredentialsBadge() {
     </Badge>
   );
 }
+
+const effectiveClientSecretSlot = (oauth2: {
+  readonly securitySchemeName: string;
+  readonly clientSecretSlot: string | null;
+}): string => oauth2.clientSecretSlot ?? oauth2ClientSecretSlot(oauth2.securitySchemeName);
+
+const sourceCredentialSlots = (source: StoredSourceSchemaType): readonly SourceCredentialSlot[] => {
+  const slots: SourceCredentialSlot[] = [];
+  for (const [name, value] of Object.entries(source.config.headers ?? {})) {
+    if (typeof value !== "string") slots.push({ kind: "secret", slot: value.slot, label: name });
+  }
+  for (const [name, value] of Object.entries(source.config.queryParams ?? {})) {
+    if (typeof value !== "string") slots.push({ kind: "secret", slot: value.slot, label: name });
+  }
+  const oauth2 = source.config.oauth2;
+  if (oauth2) {
+    slots.push({ kind: "secret", slot: oauth2.clientIdSlot, label: "Client ID" });
+    slots.push({
+      kind: "secret",
+      slot: effectiveClientSecretSlot(oauth2),
+      label: "Client Secret",
+    });
+    slots.push({
+      kind: "connection",
+      slot: oauth2.connectionSlot,
+      label: oauth2.flow === "clientCredentials" ? "OAuth client connection" : "OAuth sign-in",
+    });
+  }
+  return slots;
+};
 
 // The entry row already renders name + id + kind, so this summary
 // component only contributes extras — specifically, an OAuth status
@@ -89,34 +103,19 @@ export default function OpenApiSourceSummary(props: {
   const liveConnectionIds = new Set(connections.map((connection) => connection.id));
   const scopeRanks = new Map(scopeStack.map((scope, index) => [scope.id, index] as const));
   const credentialTargetScope = userScope;
-  const missing = missingCredentialLabels(source, bindings, credentialTargetScope, scopeRanks, {
+  const missing = missingSourceCredentialLabels({
+    slots: sourceCredentialSlots(source),
+    bindings,
+    targetScope: credentialTargetScope,
+    scopeRanks,
     liveConnectionIds,
   });
 
   if (props.variant === "panel") {
-    if (missing.length === 0) return null;
-    return (
-      <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-4">
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">
-              This source needs your credentials before tools can run.
-            </div>
-            <div className="mt-0.5 truncate text-xs text-muted-foreground">
-              Missing: {missing.join(", ")}
-            </div>
-          </div>
-          {props.onAction && (
-            <Button size="sm" onClick={props.onAction}>
-              Add credentials
-            </Button>
-          )}
-        </div>
-      </div>
-    );
+    return <SourceCredentialNotice missing={missing} onAction={props.onAction} />;
   }
 
-  if (missing.length > 0) return <NeedsCredentialsBadge />;
+  if (missing.length > 0) return <SourceCredentialStatusBadge missing={missing} />;
 
   if (!oauth2) return null;
   const connectionBinding = effectiveBindingForScope(
@@ -131,7 +130,7 @@ export default function OpenApiSourceSummary(props: {
       : null;
 
   if (connectionId && connections.some((connection) => connection.id === connectionId)) {
-    return <ConnectedBadge />;
+    return <SourceCredentialStatusBadge missing={[]} />;
   }
 
   return <OAuthBadge />;

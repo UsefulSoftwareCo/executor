@@ -25,6 +25,7 @@ import {
 } from "../components/select";
 import type { VariantProps } from "class-variance-authority";
 
+import { secretValueInputType } from "./secret-input";
 import { getUniqueSecretId, isSecretIdTaken } from "./secret-id";
 
 // ---------------------------------------------------------------------------
@@ -219,25 +220,26 @@ function ValueField(props: { revealable?: boolean; placeholder?: string; autoFoc
   const { state, actions } = useSecretForm();
   const inputId = useId();
   const revealable = props.revealable ?? false;
+  const revealed = revealable && state.revealed;
   const errored = state.status.kind === "error";
 
   return (
     <Field>
       <FieldLabel htmlFor={inputId}>Value</FieldLabel>
-      <div className="relative">
+      <div className="relative" data-ph-block>
         <Input
           id={inputId}
-          type={revealable ? "text" : "password"}
+          type={secretValueInputType({ revealable, revealed })}
           value={state.value}
           onChange={(e) => actions.setValue((e.target as HTMLInputElement).value)}
           placeholder={props.placeholder ?? "ghp_xxxxxxxxxxxxxxxxxxxx"}
           autoFocus={props.autoFocus}
+          autoComplete="new-password"
           className={revealable ? "pr-9 font-mono" : "font-mono"}
           style={
-            revealable && !state.revealed
-              ? ({ WebkitTextSecurity: "disc" } as CSSProperties)
-              : undefined
+            revealable && !revealed ? ({ WebkitTextSecurity: "disc" } as CSSProperties) : undefined
           }
+          data-ph-block
         />
         {revealable && (
           <Button

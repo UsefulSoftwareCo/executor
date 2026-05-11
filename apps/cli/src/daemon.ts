@@ -48,10 +48,17 @@ export const parseDaemonBaseUrl = (baseUrl: string, defaultPort: number): Parsed
 // Local-host checks
 // ---------------------------------------------------------------------------
 
-const LOCAL_DAEMON_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const LOCAL_DAEMON_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const BUN_EMBEDDED_ENTRYPOINT_PREFIX = "/$bunfs/";
 
 export const canAutoStartLocalDaemonForHost = (hostname: string): boolean =>
   LOCAL_DAEMON_HOSTNAMES.has(hostname.toLowerCase());
+
+export const isDevCliEntrypoint = (scriptPath: string | undefined): boolean => {
+  if (!scriptPath) return false;
+  if (scriptPath.startsWith(BUN_EMBEDDED_ENTRYPOINT_PREFIX)) return false;
+  return scriptPath.endsWith(".ts") || scriptPath.endsWith(".js");
+};
 
 // ---------------------------------------------------------------------------
 // Process spec

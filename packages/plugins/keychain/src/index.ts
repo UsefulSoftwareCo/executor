@@ -18,8 +18,9 @@ import { makeKeychainProvider, scopedKeychainServiceName } from "./provider";
 // error, but `setPassword` fails because the secret-service backend
 // isn't actually reachable. Writing is the capability the executor
 // cares about, so test it directly.
-const PROBE_ACCOUNT = "__executor_keychain_probe__";
 const PROBE_VALUE = "probe";
+const probeAccount = (): string =>
+  `__executor_keychain_probe__:${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
 // ---------------------------------------------------------------------------
 // Re-exports
@@ -88,9 +89,10 @@ export const keychainPlugin = definePlugin((options?: KeychainPluginConfig) => (
     Effect.gen(function* () {
       const baseServiceName = resolveServiceName(options?.serviceName);
       const probeServiceName = scopedKeychainServiceName(baseServiceName, ctx.scopes[0]!.id);
-      const reachable = yield* setPassword(probeServiceName, PROBE_ACCOUNT, PROBE_VALUE).pipe(
+      const account = probeAccount();
+      const reachable = yield* setPassword(probeServiceName, account, PROBE_VALUE).pipe(
         Effect.andThen(
-          deletePassword(probeServiceName, PROBE_ACCOUNT).pipe(Effect.catch(() => Effect.void)),
+          deletePassword(probeServiceName, account).pipe(Effect.catch(() => Effect.void)),
         ),
         Effect.as(true),
         Effect.catch(() =>

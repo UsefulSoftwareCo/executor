@@ -128,6 +128,16 @@ export interface GraphqlUpdateSourceInput {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Match `token` as a separator-bounded run inside a URL hostname or path,
+ *  used as a low-confidence detection hint when introspection fails.
+ *  Boundary chars are everything non-alphanumeric, so `/api/graphql`,
+ *  `graphql.example.com`, `graphql-api`, and `graphql_v2` all match while
+ *  `graphqlserver` and `/graphqlite` do not. */
+const urlMatchesToken = (url: URL, token: string): boolean => {
+  const re = new RegExp(`(?:^|[^a-z0-9])${token}(?:$|[^a-z0-9])`, "i");
+  return re.test(url.hostname) || re.test(url.pathname);
+};
+
 /** Derive a namespace from an endpoint URL */
 const namespaceFromEndpoint = (endpoint: string): string => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL construction throws; this helper intentionally falls back to the stable default namespace
@@ -1144,16 +1154,34 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           Effect.catch(() => Effect.succeed(false)),
         );
 
-        if (!ok) return null;
-
         const name = namespaceFromEndpoint(trimmed);
-        return new SourceDetectionResult({
-          kind: "graphql",
-          confidence: "high",
-          endpoint: trimmed,
-          name,
-          namespace: name,
-        });
+
+        if (ok) {
+          return new SourceDetectionResult({
+            kind: "graphql",
+            confidence: "high",
+            endpoint: trimmed,
+            name,
+            namespace: name,
+          });
+        }
+
+        // Low-confidence URL-token fallback. Introspection can fail for
+        // many reasons (auth, CORS, the endpoint disabled introspection
+        // in production, transport errors). When the URL itself
+        // strongly implies GraphQL, surface a candidate so the user
+        // can still pick it from the detect dropdown.
+        if (urlMatchesToken(parsed.value, "graphql")) {
+          return new SourceDetectionResult({
+            kind: "graphql",
+            confidence: "low",
+            endpoint: trimmed,
+            name,
+            namespace: name,
+          });
+        }
+
+        return null;
       }),
 
     routes: () => GraphqlGroup,

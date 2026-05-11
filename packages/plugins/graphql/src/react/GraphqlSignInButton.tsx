@@ -10,6 +10,7 @@ import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js
 import { ScopeId } from "@executor-js/sdk/core";
 
 import { graphqlSourceAtom, graphqlSourceBindingsAtom, setGraphqlSourceBinding } from "./atoms";
+import { GraphqlSourceBindingInput } from "../sdk/types";
 
 export default function GraphqlSignInButton(props: { sourceId: string }) {
   const scopeId = useScope();
@@ -19,9 +20,9 @@ export default function GraphqlSignInButton(props: { sourceId: string }) {
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
   const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
   const bindingsResult = useAtomValue(
-    graphqlSourceBindingsAtom(scopeId, props.sourceId, sourceScope),
+    graphqlSourceBindingsAtom(userScopeId, props.sourceId, sourceScope),
   );
-  const connectionsResult = useAtomValue(connectionsAtom(scopeId));
+  const connectionsResult = useAtomValue(connectionsAtom(userScopeId));
   const setBinding = useAtomSet(setGraphqlSourceBinding, { mode: "promise" });
 
   const oauth2 = source?.auth.kind === "oauth2" ? source.auth : null;
@@ -58,14 +59,14 @@ export default function GraphqlSignInButton(props: { sourceId: string }) {
       isConnected={isConnected}
       onConnected={async (connectionId) => {
         await setBinding({
-          params: { scopeId },
-          payload: {
+          params: { scopeId: userScopeId },
+          payload: new GraphqlSourceBindingInput({
             sourceId: props.sourceId,
             sourceScope,
             scope: userScopeId,
             slot: oauth2.connectionSlot,
             value: { kind: "connection", connectionId },
-          },
+          }),
           reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
         });
       }}

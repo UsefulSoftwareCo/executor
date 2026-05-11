@@ -25,6 +25,18 @@ type ChartContextProps = {
   config: ChartConfig;
 };
 
+const cssIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const cssColorPattern =
+  /^(?:#[0-9A-Fa-f]{3,8}|(?:rgb|hsl)a?\(\s*[-+0-9.%]+\s*(?:,\s*[-+0-9.%]+\s*){2}(?:,\s*[-+0-9.]+\s*)?\)|(?:rgb|hsl)a?\(\s*[-+0-9.%]+\s+[-+0-9.%]+\s+[-+0-9.%]+(?:\s*\/\s*[-+0-9.%]+)?\s*\)|[A-Za-z]+|var\(--[A-Za-z0-9_-]+\))$/;
+
+export const chartCssVariableName = (key: string): string | null =>
+  cssIdentifierPattern.test(key) ? `--color-${key}` : null;
+
+export const chartCssColorValue = (color: string): string | null => {
+  const trimmed = color.trim();
+  return cssColorPattern.test(trimmed) ? trimmed : null;
+};
+
 const ChartContext = React.createContext<ChartContextProps | null>(null);
 
 function useChart() {
@@ -92,8 +104,11 @@ ${prefix} [data-chart=${id}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ?? itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    const variableName = chartCssVariableName(key);
+    const colorValue = color ? chartCssColorValue(color) : null;
+    return variableName && colorValue ? `  ${variableName}: ${colorValue};` : null;
   })
+  .filter((line): line is string => line !== null)
   .join("\n")}
 }
 `,

@@ -37,9 +37,10 @@
     "typecheck": "turbo run typecheck",
     "typecheck:slow": "turbo run typecheck:slow",
     "ci": "bun run lint && bun run typecheck && bun run test",
-    "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:changelog-stubs",
+    "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:http-payload-schemas && bun run lint:changelog-stubs",
     "lint:release-notes": "bun run scripts/check-release-notes.ts",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
+    "lint:http-payload-schemas": "bun run scripts/check-http-payload-schemas.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
@@ -57,12 +58,13 @@
     "release:publish:packages:dry-run": "bun run scripts/publish-packages.ts --dry-run",
     "release:publish:packages:prepare": "bun run scripts/publish-packages.ts --prepare-only",
     "clean": "bun run scripts/clean.ts",
-    "prepare": "effect-language-service patch"
+    "prepare": "effect-language-service patch && effect-tsgo patch"
   },
   "dependencies": {},
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
     "@effect/language-service": "^0.85.1",
+    "@effect/tsgo": "^0.5.2",
     "@effect/vitest": "catalog:",
     "@typescript/native-preview": "^7.0.0-dev.20260410.1",
     "@vitest/expect": "catalog:",

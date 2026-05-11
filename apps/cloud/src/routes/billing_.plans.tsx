@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useAuth } from "../web/auth";
 import { useCustomer, useListPlans } from "autumn-js/react";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
@@ -14,8 +13,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@executor-js/react/components/dialog";
-import { Input } from "@executor-js/react/components/input";
-import { Label } from "@executor-js/react/components/label";
 
 type Plan = NonNullable<ReturnType<typeof useListPlans>["data"]>[number];
 
@@ -306,69 +303,13 @@ function PlansPage() {
 }
 
 function SlackContactCta() {
-  const auth = useAuth();
-  const signedIn = auth.status === "authenticated" ? auth : null;
-  const prefillEmail = signedIn?.user.email ?? "";
-  const orgName = signedIn?.organization?.name ?? "";
-
   const [open, setOpen] = useState(false);
-  const [email, setEmail] = useState(prefillEmail);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
-
-  // Hydrate prefill once auth resolves (it starts as `loading` on first render).
-  useEffect(() => {
-    if (prefillEmail && !email) setEmail(prefillEmail);
-  }, [prefillEmail]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const reset = () => {
-    setEmail(prefillEmail);
-    setError(null);
-    setInviteUrl(null);
-  };
-
-  const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: browser fetch submit path maps network failures to public UI copy
-    try {
-      const res = await fetch("/api/contact/slack", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          email,
-          organization: orgName || undefined,
-        }),
-      });
-      const data = (await res.json().then(
-        (value) => value,
-        () => ({}),
-      )) as { url?: string; error?: string };
-      if (!res.ok) {
-        setError(data.error ?? "Something went wrong. Please try again.");
-        return;
-      }
-      setInviteUrl(data.url ?? null);
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="mt-10 flex flex-col items-center gap-3 border-t border-border pt-8 text-center">
       <p className="text-sm text-muted-foreground">Got questions?</p>
       <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm font-medium">
-        <Dialog
-          open={open}
-          onOpenChange={(next) => {
-            setOpen(next);
-            if (!next) reset();
-          }}
-        >
+        <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button
               type="button"
@@ -382,67 +323,28 @@ function SlackContactCta() {
             </Button>
           </DialogTrigger>
           <DialogContent>
-            {inviteUrl ? (
-              <>
-                <DialogHeader>
-                  <DialogTitle>Check your inbox</DialogTitle>
-                  <DialogDescription>
-                    We've created a private Slack channel and emailed you an invite. You can also
-                    open it directly:
-                  </DialogDescription>
-                </DialogHeader>
-                <a
-                  href={inviteUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  <SlackMark className="size-4" />
-                  Open Slack invite
+            <DialogHeader>
+              <DialogTitle>Get in touch on Slack</DialogTitle>
+              <DialogDescription>
+                Add{" "}
+                <a className="font-medium text-foreground underline" href="mailto:rhys@executor.sh">
+                  rhys@executor.sh
+                </a>{" "}
+                on Slack Connect to get in touch.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Done
+                </Button>
+              </DialogClose>
+              <Button asChild>
+                <a href="mailto:rhys@executor.sh?subject=Executor%20Slack%20invite">
+                  Email for invite
                 </a>
-                <DialogFooter>
-                  <DialogClose asChild>
-                    <Button type="button" variant="outline">
-                      Done
-                    </Button>
-                  </DialogClose>
-                </DialogFooter>
-              </>
-            ) : (
-              <form onSubmit={onSubmit}>
-                <DialogHeader>
-                  <DialogTitle>Get in touch on Slack</DialogTitle>
-                  <DialogDescription>
-                    We'll create a private Slack Connect channel between you and the Executor team.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="grid gap-4 py-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="slack-contact-email">Work email</Label>
-                    <Input
-                      id="slack-contact-email"
-                      type="email"
-                      autoComplete="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.currentTarget.value)}
-                      placeholder="you@company.com"
-                    />
-                  </div>
-                  {error && <p className="text-sm text-destructive">{error}</p>}
-                </div>
-                <DialogFooter>
-                  <DialogClose asChild>
-                    <Button type="button" variant="outline" disabled={submitting}>
-                      Cancel
-                    </Button>
-                  </DialogClose>
-                  <Button type="submit" disabled={submitting || !email}>
-                    {submitting ? "Sending…" : "Send invite"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            )}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
         <span className="text-muted-foreground/60" aria-hidden>

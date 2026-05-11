@@ -3,5 +3,5 @@ import { getBaseUrl } from "@executor-js/react/api/base-url";
 import { GraphqlGroup } from "../api/group";
 
 export const GraphqlClient = createPluginAtomClient(GraphqlGroup, {
-  baseUrl: getBaseUrl(),
+  baseUrl: getBaseUrl,
 });

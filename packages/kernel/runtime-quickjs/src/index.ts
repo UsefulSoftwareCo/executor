@@ -37,7 +37,11 @@ class QuickJsExecutionError extends Data.TaggedError("QuickJsExecutionError")<{
   readonly message: string;
 }> {}
 
+// Large OpenAPI specs can take longer to parse inside QuickJS, so keep the
+// default execution budget at five minutes unless a caller opts into less.
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_MEMORY_LIMIT_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_STACK_SIZE_BYTES = 1 * 1024 * 1024;
 const EXECUTION_FILENAME = "executor-quickjs-runtime.js";
 
 const toError = (cause: unknown): Error =>
@@ -297,13 +301,8 @@ const evaluateInQuickJs = async (
   const runtime = QuickJS.newRuntime();
 
   try {
-    if (options.memoryLimitBytes !== undefined) {
-      runtime.setMemoryLimit(options.memoryLimitBytes);
-    }
-
-    if (options.maxStackSizeBytes !== undefined) {
-      runtime.setMaxStackSize(options.maxStackSizeBytes);
-    }
+    runtime.setMemoryLimit(options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES);
+    runtime.setMaxStackSize(options.maxStackSizeBytes ?? DEFAULT_MAX_STACK_SIZE_BYTES);
 
     runtime.setInterruptHandler(shouldInterruptAfterDeadline(deadlineMs));
 

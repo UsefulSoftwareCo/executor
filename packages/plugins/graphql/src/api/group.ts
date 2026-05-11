@@ -9,7 +9,7 @@ import {
   GraphqlCredentialInput,
   GraphqlSourceAuth,
   GraphqlSourceAuthInput,
-  GraphqlSourceBindingInput,
+  GraphqlSourceBindingInputSchema,
   GraphqlSourceBindingRef,
 } from "../sdk/types";
 
@@ -152,7 +152,7 @@ export const GraphqlGroup = HttpApiGroup.make("graphql")
   .add(
     HttpApiEndpoint.post("setSourceBinding", "/scopes/:scopeId/graphql/source-bindings", {
       params: ScopeParams,
-      payload: GraphqlSourceBindingInput,
+      payload: GraphqlSourceBindingInputSchema,
       success: GraphqlSourceBindingRef,
       error: GraphqlErrors,
     }),

@@ -160,7 +160,12 @@ export const syncFromConfig = (input: {
           Effect.catchCause((cause) => {
             const ns =
               "namespace" in source ? source.namespace : "name" in source ? source.name : "unknown";
-            console.warn(`[config-sync] Failed to load source "${ns}":`, Cause.pretty(cause));
+            const squashed = Cause.squash(cause);
+            const message =
+              squashed && typeof squashed === "object" && "message" in squashed
+                ? String((squashed as { message: unknown }).message)
+                : Cause.pretty(cause);
+            console.warn(`[config-sync] Failed to load source "${ns}": ${message}`);
             return Effect.succeed(false as const);
           }),
         ),

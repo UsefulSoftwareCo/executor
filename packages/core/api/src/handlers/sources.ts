@@ -76,7 +76,7 @@ export const SourcesHandlers = HttpApiBuilder.group(ExecutorApi, "sources", (han
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const results = yield* executor.sources.detect(payload.url);
+          const results = yield* executor.sources.detect(payload.url.trim());
           return results.map((r) => ({
             kind: r.kind,
             confidence: r.confidence,

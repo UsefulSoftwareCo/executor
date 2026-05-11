@@ -529,20 +529,29 @@ const targetScopeForBinding = (
   );
 };
 
+const findOuterSource = (
+  ctx: PluginCtx<OpenapiStore>,
+  namespace: string,
+  scope: string,
+): Effect.Effect<StoredSource | null, StorageFailure> =>
+  Effect.gen(function* () {
+    const ranks = scopeRanks(ctx);
+    const baseRank = scopeRank(ranks, scope);
+    for (let index = baseRank + 1; index < ctx.scopes.length; index++) {
+      const candidateScope = ctx.scopes[index];
+      if (!candidateScope) continue;
+      const source = yield* ctx.storage.getSource(namespace, candidateScope.id);
+      if (source) return source;
+    }
+    return null;
+  });
+
 const resolveEffectiveSourceConfig = (
   ctx: PluginCtx<OpenapiStore>,
   base: StoredSource,
 ): Effect.Effect<EffectiveSourceConfig, StorageFailure> =>
   Effect.gen(function* () {
-    const ranks = scopeRanks(ctx);
-    const baseRank = scopeRank(ranks, base.scope);
-    let fallback: StoredSource | null = null;
-    for (let index = baseRank + 1; index < ctx.scopes.length; index++) {
-      const scope = ctx.scopes[index];
-      if (!scope) continue;
-      fallback = yield* ctx.storage.getSource(base.namespace, scope.id);
-      if (fallback) break;
-    }
+    const fallback = yield* findOuterSource(ctx, base.namespace, base.scope);
 
     if (!fallback) {
       return {
@@ -561,7 +570,7 @@ const resolveEffectiveSourceConfig = (
       config: {
         ...base.config,
         sourceUrl: base.config.sourceUrl ?? fallback.config.sourceUrl,
-        baseUrl: base.config.baseUrl || fallback.config.baseUrl,
+        baseUrl: fallback.config.baseUrl,
         namespace: base.config.namespace ?? fallback.config.namespace,
         headers: hasBaseHeaders ? base.config.headers : fallback.config.headers,
         queryParams: hasBaseQueryParams ? base.config.queryParams : fallback.config.queryParams,
@@ -806,6 +815,12 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         Option.getOrElse(result.title, () => "api")
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "_");
+      const outerSource = yield* findOuterSource(ctx, namespace, input.scope);
+      if (outerSource && input.baseUrl !== undefined && input.baseUrl.trim() !== "") {
+        return yield* new OpenApiOAuthError({
+          message: "OpenAPI source shadows inherit the outer source base URL",
+        });
+      }
 
       const hoistedDefs: Record<string, unknown> = {};
       if (doc.components?.schemas) {
@@ -814,7 +829,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         }
       }
 
-      const baseUrl = input.baseUrl ?? resolveBaseUrl(result.servers);
+      const baseUrl = outerSource ? undefined : (input.baseUrl ?? resolveBaseUrl(result.servers));
       const canonicalHeaders = canonicalizeHeaders(input.headers);
       const canonicalQueryParams = canonicalizeCredentialMap(
         input.queryParams,
@@ -989,7 +1004,11 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             queryParams: config.queryParams,
             specFetchCredentials: config.specFetchCredentials,
             oauth2: config.oauth2,
-            credentialTargetScope: config.credentialTargetScope,
+            // Default to the source's own scope. refreshSource and editSource
+            // do the same; without this, config-sync's addSpec — which never
+            // passes the field — fails with "credentialTargetScope is
+            // required" the moment the jsonc declares any header secret.
+            credentialTargetScope: config.credentialTargetScope ?? config.scope,
           });
         });
 
@@ -1073,6 +1092,14 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               ...(input.oauth2 !== undefined ? ["oauth2:"] : []),
             ];
             const targetScope = input.credentialTargetScope ?? scope;
+            if (input.baseUrl !== undefined && input.baseUrl.trim() !== "") {
+              const outerSource = yield* findOuterSource(ctx, namespace, scope);
+              if (outerSource) {
+                return yield* new OpenApiOAuthError({
+                  message: "OpenAPI source shadows inherit the outer source base URL",
+                });
+              }
+            }
             if (affectedPrefixes.length > 0 || directBindings.length > 0) {
               yield* validateOpenApiBindingTarget(ctx, {
                 sourceId: namespace,

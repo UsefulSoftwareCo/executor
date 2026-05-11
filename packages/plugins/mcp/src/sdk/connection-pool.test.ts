@@ -123,7 +123,7 @@ const serveMcpServer = Effect.acquireRelease(
 // Helper — one executor, one mcp source pointed at the test server
 // ---------------------------------------------------------------------------
 
-const makeTestExecutor = (serverUrl: string) =>
+const makeTestExecutor = (serverUrl: string, namespace = "pool-test") =>
   createExecutor(
     makeTestConfig({
       plugins: [mcpPlugin()] as const,
@@ -133,7 +133,8 @@ const makeTestExecutor = (serverUrl: string) =>
       executor.mcp.addSource({
         transport: "remote",
         scope: "test-scope",
-        name: "pool-test",
+        name: namespace,
+        namespace,
         endpoint: serverUrl,
       }),
     ),
@@ -205,6 +206,52 @@ describe("MCP connection pooling (regression)", () => {
       // Back to the first tool — still pooled.
       yield* executor.tools.invoke(echo.id, { value: "c" }, { onElicitation: "accept-all" });
       expect(server.sessionCount()).toBe(baseline);
+    }),
+  );
+
+  it.effect("different sources with the same endpoint use separate cached connections", () =>
+    Effect.gen(function* () {
+      const server = yield* serveMcpServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [mcpPlugin()] as const,
+        }),
+      );
+      yield* executor.mcp.addSource({
+        transport: "remote",
+        scope: "test-scope",
+        name: "pool-a",
+        namespace: "pool_a",
+        endpoint: server.url,
+      });
+      yield* executor.mcp.addSource({
+        transport: "remote",
+        scope: "test-scope",
+        name: "pool-b",
+        namespace: "pool_b",
+        endpoint: server.url,
+      });
+
+      const tools = yield* executor.tools.list();
+      const echoTools = tools.filter((t) => t.name === "echo");
+      expect(echoTools).toHaveLength(2);
+
+      const sessionsAfterAddSource = server.sessionCount();
+
+      yield* executor.tools.invoke(
+        echoTools[0]!.id,
+        { value: "a" },
+        { onElicitation: "accept-all" },
+      );
+      const afterFirstInvoke = server.sessionCount();
+      expect(afterFirstInvoke).toBe(sessionsAfterAddSource + 1);
+
+      yield* executor.tools.invoke(
+        echoTools[1]!.id,
+        { value: "b" },
+        { onElicitation: "accept-all" },
+      );
+      expect(server.sessionCount()).toBe(afterFirstInvoke + 1);
     }),
   );
 });

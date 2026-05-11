@@ -7,6 +7,7 @@ const IPC_PREFIX = "@@executor-ipc@@";
 
 const pendingToolCalls = new Map();
 let started = false;
+let ipcNonce = "";
 
 /** @type {string[]} */
 const logs = [];
@@ -31,6 +32,7 @@ const createToolCaller = (toolPath) => (args) =>
 
     writeIpcMessage({
       type: "tool_call",
+      nonce: ipcNonce,
       requestId,
       toolPath,
       args: args === undefined ? {} : args,
@@ -105,6 +107,7 @@ const handleStart = (message) => {
   if (started) {
     writeIpcMessage({
       type: "failed",
+      nonce: ipcNonce,
       error: "start message already received",
       logs,
     });
@@ -112,11 +115,13 @@ const handleStart = (message) => {
   }
 
   started = true;
+  ipcNonce = typeof message.nonce === "string" ? message.nonce : "";
 
   runUserCode(message.code)
     .then((result) => {
       writeIpcMessage({
         type: "completed",
+        nonce: ipcNonce,
         result,
         logs,
       });
@@ -124,6 +129,7 @@ const handleStart = (message) => {
     .catch((error) => {
       writeIpcMessage({
         type: "failed",
+        nonce: ipcNonce,
         error: toErrorMessage(error),
         logs,
       });
@@ -131,6 +137,10 @@ const handleStart = (message) => {
 };
 
 const handleToolResult = (message) => {
+  if (message.nonce !== ipcNonce) {
+    return;
+  }
+
   const pending = pendingToolCalls.get(message.requestId);
   if (!pending) {
     return;
@@ -193,6 +203,7 @@ const decodeLines = async () => {
       } catch (error) {
         writeIpcMessage({
           type: "failed",
+          nonce: ipcNonce,
           error: `invalid host message: ${toErrorMessage(error)}`,
           logs,
         });

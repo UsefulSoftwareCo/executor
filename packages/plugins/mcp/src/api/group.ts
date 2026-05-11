@@ -8,7 +8,7 @@ import { McpStoredSourceSchema } from "../sdk/stored-source";
 import {
   McpConnectionAuthInput,
   McpCredentialInput,
-  McpSourceBindingInput,
+  McpSourceBindingInputSchema,
   McpSourceBindingRef,
 } from "../sdk/types";
 
@@ -88,6 +88,7 @@ const ProbeEndpointPayload = Schema.Struct({
 const ProbeEndpointResponse = Schema.Struct({
   connected: Schema.Boolean,
   requiresOAuth: Schema.Boolean,
+  supportsDynamicRegistration: Schema.Boolean,
   name: Schema.String,
   namespace: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
@@ -200,7 +201,7 @@ export const McpGroup = HttpApiGroup.make("mcp")
   .add(
     HttpApiEndpoint.post("setSourceBinding", "/scopes/:scopeId/mcp/source-bindings", {
       params: ScopeParams,
-      payload: McpSourceBindingInput,
+      payload: McpSourceBindingInputSchema,
       success: McpSourceBindingRef,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),

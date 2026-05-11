@@ -734,4 +734,75 @@ describe("credential bindings", () => {
       expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
     }),
   );
+
+  it.effect(
+    "materializes a routing row for read-only provider items (e.g. 1Password) when binding",
+    () =>
+      Effect.gen(function* () {
+        // Read-only provider that lists an item nobody registered via
+        // secrets.set — models 1Password / env / file-secrets.
+        const itemId = "op-vault-item-1";
+        const itemName = "Cloudflare API Token";
+        const readonlyProvider: SecretProvider = {
+          key: "readonly-vault",
+          writable: false,
+          allowFallback: false,
+          get: (id) => Effect.sync(() => (id === itemId ? "from-vault" : null)),
+          list: () => Effect.sync(() => [{ id: itemId, name: itemName }]),
+        };
+
+        const scopes = {
+          org: scope("org", "Org"),
+          userA: scope("user-workspace-a", "User A Workspace"),
+        };
+        const plugins = [
+          memorySecretsPlugin(readonlyProvider),
+          memoryConnectionPlugin(),
+          credentialTestPlugin(),
+        ] as const;
+        const adapter = makeMemoryAdapter({ schema: collectSchemas(plugins) });
+        const blobs = makeInMemoryBlobStore();
+        const orgExecutor = yield* createExecutor({
+          scopes: [scopes.org],
+          adapter,
+          blobs,
+          plugins,
+          onElicitation: "accept-all",
+        });
+        yield* orgExecutor.credentialTest.registerSource(scopes.org.id);
+
+        const userExecutor = yield* createExecutor({
+          scopes: [scopes.userA, scopes.org],
+          adapter,
+          blobs,
+          plugins,
+          onElicitation: "accept-all",
+        });
+
+        const binding = yield* userExecutor.credentialBindings.set({
+          targetScope: scopes.userA.id,
+          pluginId: TEST_PLUGIN_ID,
+          sourceId: TEST_SOURCE_ID,
+          sourceScope: scopes.org.id,
+          slotKey: TEST_SLOT,
+          value: { kind: "secret", secretId: SecretId.make(itemId) },
+        });
+
+        expect(binding.scopeId).toBe(scopes.userA.id);
+
+        const secrets = yield* userExecutor.secrets.list();
+        const materialized = secrets.find((s) => String(s.id) === itemId);
+        expect(materialized).toBeDefined();
+        expect(materialized?.provider).toBe("readonly-vault");
+        expect(materialized?.name).toBe(itemName);
+
+        const resolved = yield* userExecutor.credentialBindings.resolve({
+          pluginId: TEST_PLUGIN_ID,
+          sourceId: TEST_SOURCE_ID,
+          sourceScope: scopes.org.id,
+          slotKey: TEST_SLOT,
+        });
+        expect(resolved.status).toBe("resolved");
+      }),
+  );
 });

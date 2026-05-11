@@ -35,16 +35,54 @@ const decodeArgsRecord = Schema.decodeUnknownOption(ArgsRecord);
 const argsRecord = (value: unknown): Record<string, unknown> =>
   Option.getOrElse(decodeArgsRecord(value), () => ({}));
 
-const connectionCacheKey = (sd: McpStoredSourceData, invokerScope: string): string =>
-  sd.transport === "stdio"
-    ? `stdio:${sd.command}`
-    : // Remote sources may resolve per-user secrets (OAuth tokens, header
-      // auth) via scope shadowing, so two users invoking the same source
-      // get different Authorization headers. The connection caches that
-      // header in transport state, so the cache key must include the
-      // invoking scope — otherwise user B re-uses user A's connection
-      // (and user A's tokens).
-      `remote:${invokerScope}:${sd.endpoint}`;
+const stableJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const fingerprint = (value: unknown): string => {
+  const input = stableJson(value);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+};
+
+const connectionCacheKey = (input: {
+  readonly sourceData: McpStoredSourceData;
+  readonly invokerScope: string;
+  readonly sourceId: string;
+  readonly sourceScope: string;
+}): string => {
+  const sd = input.sourceData;
+  return sd.transport === "stdio"
+    ? `stdio:${fingerprint({
+        sourceId: input.sourceId,
+        sourceScope: input.sourceScope,
+        command: sd.command,
+        args: sd.args ?? [],
+        env: sd.env ?? {},
+        cwd: sd.cwd ?? null,
+      })}`
+    : `remote:${fingerprint({
+        sourceId: input.sourceId,
+        sourceScope: input.sourceScope,
+        invokerScope: input.invokerScope,
+        endpoint: sd.endpoint,
+        remoteTransport: sd.remoteTransport ?? "auto",
+        headers: sd.headers ?? {},
+        queryParams: sd.queryParams ?? {},
+        auth: sd.auth,
+      })}`;
+};
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge — decode incoming MCP ElicitRequest, route through
@@ -146,6 +184,8 @@ export interface InvokeMcpToolInput {
   readonly toolName: string;
   readonly args: unknown;
   readonly sourceData: McpStoredSourceData;
+  readonly sourceId: string;
+  readonly sourceScope: string;
   /** Innermost executor scope id at invoke time. Mixed into the
    *  connection cache key so per-user OAuth/secret resolution doesn't
    *  collapse multiple users onto one shared connection. */
@@ -162,7 +202,7 @@ export const invokeMcpTool = (
   const transport: string =
     input.sourceData.transport === "stdio" ? "stdio" : (input.sourceData.remoteTransport ?? "auto");
   return Effect.gen(function* () {
-    const cacheKey = connectionCacheKey(input.sourceData, input.invokerScope);
+    const cacheKey = connectionCacheKey(input);
     const args = argsRecord(input.args);
 
     // Register the connector for the cache lookup (side-channel pattern

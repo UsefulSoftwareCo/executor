@@ -220,9 +220,8 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (response.status !== 200) {
-    const body = yield* response.text.pipe(Effect.catch(() => Effect.succeed("<unreadable>")));
     return yield* new GraphqlIntrospectionError({
-      message: `Introspection failed with status ${response.status}: ${body.slice(0, 1_000)}`,
+      message: `Introspection failed with status ${response.status}`,
     });
   }
 

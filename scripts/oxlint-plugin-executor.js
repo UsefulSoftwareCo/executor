@@ -18,6 +18,7 @@ import noRawFetch from "./oxlint-plugin-executor/rules/no-raw-fetch.js";
 import noRawErrorThrow from "./oxlint-plugin-executor/rules/no-raw-error-throw.js";
 import noRedundantPrimitiveCast from "./oxlint-plugin-executor/rules/no-redundant-primitive-cast.js";
 import noRedundantErrorFactory from "./oxlint-plugin-executor/rules/no-redundant-error-factory.js";
+import noSchemaClassHttpPayload from "./oxlint-plugin-executor/rules/no-schema-class-http-payload.js";
 import noTsNocheck from "./oxlint-plugin-executor/rules/no-ts-nocheck.js";
 import noTryCatchOrThrow from "./oxlint-plugin-executor/rules/no-try-catch-or-throw.js";
 import noUnknownErrorMessage from "./oxlint-plugin-executor/rules/no-unknown-error-message.js";
@@ -57,6 +58,7 @@ export default {
     "no-raw-error-throw": noRawErrorThrow,
     "no-redundant-primitive-cast": noRedundantPrimitiveCast,
     "no-redundant-error-factory": noRedundantErrorFactory,
+    "no-schema-class-http-payload": noSchemaClassHttpPayload,
     "no-try-catch-or-throw": noTryCatchOrThrow,
     "no-unknown-error-message": noUnknownErrorMessage,
     "no-unknown-shape-probing": noUnknownShapeProbing,

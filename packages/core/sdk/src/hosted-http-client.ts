@@ -28,6 +28,36 @@ const parseIpv4 = (hostname: string): readonly [number, number, number, number] 
   return parsed as [number, number, number, number];
 };
 
+const parseIpv4MappedIpv6 = (
+  hostname: string,
+): readonly [number, number, number, number] | null => {
+  const prefix = "::ffff:";
+  if (!hostname.startsWith(prefix)) return null;
+  const embedded = hostname.slice(prefix.length);
+  const dotted = parseIpv4(embedded);
+  if (dotted) return dotted;
+
+  const parts = embedded.split(":");
+  if (parts.length !== 2) return null;
+
+  const words = parts.map((part) => Number.parseInt(part, 16));
+  if (
+    words.some(
+      (word, index) =>
+        parts[index] === "" ||
+        !/^[0-9a-f]+$/i.test(parts[index]) ||
+        !Number.isInteger(word) ||
+        word < 0 ||
+        word > 0xffff,
+    )
+  ) {
+    return null;
+  }
+
+  const [high, low] = words;
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff];
+};
+
 const isPrivateIpv4 = ([a, b]: readonly [number, number, number, number]): boolean =>
   a === 0 ||
   a === 10 ||
@@ -51,6 +81,8 @@ const isLocalOrPrivateHostname = (hostname: string): boolean => {
   if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
   const ipv4 = parseIpv4(normalized);
   if (ipv4) return isPrivateIpv4(ipv4);
+  const mappedIpv4 = parseIpv4MappedIpv6(normalized);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4);
   return (
     normalized === "::1" ||
     normalized.startsWith("fe80:") ||
@@ -112,12 +144,20 @@ const guardFetch = (
         response.headers.has("location") &&
         redirects < maxRedirects
       ) {
-        current = new URL(response.headers.get("location")!, url).toString();
+        const next = new URL(response.headers.get("location")!, url);
+        if (next.origin !== new URL(url).origin) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch-compatible adapter must reject blocked requests
+          throw new HostedOutboundRequestBlocked({
+            url: next.toString(),
+            reason: "Cross-origin redirects are not allowed",
+          });
+        }
+        current = next.toString();
         continue;
       }
       return response;
     }
-    return underlying(current, { ...init, redirect: "manual" });
+    return await underlying(current, { ...init, redirect: "manual" });
   }) as typeof globalThis.fetch;
 
 export const makeHostedHttpClientLayer = (

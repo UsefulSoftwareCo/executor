@@ -33,6 +33,20 @@ paths: {}
     }),
   );
 
+  it.effect("falls back to YAML for flow-style YAML documents", () =>
+    Effect.gen(function* () {
+      const doc = yield* parse(`
+{
+  openapi: 3.0.0,
+  info: { title: Test, version: 1.0.0 },
+  paths: {}
+}
+`);
+
+      expect(doc.openapi).toBe("3.0.0");
+    }),
+  );
+
   it.effect("returns a stable parse error for empty documents", () =>
     Effect.gen(function* () {
       const error = yield* parse("").pipe(Effect.flip);

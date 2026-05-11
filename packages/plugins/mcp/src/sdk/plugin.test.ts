@@ -17,7 +17,7 @@ import {
   type SecretProvider,
 } from "@executor-js/sdk";
 
-import { mcpPlugin } from "./plugin";
+import { mcpPlugin, userFacingProbeMessage } from "./plugin";
 import { MCP_OAUTH_CONNECTION_SLOT } from "./types";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
 import { serveMcpServer } from "../testing";
@@ -860,6 +860,92 @@ describe("MCP destructiveHint → requiresApproval", () => {
       const deleteTitled = tools.find((t) => t.name === "delete_titled");
       expect(deleteTitled?.annotations?.requiresApproval).toBe(true);
       expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
+    }),
+  );
+});
+
+describe("userFacingProbeMessage", () => {
+  it("turns auth-required into a credentials-asking message", () => {
+    const message = userFacingProbeMessage({
+      kind: "not-mcp",
+      category: "auth-required",
+      reason: "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
+    });
+    expect(message).toMatch(/requires authentication/i);
+    expect(message).toMatch(/credentials/i);
+  });
+
+  it("turns wrong-shape into a 'not an MCP server' message", () => {
+    const message = userFacingProbeMessage({
+      kind: "not-mcp",
+      category: "wrong-shape",
+      reason: "2xx POST body is not a JSON-RPC envelope",
+    });
+    expect(message).toMatch(/doesn't appear to host an MCP server/i);
+  });
+
+  it("turns unreachable into a connectivity message", () => {
+    const message = userFacingProbeMessage({
+      kind: "unreachable",
+      reason: "ECONNREFUSED",
+    });
+    expect(message).toMatch(/couldn't reach/i);
+  });
+
+  it("never surfaces the raw probe reason verbatim", () => {
+    const reasons = [
+      "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
+      "2xx POST body is not a JSON-RPC envelope",
+      "GET response is not an SSE stream",
+      "unexpected status 418 for initialize",
+    ] as const;
+    for (const reason of reasons) {
+      const auth = userFacingProbeMessage({ kind: "not-mcp", category: "auth-required", reason });
+      const wrong = userFacingProbeMessage({ kind: "not-mcp", category: "wrong-shape", reason });
+      expect(auth).not.toContain(reason);
+      expect(wrong).not.toContain(reason);
+    }
+  });
+});
+
+describe("mcpPlugin detect URL-token fallback", () => {
+  // Port 1 connection-refuses immediately, so wire-shape detection
+  // returns `unreachable` and the URL-token fallback is the only thing
+  // that can produce a candidate.
+  it.effect("returns low-confidence candidate when path has /mcp segment", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.sources.detect("http://127.0.0.1:1/api/mcp");
+      const mcp = results.find((r) => r.kind === "mcp");
+      expect(mcp).toBeDefined();
+      expect(mcp?.confidence).toBe("low");
+    }),
+  );
+
+  it.effect("matches mcp on hostname label", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.sources.detect("http://mcp.127.0.0.1.nip.io:1/");
+      const mcp = results.find((r) => r.kind === "mcp");
+      expect(mcp?.confidence).toBe("low");
+    }),
+  );
+
+  it.effect("does not match mcp as a substring", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      // `/mcpstore` is a substring containing `mcp` but `mcp` is not a
+      // separator-bounded run, so the URL-token fallback must not fire.
+      const results = yield* executor.sources.detect("http://127.0.0.1:1/mcpstore");
+      expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
+    }),
+  );
+
+  it.effect("returns null when no token match and no wire-shape match", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const results = yield* executor.sources.detect("http://127.0.0.1:1/api/v1");
+      expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
     }),
   );
 });

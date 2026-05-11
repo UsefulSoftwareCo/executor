@@ -1,4 +1,7 @@
 {
   "typescript.tsdk": "./node_modules/typescript/lib",
-  "typescript.enablePromptUseWorkspaceTsdk": true
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "typescript.native-preview.tsdk": "node_modules/@typescript/native-preview",
+  "typescript.experimental.useTsgo": true,
+  "js/ts.experimental.useTsgo": true
 }

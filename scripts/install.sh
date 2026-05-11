@@ -186,8 +186,9 @@ check_existing_version() {
 
 download_and_install() {
     print_message info "\n${MUTED}Installing ${NC}${APP} ${MUTED}version: ${NC}${specific_version}"
-    local tmp_dir="${TMPDIR:-/tmp}/${APP}_install_$$"
-    mkdir -p "$tmp_dir"
+    local tmp_dir
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/${APP}_install_XXXXXXXXXX")
+    trap 'rm -rf "$tmp_dir"' RETURN
 
     curl -# -L -o "${tmp_dir}/${filename}" "$url"
 
@@ -205,6 +206,7 @@ download_and_install() {
 
     chmod 755 "${INSTALL_DIR}/${APP}"
     rm -rf "$tmp_dir"
+    trap - RETURN
 }
 
 install_from_binary() {

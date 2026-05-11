@@ -1,3 +1,86 @@
+--
+-- Slug-normalization staging table.
+--
+-- 0008 originally inlined a 41-deep `replace(replace(... lower(...) ...))`
+-- chain everywhere it derived a slot_key from a header / param / oauth
+-- scheme name. bun:sqlite's lemon parser stack overflows on that depth on
+-- platforms with smaller thread stacks (notably the compiled CLI binary on
+-- macOS), so we precompute slugs once into a temp table and reference them
+-- via flat scalar subqueries below.
+--
+CREATE TEMP TABLE `__slug_norm` (
+	`raw` text PRIMARY KEY,
+	`slug` text NOT NULL DEFAULT ''
+);--> statement-breakpoint
+
+INSERT OR IGNORE INTO `__slug_norm` (`raw`)
+SELECT DISTINCT `raw` FROM (
+	SELECT h.`key` AS `raw` FROM `openapi_source` s, json_each(s.`headers`) h
+		WHERE s.`headers` IS NOT NULL AND h.`type` = 'object'
+	UNION
+	SELECT json_extract(s.`oauth2`, '$.securitySchemeName') FROM `openapi_source` s
+		WHERE s.`oauth2` IS NOT NULL
+	UNION
+	SELECT `name` FROM `openapi_source_query_param` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `openapi_source_spec_fetch_header` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `openapi_source_spec_fetch_query_param` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `graphql_source_header` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `graphql_source_query_param` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `mcp_source_header` WHERE `name` IS NOT NULL
+	UNION
+	SELECT `name` FROM `mcp_source_query_param` WHERE `name` IS NOT NULL
+) WHERE `raw` IS NOT NULL AND `raw` != '';--> statement-breakpoint
+
+UPDATE `__slug_norm` SET `slug` = lower(trim(`raw`));--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(9), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(10), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(13), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ' ', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '_', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '.', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ':', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '/', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '@', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '+', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '&', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '?', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '#', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '%', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '$', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ',', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ';', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '(', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ')', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '[', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, ']', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '{', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '}', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '=', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '~', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '!', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(34), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(39), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, char(92), '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '|', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '*', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '<', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '>', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = replace(`slug`, '--', '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = trim(`slug`, '-');--> statement-breakpoint
+UPDATE `__slug_norm` SET `slug` = CASE WHEN `slug` = '' THEN 'default' ELSE `slug` END;--> statement-breakpoint
+
 -- local scoped credential/source-slot/OAuth cutover.
 -- Squashes the PR-local migration chain into one runtime schema transition.
 -- 0008_add_credential_binding.sql
@@ -101,7 +184,7 @@ INSERT INTO `__openapi_header_slot_preflight` (`scope_id`, `source_id`, `slot_ke
 SELECT
 	s.`scope_id`,
 	s.`id`,
-	'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default') AS `slot_key`
 FROM `openapi_source` s, json_each(s.`headers`) h
 WHERE s.`headers` IS NOT NULL
   AND h.`type` = 'object'
@@ -115,7 +198,7 @@ WITH header_rows AS (
 		s.`scope_id`,
 		s.`id` AS `source_id`,
 		h.`key` AS `name`,
-		'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default') AS `slot_key`,
 		json_extract(h.`value`, '$.secretId') AS `secret_id`
 	FROM `openapi_source` s, json_each(s.`headers`) h
 	WHERE s.`headers` IS NOT NULL
@@ -161,7 +244,7 @@ SET `headers` = (
 			  AND json_extract(h.`value`, '$.prefix') IS NOT NULL
 				THEN json_object(
 					'kind', 'binding',
-					'slot', 'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+					'slot', 'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default'),
 					'prefix', json_extract(h.`value`, '$.prefix')
 				)
 			WHEN h.`type` = 'object'
@@ -169,7 +252,7 @@ SET `headers` = (
 			  AND json_extract(h.`value`, '$.secretId') IS NOT NULL
 				THEN json_object(
 					'kind', 'binding',
-					'slot', 'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default')
+					'slot', 'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default')
 				)
 			WHEN h.`type` IN ('object', 'array') THEN json(h.`value`)
 			ELSE h.`value`
@@ -186,7 +269,7 @@ WITH oauth_rows AS (
 		s.`scope_id`,
 		s.`id` AS `source_id`,
 		json_extract(s.`oauth2`, '$.securitySchemeName') AS `security_scheme_name`,
-		'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(s.`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':client-id' AS `client_id_slot`,
+		'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(s.`oauth2`, '$.securitySchemeName')), 'default') || ':client-id' AS `client_id_slot`,
 		json_extract(s.`oauth2`, '$.clientIdSecretId') AS `client_id_secret_id`,
 		json_extract(s.`oauth2`, '$.connectionId') AS `connection_id`
 	FROM `openapi_source` s
@@ -225,7 +308,7 @@ WITH oauth_rows AS (
 	SELECT
 		s.`scope_id`,
 		s.`id` AS `source_id`,
-		'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(s.`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':client-secret' AS `client_secret_slot`,
+		'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(s.`oauth2`, '$.securitySchemeName')), 'default') || ':client-secret' AS `client_secret_slot`,
 		json_extract(s.`oauth2`, '$.clientSecretSecretId') AS `client_secret_secret_id`
 	FROM `openapi_source` s
 	WHERE s.`oauth2` IS NOT NULL
@@ -263,7 +346,7 @@ WITH oauth_rows AS (
 	SELECT
 		s.`scope_id`,
 		s.`id` AS `source_id`,
-		'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(s.`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':connection' AS `connection_slot`,
+		'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(s.`oauth2`, '$.securitySchemeName')), 'default') || ':connection' AS `connection_slot`,
 		json_extract(s.`oauth2`, '$.connectionId') AS `connection_id`
 	FROM `openapi_source` s
 	WHERE s.`oauth2` IS NOT NULL
@@ -304,13 +387,13 @@ SET `oauth2` = json_object(
 	'tokenUrl', json_extract(`oauth2`, '$.tokenUrl'),
 	'authorizationUrl', json_extract(`oauth2`, '$.authorizationUrl'),
 	'issuerUrl', json_extract(`oauth2`, '$.issuerUrl'),
-	'clientIdSlot', 'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':client-id',
+	'clientIdSlot', 'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(`oauth2`, '$.securitySchemeName')), 'default') || ':client-id',
 	'clientSecretSlot',
 		CASE
 			WHEN json_extract(`oauth2`, '$.clientSecretSecretId') IS NULL THEN NULL
-			ELSE 'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':client-secret'
+			ELSE 'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(`oauth2`, '$.securitySchemeName')), 'default') || ':client-secret'
 		END,
-	'connectionSlot', 'oauth2:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(json_extract(`oauth2`, '$.securitySchemeName')), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') || ':connection',
+	'connectionSlot', 'oauth2:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = json_extract(`oauth2`, '$.securitySchemeName')), 'default') || ':connection',
 	'scopes', json(COALESCE(json_extract(`oauth2`, '$.scopes'), '[]'))
 )
 WHERE `oauth2` IS NOT NULL
@@ -328,7 +411,7 @@ INSERT INTO `__openapi_query_param_slot_preflight` (`scope_id`, `source_id`, `sl
 SELECT
 	r.`scope_id`,
 	r.`source_id`,
-	'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`
 FROM `openapi_source_query_param` r
 WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL;--> statement-breakpoint
 
@@ -338,7 +421,7 @@ WITH rows AS (
 	SELECT
 		r.`scope_id`,
 		r.`source_id`,
-		'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`,
 		r.`secret_id`
 	FROM `openapi_source_query_param` r
 	WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL
@@ -374,7 +457,7 @@ ALTER TABLE `openapi_source_query_param` ADD `slot_key` text;--> statement-break
 ALTER TABLE `openapi_source_query_param` ADD `prefix` text;--> statement-breakpoint
 UPDATE `openapi_source_query_param`
 SET
-	`slot_key` = 'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`kind` = 'binding'
 WHERE `kind` = 'secret';--> statement-breakpoint
@@ -393,7 +476,7 @@ INSERT INTO `__openapi_spec_fetch_header_slot_preflight` (`scope_id`, `source_id
 SELECT
 	r.`scope_id`,
 	r.`source_id`,
-	'spec_fetch_header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'spec_fetch_header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`
 FROM `openapi_source_spec_fetch_header` r
 WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL;--> statement-breakpoint
 
@@ -403,7 +486,7 @@ WITH rows AS (
 	SELECT
 		r.`scope_id`,
 		r.`source_id`,
-		'spec_fetch_header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'spec_fetch_header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`,
 		r.`secret_id`
 	FROM `openapi_source_spec_fetch_header` r
 	WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL
@@ -439,7 +522,7 @@ ALTER TABLE `openapi_source_spec_fetch_header` ADD `slot_key` text;--> statement
 ALTER TABLE `openapi_source_spec_fetch_header` ADD `prefix` text;--> statement-breakpoint
 UPDATE `openapi_source_spec_fetch_header`
 SET
-	`slot_key` = 'spec_fetch_header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'spec_fetch_header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`kind` = 'binding'
 WHERE `kind` = 'secret';--> statement-breakpoint
@@ -458,7 +541,7 @@ INSERT INTO `__openapi_spec_fetch_query_param_slot_preflight` (`scope_id`, `sour
 SELECT
 	r.`scope_id`,
 	r.`source_id`,
-	'spec_fetch_query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'spec_fetch_query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`
 FROM `openapi_source_spec_fetch_query_param` r
 WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL;--> statement-breakpoint
 
@@ -468,7 +551,7 @@ WITH rows AS (
 	SELECT
 		r.`scope_id`,
 		r.`source_id`,
-		'spec_fetch_query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(r.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'spec_fetch_query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = r.`name`), 'default') AS `slot_key`,
 		r.`secret_id`
 	FROM `openapi_source_spec_fetch_query_param` r
 	WHERE r.`kind` = 'secret' AND r.`secret_id` IS NOT NULL
@@ -504,7 +587,7 @@ ALTER TABLE `openapi_source_spec_fetch_query_param` ADD `slot_key` text;--> stat
 ALTER TABLE `openapi_source_spec_fetch_query_param` ADD `prefix` text;--> statement-breakpoint
 UPDATE `openapi_source_spec_fetch_query_param`
 SET
-	`slot_key` = 'spec_fetch_query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'spec_fetch_query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`kind` = 'binding'
 WHERE `kind` = 'secret';--> statement-breakpoint
@@ -562,7 +645,7 @@ INSERT INTO `__graphql_header_slot_preflight` (`scope_id`, `source_id`, `slot_ke
 SELECT
 	h.`scope_id`,
 	h.`source_id`,
-	'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`name`), 'default') AS `slot_key`
 FROM `graphql_source_header` h
 WHERE h.`kind` = 'secret'
   AND h.`secret_id` IS NOT NULL;--> statement-breakpoint
@@ -574,7 +657,7 @@ WITH header_rows AS (
 		h.`scope_id`,
 		h.`source_id`,
 		h.`name`,
-		'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`name`), 'default') AS `slot_key`,
 		h.`secret_id`,
 		h.`secret_prefix`
 	FROM `graphql_source_header` h
@@ -603,7 +686,7 @@ FROM header_rows r;--> statement-breakpoint
 UPDATE `graphql_source_header`
 SET
 	`kind` = 'binding',
-	`slot_key` = 'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`text_value` = NULL
 WHERE `kind` = 'secret'
@@ -627,7 +710,7 @@ INSERT INTO `__graphql_query_param_slot_preflight` (`scope_id`, `source_id`, `sl
 SELECT
 	q.`scope_id`,
 	q.`source_id`,
-	'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(q.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = q.`name`), 'default') AS `slot_key`
 FROM `graphql_source_query_param` q
 WHERE q.`kind` = 'secret'
   AND q.`secret_id` IS NOT NULL;--> statement-breakpoint
@@ -639,7 +722,7 @@ WITH query_param_rows AS (
 		q.`scope_id`,
 		q.`source_id`,
 		q.`name`,
-		'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(q.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = q.`name`), 'default') AS `slot_key`,
 		q.`secret_id`,
 		q.`secret_prefix`
 	FROM `graphql_source_query_param` q
@@ -668,7 +751,7 @@ FROM query_param_rows r;--> statement-breakpoint
 UPDATE `graphql_source_query_param`
 SET
 	`kind` = 'binding',
-	`slot_key` = 'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`text_value` = NULL
 WHERE `kind` = 'secret'
@@ -818,7 +901,7 @@ INSERT INTO `__mcp_header_slot_preflight` (`scope_id`, `source_id`, `slot_key`)
 SELECT
 	h.`scope_id`,
 	h.`source_id`,
-	'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`name`), 'default') AS `slot_key`
 FROM `mcp_source_header` h
 WHERE h.`kind` = 'secret'
   AND h.`secret_id` IS NOT NULL;--> statement-breakpoint
@@ -830,7 +913,7 @@ WITH header_rows AS (
 		h.`scope_id`,
 		h.`source_id`,
 		h.`name`,
-		'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`name`), 'default') AS `slot_key`,
 		h.`secret_id`,
 		h.`secret_prefix`
 	FROM `mcp_source_header` h
@@ -859,7 +942,7 @@ FROM header_rows r;--> statement-breakpoint
 UPDATE `mcp_source_header`
 SET
 	`kind` = 'binding',
-	`slot_key` = 'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`text_value` = NULL
 WHERE `kind` = 'secret'
@@ -883,7 +966,7 @@ INSERT INTO `__mcp_query_param_slot_preflight` (`scope_id`, `source_id`, `slot_k
 SELECT
 	q.`scope_id`,
 	q.`source_id`,
-	'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(q.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = q.`name`), 'default') AS `slot_key`
 FROM `mcp_source_query_param` q
 WHERE q.`kind` = 'secret'
   AND q.`secret_id` IS NOT NULL;--> statement-breakpoint
@@ -895,7 +978,7 @@ WITH query_param_rows AS (
 		q.`scope_id`,
 		q.`source_id`,
 		q.`name`,
-		'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(q.`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = q.`name`), 'default') AS `slot_key`,
 		q.`secret_id`,
 		q.`secret_prefix`
 	FROM `mcp_source_query_param` q
@@ -924,7 +1007,7 @@ FROM query_param_rows r;--> statement-breakpoint
 UPDATE `mcp_source_query_param`
 SET
 	`kind` = 'binding',
-	`slot_key` = 'query_param:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(`name`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default'),
+	`slot_key` = 'query_param:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = `name`), 'default'),
 	`prefix` = `secret_prefix`,
 	`text_value` = NULL
 WHERE `kind` = 'secret'
@@ -1038,7 +1121,7 @@ INSERT INTO `__openapi_header_row_slot_preflight` (`scope_id`, `source_id`, `slo
 SELECT
 	s.`scope_id`,
 	s.`id`,
-	'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`
+	'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default') AS `slot_key`
 FROM `openapi_source` s, json_each(s.`headers`) h
 WHERE s.`headers` IS NOT NULL
   AND h.`type` = 'object'
@@ -1052,7 +1135,7 @@ WITH header_rows AS (
 		s.`scope_id`,
 		s.`id` AS `source_id`,
 		h.`key` AS `name`,
-		'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default') AS `slot_key`,
+		'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default') AS `slot_key`,
 		json_extract(h.`value`, '$.secretId') AS `secret_id`
 	FROM `openapi_source` s, json_each(s.`headers`) h
 	WHERE s.`headers` IS NOT NULL
@@ -1110,7 +1193,7 @@ SELECT
 		WHEN h.`type` = 'object' AND json_extract(h.`value`, '$.kind') = 'binding'
 			THEN json_extract(h.`value`, '$.slot')
 		WHEN h.`type` = 'object' AND json_extract(h.`value`, '$.secretId') IS NOT NULL
-			THEN 'header:' || COALESCE(NULLIF(trim(replace(replace(replace(replace(replace(replace(replace(replace(lower(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(trim(h.`key`), char(9), '-'), char(10), '-'), char(13), '-'), ' ', '-'), '_', '-'), '.', '-'), ':', '-'), '/', '-'), '@', '-'), '+', '-'), '&', '-'), '?', '-'), '#', '-'), '%', '-'), '$', '-'), ',', '-'), ';', '-'), '(', '-'), ')', '-'), '[', '-'), ']', '-'), '{', '-'), '}', '-'), '=', '-'), '~', '-'), '!', '-'), char(34), '-'), char(39), '-'), char(92), '-'), '|', '-'), '*', '-'), '<', '-'), '>', '-')), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '--', '-'), '-'), ''), 'default')
+			THEN 'header:' || COALESCE((SELECT `slug` FROM `__slug_norm` WHERE `raw` = h.`key`), 'default')
 		ELSE NULL
 	END,
 	CASE
@@ -1132,3 +1215,6 @@ WHERE s.`headers` IS NOT NULL
 );--> statement-breakpoint
 
 ALTER TABLE `openapi_source` DROP COLUMN `headers`;
+
+--> statement-breakpoint
+DROP TABLE `__slug_norm`;

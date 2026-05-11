@@ -17,6 +17,7 @@ import {
   createPkceCodeChallenge,
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
+  exchangeClientCredentials,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -203,6 +204,32 @@ describe("buildAuthorizationUrl", () => {
     const url = new URL(buildAuthorizationUrl(baseInput));
     expect(url.searchParams.has("resource")).toBe(false);
   });
+
+  it("rejects unsupported authorization URL schemes", () => {
+    expect(() =>
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "javascript:alert(1)",
+      }),
+    ).toThrow(/Authorization URL must use https: or loopback http:/);
+    expect(() =>
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "http://example.com/authorize",
+      }),
+    ).toThrow(/Authorization URL must use https: or loopback http:/);
+  });
+
+  it("allows HTTP authorization URLs when the caller opts into local HTTP", () => {
+    const url = new URL(
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "http://example.com/authorize",
+        endpointUrlPolicy: { allowHttp: true },
+      }),
+    );
+    expect(url.origin + url.pathname).toBe("http://example.com/authorize");
+  });
 });
 
 describe("exchangeAuthorizationCode", () => {
@@ -230,6 +257,23 @@ describe("exchangeAuthorizationCode", () => {
         expect(call.body.get("code")).toBe("abc");
       }),
     ),
+  );
+
+  it.effect("rejects unsupported token URL schemes before exchange", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        exchangeAuthorizationCode({
+          tokenUrl: "http://example.com/token",
+          clientId: "cid",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) return;
+      expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
+    }),
   );
 
   it.effect("omits client_secret when none is provided (public clients with PKCE)", () =>
@@ -546,6 +590,23 @@ describe("exchangeAuthorizationCode", () => {
           expect(failure).not.toContain("do-not-log");
         }),
     ),
+  );
+});
+
+describe("exchangeClientCredentials", () => {
+  it.effect("rejects unsupported token URL schemes before exchange", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        exchangeClientCredentials({
+          tokenUrl: "http://example.com/token",
+          clientId: "cid",
+          clientSecret: "secret",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) return;
+      expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
+    }),
   );
 });
 

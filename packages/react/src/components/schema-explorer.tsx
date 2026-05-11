@@ -26,6 +26,17 @@ type JsonSchema = {
   format?: string;
 };
 
+export const safeSchemaValueLabel = (value: unknown): string => {
+  if (typeof value === "bigint") return `${value.toString()}n`;
+  try {
+    const label = JSON.stringify(value);
+    if (label === undefined) return String(value);
+    return label.length > 120 ? `${label.slice(0, 117)}...` : label;
+  } catch {
+    return "[unavailable]";
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Ref resolution — lazy, only on expand
 // ---------------------------------------------------------------------------
@@ -64,11 +75,11 @@ const getTypeLabel = (schema: JsonSchema, root: JsonSchema): string => {
     return getRefName(schema.$ref) ?? "ref";
   }
 
-  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  if (schema.const !== undefined) return safeSchemaValueLabel(schema.const);
 
   if (schema.enum) {
     if (schema.enum.length <= 3) {
-      return schema.enum.map((v) => JSON.stringify(v)).join(" | ");
+      return schema.enum.map((v) => safeSchemaValueLabel(v)).join(" | ");
     }
     return `enum (${schema.enum.length})`;
   }
@@ -263,7 +274,7 @@ function PropertyRow(props: {
             ))}
           {schema.default !== undefined && (
             <p className="text-xs leading-5 text-muted-foreground">
-              = {JSON.stringify(schema.default)}
+              = {safeSchemaValueLabel(schema.default)}
             </p>
           )}
         </div>

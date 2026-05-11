@@ -987,4 +987,110 @@ describe("connections — multi-scope behaviour", () => {
       expect(outerStill?.identityLabel).toBe("outer");
     }),
   );
+
+  it.effect("accessTokenAtScope refreshes with token material from the selected scope", () =>
+    Effect.gen(function* () {
+      const secretProvider = makeMemoryProvider();
+      const calls: ConnectionRefreshInput[] = [];
+      const provider: ConnectionProvider = {
+        key: "spotify",
+        refresh: (input) =>
+          Effect.sync(() => {
+            calls.push(input);
+            return {
+              accessToken: `rotated-${input.refreshToken ?? "none"}`,
+              refreshToken: `${input.refreshToken ?? "none"}-next`,
+              expiresAt: Date.now() + 3_600_000,
+            };
+          }),
+      };
+      const plugins = [memorySecretsPlugin(secretProvider), connPlugin(provider)] as const;
+      const schema = collectSchemas(plugins);
+      const adapter = makeMemoryAdapter({ schema });
+      const blobs = makeInMemoryBlobStore();
+
+      const outerId = scpid("org");
+      const innerId = scpid("user-org:u1:org");
+      const outerScope = new Scope({
+        id: outerId,
+        name: "outer",
+        createdAt: new Date(),
+      });
+      const innerScope = new Scope({
+        id: innerId,
+        name: "inner",
+        createdAt: new Date(),
+      });
+
+      const execOuter = yield* createExecutor({
+        scopes: [outerScope],
+        adapter,
+        blobs,
+        plugins,
+        onElicitation: "accept-all",
+      });
+      const execInner = yield* createExecutor({
+        scopes: [innerScope, outerScope],
+        adapter,
+        blobs,
+        plugins,
+        onElicitation: "accept-all",
+      });
+
+      const sharedConnection = cid("shared");
+      yield* execOuter.connections.create(
+        new CreateConnectionInput({
+          id: sharedConnection,
+          scope: outerId,
+          provider: "spotify",
+          identityLabel: "outer",
+          accessToken: new TokenMaterial({
+            secretId: sid("shared.access"),
+            name: "access",
+            value: "outer-access",
+          }),
+          refreshToken: new TokenMaterial({
+            secretId: sid("shared.refresh"),
+            name: "refresh",
+            value: "outer-refresh",
+          }),
+          expiresAt: Date.now() - 1_000,
+          oauthScope: null,
+          providerState: null,
+        }),
+      );
+      yield* execInner.connections.create(
+        new CreateConnectionInput({
+          id: sharedConnection,
+          scope: innerId,
+          provider: "spotify",
+          identityLabel: "inner",
+          accessToken: new TokenMaterial({
+            secretId: sid("shared.access"),
+            name: "access",
+            value: "inner-access",
+          }),
+          refreshToken: new TokenMaterial({
+            secretId: sid("shared.refresh"),
+            name: "refresh",
+            value: "inner-refresh",
+          }),
+          expiresAt: Date.now() - 1_000,
+          oauthScope: null,
+          providerState: null,
+        }),
+      );
+
+      const token = yield* execInner.connections.accessTokenAtScope("shared", String(innerId));
+
+      expect(token).toBe("rotated-inner-refresh");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.scopeId).toBe(innerId);
+      expect(calls[0]!.refreshToken).toBe("inner-refresh");
+      expect(yield* secretProvider.get!("shared.refresh", String(innerId))).toBe(
+        "inner-refresh-next",
+      );
+      expect(yield* secretProvider.get!("shared.refresh", String(outerId))).toBe("outer-refresh");
+    }),
+  );
 });

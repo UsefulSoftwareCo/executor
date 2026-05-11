@@ -48,6 +48,14 @@ const endpointWithQueryParams = (endpoint: string, queryParams: Record<string, s
   return url.toString();
 };
 
+export const endpointForTelemetry = (endpoint: string): string => {
+  if (!URL.canParse(endpoint)) return endpoint;
+  const url = new URL(endpoint);
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+};
+
 // ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------
@@ -73,11 +81,12 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
 ) {
   const client = yield* HttpClient.HttpClient;
   const requestEndpoint = endpointWithQueryParams(endpoint, resolvedQueryParams);
+  const telemetryEndpoint = endpointForTelemetry(endpoint);
 
   yield* Effect.annotateCurrentSpan({
     "http.method": "POST",
-    "http.url": requestEndpoint,
-    "plugin.graphql.endpoint": endpoint,
+    "http.url": telemetryEndpoint,
+    "plugin.graphql.endpoint": telemetryEndpoint,
     "plugin.graphql.operation_kind": operation.kind,
     "plugin.graphql.field_name": operation.fieldName,
     "plugin.graphql.headers.resolved_count": Object.keys(resolvedHeaders).length,
@@ -160,7 +169,7 @@ export const invokeWithLayer = (
     Effect.provide(httpClientLayer),
     Effect.withSpan("plugin.graphql.invoke", {
       attributes: {
-        "plugin.graphql.endpoint": endpoint,
+        "plugin.graphql.endpoint": endpointForTelemetry(endpoint),
         "plugin.graphql.operation_kind": operation.kind,
         "plugin.graphql.field_name": operation.fieldName,
       },

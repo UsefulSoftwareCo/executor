@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import {
-  ConfiguredCredentialValue as ConfiguredCredentialValueSchema,
+  ConfiguredCredentialValueSchema,
   CredentialBindingValue,
   credentialSlotKey,
   ScopedSecretCredentialInput,
@@ -106,15 +106,17 @@ export type GraphqlSourceAuthInput = typeof GraphqlSourceAuthInput.Type;
 export const GraphqlSourceBindingValue = CredentialBindingValue;
 export type GraphqlSourceBindingValue = typeof GraphqlSourceBindingValue.Type;
 
-export class GraphqlSourceBindingInput extends Schema.Class<GraphqlSourceBindingInput>(
-  "GraphqlSourceBindingInput",
-)({
+export const GraphqlSourceBindingInputSchema = Schema.Struct({
   sourceId: Schema.String,
   sourceScope: ScopeId,
   scope: ScopeId,
   slot: Schema.String,
   value: GraphqlSourceBindingValue,
-}) {}
+});
+
+export class GraphqlSourceBindingInput extends Schema.Class<GraphqlSourceBindingInput>(
+  "GraphqlSourceBindingInput",
+)(GraphqlSourceBindingInputSchema.fields) {}
 
 export class GraphqlSourceBindingRef extends Schema.Class<GraphqlSourceBindingRef>(
   "GraphqlSourceBindingRef",

@@ -159,6 +159,15 @@ const getServiceFromConfig = (
     Effect.flatMap((resolved) => makeOnePasswordService(resolved, { timeoutMs, preferSdk })),
   );
 
+const configuredVaultUri = (config: OnePasswordConfig, secretId: string): string | null => {
+  if (!secretId.startsWith("op://")) {
+    return `op://${config.vaultId}/${secretId}/${CREDENTIAL_FIELD}`;
+  }
+  const match = secretId.match(/^op:\/\/([^/]+)\/.+/);
+  if (!match || match[1] !== config.vaultId) return null;
+  return secretId;
+};
+
 // ---------------------------------------------------------------------------
 // SecretProvider — read-only, resolves op:// URIs or vaultId-based lookups
 // ---------------------------------------------------------------------------
@@ -170,6 +179,7 @@ const makeProvider = (
 ): SecretProvider => ({
   key: "onepassword",
   writable: false,
+  allowFallback: false,
 
   // 1Password vaults are named in the stored config; the executor-scope
   // arg isn't used for routing here. A future refactor could let the
@@ -179,9 +189,8 @@ const makeProvider = (
       Effect.flatMap((config) => {
         if (!config) return Effect.succeed(null as string | null);
 
-        const uri = secretId.startsWith("op://")
-          ? secretId
-          : `op://${config.vaultId}/${secretId}/${CREDENTIAL_FIELD}`;
+        const uri = configuredVaultUri(config, secretId);
+        if (uri === null) return Effect.succeed(null as string | null);
 
         return getServiceFromConfig(config, ctx, timeoutMs, preferSdk).pipe(
           Effect.flatMap((svc) => svc.resolveSecret(uri)),
@@ -261,8 +270,15 @@ const makeOnePasswordExtension = (
             message: "1Password is not configured",
           });
         }
+        const scopedUri = configuredVaultUri(config, uri);
+        if (scopedUri === null) {
+          return yield* new OnePasswordError({
+            operation: "resolve",
+            message: "1Password secret URI is outside the configured vault",
+          });
+        }
         const svc = yield* getServiceFromConfig(config, ctx, timeoutMs, preferSdk);
-        return yield* svc.resolveSecret(uri);
+        return yield* svc.resolveSecret(scopedUri);
       }),
   };
 };

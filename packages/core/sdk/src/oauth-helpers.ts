@@ -57,6 +57,47 @@ export const OAUTH2_REFRESH_SKEW_MS = 60_000;
 /** Default token-endpoint timeout. */
 export const OAUTH2_DEFAULT_TIMEOUT_MS = 20_000;
 
+export interface OAuthEndpointUrlPolicy {
+  readonly allowHttp?: boolean;
+}
+
+const isLoopbackHttpUrl = (value: string): boolean => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  if (url.protocol !== "http:") return false;
+  const hostname = url.hostname.toLowerCase();
+  return (
+    hostname === "localhost" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    hostname.startsWith("127.")
+  );
+};
+
+export const isSupportedOAuthEndpointUrl = (
+  value: string,
+  policy: OAuthEndpointUrlPolicy = {},
+): boolean => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" ||
+    isLoopbackHttpUrl(value) ||
+    (url.protocol === "http:" && policy.allowHttp === true)
+  );
+};
+
+export const assertSupportedOAuthEndpointUrl = (
+  value: string,
+  label = "OAuth endpoint URL",
+  policy: OAuthEndpointUrlPolicy = {},
+): string => {
+  if (isSupportedOAuthEndpointUrl(value, policy)) return value;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: synchronous assertion helper used by URL constructors and Effect.try wrappers
+  throw new TypeError(`${label} must use https: or loopback http:`);
+};
+
 // ---------------------------------------------------------------------------
 // PKCE (RFC 7636) — straight delegation to `oauth4webapi`
 // ---------------------------------------------------------------------------
@@ -86,12 +127,19 @@ export type BuildAuthorizationUrlInput = {
   readonly resource?: string;
   /** Provider-specific extras (e.g. Google's `access_type=offline`). */
   readonly extraParams?: Readonly<Record<string, string>>;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 };
 
 /** Build an RFC 6749 §4.1.1 authorization URL. Sync; pre-computed
  *  challenge lets this stay out of the Promise world. */
 export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string => {
-  const url = new URL(input.authorizationUrl);
+  const url = new URL(
+    assertSupportedOAuthEndpointUrl(
+      input.authorizationUrl,
+      "Authorization URL",
+      input.endpointUrlPolicy,
+    ),
+  );
   const separator = input.scopeSeparator ?? " ";
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUrl);
@@ -222,7 +270,11 @@ const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2E
 
 export type ClientAuthMethod = "body" | "basic";
 
-const asFromTokenUrl = (tokenUrl: string): oauth.AuthorizationServer => {
+const asFromTokenUrl = (
+  tokenUrl: string,
+  endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
+): oauth.AuthorizationServer => {
+  assertSupportedOAuthEndpointUrl(tokenUrl, "Token URL", endpointUrlPolicy);
   const url = new URL(tokenUrl);
   return {
     issuer: `${url.protocol}//${url.host}`,
@@ -235,9 +287,10 @@ const asFromTokenUrlAndIssuer = (
   issuerUrl: string | null | undefined,
   options: {
     readonly idTokenSigningAlgValuesSupported?: readonly string[];
+    readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   } = {},
 ): oauth.AuthorizationServer => {
-  const as = asFromTokenUrl(tokenUrl);
+  const as = asFromTokenUrl(tokenUrl, options.endpointUrlPolicy);
   const withIssuer = issuerUrl ? { ...as, issuer: issuerUrl } : as;
   return options.idTokenSigningAlgValuesSupported
     ? {
@@ -247,28 +300,20 @@ const asFromTokenUrlAndIssuer = (
     : withIssuer;
 };
 
-const isLoopbackHttpUrl = (value: string): boolean => {
-  if (!URL.canParse(value)) return false;
-  const url = new URL(value);
-  if (url.protocol !== "http:") return false;
-  const hostname = url.hostname.toLowerCase();
-  return (
-    hostname === "localhost" ||
-    hostname === "0.0.0.0" ||
-    hostname === "::1" ||
-    hostname === "[::1]" ||
-    hostname.startsWith("127.")
-  );
-};
-
 const oauth4webapiRequestOptions = (
   targetUrl: string,
   timeoutMs: number | undefined,
+  endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
 ): Record<string, unknown> => {
   const options: Record<string, unknown> = {
     signal: AbortSignal.timeout(timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS),
   };
-  if (isLoopbackHttpUrl(targetUrl)) {
+  if (
+    isLoopbackHttpUrl(targetUrl) ||
+    (URL.canParse(targetUrl) &&
+      new URL(targetUrl).protocol === "http:" &&
+      endpointUrlPolicy.allowHttp === true)
+  ) {
     (options as { [oauth.allowInsecureRequests]?: boolean })[oauth.allowInsecureRequests] = true;
   }
   return options;
@@ -344,6 +389,7 @@ export type ExchangeAuthorizationCodeInput = {
    *  to call. */
   readonly resource?: string;
   readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 };
 
 export const exchangeAuthorizationCode = (
@@ -353,6 +399,7 @@ export const exchangeAuthorizationCode = (
     try: async () => {
       const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
         idTokenSigningAlgValuesSupported: input.idTokenSigningAlgValuesSupported,
+        endpointUrlPolicy: input.endpointUrlPolicy,
       });
       const client: oauth.Client = { client_id: input.clientId };
       const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
@@ -375,7 +422,7 @@ export const exchangeAuthorizationCode = (
         clientAuth,
         "authorization_code",
         params,
-        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs),
+        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
       );
       return await processTokenEndpointResponse(as, client, response);
     },
@@ -394,6 +441,7 @@ export type ExchangeClientCredentialsInput = {
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
   readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 };
 
 export const exchangeClientCredentials = (
@@ -401,7 +449,7 @@ export const exchangeClientCredentials = (
 ): Effect.Effect<OAuth2TokenResponse, OAuth2Error> =>
   Effect.tryPromise({
     try: async () => {
-      const as = asFromTokenUrl(input.tokenUrl);
+      const as = asFromTokenUrl(input.tokenUrl, input.endpointUrlPolicy);
       const client: oauth.Client = { client_id: input.clientId };
       const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
       const params = new URLSearchParams();
@@ -413,7 +461,7 @@ export const exchangeClientCredentials = (
         client,
         clientAuth,
         params,
-        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs),
+        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
       );
       const result = await oauth.processClientCredentialsResponse(as, client, response);
       return tokenResponseFrom(result);
@@ -440,6 +488,7 @@ export type RefreshAccessTokenInput = {
    *  the same resource. */
   readonly resource?: string;
   readonly timeoutMs?: number;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 };
 
 export const refreshAccessToken = (
@@ -449,6 +498,7 @@ export const refreshAccessToken = (
     try: async () => {
       const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
         idTokenSigningAlgValuesSupported: input.idTokenSigningAlgValuesSupported,
+        endpointUrlPolicy: input.endpointUrlPolicy,
       });
       const client: oauth.Client = { client_id: input.clientId };
       const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
@@ -467,7 +517,7 @@ export const refreshAccessToken = (
         clientAuth,
         input.refreshToken,
         {
-          ...oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs),
+          ...oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
           additionalParameters,
         },
       );

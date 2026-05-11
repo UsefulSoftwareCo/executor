@@ -23,9 +23,11 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 
 import {
   OAUTH2_DEFAULT_TIMEOUT_MS,
+  assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
   createPkceCodeChallenge,
   createPkceCodeVerifier,
+  type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 
 // ---------------------------------------------------------------------------
@@ -140,27 +142,37 @@ export interface DiscoveryRequestOptions {
    *  authorization-server metadata, DCR, authorization, or token calls. */
   readonly resourceHeaders?: Readonly<Record<string, string>>;
   readonly resourceQueryParams?: Readonly<Record<string, string>>;
+  readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
 }
 
 const MCP_PROTOCOL_VERSION_HEADER = "mcp-protocol-version";
 
-const isLoopbackHttpUrl = (value: string): boolean => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor is the platform parser; invalid URLs are not loopback HTTP
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:") return false;
-    const hostname = url.hostname.toLowerCase();
-    return (
-      hostname === "localhost" ||
-      hostname === "0.0.0.0" ||
-      hostname === "::1" ||
-      hostname === "[::1]" ||
-      hostname.startsWith("127.")
-    );
-  } catch {
-    return false;
-  }
-};
+const validateEndpointUrl = (
+  value: string,
+  label: string,
+  policy: OAuthEndpointUrlPolicy = {},
+): Effect.Effect<string, OAuthDiscoveryError> =>
+  Effect.try({
+    try: () => assertSupportedOAuthEndpointUrl(value, label, policy),
+    catch: (cause) =>
+      new OAuthDiscoveryError({
+        message: `${label} must use https: or loopback http:`,
+        cause,
+      }),
+  });
+
+const validateAuthorizationServerMetadata = (
+  metadata: OAuthAuthorizationServerMetadata,
+  policy: OAuthEndpointUrlPolicy = {},
+): Effect.Effect<void, OAuthDiscoveryError> =>
+  Effect.gen(function* () {
+    yield* validateEndpointUrl(metadata.issuer, "issuer", policy);
+    yield* validateEndpointUrl(metadata.authorization_endpoint, "authorization_endpoint", policy);
+    yield* validateEndpointUrl(metadata.token_endpoint, "token_endpoint", policy);
+    if (metadata.registration_endpoint) {
+      yield* validateEndpointUrl(metadata.registration_endpoint, "registration_endpoint", policy);
+    }
+  });
 
 const provideHttpClient = <A, E>(
   effect: Effect.Effect<A, E, HttpClient.HttpClient>,
@@ -325,6 +337,7 @@ export const discoverAuthorizationServerMetadata = (
   OAuthDiscoveryError
 > =>
   Effect.gen(function* () {
+    yield* validateEndpointUrl(issuer, "issuer", options.endpointUrlPolicy);
     const issuerUrl = new URL(issuer);
     const issuerOrigin = `${issuerUrl.protocol}//${issuerUrl.host}`;
     const issuerPath = issuerUrl.pathname.replace(/\/+$/, "");
@@ -380,6 +393,7 @@ export const discoverAuthorizationServerMetadata = (
             }),
         ),
       );
+      yield* validateAuthorizationServerMetadata(metadata, options.endpointUrlPolicy);
       return { metadataUrl, metadata };
     }
     return null;
@@ -480,12 +494,19 @@ export const registerDynamicClient = (
   options: DiscoveryRequestOptions = {},
 ): Effect.Effect<OAuthClientInformation, OAuthDiscoveryError> =>
   Effect.gen(function* () {
-    const url = new URL(input.registrationEndpoint);
-    if (url.protocol !== "https:" && !isLoopbackHttpUrl(input.registrationEndpoint)) {
-      return yield* new DcrTransport({
-        detail: `registration_endpoint must be HTTPS or a loopback HTTP URL (got ${url.protocol}//${url.host})`,
-      });
-    }
+    yield* validateEndpointUrl(
+      input.registrationEndpoint,
+      "registration_endpoint",
+      options.endpointUrlPolicy,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DcrTransport({
+            detail: "registration_endpoint must use https: or loopback http:",
+            cause,
+          }),
+      ),
+    );
 
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -572,6 +593,30 @@ export const canonicalResourceUrl = (value: string): string => {
   const path = url.pathname.replace(/\/+$/, "");
   return `${scheme}//${host}${path}`;
 };
+
+const validateResourceIndicator = (
+  value: string,
+  expected: string,
+): Effect.Effect<string, OAuthDiscoveryError> =>
+  Effect.try({
+    try: () => canonicalResourceUrl(value),
+    catch: (cause) =>
+      new OAuthDiscoveryError({
+        message: "Protected resource metadata resource is malformed",
+        cause,
+      }),
+  }).pipe(
+    Effect.flatMap((actual) =>
+      actual === expected || expected.startsWith(`${actual}/`)
+        ? Effect.succeed(actual)
+        : Effect.fail(
+            new OAuthDiscoveryError({
+              message: "Protected resource metadata resource does not match requested endpoint",
+              cause: { expected, actual },
+            }),
+          ),
+    ),
+  );
 
 // ---------------------------------------------------------------------------
 // Token-endpoint auth method negotiation
@@ -666,6 +711,8 @@ export const beginDynamicAuthorization = (
           }
         : null
       : yield* discoverProtectedResourceMetadata(input.endpoint, options);
+
+    const expectedResource = canonicalResourceUrl(input.endpoint);
 
     // RFC 9728 allows multiple authorization_servers — try each in
     // listed order. Fall back to the endpoint's origin only when no
@@ -777,7 +824,9 @@ export const beginDynamicAuthorization = (
         );
       })());
 
-    const resourceValue = resource?.metadata.resource ?? canonicalResourceUrl(input.endpoint);
+    const resourceValue = resource?.metadata.resource
+      ? yield* validateResourceIndicator(resource.metadata.resource, expectedResource)
+      : expectedResource;
 
     const codeVerifier = createPkceCodeVerifier();
     const codeChallenge = yield* Effect.promise(() => createPkceCodeChallenge(codeVerifier));
@@ -790,6 +839,7 @@ export const beginDynamicAuthorization = (
       state: input.state,
       codeChallenge,
       resource: resourceValue,
+      endpointUrlPolicy: options.endpointUrlPolicy,
     });
 
     return {

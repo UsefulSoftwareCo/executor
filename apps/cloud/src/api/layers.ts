@@ -3,6 +3,7 @@ import { HttpServer } from "effect/unstable/http";
 import { Layer } from "effect";
 
 import { OrgAuthLive, SessionAuthLive } from "../auth/middleware-live";
+import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import {
   CloudAuthPublicHandlers,
@@ -50,6 +51,7 @@ export const BootSharedServices = Layer.mergeAll(
 export const makeNonProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
   HttpApiBuilder.layer(NonProtectedApi).pipe(
     Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
+    Layer.provideMerge(ApiKeyService.WorkOS),
     Layer.provide(requestScopedMiddleware(rsLive).layer),
     Layer.provideMerge(SessionAuthLive),
   );

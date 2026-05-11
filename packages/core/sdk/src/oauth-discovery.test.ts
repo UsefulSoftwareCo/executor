@@ -180,6 +180,52 @@ describe("discoverAuthorizationServerMetadata", () => {
         }),
     ),
   );
+
+  it.effect("rejects unsupported authorization server endpoint URLs", () =>
+    withOAuthFixture(
+      () =>
+        sendJson({
+          issuer: "http://example.com",
+          authorization_endpoint: "javascript:alert(1)",
+          token_endpoint: "http://example.com/token",
+          response_types_supported: ["code"],
+        }),
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(discoverAuthorizationServerMetadata(baseUrl));
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const reason = exit.cause.reasons.find(Cause.isFailReason);
+          expect(reason?.error).toEqual(
+            expect.objectContaining({
+              _tag: "OAuthDiscoveryError",
+              message: expect.stringMatching(/must use https: or loopback http:/),
+            }),
+          );
+        }),
+    ),
+  );
+
+  it.effect("allows HTTP authorization server endpoints when the caller opts into local HTTP", () =>
+    withOAuthFixture(
+      () =>
+        sendJson({
+          issuer: "http://example.com",
+          authorization_endpoint: "http://example.com/authorize",
+          token_endpoint: "http://example.com/token",
+          response_types_supported: ["code"],
+        }),
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* discoverAuthorizationServerMetadata(baseUrl, {
+            endpointUrlPolicy: { allowHttp: true },
+          });
+          expect(result).not.toBeNull();
+          expect(result!.metadata.authorization_endpoint).toBe("http://example.com/authorize");
+          expect(result!.metadata.token_endpoint).toBe("http://example.com/token");
+        }),
+    ),
+  );
 });
 
 describe("registerDynamicClient", () => {
@@ -480,7 +526,7 @@ describe("beginDynamicAuthorization", () => {
     ),
   );
 
-  it.effect("includes RFC 8707 resource parameter on the authorization URL", () =>
+  it.effect("rejects protected-resource metadata for a different resource", () =>
     withOAuthFixture(
       (request, baseUrl) => {
         if (request.url === "/.well-known/oauth-protected-resource/v1/mcp") {
@@ -513,15 +559,22 @@ describe("beginDynamicAuthorization", () => {
       },
       ({ baseUrl }) =>
         Effect.gen(function* () {
-          const result = yield* beginDynamicAuthorization({
-            endpoint: `${baseUrl}/v1/mcp`,
-            redirectUrl: "https://app/cb",
-            state: "s",
-          });
-
-          const authUrl = new URL(result.authorizationUrl);
-          expect(authUrl.searchParams.get("resource")).toBe(`${baseUrl}/canonical-id`);
-          expect(result.state.resource).toBe(`${baseUrl}/canonical-id`);
+          const exit = yield* Effect.exit(
+            beginDynamicAuthorization({
+              endpoint: `${baseUrl}/v1/mcp`,
+              redirectUrl: "https://app/cb",
+              state: "s",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          const reason = exit.cause.reasons.find(Cause.isFailReason);
+          expect(reason?.error).toEqual(
+            expect.objectContaining({
+              _tag: "OAuthDiscoveryError",
+              message: expect.stringMatching(/resource does not match requested endpoint/),
+            }),
+          );
         }),
     ),
   );

@@ -11,6 +11,7 @@ import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js
 
 import { mcpSourceAtom, mcpSourceBindingsAtom, setMcpSourceBinding } from "./atoms";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
+import { McpSourceBindingInput } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // McpSignInButton — top-bar action on the source detail page.
@@ -29,8 +30,10 @@ export default function McpSignInButton(props: { sourceId: string }) {
   const source =
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
   const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
-  const bindingsResult = useAtomValue(mcpSourceBindingsAtom(scopeId, props.sourceId, sourceScope));
-  const connectionsResult = useAtomValue(connectionsAtom(scopeId));
+  const bindingsResult = useAtomValue(
+    mcpSourceBindingsAtom(userScopeId, props.sourceId, sourceScope),
+  );
+  const connectionsResult = useAtomValue(connectionsAtom(userScopeId));
   const setBinding = useAtomSet(setMcpSourceBinding, { mode: "promise" });
 
   const remote = source && source.config.transport === "remote" ? source.config : null;
@@ -69,16 +72,17 @@ export default function McpSignInButton(props: { sourceId: string }) {
         bindings ?? [],
       )}
       isConnected={isConnected}
+      detectPopupClosed={false}
       onConnected={async (nextConnectionId) => {
         await setBinding({
-          params: { scopeId },
-          payload: {
+          params: { scopeId: userScopeId },
+          payload: new McpSourceBindingInput({
             sourceId: props.sourceId,
             sourceScope,
             scope: userScopeId,
             slot: oauth2.connectionSlot,
             value: { kind: "connection", connectionId: nextConnectionId },
-          },
+          }),
           reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
         });
       }}

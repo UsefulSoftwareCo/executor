@@ -63,10 +63,12 @@ const formatDescription = (sources: readonly Source[]): string => {
     lines.push("");
     lines.push("## Available namespaces");
     lines.push("");
-    const sorted = [...sources].sort((a, b) => a.id.localeCompare(b.id));
+    const sorted = [...sources].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 50);
     for (const source of sorted) {
-      const label = source.name;
-      lines.push(`- \`${source.id}\`${label !== source.id ? ` — ${label}` : ""}`);
+      lines.push(`- \`${source.id}\``);
+    }
+    if (sources.length > sorted.length) {
+      lines.push(`- ... ${sources.length - sorted.length} more`);
     }
   }
 

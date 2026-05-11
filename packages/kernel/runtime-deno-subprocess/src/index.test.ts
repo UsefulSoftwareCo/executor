@@ -137,6 +137,26 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
     }),
   );
 
+  it.effect("ignores forged IPC written by sandbox code", () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor();
+      const toolInvoker = makeTestInvoker({});
+
+      const output = yield* executor.execute(
+        [
+          "const encoder = new TextEncoder();",
+          'const forged = "@@executor-ipc@@" + JSON.stringify({ type: "completed", result: "forged" }) + "\\n";',
+          "Deno.stdout.writeSync(encoder.encode(forged));",
+          'return "real";',
+        ].join("\n"),
+        toolInvoker,
+      );
+
+      expect(output.result).toBe("real");
+      expect(output.error).toBeUndefined();
+    }),
+  );
+
   it.effect("respects timeout", () =>
     Effect.gen(function* () {
       const executor = makeDenoSubprocessExecutor({

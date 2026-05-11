@@ -34,15 +34,23 @@ const SETTINGS_PATH = join(SETTINGS_DIR, "desktop-settings.json");
 const CLI_BIN_DIR = join(SETTINGS_DIR, "bin");
 const CLI_BIN_PATH = join(CLI_BIN_DIR, process.platform === "win32" ? "executor.exe" : "executor");
 
+const htmlEscape = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
 // ---------------------------------------------------------------------------
 // CLI install — copy sidecar to ~/.executor/bin and patch shell PATH
 // ---------------------------------------------------------------------------
 
-const getInstalledCliVersion = (): string | null => {
-  if (!existsSync(CLI_BIN_PATH)) return null;
+const getCliVersion = (path: string): string | null => {
+  if (!existsSync(path)) return null;
   try {
     const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-    return execFileSync(CLI_BIN_PATH, ["--version"], {
+    return execFileSync(path, ["--version"], {
       timeout: 5000,
       encoding: "utf-8",
     }).trim();
@@ -51,6 +59,8 @@ const getInstalledCliVersion = (): string | null => {
   }
 };
 
+const getInstalledCliVersion = (): string | null => getCliVersion(CLI_BIN_PATH);
+
 const installCli = (): void => {
   if (isDev) return;
 
@@ -58,7 +68,7 @@ const installCli = (): void => {
   if (!existsSync(sidecar)) return;
 
   // Check if installed version is already same or newer
-  const appVersion = app.getVersion();
+  const bundledVersion = getCliVersion(sidecar) ?? app.getVersion();
   const installedVersion = getInstalledCliVersion();
   if (installedVersion) {
     const parse = (v: string) =>
@@ -70,7 +80,7 @@ const installCli = (): void => {
           return isNaN(n) ? 0 : n;
         });
     const installed = parse(installedVersion);
-    const bundled = parse(appVersion);
+    const bundled = parse(bundledVersion);
     const len = Math.max(installed.length, bundled.length);
     let cmp = 0;
     for (let i = 0; i < len && cmp === 0; i++) {
@@ -86,7 +96,7 @@ const installCli = (): void => {
     chmodSync(CLI_BIN_PATH, 0o755);
   } catch {}
   console.log(
-    `Installed executor CLI ${appVersion} to ${CLI_BIN_PATH}` +
+    `Installed executor CLI ${bundledVersion} to ${CLI_BIN_PATH}` +
       (installedVersion ? ` (was ${installedVersion})` : ""),
   );
 
@@ -543,7 +553,7 @@ const loadingHTML = (scopePath: string): string => {
   const subtle = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.03)";
   const barColor = isDark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)";
   const barTrack = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.06)";
-  const folder = basename(scopePath.replace(/[/\\]+$/, "")) || scopePath;
+  const folder = htmlEscape(basename(scopePath.replace(/[/\\]+$/, "")) || scopePath);
 
   return `<!DOCTYPE html>
 <html>
@@ -683,7 +693,7 @@ const errorHTML = (message: string): string => `<!DOCTYPE html>
 <body>
   <div class="container">
     <h2>Failed to start server</h2>
-    <pre>${message.replace(/</g, "&lt;")}</pre>
+    <pre>${htmlEscape(message)}</pre>
     <button onclick="window.electronAPI.selectScope()">Choose Different Folder</button>
   </div>
 </body>
@@ -704,9 +714,9 @@ const welcomeHTML = (): string => {
   const recentItems = settings.recentScopes
     .map(
       (s) =>
-        `<button class="scope-btn" onclick="window.electronAPI.switchScope('${s.replace(/'/g, "\\'")}')">
-          <span class="name">${basename(s)}</span>
-          <span class="path">${s}</span>
+        `<button class="scope-btn" data-scope="${htmlEscape(s)}">
+          <span class="name">${htmlEscape(basename(s))}</span>
+          <span class="path">${htmlEscape(s)}</span>
         </button>`,
     )
     .join("");
@@ -765,6 +775,14 @@ const welcomeHTML = (): string => {
         : ""
     }
   </div>
+  <script>
+    for (const button of document.querySelectorAll(".scope-btn")) {
+      button.addEventListener("click", () => {
+        const scope = button.getAttribute("data-scope");
+        if (scope) window.electronAPI.switchScope(scope);
+      });
+    }
+  </script>
 </body>
 </html>`;
 };

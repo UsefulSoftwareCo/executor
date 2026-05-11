@@ -16,10 +16,10 @@ class Pet extends Schema.Class<Pet>("Pet")({
   tag: Schema.optional(Schema.String),
 }) {}
 
-class CreatePetInput extends Schema.Class<CreatePetInput>("CreatePetInput")({
+const CreatePetInput = Schema.Struct({
   name: Schema.String,
   tag: Schema.optional(Schema.String),
-}) {}
+});
 
 class PetNotFound extends Schema.TaggedErrorClass<PetNotFound>()("PetNotFound", {
   message: Schema.String,

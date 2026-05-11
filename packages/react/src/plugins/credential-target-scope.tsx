@@ -170,12 +170,15 @@ export function CredentialScopeDropdown(props: {
   readonly onChange: (scope: ScopeId) => void;
   readonly label?: string;
   readonly help?: ReactNode;
+  readonly className?: string;
+  readonly triggerClassName?: string;
+  readonly size?: "sm" | "default";
 }) {
   const label = props.label ?? "Used by";
   if (props.options.length <= 1) return null;
 
   return (
-    <div className="space-y-1.5">
+    <div className={props.className ?? "space-y-1.5"}>
       <div className="flex items-center gap-1.5">
         <FieldLabel className="text-[11px]">{label}</FieldLabel>
         <HelpTooltip label={label}>
@@ -186,7 +189,7 @@ export function CredentialScopeDropdown(props: {
         value={String(props.value)}
         onValueChange={(value) => props.onChange(ScopeId.make(value))}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className={props.triggerClassName ?? "w-full"} size={props.size}>
           <SelectValue placeholder={label} />
         </SelectTrigger>
         <SelectContent>
@@ -230,7 +233,7 @@ export function CredentialUsageRow(props: {
   }
 
   return (
-    <div className="grid gap-2 md:grid-cols-2">
+    <div className="grid items-stretch gap-2 md:grid-cols-2">
       <div className="min-w-0 space-y-2.5">{props.children}</div>
       <CredentialScopeDropdown
         value={props.value}
@@ -238,6 +241,8 @@ export function CredentialUsageRow(props: {
         onChange={props.onChange}
         label={props.label}
         help={props.help}
+        className="flex h-full flex-col space-y-1.5"
+        triggerClassName="w-full min-h-9 flex-1 data-[size=default]:h-full"
       />
     </div>
   );

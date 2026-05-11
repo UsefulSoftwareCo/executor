@@ -1,293 +1,330 @@
 ---
-import Layout from '../layouts/Layout.astro'
-import { AnimatedBeamDemo } from '../components/animated-beam-demo'
+import Layout from "../layouts/Layout.astro";
+import { AnimatedBeamDemo } from "../components/animated-beam-demo";
+import { SelfHostContactModal } from "../components/self-host-contact-modal";
 ---
 
 <Layout>
   <main class="bg-soft min-h-dvh relative antialiased">
-
     {/* Pattern + fade — span the top 100vh, behind everything */}
-    <div class="pattern-bg pattern-graph" style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 1; pointer-events: none;"></div>
-    <div style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 2; pointer-events: none; background: linear-gradient(180deg, transparent 0%, transparent 65%, var(--color-surface) 100%);"></div>
+    <div
+      class="pattern-bg pattern-graph"
+      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 1; pointer-events: none;"
+    >
+    </div>
+    <div
+      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 2; pointer-events: none; background: linear-gradient(180deg, transparent 0%, transparent 65%, var(--color-surface) 100%);"
+    >
+    </div>
 
     <div class="relative z-10">
-
-    {/* NAV */}
-    <nav>
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10 h-14 flex items-center justify-between">
-        <a href="/" class="flex items-center gap-2.5">
-          <img src="/favicon-192.png" alt="" class="w-5 h-5" />
-          <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink">executor</span>
-        </a>
-        <div class="flex items-center gap-5">
-          <a href="https://github.com/RhysSullivan/executor" class="text-[14px] font-medium text-ink-2 hover:text-ink transition-colors">GitHub</a>
-          <a href="/cloud" class="btn-primary">Try Cloud →</a>
-        </div>
-      </div>
-    </nav>
-
-    {/* HERO — centered, tight */}
-    <section class="relative">
-      <div class="relative z-10 px-6 sm:px-10 pt-28 pb-32 sm:pt-36 sm:pb-44">
-        <div class="max-w-[920px] mx-auto text-center">
-          <h1 class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-12 mx-auto max-w-[18ch] text-balance">
-            Connect any agent to <span class="serif-italic">everything</span>.
-          </h1>
-          <div class="rise-2 max-w-[760px] mx-auto mb-12">
-            <div class="surface-card p-6 sm:p-7">
-              <AnimatedBeamDemo client:load variant="stripe" />
-            </div>
-          </div>
-          <p class="rise-3 text-[18px] leading-[1.55] text-ink-2 mx-auto max-w-[44ch] mb-9 text-pretty">
-            One gateway. Every tool. Every team.
-          </p>
-          <div class="rise-4 flex flex-wrap items-center justify-center gap-5">
+      {/* NAV */}
+      <nav>
+        <div
+          class="max-w-[1200px] mx-auto px-6 sm:px-10 h-14 flex items-center justify-between"
+        >
+          <a href="/" class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="w-5 h-5" />
+            <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink"
+              >executor</span
+            >
+          </a>
+          <div class="flex items-center gap-5">
+            <a
+              href="https://github.com/RhysSullivan/executor"
+              class="text-[14px] font-medium text-ink-2 hover:text-ink transition-colors"
+              >GitHub</a
+            >
             <a href="/cloud" class="btn-primary">Try Cloud →</a>
-            <a href="#install" class="btn-link">
-              <span class="font-mono text-[13px] text-ink-3">$</span>
-              <span>npx executor web</span>
-            </a>
           </div>
         </div>
-      </div>
-    </section>
+      </nav>
 
-    {/* ─── PILLARS ─── */}
-    <section class="py-24 sm:py-32">
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-        <div class="mb-16 max-w-2xl">
-          <div class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4">What it does</div>
-          <h2 class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink mb-5 max-w-[24ch] text-balance">
-            Connect once. <span class="serif-italic">Use everywhere</span>.
+      {/* HERO — centered, tight */}
+      <section class="relative">
+        <div class="relative z-10 px-6 sm:px-10 pt-28 pb-32 sm:pt-36 sm:pb-44">
+          <div class="max-w-[920px] mx-auto text-center">
+            <h1
+              class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-12 mx-auto max-w-[18ch] text-balance"
+            >
+              Connect any agent to <span class="serif-italic">everything</span>.
+            </h1>
+            <div class="rise-2 max-w-[760px] mx-auto mb-12">
+              <div class="surface-card p-6 sm:p-7">
+                <AnimatedBeamDemo client:load variant="stripe" />
+              </div>
+            </div>
+            <p
+              class="rise-3 text-[18px] leading-[1.55] text-ink-2 mx-auto max-w-[44ch] mb-9 text-pretty"
+            >
+              One gateway. Every tool. Every team.
+            </p>
+            <div
+              class="rise-4 flex flex-wrap items-center justify-center gap-5"
+            >
+              <a href="/cloud" class="btn-primary">Try Cloud →</a>
+              <button
+                type="button"
+                class="btn-link copy-btn"
+                data-copy="npx executor web"
+                aria-label="Copy npx executor web to clipboard"
+              >
+                <span class="font-mono text-[13px] text-ink-3">$</span>
+                <span>npm i -g executor && executor web</span>
+                <span class="copy-icons text-ink-3" aria-hidden="true">
+                  <svg
+                    class="copy-icon-copy"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><rect x="9" y="9" width="13" height="13" rx="2" ry="2"
+                    ></rect><path
+                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                    ></path></svg
+                  >
+                  <svg
+                    class="copy-icon-check"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><polyline points="20 6 9 17 4 12"></polyline></svg
+                  >
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FOUNDER NOTE ─── */}
+      <section class="py-20 sm:py-28 border-t border-rule">
+        <div class="max-w-[680px] mx-auto px-6 sm:px-10">
+          <h2
+            class="text-[clamp(2rem,3.6vw,2.6rem)] font-semibold tracking-[-0.02em] leading-[1.08] text-ink mb-10 text-balance"
+          >
+            What is <span class="serif-italic">Executor</span>?
           </h2>
-          <p class="text-[17px] leading-[1.55] text-ink-2 max-w-[56ch] text-pretty">
-            One layer between your agents and the tools they need. Bring any spec, plug in any agent, govern every action.
-          </p>
-        </div>
 
-        <div class="grid sm:grid-cols-2 gap-5">
-          {/* Every tool */}
-          <div class="surface-card p-7 sm:p-8">
-            <div class="size-9 rounded-md flex items-center justify-center mb-5" style="background: rgba(99,91,255,0.08)">
-              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent)">
-                <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-              </svg>
-            </div>
-            <h3 class="text-[18px] font-semibold tracking-[-0.01em] text-ink mb-2">Every tool</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 text-pretty">
-              OpenAPI, GraphQL, MCP, CLI. Point Executor at any spec — it indexes, types, and exposes the tools.
+          <div
+            class="space-y-5 text-[16.5px] leading-[1.65] text-ink-2 text-pretty"
+          >
+            <p>
+              Executor is a tool/source discovery and execution layer for
+              agent-callable tools.
             </p>
-          </div>
+            <p>
+              Executor doesn't care what you add. MCP, OpenAPI, GraphQL, custom
+              sources, under the hood they all become a tool name, an input
+              schema, and an output schema. Once they're in that shape, you can
+              call them however you want. Today that's implemented as a
+              code-mode MCP, but it could just as well be the Executor CLI, or a
+              native client you drop in.
+            </p>
+            <p>
+              Because every tool looks the same, your agent can call them from
+              gen-UI dashboards it writes on the fly, call them as one off
+              scripts in a chat, or use them in reusable workflows.
+            </p>
 
-          {/* Every agent */}
-          <div class="surface-card p-7 sm:p-8">
-            <div class="size-9 rounded-md flex items-center justify-center mb-5" style="background: rgba(99,91,255,0.08)">
-              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent)">
-                <circle cx="9" cy="8" r="3"/>
-                <circle cx="17" cy="9" r="2.5"/>
-                <path d="M3 19c1-3.5 4-5 6-5s5 1.5 6 5"/>
-                <path d="M14 19c.5-2 2.5-3 3-3s2.5 1 3 3"/>
-              </svg>
-            </div>
-            <h3 class="text-[18px] font-semibold tracking-[-0.01em] text-ink mb-2">Every agent</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 text-pretty">
-              Claude Code, Cursor, Codex, OpenCode, Windsurf, or your own. One catalog, no per-agent setup.
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Teams
+            </h3>
+            <p>
+              Set your sources up once and your whole team has them. It supports
+              per-user credentials and shared ones. No more onboarding ritual,
+              no more toggling MCPs on and off mid-task. Your agents should be
+              able to reach your company's resources in a way that isn't scary.
             </p>
-          </div>
 
-          {/* Permission model */}
-          <div class="surface-card p-7 sm:p-8">
-            <div class="size-9 rounded-md flex items-center justify-center mb-5" style="background: rgba(99,91,255,0.08)">
-              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent)">
-                <path d="M12 3l8 3v6c0 4.5-3.4 8.4-8 9-4.6-.6-8-4.5-8-9V6l8-3z"/>
-                <path d="M9 12l2 2 4-4"/>
-              </svg>
-            </div>
-            <h3 class="text-[18px] font-semibold tracking-[-0.01em] text-ink mb-2">Permission model</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 text-pretty">
-              Auto-run reads. Pause on writes. Block destructive. Wildcard rules. The fast path stays fast.
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Sandboxing
+            </h3>
+            <p>
+              Tool calls run in a JavaScript sandbox. The agent has access to
+              secrets.
             </p>
-          </div>
 
-          {/* Auth */}
-          <div class="surface-card p-7 sm:p-8">
-            <div class="size-9 rounded-md flex items-center justify-center mb-5" style="background: rgba(99,91,255,0.08)">
-              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent)">
-                <circle cx="8" cy="14" r="4"/>
-                <path d="M11 11l9-9"/>
-                <path d="M16 6l3 3"/>
-                <path d="M14 8l3 3"/>
-              </svg>
-            </div>
-            <h3 class="text-[18px] font-semibold tracking-[-0.01em] text-ink mb-2">Auth that follows you</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 text-pretty">
-              Sign in once. Every machine, every agent, and every teammate inherits your credentials.
+            <h3
+              class="text-[17px] font-semibold tracking-[-0.01em] text-ink pt-5"
+            >
+              Destructive actions
+            </h3>
+            <p>
+              Executor preserves the semantics of whatever it imported from: GET
+              vs DELETE for OpenAPI, <code
+                class="font-mono text-[14px] text-ink bg-surface-2 border border-rule px-1.5 py-0.5 rounded"
+                >destructiveHint</code
+              > for MCP, mutations for GraphQL. That tells the agent what it can auto-run
+              and what should pull you back into the loop, so it can work autonomously
+              without taking you out of it.
             </p>
-          </div>
-        </div>
-      </div>
-    </section>
 
-    {/* ─── THE ONES ─── */}
-    <section class="py-24 sm:py-32 border-t border-rule">
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-        <div class="mb-14 max-w-2xl">
-          <div class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4">Under the hood</div>
-          <h2 class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink max-w-[24ch] text-balance">
-            One of <span class="serif-italic">each</span>.
-          </h2>
-        </div>
+            <p class="pt-5">
+              It's all open source, built on the same SDK we publish to npm.
+              There's two ways to try it, either the local version via the
+              `executor` cli, or the cloud version.
+            </p>
 
-        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-10 gap-y-12">
-          <div>
-            <span class="font-mono text-[12px] tracking-[0.1em]" style="color: var(--color-accent)">01</span>
-            <h3 class="text-[16px] font-semibold tracking-[-0.005em] text-ink mt-3 mb-2">One catalog</h3>
-            <p class="text-[14px] leading-[1.6] text-ink-2 text-pretty">
-              Every integration indexed once. Searchable, typed, discoverable from any agent.
-            </p>
-          </div>
-          <div>
-            <span class="font-mono text-[12px] tracking-[0.1em]" style="color: var(--color-accent)">02</span>
-            <h3 class="text-[16px] font-semibold tracking-[-0.005em] text-ink mt-3 mb-2">One auth layer</h3>
-            <p class="text-[14px] leading-[1.6] text-ink-2 text-pretty">
-              Credentials live with Executor. Never pasted into a prompt or copied between machines.
-            </p>
-          </div>
-          <div>
-            <span class="font-mono text-[12px] tracking-[0.1em]" style="color: var(--color-accent)">03</span>
-            <h3 class="text-[16px] font-semibold tracking-[-0.005em] text-ink mt-3 mb-2">One policy set</h3>
-            <p class="text-[14px] leading-[1.6] text-ink-2 text-pretty">
-              Same rules across every agent and every machine. Wildcard, version, and team scoped.
-            </p>
-          </div>
-          <div>
-            <span class="font-mono text-[12px] tracking-[0.1em]" style="color: var(--color-accent)">04</span>
-            <h3 class="text-[16px] font-semibold tracking-[-0.005em] text-ink mt-3 mb-2">One audit log</h3>
-            <p class="text-[14px] leading-[1.6] text-ink-2 text-pretty">
-              Every tool call, approval, and block — one place to query, one source of truth.
-            </p>
+            <p class="text-ink-3 text-[14.5px] pt-3">— Rhys</p>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    {/* ─── ROADMAP ─── */}
-    <section id="roadmap" class="py-24 sm:py-32 border-t border-rule">
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-        <div class="mb-16 max-w-2xl">
-          <div class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4">Roadmap</div>
-          <h2 class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink max-w-[24ch] text-balance">
-            Where it's <span class="serif-italic">going</span>.
-          </h2>
-        </div>
-
-        <div class="grid md:grid-cols-3 gap-6">
-          {/* Now */}
-          <div class="surface-card p-7" style="border-color: rgba(99,91,255,0.25)">
-            <div class="flex items-center gap-2 mb-5">
-              <span class="size-1.5 rounded-full" style="background: var(--color-accent); box-shadow: 0 0 0 4px rgba(99,91,255,0.12)"></span>
-              <span class="font-mono text-[11px] uppercase tracking-[0.18em]" style="color: var(--color-accent)">Now</span>
+      {/* ─── GET STARTED ─── */}
+      <section id="install" class="py-24 sm:py-32 border-t border-rule">
+        <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
+          <div class="mb-14 mx-auto text-center max-w-2xl">
+            <div
+              class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4"
+            >
+              Get started
             </div>
-            <ul role="list" class="space-y-2.5 text-[14px] text-ink-2">
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>Core SDK &amp; CLI</span></li>
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>MCP bridge</span></li>
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>Permission engine</span></li>
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>Local web UI</span></li>
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>Desktop app</span></li>
-              <li class="flex gap-2.5"><span class="text-ink-3">→</span><span>Cloud &amp; team management</span></li>
-            </ul>
+            <h2
+              class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink mx-auto max-w-[20ch] text-balance"
+            >
+              Pick your <span class="serif-italic">path</span>.
+            </h2>
           </div>
 
-          {/* Soon */}
-          <div class="surface-card p-7">
-            <div class="flex items-center gap-2 mb-5">
-              <span class="size-1.5 rounded-full bg-ink-3"></span>
-              <span class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-2">Soon</span>
+          <div class="grid md:grid-cols-3 gap-6 max-w-[1100px] mx-auto">
+            {/* Cloud */}
+            <div
+              class="surface-card p-8 flex flex-col"
+              style="border-color: rgba(99,91,255,0.25)"
+            >
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em]"
+                  style="color: var(--color-accent)">Recommended</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Cloud
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                Hosted Executor. Auth, sync, policies, and the whole team online
+                in five minutes. Free tier to start.
+              </p>
+              <a href="/cloud" class="btn-primary self-start">Try Cloud →</a>
             </div>
-            <ul role="list" class="space-y-2.5 text-[14px] text-ink-2">
-              <li>Skills</li>
-              <li>Generative UI</li>
-              <li>Workflows</li>
-              <li>Workspaces</li>
-            </ul>
-          </div>
 
-          {/* Later */}
-          <div class="surface-card p-7" style="opacity: 0.85">
-            <div class="flex items-center gap-2 mb-5">
-              <span class="size-1.5 rounded-full" style="background: rgba(13,13,16,0.25)"></span>
-              <span class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3">Later</span>
+            {/* Local */}
+            <div class="surface-card p-8 flex flex-col">
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3"
+                  >Open source</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Local
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                Run on your own machine. Keychain-backed secrets. Zero data
+                leaves your laptop. MIT licensed.
+              </p>
+              <div
+                class="font-mono text-[13px] text-ink bg-surface-2 border border-rule px-3 py-2 rounded-md self-start"
+                style="background: var(--color-surface-2)"
+              >
+                <span class="text-ink-3">$</span> npm i -g executor && executor web
+              </div>
             </div>
-            <ul role="list" class="space-y-2.5 text-[14px] text-ink-3">
-              <li>Customer-managed integrations</li>
-              <li>Webhooks &amp; crons</li>
-              <li>Virtual filesystems &amp; KV</li>
-              <li>npm ecosystem support</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </section>
 
-    {/* ─── GET STARTED ─── */}
-    <section id="install" class="py-24 sm:py-32 border-t border-rule">
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10">
-        <div class="mb-14 mx-auto text-center max-w-2xl">
-          <div class="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-3 mb-4">Get started</div>
-          <h2 class="text-[clamp(2.2rem,4.5vw,3.4rem)] font-semibold tracking-[-0.02em] leading-[1.05] text-ink mx-auto max-w-[20ch] text-balance">
-            Pick your <span class="serif-italic">path</span>.
-          </h2>
-        </div>
-
-        <div class="grid md:grid-cols-2 gap-6 max-w-[920px] mx-auto">
-          {/* Cloud */}
-          <div class="surface-card p-8 flex flex-col" style="border-color: rgba(99,91,255,0.25)">
-            <div class="flex items-center gap-2 mb-4">
-              <span class="font-mono text-[11px] uppercase tracking-[0.18em]" style="color: var(--color-accent)">Recommended</span>
-            </div>
-            <h3 class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3">Cloud</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1">
-              Hosted Executor. Auth, sync, policies, and the whole team online in five minutes. Free tier to start.
-            </p>
-            <a href="/cloud" class="btn-primary self-start">Try Cloud →</a>
-          </div>
-
-          {/* Local */}
-          <div class="surface-card p-8 flex flex-col">
-            <div class="flex items-center gap-2 mb-4">
-              <span class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3">Open source</span>
-            </div>
-            <h3 class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3">Local</h3>
-            <p class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1">
-              Run on your own machine. Keychain-backed secrets. Zero data leaves your laptop. MIT licensed.
-            </p>
-            <div class="font-mono text-[13px] text-ink bg-surface-2 border border-rule px-3 py-2 rounded-md self-start" style="background: var(--color-surface-2)">
-              <span class="text-ink-3">$</span> npx executor web
+            {/* Self-Hosted */}
+            <div class="surface-card p-8 flex flex-col">
+              <div class="flex items-center gap-2 mb-4">
+                <span
+                  class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3"
+                  >Bring your own infra</span
+                >
+              </div>
+              <h3
+                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
+              >
+                Self-Hosted
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+              >
+                We're looking for early adopters to give feedback and use the
+                self hosted product. If you're a company interested in self
+                hosting get in touch.
+              </p>
+              <SelfHostContactModal client:load />
             </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    {/* ─── FOOTER ─── */}
-    <footer class="border-t border-rule py-10">
-      <div class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-        <div class="flex items-center gap-2.5">
-          <img src="/favicon-192.png" alt="" class="w-4 h-4 opacity-80" />
-          <span class="text-[13px] font-medium text-ink-2">executor</span>
-          <span class="text-[12px] text-ink-3 ml-2">© {new Date().getFullYear()}</span>
+      {/* ─── FOOTER ─── */}
+      <footer class="border-t border-rule py-10">
+        <div
+          class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6"
+        >
+          <div class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="w-4 h-4 opacity-80" />
+            <span class="text-[13px] font-medium text-ink-2">executor</span>
+            <span class="text-[12px] text-ink-3 ml-2"
+              >© {new Date().getFullYear()}</span
+            >
+          </div>
+          <div class="flex items-center gap-6 text-[13px] text-ink-2">
+            <a
+              href="https://github.com/RhysSullivan/executor"
+              class="hover:text-ink transition-colors">GitHub</a
+            >
+            <a href="/privacy" class="hover:text-ink transition-colors"
+              >Privacy</a
+            >
+            <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
+          </div>
         </div>
-        <div class="flex items-center gap-6 text-[13px] text-ink-2">
-          <a href="https://github.com/RhysSullivan/executor" class="hover:text-ink transition-colors">GitHub</a>
-          <a href="/privacy" class="hover:text-ink transition-colors">Privacy</a>
-          <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
-        </div>
-      </div>
-    </footer>
-
+      </footer>
     </div>
   </main>
 </Layout>
+
+<script>
+  document
+    .querySelectorAll<HTMLButtonElement>("button[data-copy]")
+    .forEach((btn) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      btn.addEventListener("click", async () => {
+        const text = btn.dataset.copy ?? "";
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.dataset.copied = "true";
+        } catch {
+          btn.dataset.copied = "false";
+        }
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          delete btn.dataset.copied;
+        }, 1500);
+      });
+    });
+</script>

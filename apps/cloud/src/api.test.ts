@@ -13,7 +13,8 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Schema } from "effect";
+import { Cause, Effect, Layer, Schema } from "effect";
+import { toErrorServerResponse } from "./api/error-response";
 
 const SourceResponse = Schema.Struct({ source: Schema.String });
 
@@ -72,7 +73,7 @@ const ProtectedHandlers = HttpApiBuilder.group(ProtectedTestApi, "protected", (h
 // the full WorkOS / executor stack.
 // ---------------------------------------------------------------------------
 
-type ProtectedMode = "ok" | "none" | "error" | "bad-status";
+type ProtectedMode = "ok" | "none" | "error" | "bad-status" | "defect";
 const testState: { mode: ProtectedMode } = { mode: "ok" };
 const resetState = () => {
   testState.mode = "ok";
@@ -99,6 +100,9 @@ const TestProtectedGate = HttpRouter.middleware()((httpEffect) =>
       return Effect.succeed(
         HttpServerResponse.jsonUnsafe({ source: "protected" }, { status: 400 }),
       );
+    }
+    if (testState.mode === "defect") {
+      return Effect.succeed(toErrorServerResponse(Cause.die("secret-bearing failure detail")));
     }
     return httpEffect;
   }),
@@ -247,6 +251,21 @@ layer(TestClientLayer)("handleApiRequest", (it) => {
       expect(response.status).toBe(500);
       const body = yield* response.json;
       expect(body).toEqual({ error: "boom" });
+    }),
+  );
+
+  it.effect("maps protected defects to the generic API error body", () =>
+    Effect.gen(function* () {
+      resetState();
+      testState.mode = "defect";
+
+      const response = yield* HttpClient.get(`${TEST_BASE_URL}/scope`);
+      expect(response.status).toBe(500);
+      const body = yield* response.json;
+      expect(body).toEqual({
+        error: "Internal server error",
+        code: "internal_server_error",
+      });
     }),
   );
 });

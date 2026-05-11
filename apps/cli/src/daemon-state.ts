@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
@@ -37,7 +39,7 @@ export interface DaemonStartLock {
 // Host normalization
 // ---------------------------------------------------------------------------
 
-const LOCAL_HOST_ALIASES = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const LOCAL_HOST_ALIASES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 export const canonicalDaemonHost = (hostname: string): string => {
   const normalized = hostname.trim().toLowerCase();
@@ -47,9 +49,9 @@ export const canonicalDaemonHost = (hostname: string): string => {
 export const currentDaemonScopeId = (): string => {
   const explicitScope = process.env.EXECUTOR_SCOPE_DIR?.trim();
   if (explicitScope && explicitScope.length > 0) {
-    return `scope:${explicitScope}`;
+    return `scope:${resolve(explicitScope)}`;
   }
-  return `cwd:${process.cwd()}`;
+  return `cwd:${resolve(process.cwd())}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -61,7 +63,8 @@ const resolveDaemonDataDir = (path: Path.Path): string =>
 
 const sanitizeHostForPath = (hostname: string): string =>
   hostname.replaceAll(/[^a-z0-9.-]+/gi, "_");
-const sanitizeScopeForPath = (scopeId: string): string => scopeId.replaceAll(/[^a-z0-9.-]+/gi, "_");
+const scopeKeyForPath = (scopeId: string): string =>
+  createHash("sha256").update(scopeId).digest("hex").slice(0, 24);
 
 const daemonRecordPath = (path: Path.Path, input: { hostname: string; port: number }): string => {
   const host = sanitizeHostForPath(canonicalDaemonHost(input.hostname));
@@ -73,7 +76,7 @@ const daemonPointerPath = (
   input: { hostname: string; scopeId: string },
 ): string => {
   const host = sanitizeHostForPath(canonicalDaemonHost(input.hostname));
-  const scope = sanitizeScopeForPath(input.scopeId);
+  const scope = scopeKeyForPath(input.scopeId);
   return path.join(resolveDaemonDataDir(path), `daemon-active-${host}-${scope}.json`);
 };
 

@@ -2,37 +2,39 @@ import { useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { mcpSourceAtom, mcpSourceBindingsAtom, updateMcpSource } from "./atoms";
-import { useScope } from "@executor-js/react/api/scope-context";
-import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  SourceIdentityFields,
-  useSourceIdentity,
-} from "@executor-js/react/plugins/source-identity";
-import {
-  CredentialTargetScopeSelector,
-  useCredentialTargetScope,
-} from "@executor-js/react/plugins/credential-target-scope";
+  mcpSourceAtom,
+  mcpSourceBindingsAtom,
+  setMcpSourceBinding,
+  updateMcpSource,
+} from "./atoms";
+import { connectionsAtom } from "@executor-js/react/api/atoms";
+import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
+import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
+import { useCredentialTargetScope } from "@executor-js/react/plugins/credential-target-scope";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
   HttpCredentialsEditor,
+  serializeHttpCredentials,
   serializeScopedHttpCredentials,
   type HttpCredentialsState,
 } from "@executor-js/react/plugins/http-credentials";
 import {
+  effectiveCredentialBindingForScope,
   httpCredentialsFromConfiguredCredentialBindings,
   initialCredentialTargetScope,
 } from "@executor-js/react/plugins/credential-bindings";
+import { SourceOAuthConnectionControl } from "@executor-js/react/plugins/source-oauth-connection";
 import { Button } from "@executor-js/react/components/button";
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntryField,
-} from "@executor-js/react/components/card-stack";
-import { Input } from "@executor-js/react/components/input";
 import { Badge } from "@executor-js/react/components/badge";
 import { ScopeId } from "@executor-js/sdk/core";
-import type { McpCredentialInput, McpSourceBindingRef } from "../sdk/types";
+import { McpRemoteSourceFields } from "./McpRemoteSourceFields";
+import {
+  McpSourceBindingInput,
+  type McpCredentialInput,
+  type McpSourceBindingRef,
+} from "../sdk/types";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
 
 // ---------------------------------------------------------------------------
@@ -46,14 +48,23 @@ function RemoteEditForm(props: {
   onSave: () => void;
 }) {
   const displayScope = useScope();
+  const scopeStack = useScopeStack();
   const sourceScope = ScopeId.make(props.initial.scope);
-  const { credentialTargetScope, setCredentialTargetScope, credentialScopeOptions } =
-    useCredentialTargetScope({
-      sourceScope,
-      initialTargetScope: initialCredentialTargetScope(sourceScope, props.bindings),
-    });
+  const { credentialTargetScope, credentialScopeOptions } = useCredentialTargetScope({
+    sourceScope,
+    initialTargetScope: initialCredentialTargetScope(sourceScope, props.bindings),
+  });
+  const {
+    credentialTargetScope: oauthCredentialTargetScope,
+    setCredentialTargetScope: setOAuthCredentialTargetScope,
+  } = useCredentialTargetScope({
+    sourceScope,
+    initialTargetScope: initialCredentialTargetScope(sourceScope, props.bindings),
+  });
   const doUpdate = useAtomSet(updateMcpSource, { mode: "promiseExit" });
+  const setBinding = useAtomSet(setMcpSourceBinding, { mode: "promise" });
   const secretList = useSecretPickerSecrets();
+  const connectionsResult = useAtomValue(connectionsAtom(displayScope));
 
   const identity = useSourceIdentity({
     fallbackName: props.initial.name,
@@ -74,6 +85,23 @@ function RemoteEditForm(props: {
   const identityDirty = identity.name.trim() !== props.initial.name.trim();
   const metadataDirty = identityDirty || endpoint.trim() !== props.initial.config.endpoint.trim();
   const dirty = metadataDirty || credentialsDirty;
+  const oauth2 = props.initial.config.auth.kind === "oauth2" ? props.initial.config.auth : null;
+  const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
+  const scopeRanks = new Map(scopeStack.map((scope, index) => [scope.id, index] as const));
+  const connectionBinding = oauth2
+    ? effectiveCredentialBindingForScope(
+        props.bindings,
+        oauth2.connectionSlot,
+        oauthCredentialTargetScope,
+        scopeRanks,
+      )
+    : null;
+  const boundConnectionId =
+    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
+  const isConnected =
+    boundConnectionId !== null &&
+    connections.some((connection) => connection.id === boundConnectionId);
+  const oauthRequestCredentials = serializeHttpCredentials(credentials);
 
   const handleCredentialsChange = (next: HttpCredentialsState) => {
     setCredentials(next);
@@ -137,32 +165,17 @@ function RemoteEditForm(props: {
         </Badge>
       </div>
 
-      <SourceIdentityFields identity={identity} namespaceReadOnly />
-
-      {/* Endpoint */}
-      <CardStack>
-        <CardStackContent className="border-t-0">
-          <CardStackEntryField label="Endpoint">
-            <Input
-              value={endpoint}
-              onChange={(e) => {
-                setEndpoint((e.target as HTMLInputElement).value);
-              }}
-              placeholder="https://mcp.example.com"
-              className="font-mono text-sm"
-            />
-          </CardStackEntryField>
-        </CardStackContent>
-      </CardStack>
-
-      <CredentialTargetScopeSelector
-        value={credentialTargetScope}
-        options={credentialScopeOptions}
-        onChange={(targetScope) => {
-          setCredentialTargetScope(targetScope);
-          setCredentialsDirty(true);
+      <McpRemoteSourceFields
+        url={endpoint}
+        onUrlChange={setEndpoint}
+        identity={identity}
+        preview={{
+          name: props.initial.name,
+          serverName: props.initial.name,
+          connected: true,
+          toolCount: null,
         }}
-        description="Choose where updated MCP credentials are saved."
+        namespaceReadOnly
       />
 
       <HttpCredentialsEditor
@@ -174,6 +187,39 @@ function RemoteEditForm(props: {
         credentialScopeOptions={credentialScopeOptions}
         bindingScopeOptions={credentialScopeOptions}
       />
+
+      {oauth2 && (
+        <SourceOAuthConnectionControl
+          popupName="mcp-oauth"
+          pluginId="mcp"
+          namespace={slugifyNamespace(props.initial.namespace) || "mcp"}
+          fallbackNamespace="mcp"
+          endpoint={endpoint.trim()}
+          tokenScope={oauthCredentialTargetScope}
+          onTokenScopeChange={setOAuthCredentialTargetScope}
+          credentialScopeOptions={credentialScopeOptions}
+          connectionId={boundConnectionId}
+          sourceLabel={`${identity.name.trim() || props.initial.namespace || "MCP"} OAuth`}
+          headers={oauthRequestCredentials.headers}
+          queryParams={oauthRequestCredentials.queryParams}
+          isConnected={isConnected}
+          onConnected={async (connectionId) => {
+            await setBinding({
+              params: { scopeId: oauthCredentialTargetScope },
+              payload: new McpSourceBindingInput({
+                sourceId: props.sourceId,
+                sourceScope,
+                scope: oauthCredentialTargetScope,
+                slot: oauth2.connectionSlot,
+                value: { kind: "connection", connectionId },
+              }),
+              reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
+            });
+          }}
+          reconnectingLabel="Reconnecting…"
+          signingInLabel="Signing in…"
+        />
+      )}
 
       {error && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
