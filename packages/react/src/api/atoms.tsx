@@ -120,6 +120,8 @@ export const policiesAtom = (scopeId: ScopeId) =>
 
 export const setSecret = ExecutorApiClient.mutation("secrets", "set");
 
+export const updateSecret = ExecutorApiClient.mutation("secrets", "update");
+
 export const removeSecret = ExecutorApiClient.mutation("secrets", "remove");
 
 export const removeConnection = ExecutorApiClient.mutation("connections", "remove");
@@ -202,6 +204,25 @@ export const removeConnectionOptimistic = Atom.family((scopeId: ScopeId) =>
 
 export const secretsOptimisticAtom = Atom.family((scopeId: ScopeId) =>
   Atom.optimistic(secretsAtom(scopeId)),
+);
+
+export const updateSecretOptimistic = Atom.family((scopeId: ScopeId) =>
+  secretsOptimisticAtom(scopeId).pipe(
+    Atom.optimisticFn({
+      reducer: (current, arg) =>
+        AsyncResult.map(current, (rows) =>
+          rows.map((r) =>
+            r.id === arg.params.secretId && r.scopeId === arg.params.scopeId
+              ? {
+                  ...r,
+                  ...(arg.payload.name !== undefined ? { name: arg.payload.name } : {}),
+                }
+              : r,
+          ),
+        ),
+      fn: updateSecret,
+    }),
+  ),
 );
 
 export const removeSecretOptimistic = Atom.family((scopeId: ScopeId) =>

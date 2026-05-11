@@ -409,6 +409,11 @@ describe("mcpPlugin", () => {
       expect(orgView?.config.transport).toBe("remote");
       if (orgView?.config.transport !== "remote") return;
       expect(orgView.config.endpoint).toBe("http://127.0.0.1:1/org-mcp");
+
+      const sources = yield* executor.sources.list();
+      const listedSource = sources.find((source) => source.id === "shared");
+      expect(listedSource?.name).toBe("User Renamed");
+      expect(listedSource?.url).toBe("http://127.0.0.1:1/user-new-mcp");
     }),
   );
 

@@ -5,7 +5,12 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { toast } from "sonner";
-import { removeSecretOptimistic, secretsOptimisticAtom, secretUsagesAtom } from "../api/atoms";
+import {
+  removeSecretOptimistic,
+  secretsOptimisticAtom,
+  secretUsagesAtom,
+  updateSecretOptimistic,
+} from "../api/atoms";
 import { secretWriteKeys } from "../api/reactivity-keys";
 import { useSecretProviderPlugins } from "@executor-js/sdk/client";
 import { SecretId, SecretInUseError, type ScopeId } from "@executor-js/sdk";
@@ -22,6 +27,8 @@ import {
   DialogClose,
 } from "../components/dialog";
 import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -163,6 +170,116 @@ function SecretUsageFooter(props: { scopeId: ScopeId; secretId: SecretId }) {
 }
 
 // ---------------------------------------------------------------------------
+// Edit secret dialog
+// ---------------------------------------------------------------------------
+
+function EditSecretDialog(props: {
+  secret: { id: string; scopeId: ScopeId; name: string };
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(props.secret.name);
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const doUpdate = useAtomSet(updateSecretOptimistic(props.secret.scopeId), {
+    mode: "promiseExit",
+  });
+
+  const nameDirty = name.trim() !== props.secret.name;
+  const valueDirty = value.length > 0;
+  const dirty = nameDirty || valueDirty;
+
+  const handleSave = async () => {
+    if (!dirty) return;
+    setSaving(true);
+    setError(null);
+    const payload: { name?: string; value?: string } = {};
+    if (nameDirty) payload.name = name.trim();
+    if (valueDirty) payload.value = value;
+    const exit = await doUpdate({
+      params: { scopeId: props.secret.scopeId, secretId: SecretId.make(props.secret.id) },
+      payload,
+      reactivityKeys: secretWriteKeys,
+    });
+    if (Exit.isFailure(exit)) {
+      setError("Failed to update secret");
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    props.onSaved();
+    props.onOpenChange(false);
+  };
+
+  // Reset form state when dialog opens
+  const handleOpenChange = (open: boolean) => {
+    if (open) {
+      setName(props.secret.name);
+      setValue("");
+      setError(null);
+    }
+    props.onOpenChange(open);
+  };
+
+  return (
+    <Dialog open={props.open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle className="font-display text-xl">Edit secret</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed">
+            Update the display name or rotate the secret value. Leave the value field empty to keep
+            the current value.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-5 py-3">
+          <div className="grid gap-2">
+            <Label htmlFor="secret-name">Display name</Label>
+            <Input
+              id="secret-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Cloudflare API Token"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="secret-value">New value (optional)</Label>
+            <Input
+              id="secret-value"
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="Leave empty to keep current value"
+            />
+            <p className="text-xs text-muted-foreground">
+              Enter a new value to rotate the secret. The current value is not shown for security.
+            </p>
+          </div>
+          {error && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+              <p className="text-sm text-destructive">{error}</p>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="ghost" size="sm">
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button size="sm" onClick={handleSave} disabled={!dirty || saving}>
+            {saving ? "Saving..." : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Secret row
 // ---------------------------------------------------------------------------
 
@@ -171,6 +288,7 @@ function SecretRow(props: {
   showProvider: boolean;
   secret: { id: string; scopeId: ScopeId; name: string; provider?: string };
   scopeLabel: string;
+  onEdit: () => void;
   onRemove: () => void;
 }) {
   const { secret, showProvider } = props;
@@ -211,6 +329,9 @@ function SecretRow(props: {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
+              Edit secret
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:text-destructive text-sm"
               onClick={props.onRemove}
@@ -240,6 +361,11 @@ export function SecretsPage(props: {
     "Store a credential or API key. Values are kept in your system keychain when available, with a local encrypted file fallback.";
   const secretProviderPlugins = useSecretProviderPlugins();
   const [addOpen, setAddOpen] = useState(false);
+  const [editingSecret, setEditingSecret] = useState<{
+    id: string;
+    scopeId: ScopeId;
+    name: string;
+  } | null>(null);
   const scopeId = useScope();
   const scopeStack = useScopeStack();
   const secrets = useAtomValue(secretsOptimisticAtom(scopeId));
@@ -378,6 +504,9 @@ export function SecretsPage(props: {
                           provider: s.provider ? String(s.provider) : undefined,
                         }}
                         scopeLabel={scopeLabel(s.scopeId)}
+                        onEdit={() =>
+                          setEditingSecret({ id: s.id, scopeId: s.scopeId, name: s.name })
+                        }
                         onRemove={() => handleRemove(s)}
                       />
                     ),
@@ -396,6 +525,17 @@ export function SecretsPage(props: {
           existingSecretIds={existingSecretIds}
           scopeId={scopeId}
         />
+
+        {editingSecret && (
+          <EditSecretDialog
+            secret={editingSecret}
+            open={true}
+            onOpenChange={(open) => {
+              if (!open) setEditingSecret(null);
+            }}
+            onSaved={() => setEditingSecret(null)}
+          />
+        )}
       </div>
     </div>
   );
