@@ -185,7 +185,15 @@ export default function executorVitePlugin(options: ExecutorVitePluginOptions = 
         continue;
       }
       const ident = `__executor_plugin_${exportExpressions.length}`;
-      lines.push(`import ${ident} from ${JSON.stringify(`${entry.pkg}/client`)};`);
+      // Emit the absolute file path rather than `${pkg}/client`. Vite
+      // resolves bare specifiers from its `root`, which for hosts like
+      // apps/local is `packages/app/` — a location that doesn't see
+      // plugin packages installed under the consumer's node_modules.
+      // Resolving here (from the consumer's executor.config dir) and
+      // emitting the absolute path bypasses Vite's node_modules walk
+      // entirely while still honoring each plugin's `exports./client`
+      // conditions (Node's resolver handles those above).
+      lines.push(`import ${ident} from ${JSON.stringify(pathToFileURL(resolved).href)};`);
       // Plugins that surface a `clientConfig` default-export a factory
       // `(config?) => ClientPluginSpec`; everyone else default-exports
       // a bare `ClientPluginSpec` value. We emit a call only when we
