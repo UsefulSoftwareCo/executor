@@ -18,6 +18,28 @@ export { OAUTH_POPUP_MESSAGE_TYPE, isOAuthPopupResult } from "@executor-js/sdk";
 export type { OAuthPopupResult } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
+// Completion listener — optional process-wide hook called every time an
+// OAuth flow finishes (success or failure). Lets hosts that can't use the
+// in-browser postMessage/BroadcastChannel handoff observe results another
+// way (e.g. the local server registers an in-memory registry so the
+// Electron renderer can poll over HTTP when the user signed in via the
+// system browser).
+//
+// Default: no listener. Cloud hosts (Cloudflare Workers — stateless,
+// multi-isolate) intentionally don't register one; an in-memory side
+// channel can't bridge isolates and the same-origin web SPA already
+// receives results via postMessage, so the listener is a no-op there.
+// ---------------------------------------------------------------------------
+
+export type OAuthCompletionListener = (result: OAuthPopupResult<unknown>) => void;
+
+let completionListener: OAuthCompletionListener | null = null;
+
+export const setOAuthCompletionListener = (listener: OAuthCompletionListener | null): void => {
+  completionListener = listener;
+};
+
+// ---------------------------------------------------------------------------
 // HTML generation
 // ---------------------------------------------------------------------------
 
@@ -154,5 +176,8 @@ export const runOAuthCallback = <TAuth, E, R>(
           ...(details && details !== short ? { errorDetails: details } : {}),
         });
       }),
+      Effect.tap((result) =>
+        Effect.sync(() => completionListener?.(result as OAuthPopupResult<unknown>)),
+      ),
       Effect.map((result) => popupDocument(result, input.channelName)),
     );

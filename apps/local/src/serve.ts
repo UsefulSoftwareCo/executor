@@ -9,11 +9,14 @@
 
 import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
+import { setOAuthCompletionListener } from "@executor-js/api";
+import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
 import { getServerHandlers } from "./server/main";
 import {
   DEFAULT_ALLOWED_HOSTS,
   hasFileExtension,
   isLoopbackBindHost,
+  isUnauthenticatedOAuthCallbackPath,
   makeIsAllowedHost,
   makeIsAuthorized,
   normalizeCredential,
@@ -111,6 +114,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
 
   const handlers = opts.handlers ?? (await getServerHandlers());
 
+  // Mirror every OAuth callback completion into the local in-memory result
+  // store. The Electron desktop renderer polls /api/oauth/await/:sessionId
+  // for these when the user runs the flow in their system browser (no
+  // shared origin → no postMessage). Cloud doesn't register a listener;
+  // its same-origin web SPA receives results via postMessage directly.
+  setOAuthCompletionListener((result) => publishOAuthResult(result));
+
   // Build static routes from either embedded assets or disk
   let staticRoutes: Record<string, StaticHandler>;
   let serveIndex: StaticHandler;
@@ -137,17 +147,33 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         return new Response("Forbidden", { status: 403 });
       }
 
-      if (requiresAuth && !isAuthorized(req)) {
+      const url = new URL(req.url);
+
+      // OAuth provider callbacks are hit by the user's external browser
+      // and can't carry our Basic auth header. The OAuth `state`
+      // parameter is the security gate — see isUnauthenticatedOAuthCallbackPath.
+      const skipAuth = isUnauthenticatedOAuthCallbackPath(url.pathname);
+
+      if (requiresAuth && !skipAuth && !isAuthorized(req)) {
         return new Response("Unauthorized", {
           status: 401,
           headers: { "www-authenticate": 'Bearer realm="executor", Basic realm="executor"' },
         });
       }
 
-      const url = new URL(req.url);
-
       if (url.pathname.startsWith("/mcp")) {
         return handlers.mcp.handleRequest(req);
+      }
+
+      // OAuth result polling — local-only, served outside the typed API
+      // because cloud (Cloudflare Workers, stateless) can't back the
+      // in-memory store. See setOAuthCompletionListener above.
+      const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(url.pathname);
+      if (awaitMatch && req.method === "GET") {
+        const result = consumeOAuthResult(awaitMatch[1]);
+        return new Response(JSON.stringify(result), {
+          headers: { "content-type": "application/json" },
+        });
       }
 
       if (url.pathname.startsWith("/api/") || url.pathname === "/api") {
@@ -174,6 +200,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   return {
     port: server.port!,
     async stop() {
+      setOAuthCompletionListener(null);
       server.stop(true);
       await handlers.mcp.close();
       await handlers.api.dispose();

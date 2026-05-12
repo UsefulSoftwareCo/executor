@@ -99,7 +99,11 @@ export const buildMcpInstallCommand = (input: {
 };
 
 export function McpInstallCard(props: { className?: string }) {
-  const showStdio = isLocal;
+  // Desktop hosts ship Electron without putting an `executor` binary on
+  // PATH, and the bundled sidecar is locked to the running app. Force the
+  // HTTP path there — it routes through the running sidecar with the
+  // Basic auth header injected by the renderer.
+  const showStdio = isLocal && readDesktopBridge() === null;
   const [mode, setMode] = useState<TransportMode>(showStdio ? "stdio" : "http");
   const [origin, setOrigin] = useState<string | null>(null);
   const [desktop, setDesktop] = useState<{

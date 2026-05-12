@@ -202,3 +202,81 @@ export const openOAuthPopup = <TAuth>(input: OpenOAuthPopupInput<TAuth>): (() =>
     closePopup(popup);
   };
 };
+
+// ---------------------------------------------------------------------------
+// System-browser flow — used when a desktop host (Electron) opens the auth
+// URL in the user's real browser. There's no shared origin, so the
+// renderer polls `/api/oauth/await/:sessionId` for the result. The local
+// server publishes there via `setOAuthCompletionListener` (see
+// apps/local/src/serve.ts).
+// ---------------------------------------------------------------------------
+
+export type OpenOAuthSystemBrowserInput<TAuth> = {
+  readonly url: string;
+  readonly sessionId: string;
+  readonly openExternal: (url: string) => Promise<void>;
+  readonly onResult: (data: OAuthPopupResult<TAuth>) => void;
+  /** Called once if the external open itself fails (URL rejected, IPC error). */
+  readonly onOpenFailed?: (cause: unknown) => void;
+  /** Poll cadence. Default 1000ms. */
+  readonly pollMs?: number;
+  /** Stop polling after this many ms with no result. Default 10 minutes. */
+  readonly timeoutMs?: number;
+  readonly onTimeout?: () => void;
+};
+
+const OAUTH_AWAIT_DEFAULT_POLL_MS = 1000;
+const OAUTH_AWAIT_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+export const openOAuthSystemBrowser = <TAuth>(
+  input: OpenOAuthSystemBrowserInput<TAuth>,
+): (() => void) => {
+  let settled = false;
+  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const controller = new AbortController();
+
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    if (pollHandle !== null) clearInterval(pollHandle);
+    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    controller.abort();
+  };
+
+  const poll = async () => {
+    if (settled) return;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch can reject for transient network errors during polling
+    try {
+      const response = await fetch(`/api/oauth/await/${encodeURIComponent(input.sessionId)}`, {
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as unknown;
+      if (body === null || settled) return;
+      if (!isOAuthPopupResult<TAuth>(body)) return;
+      settle();
+      input.onResult(body);
+    } catch {
+      // Transient — next tick will retry. AbortError after settle is also caught here.
+    }
+  };
+
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: openExternal is host-provided and may reject
+  input.openExternal(input.url).catch((cause: unknown) => {
+    if (settled) return;
+    settle();
+    input.onOpenFailed?.(cause);
+  });
+
+  pollHandle = setInterval(() => void poll(), input.pollMs ?? OAUTH_AWAIT_DEFAULT_POLL_MS);
+  void poll();
+  timeoutHandle = setTimeout(() => {
+    if (settled) return;
+    settle();
+    input.onTimeout?.();
+  }, input.timeoutMs ?? OAUTH_AWAIT_DEFAULT_TIMEOUT_MS);
+
+  return () => settle();
+};

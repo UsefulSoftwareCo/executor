@@ -18,7 +18,9 @@ export {
   isOAuthPopupResult,
   popupDocument,
   runOAuthCallback,
+  setOAuthCompletionListener,
   type OAuthCallbackUrlParams,
+  type OAuthCompletionListener,
   type OAuthPopupResult,
   type RunOAuthCallbackInput,
 } from "./oauth-popup";

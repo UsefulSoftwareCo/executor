@@ -78,3 +78,20 @@ export const hasFileExtension = (pathname: string): boolean => {
   const lastSegment = pathname.split("/").at(-1) ?? "";
   return lastSegment.includes(".");
 };
+
+/**
+ * OAuth provider callbacks land here from the user's external browser,
+ * which has no way to send our Basic auth header. The `state` parameter
+ * is the cryptographic gate — each in-flight session is server-issued
+ * and validated by the shared `completeOAuth` before any work happens.
+ * Bypassing Basic auth on these paths is safe.
+ *
+ * Matches:
+ * - `/api/oauth/callback` — the shared OAuth API mount point.
+ * - `/api/oauth/await/<sessionId>` — polled by the Electron renderer
+ *   when the user runs the flow in their system browser. The sessionId
+ *   is the cryptographic flow id; results are one-shot, so a leaked
+ *   poll without a matching active flow returns null.
+ */
+export const isUnauthenticatedOAuthCallbackPath = (pathname: string): boolean =>
+  /^\/api\/oauth\/(callback|await)(\/|$)/.test(pathname);

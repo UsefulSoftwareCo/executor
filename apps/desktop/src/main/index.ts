@@ -206,6 +206,17 @@ const registerIpcHandlers = () => {
     (): DesktopServerSettings => regeneratePassword(),
   );
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
+  ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
+    if (typeof rawUrl !== "string") return;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+      await shell.openExternal(parsed.toString());
+    } catch {
+      // Reject malformed URLs silently — renderer falls back to popup flow.
+    }
+  });
 };
 
 const boot = async () => {

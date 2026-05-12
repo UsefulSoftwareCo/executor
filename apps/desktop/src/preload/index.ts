@@ -22,6 +22,13 @@ const api = {
   restartServer(): Promise<{ readonly port: number; readonly baseUrl: string }> {
     return ipcRenderer.invoke("executor:server:restart");
   },
+  /**
+   * Open an http(s) URL in the user's default browser. Main-side validates
+   * the scheme. Used by the system-browser OAuth flow.
+   */
+  openExternal(url: string): Promise<void> {
+    return ipcRenderer.invoke("executor:shell:open-external", url);
+  },
 } as const;
 
 contextBridge.exposeInMainWorld("executor", api);
