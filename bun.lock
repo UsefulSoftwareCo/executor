@@ -127,6 +127,13 @@
       "devDependencies": {
         "@executor-js/app": "workspace:*",
         "@executor-js/local": "workspace:*",
+        "@executor-js/plugin-file-secrets": "workspace:*",
+        "@executor-js/plugin-google-discovery": "workspace:*",
+        "@executor-js/plugin-graphql": "workspace:*",
+        "@executor-js/plugin-keychain": "workspace:*",
+        "@executor-js/plugin-mcp": "workspace:*",
+        "@executor-js/plugin-onepassword": "workspace:*",
+        "@executor-js/plugin-openapi": "workspace:*",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
         "electron": "41.2.1",
