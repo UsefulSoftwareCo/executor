@@ -28,8 +28,9 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@executor-js/react/components/dropdown-menu";
-import { SourceFavicon } from "@executor-js/react/components/source-favicon";
+import { SourceFavicon, sourcePresetIconUrl } from "@executor-js/react/components/source-favicon";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
+import { useSourcePlugins } from "@executor-js/sdk/client";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { AUTH_PATHS } from "../auth/api";
 import { organizationsAtom, switchOrganization, useAuth } from "./auth";
@@ -75,6 +76,7 @@ function NavItem(props: { to: string; label: string; active: boolean; onNavigate
 function SourceList(props: { pathname: string; onNavigate?: () => void }) {
   const scopeId = useScope();
   const sources = useAtomValue(sourcesOptimisticAtom(scopeId));
+  const sourcePlugins = useSourcePlugins();
 
   return AsyncResult.match(sources, {
     onInitial: () => (
@@ -114,7 +116,7 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
                     : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
                 ].join(" ")}
               >
-                <SourceFavicon url={s.url} />
+                <SourceFavicon icon={sourcePresetIconUrl(s, sourcePlugins)} url={s.url} />
                 <span className="flex-1 truncate">{s.name}</span>
                 <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
                   {s.kind}

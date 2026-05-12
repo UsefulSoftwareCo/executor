@@ -7,9 +7,9 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { sourcesAtom, sourcesOptimisticAtom, toolsAtom } from "@executor-js/react/api/atoms";
 import { useScope, useScopeInfo } from "@executor-js/react/api/scope-context";
 import { Button } from "@executor-js/react/components/button";
-import { SourceFavicon } from "@executor-js/react/components/source-favicon";
+import { SourceFavicon, sourcePresetIconUrl } from "@executor-js/react/components/source-favicon";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
-import { useClientPlugins } from "@executor-js/sdk/client";
+import { useClientPlugins, useSourcePlugins } from "@executor-js/sdk/client";
 
 // ── Env ─────────────────────────────────────────────────────────────────
 
@@ -268,6 +268,7 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
 function SourceList(props: { pathname: string; onNavigate?: () => void }) {
   const scopeId = useScope();
   const sources = useAtomValue(sourcesOptimisticAtom(scopeId));
+  const sourcePlugins = useSourcePlugins();
 
   return AsyncResult.match(sources, {
     onInitial: () => <div className="px-2.5 py-2 text-xs text-muted-foreground">Loading…</div>,
@@ -298,7 +299,11 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
                     : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
                 ].join(" ")}
               >
-                <SourceFavicon sourceId={s.id} url={s.url} />
+                <SourceFavicon
+                  icon={sourcePresetIconUrl(s, sourcePlugins)}
+                  sourceId={s.id}
+                  url={s.url}
+                />
                 <span className="flex-1 truncate">{s.name}</span>
                 <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
                   {s.kind}

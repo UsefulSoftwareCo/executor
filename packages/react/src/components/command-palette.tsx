@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { PlusIcon } from "lucide-react";
-import { SourceFavicon } from "./source-favicon";
+import { SourceFavicon, sourcePresetIconUrl } from "./source-favicon";
 import { sourcesOptimisticAtom } from "../api/atoms";
 import { useScope } from "../hooks/use-scope";
 import { useSourcePlugins } from "@executor-js/sdk/client";
@@ -151,7 +151,7 @@ export function CommandPalette() {
                   value={`connected ${s.name} ${s.id} ${s.kind}`}
                   onSelect={() => goToSource(s.id)}
                 >
-                  <SourceFavicon url={s.url} />
+                  <SourceFavicon icon={sourcePresetIconUrl(s, sourcePlugins)} url={s.url} />
                   <span className="flex-1 truncate">{s.name}</span>
                   <CommandShortcut>{s.kind}</CommandShortcut>
                 </CommandItem>

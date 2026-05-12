@@ -29,7 +29,7 @@ import {
   CardStackEntryMedia,
   CardStackEntryTitle,
 } from "../components/card-stack";
-import { SourceFavicon } from "../components/source-favicon";
+import { SourceFavicon, sourcePresetIconUrl } from "../components/source-favicon";
 import { Skeleton } from "../components/skeleton";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
@@ -411,7 +411,12 @@ function SourceGrid(props: {
             <CardStackEntry key={s.id} asChild searchText={`${s.name} ${s.id} ${s.kind}`}>
               <Link to="/sources/$namespace" params={{ namespace: s.id }}>
                 <CardStackEntryMedia>
-                  <SourceFavicon sourceId={s.id} url={s.url} size={32} />
+                  <SourceFavicon
+                    icon={sourcePresetIconUrl(s, sourcePlugins)}
+                    sourceId={s.id}
+                    url={s.url}
+                    size={32}
+                  />
                 </CardStackEntryMedia>
                 <CardStackEntryContent>
                   <CardStackEntryTitle>{s.name}</CardStackEntryTitle>
