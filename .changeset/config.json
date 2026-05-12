@@ -10,7 +10,7 @@
       "@executor-js/runtime-quickjs",
       "@executor-js/execution",
       "@executor-js/config",
-      "@executor-js/cli",
+      "executor",
       "@executor-js/plugin-file-secrets",
       "@executor-js/plugin-google-discovery",
       "@executor-js/plugin-graphql",
