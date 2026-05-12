@@ -33,6 +33,7 @@ export type { OAuthPopupResult } from "@executor-js/sdk";
 
 export type OAuthCompletionListener = (result: OAuthPopupResult<unknown>) => void;
 
+// TODO: replace with plugin notify framework
 let completionListener: OAuthCompletionListener | null = null;
 
 export const setOAuthCompletionListener = (listener: OAuthCompletionListener | null): void => {
