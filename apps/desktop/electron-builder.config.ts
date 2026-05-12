@@ -6,7 +6,10 @@ const config: Configuration = {
   artifactName: "executor-desktop-${os}-${arch}.${ext}",
   directories: {
     output: "dist",
-    buildResources: "resources",
+    // Static build inputs live in build/ (icon.png, entitlements.mac.plist).
+    // Runtime resources staged at build time (sidecar binary, web-ui) live
+    // in resources/ and are wired in via `extraResources` below.
+    buildResources: "build",
   },
   files: ["out/**/*", "package.json"],
   extraResources: [

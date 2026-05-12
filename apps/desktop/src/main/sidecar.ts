@@ -14,6 +14,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { app } from "electron";
 
@@ -64,14 +65,15 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     );
   }
 
-  // Pin all user-mutable state (executor.jsonc, data.db, migrations) to the
-  // per-user Electron userData dir (mac: ~/Library/Application Support/Executor,
-  // win: %APPDATA%/Executor, linux: ~/.config/Executor). app.setPath in
-  // main/index.ts pins this to a stable appId-scoped path that survives
-  // auto-updates; defaulting cwd into process.resourcesPath (the app bundle)
-  // would put writes inside a read-only signed bundle.
-  const userDataPath = app.getPath("userData");
-  mkdirSync(userDataPath, { recursive: true });
+  // executor.jsonc and data.db go to ~/.executor — the same path the CLI's
+  // `executor web` uses. Desktop and CLI share state on the same machine so
+  // sources/secrets/policies set up in one show up in the other, and
+  // user-facing commands like `executor mcp --scope ~/.executor` stay
+  // copy-paste-friendly. Electron's userData (set in main/index.ts) is
+  // still used for electron-store, electron-log, and window-state — those
+  // stay app-scoped to avoid colliding with anything else under HOME.
+  const scopeDir = join(homedir(), ".executor");
+  mkdirSync(scopeDir, { recursive: true });
 
   const child = spawn(command, args, {
     cwd,
@@ -82,8 +84,8 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
       EXECUTOR_HOST: hostname,
       EXECUTOR_AUTH_PASSWORD: authPassword,
       EXECUTOR_CLIENT_DIR: clientDir,
-      EXECUTOR_SCOPE_DIR: userDataPath,
-      EXECUTOR_DATA_DIR: userDataPath,
+      EXECUTOR_SCOPE_DIR: scopeDir,
+      EXECUTOR_DATA_DIR: scopeDir,
     },
   });
 

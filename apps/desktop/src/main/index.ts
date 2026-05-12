@@ -6,14 +6,17 @@ import updater from "electron-updater";
 const { autoUpdater } = updater;
 import { startSidecar, stopSidecar, type SidecarConnection } from "./sidecar";
 
-// Pin userData to an appId-scoped dir BEFORE app.ready so every downstream
-// consumer (electron-store, the sidecar's EXECUTOR_SCOPE_DIR, electron-log)
-// agrees on the location. Without this, userData defaults to a path derived
-// from package.json#name (`@executor-js/desktop`), which is ugly and changes
-// if we ever rename the workspace package.
-const APP_ID = "sh.executor.desktop";
+// Pin userData to a friendly app-name-scoped dir BEFORE app.ready so every
+// Electron-side consumer (electron-store, electron-log, window-state) lands
+// at a predictable spot. The bundle identifier `sh.executor.desktop` is
+// used for the app ID (electron-builder, single-instance lock) but NOT for
+// the userData path — we keep that as the readable "Executor" so anyone
+// who pokes around inside ~/Library/Application Support sees the friendly
+// name. User-mutable executor state (executor.jsonc, data.db) is pinned
+// separately to ~/.executor in main/sidecar.ts; it's intentionally NOT
+// under userData so the path matches the CLI's default.
 app.setName("Executor");
-app.setPath("userData", join(app.getPath("appData"), APP_ID));
+app.setPath("userData", join(app.getPath("appData"), "Executor"));
 
 log.initialize({ preload: true });
 log.transports.file.level = "info";
@@ -50,6 +53,19 @@ const installBasicAuthHeader = (origin: string, password: string) => {
   );
 };
 
+const resolveLinuxIcon = (): string | undefined => {
+  if (process.platform !== "linux") return undefined;
+  // In packaged AppImage/deb/rpm the icon is referenced through the
+  // desktop-entry file electron-builder generates; this is only used at
+  // BrowserWindow construction time. Resolves to the icon staged by
+  // electron-builder under Resources/ in production, or back to the
+  // source PNG when running unpacked in dev.
+  if (app.isPackaged) {
+    return join(process.resourcesPath, "icon.png");
+  }
+  return join(import.meta.dirname, "..", "..", "build", "icon.png");
+};
+
 const createWindow = async (conn: SidecarConnection) => {
   const windowState = windowStateKeeper({
     defaultWidth: 1280,
@@ -57,6 +73,8 @@ const createWindow = async (conn: SidecarConnection) => {
   });
 
   installBasicAuthHeader(conn.baseUrl, conn.authPassword);
+
+  const linuxIcon = resolveLinuxIcon();
 
   mainWindow = new BrowserWindow({
     x: windowState.x,
@@ -68,6 +86,7 @@ const createWindow = async (conn: SidecarConnection) => {
     show: false,
     backgroundColor: "#0a0a0a",
     autoHideMenuBar: true,
+    ...(linuxIcon ? { icon: linuxIcon } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
