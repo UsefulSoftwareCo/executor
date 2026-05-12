@@ -1,9 +1,19 @@
+import { join } from "node:path";
 import { app, BrowserWindow, session, shell } from "electron";
 import windowStateKeeper from "electron-window-state";
 import log from "electron-log/main.js";
 import updater from "electron-updater";
 const { autoUpdater } = updater;
 import { startSidecar, stopSidecar, type SidecarConnection } from "./sidecar";
+
+// Pin userData to an appId-scoped dir BEFORE app.ready so every downstream
+// consumer (electron-store, the sidecar's EXECUTOR_SCOPE_DIR, electron-log)
+// agrees on the location. Without this, userData defaults to a path derived
+// from package.json#name (`@executor-js/desktop`), which is ugly and changes
+// if we ever rename the workspace package.
+const APP_ID = "sh.executor.desktop";
+app.setName("Executor");
+app.setPath("userData", join(app.getPath("appData"), APP_ID));
 
 log.initialize({ preload: true });
 log.transports.file.level = "info";

@@ -13,7 +13,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { app } from "electron";
 
@@ -64,6 +64,15 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     );
   }
 
+  // Pin all user-mutable state (executor.jsonc, data.db, migrations) to the
+  // per-user Electron userData dir (mac: ~/Library/Application Support/Executor,
+  // win: %APPDATA%/Executor, linux: ~/.config/Executor). app.setPath in
+  // main/index.ts pins this to a stable appId-scoped path that survives
+  // auto-updates; defaulting cwd into process.resourcesPath (the app bundle)
+  // would put writes inside a read-only signed bundle.
+  const userDataPath = app.getPath("userData");
+  mkdirSync(userDataPath, { recursive: true });
+
   const child = spawn(command, args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
@@ -73,6 +82,8 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
       EXECUTOR_HOST: hostname,
       EXECUTOR_AUTH_PASSWORD: authPassword,
       EXECUTOR_CLIENT_DIR: clientDir,
+      EXECUTOR_SCOPE_DIR: userDataPath,
+      EXECUTOR_DATA_DIR: userDataPath,
     },
   });
 
