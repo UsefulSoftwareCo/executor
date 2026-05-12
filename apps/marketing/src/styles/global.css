@@ -183,6 +183,211 @@ body {
   transform: scale(1);
 }
 
+/* ──────────────────────────────────────────────────────────────
+   Hero toggle — segmented "Try in Cloud / Try locally" control.
+   A sliding white pill animates between two equal-width tabs.
+   The active pane is revealed below; inactive panes hide.
+   ─────────────────────────────────────────────────────────── */
+.tab-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  padding: 4px;
+  isolation: isolate;
+}
+.tab-toggle > button {
+  position: relative;
+  z-index: 1;
+  min-width: 7.5rem;
+  padding: 0.5rem 1.1rem;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--color-ink-3);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.tab-toggle > button:hover {
+  color: var(--color-ink-2);
+}
+.tab-toggle > button[aria-selected="true"] {
+  color: var(--color-ink);
+}
+.tab-toggle .tab-indicator {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  background: white;
+  border-radius: 999px;
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.04),
+    0 0 0 1px var(--color-rule);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 0;
+}
+.tab-toggle[data-active="local"] .tab-indicator {
+  transform: translateX(100%);
+}
+
+.hero-toggle .pane {
+  display: none;
+}
+.hero-toggle[data-active="cloud"] .pane[data-pane="cloud"],
+.hero-toggle[data-active="local"] .pane[data-pane="local"] {
+  display: flex;
+}
+
+/* Per-pane description — sits above the CTA. Smaller than the hero tagline,
+   tight max-width so two lines wrap naturally on narrow widths. */
+.pane-desc {
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--color-ink-2);
+  letter-spacing: -0.005em;
+  max-width: 36ch;
+  text-align: center;
+  text-wrap: balance;
+  margin: 0;
+}
+
+/* Subtle metadata strip under each pane's CTA — uppercase mono dots */
+.pane-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-3);
+}
+.pane-meta .dot {
+  width: 3px;
+  height: 3px;
+  background: var(--color-ink-3);
+  border-radius: 999px;
+  opacity: 0.45;
+  flex-shrink: 0;
+}
+.pane-meta .meta-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-transform: none;
+  letter-spacing: -0.005em;
+  font-family: var(--font-mono);
+  color: var(--color-ink-2);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.pane-meta .meta-copy:hover {
+  color: var(--color-ink);
+}
+
+/* "Other platforms" popover so the layout doesn't shift when it opens */
+.download-other {
+  position: relative;
+}
+.download-other > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--color-ink-3);
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.download-other > summary::-webkit-details-marker {
+  display: none;
+}
+.download-other > summary:hover {
+  color: var(--color-ink-2);
+  background: var(--color-surface-2);
+}
+.download-other[open] > summary {
+  color: var(--color-ink);
+}
+.download-other .download-other-list {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  padding: 0.45rem;
+  min-width: 16rem;
+  box-shadow:
+    0 4px 16px -6px rgba(13, 13, 16, 0.12),
+    0 1px 3px rgba(13, 13, 16, 0.04);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.download-other .download-other-list a {
+  display: block;
+  padding: 0.55rem 0.8rem;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--color-ink-2);
+  text-align: left;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.download-other .download-other-list a:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-2);
+}
+
+/* Larger primary button for the hero pane — keeps btn-primary base sizing
+   for nav/cards but bumps the hero's CTA to a more confident scale */
+.btn-primary--hero {
+  padding: 0.7rem 1.25rem;
+  font-size: 14.5px;
+}
+
+/* Accent-colored inline link — for secondary callouts inside card bodies */
+.link-accent {
+  color: var(--color-accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  text-underline-offset: 3px;
+  transition:
+    color 0.15s ease,
+    text-decoration-color 0.15s ease;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+.link-accent:hover {
+  color: var(--color-accent-hover);
+  text-decoration-color: var(--color-accent-hover);
+}
+
 /* Legal pages */
 .legal-prose {
   color: color-mix(in srgb, var(--color-ink) 85%, transparent);

@@ -7,31 +7,48 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@executor-js/react/components/dialog";
+
 const TEMPLATE = "Hi Rhys, I'm at {company} and interested in self hosting executor.";
 const EMAIL = "rhys@executor.sh";
 
-export function SelfHostContactModal() {
+type Variant = "card" | "inline";
+
+interface Props {
+  /**
+   * "card" (default) — block-level "Get in touch →" link styled like a card CTA.
+   * "inline" — accent-colored inline link sized to flow inside a paragraph.
+   */
+  readonly variant?: Variant;
+}
+
+export function SelfHostContactModal({ variant = "card" }: Props) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button
-          variant="link"
-          className="btn-link self-start h-auto p-0 text-current hover:no-underline"
-        >
-          Get in touch →
-        </Button>
+        {variant === "inline" ? (
+          <Button variant="link" className="link-accent inline-flex h-auto items-baseline p-0">
+            Looking for self-hosted? →
+          </Button>
+        ) : (
+          <Button
+            variant="link"
+            className="btn-link self-start h-auto p-0 text-current hover:no-underline"
+          >
+            Get in touch →
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent
         showCloseButton={false}
-        className="surface-card gap-0 border-0 p-6 sm:max-w-[520px] sm:p-7"
+        className="surface-card gap-0 border-0 p-6 sm:max-w-[560px] sm:p-7"
         style={{
           background: "var(--color-surface)",
           color: "var(--color-ink)",
         }}
       >
-        <div className="mb-4 flex items-start justify-between gap-4">
+        <div className="mb-5 flex items-start justify-between gap-4">
           <DialogTitle className="text-[20px] font-semibold tracking-[-0.01em]">
-            Get in touch
+            Self-hosted Executor
           </DialogTitle>
           <DialogClose asChild>
             <Button
@@ -58,8 +75,13 @@ export function SelfHostContactModal() {
           </DialogClose>
         </div>
 
-        <p className="mb-3 text-[13.5px] leading-[1.55]" style={{ color: "var(--color-ink-2)" }}>
-          Copy the template, fill in your company, and send it to me.
+        <p className="mb-4 text-[14px] leading-[1.6]" style={{ color: "var(--color-ink-2)" }}>
+          We're looking for early adopters to give feedback and use the self hosted product. If
+          you're a company interested in self hosting get in touch.
+        </p>
+
+        <p className="mb-2 text-[13px] font-medium" style={{ color: "var(--color-ink-3)" }}>
+          Copy this and send it over:
         </p>
 
         <div

@@ -59,48 +59,106 @@ import { SelfHostContactModal } from "../components/self-host-contact-modal";
             >
               One gateway. Every tool. Every team.
             </p>
+
+            {/* ── Toggle: Try in Cloud / Try locally ── */}
             <div
-              class="rise-4 flex flex-wrap items-center justify-center gap-5"
+              class="rise-4 hero-toggle flex flex-col items-center gap-7"
+              data-active="cloud"
             >
-              <a href="/cloud" class="btn-primary">Try Cloud →</a>
-              <button
-                type="button"
-                class="btn-link copy-btn"
-                data-copy="npm i -g executor && executor web"
-                aria-label="Copy npm i -g executor && executor web to clipboard"
+              <div
+                class="tab-toggle"
+                data-active="cloud"
+                role="tablist"
+                aria-label="Choose how to try Executor"
               >
-                <span class="font-mono text-[13px] text-ink-3">$</span>
-                <span>npm i -g executor && executor web</span>
-                <span class="copy-icons text-ink-3" aria-hidden="true">
-                  <svg
-                    class="copy-icon-copy"
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    ><rect x="9" y="9" width="13" height="13" rx="2" ry="2"
-                    ></rect><path
-                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                    ></path></svg
+                <span class="tab-indicator" aria-hidden="true"></span>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  data-tab="cloud"
+                >
+                  Cloud
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  data-tab="local"
+                >
+                  Local
+                </button>
+              </div>
+
+              {/* Cloud pane */}
+              <div
+                class="pane flex-col items-center gap-4"
+                data-pane="cloud"
+                role="tabpanel"
+                aria-labelledby="tab-cloud"
+              >
+                <p class="pane-desc">
+                  Built for teams. Plug into any agent via MCP.
+                </p>
+                <a href="/cloud" class="btn-primary btn-primary--hero"
+                  >Try Cloud →</a
+                >
+              </div>
+
+              {/* Local pane — auto-detected download */}
+              <div
+                class="pane flex-col items-center gap-4"
+                data-pane="local"
+                role="tabpanel"
+                aria-labelledby="tab-local"
+                data-download
+              >
+                <p class="pane-desc">
+                  Everything runs on your machine locally.
+                </p>
+                <div class="flex flex-wrap items-center justify-center gap-3">
+                  <a
+                    data-os="mac-arm64"
+                    href="https://github.com/RhysSullivan/executor/releases/latest/download/executor-desktop-mac-arm64.dmg"
+                    class="btn-primary btn-primary--hero"
                   >
-                  <svg
-                    class="copy-icon-check"
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    ><polyline points="20 6 9 17 4 12"></polyline></svg
+                    Download for Mac (Apple Silicon)
+                  </a>
+                  <a
+                    data-os="mac-x64"
+                    href="https://github.com/RhysSullivan/executor/releases/latest/download/executor-desktop-mac-x64.dmg"
+                    class="btn-primary btn-primary--hero"
                   >
-                </span>
-              </button>
+                    Download for Mac (Intel)
+                  </a>
+                  <a
+                    data-os="win-x64"
+                    href="https://github.com/RhysSullivan/executor/releases/latest/download/executor-desktop-win-x64.exe"
+                    class="btn-primary btn-primary--hero"
+                  >
+                    Download for Windows
+                  </a>
+                  <a
+                    data-os="linux-x64"
+                    href="https://github.com/RhysSullivan/executor/releases/latest/download/executor-desktop-linux-x64.AppImage"
+                    class="btn-primary btn-primary--hero"
+                  >
+                    Download for Linux
+                  </a>
+
+                  <details
+                    class="download-other hidden"
+                    data-download-other
+                  >
+                    <summary>Other platforms ▾</summary>
+                    <div
+                      class="download-other-list"
+                      data-download-other-list
+                    >
+                    </div>
+                  </details>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -200,7 +258,9 @@ import { SelfHostContactModal } from "../components/self-host-contact-modal";
             </h2>
           </div>
 
-          <div class="grid md:grid-cols-3 gap-6 max-w-[1100px] mx-auto">
+          <div
+            class="grid md:grid-cols-2 gap-6 max-w-[760px] mx-auto"
+          >
             {/* Cloud */}
             <div
               class="surface-card p-8 flex flex-col"
@@ -218,15 +278,18 @@ import { SelfHostContactModal } from "../components/self-host-contact-modal";
                 Cloud
               </h3>
               <p
-                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
+                class="text-[14.5px] leading-[1.55] text-ink-2 mb-3 text-pretty"
               >
-                Hosted Executor. Auth, sync, policies, and the whole team online
-                in five minutes. Free tier to start.
+                Hosted Executor. Auth, sync, policies, and the whole team
+                online in five minutes. Free tier to start.
+              </p>
+              <p class="mb-6 text-[13.5px] leading-[1.55] text-ink-3 flex-1">
+                <SelfHostContactModal client:load variant="inline" />
               </p>
               <a href="/cloud" class="btn-primary self-start">Try Cloud →</a>
             </div>
 
-            {/* Local */}
+            {/* Desktop */}
             <div class="surface-card p-8 flex flex-col">
               <div class="flex items-center gap-2 mb-4">
                 <span
@@ -237,43 +300,21 @@ import { SelfHostContactModal } from "../components/self-host-contact-modal";
               <h3
                 class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
               >
-                Local
+                Desktop
               </h3>
               <p
                 class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
               >
-                Run on your own machine. Keychain-backed secrets. Zero data
-                leaves your laptop. MIT licensed.
+                A native app for Mac, Windows, and Linux. Everything stays
+                on your machine — sources, secrets, sessions. MIT licensed.
               </p>
-              <div
-                class="font-mono text-[13px] text-ink bg-surface-2 border border-rule px-3 py-2 rounded-md self-start"
-                style="background: var(--color-surface-2)"
+              <button
+                type="button"
+                data-jump-to-local
+                class="btn-primary self-start"
               >
-                <span class="text-ink-3">$</span> npm i -g executor && executor web
-              </div>
-            </div>
-
-            {/* Self-Hosted */}
-            <div class="surface-card p-8 flex flex-col">
-              <div class="flex items-center gap-2 mb-4">
-                <span
-                  class="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-3"
-                  >Bring your own infra</span
-                >
-              </div>
-              <h3
-                class="text-[22px] font-semibold tracking-[-0.01em] text-ink mb-3"
-              >
-                Self-Hosted
-              </h3>
-              <p
-                class="text-[14.5px] leading-[1.55] text-ink-2 mb-6 text-pretty flex-1"
-              >
-                We're looking for early adopters to give feedback and use the
-                self hosted product. If you're a company interested in self
-                hosting get in touch.
-              </p>
-              <SelfHostContactModal client:load />
+                Download →
+              </button>
             </div>
           </div>
         </div>
@@ -327,4 +368,124 @@ import { SelfHostContactModal } from "../components/self-host-contact-modal";
         }, 1500);
       });
     });
+</script>
+
+<script>
+  // ── Hero tab toggle: Try in Cloud / Try locally ────────────────────
+  // Drives the sliding pill indicator + pane visibility via a single
+  // `data-active` attribute on the wrapper. Default "cloud" so no-JS
+  // visitors still see the recommended path.
+  const heroToggle = document.querySelector<HTMLElement>(".hero-toggle");
+  const tabToggle = heroToggle?.querySelector<HTMLElement>(".tab-toggle");
+  const setActiveTab = (tab: "cloud" | "local") => {
+    if (!heroToggle || !tabToggle) return;
+    heroToggle.dataset.active = tab;
+    tabToggle.dataset.active = tab;
+    tabToggle.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach(
+      (btn) => {
+        btn.setAttribute(
+          "aria-selected",
+          btn.dataset.tab === tab ? "true" : "false",
+        );
+      },
+    );
+  };
+  if (heroToggle && tabToggle) {
+    tabToggle.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach(
+      (btn) => {
+        btn.addEventListener("click", () => {
+          const tab = btn.dataset.tab as "cloud" | "local" | undefined;
+          if (tab) setActiveTab(tab);
+        });
+      },
+    );
+  }
+
+  // Desktop card "Download →" CTA jumps to the hero, switches to Local,
+  // and lets the auto-detect script there pick the right OS button.
+  document
+    .querySelectorAll<HTMLButtonElement>("button[data-jump-to-local]")
+    .forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setActiveTab("local");
+        heroToggle?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+
+  // ── Auto-detect download platform ──────────────────────────────────
+  // Shows ONE primary button matching the visitor's OS in the "Try
+  // locally" pane; tucks the others behind an "Other platforms"
+  // popover. No-JS / unrecognised UA: all four buttons visible (still
+  // functional, just less polished).
+  type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64";
+
+  type UserAgentData = {
+    readonly platform: string;
+    readonly getHighEntropyValues?: (
+      hints: ReadonlyArray<string>,
+    ) => Promise<{ readonly architecture?: string; readonly bitness?: string }>;
+  };
+
+  const detectOs = async (): Promise<DownloadOs | null> => {
+    const navAny = navigator as Navigator & {
+      readonly userAgentData?: UserAgentData;
+    };
+    const uad = navAny.userAgentData;
+    const platformRaw =
+      uad?.platform ?? navigator.platform ?? navigator.userAgent ?? "";
+    const platform = platformRaw.toLowerCase();
+    const ua = navigator.userAgent.toLowerCase();
+
+    if (platform.includes("win") || ua.includes("windows")) return "win-x64";
+    if (platform.includes("linux") || ua.includes("linux")) return "linux-x64";
+    if (platform.includes("mac") || ua.includes("mac")) {
+      // Apple Silicon vs Intel: ask client hints first, then fall back to
+      // a heuristic. Most modern Macs are arm64.
+      if (uad?.getHighEntropyValues) {
+        try {
+          const hints = await uad.getHighEntropyValues([
+            "architecture",
+            "bitness",
+          ]);
+          if (hints.architecture === "arm") return "mac-arm64";
+          if (hints.architecture === "x86") return "mac-x64";
+        } catch {}
+      }
+      return "mac-arm64";
+    }
+    return null;
+  };
+
+  void (async () => {
+    const root = document.querySelector<HTMLElement>("[data-download]");
+    if (!root) return;
+    const buttons = Array.from(
+      root.querySelectorAll<HTMLAnchorElement>("a[data-os]"),
+    );
+    const other = root.querySelector<HTMLDetailsElement>(
+      "[data-download-other]",
+    );
+    const otherList = root.querySelector<HTMLDivElement>(
+      "[data-download-other-list]",
+    );
+    if (buttons.length === 0 || !other || !otherList) return;
+
+    const detected = await detectOs();
+    if (!detected) return;
+
+    for (const btn of buttons) {
+      const os = btn.dataset.os as DownloadOs | undefined;
+      if (os && os !== detected) {
+        btn.classList.add("hidden");
+        const clone = btn.cloneNode(true) as HTMLAnchorElement;
+        clone.classList.remove(
+          "btn-primary",
+          "btn-primary--hero",
+          "hidden",
+        );
+        otherList.appendChild(clone);
+      }
+    }
+    other.classList.remove("hidden");
+  })();
 </script>
