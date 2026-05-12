@@ -31,7 +31,15 @@ const APPS_LOCAL_DIST = resolve(APPS_LOCAL, "dist");
 const EMBEDDED_MIGRATIONS_PATH = join(APPS_LOCAL, "src/server/embedded-migrations.gen.ts");
 const EMBEDDED_MIGRATIONS_STUB = `const migrations: Record<string, string> | null = null;\n\nexport default migrations;\n`;
 
-const binaryName = process.platform === "win32" ? "executor-sidecar.exe" : "executor-sidecar";
+/**
+ * Cross-compile target for `bun build --compile`. When unset we use Bun's
+ * default `bun` target (the runner's own platform). CI passes a specific
+ * value like `bun-darwin-x64` to produce binaries for other platforms from
+ * a single matrix entry.
+ */
+const BUN_TARGET = process.env.BUN_TARGET ?? "bun";
+const targetIsWindows = BUN_TARGET.includes("windows") || process.platform === "win32";
+const binaryName = targetIsWindows ? "executor-sidecar.exe" : "executor-sidecar";
 const sidecarBinary = resolve(SIDECAR_OUT_DIR, binaryName);
 
 const createEmbeddedMigrationsSource = async (): Promise<string> => {
@@ -74,8 +82,10 @@ await writeFile(EMBEDDED_MIGRATIONS_PATH, `${embeddedMigrations}\n`);
 
 // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: ensure the gen stub is restored even if compile fails
 try {
-  console.log(`[build-sidecar] bun build --compile ${SIDECAR_ENTRY} → ${sidecarBinary}`);
-  await $`bun build --compile --minify --sourcemap --target=bun --outfile ${sidecarBinary} ${SIDECAR_ENTRY}`.cwd(
+  console.log(
+    `[build-sidecar] bun build --compile --target=${BUN_TARGET} ${SIDECAR_ENTRY} → ${sidecarBinary}`,
+  );
+  await $`bun build --compile --minify --sourcemap --target=${BUN_TARGET} --outfile ${sidecarBinary} ${SIDECAR_ENTRY}`.cwd(
     REPO_ROOT,
   );
 } finally {
