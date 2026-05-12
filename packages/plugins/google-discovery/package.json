@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-google-discovery",
-  "version": "1.4.21",
+  "version": "1.4.22",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/google-discovery",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"

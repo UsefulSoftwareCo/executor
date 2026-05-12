@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/runtime-quickjs",
-  "version": "1.4.21",
+  "version": "1.4.22",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/kernel/runtime-quickjs",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
