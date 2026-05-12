@@ -47,18 +47,21 @@ const buildHttpEndpoint = (input: {
   readonly origin: string | null;
   readonly desktop: {
     readonly port: number;
-    readonly requireAuth: boolean;
-    readonly password: string;
   } | null;
 }): string => {
   if (input.desktop) {
-    const auth =
-      input.desktop.requireAuth && input.desktop.password
-        ? `executor:${input.desktop.password}@`
-        : "";
-    return `http://${auth}127.0.0.1:${input.desktop.port}/mcp`;
+    return `http://127.0.0.1:${input.desktop.port}/mcp`;
   }
   return input.origin ? `${input.origin}/mcp` : "<this-server>/mcp";
+};
+
+const buildBasicAuthHeader = (password: string): string => {
+  // Renderer-only — every browser/Electron renderer has btoa. SSR doesn't
+  // render this card, so we don't need a Node fallback here.
+  if (typeof globalThis.btoa !== "function") {
+    return `Authorization: Basic executor:${password}`;
+  }
+  return `Authorization: Basic ${globalThis.btoa(`executor:${password}`)}`;
 };
 
 export const buildMcpInstallCommand = (input: {
@@ -73,8 +76,19 @@ export const buildMcpInstallCommand = (input: {
   } | null;
 }): string => {
   if (input.mode === "http") {
-    const endpoint = buildHttpEndpoint({ origin: input.origin, desktop: input.desktop ?? null });
-    return `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`;
+    const endpoint = buildHttpEndpoint({
+      origin: input.origin,
+      desktop: input.desktop ? { port: input.desktop.port } : null,
+    });
+    const headerFlags: string[] = [];
+    if (input.desktop?.requireAuth && input.desktop.password) {
+      headerFlags.push(`--header ${shellQuoteWord(buildBasicAuthHeader(input.desktop.password))}`);
+    }
+    const parts = [
+      `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
+      ...headerFlags,
+    ];
+    return parts.join(" ");
   }
 
   const innerArgs = input.isDev ? ["bun", "run", "dev:cli", "mcp"] : ["executor", "mcp"];
