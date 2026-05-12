@@ -144,7 +144,33 @@ const createWindow = async (conn: SidecarConnection) => {
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, disposition }) => {
+    // JS-initiated `window.open(url, name, "popup=1,...")` calls (OAuth
+    // sign-in flow in packages/react/src/api/oauth-popup.ts:73) come in
+    // with disposition "new-window" — allow them as Electron child
+    // windows so the renderer's popup tracking (closed polling +
+    // BroadcastChannel handoff) works. Plain `<a target="_blank">`
+    // link clicks come in as "foreground-tab" / "background-tab" /
+    // "other" and route to the user's default browser.
+    if (disposition === "new-window") {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          autoHideMenuBar: true,
+          webPreferences: {
+            // No preload, no nodeIntegration — popup loads third-party
+            // OAuth provider pages, then a final navigation back to
+            // 127.0.0.1:<port>/oauth/callback which the session-level
+            // Basic auth header injection (installBasicAuthHeader)
+            // catches automatically. The popup never needs the
+            // executor IPC bridge.
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    }
     void shell.openExternal(url);
     return { action: "deny" };
   });

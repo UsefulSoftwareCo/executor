@@ -36,6 +36,7 @@
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/integrations-registry": "workspace:*",
         "@executor-js/local": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
         "@jitl/quickjs-wasmfile-release-sync": "catalog:",
@@ -155,6 +156,7 @@
         "@executor-js/config": "workspace:*",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/integrations-registry": "workspace:*",
         "@executor-js/plugin-desktop-settings": "workspace:*",
         "@executor-js/plugin-example": "workspace:*",
         "@executor-js/plugin-file-secrets": "workspace:*",
@@ -351,6 +353,20 @@
         "@executor-js/runtime-quickjs": "workspace:*",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
+    "packages/core/integrations-registry": {
+      "name": "@executor-js/integrations-registry",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-node": "catalog:",
+        "@effect/vitest": "catalog:",
         "tsup": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
@@ -1346,6 +1362,8 @@
     "@executor-js/execution": ["@executor-js/execution@workspace:packages/core/execution"],
 
     "@executor-js/host-mcp": ["@executor-js/host-mcp@workspace:packages/hosts/mcp"],
+
+    "@executor-js/integrations-registry": ["@executor-js/integrations-registry@workspace:packages/core/integrations-registry"],
 
     "@executor-js/ir": ["@executor-js/ir@workspace:packages/kernel/ir"],
 

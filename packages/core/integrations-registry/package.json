@@ -1,0 +1,49 @@
+{
+  "name": "@executor-js/integrations-registry",
+  "version": "0.1.0",
+  "private": true,
+  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/integrations-registry",
+  "bugs": {
+    "url": "https://github.com/RhysSullivan/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "directory": "packages/core/integrations-registry"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "test": "vitest run",
+    "typecheck": "tsgo --noEmit",
+    "typecheck:slow": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

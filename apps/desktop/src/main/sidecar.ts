@@ -100,6 +100,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
       EXECUTOR_CLIENT_DIR: clientDir,
       EXECUTOR_SCOPE_DIR: scopeDir,
       EXECUTOR_DATA_DIR: scopeDir,
+      EXECUTOR_CLIENT: "desktop",
     },
   });
 

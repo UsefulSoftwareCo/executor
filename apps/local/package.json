@@ -27,6 +27,7 @@
     "@executor-js/config": "workspace:*",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/integrations-registry": "workspace:*",
     "@executor-js/plugin-desktop-settings": "workspace:*",
     "@executor-js/plugin-example": "workspace:*",
     "@executor-js/plugin-file-secrets": "workspace:*",

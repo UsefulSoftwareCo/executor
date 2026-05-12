@@ -263,12 +263,16 @@ export const openOAuthSystemBrowser = <TAuth>(
     }
   };
 
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: openExternal is host-provided and may reject
-  input.openExternal(input.url).catch((cause: unknown) => {
-    if (settled) return;
-    settle();
-    input.onOpenFailed?.(cause);
-  });
+  void (async () => {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: openExternal is host-provided IPC, no Effect runtime in this browser-only helper
+    try {
+      await input.openExternal(input.url);
+    } catch (cause: unknown) {
+      if (settled) return;
+      settle();
+      input.onOpenFailed?.(cause);
+    }
+  })();
 
   pollHandle = setInterval(() => void poll(), input.pollMs ?? OAUTH_AWAIT_DEFAULT_POLL_MS);
   void poll();

@@ -24,6 +24,7 @@
   "dependencies": {
     "@effect/platform-bun": "catalog:",
     "@executor-js/api": "workspace:*",
+    "@executor-js/integrations-registry": "workspace:*",
     "@executor-js/local": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@jitl/quickjs-wasmfile-release-sync": "catalog:",

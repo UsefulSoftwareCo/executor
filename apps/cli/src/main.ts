@@ -60,6 +60,7 @@ import * as Cause from "effect/Cause";
 import { ExecutorApi } from "@executor-js/api";
 import { startServer, runMcpStdioServer, getExecutor } from "@executor-js/local";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { fetchIntegrations } from "./integrations";
 import {
   buildDaemonSpawnSpec,
   chooseDaemonPort,
@@ -1493,6 +1494,10 @@ if (process.argv.includes("-v")) {
 
 const isCallHelpInvocation =
   process.argv[2] === "call" && process.argv.slice(3).some((arg) => isHelpFlag(arg));
+
+// Kick off the integrations.sh registry fetch on a sidecar runtime — see
+// `./integrations`. Skipped on `-v` (short-circuits earlier).
+fetchIntegrations();
 
 const program = (
   isCallHelpInvocation

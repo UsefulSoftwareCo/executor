@@ -5,6 +5,8 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "@executor-js/host-mcp";
 
+import { startIntegrationsRefresh } from "./integrations";
+
 // ---------------------------------------------------------------------------
 // Streamable HTTP handler
 // ---------------------------------------------------------------------------
@@ -112,6 +114,8 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
 // ---------------------------------------------------------------------------
 
 export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
+  startIntegrationsRefresh();
+
   const server = await Effect.runPromise(createExecutorMcpServer(config));
   const transport = new StdioServerTransport();
 

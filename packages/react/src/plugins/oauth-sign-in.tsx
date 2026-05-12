@@ -19,9 +19,10 @@ type DesktopBridge = {
 
 const getDesktopBridge = (): DesktopBridge | null => {
   if (typeof window === "undefined") return null;
-  const bridge = (window as unknown as { executor?: Partial<DesktopBridge> }).executor;
-  return bridge && typeof bridge.openExternal === "function"
-    ? (bridge as DesktopBridge)
+  const candidate = (window as { readonly executor?: Partial<DesktopBridge> }).executor;
+  return candidate && typeof candidate.openExternal === "function"
+    ? // oxlint-disable-next-line executor/no-double-cast -- boundary: narrowed by the typeof guard above
+      (candidate as DesktopBridge)
     : null;
 };
 import { Button } from "../components/button";
@@ -251,8 +252,7 @@ export function useOAuthPopupFlow<
         // appear closed to the opener. Keep server OAuth state alive for a
         // callback or TTL cleanup; only explicit cancel deletes the session.
         const message =
-          popupClosedMessage ??
-          "Sign-in cancelled - popup was closed before completing the flow.";
+          popupClosedMessage ?? "Sign-in cancelled - popup was closed before completing the flow.";
         setBusy(false);
         setError(message);
         input.onError?.(message);

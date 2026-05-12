@@ -11,6 +11,7 @@ import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
 import { setOAuthCompletionListener } from "@executor-js/api";
 import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
+import { startIntegrationsRefresh } from "./server/integrations";
 import { getServerHandlers } from "./server/main";
 import {
   DEFAULT_ALLOWED_HOSTS,
@@ -111,6 +112,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   const allowedHostSet = new Set<string>([...DEFAULT_ALLOWED_HOSTS, ...(opts.allowedHosts ?? [])]);
   const isAllowedHost = makeIsAllowedHost(allowedHostSet);
   const clientDir = opts.clientDir ?? resolve(import.meta.dirname, "../dist");
+
+  startIntegrationsRefresh();
 
   const handlers = opts.handlers ?? (await getServerHandlers());
 
