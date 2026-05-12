@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "out",
+    "rootDir": ".",
+    "jsx": "react-jsx",
+    "types": ["node", "bun-types"]
+  },
+  "include": [
+    "src",
+    "scripts",
+    "electron.vite.config.ts",
+    "electron-builder.config.ts"
+  ]
+}

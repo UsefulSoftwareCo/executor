@@ -23,6 +23,7 @@
   "workspaces": [
     "packages/*/*",
     "packages/react",
+    "packages/app",
     "apps/*",
     "examples/*"
   ],

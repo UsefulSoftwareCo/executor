@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import executorVitePlugin from "@executor-js/vite-plugin";
+import appPlugin from "@executor-js/app/vite";
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const rootPackage = JSON.parse(
@@ -28,6 +26,8 @@ const EXECUTOR_GITHUB_URL = (
 )
   .replace(/^git\+/, "")
   .replace(/\.git$/, "");
+
+const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
 
 /**
  * Vite plugin that forwards /api and /mcp requests to the Effect handlers
@@ -104,13 +104,18 @@ function executorApiPlugin(): Plugin {
 }
 
 export default defineConfig({
+  root: APP_ROOT,
+  publicDir: resolve(APP_ROOT, "public"),
+  build: {
+    outDir: resolve(import.meta.dirname, "dist"),
+    emptyOutDir: true,
+  },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify(EXECUTOR_GITHUB_URL),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
   resolve: {
-    dedupe: ["react", "react-dom"],
     tsconfigPaths: true,
   },
   server: {
@@ -131,14 +136,5 @@ export default defineConfig({
       allow: [resolve(import.meta.dirname, "../..")],
     },
   },
-  plugins: [
-    tailwindcss(),
-    executorVitePlugin(),
-    tanstackRouter({
-      target: "react",
-      autoCodeSplitting: true,
-    }),
-    ...react(),
-    executorApiPlugin(),
-  ],
+  plugins: [appPlugin, executorApiPlugin()],
 });

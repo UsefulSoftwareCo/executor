@@ -1,0 +1,39 @@
+{
+  "name": "@executor-js/desktop",
+  "private": true,
+  "version": "1.4.4",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/RhysSullivan/executor",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "predev": "bun run --filter @executor-js/local build",
+    "dev": "electron-vite dev",
+    "prebuild": "bun run --filter @executor-js/local build && bun ./scripts/build-sidecar.ts",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "electron-builder --config electron-builder.config.ts",
+    "package:mac": "electron-builder --mac --config electron-builder.config.ts",
+    "package:win": "electron-builder --win --config electron-builder.config.ts",
+    "package:linux": "electron-builder --linux --config electron-builder.config.ts",
+    "typecheck": "tsgo --noEmit",
+    "typecheck:slow": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron-log": "^5",
+    "electron-store": "^10",
+    "electron-updater": "^6",
+    "electron-window-state": "^5.0.3"
+  },
+  "devDependencies": {
+    "@executor-js/app": "workspace:*",
+    "@executor-js/local": "workspace:*",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "electron": "41.2.1",
+    "electron-builder": "^26",
+    "electron-vite": "^5",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

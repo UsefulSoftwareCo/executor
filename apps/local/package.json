@@ -23,6 +23,7 @@
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
     "@executor-js/api": "workspace:*",
+    "@executor-js/app": "workspace:*",
     "@executor-js/config": "workspace:*",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",

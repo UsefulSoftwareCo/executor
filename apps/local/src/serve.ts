@@ -7,84 +7,23 @@
  * Or import:      import { startServer } from "@executor-js/local/serve"
  */
 
-import { timingSafeEqual } from "node:crypto";
 import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
 import { getServerHandlers } from "./server/main";
-
-// ---------------------------------------------------------------------------
-// Host allowlist
-// ---------------------------------------------------------------------------
-
-const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"];
-const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
-
-const normalizeCredential = (value: string | undefined): string | null => {
-  const normalized = value?.trim();
-  return normalized && normalized.length > 0 ? normalized : null;
-};
-
-const safeEqual = (actual: string, expected: string): boolean => {
-  const actualBytes = Buffer.from(actual);
-  const expectedBytes = Buffer.from(expected);
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-};
-
-const isLoopbackBindHost = (hostname: string): boolean =>
-  LOOPBACK_BIND_HOSTS.has(hostname.trim().toLowerCase());
-
-const makeIsAllowedHost =
-  (allowed: ReadonlySet<string>) =>
-  (request: Request): boolean => {
-    const host = request.headers.get("host");
-    if (!host) return true;
-    const hostname = host.replace(/:\d+$/, "");
-    return allowed.has(hostname);
-  };
-
-const hasBearerToken = (request: Request, token: string): boolean => {
-  const authorization = request.headers.get("authorization");
-  const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  return (
-    (bearer !== undefined && safeEqual(bearer, token)) ||
-    safeEqual(request.headers.get("x-executor-token") ?? "", token)
-  );
-};
-
-const hasBasicPassword = (request: Request, password: string): boolean => {
-  const authorization = request.headers.get("authorization");
-  const encoded = authorization?.match(/^Basic\s+(.+)$/i)?.[1]?.trim();
-  if (!encoded) return false;
-
-  let decoded: string;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Basic auth decoding accepts untrusted header bytes
-  try {
-    decoded = Buffer.from(encoded, "base64").toString("utf8");
-  } catch {
-    return false;
-  }
-
-  const separator = decoded.indexOf(":");
-  const actualPassword = separator >= 0 ? decoded.slice(separator + 1) : decoded;
-  return safeEqual(actualPassword, password);
-};
-
-const makeIsAuthorized =
-  (auth: { token: string | null; password: string | null }) =>
-  (request: Request): boolean =>
-    (auth.token !== null && hasBearerToken(request, auth.token)) ||
-    (auth.password !== null && hasBasicPassword(request, auth.password));
+import {
+  DEFAULT_ALLOWED_HOSTS,
+  hasFileExtension,
+  isLoopbackBindHost,
+  makeIsAllowedHost,
+  makeIsAuthorized,
+  normalizeCredential,
+} from "./serve-shared";
 
 // ---------------------------------------------------------------------------
 // Static files
 // ---------------------------------------------------------------------------
 
 type StaticHandler = () => Response | Promise<Response>;
-
-const hasFileExtension = (pathname: string): boolean => {
-  const lastSegment = pathname.split("/").at(-1) ?? "";
-  return lastSegment.includes(".");
-};
 
 function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHandler> {
   const routes: Record<string, StaticHandler> = {};
