@@ -1,6 +1,11 @@
 name: Publish Desktop App
 run-name: "${{ format('publish desktop {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}"
 
+# Triggered manually or by publish-executor-package.yml after a CLI release
+# lands. Builds Electron distributables for mac/win/linux with the Bun-compiled
+# sidecar bundled in `resources/sidecar/`, then attaches them to the GitHub
+# release matching the tag so electron-updater can pick them up.
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,19 +32,19 @@ jobs:
           - os: macos-latest
             arch: arm64
             platform: mac
-            cli-asset: executor-darwin-arm64.zip
+            bun-target: bun-darwin-arm64
           - os: macos-latest
             arch: x64
             platform: mac
-            cli-asset: executor-darwin-x64.zip
+            bun-target: bun-darwin-x64
           - os: ubuntu-latest
             arch: x64
             platform: linux
-            cli-asset: executor-linux-x64.tar.gz
+            bun-target: bun-linux-x64
           - os: windows-latest
             arch: x64
             platform: win
-            cli-asset: executor-windows-x64.zip
+            bun-target: bun-windows-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -77,52 +82,25 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build web app
-        run: bun run build
-        working-directory: apps/local
+        run: bun run --filter @executor-js/local build
 
-      - name: Download and extract CLI sidecar (unix)
-        if: matrix.platform != 'win'
+      - name: Build sidecar binary + stage web UI
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p apps/desktop/resources
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.cli-asset }}" --dir /tmp/cli-download
-          cd /tmp/cli-download
-          if [[ "${{ matrix.cli-asset }}" == *.tar.gz ]]; then
-            tar -xzf "${{ matrix.cli-asset }}"
-          else
-            unzip -o "${{ matrix.cli-asset }}"
-          fi
-          cp executor "${{ github.workspace }}/apps/desktop/resources/executor"
-          chmod +x "${{ github.workspace }}/apps/desktop/resources/executor"
-          if [ -f emscripten-module.wasm ]; then
-            cp emscripten-module.wasm "${{ github.workspace }}/apps/desktop/resources/"
-          fi
-
-      - name: Download and extract CLI sidecar (windows)
-        if: matrix.platform == 'win'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "apps/desktop/resources"
-          gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern "${{ matrix.cli-asset }}" --dir "$env:TEMP/cli-download"
-          Expand-Archive -Path "$env:TEMP/cli-download/${{ matrix.cli-asset }}" -DestinationPath "$env:TEMP/cli-extract" -Force
-          Copy-Item "$env:TEMP/cli-extract/executor.exe" "apps/desktop/resources/executor.exe"
-          if (Test-Path "$env:TEMP/cli-extract/emscripten-module.wasm") {
-            Copy-Item "$env:TEMP/cli-extract/emscripten-module.wasm" "apps/desktop/resources/"
-          }
-
-      - name: Build desktop app (TypeScript)
-        run: bunx tsc -p tsconfig.json
+          BUN_TARGET: ${{ matrix.bun-target }}
+        run: bun ./scripts/build-sidecar.ts
         working-directory: apps/desktop
 
-      - name: Prepare Linux package output directory
-        if: matrix.platform == 'linux'
-        run: mkdir -p apps/desktop/dist/@executor-js
+      - name: Build Electron main/preload/renderer
+        run: bunx --bun electron-vite build
+        working-directory: apps/desktop
 
       - name: Build desktop distributables
-        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          # electron-builder reads GH_TOKEN for the publish step. We use
+          # --publish never here and attach assets explicitly in the release
+          # job so we don't fight electron-updater's metadata expectations.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
 
       - name: Upload artifacts
@@ -131,9 +109,12 @@ jobs:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
             apps/desktop/dist/*.exe
             apps/desktop/dist/*.AppImage
             apps/desktop/dist/*.deb
+            apps/desktop/dist/*.rpm
+            apps/desktop/dist/latest*.yml
           if-no-files-found: warn
 
   release:
@@ -168,7 +149,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          find artifacts -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" \) | while read file; do
+          find artifacts -type f \
+            \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \
+            -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
+            -o -name "latest*.yml" \) | while read file; do
             echo "Uploading: $file"
             gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber || true
           done
