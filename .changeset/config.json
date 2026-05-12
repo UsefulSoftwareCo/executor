@@ -18,7 +18,8 @@
       "@executor-js/plugin-mcp",
       "@executor-js/plugin-onepassword",
       "@executor-js/plugin-openapi",
-      "@executor-js/plugin-example"
+      "@executor-js/plugin-example",
+      "@executor-js/desktop"
     ]
   ],
   "linked": [],
@@ -35,6 +36,7 @@
     "@executor-js/runtime-dynamic-worker",
     "@executor-js/storage-postgres",
     "@executor-js/plugin-workos-vault",
-    "@executor-js/example-promise-sdk"
+    "@executor-js/example-promise-sdk",
+    "@executor-js/app"
   ]
 }
