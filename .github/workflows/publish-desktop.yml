@@ -170,10 +170,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          find artifacts -type f \
+          set -euo pipefail
+          while IFS= read -r file; do
+            echo "Uploading: $file"
+            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
+          done < <(find artifacts -type f \
             \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
-            -o -name "latest*.yml" \) | while read file; do
-            echo "Uploading: $file"
-            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber || true
-          done
+            -o -name "latest*.yml" \))
+
+      # Flip draft → published only after every desktop asset is uploaded —
+      # this is the atomic point where the new tag becomes "latest".
+      - name: Promote release (draft → published)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"
