@@ -90,6 +90,10 @@ interface SecretFormProviderProps {
   readonly existingSecretIds: readonly string[];
   readonly suggestedName?: string;
   readonly fallbackId?: string;
+  /** Force the secret id to a pre-allocated value (e.g. when the agent's
+   *  `secrets.create` tool generated a UUID up front and the user is
+   *  just here to provide the value). */
+  readonly initialIdOverride?: string;
   readonly initialProvider?: string;
   readonly scopeId: ScopeId;
   readonly onCreated: (secretId: string) => void;
@@ -101,6 +105,7 @@ function SecretFormProvider(props: SecretFormProviderProps) {
     existingSecretIds,
     suggestedName = "",
     fallbackId = "secret",
+    initialIdOverride,
     initialProvider = "auto",
     scopeId,
     onCreated,
@@ -112,7 +117,7 @@ function SecretFormProvider(props: SecretFormProviderProps) {
   const [state, setState] = useState<SecretFormState>(() => ({
     name: suggestedName,
     value: "",
-    idOverride: null,
+    idOverride: initialIdOverride ?? null,
     provider: initialProvider,
     revealed: false,
     status: { kind: "idle" },

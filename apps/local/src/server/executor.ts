@@ -653,6 +653,16 @@ const createLocalExecutorLayer = () => {
         plugins,
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
+        // Built-in agent-facing tools (scopes.list, secrets.list,
+        // secrets.create). webBaseUrl is where the executor's web UI
+        // listens — same port as the daemon API since the daemon serves
+        // both. Mirrors serve.ts's port resolution so a custom $PORT
+        // flows through. EXECUTOR_WEB_BASE_URL overrides entirely for
+        // deployments where the UI is on a different host.
+        coreTools: {
+          webBaseUrl:
+            process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`,
+        },
       });
 
       return { executor, plugins };

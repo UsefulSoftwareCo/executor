@@ -28,6 +28,7 @@ import {
 } from "./fuma-runtime";
 
 import { makeFumaBlobStore, pluginBlobStore } from "./blob";
+import { coreToolsPlugin } from "./core-tools";
 import {
   ConnectionProviderState,
   ConnectionRef,
@@ -409,6 +410,20 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
     readonly maxResults?: number;
     readonly timeout?: Duration.Input;
     readonly hostedOutboundPolicy?: boolean;
+  };
+  /**
+   * Enable the built-in `core-tools` plugin which contributes
+   * agent-facing static tools (`scopes.list`, `secrets.list`,
+   * `secrets.create`). The `webBaseUrl` is where the executor's web
+   * UI lives; `secrets.create` builds a URL elicitation that points
+   * the user at `${webBaseUrl}/secrets?...` so the plaintext value
+   * never crosses the agent.
+   *
+   * Omit to skip registration (tests, MCP-only hosts that don't
+   * surface a web UI, etc.).
+   */
+  readonly coreTools?: {
+    readonly webBaseUrl: string;
   };
 }
 
@@ -1031,7 +1046,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       const empty: readonly AnyPlugin[] = [];
       return empty as TPlugins;
     };
-    const { scopes, plugins = defaultPlugins() } = config;
+    const { scopes, plugins: userPlugins = defaultPlugins() } = config;
+
+    if (scopes.length === 0) {
+      return yield* new StorageError({
+        message: "createExecutor requires a non-empty scopes array",
+        cause: undefined,
+      });
+    }
+
+    // Built-in core-tools plugin: contributes scopes.list / secrets.list /
+    // secrets.create static tools so agents can manage executor primitives
+    // without the host wiring it explicitly. Opt-in via `coreTools` config.
+    const plugins: readonly AnyPlugin[] = config.coreTools
+      ? ([
+          coreToolsPlugin({ webBaseUrl: config.coreTools.webBaseUrl }),
+          ...userPlugins,
+        ] as readonly AnyPlugin[])
+      : (userPlugins as readonly AnyPlugin[]);
+
     const tables = yield* Effect.try({
       try: () => collectTables(plugins),
       catch: (cause) => storageFailureFromUnknown("Failed to collect executor tables", cause),
@@ -1051,14 +1084,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       },
       catch: (cause) => storageFailureFromUnknown("Failed to validate executor tables", cause),
     });
-
-    if (scopes.length === 0) {
-      return yield* new StorageError({
-        message: "createExecutor requires a non-empty scopes array",
-        cause: undefined,
-      });
-    }
-
     const scopeIds = scopes.map((s) => String(s.id));
     const rootDb = withQueryContext(rootDbUntyped, {
       allowedScopeIds: new Set(scopeIds),

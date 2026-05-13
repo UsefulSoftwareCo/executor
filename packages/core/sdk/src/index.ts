@@ -328,6 +328,12 @@ export {
   collectTables,
 } from "./executor";
 
+// Built-in core-tools plugin (scopes.list, secrets.list, secrets.create
+// with URL elicitation). Auto-registered by createExecutor when
+// `coreTools` is set on the config; also exportable for callers who
+// want to register it manually.
+export { coreToolsPlugin, type CoreToolsPluginOptions } from "./core-tools";
+
 // CLI / runtime config
 export {
   defineExecutorConfig,

@@ -62,6 +62,12 @@ const isSecretInUseError = Schema.is(SecretInUseError);
 // state always starts fresh — no manual reset.
 // ---------------------------------------------------------------------------
 
+interface SecretPrefill {
+  readonly name?: string;
+  readonly secretId?: string;
+  readonly provider?: string;
+}
+
 function AddSecretDialog(props: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -69,6 +75,7 @@ function AddSecretDialog(props: {
   storageOptions: readonly SecretStorageOption[];
   existingSecretIds: readonly string[];
   scopeId: ScopeId;
+  prefill?: SecretPrefill;
 }) {
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -79,6 +86,7 @@ function AddSecretDialog(props: {
           storageOptions={props.storageOptions}
           existingSecretIds={props.existingSecretIds}
           scopeId={props.scopeId}
+          prefill={props.prefill}
           onClose={() => props.onOpenChange(false)}
         />
       )}
@@ -91,13 +99,16 @@ function AddSecretDialogContent(props: {
   storageOptions: readonly SecretStorageOption[];
   existingSecretIds: readonly string[];
   scopeId: ScopeId;
+  prefill?: SecretPrefill;
   onClose: () => void;
 }) {
-  const initialProvider = props.storageOptions[0]?.value ?? "auto";
+  const initialProvider = props.prefill?.provider ?? props.storageOptions[0]?.value ?? "auto";
 
   return (
     <SecretForm.Provider
       existingSecretIds={props.existingSecretIds}
+      suggestedName={props.prefill?.name}
+      initialIdOverride={props.prefill?.secretId}
       initialProvider={initialProvider}
       scopeId={props.scopeId}
       onCreated={props.onClose}
@@ -232,6 +243,11 @@ export function SecretsPage(props: {
   addSecretDescription?: string;
   showProviderInfo?: boolean;
   storageOptions?: readonly SecretStorageOption[];
+  /** Pre-fill values for the add-secret modal and auto-open it. Set by
+   *  the route when the URL carries `?openAdd=1&name=…&secretId=…`,
+   *  which is how the agent-facing `secrets.create` tool hands a user
+   *  off to this page. */
+  prefill?: SecretPrefill;
 }) {
   const storageOptions = props.storageOptions ?? defaultStorageOptions;
   const showProviderInfo = props.showProviderInfo ?? true;
@@ -239,7 +255,7 @@ export function SecretsPage(props: {
     props.addSecretDescription ??
     "Store a credential or API key. Values are kept in your system keychain when available, with a local encrypted file fallback.";
   const secretProviderPlugins = useSecretProviderPlugins();
-  const [addOpen, setAddOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(props.prefill != null);
   const scopeId = useScope();
   const scopeStack = useScopeStack();
   const secrets = useAtomValue(secretsOptimisticAtom(scopeId));
@@ -395,6 +411,7 @@ export function SecretsPage(props: {
           storageOptions={storageOptions}
           existingSecretIds={existingSecretIds}
           scopeId={scopeId}
+          prefill={props.prefill}
         />
       </div>
     </div>
