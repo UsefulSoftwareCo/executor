@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/config",
-  "version": "1.4.23",
+  "version": "1.4.24",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/config",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"

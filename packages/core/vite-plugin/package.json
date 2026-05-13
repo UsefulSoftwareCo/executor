@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/vite-plugin",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/vite-plugin",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"

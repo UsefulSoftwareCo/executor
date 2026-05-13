@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-openapi",
-  "version": "1.4.23",
+  "version": "1.4.24",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/openapi",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
