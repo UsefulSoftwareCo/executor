@@ -497,6 +497,20 @@ const makeApiClient = (baseUrl: string) =>
 // Foreground session
 // ---------------------------------------------------------------------------
 
+const printServerEndpoints = (input: { baseUrl: string; readyText: string }) =>
+  Effect.sync(() => {
+    console.log(input.readyText);
+    console.log(`Web:     ${input.baseUrl}`);
+    console.log(`MCP:     ${input.baseUrl}/mcp`);
+    console.log(`OpenAPI: ${input.baseUrl}/api/docs`);
+  });
+
+const resolveExistingWebSession = (input: { hostname: string; port: number }) =>
+  Effect.gen(function* () {
+    const target = yield* resolveDaemonTarget(daemonBaseUrl(input.hostname, input.port));
+    return (yield* isServerReachable(target.baseUrl)) ? target.baseUrl : null;
+  });
+
 const runForegroundSession = (input: {
   port: number;
   hostname: string;
@@ -519,10 +533,7 @@ const runForegroundSession = (input: {
     const displayHost =
       input.hostname === "0.0.0.0" || input.hostname === "::" ? "localhost" : input.hostname;
     const baseUrl = `http://${displayHost}:${server.port}`;
-    console.log(`Executor is ready.`);
-    console.log(`Web:     ${baseUrl}`);
-    console.log(`MCP:     ${baseUrl}/mcp`);
-    console.log(`OpenAPI: ${baseUrl}/api/docs`);
+    yield* printServerEndpoints({ baseUrl, readyText: "Executor is ready." });
     if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
       console.log(
         `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
@@ -1315,6 +1326,14 @@ const webCommand = Command.make(
   ({ port, scope, hostname, allowedHost, authToken, authPassword }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      const existingBaseUrl = yield* resolveExistingWebSession({ hostname, port });
+      if (existingBaseUrl) {
+        yield* printServerEndpoints({
+          baseUrl: existingBaseUrl,
+          readyText: "Executor is already running.",
+        });
+        return;
+      }
       yield* runForegroundSession({
         port,
         hostname,
