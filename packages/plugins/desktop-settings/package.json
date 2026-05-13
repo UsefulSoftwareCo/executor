@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-desktop-settings",
-  "version": "1.4.22",
+  "version": "1.4.23",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/desktop-settings",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
