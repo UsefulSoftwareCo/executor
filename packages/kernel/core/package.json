@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/codemode-core",
-  "version": "1.4.26",
+  "version": "1.4.27",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/kernel/core",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
