@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-file-secrets",
-  "version": "1.4.25",
+  "version": "1.4.26",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/file-secrets",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
