@@ -17,11 +17,9 @@ import {
 
 import { Scope, ScopeId, type AnyPlugin, collectSchemas, createExecutor } from "@executor-js/sdk";
 import { makeSqliteAdapter, makeSqliteBlobStore } from "@executor-js/storage-file";
-import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import { loadPluginsFromJsonc, makeFileConfigSink } from "@executor-js/config";
+import { loadPluginsFromJsonc } from "@executor-js/config";
 import * as executorSchema from "./executor-schema";
 
-import { syncFromConfig, resolveConfigPath } from "./config-sync";
 import executorConfig from "../../executor.config";
 
 // In dev mode the drizzle folder sits next to the source tree. In a compiled
@@ -208,6 +206,8 @@ const migrationHistoryMismatchMessage = (dataDir: string): string =>
     "Use the matching Executor build, set EXECUTOR_DATA_DIR to a different data directory, or restore a backup.",
   ].join("\n");
 
+const resolvePluginConfigPath = (scopeDir: string): string => join(scopeDir, "executor.jsonc");
+
 export const checkDrizzleMigrationCompatibility = (input: {
   readonly sqlite: Database;
   readonly dbPath: string;
@@ -274,20 +274,13 @@ const createLocalExecutorLayer = () => {
       if (legacySecrets.length > 0) {
         importLegacySecrets(sqlite, scopeId, legacySecrets);
       }
-      const configPath = resolveConfigPath(cwd);
-      const configFile = makeFileConfigSink({
-        path: configPath,
-        fsLayer: NodeFileSystem.layer,
-      });
-
-      const staticPlugins = executorConfig.plugins({ configFile });
+      const configPath = resolvePluginConfigPath(cwd);
+      const staticPlugins = executorConfig.plugins();
       const dynamicPlugins =
-        (yield* Effect.promise(() =>
-          loadPluginsFromJsonc({ path: configPath, deps: { configFile } }),
-        )) ?? [];
+        (yield* Effect.promise(() => loadPluginsFromJsonc({ path: configPath }))) ?? [];
       // Static config wins on conflict — mirrors @executor-js/vite-plugin's
-      // ordering. Without this, a package listed in both surfaces would
-      // boot twice (double routes, double in-memory storage).
+      // ordering. Without this, a package listed in both surfaces would boot
+      // twice (double routes, double in-memory storage).
       const staticPackageNames = new Set(
         staticPlugins.map((p) => p.packageName).filter((n): n is string => !!n),
       );
@@ -321,12 +314,6 @@ const createLocalExecutorLayer = () => {
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
       });
-
-      // Sync sources from executor.jsonc (idempotent — plugins upsert).
-      // Runs after plugins are wired so sources added here round-trip
-      // back through configFile — harmless because the file already
-      // contains them.
-      yield* syncFromConfig({ executor, configPath, targetScope: scope.id });
 
       return { executor, plugins };
     }),

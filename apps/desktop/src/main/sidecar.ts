@@ -74,13 +74,14 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     );
   }
 
-  // executor.jsonc and data.db go to ~/.executor — the same path the CLI's
-  // `executor web` uses. Desktop and CLI share state on the same machine so
-  // sources/secrets/policies set up in one show up in the other, and
-  // user-facing commands like `executor mcp --scope ~/.executor` stay
-  // copy-paste-friendly. Electron's userData (set in main/index.ts) is
-  // still used for electron-store, electron-log, and window-state — those
-  // stay app-scoped to avoid colliding with anything else under HOME.
+  // data.db and the optional executor.jsonc plugin manifest live under
+  // ~/.executor — the same path the CLI's `executor web` uses. Desktop and CLI
+  // share state on the same machine so sources/secrets/policies set up in one
+  // show up in the other, and user-facing commands like
+  // `executor mcp --scope ~/.executor` stay copy-paste-friendly. Electron's
+  // userData (set in main/index.ts) is still used for electron-store,
+  // electron-log, and window-state — those stay app-scoped to avoid colliding
+  // with anything else under HOME.
   const scopeDir = join(homedir(), ".executor");
   mkdirSync(scopeDir, { recursive: true });
 

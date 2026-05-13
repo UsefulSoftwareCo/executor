@@ -28,9 +28,9 @@ import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/
 
 // Pin userData to a friendly app-name-scoped dir BEFORE app.ready so every
 // Electron-side consumer (electron-store, electron-log, window-state) lands
-// at a predictable spot. User-mutable executor state (executor.jsonc,
-// data.db) is pinned separately to ~/.executor in main/sidecar.ts — that
-// path matches the CLI's default.
+// at a predictable spot. User-mutable executor state (data.db and the optional
+// executor.jsonc plugin manifest) is pinned separately to ~/.executor in
+// main/sidecar.ts — that path matches the CLI's default.
 app.setName("Executor");
 app.setPath("userData", join(app.getPath("appData"), "Executor"));
 

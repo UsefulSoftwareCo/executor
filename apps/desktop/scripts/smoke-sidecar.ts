@@ -7,16 +7,16 @@
  *
  * Flow:
  *   1. Spin up a tiny local OpenAPI server (one operation, returns 42).
- *   2. Write a temp executor.jsonc that points at it as a source.
- *   3. Spawn the compiled `executor-sidecar` binary with EXECUTOR_PORT=0
+ *   2. Spawn the compiled `executor-sidecar` binary with EXECUTOR_PORT=0
  *      and parse the `EXECUTOR_READY:<port>` sentinel.
- *   4. Connect via MCP streamable HTTP, call the `execute` tool with code
- *      that invokes the OpenAPI tool, assert the answer round-trips as 42.
+ *   3. Connect via MCP streamable HTTP, call the `execute` tool with code
+ *      that registers and invokes the OpenAPI tool, assert the answer
+ *      round-trips as 42.
  *
  * Run after `bun ./scripts/build-sidecar.ts`. Exits non-zero on any
  * deviation so it can gate CI.
  */
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type Subprocess } from "bun";
@@ -182,18 +182,6 @@ const main = async () => {
   console.log(`[smoke-sidecar] scope:   ${scopeDir}`);
   console.log(`[smoke-sidecar] openapi: ${openapi.origin}`);
 
-  const config = {
-    sources: [
-      {
-        kind: "openapi",
-        spec: `${openapi.origin}/openapi.json`,
-        baseUrl: openapi.origin,
-        namespace: "petstore",
-      },
-    ],
-  };
-  await writeFile(join(scopeDir, "executor.jsonc"), JSON.stringify(config, null, 2));
-
   const proc = spawn({
     cmd: [BINARY],
     env: {
@@ -241,9 +229,16 @@ const main = async () => {
     if (!hasExecute) fail(`MCP tools/list missing "execute": ${JSON.stringify(tools.tools)}`);
 
     // Drive the running OpenAPI server through a multi-step orchestration
-    // in one execute. Covers: array list response, path param dispatch, and
-    // object responses — all going out over real HTTP from inside QuickJS.
+    // in one execute. Covers: source registration, array list response, path
+    // param dispatch, and object responses — all going out over real HTTP from
+    // inside QuickJS.
     const code = `
+await tools.executor.openapi.addSource({
+  scope: ${JSON.stringify(scopeDir)},
+  spec: ${JSON.stringify(`${openapi.origin}/openapi.json`)},
+  baseUrl: ${JSON.stringify(openapi.origin)},
+  namespace: "petstore",
+});
 const list = await tools.petstore.pets.listPets({});
 const fetched = await tools.petstore.pets.getPet({ petId: list[1].id });
 return {

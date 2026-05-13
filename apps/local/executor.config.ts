@@ -1,5 +1,4 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
-import type { ConfigFileSink } from "@executor-js/config";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { googleDiscoveryHttpPlugin } from "@executor-js/plugin-google-discovery/api";
@@ -14,24 +13,19 @@ import { desktopSettingsPlugin } from "@executor-js/plugin-desktop-settings/serv
 //
 // Consumed by:
 //   - the schema-gen CLI (reads `plugin.schema` only; calls `plugins({})`)
-//   - the host runtime (calls `plugins({ configFile })` with a real sink)
+//   - the host runtime
 //
-// `TDeps` is inferred from the factory parameter annotation directly.
 // First-party and third-party plugins use the same import-and-call flow.
 // ---------------------------------------------------------------------------
 
-interface LocalPluginDeps {
-  readonly configFile?: ConfigFileSink;
-}
-
 export default defineExecutorConfig({
   dialect: "sqlite",
-  plugins: ({ configFile }: LocalPluginDeps = {}) =>
+  plugins: () =>
     [
-      openApiHttpPlugin({ configFile }),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true, configFile }),
+      openApiHttpPlugin(),
+      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       googleDiscoveryHttpPlugin(),
-      graphqlHttpPlugin({ configFile }),
+      graphqlHttpPlugin(),
       keychainPlugin(),
       fileSecretsPlugin(),
       onepasswordHttpPlugin(),
