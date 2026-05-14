@@ -15,6 +15,7 @@ import type { AddressInfo } from "node:net";
 import {
   createExecutor,
   definePlugin,
+  type FumaDb,
   makeTestConfig,
   RemoveSecretInput,
   Scope,
@@ -33,6 +34,27 @@ import { ConfiguredHeaderBinding, OAuth2SourceConfig, OpenApiSourceBindingInput 
 import { makeOpenApiTestServer } from "../testing";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
+
+type FumaQueryCall = {
+  readonly method: "findFirst" | "findMany";
+  readonly table: string;
+};
+
+const recordFumaQueries = (db: FumaDb, calls: FumaQueryCall[]): FumaDb =>
+  new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop !== "findFirst" && prop !== "findMany") return value;
+      return (table: string, ...args: readonly unknown[]) => {
+        calls.push({ method: prop, table });
+        return (value as (tableName: string, ...innerArgs: readonly unknown[]) => unknown).call(
+          target,
+          table,
+          ...args,
+        );
+      };
+    },
+  });
 
 // ---------------------------------------------------------------------------
 // Define a test API with Effect HttpApi
@@ -966,8 +988,12 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         scopes: stackedScopes,
         plugins: [openApiPlugin({ httpClientLayer: clientLayer }), memorySecretsPlugin()] as const,
       });
+      const queryCalls: FumaQueryCall[] = [];
 
-      const executor = yield* createExecutor(config);
+      const executor = yield* createExecutor({
+        ...config,
+        db: recordFumaQueries(config.db, queryCalls),
+      });
 
       yield* executor.openapi.addSpec({
         spec: specJson,
@@ -983,9 +1009,15 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
         name: "User Source",
       });
 
+      queryCalls.length = 0;
       const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
 
       expect(userView?.config.baseUrl).toBe("https://org.example.com");
+      expect(
+        queryCalls.some(
+          (call) => call.method === "findMany" && call.table === "openapi_source",
+        ),
+      ).toBe(false);
     }),
   );
 
