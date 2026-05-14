@@ -6,13 +6,17 @@ import {
   createDrizzleRuntimeSchemaSqlFromTables,
   drizzleAdapter,
 } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema } from "fumadb/schema";
+import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 
 import type { FumaDb, FumaTables } from "@executor-js/sdk";
 
-export interface SqliteFumaDb {
-  readonly db: FumaDb;
-  readonly fuma: FumaDB;
+type SqliteFumaSchema<TTables extends FumaTables> = ReturnType<
+  typeof fumaSchema<string, TTables, RelationsMap<TTables>>
+>;
+
+export interface SqliteFumaDb<TTables extends FumaTables = FumaTables> {
+  readonly db: FumaDb<SqliteFumaSchema<TTables>>;
+  readonly fuma: FumaDB<SqliteFumaSchema<TTables>[]>;
   readonly drizzle: BunSQLiteDatabase<Record<string, unknown>>;
   readonly sqlite: Database;
   readonly close: () => Promise<void>;
@@ -25,12 +29,9 @@ export interface CreateSqliteFumaDbOptions<TTables extends FumaTables = FumaTabl
   readonly path: string;
 }
 
-const asFumaDb = (db: unknown): FumaDb => db as FumaDb;
-const asFumaClient = (client: unknown): FumaDB => client as FumaDB;
-
 export const createSqliteFumaDb = async <const TTables extends FumaTables>(
   options: CreateSqliteFumaDbOptions<TTables>,
-): Promise<SqliteFumaDb> => {
+): Promise<SqliteFumaDb<TTables>> => {
   const version = options.version ?? "1.0.0";
   const sqlite = new Database(options.path, { create: true });
   sqlite.exec("PRAGMA foreign_keys = ON");
@@ -69,8 +70,8 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
   );
 
   return {
-    db: asFumaDb(fuma.orm(version)),
-    fuma: asFumaClient(fuma),
+    db: fuma.orm(version),
+    fuma,
     drizzle: drizzleDb,
     sqlite,
     close: async () => {

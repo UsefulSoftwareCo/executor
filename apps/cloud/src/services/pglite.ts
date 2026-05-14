@@ -4,19 +4,18 @@ import {
   type PGLiteSocketServer as PgliteSocketServer,
 } from "@electric-sql/pglite-socket";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
-import type { FumaDB } from "fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   ensureDrizzleRuntimeSchemaFromTables,
 } from "fumadb/adapters/drizzle";
 
-import type { FumaDb, FumaTables } from "@executor-js/sdk";
+import type { FumaTables } from "@executor-js/sdk";
 
-import { createDrizzleFumaDb } from "./fuma";
+import { createDrizzleFumaDb, type DrizzleFumaDb } from "./fuma";
 
-export interface PgliteFumaDb {
-  readonly db: FumaDb;
-  readonly fuma: FumaDB;
+export interface PgliteFumaDb<
+  TTables extends FumaTables = FumaTables,
+> extends DrizzleFumaDb<TTables> {
   readonly drizzle: PgliteDatabase<any>;
   readonly pglite: PGlite;
   readonly server: PgliteSocketServer | null;
@@ -35,7 +34,7 @@ export interface CreatePgliteFumaDbOptions<TTables extends FumaTables = FumaTabl
 
 export const createPgliteFumaDb = async <const TTables extends FumaTables>(
   options: CreatePgliteFumaDbOptions<TTables>,
-): Promise<PgliteFumaDb> => {
+): Promise<PgliteFumaDb<TTables>> => {
   const version = options.version ?? "1.0.0";
   const pglite = await PGlite.create(options.dataDir ?? "memory://");
   const schema = createDrizzleRuntimeSchemaFromTables({

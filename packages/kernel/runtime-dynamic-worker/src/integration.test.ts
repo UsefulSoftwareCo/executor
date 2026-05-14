@@ -159,10 +159,11 @@ const makeSpec = (contentType: string, schema: Record<string, unknown> = { type:
     },
   });
 
-const asFumaDb = (db: unknown): FumaDb => db as FumaDb;
-
-const createPostgresFumaDb = (db: unknown, tables: FumaTables): FumaDb => {
-  const version = "1.0.0";
+const createPostgresFumaDb = <const TTables extends FumaTables>(
+  db: unknown,
+  tables: TTables,
+): FumaDb => {
+  const version = "1.0.0" as const;
   const factory = fumadb({
     namespace: DATABASE_NAMESPACE,
     schemas: [
@@ -178,7 +179,7 @@ const createPostgresFumaDb = (db: unknown, tables: FumaTables): FumaDb => {
       provider: "postgresql",
     }),
   );
-  return asFumaDb(fuma.orm(version));
+  return fuma.orm(version);
 };
 
 const buildSandboxBridge = (spec: string, namespace: string, baseUrl = "https://upstream.test") =>

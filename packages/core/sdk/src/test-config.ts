@@ -29,7 +29,6 @@ const makeLazyTestFumaDb = (options: {
   readonly dataDir?: string;
 }): TestFumaDb => {
   let started: Promise<SqliteTestFumaDb> | undefined;
-  const asFumaDb = (db: unknown): FumaDb => db as FumaDb;
   const start = () => {
     if (!started) {
       started = import("./sqlite-test-db").then(({ createSqliteTestFumaDb }) =>
@@ -43,21 +42,20 @@ const makeLazyTestFumaDb = (options: {
     return started;
   };
 
-  const db = asFumaDb(
-    new Proxy(
-      { internal: undefined },
-      {
-        get(target, prop) {
-          if (prop === "internal") return target.internal;
-          return async (...args: unknown[]) => {
-            const actual = await start();
-            const method = Reflect.get(actual.db, prop) as (...innerArgs: unknown[]) => unknown;
-            return method.apply(actual.db, args);
-          };
-        },
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: lazy test DB proxy has the FumaDB shape only after first method access
+  const db = new Proxy(
+    { internal: undefined },
+    {
+      get(target, prop) {
+        if (prop === "internal") return target.internal;
+        return async (...args: unknown[]) => {
+          const actual = await start();
+          const method = Reflect.get(actual.db, prop) as (...innerArgs: unknown[]) => unknown;
+          return method.apply(actual.db, args);
+        };
       },
-    ),
-  );
+    },
+  ) as unknown as FumaDb;
 
   return {
     db,
@@ -81,7 +79,10 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
   options?: TestConfigOptions<TPlugins>,
-): ExecutorConfig<TPlugins> & { readonly testDb: TestFumaDb } => {
+): Omit<ExecutorConfig<TPlugins>, "db"> & {
+  readonly db: FumaDb;
+  readonly testDb: TestFumaDb;
+} => {
   const scopes = options?.scopes ?? [
     Scope.make({
       id: ScopeId.make("test-scope"),

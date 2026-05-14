@@ -1,12 +1,16 @@
 import { fumadb, type FumaDB } from "fumadb";
 import { drizzleAdapter, type DrizzleConfig } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema } from "fumadb/schema";
+import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 
 import type { FumaDb, FumaTables } from "@executor-js/sdk";
 
-export interface DrizzleFumaDb {
-  readonly db: FumaDb;
-  readonly fuma: FumaDB;
+type DrizzleFumaSchema<TTables extends FumaTables> = ReturnType<
+  typeof fumaSchema<string, TTables, RelationsMap<TTables>>
+>;
+
+export interface DrizzleFumaDb<TTables extends FumaTables = FumaTables> {
+  readonly db: FumaDb<DrizzleFumaSchema<TTables>>;
+  readonly fuma: FumaDB<DrizzleFumaSchema<TTables>[]>;
 }
 
 export interface CreateDrizzleFumaDbOptions<TTables extends FumaTables = FumaTables> {
@@ -17,12 +21,9 @@ export interface CreateDrizzleFumaDbOptions<TTables extends FumaTables = FumaTab
   readonly provider: DrizzleConfig["provider"];
 }
 
-const asFumaDb = (db: unknown): FumaDb => db as FumaDb;
-const asFumaClient = (client: unknown): FumaDB => client as FumaDB;
-
 export const createDrizzleFumaDb = <const TTables extends FumaTables>(
   options: CreateDrizzleFumaDbOptions<TTables>,
-): DrizzleFumaDb => {
+): DrizzleFumaDb<TTables> => {
   const version = options.version ?? "1.0.0";
   const latestSchema = fumaSchema({
     version,
@@ -40,7 +41,7 @@ export const createDrizzleFumaDb = <const TTables extends FumaTables>(
   );
 
   return {
-    db: asFumaDb(fuma.orm(version)),
-    fuma: asFumaClient(fuma),
+    db: fuma.orm(version),
+    fuma,
   };
 };

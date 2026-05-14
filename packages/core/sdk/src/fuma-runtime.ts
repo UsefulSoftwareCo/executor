@@ -17,7 +17,7 @@ export type FumaTables = Record<string, AnyTable>;
 export type TablesToFumaSchema<TTables extends FumaTables | undefined> = TTables extends FumaTables
   ? FumaSchema<"latest", TTables>
   : AnySchema;
-export type FumaDb<TSchema extends AnySchema = AnySchema> = AbstractQuery<TSchema>;
+export type FumaDb<TSchema extends AnySchema = any> = AbstractQuery<TSchema>;
 export type FumaRow<TTable extends AnyTable> = Omit<
   {
     readonly [K in keyof TTable["columns"]]: TTable["columns"][K]["$out"];

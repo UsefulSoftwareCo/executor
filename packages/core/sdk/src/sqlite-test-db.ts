@@ -8,13 +8,17 @@ import {
   createDrizzleRuntimeSchemaSqlFromTables,
   drizzleAdapter,
 } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema } from "fumadb/schema";
+import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 
-export interface SqliteTestFumaDb {
-  readonly db: FumaDb;
-  readonly fuma: FumaDB;
+type SqliteTestFumaSchema<TTables extends FumaTables> = ReturnType<
+  typeof fumaSchema<string, TTables, RelationsMap<TTables>>
+>;
+
+export interface SqliteTestFumaDb<TTables extends FumaTables = FumaTables> {
+  readonly db: FumaDb<SqliteTestFumaSchema<TTables>>;
+  readonly fuma: FumaDB<SqliteTestFumaSchema<TTables>[]>;
   readonly drizzle: BetterSQLite3Database<Record<string, unknown>>;
   readonly sqlite: Database.Database;
   readonly close: () => Promise<void>;
@@ -27,12 +31,9 @@ export interface CreateSqliteTestFumaDbOptions<TTables extends FumaTables = Fuma
   readonly path?: string;
 }
 
-const asFumaDb = (db: unknown): FumaDb => db as FumaDb;
-const asFumaClient = (client: unknown): FumaDB => client as FumaDB;
-
 export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
   options: CreateSqliteTestFumaDbOptions<TTables>,
-): Promise<SqliteTestFumaDb> => {
+): Promise<SqliteTestFumaDb<TTables>> => {
   const version = options.version ?? "1.0.0";
   const namespace = options.namespace ?? "executor_test";
   if (options.path && options.path !== ":memory:") {
@@ -74,8 +75,8 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
   );
 
   return {
-    db: asFumaDb(fuma.orm(version)),
-    fuma: asFumaClient(fuma),
+    db: fuma.orm(version),
+    fuma,
     drizzle: drizzleDb,
     sqlite,
     close: async () => {
