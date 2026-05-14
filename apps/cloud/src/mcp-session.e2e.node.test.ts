@@ -176,7 +176,7 @@ describe("cloud MCP session end-to-end", () => {
       const tools = yield* Effect.promise(() => client.listTools());
       const names = tools.tools.map((t) => t.name);
       expect(names).toContain("execute");
-    }).pipe(Effect.provide(DbService.Live), Effect.scoped),
+    }).pipe(Effect.provide(DbService.TestDirectPglite), Effect.scoped),
   );
 
   it.effect("runs user code via the execute tool end-to-end", () =>
@@ -188,7 +188,7 @@ describe("cloud MCP session end-to-end", () => {
       expect(result.isError).toBeFalsy();
       const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
       expect(text).toContain("3");
-    }).pipe(Effect.provide(DbService.Live), Effect.scoped),
+    }).pipe(Effect.provide(DbService.TestDirectPglite), Effect.scoped),
   );
 
   // Isolates the drizzle adapter path so a schema spread drift surfaces as
@@ -200,7 +200,7 @@ describe("cloud MCP session end-to-end", () => {
       const executor = yield* buildScopedExecutor(nextOrgId(), "drizzle-probe");
       const sources = yield* executor.sources.list();
       expect(Array.isArray(sources)).toBe(true);
-    }).pipe(Effect.provide(DbService.Live), Effect.scoped),
+    }).pipe(Effect.provide(DbService.TestDirectPglite), Effect.scoped),
   );
 
   it.effect("bridges a form elicitation from engine to client and back", () =>
@@ -222,6 +222,6 @@ describe("cloud MCP session end-to-end", () => {
       const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
       expect(text).toContain("accept");
       expect(text).toContain("approved");
-    }).pipe(Effect.provide(DbService.Live), Effect.scoped),
+    }).pipe(Effect.provide(DbService.TestDirectPglite), Effect.scoped),
   );
 });

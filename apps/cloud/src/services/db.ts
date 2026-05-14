@@ -20,8 +20,12 @@ import { Context, Effect, Layer } from "effect";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import postgres, { type Sql } from "postgres";
+import { collectTables } from "@executor-js/sdk";
+import executorConfig from "../../executor.config";
 import * as cloudSchema from "./schema";
 import * as executorSchema from "./executor-schema";
+import { createPgliteFumaDb } from "./pglite";
+import { ensureCloudSchema } from "./schema-init";
 
 // Exported so every drizzle() call in the cloud app shares one schema
 // object. Historically `mcp-session.ts` built its own and forgot to spread
@@ -43,10 +47,6 @@ type DbResource = DbServiceShape & {
 
 type DirectPgliteRuntime = {
   readonly db: DrizzleDb;
-};
-
-type TestEnv = typeof env & {
-  readonly EXECUTOR_TEST_DIRECT_PGLITE?: string;
 };
 
 let directPgliteRuntime: Promise<DirectPgliteRuntime> | undefined;
@@ -80,17 +80,6 @@ const makeSql = (): Sql =>
 
 const getDirectPgliteRuntime = async (): Promise<DirectPgliteRuntime> => {
   directPgliteRuntime ??= (async () => {
-    const [
-      { collectTables },
-      { createPgliteFumaDb },
-      { default: executorConfig },
-      { ensureCloudSchema },
-    ] = await Promise.all([
-      import("@executor-js/sdk"),
-      import("./pglite"),
-      import("../../executor.config"),
-      import("./schema-init"),
-    ]);
     const runtime = await createPgliteFumaDb({
       tables: collectTables(executorConfig.plugins({})),
       namespace: "executor_cloud",
@@ -132,17 +121,16 @@ const makePostgresResource = (): DbResource => {
   };
 };
 
-const makeDbResource = (): Effect.Effect<DbResource> => {
-  if ((env as TestEnv).EXECUTOR_TEST_DIRECT_PGLITE === "true") {
-    return Effect.promise(makeDirectPgliteResource);
-  }
-  return Effect.sync(makePostgresResource);
-};
-
 export class DbService extends Context.Service<DbService, DbServiceShape>()(
   "@executor-js/cloud/DbService",
 ) {
-  static Live = Layer.effect(this)(
-    Effect.acquireRelease(makeDbResource(), (resource) => resource.close()),
+  static Production = Layer.effect(this)(
+    Effect.acquireRelease(Effect.sync(makePostgresResource), (resource) => resource.close()),
   );
+
+  static TestDirectPglite = Layer.effect(this)(
+    Effect.acquireRelease(Effect.promise(makeDirectPgliteResource), (resource) => resource.close()),
+  );
+
+  static Live = this.Production;
 }
