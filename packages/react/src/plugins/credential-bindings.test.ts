@@ -91,6 +91,10 @@ describe("credential binding editor helpers", () => {
             slot: "header:authorization",
             prefix: "Bearer ",
           },
+          Mode: {
+            slot: "header:mode",
+            prefix: "mode=",
+          },
           "X-Literal": "literal",
         },
         [
@@ -102,6 +106,14 @@ describe("credential binding editor helpers", () => {
               secretId: SecretId.make("api-token"),
             },
           },
+          {
+            slotKey: "header:mode",
+            scopeId: ScopeId.make("user_1"),
+            value: {
+              kind: "text",
+              text: "fast",
+            },
+          },
         ],
       ),
     ).toEqual({
@@ -109,6 +121,7 @@ describe("credential binding editor helpers", () => {
         secretId: "api-token",
         prefix: "Bearer ",
       },
+      Mode: "mode=fast",
       "X-Literal": "literal",
     });
   });

@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import type { SecretPickerSecret } from "@executor-js/react/plugins/secret-picker";
-import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
+import { CreatableSecretPicker } from "@executor-js/react/plugins/creatable-secret-picker";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import type { ScopeId } from "@executor-js/sdk";
 import { Badge } from "@executor-js/react/components/badge";

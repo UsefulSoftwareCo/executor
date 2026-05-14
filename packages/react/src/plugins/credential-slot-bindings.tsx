@@ -9,7 +9,7 @@ import {
   isSecretCredentialBindingValue,
   type SourceCredentialBindingRef,
 } from "./credential-bindings";
-import { CreatableSecretPicker } from "./secret-header-auth";
+import { CreatableSecretPicker } from "./creatable-secret-picker";
 import type { SecretPickerSecret } from "./secret-picker";
 
 export type SecretCredentialSlot = {

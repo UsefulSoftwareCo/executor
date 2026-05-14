@@ -14,7 +14,7 @@ import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/
 import { useCredentialTargetScope } from "@executor-js/react/plugins/credential-target-scope";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
-  HttpCredentialsEditor,
+  HttpCredentials,
   serializeHttpCredentials,
   serializeScopedHttpCredentials,
   type HttpCredentialsState,
@@ -174,7 +174,7 @@ function RemoteEditForm(props: {
         namespaceReadOnly
       />
 
-      <HttpCredentialsEditor
+      <HttpCredentials.Root
         credentials={credentials}
         onChange={handleCredentialsChange}
         existingSecrets={secretList}
@@ -182,7 +182,10 @@ function RemoteEditForm(props: {
         targetScope={credentialTargetScope}
         credentialScopeOptions={credentialScopeOptions}
         bindingScopeOptions={credentialScopeOptions}
-      />
+      >
+        <HttpCredentials.Headers />
+        <HttpCredentials.QueryParams />
+      </HttpCredentials.Root>
 
       {oauth2 && (
         <SourceOAuthConnectionControl

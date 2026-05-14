@@ -1,7 +1,11 @@
 import { ScopeId, type CredentialBindingValue, type SecretBackedValue } from "@executor-js/sdk";
 
-import type { HttpCredentialsState, QueryParamState } from "./http-credentials";
-import { headerValueToState, type HeaderState } from "./secret-header-auth";
+import {
+  httpCredentialRowFromValue,
+  type HttpCredentialRow,
+  type HttpCredentialsState,
+  type QueryParamState,
+} from "./http-credentials";
 
 type ConfiguredCredentialValueLike =
   | string
@@ -59,15 +63,15 @@ const headerFromConfiguredCredential = (
   name: string,
   value: ConfiguredCredentialValueLike,
   bindings: ReadonlyMap<string, SourceCredentialBindingRef>,
-): HeaderState | null => {
+): HttpCredentialRow | null => {
   if (typeof value === "string") {
-    return headerValueToState(name, value);
+    return httpCredentialRowFromValue(name, value);
   }
 
   const binding = bindings.get(value.slot);
   if (binding?.value.kind === "secret") {
     return {
-      ...headerValueToState(name, {
+      ...httpCredentialRowFromValue(name, {
         secretId: binding.value.secretId,
         prefix: value.prefix,
       }),
@@ -77,7 +81,10 @@ const headerFromConfiguredCredential = (
   }
 
   if (binding?.value.kind === "text") {
-    return headerValueToState(name, binding.value.text);
+    return {
+      ...httpCredentialRowFromValue(name, binding.value.text),
+      prefix: value.prefix,
+    };
   }
 
   return null;
@@ -104,7 +111,12 @@ const queryParamFromConfiguredCredential = (
   }
 
   if (binding?.value.kind === "text") {
-    return { name, secretId: null, literalValue: binding.value.text };
+    return {
+      name,
+      secretId: null,
+      literalValue: binding.value.text,
+      prefix: value.prefix,
+    };
   }
 
   return null;
@@ -130,7 +142,7 @@ export const secretBackedValuesFromConfiguredCredentialBindings = (
         ...(value.prefix ? { prefix: value.prefix } : {}),
       };
     } else if (binding?.value.kind === "text") {
-      out[name] = binding.value.text;
+      out[name] = value.prefix ? `${value.prefix}${binding.value.text}` : binding.value.text;
     }
   }
 

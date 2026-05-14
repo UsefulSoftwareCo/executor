@@ -12,7 +12,7 @@ import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
-  HttpCredentialsEditor,
+  HttpCredentials,
   serializeHttpCredentials,
   serializeScopedHttpCredentials,
   type HttpCredentialsState,
@@ -191,7 +191,7 @@ function EditForm(props: {
         namespaceReadOnly
       />
 
-      <HttpCredentialsEditor
+      <HttpCredentials.Root
         credentials={credentials}
         onChange={handleCredentialsChange}
         existingSecrets={secretList}
@@ -199,7 +199,10 @@ function EditForm(props: {
         targetScope={credentialTargetScope}
         credentialScopeOptions={credentialScopeOptions}
         bindingScopeOptions={credentialScopeOptions}
-      />
+      >
+        <HttpCredentials.Headers />
+        <HttpCredentials.QueryParams />
+      </HttpCredentials.Root>
 
       {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}
       <section className="hidden space-y-2.5">

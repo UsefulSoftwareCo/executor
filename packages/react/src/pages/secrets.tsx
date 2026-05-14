@@ -58,7 +58,7 @@ const isSecretInUseError = Schema.is(SecretInUseError);
 //
 // Form state, derived id, dup detection, and submit lifecycle live in
 // `<SecretForm.Provider>` and are shared with the inline create flow in
-// secret-header-auth.tsx. Dialog content remounts on each open via `key` so
+// creatable-secret-picker.tsx. Dialog content remounts on each open via `key` so
 // state always starts fresh — no manual reset.
 // ---------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import { useScope } from "@executor-js/react/api/scope-context";
 import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  HttpCredentialsEditor,
+  HttpCredentials,
   httpCredentialsValid,
   serializeScopedHttpCredentials,
   serializeHttpCredentials,
@@ -177,7 +177,7 @@ export default function AddGraphqlSource(props: {
 
       <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
 
-      <HttpCredentialsEditor
+      <HttpCredentials.Root
         credentials={credentials}
         onChange={setCredentials}
         existingSecrets={secretList}
@@ -185,7 +185,10 @@ export default function AddGraphqlSource(props: {
         targetScope={requestCredentialTargetScope}
         credentialScopeOptions={credentialScopeOptions}
         bindingScopeOptions={credentialScopeOptions}
-      />
+      >
+        <HttpCredentials.Headers />
+        <HttpCredentials.QueryParams />
+      </HttpCredentials.Root>
 
       {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}
       <section className="hidden space-y-2.5">

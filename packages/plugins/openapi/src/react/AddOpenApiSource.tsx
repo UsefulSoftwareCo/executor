@@ -17,11 +17,13 @@ import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/rea
 // state without a refresh.
 const addSpecWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
 const bindingWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
-import { HeadersList } from "@executor-js/react/plugins/headers-list";
 import {
-  HttpCredentialsEditor,
+  HttpCredentials,
+  configuredCredentialMapFromRows,
   emptyHttpCredentials,
+  matchHttpCredentialPreset,
   serializeHttpCredentials,
+  type HttpCredentialRow,
   type HttpCredentialsState,
 } from "@executor-js/react/plugins/http-credentials";
 import {
@@ -29,12 +31,9 @@ import {
   useOAuthPopupFlow,
   type OAuthCompletionPayload,
 } from "@executor-js/react/plugins/oauth-sign-in";
-import {
-  CreatableSecretPicker,
-  matchPresetKey,
-  type HeaderState,
-} from "@executor-js/react/plugins/secret-header-auth";
+import { CreatableSecretPicker } from "@executor-js/react/plugins/creatable-secret-picker";
 import { CredentialScopeDropdown } from "@executor-js/react/plugins/credential-target-scope";
+import { OAuthConnectionControl } from "@executor-js/react/plugins/source-oauth-connection";
 import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import { Button } from "@executor-js/react/components/button";
@@ -67,7 +66,7 @@ import {
   oauth2ConnectionSlot,
   queryParamBindingSlot,
 } from "../sdk/store";
-import { ConfiguredHeaderBinding, OAuth2SourceConfig, type ServerInfo } from "../sdk/types";
+import { OAuth2SourceConfig, type ConfiguredHeaderValue, type ServerInfo } from "../sdk/types";
 import { expandServerUrlOptions } from "../sdk/openapi-utils";
 
 export const OPENAPI_OAUTH_POPUP_NAME = "openapi-oauth";
@@ -169,14 +168,14 @@ function prefixForHeader(preset: HeaderPreset, headerName: string): string | und
   return undefined;
 }
 
-function entriesFromSpecPreset(preset: HeaderPreset): HeaderState[] {
+function entriesFromSpecPreset(preset: HeaderPreset): HttpCredentialRow[] {
   return preset.secretHeaders.map((headerName) => {
     const prefix = prefixForHeader(preset, headerName);
     return {
       name: headerName,
       secretId: null,
       prefix,
-      presetKey: matchPresetKey(headerName, prefix),
+      presetKey: matchHttpCredentialPreset(headerName, prefix),
       fromPreset: true,
     };
   });
@@ -212,7 +211,7 @@ export default function AddOpenApiSource(props: {
 
   // Auth
   const [strategy, setStrategy] = useState<StrategySelection>({ kind: "none" });
-  const [customHeaders, setCustomHeaders] = useState<HeaderState[]>([]);
+  const [customHeaders, setCustomHeaders] = useState<HttpCredentialRow[]>([]);
   const [specFetchCredentials, setSpecFetchCredentials] = useState<HttpCredentialsState>(() =>
     emptyHttpCredentials(),
   );
@@ -332,59 +331,23 @@ export default function AddOpenApiSource(props: {
 
   const resolvedBaseUrl = baseUrl.trim();
 
-  const configuredHeaders: Record<string, ConfiguredHeaderBinding> = {};
-  const headerBindings: Array<{
-    slot: string;
-    secretId: string;
-    scope: ScopeId;
-    secretScope: ScopeId;
-  }> = [];
-  const configuredQueryParams: Record<string, string | ConfiguredHeaderBinding> = {};
-  const queryParamBindings: Array<{
-    slot: string;
-    secretId: string;
-    scope: ScopeId;
-    secretScope: ScopeId;
-  }> = [];
-  for (const ch of customHeaders) {
-    if (!ch.name.trim()) continue;
-    const slot = headerBindingSlot(ch.name.trim());
-    configuredHeaders[ch.name.trim()] = ConfiguredHeaderBinding.make({
-      kind: "binding",
-      slot,
-      prefix: ch.prefix,
-    });
-    if (ch.secretId) {
-      headerBindings.push({
-        slot,
-        secretId: ch.secretId,
-        scope: ch.targetScope ?? credentialTargetScope,
-        secretScope: ch.secretScope ?? ch.targetScope ?? credentialTargetScope,
-      });
-    }
-  }
-  for (const param of runtimeCredentials.queryParams) {
-    const name = param.name.trim();
-    if (!name) continue;
-    if (param.secretId) {
-      const slot = queryParamBindingSlot(name);
-      configuredQueryParams[name] = ConfiguredHeaderBinding.make({
-        kind: "binding",
-        slot,
-        prefix: param.prefix,
-      });
-      queryParamBindings.push({
-        slot,
-        secretId: param.secretId,
-        scope: param.targetScope ?? credentialTargetScope,
-        secretScope: param.secretScope ?? param.targetScope ?? credentialTargetScope,
-      });
-      continue;
-    }
-    if (param.literalValue?.trim()) {
-      configuredQueryParams[name] = param.literalValue.trim();
-    }
-  }
+  const headerCredentialConfig = configuredCredentialMapFromRows(
+    customHeaders,
+    credentialTargetScope,
+    headerBindingSlot,
+  );
+  const configuredHeaders = headerCredentialConfig.values as Record<string, ConfiguredHeaderValue>;
+  const headerBindings = headerCredentialConfig.bindings;
+  const queryParamCredentialConfig = configuredCredentialMapFromRows(
+    runtimeCredentials.queryParams,
+    credentialTargetScope,
+    queryParamBindingSlot,
+  );
+  const configuredQueryParams = queryParamCredentialConfig.values as Record<
+    string,
+    ConfiguredHeaderValue
+  >;
+  const queryParamBindings = queryParamCredentialConfig.bindings;
 
   const oauth2Presets: readonly OAuth2Preset[] = preview?.oauth2Presets ?? [];
   const oauth2RedirectUrl = oauthCallbackUrl(OPENAPI_OAUTH_CALLBACK_PATH);
@@ -438,7 +401,9 @@ export default function AddOpenApiSource(props: {
   const hasIncompleteHeaderCredentials =
     strategy.kind !== "none" &&
     strategy.kind !== "oauth2" &&
-    customHeaders.some((header) => header.name.trim() && !header.secretId);
+    customHeaders.some(
+      (header) => header.name.trim() && !header.secretId && !header.literalValue?.trim(),
+    );
   const hasIncompleteQueryCredentials = runtimeCredentials.queryParams.some(
     (param) => param.name.trim() && !param.secretId && !param.literalValue?.trim(),
   );
@@ -527,7 +492,7 @@ export default function AddOpenApiSource(props: {
     );
   };
 
-  const handleHeadersChange = (next: HeaderState[]) => {
+  const handleHeadersChange = (next: HttpCredentialRow[]) => {
     setCustomHeaders(next);
     if (strategy.kind === "header" && next.every((h) => !h.fromPreset)) {
       setStrategy(next.length === 0 ? { kind: "none" } : { kind: "custom" });
@@ -903,17 +868,16 @@ export default function AddOpenApiSource(props: {
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <HttpCredentialsEditor
+              <HttpCredentials.Root
                 credentials={specFetchCredentials}
                 onChange={setSpecFetchCredentials}
                 existingSecrets={secretList}
                 sourceName={identity.name}
                 targetScope={credentialTargetScope}
-                labels={{
-                  headers: "Spec fetch headers",
-                  queryParams: "Spec fetch query parameters",
-                }}
-              />
+              >
+                <HttpCredentials.Headers label="Spec fetch headers" />
+                <HttpCredentials.QueryParams label="Spec fetch query parameters" />
+              </HttpCredentials.Root>
             </CollapsibleContent>
           </Collapsible>
         </>
@@ -1038,22 +1002,21 @@ export default function AddOpenApiSource(props: {
 
             {/* Header-based auth input */}
             {strategy.kind !== "none" && strategy.kind !== "oauth2" && (
-              <div className="space-y-3">
-                <HeadersList
-                  headers={customHeaders}
-                  onHeadersChange={handleHeadersChange}
-                  existingSecrets={secretList}
-                  sourceName={identity.name}
-                  targetScope={credentialTargetScope}
-                  credentialScopeOptions={initialCredentialScopeOptions}
-                  bindingScopeOptions={bindingScopeOptions}
-                  restrictSecretsToTargetScope
-                  emptyLabel="No credentials yet. Add the header value this method should use."
-                />
-              </div>
+              <HttpCredentials.Root
+                credentials={{ headers: customHeaders, queryParams: [] }}
+                onChange={(credentials) => handleHeadersChange(credentials.headers)}
+                existingSecrets={secretList}
+                sourceName={identity.name}
+                targetScope={credentialTargetScope}
+                credentialScopeOptions={initialCredentialScopeOptions}
+                bindingScopeOptions={bindingScopeOptions}
+                restrictSecretsToTargetScope
+              >
+                <HttpCredentials.Headers label="Header credentials" />
+              </HttpCredentials.Root>
             )}
 
-            <HttpCredentialsEditor
+            <HttpCredentials.Root
               credentials={runtimeCredentials}
               onChange={setRuntimeCredentials}
               existingSecrets={secretList}
@@ -1062,9 +1025,9 @@ export default function AddOpenApiSource(props: {
               credentialScopeOptions={initialCredentialScopeOptions}
               bindingScopeOptions={bindingScopeOptions}
               restrictSecretsToTargetScope
-              sections={{ headers: false, queryParams: true }}
-              labels={{ queryParams: "Runtime query parameters" }}
-            />
+            >
+              <HttpCredentials.QueryParams label="Runtime query parameters" />
+            </HttpCredentials.Root>
 
             {/* OAuth2 configuration */}
             {selectedOAuth2Preset && (
@@ -1179,65 +1142,58 @@ export default function AddOpenApiSource(props: {
                     </div>
                   </div>
 
-                  {oauth2Auth ? (
-                    <div className="flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/5 px-3 py-2">
-                      <div className="text-[11px] text-green-700 dark:text-green-400">
-                        Connected · {oauth2SelectedScopes.size} scope
-                        {oauth2SelectedScopes.size === 1 ? "" : "s"} granted
-                      </div>
+                  <OAuthConnectionControl
+                    tokenScope={oauthTokenTargetScope}
+                    credentialScopeOptions={credentialScopeOptions}
+                    onTokenScopeChange={(targetScope) => {
+                      setOAuthTokenTargetScope(targetScope);
+                      setOauth2AuthState(null);
+                    }}
+                    label="OAuth sign-in"
+                    scopeLabel="Token saved to"
+                    scopeHelp="Choose who can use the signed-in OAuth token."
+                    status={
+                      oauth2Auth
+                        ? {
+                            kind: "connected",
+                            label: `Connected · ${oauth2SelectedScopes.size} scope${
+                              oauth2SelectedScopes.size === 1 ? "" : "s"
+                            } granted`,
+                          }
+                        : oauth2Busy
+                          ? {
+                              kind: "busy",
+                              label:
+                                "Waiting for OAuth... complete the flow in the popup, or cancel to retry.",
+                            }
+                          : { kind: "idle" }
+                    }
+                  >
+                    {oauth2Auth ? (
                       <Button variant="ghost" size="sm" onClick={() => setOauth2AuthState(null)}>
                         Disconnect
                       </Button>
-                    </div>
-                  ) : oauth2Busy ? (
-                    <div className="flex items-center gap-2">
-                      <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-background/50 px-3 py-2 text-[11px] text-muted-foreground">
-                        <Spinner className="size-3.5" />
-                        Waiting for OAuth… complete the flow in the popup, or cancel to retry.
-                      </div>
-                      <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
-                        Cancel
+                    ) : oauth2Busy ? (
+                      <>
+                        <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
+                          Cancel
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={handleConnectOAuth2}>
+                          Retry
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleConnectOAuth2}
+                        disabled={!canConnectOAuth2}
+                      >
+                        Sign in
                       </Button>
-                      <Button variant="secondary" size="sm" onClick={handleConnectOAuth2}>
-                        Retry
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-1.5">
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <div className="flex items-center gap-1.5">
-                            <FieldLabel className="text-[11px]">OAuth sign-in</FieldLabel>
-                            <HelpTooltip label="OAuth sign-in">
-                              Start the provider OAuth flow.
-                            </HelpTooltip>
-                          </div>
-                          <Button
-                            variant="secondary"
-                            onClick={handleConnectOAuth2}
-                            disabled={!canConnectOAuth2}
-                            className={
-                              canConnectOAuth2
-                                ? "w-full border border-green-500/30 bg-green-600 text-white hover:bg-green-700 focus-visible:ring-green-500/30 dark:bg-green-500 dark:text-white dark:hover:bg-green-600"
-                                : "w-full"
-                            }
-                          >
-                            Connect via OAuth
-                          </Button>
-                        </div>
-                        <CredentialScopeDropdown
-                          value={oauthTokenTargetScope}
-                          options={credentialScopeOptions}
-                          onChange={(targetScope) => {
-                            setOAuthTokenTargetScope(targetScope);
-                            setOauth2AuthState(null);
-                          }}
-                          label="Token saved to"
-                          help="Choose who can use the signed-in OAuth token."
-                        />
-                      </div>
-                    </div>
-                  )}
+                    )}
+                  </OAuthConnectionControl>
 
                   {oauth2Error && (
                     <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
