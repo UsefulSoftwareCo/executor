@@ -182,6 +182,52 @@ describe("probeMcpEndpointShape", () => {
     ),
   );
 
+  // Datadog shape: bare `401 {"errors":["Unauthorized"]}` with no
+  // WWW-Authenticate header at all, but the server still publishes
+  // RFC 9728 protected-resource metadata at the path-scoped well-known
+  // URL. The metadata probe is what lets us classify it as MCP+auth.
+  it.effect("classifies 401 w/o WWW-Authenticate but with RFC 9728 metadata as MCP+auth", () =>
+    withServer(
+      (request) => {
+        if (request.url.includes("/.well-known/oauth-protected-resource")) {
+          const host = request.headers.host ?? "127.0.0.1";
+          return HttpServerResponse.jsonUnsafe({
+            resource: `http://${host}/probe`,
+            authorization_servers: [`http://${host}`],
+          });
+        }
+        return HttpServerResponse.jsonUnsafe({ errors: ["Unauthorized"] }, { status: 401 });
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toEqual({ kind: "mcp", requiresAuth: true });
+        }),
+    ),
+  );
+
+  // The metadata probe must not rescue a 401 when the published
+  // `resource` describes some unrelated resource on the same host.
+  it.effect("rejects 401 when RFC 9728 metadata resource doesn't match endpoint", () =>
+    withServer(
+      (request) => {
+        if (request.url.includes("/.well-known/oauth-protected-resource")) {
+          const host = request.headers.host ?? "127.0.0.1";
+          return HttpServerResponse.jsonUnsafe({
+            resource: `http://${host}/some-other-api`,
+            authorization_servers: [`http://${host}`],
+          });
+        }
+        return HttpServerResponse.jsonUnsafe({ errors: ["Unauthorized"] }, { status: 401 });
+      },
+      (endpoint) =>
+        Effect.gen(function* () {
+          const result = yield* probeMcpEndpointShape(endpoint);
+          expect(result).toMatchObject({ kind: "not-mcp", category: "auth-required" });
+        }),
+    ),
+  );
+
   it.effect("rejects 401 + Bearer with empty body as auth-required", () =>
     withServer(
       () =>
