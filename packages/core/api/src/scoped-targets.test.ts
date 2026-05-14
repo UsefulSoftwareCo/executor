@@ -15,6 +15,7 @@ import {
   definePlugin,
   makeTestConfig,
   type Executor,
+  withQueryContext,
 } from "@executor-js/sdk";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 
@@ -175,7 +176,9 @@ describe("core API explicit target scopes", () => {
       expect(response.status).toBe(200);
       const rows = toScopeRows(
         yield* Effect.promise(() =>
-          config.db.findMany("connection", {
+          withQueryContext(config.db, {
+            allowedScopeIds: new Set([String(userScope), String(orgScope)]),
+          }).findMany("connection", {
             where: (b) => b("id", "=", connectionId),
           }),
         ),
@@ -222,7 +225,11 @@ describe("core API explicit target scopes", () => {
       );
 
       expect(response.status).toBe(400);
-      const sessions = yield* Effect.promise(() => config.db.findMany("oauth2_session"));
+      const sessions = yield* Effect.promise(() =>
+        withQueryContext(config.db, {
+          allowedScopeIds: new Set([String(userScope), String(orgScope)]),
+        }).findMany("oauth2_session"),
+      );
       expect(sessions).toEqual([]);
     }),
   );

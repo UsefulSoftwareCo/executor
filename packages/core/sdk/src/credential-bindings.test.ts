@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
+import { withQueryContext } from "fumadb/query";
 
 import { CreateConnectionInput, TokenMaterial } from "./connections";
 import { createExecutor, type Executor } from "./executor";
@@ -97,7 +98,10 @@ const makeHarness = () => {
     });
 
   return {
-    db: config.db,
+    dbFor: (visibleScopes: readonly Scope[]) =>
+      withQueryContext(config.db, {
+        allowedScopeIds: new Set(visibleScopes.map((visibleScope) => String(visibleScope.id))),
+      }),
     scopes,
     create: (visibleScopes: readonly Scope[]) => create(visibleScopes, plugins),
   };
@@ -304,7 +308,7 @@ describe("credential bindings", () => {
 
       const migratedAt = new Date("2026-05-01T00:00:00.000Z");
       yield* Effect.promise(() =>
-        harness.db.create("credential_binding", {
+        harness.dbFor([harness.scopes.org]).create("credential_binding", {
           id: "invalid-outer-binding",
           scope_id: harness.scopes.org.id,
           plugin_id: TEST_PLUGIN_ID,
@@ -520,7 +524,7 @@ describe("credential bindings", () => {
 
       const migratedAt = new Date("2026-05-01T00:00:00.000Z");
       yield* Effect.promise(() =>
-        harness.db.create("credential_binding", {
+        harness.dbFor([harness.scopes.userWorkspaceA]).create("credential_binding", {
           id: "openapi-source-binding:legacy-row-id",
           scope_id: harness.scopes.userWorkspaceA.id,
           plugin_id: TEST_PLUGIN_ID,
@@ -546,7 +550,7 @@ describe("credential bindings", () => {
       });
 
       const rawRows = yield* Effect.promise(() =>
-        harness.db.findMany("credential_binding", {
+        harness.dbFor([harness.scopes.userWorkspaceA]).findMany("credential_binding", {
           where: (b) =>
             b.and(
               b("scope_id", "=", harness.scopes.userWorkspaceA.id),

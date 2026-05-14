@@ -57,7 +57,11 @@ const causeMessage = (cause: unknown): string | undefined => {
   return typeof message === "string" && message.length > 0 ? message : undefined;
 };
 
+export const isStorageFailure = (error: unknown): error is StorageFailure =>
+  Predicate.isTagged(error, "StorageError") || Predicate.isTagged(error, "UniqueViolationError");
+
 export const fumaFailureFromCause = (label: string, cause: unknown): StorageFailure => {
+  if (isStorageFailure(cause)) return cause;
   if (isUniqueViolation(cause)) return new UniqueViolationError({ model: label });
   return new StorageError({
     message: causeMessage(cause) ?? `FumaDB operation failed: ${label}`,
@@ -135,6 +139,3 @@ export const makeFumaClient = (db: FumaDb): IFumaClient => {
 export class FumaClient extends Context.Service<FumaClient, IFumaClient>()("executor/FumaClient") {
   static layer = (db: FumaDb) => Layer.succeed(this)(makeFumaClient(db));
 }
-
-export const isStorageFailure = (error: unknown): error is StorageFailure =>
-  Predicate.isTagged(error, "StorageError") || Predicate.isTagged(error, "UniqueViolationError");

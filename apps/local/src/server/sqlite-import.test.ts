@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { collectTables } from "@executor-js/sdk";
+import { collectTables, withQueryContext } from "@executor-js/sdk";
 
 import { importSqliteDataToFuma } from "./sqlite-import";
 import { createSqliteFumaDb, type SqliteFumaDb } from "./sqlite-fumadb";
@@ -96,7 +96,9 @@ describe("importSqliteDataToFuma", () => {
     expect(existsSync(sqlitePath)).toBe(false);
     expect(result.backupPath && existsSync(result.backupPath)).toBe(true);
 
-    const source = (await sqlite.db.findFirst("source", {
+    const db = withQueryContext(sqlite.db, { allowedScopeIds: new Set(["scope_a"]) });
+
+    const source = (await db.findFirst("source", {
       where: (b) => b("id", "=", "src_1"),
     })) as Record<string, unknown>;
     expect(source.scope_id).toBe("scope_a");
@@ -105,7 +107,7 @@ describe("importSqliteDataToFuma", () => {
     expect(source.can_edit).toBe(true);
     expect(source.created_at).toBeInstanceOf(Date);
 
-    const blob = (await sqlite.db.findFirst("blob", {
+    const blob = (await db.findFirst("blob", {
       where: (b) => b("id", "=", JSON.stringify(["scope_a/plugin", "spec"])),
     })) as Record<string, unknown>;
     expect(blob.value).toBe("{}");

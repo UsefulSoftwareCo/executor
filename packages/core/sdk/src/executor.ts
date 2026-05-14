@@ -12,7 +12,7 @@ import {
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "fumadb";
 import { memoryAdapter } from "fumadb/adapters/memory";
-import type { Condition, ConditionBuilder } from "fumadb/query";
+import { withQueryContext, type Condition, type ConditionBuilder } from "fumadb/query";
 import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 import type { AnyColumn } from "fumadb/schema";
 import type { OAuthEndpointUrlPolicy } from "./oauth-helpers";
@@ -122,6 +122,7 @@ import {
   type ToolListFilter,
 } from "./types";
 import { buildToolTypeScriptPreview } from "./schema-types";
+import { assertExecutorScopePolicyTable, type ExecutorScopePolicyContext } from "./scope-policy";
 import { validateHostedOutboundUrl } from "./hosted-http-client";
 
 const MAX_ANNOTATION_GROUPS = 64;
@@ -398,6 +399,11 @@ export const collectTables = (plugins: readonly AnyPlugin[]): FumaTables => {
       merged[tableKey] = tableDef as FumaTables[string];
     }
   }
+
+  for (const tableDef of Object.values(merged)) {
+    assertExecutorScopePolicyTable(tableDef);
+  }
+
   return merged;
 };
 
@@ -800,12 +806,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
     }
 
-    // FumaDB is the storage model. Scope constraints are explicit in each
-    // table query rather than hidden behind a separate adapter layer.
-    const fuma = makeFumaClient(rootDbUntyped);
+    const scopeIds = scopes.map((s) => String(s.id));
+    const rootDb = withQueryContext(rootDbUntyped, {
+      allowedScopeIds: new Set(scopeIds),
+    } satisfies ExecutorScopePolicyContext);
+    const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
     const blobs = makeFumaBlobStore(fuma);
-    const scopeIds = scopes.map((s) => String(s.id));
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
     // Populated once, never mutated after startup.

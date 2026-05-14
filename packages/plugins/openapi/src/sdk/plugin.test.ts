@@ -24,6 +24,7 @@ import {
   SetSecretInput,
   type InvokeOptions,
   type SecretProvider,
+  withQueryContext,
 } from "@executor-js/sdk";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 import type { ConfigFileSink } from "@executor-js/config";
@@ -1177,6 +1178,9 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
             plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
           });
           const executor = yield* createExecutor(config);
+          const db = withQueryContext(config.db, {
+            allowedScopeIds: new Set([String(USER_SCOPE), String(ORG_SCOPE)]),
+          });
 
           yield* executor.secrets.set(
             SetSecretInput.make({
@@ -1206,7 +1210,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
           });
 
           const userRowsBefore = yield* Effect.promise(() =>
-            config.db.findMany("openapi_source_spec_fetch_header", {
+            db.findMany("openapi_source_spec_fetch_header", {
               where: (b) =>
                 b.and(
                   b("scope_id", "=", String(USER_SCOPE)),
@@ -1225,7 +1229,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
           expect(server.requestCount()).toBeGreaterThan(requestsBefore);
           expect(server.lastToken()).toBe("org-token");
           const orgRowsAfter = yield* Effect.promise(() =>
-            config.db.findMany("openapi_source_spec_fetch_header", {
+            db.findMany("openapi_source_spec_fetch_header", {
               where: (b) =>
                 b.and(
                   b("scope_id", "=", String(ORG_SCOPE)),
@@ -1234,7 +1238,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
             }),
           );
           const userRowsAfter = yield* Effect.promise(() =>
-            config.db.findMany("openapi_source_spec_fetch_header", {
+            db.findMany("openapi_source_spec_fetch_header", {
               where: (b) =>
                 b.and(
                   b("scope_id", "=", String(USER_SCOPE)),

@@ -20,6 +20,7 @@ export {
 // FumaDB integration.
 export { fumadb } from "fumadb";
 export type { FumaDB } from "fumadb";
+export { withQueryContext } from "fumadb/query";
 export type { AbstractQuery, Condition, ConditionBuilder } from "fumadb/query";
 export { column, idColumn, schema as fumaSchema, table } from "fumadb/schema";
 export type { AnyColumn, AnySchema, AnyTable, Column, Schema as FumaSchema } from "fumadb/schema";

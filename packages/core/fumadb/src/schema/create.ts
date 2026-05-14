@@ -1,16 +1,121 @@
 import { createId } from "../cuid";
 import type { CustomMigrationFn } from "../migration-engine/create";
+import type { Condition, ConditionBuilder } from "../query/condition-builder";
 import { validateSchema } from "./validate";
 
 export type AnySchema = Schema<string, Record<string, AnyTable>>;
 
 export type AnyRelation = Relation;
 
-export type AnyTable = Table;
+export interface AnyTable {
+  names: NameVariants;
+  ormName: string;
+  columns: Record<string, AnyColumn>;
+  relations: Record<string, AnyRelation>;
+  foreignKeys: ForeignKey[];
+  policies: StoredTablePolicy[];
+  getUniqueConstraints: (level?: "table" | "column" | "all") => UniqueConstraint[];
+  getColumnByName: (name: string, type?: keyof NameVariants) => AnyColumn | undefined;
+  getIdColumn: () => AnyColumn;
+  clone: () => AnyTable;
+}
 
 export type AnyColumn =
   | Column<keyof TypeMap, unknown, unknown>
   | IdColumn<IdColumnType, unknown, unknown>;
+
+export type TableColumnName<T extends AnyTable> = Extract<keyof T["columns"], string>;
+
+export type TableColumnValues<T extends AnyTable> = {
+  [K in keyof T["columns"]]: T["columns"][K]["$out"];
+};
+
+type Simplify<T> = {
+  [K in keyof T]: T[K];
+};
+
+type TableColumnInputValues<T extends AnyTable> = {
+  [K in keyof T["columns"]]: T["columns"][K]["$in"];
+};
+
+type PickNotNullable<T> = {
+  [P in keyof T as null extends T[P] ? never : P]: T[P];
+};
+
+export type TableInsertValues<T extends AnyTable> = Simplify<
+  {
+    [K in keyof T["columns"]]?: T["columns"][K]["$in"];
+  } & PickNotNullable<TableColumnInputValues<T>>
+>;
+
+export type TableUpdateValues<T extends AnyTable> = {
+  [K in keyof T["columns"]]?: T["columns"][K] extends IdColumn
+    ? never
+    : T["columns"][K]["$in"];
+};
+
+type MaybePromise<T> = T | Promise<T>;
+export type TablePolicyCondition = Condition | boolean | void;
+
+export interface TableReadPolicyInput<TTable extends AnyTable, TContext> {
+  readonly where: Condition | undefined;
+  readonly context: TContext;
+  readonly builder: ConditionBuilder<TTable["columns"]>;
+}
+
+export interface TableCreatePolicyInput<TTable extends AnyTable, TContext> {
+  readonly values: TableInsertValues<TTable>;
+  readonly context: TContext;
+}
+
+export interface TableUpdatePolicyInput<TTable extends AnyTable, TContext> {
+  readonly where: Condition | undefined;
+  readonly set: TableUpdateValues<TTable>;
+  readonly context: TContext;
+  readonly builder: ConditionBuilder<TTable["columns"]>;
+  readonly operation: "update" | "upsert";
+}
+
+export interface TableDeletePolicyInput<TTable extends AnyTable, TContext> {
+  readonly where: Condition | undefined;
+  readonly context: TContext;
+  readonly builder: ConditionBuilder<TTable["columns"]>;
+}
+
+export type TableReadPolicyCallback<TTable extends AnyTable, TContext> = (
+  input: TableReadPolicyInput<TTable, TContext>
+) => MaybePromise<TablePolicyCondition>;
+
+export type TableCreatePolicyCallback<TTable extends AnyTable, TContext> = (
+  input: TableCreatePolicyInput<TTable, TContext>
+) => MaybePromise<void>;
+
+export type TableUpdatePolicyCallback<TTable extends AnyTable, TContext> = (
+  input: TableUpdatePolicyInput<TTable, TContext>
+) => MaybePromise<TablePolicyCondition>;
+
+export type TableDeletePolicyCallback<TTable extends AnyTable, TContext> = (
+  input: TableDeletePolicyInput<TTable, TContext>
+) => MaybePromise<TablePolicyCondition>;
+
+export interface TablePolicy<
+  TTable extends AnyTable = AnyTable,
+  TContext = unknown,
+> {
+  readonly name?: string;
+  onRead?: TableReadPolicyCallback<TTable, TContext>;
+  onCreate?: TableCreatePolicyCallback<TTable, TContext>;
+  onUpdate?: TableUpdatePolicyCallback<TTable, TContext>;
+  onDelete?: TableDeletePolicyCallback<TTable, TContext>;
+}
+
+export interface StoredTablePolicy {
+  readonly name?: string;
+  onRead?: TableReadPolicyCallback<AnyTable, unknown>;
+  onCreate?: TableCreatePolicyCallback<AnyTable, unknown>;
+  onUpdate?: TableUpdatePolicyCallback<AnyTable, unknown>;
+  onDelete?: TableDeletePolicyCallback<AnyTable, unknown>;
+}
 
 export type ForeignKeyAction = "RESTRICT" | "CASCADE" | "SET NULL";
 
@@ -199,6 +304,7 @@ export interface Table<
   columns: Columns;
   relations: Relations;
   foreignKeys: ForeignKey[];
+  policies: StoredTablePolicy[];
 
   /**
    * @param level default to 'all'
@@ -220,10 +326,9 @@ export interface Table<
   /**
    * Add unique constraint to the fields, for consistency, duplicated null values are allowed.
    */
-  unique: (
-    name: string,
-    columns: (keyof Columns)[]
-  ) => Table<Columns, Relations>;
+  unique(name: string, columns: (keyof Columns)[]): Table<Columns, Relations>;
+
+  policy<TContext>(policy: TablePolicy<this, TContext>): this;
 
   clone: () => Table<Columns, Relations>;
 }
@@ -469,6 +574,7 @@ export function table<Columns extends Record<string, AnyColumn>>(
   let names: NameVariants | undefined;
 
   const uniqueConstraints: UniqueConstraint[] = [];
+  const policies: StoredTablePolicy[] = [];
   const out: Table<Columns, {}> = {
     ormName: "",
     get names() {
@@ -484,6 +590,7 @@ export function table<Columns extends Record<string, AnyColumn>>(
     columns,
     relations: {},
     foreignKeys: [],
+    policies,
     getUniqueConstraints(level = "all") {
       const result: UniqueConstraint[] = [];
       if (level === "all" || level === "table")
@@ -522,6 +629,10 @@ export function table<Columns extends Record<string, AnyColumn>>(
 
       return this;
     },
+    policy(policy) {
+      policies.push(policy as StoredTablePolicy);
+      return this;
+    },
     clone() {
       const cloneColumns: Record<string, AnyColumn> = {};
 
@@ -536,6 +647,7 @@ export function table<Columns extends Record<string, AnyColumn>>(
           con.columns.map((col) => col.ormName)
         );
       }
+      clone.policies.push(...policies);
 
       return clone;
     },
@@ -594,7 +706,7 @@ type CreateSchemaTables<
             >
           : Relations
       >
-    : never;
+    : Tables[K];
 };
 
 export interface Schema<

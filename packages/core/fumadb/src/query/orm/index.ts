@@ -1,4 +1,9 @@
-import type { AnyColumn, AnyRelation, AnySchema, AnyTable } from "../../schema";
+import type {
+  AnyColumn,
+  AnyRelation,
+  AnySchema,
+  AnyTable,
+} from "../../schema";
 import type {
   AbstractQuery,
   AnySelectClause,
@@ -7,7 +12,7 @@ import type {
   JoinBuilder,
   OrderBy,
 } from "..";
-import { buildCondition, type Condition } from "../condition-builder";
+import { buildCondition, createBuilder, type Condition } from "../condition-builder";
 
 export interface CompiledJoin {
   relation: AnyRelation;
@@ -89,24 +94,155 @@ export type SimplifyFindOptions<O> = Omit<
   join?: CompiledJoin[];
 };
 
-export interface ORMAdapter {
-  tables: Record<string, AnyTable>;
+type WriteOperation = "create" | "update" | "upsert";
+
+const mergePolicyCondition = (
+  table: AnyTable,
+  where: Condition | undefined,
+  condition: Condition | boolean | void,
+): Condition | undefined | false => {
+  if (condition === undefined || condition === true) return where;
+  if (condition === false) return false;
+
+  const next = createBuilder(table.columns).and(where ?? true, condition);
+  if (next === true) return undefined;
+  if (next === false) return false;
+  return next;
+};
+
+const applyReadPolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  context: unknown,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onRead?.({
+      where: nextWhere,
+      context,
+      builder: createBuilder(table.columns),
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+const applyReadPoliciesToOptions = async (
+  table: AnyTable,
+  options: SimplifyFindOptions<FindManyOptions>,
+  context: unknown,
+): Promise<SimplifyFindOptions<FindManyOptions> | false> => {
+  const where = await applyReadPolicies(table, options.where, context);
+  if (where === false) return false;
+
+  let changed = where !== options.where;
+  const join: CompiledJoin[] | undefined = options.join ? [] : undefined;
+
+  for (const entry of options.join ?? []) {
+    if (entry.options === false) {
+      join!.push(entry);
+      continue;
+    }
+
+    const nextOptions = await applyReadPoliciesToOptions(
+      entry.relation.table,
+      entry.options,
+      context,
+    );
+    if (nextOptions === false) {
+      join!.push({ ...entry, options: false });
+      changed = true;
+      continue;
+    }
+    if (nextOptions !== entry.options) changed = true;
+    join!.push(nextOptions === entry.options ? entry : { ...entry, options: nextOptions });
+  }
+
+  return changed ? { ...options, where, join } : options;
+};
+
+const runCreatePolicies = async (
+  table: AnyTable,
+  values: Record<string, unknown>,
+  context: unknown,
+): Promise<void> => {
+  for (const policy of table.policies) {
+    await policy.onCreate?.({ values, context });
+  }
+};
+
+const applyUpdatePolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  set: Record<string, unknown>,
+  context: unknown,
+  operation: Extract<WriteOperation, "update" | "upsert">,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onUpdate?.({
+      where: nextWhere,
+      set,
+      context,
+      builder: createBuilder(table.columns),
+      operation,
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+const applyDeletePolicies = async (
+  table: AnyTable,
+  where: Condition | undefined,
+  context: unknown,
+): Promise<Condition | undefined | false> => {
+  let nextWhere = where;
+
+  for (const policy of table.policies) {
+    const condition = await policy.onDelete?.({
+      where: nextWhere,
+      context,
+      builder: createBuilder(table.columns),
+    });
+    const merged = mergePolicyCondition(table, nextWhere, condition);
+    if (merged === false) return false;
+    nextWhere = merged;
+  }
+
+  return nextWhere;
+};
+
+export interface ORMAdapter<S extends AnySchema = AnySchema> {
+  tables: S["tables"];
+  context?: unknown;
   count: (table: AnyTable, v: SimplifiedCountOptions) => Promise<number>;
 
   findFirst: (
-      table: AnyTable,
-      v: SimplifyFindOptions<FindFirstOptions>,) => Promise<Record<string, unknown> | null>;
+    table: AnyTable,
+    v: SimplifyFindOptions<FindFirstOptions>,
+  ) => Promise<Record<string, unknown> | null>;
 
   findMany: (
-      table: AnyTable,
-      v: SimplifyFindOptions<FindManyOptions>,) => Promise<Record<string, unknown>[]>;
+    table: AnyTable,
+    v: SimplifyFindOptions<FindManyOptions>,
+  ) => Promise<Record<string, unknown>[]>;
 
   updateMany: (
-      table: AnyTable,
-      v: {
-        where?: Condition;
-        set: Record<string, unknown>;
-      },) => Promise<void>;
+    table: AnyTable,
+    v: {
+      where?: Condition;
+      set: Record<string, unknown>;
+    },
+  ) => Promise<void>;
 
   upsert: (
     table: AnyTable,
@@ -118,70 +254,99 @@ export interface ORMAdapter {
   ) => Promise<void>;
 
   create: (
-      table: AnyTable,
-      values: Record<string, unknown>,) => Promise<Record<string, unknown>>;
+    table: AnyTable,
+    values: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
 
   createMany: (
-      table: AnyTable,
-      values: Record<string, unknown>[],) => Promise<
-      {
-        _id: unknown;
-      }[]
-    >;
+    table: AnyTable,
+    values: Record<string, unknown>[],
+  ) => Promise<
+    {
+      _id: unknown;
+    }[]
+  >;
 
   deleteMany: (
-      table: AnyTable,
-      v: {
-        where?: Condition;
-      },) => Promise<void>;
+    table: AnyTable,
+    v: {
+      where?: Condition;
+    },
+  ) => Promise<void>;
 
   /**
    * Override this to support native transaction, otherwise use soft transaction.
    */
   transaction: <T>(
-    run: (transactionInstance: AbstractQuery<AnySchema>) => Promise<T>,
+    run: (transactionInstance: AbstractQuery<S>) => Promise<T>,
   ) => Promise<T>;
 }
 
+export interface ToORMOptions {
+  readonly context?: unknown;
+}
+
 export function toORM<S extends AnySchema>(
-  adapter: ORMAdapter,
+  adapter: ORMAdapter<S>,
+  options: ToORMOptions = {},
 ): AbstractQuery<S> {
-  function toTable(name: unknown) {
-    const table = adapter.tables[name as string];
-    if (!table) throw new Error(`[FumaDB] Invalid table name ${name}.`);
+  const context = options.context ?? adapter.context;
+  const internal: ORMAdapter<S> =
+    context === adapter.context ? adapter : { ...adapter, context };
+
+  function toTable<TableName extends keyof S["tables"]>(
+    name: TableName,
+  ): S["tables"][TableName] {
+    const table = internal.tables[name];
+    if (!table) throw new Error(`[FumaDB] Invalid table name ${String(name)}.`);
 
     return table;
   }
 
   return {
-    internal: adapter,
+    internal,
     async count(name, { where } = {}) {
       const table = toTable(name);
       let conditions = where ? buildCondition(table.columns, where) : undefined;
       if (conditions === true) conditions = undefined;
       if (conditions === false) return 0;
 
-      return await adapter.count(table, {
-        where: conditions,
-      });
+      const constrainedWhere = await applyReadPolicies(table, conditions, context);
+      if (constrainedWhere === false) return 0;
+      return await internal.count(table, { where: constrainedWhere });
     },
     async upsert(name, { where, ...options }) {
       const table = toTable(name);
       const conditions = where ? buildCondition(table.columns, where) : undefined;
       if (conditions === false) return;
+      let compiledWhere: Condition | undefined | false = conditions === true ? undefined : conditions;
 
-      await adapter.upsert(table, {
-        where: conditions === true ? undefined : conditions,
+      compiledWhere = await applyUpdatePolicies(
+        table,
+        compiledWhere,
+        options.update,
+        context,
+        "upsert",
+      );
+      if (compiledWhere === false) return;
+      await runCreatePolicies(table, options.create, context);
+      await internal.upsert(table, {
+        where: compiledWhere,
         ...options,
       });
     },
     async create(name, values) {
       const table = toTable(name);
-      return await adapter.create(table, values);
+      await runCreatePolicies(table, values, context);
+      return await internal.create(table, values);
     },
     async createMany(name, values) {
       const table = toTable(name);
-      return await adapter.createMany(table, values);
+      for (const value of values) {
+        await runCreatePolicies(table, value, context);
+      }
+
+      return await internal.createMany(table, values);
     },
     async deleteMany(name, { where }) {
       const table = toTable(name);
@@ -189,27 +354,27 @@ export function toORM<S extends AnySchema>(
       if (conditions === true) conditions = undefined;
       if (conditions === false) return;
 
-      await adapter.deleteMany(table, { where: conditions });
+      const constrainedWhere = await applyDeletePolicies(table, conditions, context);
+      if (constrainedWhere === false) return;
+      await internal.deleteMany(table, { where: constrainedWhere });
     },
     async findMany(name, options = {}) {
       const table = toTable(name);
-      const compiledOptions = buildFindOptions(
-        table,
-        options as FindManyOptions,
-      );
+      let compiledOptions = buildFindOptions(table, options as FindManyOptions);
       if (compiledOptions === false) return [];
 
-      return await adapter.findMany(table, compiledOptions);
+      compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
+      if (compiledOptions === false) return [];
+      return await internal.findMany(table, compiledOptions);
     },
     async findFirst(name, options) {
       const table = toTable(name);
-      const compiledOptions = buildFindOptions(
-        table,
-        options as FindFirstOptions,
-      );
+      let compiledOptions = buildFindOptions(table, options as FindFirstOptions);
       if (compiledOptions === false) return null;
 
-      return await adapter.findFirst(table, compiledOptions);
+      compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
+      if (compiledOptions === false) return null;
+      return await internal.findFirst(table, compiledOptions);
     },
     async updateMany(name, { set, where }) {
       const table = toTable(name);
@@ -217,10 +382,27 @@ export function toORM<S extends AnySchema>(
       if (conditions === true) conditions = undefined;
       if (conditions === false) return;
 
-      return adapter.updateMany(table, { set, where: conditions });
+      const constrainedWhere = await applyUpdatePolicies(
+        table,
+        conditions,
+        set,
+        context,
+        "update",
+      );
+      if (constrainedWhere === false) return;
+      return internal.updateMany(table, { set, where: constrainedWhere });
     },
     async transaction(run) {
-      return adapter.transaction(run as any);
+      return internal.transaction((transactionInstance) =>
+        run(withQueryContext(transactionInstance, context)),
+      );
     },
   } as AbstractQuery<S>;
+}
+
+export function withQueryContext<S extends AnySchema, TContext>(
+  db: AbstractQuery<S>,
+  context: TContext,
+): AbstractQuery<S> {
+  return toORM(db.internal, { context });
 }

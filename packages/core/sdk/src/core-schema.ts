@@ -1,5 +1,11 @@
 import { column, idColumn, table, type AnyColumn, type AnyTable } from "fumadb/schema";
 import type { FumaRow } from "./fuma-runtime";
+import {
+  assertExecutorScopeAllowed,
+  executorScopePolicyName,
+  executorScopeIds,
+  type ExecutorScopePolicyContext,
+} from "./scope-policy";
 
 type UserColumns = Record<string, AnyColumn>;
 
@@ -18,11 +24,27 @@ export const executorTable = <const TColumns extends UserColumns>(
   columns: TColumns,
 ) => {
   const out = table(name, {
+    ...columns,
     row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
     id: column("id", "varchar(255)"),
-    ...columns,
   });
   out.unique(`${name}_id_uidx`, ["id"]);
+  return out.policy<ExecutorScopePolicyContext>({
+    name: executorScopePolicyName,
+  });
+};
+
+const scopedExecutorTableBase = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    id: column("id", "varchar(255)"),
+    scope_id: column("scope_id", "varchar(255)"),
+  });
+  out.unique(`${name}_scope_id_id_uidx`, ["scope_id", "id"]);
   return out;
 };
 
@@ -30,20 +52,65 @@ export const scopedExecutorTable = <const TColumns extends UserColumns>(
   name: string,
   columns: TColumns,
 ) => {
-  const out = table(name, {
-    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
-    id: column("id", "varchar(255)"),
-    scope_id: column("scope_id", "varchar(255)"),
-    ...columns,
+  const out = scopedExecutorTableBase(name, columns);
+  return out.policy<ExecutorScopePolicyContext>({
+    name: executorScopePolicyName,
+    onRead: ({ builder, context }) =>
+      builder("scope_id", "in", executorScopeIds(name, "read", context)),
+    onCreate: ({ values, context }) =>
+      assertExecutorScopeAllowed(name, "write", values.scope_id, context),
+    onUpdate: ({ builder, set, context }) => {
+      if (set.scope_id !== undefined) {
+        assertExecutorScopeAllowed(name, "write", set.scope_id, context);
+      }
+      return builder("scope_id", "in", executorScopeIds(name, "write", context));
+    },
+    onDelete: ({ builder, context }) =>
+      builder("scope_id", "in", executorScopeIds(name, "delete", context)),
   });
-  out.unique(`${name}_scope_id_id_uidx`, ["scope_id", "id"]);
-  return out;
 };
 
 const defineTables = <const TTables extends Record<string, AnyTable>>(tables: TTables): TTables =>
   tables;
 
 export const credentialBindingKinds = ["text", "secret", "connection"] as const;
+
+const credentialBindingTable = (() => {
+  const out = scopedExecutorTableBase("credential_binding", {
+    plugin_id: textColumn("plugin_id"),
+    source_id: textColumn("source_id"),
+    source_scope_id: textColumn("source_scope_id"),
+    slot_key: textColumn("slot_key"),
+    kind: textColumn("kind"),
+    text_value: nullableTextColumn("text_value"),
+    secret_id: nullableTextColumn("secret_id"),
+    secret_scope_id: nullableTextColumn("secret_scope_id"),
+    connection_id: nullableTextColumn("connection_id"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  });
+
+  return out.policy<ExecutorScopePolicyContext>({
+    name: executorScopePolicyName,
+    onRead: ({ builder, context }) =>
+      builder("scope_id", "in", executorScopeIds("credential_binding", "read", context)),
+    onCreate: ({ values, context }) =>
+      assertExecutorScopeAllowed("credential_binding", "write", values.scope_id, context),
+    onUpdate: ({ builder, set, context }) => {
+      if (set.scope_id !== undefined) {
+        assertExecutorScopeAllowed("credential_binding", "write", set.scope_id, context);
+      }
+      return builder("scope_id", "in", executorScopeIds("credential_binding", "write", context));
+    },
+    onDelete: ({ builder, context }) => {
+      const scopeIds = executorScopeIds("credential_binding", "delete", context);
+      return builder.or(
+        builder("scope_id", "in", scopeIds),
+        builder("source_scope_id", "in", scopeIds),
+      );
+    },
+  });
+})();
 
 export const coreTables = defineTables({
   source: scopedExecutorTable("source", {
@@ -101,19 +168,7 @@ export const coreTables = defineTables({
     expires_at: bigintColumn("expires_at"),
     created_at: dateColumn("created_at"),
   }),
-  credential_binding: scopedExecutorTable("credential_binding", {
-    plugin_id: textColumn("plugin_id"),
-    source_id: textColumn("source_id"),
-    source_scope_id: textColumn("source_scope_id"),
-    slot_key: textColumn("slot_key"),
-    kind: textColumn("kind"),
-    text_value: nullableTextColumn("text_value"),
-    secret_id: nullableTextColumn("secret_id"),
-    secret_scope_id: nullableTextColumn("secret_scope_id"),
-    connection_id: nullableTextColumn("connection_id"),
-    created_at: dateColumn("created_at"),
-    updated_at: dateColumn("updated_at"),
-  }),
+  credential_binding: credentialBindingTable,
   tool_policy: scopedExecutorTable("tool_policy", {
     pattern: textColumn("pattern"),
     action: textColumn("action"),

@@ -1,46 +1,34 @@
 import type {
   AnySchema,
   AnyTable,
-  IdColumn,
   Relation,
+  TableColumnValues,
+  TableInsertValues,
+  TableUpdateValues,
 } from "../schema/create";
 import type { Condition, ConditionBuilder } from "./condition-builder";
 import type { ORMAdapter } from "./orm";
 
 export type { Condition, ConditionBuilder } from "./condition-builder";
+export { withQueryContext } from "./orm";
+export type {
+  CompiledJoin,
+  ORMAdapter,
+  SimplifiedCountOptions,
+  SimplifyFindOptions,
+} from "./orm";
 
 export type AnySelectClause = SelectClause<AnyTable>;
 
 export type SelectClause<T extends AnyTable> = true | (keyof T["columns"])[];
 
-type TableToColumnValues<T extends AnyTable> = {
-  [K in keyof T["columns"]]: T["columns"][K]["$out"];
-};
+export type TableToColumnValues<T extends AnyTable> = TableColumnValues<T>;
 
-type PickNullable<T> = {
-  [P in keyof T as null extends T[P] ? P : never]: T[P];
-};
+export type TableToInsertValues<T extends AnyTable> = TableInsertValues<T>;
 
-type PickNotNullable<T> = {
-  [P in keyof T as null extends T[P] ? never : P]: T[P];
-};
+export type TableToUpdateValues<T extends AnyTable> = TableUpdateValues<T>;
 
-type TableToInsertValues<T extends AnyTable> = Partial<
-  PickNullable<{
-    [K in keyof T["columns"]]: T["columns"][K]["$in"];
-  }>
-> &
-  PickNotNullable<{
-    [K in keyof T["columns"]]: T["columns"][K]["$in"];
-  }>;
-
-type TableToUpdateValues<T extends AnyTable> = {
-  [K in keyof T["columns"]]?: T["columns"][K] extends IdColumn
-    ? never
-    : T["columns"][K]["$in"];
-};
-
-type MainSelectResult<
+export type MainSelectResult<
   S extends SelectClause<T>,
   T extends AnyTable,
 > = S extends true
@@ -70,7 +58,7 @@ export type JoinBuilder<T extends AnyTable, Out = {}> = {
     : never;
 };
 
-type SelectResult<
+export type SelectResult<
   T extends AnyTable,
   JoinOut,
   Select extends SelectClause<T>,
@@ -113,7 +101,7 @@ export type FindManyOptions<
   : {});
 
 export interface AbstractQuery<S extends AnySchema> {
-  internal: ORMAdapter;
+  internal: ORMAdapter<S>;
 
   /**
    * The code in the transaction will receive a transaction query instance.

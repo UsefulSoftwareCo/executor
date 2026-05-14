@@ -3,12 +3,7 @@ import type { Context, Layer } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import type { HttpApiGroup } from "effect/unstable/httpapi";
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
-import type {
-  FumaTables,
-  IFumaClient,
-  StorageFailure,
-  TablesToFumaSchema,
-} from "./fuma-runtime";
+import type { FumaTables, IFumaClient, StorageFailure, TablesToFumaSchema } from "./fuma-runtime";
 
 import type { PluginBlobStore } from "./blob";
 import type {

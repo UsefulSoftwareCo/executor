@@ -1,5 +1,4 @@
 import { Context, Effect, Layer } from "effect";
-
 import { collectTables, createExecutor, type Executor, type ExecutorConfig } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
 import { ScopeId } from "./ids";
@@ -42,9 +41,21 @@ const makeLazyTestFumaDb = (options: {
     return started;
   };
 
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: lazy test DB proxy has the FumaDB shape only after first method access
+  const internal: FumaDb["internal"] = {
+    tables: options.tables,
+    count: async (table, value) => (await start()).db.internal.count(table, value),
+    create: async (table, values) => (await start()).db.internal.create(table, values),
+    createMany: async (table, values) => (await start()).db.internal.createMany(table, values),
+    deleteMany: async (table, value) => (await start()).db.internal.deleteMany(table, value),
+    findFirst: async (table, value) => (await start()).db.internal.findFirst(table, value),
+    findMany: async (table, value) => (await start()).db.internal.findMany(table, value),
+    transaction: async (run) => (await start()).db.internal.transaction(run),
+    updateMany: async (table, value) => (await start()).db.internal.updateMany(table, value),
+    upsert: async (table, value) => (await start()).db.internal.upsert(table, value),
+  };
+
   const db = new Proxy(
-    { internal: undefined },
+    { internal },
     {
       get(target, prop) {
         if (prop === "internal") return target.internal;
@@ -55,7 +66,7 @@ const makeLazyTestFumaDb = (options: {
         };
       },
     },
-  ) as unknown as FumaDb;
+  ) as FumaDb;
 
   return {
     db,

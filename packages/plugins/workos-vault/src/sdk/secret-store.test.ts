@@ -12,6 +12,7 @@ import {
   ScopeId,
   SecretId,
   SetSecretInput,
+  withQueryContext,
 } from "@executor-js/sdk";
 
 import {
@@ -412,7 +413,9 @@ describe("WorkOS Vault secret provider — multi-scope isolation", () => {
 
       const rows = toVaultMetadataRows(
         yield* Effect.promise(() =>
-          config.db.findMany("workos_vault_metadata", {
+          withQueryContext(config.db, {
+            allowedScopeIds: new Set([String(innerId), String(outerId)]),
+          }).findMany("workos_vault_metadata", {
             where: (b) => b("id", "=", "api-token"),
           }),
         ),
