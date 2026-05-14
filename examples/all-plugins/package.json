@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/example-all-plugins",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "type": "module",
   "scripts": {
