@@ -1,8 +1,17 @@
-import type { ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
+import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { CheckIcon } from "lucide-react";
 import type { ConnectionId, ScopeId, SecretBackedValue } from "@executor-js/sdk";
 
+import { connectionsAtom, setSourceCredentialBinding } from "../api/atoms";
+import { connectionWriteKeys, sourceWriteKeys } from "../api/reactivity-keys";
+import { useScope, useScopeStack } from "../api/scope-context";
 import { Spinner } from "../components/spinner";
+import {
+  effectiveCredentialBindingForScope,
+  type SourceCredentialBindingRef,
+} from "./credential-bindings";
 import {
   CredentialControlField,
   CredentialUsageRow,
@@ -36,6 +45,61 @@ const statusLabel = (status: OAuthConnectionStatus): ReactNode => {
   if (status.label !== undefined) return status.label;
   return defaultStatusLabelByKind[status.kind];
 };
+
+export function useSourceOAuthConnectionBinding(props: {
+  readonly pluginId: string;
+  readonly sourceId: string;
+  readonly sourceScope: ScopeId;
+  readonly slotKey: string;
+  readonly targetScope: ScopeId;
+  readonly bindings: readonly SourceCredentialBindingRef[];
+}) {
+  const displayScope = useScope();
+  const scopeStack = useScopeStack();
+  const connectionsResult = useAtomValue(connectionsAtom(displayScope));
+  const setBinding = useAtomSet(setSourceCredentialBinding, { mode: "promise" });
+  const scopeRanks = useMemo(
+    () => new Map(scopeStack.map((scope, index) => [scope.id, index] as const)),
+    [scopeStack],
+  );
+  const connectionBinding = effectiveCredentialBindingForScope(
+    props.bindings,
+    props.slotKey,
+    props.targetScope,
+    scopeRanks,
+  );
+  const connectionId =
+    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
+  const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
+  const isConnected =
+    connectionId !== null && connections.some((connection) => connection.id === connectionId);
+  const onConnected = useCallback(
+    async (nextConnectionId: ConnectionId) => {
+      await setBinding({
+        params: { scopeId: props.targetScope },
+        payload: {
+          targetScope: props.targetScope,
+          pluginId: props.pluginId,
+          sourceId: props.sourceId,
+          sourceScope: props.sourceScope,
+          slotKey: props.slotKey,
+          value: { kind: "connection", connectionId: nextConnectionId },
+        },
+        reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
+      });
+    },
+    [
+      props.pluginId,
+      props.sourceId,
+      props.sourceScope,
+      props.slotKey,
+      props.targetScope,
+      setBinding,
+    ],
+  );
+
+  return { connectionId, isConnected, onConnected };
+}
 
 export function OAuthConnectionControl(props: {
   readonly tokenScope: ScopeId;
@@ -92,7 +156,6 @@ export function SourceOAuthConnectionControl(props: {
   readonly queryParams?: Record<string, SecretBackedValue>;
   readonly isConnected: boolean;
   readonly onConnected: (connectionId: ConnectionId) => void | Promise<void>;
-  readonly disabled?: boolean;
   readonly reconnectingLabel?: string;
   readonly signingInLabel?: string;
 }) {

@@ -12,19 +12,15 @@ import {
   CardStackContent,
   CardStackEntryField,
 } from "@executor-js/react/components/card-stack";
-import { FieldLabel } from "@executor-js/react/components/field";
-import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
 import { Spinner } from "@executor-js/react/components/spinner";
 import { Textarea } from "@executor-js/react/components/textarea";
+import { emptyHttpCredentials } from "@executor-js/react/plugins/http-credentials";
 import {
-  emptyHttpCredentials,
-  HttpCredentials,
-  httpCredentialsValid,
-  serializeScopedHttpCredentials,
-  serializeHttpCredentials,
-} from "@executor-js/react/plugins/http-credentials";
+  HttpCredentialEditor,
+  useHttpCredentialEditorController,
+} from "@executor-js/react/plugins/http-credential-state";
 import {
   sourceDisplayNameFromUrl,
   slugifyNamespace,
@@ -296,7 +292,6 @@ export default function AddMcpSource(props: {
   });
 
   const [remoteAuthMode, setRemoteAuthMode] = useState<RemoteAuthMode>("none");
-  const [remoteCredentials, setRemoteCredentials] = useState(() => emptyHttpCredentials());
 
   const probe = "probe" in state ? state.probe : null;
   const tokens = "tokens" in state ? state.tokens : null;
@@ -305,12 +300,20 @@ export default function AddMcpSource(props: {
     fallbackName:
       sourceDisplayNameFromUrl(state.url, "MCP") ?? probe?.serverName ?? probe?.name ?? "",
   });
+  const remoteCredentialEditor = useHttpCredentialEditorController({
+    initialCredentials: emptyHttpCredentials(),
+    targetScope: requestCredentialTargetScope,
+    existingSecrets: secretList,
+    sourceName: remoteIdentity.name,
+    credentialScopeOptions,
+    bindingScopeOptions: credentialScopeOptions,
+  });
   const isProbing = state.step === "probing";
   const isAdding = state.step === "adding";
   const isOAuthBusy =
     state.step === "oauth-starting" || state.step === "oauth-waiting" || oauth.busy;
   const canUseNone = probe?.requiresOAuth !== true || probe.supportsDynamicRegistration === false;
-  const remoteCredentialsComplete = httpCredentialsValid(remoteCredentials);
+  const remoteCredentialsComplete = remoteCredentialEditor.state.valid;
   const authReady = remoteAuthMode === "none" ? canUseNone : tokens !== null;
   const canAdd =
     Boolean(probe) && authReady && remoteCredentialsComplete && !isAdding && !isOAuthBusy;
@@ -323,13 +326,11 @@ export default function AddMcpSource(props: {
 
   const handleProbe = useCallback(async () => {
     dispatch({ type: "probe-start" });
-    const { headers, queryParams } = serializeHttpCredentials(remoteCredentials);
     const exit = await doProbe({
       params: { scopeId },
       payload: {
         endpoint: state.url.trim(),
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(Object.keys(queryParams).length > 0 ? { queryParams } : {}),
+        ...remoteCredentialEditor.serialized.requestFields,
       },
     });
     if (Exit.isFailure(exit)) {
@@ -341,7 +342,7 @@ export default function AddMcpSource(props: {
     }
     setRemoteAuthMode(exit.value.requiresOAuth ? "oauth2" : "none");
     dispatch({ type: "probe-ok", probe: exit.value });
-  }, [state.url, scopeId, doProbe, remoteCredentials]);
+  }, [state.url, scopeId, doProbe, remoteCredentialEditor]);
 
   // Keep the latest handleProbe in a ref so the debounced effect can call it
   // without depending on its identity (which changes every render).
@@ -361,22 +362,16 @@ export default function AddMcpSource(props: {
     return () => clearTimeout(handle);
   }, [transport, state.step, state.url]);
 
-  const handleRemoteCredentialsChange = useCallback((next: typeof remoteCredentials) => {
-    setRemoteCredentials(next);
-  }, []);
-
   const handleOAuth = useCallback(async () => {
     dispatch({ type: "oauth-start" });
     const namespaceSlug =
       slugifyNamespace(remoteIdentity.namespace) ||
       slugifyNamespace(probe?.namespace ?? "") ||
       "mcp";
-    const { headers, queryParams } = serializeHttpCredentials(remoteCredentials);
     await oauth.start({
       payload: {
         endpoint: state.url.trim(),
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(Object.keys(queryParams).length > 0 ? { queryParams } : {}),
+        ...remoteCredentialEditor.serialized.requestFields,
         redirectUrl: oauthCallbackUrl(),
         connectionId: oauthConnectionId({
           pluginId: "mcp",
@@ -401,7 +396,7 @@ export default function AddMcpSource(props: {
         dispatch({ type: "oauth-waiting", sessionId: result.sessionId }),
       onError: (error) => dispatch({ type: "oauth-fail", error }),
     });
-  }, [state.url, remoteIdentity, probe, remoteCredentials, oauth, oauthCredentialTargetScope]);
+  }, [state.url, remoteIdentity, probe, remoteCredentialEditor, oauth, oauthCredentialTargetScope]);
 
   const handleCancelOAuth = useCallback(() => {
     oauth.cancel();
@@ -423,10 +418,7 @@ export default function AddMcpSource(props: {
               connectionSlot: MCP_OAUTH_CONNECTION_SLOT,
             }
         : { kind: "none" as const };
-    const credentials = serializeScopedHttpCredentials(
-      remoteCredentials,
-      requestCredentialTargetScope,
-    );
+    const requestCredentials = remoteCredentialEditor.serialized.scopedFields<McpCredentialInput>();
     const displayName = remoteIdentity.name.trim() || probe.serverName || probe.name;
     const slugNamespace = slugifyNamespace(remoteIdentity.namespace);
     const exit = await doAdd({
@@ -442,12 +434,7 @@ export default function AddMcpSource(props: {
           remoteAuthMode === "oauth2" && tokens
             ? oauthCredentialTargetScope
             : requestCredentialTargetScope,
-        ...(Object.keys(credentials.headers).length > 0
-          ? { headers: credentials.headers as Record<string, McpCredentialInput> }
-          : {}),
-        ...(Object.keys(credentials.queryParams).length > 0
-          ? { queryParams: credentials.queryParams }
-          : {}),
+        ...requestCredentials,
       },
       reactivityKeys: sourceWriteKeys,
     });
@@ -462,7 +449,7 @@ export default function AddMcpSource(props: {
   }, [
     probe,
     remoteAuthMode,
-    remoteCredentials,
+    remoteCredentialEditor,
     remoteIdentity,
     tokens,
     state.url,
@@ -579,37 +566,26 @@ export default function AddMcpSource(props: {
             onRetry={handleProbe}
           />
 
-          <HttpCredentials.Root
-            credentials={remoteCredentials}
-            onChange={handleRemoteCredentialsChange}
-            existingSecrets={secretList}
-            sourceName={remoteIdentity.name}
-            targetScope={requestCredentialTargetScope}
-            credentialScopeOptions={credentialScopeOptions}
-            bindingScopeOptions={credentialScopeOptions}
-          >
-            <HttpCredentials.Headers label="Request headers" />
-            <HttpCredentials.QueryParams label="Query parameters" />
-          </HttpCredentials.Root>
+          <HttpCredentialEditor.Provider controller={remoteCredentialEditor}>
+            <HttpCredentialEditor.Headers label="Request headers" />
+            <HttpCredentialEditor.QueryParams label="Query parameters" />
+          </HttpCredentialEditor.Provider>
 
           {/* Authentication */}
           {probe && (
             <section className="space-y-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <FieldLabel>Authentication</FieldLabel>
-                <FilterTabs<RemoteAuthMode>
-                  tabs={
-                    probe.requiresOAuth && probe.supportsDynamicRegistration
-                      ? [{ value: "oauth2", label: "OAuth" }]
-                      : [
-                          { value: "none", label: "None" },
-                          { value: "oauth2", label: "OAuth" },
-                        ]
-                  }
-                  value={remoteAuthMode}
-                  onChange={setRemoteAuthMode}
-                />
-              </div>
+              <HttpCredentialEditor.Auth.Root
+                label="Authentication"
+                value={remoteAuthMode}
+                onValueChange={(value) => {
+                  setRemoteAuthMode(value === "oauth2" ? "oauth2" : "none");
+                }}
+              >
+                {probe.requiresOAuth && probe.supportsDynamicRegistration ? null : (
+                  <HttpCredentialEditor.Auth.None />
+                )}
+                <HttpCredentialEditor.Auth.OAuth value="oauth2" label="OAuth" />
+              </HttpCredentialEditor.Auth.Root>
 
               {remoteAuthMode === "oauth2" && (
                 <OAuthConnectionControl

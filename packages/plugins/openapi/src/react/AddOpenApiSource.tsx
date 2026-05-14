@@ -18,14 +18,14 @@ import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/rea
 const addSpecWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
 const bindingWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
 import {
-  HttpCredentials,
-  configuredCredentialMapFromRows,
   emptyHttpCredentials,
   matchHttpCredentialPreset,
-  serializeHttpCredentials,
   type HttpCredentialRow,
-  type HttpCredentialsState,
 } from "@executor-js/react/plugins/http-credentials";
+import {
+  HttpCredentialEditor,
+  useHttpCredentialEditorController,
+} from "@executor-js/react/plugins/http-credential-state";
 import {
   oauthCallbackUrl,
   useOAuthPopupFlow,
@@ -54,7 +54,6 @@ import { HelpTooltip } from "@executor-js/react/components/help-tooltip";
 import { Label } from "@executor-js/react/components/label";
 import { Textarea } from "@executor-js/react/components/textarea";
 import { Checkbox } from "@executor-js/react/components/checkbox";
-import { RadioGroup, RadioGroupItem } from "@executor-js/react/components/radio-group";
 import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
 import { addOpenApiSpecOptimistic, previewOpenApiSpec } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
@@ -211,14 +210,7 @@ export default function AddOpenApiSource(props: {
 
   // Auth
   const [strategy, setStrategy] = useState<StrategySelection>({ kind: "none" });
-  const [customHeaders, setCustomHeaders] = useState<HttpCredentialRow[]>([]);
-  const [specFetchCredentials, setSpecFetchCredentials] = useState<HttpCredentialsState>(() =>
-    emptyHttpCredentials(),
-  );
   const [specFetchCredentialsOpen, setSpecFetchCredentialsOpen] = useState(false);
-  const [runtimeCredentials, setRuntimeCredentials] = useState<HttpCredentialsState>(() =>
-    emptyHttpCredentials(),
-  );
 
   // OAuth2 state (only populated while an oauth2 preset is selected)
   const [oauth2ClientIdSecretId, setOauth2ClientIdSecretId] = useState<string | null>(null);
@@ -288,6 +280,35 @@ export default function AddOpenApiSource(props: {
     mode: "promiseExit",
   });
   const secretList = useSecretPickerSecrets();
+  const specFetchEditor = useHttpCredentialEditorController({
+    initialCredentials: emptyHttpCredentials(),
+    targetScope: credentialTargetScope,
+    existingSecrets: secretList,
+    sourceName: identity.name,
+  });
+  const customHeaderEditor = useHttpCredentialEditorController({
+    initialCredentials: emptyHttpCredentials(),
+    targetScope: credentialTargetScope,
+    existingSecrets: secretList,
+    sourceName: identity.name,
+    credentialScopeOptions: initialCredentialScopeOptions,
+    bindingScopeOptions,
+    restrictSecretsToTargetScope: true,
+    onCredentialsChange: (next) => {
+      if (strategy.kind === "header" && next.headers.every((header) => !header.fromPreset)) {
+        setStrategy(next.headers.length === 0 ? { kind: "none" } : { kind: "custom" });
+      }
+    },
+  });
+  const runtimeCredentialEditor = useHttpCredentialEditorController({
+    initialCredentials: emptyHttpCredentials(),
+    targetScope: credentialTargetScope,
+    existingSecrets: secretList,
+    sourceName: identity.name,
+    credentialScopeOptions: initialCredentialScopeOptions,
+    bindingScopeOptions,
+    restrictSecretsToTargetScope: true,
+  });
   const initialCredentialSecrets = useMemo(
     () => secretList.filter((secret) => secret.scopeId === String(credentialTargetScope)),
     [credentialTargetScope, secretList],
@@ -331,18 +352,11 @@ export default function AddOpenApiSource(props: {
 
   const resolvedBaseUrl = baseUrl.trim();
 
-  const headerCredentialConfig = configuredCredentialMapFromRows(
-    customHeaders,
-    credentialTargetScope,
-    headerBindingSlot,
-  );
+  const headerCredentialConfig = customHeaderEditor.serialized.configuredHeaders(headerBindingSlot);
   const configuredHeaders = headerCredentialConfig.values as Record<string, ConfiguredHeaderValue>;
   const headerBindings = headerCredentialConfig.bindings;
-  const queryParamCredentialConfig = configuredCredentialMapFromRows(
-    runtimeCredentials.queryParams,
-    credentialTargetScope,
-    queryParamBindingSlot,
-  );
+  const queryParamCredentialConfig =
+    runtimeCredentialEditor.serialized.configuredQueryParams(queryParamBindingSlot);
   const configuredQueryParams = queryParamCredentialConfig.values as Record<
     string,
     ConfiguredHeaderValue
@@ -398,13 +412,16 @@ export default function AddOpenApiSource(props: {
   const hasHeaders = Object.keys(configuredHeaders).length > 0;
   const oauth2Busy = startingOAuth || oauth.busy;
   const canConnectOAuth2 = Boolean(oauth2ClientIdSecretId) && resolvedBaseUrl.length > 0;
+  const customHeaders = customHeaderEditor.state.credentials.headers;
+  const setCustomHeaders = customHeaderEditor.actions.setHeaders;
+  const runtimeQueryParams = runtimeCredentialEditor.state.credentials.queryParams;
   const hasIncompleteHeaderCredentials =
     strategy.kind !== "none" &&
     strategy.kind !== "oauth2" &&
     customHeaders.some(
       (header) => header.name.trim() && !header.secretId && !header.literalValue?.trim(),
     );
-  const hasIncompleteQueryCredentials = runtimeCredentials.queryParams.some(
+  const hasIncompleteQueryCredentials = runtimeQueryParams.some(
     (param) => param.name.trim() && !param.secretId && !param.literalValue?.trim(),
   );
   const willAddWithoutInitialCredentials =
@@ -420,12 +437,11 @@ export default function AddOpenApiSource(props: {
     setAnalyzing(true);
     setAnalyzeError(null);
     setAddError(null);
-    const credentials = serializeHttpCredentials(specFetchCredentials);
     const exit = await doPreview({
       params: { scopeId },
       payload: {
         spec: specUrl,
-        specFetchCredentials: credentials,
+        specFetchCredentials: specFetchEditor.serialized.request,
       },
     });
     if (Exit.isFailure(exit)) {
@@ -472,13 +488,13 @@ export default function AddOpenApiSource(props: {
         setCustomHeaders([]);
       }),
       Match.when({ kind: "custom" }, () => {
-        const userHeaders = customHeaders.filter((h) => !h.fromPreset);
+        const userHeaders = customHeaders.filter((header) => !header.fromPreset);
         setCustomHeaders(userHeaders.length > 0 ? userHeaders : []);
       }),
       Match.when({ kind: "header" }, (n) => {
         const preset = preview?.headerPresets[n.presetIndex];
         if (!preset) return;
-        const userHeaders = customHeaders.filter((h) => !h.fromPreset);
+        const userHeaders = customHeaders.filter((header) => !header.fromPreset);
         setCustomHeaders([...entriesFromSpecPreset(preset), ...userHeaders]);
       }),
       Match.when({ kind: "oauth2" }, (n) => {
@@ -492,17 +508,10 @@ export default function AddOpenApiSource(props: {
     );
   };
 
-  const handleHeadersChange = (next: HttpCredentialRow[]) => {
-    setCustomHeaders(next);
-    if (strategy.kind === "header" && next.every((h) => !h.fromPreset)) {
-      setStrategy(next.length === 0 ? { kind: "none" } : { kind: "custom" });
-    }
-  };
-
   const setInitialCredentialScope = (targetScope: ScopeId) => {
     setCredentialTargetScope(targetScope);
-    setCustomHeaders((headers) =>
-      headers.map((header) => ({
+    setCustomHeaders(
+      customHeaders.map((header) => ({
         ...header,
         targetScope,
         ...(header.secretScope && header.secretScope !== targetScope
@@ -672,7 +681,7 @@ export default function AddOpenApiSource(props: {
         targetScope: scopeId,
         credentialTargetScope,
         spec: specUrl,
-        specFetchCredentials: serializeHttpCredentials(specFetchCredentials),
+        specFetchCredentials: specFetchEditor.serialized.request,
         name: displayName,
         namespace,
         baseUrl: resolvedBaseUrl || undefined,
@@ -868,16 +877,10 @@ export default function AddOpenApiSource(props: {
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <HttpCredentials.Root
-                credentials={specFetchCredentials}
-                onChange={setSpecFetchCredentials}
-                existingSecrets={secretList}
-                sourceName={identity.name}
-                targetScope={credentialTargetScope}
-              >
-                <HttpCredentials.Headers label="Spec fetch headers" />
-                <HttpCredentials.QueryParams label="Spec fetch query parameters" />
-              </HttpCredentials.Root>
+              <HttpCredentialEditor.Provider controller={specFetchEditor}>
+                <HttpCredentialEditor.Headers label="Spec fetch headers" />
+                <HttpCredentialEditor.QueryParams label="Spec fetch query parameters" />
+              </HttpCredentialEditor.Provider>
             </CollapsibleContent>
           </Collapsible>
         </>
@@ -923,111 +926,46 @@ export default function AddOpenApiSource(props: {
       {preview && (
         <>
           <section className="space-y-2.5">
-            <FieldLabel>Authentication method</FieldLabel>
-            {/* RadioGroup always renders so the static Custom + None radios
-                stay visible for specs with no security schemes (e.g. MS Graph).
-                The preset .map() blocks below render nothing when their arrays
-                are empty. */}
-            <RadioGroup
+            <HttpCredentialEditor.Auth.Root
+              label="Authentication method"
               value={serializeStrategy(strategy)}
               onValueChange={(value) => selectStrategy(parseStrategy(value))}
-              className="gap-1.5"
             >
               {preview.headerPresets.map((preset, i) => {
-                const selected = strategy.kind === "header" && strategy.presetIndex === i;
                 return (
-                  <Label
+                  <HttpCredentialEditor.Auth.Header
                     key={`header-${i}`}
-                    className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                      selected
-                        ? "border-primary/50 bg-primary/[0.03]"
-                        : "border-border hover:bg-accent/50"
-                    }`}
-                  >
-                    <RadioGroupItem value={`header:${i}`} className="mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-foreground">{preset.label}</div>
-                      {preset.secretHeaders.length > 0 && (
-                        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                          {preset.secretHeaders.join(" · ")}
-                        </div>
-                      )}
-                    </div>
-                  </Label>
+                    value={`header:${i}`}
+                    label={preset.label}
+                    names={preset.secretHeaders}
+                  />
                 );
               })}
               {oauth2Presets.map((preset, i) => {
-                const selected = strategy.kind === "oauth2" && strategy.presetIndex === i;
                 const scopeCount = Object.keys(preset.scopes).length;
                 return (
-                  <Label
+                  <HttpCredentialEditor.Auth.OAuth
                     key={`oauth2-${i}`}
-                    className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                      selected
-                        ? "border-primary/50 bg-primary/[0.03]"
-                        : "border-border hover:bg-accent/50"
-                    }`}
-                  >
-                    <RadioGroupItem value={`oauth2:${i}`} className="mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-foreground">{preset.label}</div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        {scopeCount} scope{scopeCount === 1 ? "" : "s"}
-                      </div>
-                    </div>
-                  </Label>
+                    value={`oauth2:${i}`}
+                    label={preset.label}
+                    scopeCount={scopeCount}
+                  />
                 );
               })}
-              <Label
-                className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                  strategy.kind === "custom"
-                    ? "border-primary/50 bg-primary/[0.03]"
-                    : "border-border hover:bg-accent/50"
-                }`}
-              >
-                <RadioGroupItem value="custom" />
-                <span className="text-xs font-medium text-foreground">Custom</span>
-              </Label>
-              <Label
-                className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                  strategy.kind === "none"
-                    ? "border-primary/50 bg-primary/[0.03]"
-                    : "border-border hover:bg-accent/50"
-                }`}
-              >
-                <RadioGroupItem value="none" />
-                <span className="text-xs font-medium text-foreground">None</span>
-              </Label>
-            </RadioGroup>
+              <HttpCredentialEditor.Auth.Custom />
+              <HttpCredentialEditor.Auth.None />
+            </HttpCredentialEditor.Auth.Root>
 
             {/* Header-based auth input */}
             {strategy.kind !== "none" && strategy.kind !== "oauth2" && (
-              <HttpCredentials.Root
-                credentials={{ headers: customHeaders, queryParams: [] }}
-                onChange={(credentials) => handleHeadersChange(credentials.headers)}
-                existingSecrets={secretList}
-                sourceName={identity.name}
-                targetScope={credentialTargetScope}
-                credentialScopeOptions={initialCredentialScopeOptions}
-                bindingScopeOptions={bindingScopeOptions}
-                restrictSecretsToTargetScope
-              >
-                <HttpCredentials.Headers label="Header credentials" />
-              </HttpCredentials.Root>
+              <HttpCredentialEditor.Provider controller={customHeaderEditor}>
+                <HttpCredentialEditor.Headers label="Header credentials" />
+              </HttpCredentialEditor.Provider>
             )}
 
-            <HttpCredentials.Root
-              credentials={runtimeCredentials}
-              onChange={setRuntimeCredentials}
-              existingSecrets={secretList}
-              sourceName={identity.name}
-              targetScope={credentialTargetScope}
-              credentialScopeOptions={initialCredentialScopeOptions}
-              bindingScopeOptions={bindingScopeOptions}
-              restrictSecretsToTargetScope
-            >
-              <HttpCredentials.QueryParams label="Runtime query parameters" />
-            </HttpCredentials.Root>
+            <HttpCredentialEditor.Provider controller={runtimeCredentialEditor}>
+              <HttpCredentialEditor.QueryParams label="Runtime query parameters" />
+            </HttpCredentialEditor.Provider>
 
             {/* OAuth2 configuration */}
             {selectedOAuth2Preset && (

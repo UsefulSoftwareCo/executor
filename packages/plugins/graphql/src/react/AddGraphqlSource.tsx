@@ -7,12 +7,9 @@ import * as Schema from "effect/Schema";
 import { useScope } from "@executor-js/react/api/scope-context";
 import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  HttpCredentials,
-  httpCredentialsValid,
-  serializeScopedHttpCredentials,
-  serializeHttpCredentials,
-  type HttpCredentialsState,
-} from "@executor-js/react/plugins/http-credentials";
+  HttpCredentialEditor,
+  useHttpCredentialEditorController,
+} from "@executor-js/react/plugins/http-credential-state";
 import {
   sourceDisplayNameFromUrl,
   slugifyNamespace,
@@ -31,7 +28,6 @@ import {
 } from "@executor-js/react/plugins/credential-target-scope";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import { Button } from "@executor-js/react/components/button";
-import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Spinner } from "@executor-js/react/components/spinner";
 import { addGraphqlSourceOptimistic } from "./atoms";
@@ -59,7 +55,6 @@ export default function AddGraphqlSource(props: {
   const identity = useSourceIdentity({
     fallbackName: sourceDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
   });
-  const [credentials, setCredentials] = useState<HttpCredentialsState>(initialGraphqlCredentials);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("none");
@@ -76,6 +71,14 @@ export default function AddGraphqlSource(props: {
     mode: "promiseExit",
   });
   const secretList = useSecretPickerSecrets();
+  const credentialEditor = useHttpCredentialEditorController({
+    initialCredentials: initialGraphqlCredentials(),
+    targetScope: requestCredentialTargetScope,
+    existingSecrets: secretList,
+    sourceName: identity.name,
+    credentialScopeOptions,
+    bindingScopeOptions: credentialScopeOptions,
+  });
   const oauth = useOAuthPopupFlow({
     popupName: "graphql-oauth",
     startErrorMessage: "Failed to start OAuth",
@@ -83,7 +86,7 @@ export default function AddGraphqlSource(props: {
 
   const canAdd =
     endpoint.trim().length > 0 &&
-    httpCredentialsValid(credentials) &&
+    credentialEditor.state.valid &&
     (authMode === "none" || tokens !== null) &&
     !oauth.busy;
 
@@ -99,15 +102,13 @@ export default function AddGraphqlSource(props: {
   }, [endpoint, identity.name, identity.namespace]);
 
   const handleOAuth = useCallback(async () => {
-    if (!endpoint.trim() || !httpCredentialsValid(credentials)) return;
+    if (!endpoint.trim() || !credentialEditor.state.valid) return;
     setAddError(null);
     const { trimmedEndpoint, namespace, displayName } = sourceIdentity();
-    const { headers, queryParams } = serializeHttpCredentials(credentials);
     await oauth.start({
       payload: {
         endpoint: trimmedEndpoint,
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(Object.keys(queryParams).length > 0 ? { queryParams } : {}),
+        ...credentialEditor.serialized.requestFields,
         redirectUrl: oauthCallbackUrl(),
         connectionId: oauthConnectionId({ pluginId: "graphql", namespace }),
         tokenScope: oauthCredentialTargetScope,
@@ -124,15 +125,12 @@ export default function AddGraphqlSource(props: {
       },
       onError: setAddError,
     });
-  }, [endpoint, credentials, oauth, sourceIdentity, oauthCredentialTargetScope]);
+  }, [endpoint, credentialEditor, oauth, sourceIdentity, oauthCredentialTargetScope]);
 
   const handleAdd = async () => {
     setAdding(true);
     setAddError(null);
-    const { headers: headerMap, queryParams } = serializeScopedHttpCredentials(
-      credentials,
-      requestCredentialTargetScope,
-    );
+    const requestCredentials = credentialEditor.serialized.scopedFields<GraphqlCredentialInput>();
 
     const { trimmedEndpoint, namespace, displayName } = sourceIdentity();
     const exit = await doAdd({
@@ -142,12 +140,7 @@ export default function AddGraphqlSource(props: {
         endpoint: trimmedEndpoint,
         name: displayName,
         namespace,
-        ...(Object.keys(headerMap).length > 0 ? { headers: headerMap } : {}),
-        ...(Object.keys(queryParams).length > 0
-          ? {
-              queryParams: queryParams as Record<string, GraphqlCredentialInput>,
-            }
-          : {}),
+        ...requestCredentials,
         credentialTargetScope:
           authMode === "oauth2" && tokens
             ? oauthCredentialTargetScope
@@ -177,35 +170,24 @@ export default function AddGraphqlSource(props: {
 
       <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
 
-      <HttpCredentials.Root
-        credentials={credentials}
-        onChange={setCredentials}
-        existingSecrets={secretList}
-        sourceName={identity.name}
-        targetScope={requestCredentialTargetScope}
-        credentialScopeOptions={credentialScopeOptions}
-        bindingScopeOptions={credentialScopeOptions}
-      >
-        <HttpCredentials.Headers />
-        <HttpCredentials.QueryParams />
-      </HttpCredentials.Root>
+      <HttpCredentialEditor.Provider controller={credentialEditor}>
+        <HttpCredentialEditor.Headers />
+        <HttpCredentialEditor.QueryParams />
+      </HttpCredentialEditor.Provider>
 
       {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}
       <section className="hidden space-y-2.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-foreground">Authentication</span>
-          <FilterTabs<AuthMode>
-            tabs={[
-              { value: "none", label: "None" },
-              { value: "oauth2", label: "OAuth" },
-            ]}
-            value={authMode}
-            onChange={(value) => {
-              setAuthMode(value);
-              setTokens(null);
-            }}
-          />
-        </div>
+        <HttpCredentialEditor.Auth.Root
+          label="Authentication"
+          value={authMode}
+          onValueChange={(value) => {
+            setAuthMode(value === "oauth2" ? "oauth2" : "none");
+            setTokens(null);
+          }}
+        >
+          <HttpCredentialEditor.Auth.None />
+          <HttpCredentialEditor.Auth.OAuth value="oauth2" label="OAuth" />
+        </HttpCredentialEditor.Auth.Root>
 
         {authMode === "oauth2" && (
           <CredentialUsageRow
@@ -233,7 +215,7 @@ export default function AddGraphqlSource(props: {
                   size="sm"
                   className="ml-auto h-7 px-2 text-xs"
                   onClick={() => void handleOAuth()}
-                  disabled={!endpoint.trim() || !httpCredentialsValid(credentials) || oauth.busy}
+                  disabled={!endpoint.trim() || !credentialEditor.state.valid || oauth.busy}
                 >
                   {oauth.busy ? "Signing in..." : tokens ? "Reconnect" : "Sign in"}
                 </Button>

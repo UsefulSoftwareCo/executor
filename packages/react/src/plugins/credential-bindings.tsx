@@ -7,7 +7,7 @@ import {
   type QueryParamState,
 } from "./http-credentials";
 
-type ConfiguredCredentialValueLike =
+export type ConfiguredCredentialValueLike =
   | string
   | {
       readonly slot: string;

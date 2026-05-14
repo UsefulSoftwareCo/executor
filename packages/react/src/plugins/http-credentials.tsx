@@ -281,6 +281,22 @@ export const serializeScopedHttpCredentials = (
   queryParams: serializeScopedQueryCredentials(credentials.queryParams, fallbackTargetScope),
 });
 
+export const nonEmptyHttpCredentialFields = <
+  HeaderValue,
+  QueryParamValue = HeaderValue,
+>(credentials: {
+  readonly headers: Record<string, HeaderValue>;
+  readonly queryParams: Record<string, QueryParamValue>;
+}): {
+  readonly headers?: Record<string, HeaderValue>;
+  readonly queryParams?: Record<string, QueryParamValue>;
+} => ({
+  ...(Object.keys(credentials.headers).length > 0 ? { headers: credentials.headers } : {}),
+  ...(Object.keys(credentials.queryParams).length > 0
+    ? { queryParams: credentials.queryParams }
+    : {}),
+});
+
 const rowValid = (row: HttpCredentialRow): boolean => {
   if (!row.name.trim()) return false;
   return Boolean(row.secretId || row.literalValue?.trim());
