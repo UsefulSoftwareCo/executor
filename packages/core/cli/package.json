@@ -13,7 +13,7 @@
     "directory": "packages/core/cli"
   },
   "bin": {
-    "executor": "./dist/index.js"
+    "executor-sdk": "./dist/index.js"
   },
   "files": [
     "dist"
@@ -40,12 +40,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/sdk": "workspace:*",
     "commander": "^12.1.0",
     "effect": "catalog:",
+    "fumadb": "workspace:*",
     "jiti": "^2.6.1"
   },
   "devDependencies": {
-    "@executor-js/sdk": "workspace:*",
     "@types/node": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",

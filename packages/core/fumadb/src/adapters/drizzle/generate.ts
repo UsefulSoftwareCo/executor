@@ -155,7 +155,7 @@ export function generateSchema(
       if (!typeFn.isCustomType) imports.addImport(typeFn.name, importSource);
       col.push(`${typeFn.name}(${params.join(", ")})`);
 
-      if (column instanceof IdColumn) {
+      if (column instanceof IdColumn || (column as { id?: unknown }).id === true) {
         col.push("primaryKey()");
       }
 
