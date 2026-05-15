@@ -99,6 +99,78 @@ const detector = (id: string, confidence: SourceDetectionResult["confidence"]) =
       ),
   }))();
 
+const schemaProbePlugin = definePlugin(() => ({
+  id: "schemaProbe" as const,
+  storage: () => ({}),
+  extension: (ctx) => ({
+    registerSource: () =>
+      ctx.transaction(
+        Effect.gen(function* () {
+          const scope = String(ctx.scopes[0]!.id);
+          yield* ctx.core.sources.register({
+            id: "schema-source",
+            scope,
+            kind: "schema",
+            name: "Schema Source",
+            tools: [
+              {
+                name: "inspect",
+                description: "inspect",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    pet: { $ref: "#/$defs/Pet" },
+                  },
+                  required: ["pet"],
+                },
+                outputSchema: { $ref: "#/$defs/Owner" },
+              },
+            ],
+          });
+          yield* ctx.core.definitions.register({
+            sourceId: "schema-source",
+            scope,
+            definitions: {
+              Pet: {
+                anyOf: [{ $ref: "#/$defs/Dog" }, { $ref: "#/$defs/Cat" }],
+              },
+              Dog: {
+                type: "object",
+                properties: {
+                  collar: { $ref: "#/$defs/Collar" },
+                },
+              },
+              Cat: {
+                type: "object",
+                properties: {
+                  lives: { type: "number" },
+                },
+              },
+              Collar: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                },
+              },
+              Owner: {
+                type: "object",
+                properties: {
+                  pet: { $ref: "#/$defs/Pet" },
+                },
+              },
+              Unused: {
+                type: "object",
+                properties: {
+                  value: { type: "string" },
+                },
+              },
+            },
+          });
+        }),
+      ),
+  }),
+}))();
+
 describe("createExecutor", () => {
   it.effect("rolls back plugin and core writes from ctx.transaction failures", () =>
     Effect.gen(function* () {
@@ -202,6 +274,48 @@ describe("createExecutor", () => {
 
       expect(results).toEqual([]);
       expect(called).toBe(false);
+    }),
+  );
+
+  it.effect("returns schema roots with shared reachable definitions", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({ plugins: [schemaProbePlugin] as const });
+
+      yield* executor.schemaProbe.registerSource();
+
+      const schema = yield* executor.tools.schema("schema-source.inspect", {
+        includeTypeScript: false,
+      });
+
+      expect(schema?.inputSchema).toEqual({
+        type: "object",
+        properties: {
+          pet: { $ref: "#/$defs/Pet" },
+        },
+        required: ["pet"],
+      });
+      expect(schema?.outputSchema).toEqual({ $ref: "#/$defs/Owner" });
+      expect(schema?.schemaDefinitions).toEqual({
+        Cat: expect.any(Object),
+        Collar: expect.any(Object),
+        Dog: expect.any(Object),
+        Owner: expect.any(Object),
+        Pet: expect.any(Object),
+      });
+      expect(schema?.schemaDefinitions).not.toHaveProperty("Unused");
+      expect(schema?.inputTypeScript).toBeUndefined();
+      expect(schema?.outputTypeScript).toBeUndefined();
+      expect(schema?.typeScriptDefinitions).toBeUndefined();
+
+      const schemaWithTypes = yield* executor.tools.schema("schema-source.inspect");
+      expect(schemaWithTypes?.inputTypeScript).toContain("pet: Pet");
+      expect(schemaWithTypes?.outputTypeScript).toBe("Owner");
+      expect(schemaWithTypes?.typeScriptDefinitions).toEqual(
+        expect.objectContaining({
+          Pet: expect.any(String),
+          Owner: expect.any(String),
+        }),
+      );
     }),
   );
 });

@@ -133,7 +133,7 @@ export const StoredSourceSchema = Schema.Struct({
   scope: Schema.String,
   name: Schema.String,
   config: Schema.Struct({
-    spec: Schema.String,
+    spec: Schema.optional(Schema.String),
     sourceUrl: Schema.optional(Schema.String),
     baseUrl: Schema.optional(Schema.String),
     namespace: Schema.optional(Schema.String),

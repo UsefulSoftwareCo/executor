@@ -1,4 +1,4 @@
-import { ScopeId, type CredentialBindingValue } from "@executor-js/sdk";
+import { ScopeId, type CredentialBindingValue } from "@executor-js/sdk/shared";
 
 import { Button } from "../components/button";
 import { CardStackEntryField } from "../components/card-stack";

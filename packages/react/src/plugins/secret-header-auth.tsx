@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 
-import { ScopeId } from "@executor-js/sdk";
+import { ScopeId } from "@executor-js/sdk/shared";
 import { Button } from "../components/button";
 import { Field, FieldGroup, FieldLabel } from "../components/field";
 import { HelpTooltip } from "../components/help-tooltip";

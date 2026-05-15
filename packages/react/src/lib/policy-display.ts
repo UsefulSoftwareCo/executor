@@ -5,7 +5,7 @@
 // one place. Splitting `state` vs `action` labels because `block` reads
 // as "Blocked" when describing current state, "Block" as a verb in menus.
 
-import type { ToolPolicyAction } from "@executor-js/sdk";
+import type { ToolPolicyAction } from "@executor-js/sdk/shared";
 
 /** Verb form — menus, select items, "what should this rule do". */
 export const POLICY_ACTION_LABEL: Record<ToolPolicyAction, string> = {

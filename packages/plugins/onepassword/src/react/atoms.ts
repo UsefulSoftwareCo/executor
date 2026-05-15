@@ -1,4 +1,4 @@
-import type { ScopeId } from "@executor-js/sdk/core";
+import type { ScopeId } from "@executor-js/sdk/shared";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
 import { OnePasswordClient } from "./client";
 

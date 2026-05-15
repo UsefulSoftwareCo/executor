@@ -4,7 +4,7 @@ import {
   type ScopeId,
   type SecretId,
   type ToolId,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
@@ -42,6 +42,15 @@ export const sourceToolsAtom = (sourceId: string, scopeId: ScopeId) =>
 export const toolSchemaAtom = (scopeId: ScopeId, toolId: ToolId) =>
   ExecutorApiClient.query("tools", "schema", {
     params: { scopeId, toolId },
+    query: {},
+    timeToLive: "1 minute",
+    reactivityKeys: [ReactivityKey.tools],
+  });
+
+export const toolTypeScriptAtom = (scopeId: ScopeId, toolId: ToolId) =>
+  ExecutorApiClient.query("tools", "schema", {
+    params: { scopeId, toolId },
+    query: { includeTypeScript: "true" },
     timeToLive: "1 minute",
     reactivityKeys: [ReactivityKey.tools],
   });

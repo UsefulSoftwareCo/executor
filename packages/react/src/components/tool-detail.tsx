@@ -1,8 +1,13 @@
 import { useMemo, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { toolSchemaAtom } from "../api/atoms";
-import { ScopeId, ToolId, type EffectivePolicy, type ToolPolicyAction } from "@executor-js/sdk";
+import { toolSchemaAtom, toolTypeScriptAtom } from "../api/atoms";
+import {
+  ScopeId,
+  ToolId,
+  type EffectivePolicy,
+  type ToolPolicyAction,
+} from "@executor-js/sdk/shared";
 import { Badge } from "./badge";
 import { Button } from "./button";
 import {
@@ -89,7 +94,6 @@ const breadcrumbParts = (name: string): string[] =>
 export function ToolDetail(props: {
   toolId: string;
   toolName: string;
-  toolDescription?: string;
   scopeId: ScopeId;
   /** Resolved effective policy — user-authored or plugin-default,
    *  unified into one shape. Surfaces in the header. */
@@ -105,17 +109,11 @@ export function ToolDetail(props: {
   const data = useMemo(() => {
     if (!AsyncResult.isSuccess(toolContract)) return null;
     const v = toolContract.value;
-    const definitions = Object.entries(v.typeScriptDefinitions ?? {}).map(([name, body]) => ({
-      name,
-      code: String(body),
-    }));
-
     return {
+      description: v.description,
       inputSchema: v.inputSchema,
       outputSchema: v.outputSchema,
-      inputTypeScript: v.inputTypeScript ? `type Input = ${v.inputTypeScript}` : null,
-      outputTypeScript: v.outputTypeScript ? `type Output = ${v.outputTypeScript}` : null,
-      definitions,
+      schemaDefinitions: v.schemaDefinitions,
     };
   }, [toolContract]);
 
@@ -147,9 +145,9 @@ export function ToolDetail(props: {
               onClearPolicy={props.onClearPolicy}
             />
           </div>
-          {props.toolDescription && (
+          {data?.description && (
             <div className="mt-1.5 max-w-lg text-sm text-muted-foreground line-clamp-2">
-              <Markdown>{props.toolDescription}</Markdown>
+              <Markdown>{data.description}</Markdown>
             </div>
           )}
 
@@ -196,52 +194,87 @@ export function ToolDetail(props: {
             tab === "schema" ? (
               <div className="px-5 py-5 space-y-5">
                 {data?.inputSchema ? (
-                  <SchemaExplorer schema={data.inputSchema} title="Parameters" />
+                  <SchemaExplorer
+                    schema={data.inputSchema}
+                    schemaDefinitions={data.schemaDefinitions}
+                    title="Parameters"
+                  />
                 ) : (
                   <EmptySection title="Parameters" message="None" />
                 )}
                 {data?.outputSchema ? (
-                  <SchemaExplorer schema={data.outputSchema} title="Response" />
+                  <SchemaExplorer
+                    schema={data.outputSchema}
+                    schemaDefinitions={data.schemaDefinitions}
+                    title="Response"
+                  />
                 ) : (
                   <EmptySection title="Response" message="None" />
                 )}
               </div>
             ) : (
-              <div className="px-5 py-5 space-y-5">
-                {data?.inputTypeScript ? (
-                  <CardStack>
-                    <CardStackHeader>Input</CardStackHeader>
-                    <CardStackContent>
-                      <ExpandableCodeBlock
-                        code={data.inputTypeScript}
-                        definitions={data.definitions}
-                        className="rounded-none border-0"
-                      />
-                    </CardStackContent>
-                  </CardStack>
-                ) : (
-                  <EmptySection title="Input" message="void" />
-                )}
-                {data?.outputTypeScript ? (
-                  <CardStack>
-                    <CardStackHeader>Output</CardStackHeader>
-                    <CardStackContent>
-                      <ExpandableCodeBlock
-                        code={data.outputTypeScript}
-                        definitions={data.definitions}
-                        className="rounded-none border-0"
-                      />
-                    </CardStackContent>
-                  </CardStack>
-                ) : (
-                  <EmptySection title="Output" message="void" />
-                )}
-              </div>
+              <ToolTypeScriptPanel scopeId={props.scopeId} toolId={props.toolId as ToolId} />
             ),
         })}
       </div>
     </div>
   );
+}
+
+function ToolTypeScriptPanel(props: { scopeId: ScopeId; toolId: ToolId }) {
+  const toolContract = useAtomValue(toolTypeScriptAtom(props.scopeId, props.toolId));
+
+  const data = useMemo(() => {
+    if (!AsyncResult.isSuccess(toolContract)) return null;
+    const v = toolContract.value;
+    const definitions = Object.entries(v.typeScriptDefinitions ?? {}).map(([name, body]) => ({
+      name,
+      code: String(body),
+    }));
+
+    return {
+      inputTypeScript: v.inputTypeScript ? `type Input = ${v.inputTypeScript}` : null,
+      outputTypeScript: v.outputTypeScript ? `type Output = ${v.outputTypeScript}` : null,
+      definitions,
+    };
+  }, [toolContract]);
+
+  return AsyncResult.match(toolContract, {
+    onInitial: () => <div className="p-5 text-sm text-muted-foreground">Loading…</div>,
+    onFailure: () => <div className="p-5 text-sm text-destructive">Something went wrong</div>,
+    onSuccess: () => (
+      <div className="px-5 py-5 space-y-5">
+        {data?.inputTypeScript ? (
+          <CardStack>
+            <CardStackHeader>Input</CardStackHeader>
+            <CardStackContent>
+              <ExpandableCodeBlock
+                code={data.inputTypeScript}
+                definitions={data.definitions}
+                className="rounded-none border-0"
+              />
+            </CardStackContent>
+          </CardStack>
+        ) : (
+          <EmptySection title="Input" message="void" />
+        )}
+        {data?.outputTypeScript ? (
+          <CardStack>
+            <CardStackHeader>Output</CardStackHeader>
+            <CardStackContent>
+              <ExpandableCodeBlock
+                code={data.outputTypeScript}
+                definitions={data.definitions}
+                className="rounded-none border-0"
+              />
+            </CardStackContent>
+          </CardStack>
+        ) : (
+          <EmptySection title="Output" message="void" />
+        )}
+      </div>
+    ),
+  });
 }
 
 // ---------------------------------------------------------------------------

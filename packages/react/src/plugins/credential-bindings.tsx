@@ -1,4 +1,8 @@
-import { ScopeId, type CredentialBindingValue, type SecretBackedValue } from "@executor-js/sdk";
+import {
+  ScopeId,
+  type CredentialBindingValue,
+  type SecretBackedValue,
+} from "@executor-js/sdk/shared";
 
 import type { HttpCredentialsState, QueryParamState } from "./http-credentials";
 import { headerValueToState, type HeaderState } from "./secret-header-auth";

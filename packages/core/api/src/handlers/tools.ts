@@ -21,21 +21,20 @@ export const ToolsHandlers = HttpApiBuilder.group(ExecutorApi, "tools", (handler
           });
           return tools.map((t) => ({
             id: ToolId.make(t.id),
-            pluginId: t.pluginId,
-            sourceId: t.sourceId,
-            name: t.name,
-            description: t.description,
-            mayElicit: t.annotations?.mayElicit,
-            requiresApproval: t.annotations?.requiresApproval,
+            ...(t.annotations?.requiresApproval !== undefined
+              ? { requiresApproval: t.annotations.requiresApproval }
+              : {}),
           }));
         }),
       ),
     )
-    .handle("schema", ({ params: path }) =>
+    .handle("schema", ({ params: path, query }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const schema = yield* executor.tools.schema(path.toolId);
+          const schema = yield* executor.tools.schema(path.toolId, {
+            includeTypeScript: query.includeTypeScript === "true",
+          });
           if (schema === null) {
             return yield* new ToolNotFoundError({ toolId: path.toolId });
           }

@@ -18,6 +18,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./core": "./src/index.ts",
+    "./shared": "./src/shared.ts",
     "./promise": "./src/promise.ts",
     "./client": "./src/client.ts",
     "./testing": "./src/testing.ts"
@@ -35,6 +36,12 @@
         "import": {
           "types": "./dist/index.d.ts",
           "default": "./dist/core.js"
+        }
+      },
+      "./shared": {
+        "import": {
+          "types": "./dist/shared.d.ts",
+          "default": "./dist/shared.js"
         }
       },
       "./client": {
@@ -62,6 +69,7 @@
     "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "fumadb": "workspace:*",
+    "json-schema-to-typescript": "15.0.4",
     "oauth4webapi": "^3.8.5"
   },
   "devDependencies": {

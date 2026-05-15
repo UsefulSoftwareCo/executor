@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { generateKeyBetween } from "fractional-indexing";
 import { ChevronDownIcon } from "lucide-react";
-import { PolicyId, ScopeId, type ToolPolicyAction } from "@executor-js/sdk";
+import { PolicyId, ScopeId, type ToolPolicyAction } from "@executor-js/sdk/shared";
 
 import {
   createPolicyOptimistic,

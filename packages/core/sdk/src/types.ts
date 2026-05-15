@@ -49,8 +49,8 @@ export interface RefreshSourceInput {
 
 // `Tool` is the runtime view used across the SDK (with sourceId/pluginId/
 // annotations); `ToolSchema` below is the separate schema-side view that
-// `executor.tools.schema(toolId)` returns (with TypeScript previews). They
-// share a name root but are intentionally distinct shapes.
+// `executor.tools.schema(toolId)` returns. It can include TypeScript previews.
+// These share a name root but are intentionally distinct shapes.
 // oxlint-disable-next-line executor/prefer-schema-inferred-types
 export interface Tool {
   readonly id: string;
@@ -66,10 +66,9 @@ export interface Tool {
 
 // ---------------------------------------------------------------------------
 // ToolSchema — the full schema-side view of a tool, returned by
-// `executor.tools.schema(toolId)`. Includes JSON schemas with `$defs`
-// attached at read time AND TypeScript preview strings rendered from
-// them via `schemaToTypeScriptPreview`. The UI uses the TS previews to
-// show "calling this tool looks like this" code samples.
+// `executor.tools.schema(toolId)`. Includes JSON schema roots plus shared
+// definitions for schema exploration, and optionally TypeScript preview strings
+// rendered from them via `schemaToTypeScriptPreview`.
 // ---------------------------------------------------------------------------
 
 export const ToolSchema = Schema.Struct({
@@ -78,11 +77,17 @@ export const ToolSchema = Schema.Struct({
   description: Schema.optional(Schema.String),
   inputSchema: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
+  schemaDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   inputTypeScript: Schema.optional(Schema.String),
   outputTypeScript: Schema.optional(Schema.String),
   typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ToolSchema = typeof ToolSchema.Type;
+
+export interface ToolSchemaOptions {
+  /** Include TypeScript preview strings. Defaults to true for SDK callers. */
+  readonly includeTypeScript?: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Source detection — optional capability on `PluginSpec.detect`. When a

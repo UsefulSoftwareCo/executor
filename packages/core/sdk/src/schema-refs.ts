@@ -118,6 +118,23 @@ export const collectRefs = (
   return found;
 };
 
+export const collectReferencedDefinitions = (
+  roots: readonly unknown[],
+  defs: ReadonlyMap<string, unknown>,
+): Record<string, unknown> => {
+  const refs = new Set<string>();
+  for (const root of roots) {
+    collectRefs(root, defs, refs);
+  }
+
+  const referenced: Record<string, unknown> = {};
+  for (const name of refs) {
+    const def = defs.get(name);
+    if (def) referenced[name] = def;
+  }
+  return referenced;
+};
+
 /**
  * Re-attach only the referenced shared definitions into a schema,
  * so the caller gets a self-contained, usable JSON Schema.
@@ -127,14 +144,8 @@ export const collectRefs = (
  */
 export const reattachDefs = (schema: unknown, defs: ReadonlyMap<string, unknown>): unknown => {
   if (schema == null || typeof schema !== "object") return schema;
-  const refs = collectRefs(schema, defs);
-  if (refs.size === 0) return schema;
-
-  const attached: Record<string, unknown> = {};
-  for (const name of refs) {
-    const def = defs.get(name);
-    if (def) attached[name] = def;
-  }
+  const attached = collectReferencedDefinitions([schema], defs);
+  if (Object.keys(attached).length === 0) return schema;
 
   return { ...(schema as Record<string, unknown>), $defs: attached };
 };

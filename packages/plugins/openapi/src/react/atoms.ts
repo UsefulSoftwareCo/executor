@@ -1,4 +1,4 @@
-import type { ScopeId } from "@executor-js/sdk/core";
+import type { ScopeId } from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { sourcesOptimisticAtom } from "@executor-js/react/api/atoms";

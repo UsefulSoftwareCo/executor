@@ -9,7 +9,7 @@ import {
   missingSourceCredentialLabels,
   type SourceCredentialSlot,
 } from "@executor-js/react/plugins/source-credential-status";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 
 import { mcpSourceAtom, mcpSourceBindingsAtom } from "./atoms";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";

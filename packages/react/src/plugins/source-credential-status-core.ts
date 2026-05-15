@@ -1,4 +1,4 @@
-import type { ConnectionId, CredentialBindingValue, ScopeId } from "@executor-js/sdk";
+import type { ConnectionId, CredentialBindingValue, ScopeId } from "@executor-js/sdk/shared";
 
 export type SourceCredentialSlot =
   | {

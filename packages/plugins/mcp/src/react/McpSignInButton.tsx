@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { connectionsAtom } from "@executor-js/react/api/atoms";

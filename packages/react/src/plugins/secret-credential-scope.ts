@@ -1,4 +1,4 @@
-import type { ScopeId } from "@executor-js/sdk";
+import type { ScopeId } from "@executor-js/sdk/shared";
 
 import type { SecretPickerSecret } from "./secret-picker";
 

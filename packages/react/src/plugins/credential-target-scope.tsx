@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-import { ScopeId } from "@executor-js/sdk";
+import { ScopeId } from "@executor-js/sdk/shared";
 
 import { useScope, useUserScope } from "../api/scope-context";
 import {

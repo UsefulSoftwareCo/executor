@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ScopeId, SecretId } from "@executor-js/sdk";
+import { ScopeId, SecretId } from "@executor-js/sdk/shared";
 
 import {
   httpCredentialsFromConfiguredCredentialBindings,

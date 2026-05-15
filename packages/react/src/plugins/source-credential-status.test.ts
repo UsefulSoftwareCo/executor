@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk";
+import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/shared";
 
 import {
   effectiveSourceCredentialBinding,

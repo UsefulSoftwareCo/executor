@@ -12,7 +12,7 @@ import * as Exit from "effect/Exit";
 
 import { setSecret } from "../api/atoms";
 import { secretWriteKeys } from "../api/reactivity-keys";
-import { SecretId, type ScopeId } from "@executor-js/sdk";
+import { SecretId, type ScopeId } from "@executor-js/sdk/shared";
 import { Button, type buttonVariants } from "../components/button";
 import { Field, FieldError, FieldLabel } from "../components/field";
 import { Input } from "../components/input";

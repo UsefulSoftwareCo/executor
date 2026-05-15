@@ -100,8 +100,8 @@ export interface PluginCtx<TStore = unknown> {
     /** Register shared JSON-schema `$defs` for a source. Tool
      *  input/output schemas registered via `sources.register` can carry
      *  `$ref: "#/$defs/X"` pointers; `executor.tools.schema(toolId)`
-     *  attaches matching defs to the returned schema. Call inside the
-     *  same `ctx.transaction` as `sources.register` for atomicity.
+     *  returns matching reachable defs alongside the schema roots. Call
+     *  inside the same `ctx.transaction` as `sources.register` for atomicity.
      *  Replaces any existing defs for the given sourceId. */
     readonly definitions: {
       readonly register: (input: DefinitionsInput) => Effect.Effect<void, StorageFailure>;

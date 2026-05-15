@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ConnectionId, ConnectionInUseError, ScopeId } from "@executor-js/sdk";
+import { ConnectionId, ConnectionInUseError, ScopeId } from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import {

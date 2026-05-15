@@ -98,7 +98,15 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
                 namespace: source.namespace,
                 scope: source.scope,
                 name: source.name,
-                config: source.config,
+                config: {
+                  sourceUrl: source.config.sourceUrl,
+                  baseUrl: source.config.baseUrl,
+                  namespace: source.config.namespace,
+                  headers: source.config.headers,
+                  queryParams: source.config.queryParams,
+                  specFetchCredentials: source.config.specFetchCredentials,
+                  oauth2: source.config.oauth2,
+                },
               })
             : null;
         }),

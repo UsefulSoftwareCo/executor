@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ScopeId } from "@executor-js/sdk";
+import { ScopeId } from "@executor-js/sdk/shared";
 
 import {
   credentialTargetScopeOptions,

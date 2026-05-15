@@ -1,4 +1,8 @@
-import type { ScopeId, ScopedSecretCredentialInput, SecretBackedValue } from "@executor-js/sdk";
+import type {
+  ScopeId,
+  ScopedSecretCredentialInput,
+  SecretBackedValue,
+} from "@executor-js/sdk/shared";
 
 import { FieldLabel } from "../components/field";
 import { HeadersList } from "./headers-list";

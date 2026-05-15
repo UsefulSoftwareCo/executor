@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, MoreHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
-import type { EffectivePolicy, ToolPolicyAction } from "@executor-js/sdk";
+import type { EffectivePolicy, ToolPolicyAction } from "@executor-js/sdk/shared";
 import { Button } from "./button";
 import { Input } from "./input";
 import {
@@ -26,7 +26,6 @@ import {
 export interface ToolSummary {
   readonly id: string;
   readonly name: string;
-  readonly pluginKey: string;
   readonly description?: string;
   /** Resolved policy for this tool — combines user-authored rules and
    *  plugin defaults into one answer. Always present. UI distinguishes

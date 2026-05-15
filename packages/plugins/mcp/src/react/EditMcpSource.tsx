@@ -28,7 +28,7 @@ import {
 import { SourceOAuthConnectionControl } from "@executor-js/react/plugins/source-oauth-connection";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 import { McpRemoteSourceFields } from "./McpRemoteSourceFields";
 import {
   McpSourceBindingInput,

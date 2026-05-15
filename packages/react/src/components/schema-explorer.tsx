@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { ChevronRight } from "lucide-react";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 
@@ -422,15 +422,36 @@ const countTopLevelFields = (schema: JsonSchema): number => {
 // SchemaExplorer — main export
 // ---------------------------------------------------------------------------
 
-export function SchemaExplorer(props: { schema: unknown; title?: string }) {
-  const schema = props.schema as JsonSchema | undefined;
-  if (!schema) return null;
+const asSchemaDefinitions = (value: unknown): Record<string, JsonSchema> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonSchema>)
+    : undefined;
 
-  const hasContent = isExpandable(schema, schema);
+export function SchemaExplorer(props: {
+  schema: unknown;
+  schemaDefinitions?: unknown;
+  title?: string;
+}) {
+  const schema = props.schema as JsonSchema | undefined;
+  const root = useMemo(() => {
+    if (!schema) return undefined;
+    const sharedDefs = asSchemaDefinitions(props.schemaDefinitions);
+    if (!sharedDefs && !schema.$defs) return schema;
+    return {
+      ...schema,
+      $defs: {
+        ...sharedDefs,
+        ...schema.$defs,
+      },
+    };
+  }, [schema, props.schemaDefinitions]);
+  if (!schema || !root) return null;
+
+  const hasContent = isExpandable(schema, root);
   const title = props.title;
 
   if (!hasContent) {
-    const typeLabel = getTypeLabel(schema, schema);
+    const typeLabel = getTypeLabel(schema, root);
     return (
       <CardStack>
         {title && <CardStackHeader>{title}</CardStackHeader>}
@@ -443,7 +464,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
     );
   }
 
-  const fieldCount = countTopLevelFields(schema);
+  const fieldCount = countTopLevelFields(root);
   const countLabel =
     fieldCount > 0 ? `${fieldCount} ${fieldCount === 1 ? "field" : "fields"}` : null;
 
@@ -463,7 +484,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
         </CardStackHeader>
       )}
       <CardStackContent>
-        <PropertyChildren schema={schema} root={schema} depth={0} />
+        <PropertyChildren schema={schema} root={root} depth={0} />
       </CardStackContent>
     </CardStack>
   );

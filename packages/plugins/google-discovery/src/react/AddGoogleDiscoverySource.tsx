@@ -9,7 +9,7 @@ import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import type { SecretPickerSecret } from "@executor-js/react/plugins/secret-picker";
 import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
-import type { ScopeId } from "@executor-js/sdk";
+import type { ScopeId } from "@executor-js/sdk/shared";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 import {

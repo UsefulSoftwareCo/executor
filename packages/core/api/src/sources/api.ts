@@ -37,15 +37,9 @@ const SourceRefreshResponse = Schema.Struct({
 
 const ToolMetadataResponse = Schema.Struct({
   id: ToolId,
-  pluginId: Schema.String,
-  sourceId: Schema.String,
-  name: Schema.String,
-  description: Schema.optional(Schema.String),
-  mayElicit: Schema.optional(Schema.Boolean),
   /** Plugin-derived default approval annotation. Surfaces in the UI as
    *  the "default" policy when no user `tool_policy` rule matches. */
   requiresApproval: Schema.optional(Schema.Boolean),
-  approvalDescription: Schema.optional(Schema.String),
 });
 
 const DetectRequest = Schema.Struct({

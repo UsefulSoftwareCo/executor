@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { generateKeyBetween } from "fractional-indexing";
-import { PolicyId, type ScopeId, type ToolPolicyAction } from "@executor-js/sdk";
+import { PolicyId, type ScopeId, type ToolPolicyAction } from "@executor-js/sdk/shared";
 
 import {
   createPolicyOptimistic,

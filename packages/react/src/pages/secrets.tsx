@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { removeSecretOptimistic, secretsOptimisticAtom, secretUsagesAtom } from "../api/atoms";
 import { secretWriteKeys } from "../api/reactivity-keys";
 import { useSecretProviderPlugins } from "@executor-js/sdk/client";
-import { SecretId, SecretInUseError, type ScopeId } from "@executor-js/sdk";
+import { SecretId, SecretInUseError, type ScopeId } from "@executor-js/sdk/shared";
 import { SecretForm } from "../plugins/secret-form";
 import { useScope } from "../hooks/use-scope";
 import { useScopeStack } from "../api/scope-context";

@@ -13,27 +13,29 @@ const PathParams = {
   toolId: ToolId,
 };
 
+const ToolSchemaQuery = Schema.Struct({
+  includeTypeScript: Schema.optional(Schema.Literal("true")),
+});
+
 // ---------------------------------------------------------------------------
 // Response schemas
 // ---------------------------------------------------------------------------
 
 const ToolMetadataResponse = Schema.Struct({
   id: ToolId,
-  pluginId: Schema.String,
-  sourceId: Schema.String,
-  name: Schema.String,
-  description: Schema.optional(Schema.String),
-  mayElicit: Schema.optional(Schema.Boolean),
   requiresApproval: Schema.optional(Schema.Boolean),
 });
 
 const ToolSchemaResponse = Schema.Struct({
   id: ToolId,
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
   inputTypeScript: Schema.optional(Schema.String),
   outputTypeScript: Schema.optional(Schema.String),
   typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   inputSchema: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
+  schemaDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ export const ToolsApi = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("schema", "/scopes/:scopeId/tools/:toolId/schema", {
       params: PathParams,
+      query: ToolSchemaQuery,
       success: ToolSchemaResponse,
       error: [InternalError, ToolNotFound],
     }),

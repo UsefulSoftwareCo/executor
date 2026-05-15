@@ -7,7 +7,7 @@ import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/rea
 import { SourceOAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import { slugifyNamespace } from "@executor-js/react/plugins/source-identity";
 import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js/react/plugins/credential-bindings";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 
 import { graphqlSourceAtom, graphqlSourceBindingsAtom, setGraphqlSourceBinding } from "./atoms";
 import { GraphqlSourceBindingInput } from "../sdk/types";

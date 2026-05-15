@@ -1,4 +1,4 @@
-import type { ConnectionId, ScopeId, SecretBackedValue } from "@executor-js/sdk";
+import type { ConnectionId, ScopeId, SecretBackedValue } from "@executor-js/sdk/shared";
 
 import {
   CredentialControlField,

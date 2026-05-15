@@ -29,7 +29,7 @@ import { Button } from "@executor-js/react/components/button";
 import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { SourceOAuthConnectionControl } from "@executor-js/react/plugins/source-oauth-connection";
 import { Badge } from "@executor-js/react/components/badge";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 import { GraphqlSourceFields } from "./GraphqlSourceFields";
 import {
   GRAPHQL_OAUTH_CONNECTION_SLOT,

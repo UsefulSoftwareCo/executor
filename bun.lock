@@ -412,6 +412,7 @@
         "effect": "catalog:",
         "fractional-indexing": "^3.2.0",
         "fumadb": "workspace:*",
+        "json-schema-to-typescript": "15.0.4",
         "oauth4webapi": "^3.8.5",
       },
       "devDependencies": {

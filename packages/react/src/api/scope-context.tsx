@@ -2,7 +2,7 @@ import * as React from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import type { ScopeId } from "@executor-js/sdk";
+import type { ScopeId } from "@executor-js/sdk/shared";
 import { scopeAtom } from "./atoms";
 
 export interface ScopeStackEntry {

@@ -4,7 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { PlusIcon } from "lucide-react";
-import type { SourceDetectionResult } from "@executor-js/sdk";
+import type { SourceDetectionResult } from "@executor-js/sdk/shared";
 import { useSourcePlugins, type SourcePlugin, type SourcePreset } from "@executor-js/sdk/client";
 import { detectSource, sourcesOptimisticAtom } from "../api/atoms";
 import { useScope } from "../hooks/use-scope";

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { effectivePolicyFromSorted } from "@executor-js/sdk";
+import { effectivePolicyFromSorted } from "@executor-js/sdk/shared";
 
 import { policiesOptimisticAtom, toolsAtom } from "../api/atoms";
 import { useScope } from "../hooks/use-scope";
@@ -37,25 +37,15 @@ export function ToolsPage() {
 
   const summaries: ToolSummary[] = useMemo(() => {
     if (!AsyncResult.isSuccess(tools)) return [];
-    return tools.value.map(
-      (t: {
-        readonly id: string;
-        readonly name: string;
-        readonly pluginId: string;
-        readonly description?: string;
-        readonly requiresApproval?: boolean;
-      }) => ({
-        id: t.id,
-        // Tree path + saved pattern must be the canonical tool id
-        // (`stripe_api.account.getAccount`), not the short `t.name`
-        // which strips the source prefix and would never match at
-        // resolution time.
-        name: t.id,
-        pluginKey: t.pluginId,
-        description: t.description,
-        policy: effectivePolicyFromSorted(t.id, sortedPolicies, t.requiresApproval),
-      }),
-    );
+    return tools.value.map((t: { readonly id: string; readonly requiresApproval?: boolean }) => ({
+      id: t.id,
+      // Tree path + saved pattern must be the canonical tool id
+      // (`stripe_api.account.getAccount`), not the short `t.name`
+      // which strips the source prefix and would never match at
+      // resolution time.
+      name: t.id,
+      policy: effectivePolicyFromSorted(t.id, sortedPolicies, t.requiresApproval),
+    }));
   }, [tools, sortedPolicies]);
 
   const selectedTool = useMemo(
@@ -112,7 +102,6 @@ export function ToolsPage() {
                   <ToolDetail
                     toolId={selectedTool.id}
                     toolName={selectedTool.name}
-                    toolDescription={selectedTool.description}
                     scopeId={scopeId}
                     policy={selectedTool.policy}
                     onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}

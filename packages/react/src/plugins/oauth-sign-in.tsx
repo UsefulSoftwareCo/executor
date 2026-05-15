@@ -32,7 +32,7 @@ import {
   ScopeId,
   type OAuthStrategy,
   type SecretBackedValue,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/shared";
 
 export type OAuthCompletionPayload = {
   readonly connectionId: string;

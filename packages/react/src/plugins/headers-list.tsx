@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { PlusIcon } from "lucide-react";
-import type { ScopeId } from "@executor-js/sdk";
+import type { ScopeId } from "@executor-js/sdk/shared";
 
 import { Button } from "../components/button";
 import {

@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { connectionsAtom, sourceAtom } from "@executor-js/react/api/atoms";
 import { Badge } from "@executor-js/react/components/badge";
 import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 import {
   SourceCredentialNotice,
   SourceCredentialStatusBadge,

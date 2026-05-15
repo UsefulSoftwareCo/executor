@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet, useAtomRefresh } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { effectivePolicyFromSorted } from "@executor-js/sdk";
+import { effectivePolicyFromSorted } from "@executor-js/sdk/shared";
 import {
   policiesOptimisticAtom,
   sourceToolsAtom,
@@ -92,24 +92,14 @@ export function SourceDetailPage(props: { namespace: string }) {
 
   const sourceTools: ToolSummary[] = useMemo(() => {
     if (!AsyncResult.isSuccess(tools)) return [];
-    return tools.value.map(
-      (t: {
-        readonly id: string;
-        readonly name: string;
-        readonly pluginId: string;
-        readonly description?: string;
-        readonly requiresApproval?: boolean;
-      }) => ({
-        id: t.id,
-        // Tree path + saved pattern must be the canonical tool id, so
-        // policy rules created from the row actually match at resolve
-        // time. The leaf label is still the short last segment.
-        name: t.id,
-        pluginKey: t.pluginId,
-        description: t.description,
-        policy: effectivePolicyFromSorted(t.id, policyList, t.requiresApproval),
-      }),
-    );
+    return tools.value.map((t: { readonly id: string; readonly requiresApproval?: boolean }) => ({
+      id: t.id,
+      // Tree path + saved pattern must be the canonical tool id, so
+      // policy rules created from the row actually match at resolve
+      // time. The leaf label is still the short last segment.
+      name: t.id,
+      policy: effectivePolicyFromSorted(t.id, policyList, t.requiresApproval),
+    }));
   }, [tools, policyList]);
 
   const selectedTool = useMemo(
@@ -272,7 +262,6 @@ export function SourceDetailPage(props: { namespace: string }) {
                     <ToolDetail
                       toolId={selectedTool.id}
                       toolName={selectedTool.name}
-                      toolDescription={selectedTool.description}
                       scopeId={scopeId}
                       policy={selectedTool.policy}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}

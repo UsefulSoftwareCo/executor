@@ -22,7 +22,7 @@ import {
 import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { Input } from "@executor-js/react/components/input";
 import { sourceWriteKeys as openApiWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/core";
+import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/shared";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
   oauthCallbackUrl,

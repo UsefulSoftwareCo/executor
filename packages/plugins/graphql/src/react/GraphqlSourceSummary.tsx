@@ -9,7 +9,7 @@ import {
   missingSourceCredentialLabels,
   type SourceCredentialSlot,
 } from "@executor-js/react/plugins/source-credential-status";
-import { ScopeId } from "@executor-js/sdk/core";
+import { ScopeId } from "@executor-js/sdk/shared";
 
 import { graphqlSourceAtom, graphqlSourceBindingsAtom } from "./atoms";
 import type { StoredGraphqlSource } from "../sdk/store";

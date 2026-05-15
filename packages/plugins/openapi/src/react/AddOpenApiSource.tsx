@@ -5,7 +5,7 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/core";
+import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk/shared";
 import { startOAuth } from "@executor-js/react/api/atoms";
 import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";

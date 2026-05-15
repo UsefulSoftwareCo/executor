@@ -341,7 +341,7 @@ describe("tool discovery", () => {
       expect(described.path).toBe("github.listRepositoryIssues");
       expect(described.name).toBe("listRepositoryIssues");
       expect(described.description).toBe("List issues for a repository");
-      expect(described.inputTypeScript).toBe("{ owner: string; repo: string }");
+      expect(described.inputTypeScript).toBe("{ owner: string; repo: string; }");
       expect(described.outputTypeScript).toBeUndefined();
       expect(described.typeScriptDefinitions).toBeUndefined();
     }),
