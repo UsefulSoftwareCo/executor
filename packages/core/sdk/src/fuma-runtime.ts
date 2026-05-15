@@ -14,10 +14,19 @@ export class UniqueViolationError extends Data.TaggedError("UniqueViolationError
 export type StorageFailure = StorageError | UniqueViolationError;
 
 export type FumaTables = Record<string, AnyTable>;
+type EmptyFumaSchema = FumaSchema<"latest", Record<never, never>>;
 export type TablesToFumaSchema<TTables extends FumaTables | undefined> = TTables extends FumaTables
-  ? FumaSchema<"latest", TTables>
-  : AnySchema;
-export type FumaDb<TSchema extends AnySchema = any> = AbstractQuery<TSchema>;
+  ? string extends keyof TTables
+    ? AnySchema
+    : FumaSchema<"latest", TTables>
+  : EmptyFumaSchema;
+export type FumaDb<TSchema extends AnySchema = AnySchema> = AbstractQuery<TSchema>;
+export type FumaQuery<TSchema extends AnySchema = AnySchema> = Omit<
+  AbstractQuery<TSchema>,
+  "internal" | "withContext" | "transaction"
+> & {
+  readonly transaction: <A>(run: (db: FumaQuery<TSchema>) => Promise<A>) => Promise<A>;
+};
 export type FumaRow<TTable extends AnyTable> = Omit<
   {
     readonly [K in keyof TTable["columns"]]: TTable["columns"][K]["$out"];
@@ -91,18 +100,58 @@ class TransactionEffectDefect {
 }
 
 export type IFumaClient<TSchema extends AnySchema = AnySchema> = Readonly<{
-  db: FumaDb<TSchema>;
   use: <A>(
     label: string,
-    fn: (db: FumaDb<TSchema>) => Promise<A>,
+    fn: (db: FumaQuery<TSchema>) => Promise<A>,
   ) => Effect.Effect<A, StorageFailure>;
   transaction: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E | StorageFailure>;
 }>;
 
-export const makeFumaClient = (db: FumaDb): IFumaClient => {
+export interface MakeFumaClientOptions {
+  readonly tables?: ReadonlySet<string>;
+}
+
+const isAllowedTable = (tables: ReadonlySet<string> | undefined, table: PropertyKey): boolean =>
+  tables === undefined || (typeof table === "string" && tables.has(table));
+
+const assertAllowedTable = (tables: ReadonlySet<string> | undefined, table: PropertyKey): void => {
+  if (isAllowedTable(tables, table)) return;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-facing FumaDB facade rejects unavailable tables synchronously before query execution
+  throw new StorageError({
+    message: `FumaDB table "${String(table)}" is not available through this storage boundary.`,
+    cause: undefined,
+  });
+};
+
+const makeSafeFumaQuery = <TSchema extends AnySchema>(
+  db: FumaDb<TSchema>,
+  options: MakeFumaClientOptions,
+): FumaQuery<TSchema> => {
+  const table = <TableName extends keyof TSchema["tables"]>(name: TableName): TableName => {
+    assertAllowedTable(options.tables, name);
+    return name;
+  };
+
+  const query: FumaQuery<TSchema> = {
+    count: (name, value) => db.count(table(name), value),
+    create: (name, value) => db.create(table(name), value),
+    createMany: (name, values) => db.createMany(table(name), values),
+    deleteMany: (name, value) => db.deleteMany(table(name), value),
+    findFirst: (name, value) => db.findFirst(table(name), value),
+    findMany: (name, value) => db.findMany(table(name), value),
+    transaction: (run) =>
+      db.transaction((transactionDb) => run(makeSafeFumaQuery(transactionDb, options))),
+    updateMany: (name, value) => db.updateMany(table(name), value),
+    upsert: (name, value) => db.upsert(table(name), value),
+  };
+
+  return Object.freeze(query);
+};
+
+export const makeFumaClient = (db: FumaDb, options: MakeFumaClientOptions = {}): IFumaClient => {
   const use: IFumaClient["use"] = (label, fn) =>
     Effect.flatMap(Effect.service(activeFumaDbRef), (active) =>
-      fumaEffect(label, () => fn(active ?? db)),
+      fumaEffect(label, () => fn(makeSafeFumaQuery(active ?? db, options))),
     ).pipe(Effect.withSpan(`fumadb.${label}`));
 
   const transaction = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | StorageFailure> =>
@@ -133,7 +182,7 @@ export const makeFumaClient = (db: FumaDb): IFumaClient => {
       });
     }).pipe(Effect.withSpan("fumadb.transaction")) as Effect.Effect<A, E | StorageFailure>;
 
-  return { db, use, transaction };
+  return { use, transaction };
 };
 
 export class FumaClient extends Context.Service<FumaClient, IFumaClient>()("executor/FumaClient") {

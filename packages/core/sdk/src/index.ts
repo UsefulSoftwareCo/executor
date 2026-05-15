@@ -24,16 +24,15 @@ export type { AbstractQuery, Condition, ConditionBuilder } from "fumadb/query";
 export { column, idColumn, schema as fumaSchema, table } from "fumadb/schema";
 export type { AnyColumn, AnySchema, AnyTable, Column, Schema as FumaSchema } from "fumadb/schema";
 
-export type { FumaDb, FumaRow, FumaTables, IFumaClient, StorageFailure } from "./fuma-runtime";
-export {
-  FumaClient,
-  StorageError,
-  UniqueViolationError,
-  fumaEffect,
-  fumaFailureFromCause,
-  isStorageFailure,
-  makeFumaClient,
+export type {
+  FumaDb,
+  FumaQuery,
+  FumaRow,
+  FumaTables,
+  IFumaClient,
+  StorageFailure,
 } from "./fuma-runtime";
+export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
 
 // Storage-layer typed errors are still exported so plugin code can catchTag
 // `UniqueViolationError`, but FumaDB itself is the storage API.
@@ -82,7 +81,6 @@ export {
   boolColumn,
   coreSchema,
   dateColumn,
-  executorTable,
   isToolPolicyAction,
   jsonColumn,
   nullableBigintColumn,
@@ -320,20 +318,6 @@ export {
   type ExecutorCliConfig,
   type ExecutorPluginsFactory,
 } from "./config";
-
-// Test helper
-export {
-  makeTestConfig,
-  makeTestExecutor,
-  makeTestExecutorHarness,
-  makeTestExecutorLayer,
-  memorySecretsPlugin,
-  TestExecutor,
-  type TestConfigOptions,
-  type TestDatabaseBackend,
-  type TestExecutorHarness,
-  type TestFumaDb,
-} from "./test-config";
 
 // JSON schema $ref helpers (used by openapi for $defs handling)
 export { hoistDefinitions, collectRefs, reattachDefs, normalizeRefs } from "./schema-refs";

@@ -7,6 +7,7 @@
 // Runs FumaDB migrations on startup so the schema is ready.
 
 import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import { createPgliteFumaDb } from "../src/services/pglite";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 5433;
 const DB_PATH = resolve(__dirname, "../.dev-db");
+const CUTOVER_MARKER_PATH = resolve(DB_PATH, "fumadb-cutover-v1");
 
 // Reap any orphan dev-db from a previous `bun dev` that didn't shut down
 // cleanly — otherwise the new instance can't bind to PORT and the app ends
@@ -49,6 +51,11 @@ if (reapStaleDevDb()) {
   await sleep(200);
 }
 
+if (existsSync(DB_PATH) && !existsSync(CUTOVER_MARKER_PATH)) {
+  console.log("[dev-db] Resetting pre-FumaDB dev database");
+  rmSync(DB_PATH, { recursive: true, force: true });
+}
+
 console.log(`[dev-db] Starting PGlite at ${DB_PATH}`);
 const runtime = await createPgliteFumaDb({
   tables: collectTables(executorConfig.plugins({})),
@@ -58,6 +65,8 @@ const runtime = await createPgliteFumaDb({
   host: "127.0.0.1",
 });
 await ensureCloudSchema(runtime.drizzle);
+mkdirSync(DB_PATH, { recursive: true });
+writeFileSync(CUTOVER_MARKER_PATH, `${new Date().toISOString()}\n`, { flag: "w" });
 console.log(`[dev-db] Listening on postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres`);
 
 const shutdown = async () => {

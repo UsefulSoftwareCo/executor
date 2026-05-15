@@ -6,16 +6,15 @@ import {
   CreateConnectionInput,
   TokenMaterial,
   createExecutor,
-  makeTestExecutorLayer,
   Scope,
   ScopeId,
   SecretId,
-  TestExecutor,
   type ConnectionProvider,
   type SecretProvider,
   SetSecretInput,
   definePlugin,
 } from "@executor-js/sdk";
+import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 import { OpenApiSourceBindingInput } from "./types";

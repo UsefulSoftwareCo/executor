@@ -13,9 +13,9 @@ import {
   OAUTH2_PROVIDER_KEY,
   createExecutor,
   definePlugin,
-  makeTestConfig,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin, userFacingProbeMessage } from "./plugin";
 import { MCP_OAUTH_CONNECTION_SLOT } from "./types";

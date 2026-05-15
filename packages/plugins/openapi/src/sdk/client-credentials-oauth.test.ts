@@ -33,9 +33,9 @@ import {
   SecretId,
   SetSecretInput,
   type InvokeOptions,
-  makeTestConfig,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";

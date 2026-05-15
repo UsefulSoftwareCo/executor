@@ -19,10 +19,10 @@ import type { AddressInfo } from "node:net";
 import {
   createExecutor,
   definePlugin,
-  makeTestConfig,
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 

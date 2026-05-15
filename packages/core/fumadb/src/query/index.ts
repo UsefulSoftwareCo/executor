@@ -10,6 +10,7 @@ import type { Condition, ConditionBuilder } from "./condition-builder";
 import type { ORMAdapter } from "./orm";
 
 export type { Condition, ConditionBuilder } from "./condition-builder";
+export { ConditionType } from "./condition-builder";
 export { withQueryContext } from "./orm";
 export type {
   CompiledJoin,
@@ -102,6 +103,15 @@ export type FindManyOptions<
 
 export interface AbstractQuery<S extends AnySchema> {
   internal: ORMAdapter<S>;
+
+  /**
+   * Rebind the query context used by table policies.
+   *
+   * Wrappers around `AbstractQuery` should forward this method instead of
+   * rebuilding from `.internal`, otherwise public query decorators can be
+   * bypassed.
+   */
+  withContext?: <TContext>(context: TContext) => AbstractQuery<S>;
 
   /**
    * The code in the transaction will receive a transaction query instance.

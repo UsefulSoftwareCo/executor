@@ -18,8 +18,10 @@ import {
   collectTables,
   createExecutor as createEffectExecutor,
   type Executor as EffectExecutor,
+  type InvokeOptions as EffectInvokeOptions,
   type OnElicitation,
 } from "./executor";
+import type { ElicitationContext, ElicitationResponse } from "./elicitation";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 import { ScopeId } from "./ids";
 import type { AnyPlugin } from "./plugin";
@@ -55,8 +57,24 @@ type Unbrand<T> =
                 ? { readonly [K in keyof T]: Unbrand<T[K]> }
                 : T;
 
+export type PromiseOnElicitation =
+  | "accept-all"
+  | ((ctx: Unbrand<ElicitationContext>) => ElicitationResponse | Promise<ElicitationResponse>);
+
+export interface PromiseInvokeOptions {
+  readonly onElicitation?: PromiseOnElicitation;
+}
+
+type PromisifiedArg<T> = T extends EffectInvokeOptions | undefined
+  ? PromiseInvokeOptions | undefined
+  : Unbrand<T>;
+
+type PromisifiedArgs<TArgs extends readonly unknown[]> = {
+  [I in keyof TArgs]: PromisifiedArg<TArgs[I]>;
+};
+
 export type Promisified<T> = T extends (...args: infer A) => Effect.Effect<infer R, infer _E>
-  ? (...args: { [I in keyof A]: Unbrand<A[I]> }) => Promise<R>
+  ? (...args: PromisifiedArgs<A>) => Promise<R>
   : T extends readonly unknown[]
     ? T
     : T extends object
@@ -96,7 +114,7 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * Required at construction so per-invoke calls don't have to thread
    * an options arg.
    */
-  readonly onElicitation: OnElicitation;
+  readonly onElicitation: PromiseOnElicitation;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,10 +129,34 @@ const isPlainObject = (v: unknown): v is Record<string | symbol, unknown> =>
   !(v instanceof Date) &&
   !(v instanceof Promise);
 
+const isPromiseOnElicitation = (value: unknown): value is PromiseOnElicitation =>
+  value === "accept-all" || typeof value === "function";
+
+const toEffectOnElicitation = (handler: PromiseOnElicitation): OnElicitation =>
+  handler === "accept-all"
+    ? "accept-all"
+    : (ctx) => Effect.promise(() => Promise.resolve(handler(ctx)));
+
+const adaptPromiseInvokeOptions = (value: unknown): unknown => {
+  if (!isPlainObject(value) || !Object.hasOwn(value, "onElicitation")) return value;
+  const onElicitation = value.onElicitation;
+  if (onElicitation === undefined || !isPromiseOnElicitation(onElicitation)) return value;
+  return {
+    ...value,
+    onElicitation: toEffectOnElicitation(onElicitation),
+  };
+};
+
+const adaptPromiseArgs = (args: readonly unknown[]): unknown[] =>
+  args.map((arg) => adaptPromiseInvokeOptions(arg));
+
 const promisifyDeep = <T>(value: T): Promisified<T> => {
   if (typeof value === "function") {
     return ((...args: unknown[]) => {
-      const result = (value as (...a: unknown[]) => unknown).apply(undefined, args);
+      const result = (value as (...a: unknown[]) => unknown).apply(
+        undefined,
+        adaptPromiseArgs(args),
+      );
       if (Effect.isEffect(result)) {
         return Effect.runPromise(result as Effect.Effect<unknown, unknown>);
       }
@@ -129,7 +171,7 @@ const promisifyDeep = <T>(value: T): Promisified<T> => {
       const v = Reflect.get(target, prop, receiver);
       if (typeof v === "function") {
         return (...args: unknown[]) => {
-          const result = (v as (...a: unknown[]) => unknown).apply(target, args);
+          const result = (v as (...a: unknown[]) => unknown).apply(target, adaptPromiseArgs(args));
           if (Effect.isEffect(result)) {
             return Effect.runPromise(result as Effect.Effect<unknown, unknown>);
           }
@@ -175,7 +217,7 @@ export const createExecutor = async <const TPlugins extends readonly AnyPlugin[]
   const effectConfig = {
     scopes,
     plugins,
-    onElicitation: config.onElicitation,
+    onElicitation: toEffectOnElicitation(config.onElicitation),
     ...(db ? { db } : {}),
   };
 

@@ -21,11 +21,10 @@ import type { AddressInfo } from "node:net";
 import {
   createExecutor,
   definePlugin,
-  makeTestExecutorLayer,
-  TestExecutor,
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 

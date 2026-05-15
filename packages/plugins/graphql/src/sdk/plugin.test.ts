@@ -8,13 +8,13 @@ import {
   createExecutor,
   definePlugin,
   ElicitationResponse,
-  makeTestConfig,
   RemoveSecretInput,
   Scope,
   ScopeId,
   SecretId,
   TokenMaterial,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { memorySecretsPlugin, serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";

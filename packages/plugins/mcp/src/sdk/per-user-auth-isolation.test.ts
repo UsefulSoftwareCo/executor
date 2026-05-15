@@ -16,10 +16,9 @@ import {
   SetSecretInput,
   TokenMaterial,
   createExecutor,
-  makeTestConfig,
-  memorySecretsPlugin,
   type ToolInvocationError,
 } from "@executor-js/sdk";
+import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 

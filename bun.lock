@@ -316,6 +316,7 @@
         "jiti": "^2.6.1",
       },
       "devDependencies": {
+        "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
         "tsup": "catalog:",
         "typescript": "catalog:",

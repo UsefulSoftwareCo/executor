@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { Scope, ScopeId, createExecutor, makeTestConfig } from "@executor-js/sdk";
+import { Scope, ScopeId, createExecutor } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 

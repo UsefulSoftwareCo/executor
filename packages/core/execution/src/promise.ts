@@ -67,10 +67,12 @@ const toPromiseInvokeOptions = (options: EffectInvokeOptions): PromiseInvokeOpti
 
   return {
     onElicitation: (ctx) =>
-      onElicitation({
-        ...ctx,
-        toolId: ToolId.make(ctx.toolId),
-      }),
+      Effect.runPromise(
+        onElicitation({
+          ...ctx,
+          toolId: ToolId.make(ctx.toolId),
+        }),
+      ),
   };
 };
 

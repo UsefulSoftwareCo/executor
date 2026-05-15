@@ -6,8 +6,8 @@ import {
   SecretId,
   SetSecretInput,
   createExecutor,
-  makeTestConfig,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { keychainPlugin } from "./index";
 
 describe("keychain plugin", () => {

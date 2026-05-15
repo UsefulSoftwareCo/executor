@@ -338,11 +338,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 } & PluginExtensions<TPlugins>;
 
 export interface ExecutorDb {
-  readonly db: FumaDb;
+  readonly db: FumaDb<any>;
   readonly close?: () => Effect.Effect<void, StorageFailure> | Promise<void> | void;
 }
 
-export type ExecutorDbInput = FumaDb | ExecutorDb;
+export type ExecutorDbInput = FumaDb<any> | ExecutorDb;
 
 export type ExecutorDbFactory = (config: {
   readonly tables: FumaTables;
@@ -407,13 +407,32 @@ export const collectTables = (plugins: readonly AnyPlugin[]): FumaTables => {
 };
 
 const validateExecutorScopePolicyTables = (tables: FumaTables): void => {
-  for (const tableDef of Object.values(tables)) {
-    assertExecutorScopePolicyTable(tableDef);
+  for (const [tableKey, tableDef] of Object.entries(tables)) {
+    assertExecutorScopePolicyTable(tableDef, tableKey);
   }
+};
+
+const validateExecutorDbTables = (required: FumaTables, actual: FumaTables): void => {
+  const missing = Object.keys(required)
+    .filter((tableName) => !actual[tableName])
+    .sort();
+  if (missing.length === 0) return;
+
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: synchronous startup validation before Executor services are built
+  throw new StorageError({
+    message: `Executor database is missing required table definitions: ${missing.join(", ")}`,
+    cause: {
+      missing,
+      available: Object.keys(actual).sort(),
+    },
+  });
 };
 
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
+
+const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
+  storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
 
 const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
   const version = "1.0.0";
@@ -811,7 +830,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const rootDbUntyped = "db" in dbInput ? dbInput.db : dbInput;
     const closeDb = "db" in dbInput ? dbInput.close : undefined;
     yield* Effect.try({
-      try: () => validateExecutorScopePolicyTables(rootDbUntyped.internal.tables),
+      try: () => {
+        validateExecutorDbTables(tables, rootDbUntyped.internal.tables);
+        validateExecutorScopePolicyTables(rootDbUntyped.internal.tables);
+      },
       catch: (cause) => storageFailureFromUnknown("Failed to validate executor tables", cause),
     });
 
@@ -2562,9 +2584,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       }
 
+      const pluginFuma = makeFumaClient(
+        rootDb,
+        plugin.schema ? { tables: new Set(Object.keys(plugin.schema)) } : { tables: new Set() },
+      );
       const storageDeps: StorageDeps = {
         scopes,
-        fuma,
+        fuma: pluginFuma,
         // Blob keys are namespaced by `<scope>/<plugin>` so two tenants
         // sharing a backing BlobStore can't collide or leak on the
         // same `(plugin, key)` pair. The store's `get`/`has` walk the
@@ -2725,7 +2751,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           typeof plugin.secretProviders === "function"
             ? plugin.secretProviders(ctx)
             : plugin.secretProviders;
-        const providers = Effect.isEffect(raw) ? yield* raw : raw;
+        const providers = Effect.isEffect(raw)
+          ? yield* raw.pipe(
+              Effect.mapError((cause) => pluginStorageFailure(plugin.id, "secretProviders", cause)),
+            )
+          : raw;
         for (const provider of providers) {
           if (secretProviders.has(provider.key)) {
             return yield* new StorageError({
@@ -2742,7 +2772,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           typeof plugin.connectionProviders === "function"
             ? plugin.connectionProviders(ctx)
             : plugin.connectionProviders;
-        const providers = Effect.isEffect(raw) ? yield* raw : raw;
+        const providers = Effect.isEffect(raw)
+          ? yield* raw.pipe(
+              Effect.mapError((cause) =>
+                pluginStorageFailure(plugin.id, "connectionProviders", cause),
+              ),
+            )
+          : raw;
         for (const provider of providers) {
           if (connectionProviders.has(provider.key)) {
             return yield* new StorageError({
@@ -2819,11 +2855,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               const [pluginId, sourceId] = key.split("\u0000") as [string, string];
               const runtime = runtimes.get(pluginId);
               if (!runtime?.plugin.resolveAnnotations) return undefined;
-              return yield* runtime.plugin.resolveAnnotations({
-                ctx: runtime.ctx,
-                sourceId,
-                toolRows: groupRows,
-              });
+              return yield* runtime.plugin
+                .resolveAnnotations({
+                  ctx: runtime.ctx,
+                  sourceId,
+                  toolRows: groupRows,
+                })
+                .pipe(
+                  Effect.mapError((cause) =>
+                    pluginStorageFailure(pluginId, "resolveAnnotations", cause),
+                  ),
+                );
             }),
           { concurrency: "unbounded" },
         );
@@ -3246,6 +3288,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               sourceId: row.source_id,
               toolRows: [row],
             })
+            .pipe(wrapInvocationError)
             .pipe(Effect.withSpan("executor.tool.resolve_annotations"));
           annotations = map[toolId];
         }
@@ -3291,11 +3334,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         yield* transaction(
           Effect.gen(function* () {
             if (runtime?.plugin.removeSource) {
-              yield* runtime.plugin.removeSource({
-                ctx: runtime.ctx,
-                sourceId,
-                scope: input.targetScope,
-              });
+              yield* runtime.plugin
+                .removeSource({
+                  ctx: runtime.ctx,
+                  sourceId,
+                  scope: input.targetScope,
+                })
+                .pipe(
+                  Effect.mapError((cause) =>
+                    pluginStorageFailure(runtime.plugin.id, "removeSource", cause),
+                  ),
+                );
             }
             yield* deleteSourceById(core, sourceId, input.targetScope);
           }),
@@ -3313,11 +3362,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (!sourceRow) return;
         const runtime = runtimes.get(sourceRow.plugin_id);
         if (runtime?.plugin.refreshSource) {
-          yield* runtime.plugin.refreshSource({
-            ctx: runtime.ctx,
-            sourceId,
-            scope: input.targetScope,
-          });
+          yield* runtime.plugin
+            .refreshSource({
+              ctx: runtime.ctx,
+              sourceId,
+              scope: input.targetScope,
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                pluginStorageFailure(runtime.plugin.id, "refreshSource", cause),
+              ),
+            );
         }
       });
 
@@ -3542,7 +3597,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         for (const runtime of runtimes.values()) {
           if (runtime.plugin.close) {
-            yield* runtime.plugin.close();
+            yield* runtime.plugin
+              .close()
+              .pipe(
+                Effect.mapError((cause) => pluginStorageFailure(runtime.plugin.id, "close", cause)),
+              );
           }
         }
         if (closeDb) {
@@ -3619,11 +3678,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       close,
     };
 
-    // Cast through `unknown` because the impl effects can include
-    // `Error` from plugin-supplied callbacks (resolveAnnotations etc.) —
-    // those leak via the helper functions and won't be cleaned until
-    // every plugin tightens its surface to typed errors. The runtime
-    // shape matches `Executor<TPlugins>`.
+    // Plugin extension keys are known from the generic plugin tuple,
+    // while runtime registration builds the same shape dynamically.
     const toExecutor = (value: unknown): Executor<TPlugins> => value as Executor<TPlugins>;
     return toExecutor(Object.assign(base, extensions));
   });

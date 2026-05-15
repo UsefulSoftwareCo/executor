@@ -110,7 +110,7 @@ describe("promise/createExecutor", () => {
         "ap.ctl.go",
         {},
         {
-          onElicitation: () => Effect.succeed({ action: "decline" as const }) as any,
+          onElicitation: async () => ({ action: "decline" as const }),
         },
       ),
     ).rejects.toMatchObject({

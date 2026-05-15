@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
-import { createExecutor, definePlugin, makeTestConfig } from "@executor-js/sdk";
+import { createExecutor, definePlugin } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { buildExecuteDescription } from "./description";
 

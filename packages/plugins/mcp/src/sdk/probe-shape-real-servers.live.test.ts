@@ -24,7 +24,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Duration, Effect, Option, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-import { createExecutor, makeTestConfig } from "@executor-js/sdk";
+import { createExecutor } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 import { probeMcpEndpointShape } from "./probe-shape";

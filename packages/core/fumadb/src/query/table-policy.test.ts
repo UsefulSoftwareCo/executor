@@ -13,6 +13,7 @@ import { column, idColumn, schema, table } from "fumadb/schema";
 
 interface TenantPolicyContext {
   readonly allowedTenantIds: ReadonlySet<string>;
+  readonly deniedTables: ReadonlySet<string>;
   readonly marker: string;
   readonly observed: string[];
 }
@@ -29,6 +30,11 @@ const assertTenantAllowed = (tableName: string, context: TenantPolicyContext, te
   }
 };
 
+const isReadDenied = (tableName: string, context: TenantPolicyContext) => {
+  observe(context, `${tableName}:read`);
+  return context.deniedTables.has(tableName);
+};
+
 const authors = table("policy_authors", {
   id: idColumn("id", "varchar(255)"),
   tenantId: column("tenant_id", "varchar(255)"),
@@ -36,7 +42,7 @@ const authors = table("policy_authors", {
 }).policy<TenantPolicyContext>({
   name: "tenant.authors",
   onRead: ({ builder, context }) => {
-    observe(context, "authors:read");
+    if (isReadDenied("authors", context)) return false;
     return builder("tenantId", "in", [...context.allowedTenantIds]);
   },
   onCreate: ({ values, context }) => assertTenantAllowed("authors", context, values.tenantId),
@@ -59,7 +65,7 @@ const posts = table("policy_posts", {
 }).policy<TenantPolicyContext>({
   name: "tenant.posts",
   onRead: ({ builder, context }) => {
-    observe(context, "posts:read");
+    if (isReadDenied("posts", context)) return false;
     return builder("tenantId", "in", [...context.allowedTenantIds]);
   },
   onCreate: ({ values, context }) => assertTenantAllowed("posts", context, values.tenantId),
@@ -82,7 +88,7 @@ const comments = table("policy_comments", {
 }).policy<TenantPolicyContext>({
   name: "tenant.comments",
   onRead: ({ builder, context }) => {
-    observe(context, "comments:read");
+    if (isReadDenied("comments", context)) return false;
     return builder("tenantId", "in", [...context.allowedTenantIds]);
   },
   onCreate: ({ values, context }) => assertTenantAllowed("comments", context, values.tenantId),
@@ -125,8 +131,13 @@ const tablePolicyDB = fumadb({
 
 type TablePolicyQuery = AbstractQuery<typeof v1>;
 
-const makeContext = (allowedTenantIds: readonly string[], marker: string): TenantPolicyContext => ({
+const makeContext = (
+  allowedTenantIds: readonly string[],
+  marker: string,
+  deniedTables: readonly string[] = [],
+): TenantPolicyContext => ({
   allowedTenantIds: new Set(allowedTenantIds),
+  deniedTables: new Set(deniedTables),
   marker,
   observed: [],
 });
@@ -403,6 +414,60 @@ describe("FumaDB table policies", () => {
           ]),
         );
       }),
+  );
+
+  it.effect("keeps requested relation keys when read policies deny joins", () =>
+    useHarness(async (orm) => {
+      await seedTenants(orm);
+
+      const blockedComments = withQueryContext(
+        orm,
+        makeContext(["tenant-a"], "blocked-comments", ["comments"]),
+      );
+      await expect(
+        blockedComments.findMany("posts", {
+          where: (builder) => builder("id", "=", "post-a-1"),
+          join: (builder) => builder.comments(),
+        }),
+      ).resolves.toEqual([
+        {
+          id: "post-a-1",
+          tenantId: "tenant-a",
+          authorId: "author-a",
+          title: "A One",
+          comments: [],
+        },
+      ]);
+
+      const blockedAuthors = withQueryContext(
+        orm,
+        makeContext(["tenant-a"], "blocked-authors", ["authors"]),
+      );
+      await expect(
+        blockedAuthors.findMany("posts", {
+          where: (builder) => builder("id", "=", "post-a-1"),
+          join: (builder) => builder.author(),
+        }),
+      ).resolves.toEqual([
+        {
+          id: "post-a-1",
+          tenantId: "tenant-a",
+          authorId: "author-a",
+          title: "A One",
+          author: null,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("fails closed when a query wrapper does not forward context rebinding", () =>
+    useHarness(async (orm) => {
+      const wrapped = { ...orm };
+
+      expect(() =>
+        withQueryContext(wrapped, makeContext(["tenant-a"], "wrapped")),
+      ).toThrow("Cannot apply query context");
+    }),
   );
 
   it.effect(

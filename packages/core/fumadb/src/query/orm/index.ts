@@ -165,6 +165,35 @@ const applyReadPoliciesToOptions = async (
   return changed ? { ...options, where, join } : options;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const applyDeniedJoinDefaults = (
+  records: Record<string, unknown>[],
+  options: SimplifyFindOptions<FindManyOptions>,
+) => {
+  if (!options.join) return;
+
+  for (const entry of options.join) {
+    if (entry.options === false) {
+      for (const record of records) {
+        record[entry.relation.name] = entry.relation.type === "many" ? [] : null;
+      }
+      continue;
+    }
+
+    for (const record of records) {
+      const value = record[entry.relation.name];
+      if (entry.relation.type === "many") {
+        if (Array.isArray(value)) applyDeniedJoinDefaults(value.filter(isRecord), entry.options);
+        continue;
+      }
+
+      if (isRecord(value)) applyDeniedJoinDefaults([value], entry.options);
+    }
+  }
+};
+
 const runCreatePolicies = async (
   table: AnyTable,
   values: Record<string, unknown>,
@@ -181,6 +210,7 @@ const applyUpdatePolicies = async (
   set: Record<string, unknown>,
   context: unknown,
   operation: Extract<WriteOperation, "update" | "upsert">,
+  create?: Record<string, unknown>,
 ): Promise<Condition | undefined | false> => {
   let nextWhere = where;
 
@@ -188,6 +218,7 @@ const applyUpdatePolicies = async (
     const condition = await policy.onUpdate?.({
       where: nextWhere,
       set,
+      create,
       context,
       builder: createBuilder(table.columns),
       operation,
@@ -303,7 +334,7 @@ export function toORM<S extends AnySchema>(
     return table;
   }
 
-  return {
+  const query = {
     internal,
     async count(name, { where } = {}) {
       const table = toTable(name);
@@ -327,6 +358,7 @@ export function toORM<S extends AnySchema>(
         options.update,
         context,
         "upsert",
+        options.create,
       );
       if (compiledWhere === false) return;
       await runCreatePolicies(table, options.create, context);
@@ -365,7 +397,9 @@ export function toORM<S extends AnySchema>(
 
       compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
       if (compiledOptions === false) return [];
-      return await internal.findMany(table, compiledOptions);
+      const records = await internal.findMany(table, compiledOptions);
+      applyDeniedJoinDefaults(records, compiledOptions);
+      return records;
     },
     async findFirst(name, options) {
       const table = toTable(name);
@@ -374,7 +408,9 @@ export function toORM<S extends AnySchema>(
 
       compiledOptions = await applyReadPoliciesToOptions(table, compiledOptions, context);
       if (compiledOptions === false) return null;
-      return await internal.findFirst(table, compiledOptions);
+      const record = await internal.findFirst(table, compiledOptions);
+      if (record) applyDeniedJoinDefaults([record], compiledOptions);
+      return record;
     },
     async updateMany(name, { set, where }) {
       const table = toTable(name);
@@ -398,11 +434,24 @@ export function toORM<S extends AnySchema>(
       );
     },
   } as AbstractQuery<S>;
+
+  Object.defineProperty(query, "withContext", {
+    enumerable: false,
+    value(nextContext: unknown) {
+      return toORM(internal, { context: nextContext });
+    },
+  });
+
+  return query;
 }
 
 export function withQueryContext<S extends AnySchema, TContext>(
   db: AbstractQuery<S>,
   context: TContext,
 ): AbstractQuery<S> {
-  return toORM(db.internal, { context });
+  if (typeof db.withContext === "function") return db.withContext(context);
+
+  throw new Error(
+    "[FumaDB] Cannot apply query context to this query object. If you wrap an AbstractQuery, forward withContext so table policies keep using the wrapper.",
+  );
 }

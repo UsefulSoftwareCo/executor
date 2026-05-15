@@ -71,6 +71,7 @@ export interface TableCreatePolicyInput<TTable extends AnyTable, TContext> {
 export interface TableUpdatePolicyInput<TTable extends AnyTable, TContext> {
   readonly where: Condition | undefined;
   readonly set: TableUpdateValues<TTable>;
+  readonly create?: TableInsertValues<TTable>;
   readonly context: TContext;
   readonly builder: ConditionBuilder<TTable["columns"]>;
   readonly operation: "update" | "upsert";

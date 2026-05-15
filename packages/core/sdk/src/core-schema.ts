@@ -2,8 +2,11 @@ import { column, idColumn, table, type AnyColumn, type AnyTable } from "fumadb/s
 import type { FumaRow } from "./fuma-runtime";
 import {
   assertExecutorScopeAllowed,
+  assertExecutorScopeTargetValue,
   executorScopePolicyName,
+  executorUnscopedPolicyName,
   executorScopeIds,
+  requireExecutorScopeTarget,
   type ExecutorScopePolicyContext,
 } from "./scope-policy";
 
@@ -19,7 +22,7 @@ export const jsonColumn = (name: string) => column(name, "json");
 export const nullableJsonColumn = (name: string) => column(name, "json").nullable();
 export const dateColumn = (name: string) => column(name, "timestamp");
 
-export const executorTable = <const TColumns extends UserColumns>(
+const unscopedExecutorTable = <const TColumns extends UserColumns>(
   name: string,
   columns: TColumns,
 ) => {
@@ -29,8 +32,8 @@ export const executorTable = <const TColumns extends UserColumns>(
     id: column("id", "varchar(255)"),
   });
   out.unique(`${name}_id_uidx`, ["id"]);
-  return out.policy<ExecutorScopePolicyContext>({
-    name: executorScopePolicyName,
+  return out.policy({
+    name: executorUnscopedPolicyName,
   });
 };
 
@@ -59,14 +62,20 @@ export const scopedExecutorTable = <const TColumns extends UserColumns>(
       builder("scope_id", "in", executorScopeIds(name, "read", context)),
     onCreate: ({ values, context }) =>
       assertExecutorScopeAllowed(name, "write", values.scope_id, context),
-    onUpdate: ({ builder, set, context }) => {
+    onUpdate: ({ builder, set, create, where, context }) => {
+      const target = requireExecutorScopeTarget(name, "write", where, context);
       if (set.scope_id !== undefined) {
-        assertExecutorScopeAllowed(name, "write", set.scope_id, context);
+        assertExecutorScopeTargetValue(name, "write", set.scope_id, target, context);
       }
-      return builder("scope_id", "in", executorScopeIds(name, "write", context));
+      if (create?.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(name, "write", create.scope_id, target, context);
+      }
+      return builder("scope_id", "=", target.value);
     },
-    onDelete: ({ builder, context }) =>
-      builder("scope_id", "in", executorScopeIds(name, "delete", context)),
+    onDelete: ({ builder, where, context }) => {
+      const target = requireExecutorScopeTarget(name, "delete", where, context);
+      return builder("scope_id", "=", target.value);
+    },
   });
 };
 
@@ -96,18 +105,34 @@ const credentialBindingTable = (() => {
       builder("scope_id", "in", executorScopeIds("credential_binding", "read", context)),
     onCreate: ({ values, context }) =>
       assertExecutorScopeAllowed("credential_binding", "write", values.scope_id, context),
-    onUpdate: ({ builder, set, context }) => {
+    onUpdate: ({ builder, set, create, where, context }) => {
+      const target = requireExecutorScopeTarget("credential_binding", "write", where, context);
       if (set.scope_id !== undefined) {
-        assertExecutorScopeAllowed("credential_binding", "write", set.scope_id, context);
+        assertExecutorScopeTargetValue(
+          "credential_binding",
+          "write",
+          set.scope_id,
+          target,
+          context,
+        );
       }
-      return builder("scope_id", "in", executorScopeIds("credential_binding", "write", context));
+      if (create?.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(
+          "credential_binding",
+          "write",
+          create.scope_id,
+          target,
+          context,
+        );
+      }
+      return builder("scope_id", "=", target.value);
     },
-    onDelete: ({ builder, context }) => {
-      const scopeIds = executorScopeIds("credential_binding", "delete", context);
-      return builder.or(
-        builder("scope_id", "in", scopeIds),
-        builder("source_scope_id", "in", scopeIds),
-      );
+    onDelete: ({ builder, where, context }) => {
+      const target = requireExecutorScopeTarget("credential_binding", "delete", where, context, [
+        "scope_id",
+        "source_scope_id",
+      ]);
+      return builder(target.column, "=", target.value);
     },
   });
 })();
@@ -176,7 +201,7 @@ export const coreTables = defineTables({
     created_at: dateColumn("created_at"),
     updated_at: dateColumn("updated_at"),
   }),
-  blob: executorTable("blob", {
+  blob: unscopedExecutorTable("blob", {
     namespace: textColumn("namespace"),
     key: textColumn("key"),
     value: textColumn("value"),

@@ -16,7 +16,6 @@ import {
   createExecutor,
   definePlugin,
   type FumaDb,
-  makeTestConfig,
   RemoveSecretInput,
   Scope,
   ScopeId,
@@ -25,6 +24,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 import type { ConfigFileSink } from "@executor-js/config";
 

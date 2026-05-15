@@ -44,7 +44,7 @@ import type { Usage, UsagesForConnectionInput, UsagesForSecretInput } from "./us
 // `scopedWhere(...)` and writes stamp an explicit `scope_id`.
 // ---------------------------------------------------------------------------
 
-export interface StorageDeps<TTables extends FumaTables | undefined = undefined> {
+export interface StorageDeps<TTables extends FumaTables | undefined = FumaTables> {
   /**
    * Precedence-ordered scope stack visible to this executor. Innermost
    * first. Reads on scoped tables walk every scope; writes require the

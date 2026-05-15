@@ -162,7 +162,7 @@ const makeSpec = (contentType: string, schema: Record<string, unknown> = { type:
 const createPostgresFumaDb = <const TTables extends FumaTables>(
   db: unknown,
   tables: TTables,
-): FumaDb => {
+): FumaDb<any> => {
   const version = "1.0.0" as const;
   const factory = fumadb({
     namespace: DATABASE_NAMESPACE,

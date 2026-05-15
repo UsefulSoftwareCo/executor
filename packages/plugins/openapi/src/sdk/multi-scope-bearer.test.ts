@@ -38,9 +38,9 @@ import {
   SetSecretInput,
   ToolInvocationError,
   type InvokeOptions,
-  makeTestConfig,
   type SecretProvider,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 import { ConfiguredHeaderBinding, OpenApiSourceBindingInput } from "./types";

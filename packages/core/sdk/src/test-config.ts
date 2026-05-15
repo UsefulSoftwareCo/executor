@@ -56,19 +56,41 @@ const makeLazyTestFumaDb = (options: {
     upsert: async (table, value) => (await start()).db.internal.upsert(table, value),
   };
 
-  const db = new Proxy(
-    { internal },
-    {
-      get(target, prop) {
-        if (prop === "internal") return target.internal;
-        return async (...args: unknown[]) => {
-          const actual = await start();
-          const method = Reflect.get(actual.db, prop) as (...innerArgs: unknown[]) => unknown;
-          return method.apply(actual.db, args);
-        };
+  const queryMethods = new Set<PropertyKey>([
+    "count",
+    "create",
+    "createMany",
+    "deleteMany",
+    "findFirst",
+    "findMany",
+    "transaction",
+    "updateMany",
+    "upsert",
+  ]);
+
+  const makeDb = (context?: ExecutorScopePolicyContext): FumaDb =>
+    new Proxy(
+      { internal: context === undefined ? internal : { ...internal, context } },
+      {
+        get(target, prop) {
+          if (prop === "internal") return target.internal;
+          if (prop === "withContext") {
+            return (nextContext: ExecutorScopePolicyContext) => makeDb(nextContext);
+          }
+          if (!queryMethods.has(prop)) return undefined;
+
+          return async (...args: unknown[]) => {
+            const actual = await start();
+            const actualDb =
+              context === undefined ? actual.db : withQueryContext(actual.db, context);
+            const method = Reflect.get(actualDb, prop) as (...innerArgs: unknown[]) => unknown;
+            return method.apply(actualDb, args);
+          };
+        },
       },
-    },
-  ) as FumaDb;
+    ) as FumaDb;
+
+  const db = makeDb();
 
   return {
     db,

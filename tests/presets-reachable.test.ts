@@ -2,7 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
-import { createExecutor, makeTestConfig } from "../packages/core/sdk/src/index";
+import { createExecutor } from "../packages/core/sdk/src/index";
+import { makeTestConfig } from "../packages/core/sdk/src/testing";
 import { openApiPlugin } from "../packages/plugins/openapi/src/sdk/plugin";
 import { parse, resolveSpecText } from "../packages/plugins/openapi/src/sdk/parse";
 import { mcpPlugin } from "../packages/plugins/mcp/src/sdk/plugin";

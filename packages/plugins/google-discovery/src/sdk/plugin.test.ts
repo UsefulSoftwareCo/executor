@@ -9,7 +9,6 @@ import {
   ConnectionId,
   CreateConnectionInput,
   createExecutor,
-  makeTestConfig,
   Scope,
   ScopeId,
   SecretId,
@@ -17,6 +16,7 @@ import {
   TokenMaterial,
   type InvokeOptions,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { googleDiscoveryPlugin } from "./plugin";
 

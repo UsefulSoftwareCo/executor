@@ -1,8 +1,11 @@
+import { ConditionType, type Condition } from "fumadb/query";
 import type { AnyTable } from "fumadb/schema";
 
 import { StorageError } from "./fuma-runtime";
 
 export const executorScopePolicyName = "executor.scope";
+export const executorUnscopedPolicyName = "executor.unscoped";
+const unscopedExecutorTables = new Set(["blob"]);
 
 export interface ExecutorScopePolicyContext {
   readonly allowedScopeIds: ReadonlySet<string>;
@@ -10,6 +13,12 @@ export interface ExecutorScopePolicyContext {
 
 export type ExecutorScopePolicyAccess = "read" | "write" | "delete";
 export type ExecutorScopeValue = string | null | undefined;
+export type ExecutorScopeTargetColumn = "scope_id" | "source_scope_id";
+
+export interface ExecutorScopeTarget {
+  readonly column: ExecutorScopeTargetColumn;
+  readonly value: string;
+}
 
 export const hasExecutorScopePolicy = (table: AnyTable): boolean =>
   table.policies.some((policy) => policy.name === executorScopePolicyName);
@@ -19,9 +28,24 @@ const scopePolicyViolation = (message: string): never => {
   throw new StorageError({ message, cause: undefined });
 };
 
-export function assertExecutorScopePolicyTable(table: AnyTable): void {
-  if (hasExecutorScopePolicy(table)) return;
-  scopePolicyViolation(`Storage table "${table.ormName}" is missing an executor scope policy.`);
+export function assertExecutorScopePolicyTable(table: AnyTable, tableKey?: string): void {
+  const tableName = table.ormName || tableKey || table.names.sql;
+  const scopedPolicy = table.policies.find((policy) => policy.name === executorScopePolicyName);
+  if (
+    scopedPolicy?.onRead &&
+    scopedPolicy.onCreate &&
+    scopedPolicy.onUpdate &&
+    scopedPolicy.onDelete
+  ) {
+    return;
+  }
+
+  const unscopedPolicy = table.policies.find(
+    (policy) => policy.name === executorUnscopedPolicyName,
+  );
+  if (unscopedPolicy && unscopedExecutorTables.has(tableName)) return;
+
+  scopePolicyViolation(`Storage table "${tableName}" is missing an executor scope policy.`);
 }
 
 const requireExecutorScopeContext = (
@@ -51,6 +75,41 @@ export const executorScopeIds = (
   context: ExecutorScopePolicyContext | undefined,
 ): string[] => [...requireExecutorScopeContext(tableName, access, context).allowedScopeIds];
 
+const findScopeTarget = (
+  condition: Condition | undefined,
+  columns: readonly ExecutorScopeTargetColumn[],
+): ExecutorScopeTarget | null => {
+  if (!condition) return null;
+  if (condition.type === ConditionType.Compare) {
+    const column = columns.find((name) => condition.a.ormName === name);
+    if (!column || condition.operator !== "=" || typeof condition.b !== "string") return null;
+    return { column, value: condition.b };
+  }
+  if (condition.type !== ConditionType.And) return null;
+
+  for (const item of condition.items) {
+    const target = findScopeTarget(item, columns);
+    if (target) return target;
+  }
+  return null;
+};
+
+export const requireExecutorScopeTarget = (
+  tableName: string,
+  access: Extract<ExecutorScopePolicyAccess, "write" | "delete">,
+  where: Condition | undefined,
+  context: ExecutorScopePolicyContext | undefined,
+  columns: readonly ExecutorScopeTargetColumn[] = ["scope_id"],
+): ExecutorScopeTarget => {
+  const scopeContext = requireExecutorScopeContext(tableName, access, context);
+  const target = findScopeTarget(where, columns);
+  if (target && scopeContext.allowedScopeIds.has(target.value)) return target;
+
+  return scopePolicyViolation(
+    `Storage ${access} on table "${tableName}" must target an explicit scope in the executor scope stack.`,
+  );
+};
+
 export const assertExecutorScopeAllowed = (
   tableName: string,
   access: ExecutorScopePolicyAccess,
@@ -60,6 +119,21 @@ export const assertExecutorScopeAllowed = (
   if (isExecutorScopeAllowed(tableName, access, value, context)) return;
   scopePolicyViolation(
     `Storage ${access} on table "${tableName}" is outside the executor scope stack.`,
+  );
+};
+
+export const assertExecutorScopeTargetValue = (
+  tableName: string,
+  access: Extract<ExecutorScopePolicyAccess, "write" | "delete">,
+  value: ExecutorScopeValue,
+  target: ExecutorScopeTarget,
+  context: ExecutorScopePolicyContext | undefined,
+): void => {
+  assertExecutorScopeAllowed(tableName, access, value, context);
+  if (value === target.value) return;
+
+  scopePolicyViolation(
+    `Storage ${access} on table "${tableName}" must write the same scope it explicitly targets.`,
   );
 };
 

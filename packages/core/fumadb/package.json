@@ -58,6 +58,12 @@
           "default": "./dist/adapters/memory/index.js"
         }
       },
+      "./cli": {
+        "import": {
+          "types": "./dist/cli/index.d.ts",
+          "default": "./dist/cli/index.js"
+        }
+      },
       "./cuid": {
         "import": {
           "types": "./dist/cuid.d.ts",
@@ -79,10 +85,11 @@
     }
   },
   "scripts": {
-    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "build": "tsup && tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit",
-    "test": "vitest run src/**/*.test.ts --passWithNoTests"
+    "test": "vitest run src/**/*.test.ts test/generate.test.ts test/uuid.test.ts --passWithNoTests",
+    "test:integration": "vitest run test/**/*.test.ts --passWithNoTests"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -5,14 +5,13 @@ import { Effect } from "effect";
 
 import {
   createExecutor,
-  makeTestConfig,
-  makeTestExecutor,
   RemoveSecretInput,
   Scope,
   ScopeId,
   SecretId,
   SetSecretInput,
 } from "@executor-js/sdk";
+import { makeTestConfig, makeTestExecutor } from "@executor-js/sdk/testing";
 
 import {
   WorkOSVaultClientError,

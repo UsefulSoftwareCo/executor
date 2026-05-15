@@ -5,11 +5,11 @@ import z from "zod";
 
 import {
   createExecutor,
-  makeTestConfig,
   FormElicitation,
   ElicitationResponse,
   type InvokeOptions,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 import { serveMcpServer } from "../testing";

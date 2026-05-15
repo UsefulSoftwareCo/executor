@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import { Effect } from "effect";
-import { createExecutor, makeTestConfig, type Tool } from "@executor-js/sdk";
+import { createExecutor, type Tool } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { googleDiscoveryHttpPlugin } from "@executor-js/plugin-google-discovery/api";

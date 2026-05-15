@@ -6,6 +6,8 @@ export {
   createExecutor,
   type Executor,
   type ExecutorConfig,
+  type PromiseInvokeOptions,
+  type PromiseOnElicitation,
   type Promisified,
 } from "./promise-executor";
 
@@ -32,7 +34,10 @@ export {
 } from "./types";
 export type { ToolAnnotations } from "./core-schema";
 export type { AnyPlugin, PluginExtensions } from "./plugin";
-export type { OnElicitation, InvokeOptions } from "./executor";
+export type {
+  PromiseOnElicitation as OnElicitation,
+  PromiseInvokeOptions as InvokeOptions,
+} from "./promise-executor";
 
 // Elicitation — Promise invoke returns raw values, but consumers still
 // may want to reference request/response shapes.

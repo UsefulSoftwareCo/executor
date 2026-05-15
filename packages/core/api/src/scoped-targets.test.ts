@@ -13,9 +13,9 @@ import {
   TokenMaterial,
   createExecutor,
   definePlugin,
-  makeTestConfig,
   type Executor,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 import { ExecutorApi } from "./api";

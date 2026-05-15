@@ -6,8 +6,8 @@ import {
   FormElicitation,
   createExecutor,
   definePlugin,
-  makeTestConfig,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
 import { describeTool, makeExecutorToolInvoker, searchTools } from "./tool-invoker";

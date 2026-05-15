@@ -1,8 +1,6 @@
 import { Database } from "bun:sqlite";
 import { Data } from "effect";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 
 /* oxlint-disable executor/no-json-parse, executor/no-switch-statement, executor/no-try-catch-or-throw -- boundary: one-shot legacy SQLite importer normalizes unknown rows and wraps native sqlite failures */
 
@@ -24,7 +22,6 @@ export class LocalSqliteImportError extends Data.TaggedError("LocalSqliteImportE
 
 export interface LocalSqliteImportOptions {
   readonly sqlitePath: string;
-  readonly markerPath: string;
   readonly target: ImportFumaDb;
   readonly tables: FumaTables;
   readonly scopeId: string;
@@ -58,6 +55,14 @@ const sqliteColumnNames = (sqlite: Database, tableName: string): ReadonlySet<str
 
 const readRows = (sqlite: Database, tableName: string): readonly SqliteRow[] =>
   sqlite.query<SqliteRow, []>(`SELECT * FROM ${quoteIdent(tableName)}`).all();
+
+const readScopeIds = (sqlite: Database, tableName: string): readonly string[] =>
+  sqlite
+    .query<{ scope_id: unknown }, []>(
+      `SELECT DISTINCT "scope_id" AS scope_id FROM ${quoteIdent(tableName)} WHERE "scope_id" IS NOT NULL`,
+    )
+    .all()
+    .flatMap((row) => (typeof row.scope_id === "string" ? [row.scope_id] : []));
 
 const parseJson = (value: string): unknown => {
   try {
@@ -155,22 +160,42 @@ const toFumaRow = (input: {
   return out;
 };
 
-const moveImportedSqliteAside = (sqlitePath: string): string => {
-  const backupPath = `${sqlitePath}.imported-${Date.now()}-${randomBytes(4).toString("hex")}`;
-  renameSync(sqlitePath, backupPath);
+export const readLegacySqliteScopeIds = (options: {
+  readonly sqlitePath: string;
+  readonly tables: FumaTables;
+  readonly scopeId: string;
+}): ReadonlySet<string> => {
+  const scopeIds = new Set([options.scopeId]);
+  if (!existsSync(options.sqlitePath)) return scopeIds;
 
-  for (const suffix of ["-wal", "-shm"]) {
-    const source = `${sqlitePath}${suffix}`;
-    if (existsSync(source)) renameSync(source, `${backupPath}${suffix}`);
+  let sqlite: Database | null = null;
+  try {
+    sqlite = new Database(options.sqlitePath, { readonly: true });
+    for (const table of Object.values(options.tables)) {
+      const tableName = table.names.sql;
+      if (!tableExists(sqlite, tableName)) continue;
+      const columns = sqliteColumnNames(sqlite, tableName);
+      if (!columns.has("scope_id")) continue;
+      for (const scopeId of readScopeIds(sqlite, tableName)) {
+        scopeIds.add(scopeId);
+      }
+    }
+    return scopeIds;
+  } catch (cause) {
+    throw new LocalSqliteImportError({
+      message: `Failed to inspect local SQLite scope ids from ${options.sqlitePath}`,
+      sqlitePath: options.sqlitePath,
+      cause,
+    });
+  } finally {
+    sqlite?.close();
   }
-
-  return backupPath;
 };
 
 export const importSqliteDataToFuma = async (
   options: LocalSqliteImportOptions,
 ): Promise<LocalSqliteImportResult> => {
-  if (!existsSync(options.sqlitePath) || existsSync(options.markerPath)) {
+  if (!existsSync(options.sqlitePath)) {
     return { imported: false, importedRows: 0, importedTables: [] };
   }
 
@@ -207,15 +232,7 @@ export const importSqliteDataToFuma = async (
     sqlite.close();
     sqlite = null;
 
-    mkdirSync(dirname(options.markerPath), { recursive: true });
-    writeFileSync(
-      options.markerPath,
-      `${JSON.stringify({ importedAt: new Date().toISOString(), importedRows, importedTables })}\n`,
-      { flag: "w" },
-    );
-
-    const backupPath = moveImportedSqliteAside(options.sqlitePath);
-    return { imported: true, importedRows, importedTables, backupPath };
+    return { imported: true, importedRows, importedTables };
   } catch (cause) {
     throw new LocalSqliteImportError({
       message: `Failed to import local SQLite data from ${options.sqlitePath}`,

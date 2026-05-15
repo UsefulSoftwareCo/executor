@@ -1,0 +1,83 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1776367901699,
+      "tag": "0000_overconfident_sharon_carter",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1776680432025,
+      "tag": "0001_sour_catseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1776732062873,
+      "tag": "0002_lively_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1776976132767,
+      "tag": "0003_little_silk_fever",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1777800000000,
+      "tag": "0004_add_tool_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1777850000000,
+      "tag": "0005_repair_mcp_oauth_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1777850000001,
+      "tag": "0006_neat_terror",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1778100000000,
+      "tag": "0007_normalize_plugin_secret_refs",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1778128200000,
+      "tag": "0008_scoped_credentials_cutover",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1778192434062,
+      "tag": "0009_repair_openapi_oauth_cutover_residue",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1778192434063,
+      "tag": "0010_add_credential_binding_secret_scope",
+      "breakpoints": true
+    }
+  ]
+}

@@ -3,7 +3,7 @@
  * — no Effect knowledge or database setup needed. Uses the SDK's
  * ephemeral in-memory FumaDB backend by default.
  */
-import { createExecutor, SecretId, SetSecretInput } from "@executor-js/sdk/promise";
+import { createExecutor } from "@executor-js/sdk/promise";
 import { mcpPlugin } from "@executor-js/plugin-mcp/promise";
 import { openApiPlugin } from "@executor-js/plugin-openapi/promise";
 import { graphqlPlugin } from "@executor-js/plugin-graphql/promise";
@@ -101,14 +101,12 @@ if (anilistTool) {
 // 7. Secrets — shared across all plugins
 // ---------------------------------------------------------------------------
 
-await executor.secrets.set(
-  SetSecretInput.make({
-    id: SecretId.make("api-key"),
-    scope: "my-app" as SetSecretInput["scope"],
-    name: "Shared API Key",
-    value: "sk_...",
-  }),
-);
+await executor.secrets.set({
+  id: "api-key",
+  scope: "my-app",
+  name: "Shared API Key",
+  value: "sk_...",
+});
 
 const resolved = await executor.secrets.get("api-key");
 console.log("Secret:", resolved);

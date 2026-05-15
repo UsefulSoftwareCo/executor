@@ -1,7 +1,8 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { ScopeId, createExecutor, makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk";
+import { ScopeId, createExecutor } from "@executor-js/sdk";
+import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
 
 import { onepasswordPlugin } from "./plugin";
 import { OnePasswordConfig, DesktopAppAuth } from "./types";
