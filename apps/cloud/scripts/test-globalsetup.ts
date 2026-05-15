@@ -4,27 +4,33 @@
 // via postgres.js. Port must match DATABASE_URL in wrangler.test.jsonc.
 // ---------------------------------------------------------------------------
 
-import { collectTables } from "@executor-js/sdk";
-import executorConfig from "../executor.config";
-import { ensureCloudSchema } from "../src/services/schema-init";
-import { createPgliteFumaDb, type PgliteFumaDb } from "../src/services/pglite";
+import { PGlite } from "@electric-sql/pglite";
+import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = 5434;
+const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 
-let runtime: PgliteFumaDb | undefined;
+let db: PGlite | undefined;
+let server: PGLiteSocketServer | undefined;
 
 export default async function setup() {
-  runtime = await createPgliteFumaDb({
-    tables: collectTables(executorConfig.plugins({})),
-    namespace: "executor_cloud",
-    port: PORT,
-    host: "127.0.0.1",
-  });
-  await ensureCloudSchema(runtime.drizzle);
+  db = await PGlite.create();
+  await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
+
+  server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1" });
+  await server.start();
+
   // eslint-disable-next-line no-console
   console.log(`[test-db] PGlite socket server listening on 127.0.0.1:${PORT}`);
 
   return async () => {
-    await runtime?.close();
+    await server?.stop();
+    await db?.close();
   };
 }

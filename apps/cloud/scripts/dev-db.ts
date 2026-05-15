@@ -4,22 +4,22 @@
 //
 // Exposes an in-process PGlite instance over a TCP socket so Hyperdrive's
 // localConnectionString can connect to it like a real Postgres server.
-// Runs FumaDB migrations on startup so the schema is ready.
+// Runs Drizzle migrations on startup so the schema matches cloud production.
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { resolve, dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectTables } from "@executor-js/sdk";
-import executorConfig from "../executor.config";
-import { ensureCloudSchema } from "../src/services/schema-init";
-import { createPgliteFumaDb } from "../src/services/pglite";
+import { PGlite } from "@electric-sql/pglite";
+import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 5433;
 const DB_PATH = resolve(__dirname, "../.dev-db");
-const CUTOVER_MARKER_PATH = resolve(DB_PATH, "fumadb-cutover-v1");
+const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 
 // Reap any orphan dev-db from a previous `bun dev` that didn't shut down
 // cleanly — otherwise the new instance can't bind to PORT and the app ends
@@ -51,27 +51,46 @@ if (reapStaleDevDb()) {
   await sleep(200);
 }
 
-if (existsSync(DB_PATH) && !existsSync(CUTOVER_MARKER_PATH)) {
-  console.log("[dev-db] Resetting pre-FumaDB dev database");
+async function hasDrizzleMigrationHistory(path: string): Promise<boolean> {
+  if (!existsSync(path)) return true;
+
+  const db = await PGlite.create(path);
+  const result = await db.query<{ exists: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'drizzle'
+        AND table_name = '__drizzle_migrations'
+    ) AS "exists"
+  `);
+  await db.close();
+  return result.rows[0]?.exists === true;
+}
+
+if (!(await hasDrizzleMigrationHistory(DB_PATH))) {
+  console.log("[dev-db] Resetting dev database without Drizzle migration history");
   rmSync(DB_PATH, { recursive: true, force: true });
 }
 
 console.log(`[dev-db] Starting PGlite at ${DB_PATH}`);
-const runtime = await createPgliteFumaDb({
-  tables: collectTables(executorConfig.plugins({})),
-  namespace: "executor_cloud",
-  dataDir: DB_PATH,
+const db = await PGlite.create(DB_PATH);
+
+console.log(`[dev-db] Running migrations from ${MIGRATIONS_FOLDER}`);
+await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
+
+const server = new PGLiteSocketServer({
+  db,
   port: PORT,
   host: "127.0.0.1",
 });
-await ensureCloudSchema(runtime.drizzle);
-mkdirSync(DB_PATH, { recursive: true });
-writeFileSync(CUTOVER_MARKER_PATH, `${new Date().toISOString()}\n`, { flag: "w" });
+
+await server.start();
 console.log(`[dev-db] Listening on postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres`);
 
 const shutdown = async () => {
   console.log("\n[dev-db] Shutting down");
-  await runtime.close();
+  await server.stop();
+  await db.close();
   process.exit(0);
 };
 
