@@ -333,3 +333,10 @@ export {
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";
+
+// ToolResult — typed value-based discriminated union for tool outcomes.
+// The `Tool` value namespace exposes `Tool.ok` / `Tool.fail` constructors;
+// the `Tool` type alias from `./types` is a separate row projection.
+// TypeScript permits the two to share a name because one is purely a
+// value and the other purely a type.
+export { ToolResult, isToolResult, type ToolError } from "./tool-result";
