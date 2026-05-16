@@ -9,7 +9,10 @@ import { Effect, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { ScopeId } from "@executor-js/sdk";
-import { serveMutableOpenApiSpecTestServer } from "@executor-js/plugin-openapi/testing";
+import {
+  makeOpenApiTestSpecJson,
+  serveMutableOpenApiSpecTestServer,
+} from "@executor-js/plugin-openapi/testing";
 
 import { asOrg } from "./__test-harness__/api-harness";
 
@@ -26,7 +29,7 @@ const refreshApi = (version: "1.0.0" | "2.0.0") =>
     .add(version === "1.0.0" ? RefreshGroupV1 : RefreshGroupV2)
     .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version }));
 
-const specV1 = JSON.stringify(OpenApi.fromApi(refreshApi("1.0.0")));
+const specV1 = makeOpenApiTestSpecJson(refreshApi("1.0.0"));
 
 describe("sources.refresh (HTTP)", () => {
   it.effect("addSpec from URL → canRefresh:true; refresh re-fetches and updates tools", () =>

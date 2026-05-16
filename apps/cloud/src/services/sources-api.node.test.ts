@@ -15,7 +15,10 @@ import {
   makeGreetingGraphqlSchema,
 } from "@executor-js/plugin-graphql/testing";
 import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
-import { serveOpenApiEchoTestServer } from "@executor-js/plugin-openapi/testing";
+import {
+  makeOpenApiTestSpecJson,
+  serveOpenApiEchoTestServer,
+} from "@executor-js/plugin-openapi/testing";
 
 import { asOrg, asUser, testUserOrgScopeId } from "./__test-harness__/api-harness";
 
@@ -30,7 +33,7 @@ const MinimalSourceApi = HttpApi.make("sourcesApiTest")
   .add(PingGroup)
   .annotateMerge(OpenApi.annotations({ title: "Sources API Test", version: "1.0.0" }));
 
-const MINIMAL_OPENAPI_SPEC = JSON.stringify(OpenApi.fromApi(MinimalSourceApi));
+const MINIMAL_OPENAPI_SPEC = makeOpenApiTestSpecJson(MinimalSourceApi);
 
 // The Cloudflare OpenAPI spec is the biggest real spec we care about:
 // 16MB, 2700+ operations, thousands of shared schemas. Exercising

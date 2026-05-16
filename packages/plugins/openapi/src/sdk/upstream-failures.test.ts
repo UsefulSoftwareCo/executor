@@ -34,6 +34,7 @@ import {
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import {
   makeOpenApiTestSourceConfig,
+  makeOpenApiTestSpecJson,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
 } from "../testing";
@@ -126,7 +127,7 @@ const FailureApi = HttpApi.make("failuresTest")
   .add(ThingsGroup)
   .annotateMerge(OpenApi.annotations({ title: "FailuresTest", version: "1.0.0" }));
 
-const makeSpec = () => JSON.stringify(OpenApi.fromApi(FailureApi));
+const makeSpec = () => makeOpenApiTestSpecJson(FailureApi);
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {

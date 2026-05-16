@@ -87,6 +87,23 @@ export type OpenApiTestSourceExecutor = {
   readonly openapi: Pick<OpenApiPluginExtension, "addSpec">;
 };
 
+export interface OpenApiTestSpecOptions {
+  readonly baseUrl?: string;
+  readonly transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>;
+}
+
+export const makeOpenApiTestSpecJson = (
+  api: HttpApi.Any,
+  options: OpenApiTestSpecOptions = {},
+): string => {
+  const annotations = OpenApi.annotations({
+    ...(options.baseUrl !== undefined ? { servers: [{ url: options.baseUrl }] } : {}),
+    transform: options.transformSpec,
+  });
+  const annotated = (api as HttpApi.AnyWithProps).annotateMerge(annotations);
+  return JSON.stringify(OpenApi.fromApi(annotated));
+};
+
 export const makeOpenApiTestSourceConfig = (
   server: OpenApiTestServerShape,
   options: OpenApiTestSourceOptions,
@@ -152,15 +169,7 @@ const openApiSpecJsonFromHttpApi = (
   transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>,
 ): Effect.Effect<string, OpenApiTestServerSpecError> =>
   Effect.try({
-    try: () => {
-      const annotated = (api as HttpApi.AnyWithProps).annotateMerge(
-        OpenApi.annotations({
-          servers: [{ url: baseUrl }],
-          transform: transformSpec,
-        }),
-      );
-      return JSON.stringify(OpenApi.fromApi(annotated));
-    },
+    try: () => makeOpenApiTestSpecJson(api, { baseUrl, transformSpec }),
     catch: (cause) => new OpenApiTestServerSpecError({ cause }),
   });
 

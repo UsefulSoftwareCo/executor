@@ -1,12 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
-import {
-  HttpApi,
-  HttpApiBuilder,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  OpenApi,
-} from "effect/unstable/httpapi";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -27,7 +21,11 @@ import type { ConfigFileSink } from "@executor-js/config";
 const TEST_SCOPE = "test-scope";
 import { openApiPlugin } from "./plugin";
 import { ConfiguredHeaderBinding, OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
-import { addOpenApiTestSource, serveOpenApiHttpApiTestServer } from "../testing";
+import {
+  addOpenApiTestSource,
+  makeOpenApiTestSpecJson,
+  serveOpenApiHttpApiTestServer,
+} from "../testing";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
 
@@ -94,8 +92,7 @@ const ItemsGroup = HttpApiGroup.make("items")
 
 const TestApi = HttpApi.make("testApi").add(ItemsGroup);
 
-const spec = OpenApi.fromApi(TestApi);
-const specJson = JSON.stringify(spec);
+const specJson = makeOpenApiTestSpecJson(TestApi);
 
 // ---------------------------------------------------------------------------
 // Implement handlers

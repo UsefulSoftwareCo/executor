@@ -7,6 +7,7 @@ import { Effect, Result, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk";
+import { makeOpenApiTestSpecJson } from "@executor-js/plugin-openapi/testing";
 
 import { asOrg } from "./__test-harness__/api-harness";
 
@@ -18,7 +19,7 @@ const TenantIsolationApi = HttpApi.make("tenantIsolationTest")
   .add(PingGroup)
   .annotateMerge(OpenApi.annotations({ title: "Tenant Test API", version: "1.0.0" }));
 
-const MINIMAL_OPENAPI_SPEC = JSON.stringify(OpenApi.fromApi(TenantIsolationApi));
+const MINIMAL_OPENAPI_SPEC = makeOpenApiTestSpecJson(TenantIsolationApi);
 
 describe("tenant isolation (HTTP)", () => {
   it.effect("write requests cannot target another org scope", () =>
