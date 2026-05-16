@@ -77,30 +77,28 @@ const executor = await createExecutor({
 });
 // docs:end create-executor
 
-try {
-  // docs:start add-source
-  await executor.openapi.addSpec({
-    namespace: "inventory",
-    scope: "docs-workspace",
-    spec: JSON.stringify(inventoryApi),
-  });
-  // docs:end add-source
+// docs:start add-source
+await executor.openapi.addSpec({
+  namespace: "inventory",
+  scope: "docs-workspace",
+  spec: JSON.stringify(inventoryApi),
+});
+// docs:end add-source
 
-  // docs:start list-tools
-  const tools = await executor.tools.list({ sourceId: "inventory" });
+// docs:start list-tools
+const tools = await executor.tools.list({ sourceId: "inventory" });
 
-  for (const tool of tools) {
-    console.log(`${tool.id}: ${tool.description}`);
-  }
-  // docs:end list-tools
-
-  // docs:start inspect-schema
-  const schema = await executor.tools.schema("inventory.listItems");
-
-  console.log(schema?.inputTypeScript ?? "No input required");
-  // docs:end inspect-schema
-} finally {
-  // docs:start close-executor
-  await executor.close();
-  // docs:end close-executor
+for (const tool of tools) {
+  console.log(`${tool.id}: ${tool.description}`);
 }
+// docs:end list-tools
+
+// docs:start inspect-schema
+const schema = await executor.tools.schema("inventory.listItems");
+
+console.log(schema?.inputTypeScript ?? "No input required");
+// docs:end inspect-schema
+
+// docs:start close-executor
+await executor.close();
+// docs:end close-executor
