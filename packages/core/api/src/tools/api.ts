@@ -17,6 +17,11 @@ const PathParams = {
 
 const ToolMetadataResponse = Schema.Struct({
   id: ToolId,
+  pluginId: Schema.String,
+  sourceId: Schema.String,
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  mayElicit: Schema.optional(Schema.Boolean),
   requiresApproval: Schema.optional(Schema.Boolean),
 });
 

@@ -61,9 +61,13 @@ export const SourcesHandlers = HttpApiBuilder.group(ExecutorApi, "sources", (han
           });
           return tools.map((t) => ({
             id: ToolId.make(t.id),
-            ...(t.annotations?.requiresApproval !== undefined
-              ? { requiresApproval: t.annotations.requiresApproval }
-              : {}),
+            pluginId: t.pluginId,
+            sourceId: t.sourceId,
+            name: t.name,
+            description: t.description,
+            mayElicit: t.annotations?.mayElicit,
+            requiresApproval: t.annotations?.requiresApproval,
+            approvalDescription: t.annotations?.approvalDescription,
           }));
         }),
       ),

@@ -123,8 +123,8 @@ describe("sources.refresh (HTTP)", () => {
           }),
         );
         expect(beforeTools.length).toBe(1);
-        expect(beforeTools.some((t) => t.id.startsWith(`${namespace}.ping.`))).toBe(true);
-        expect(beforeTools.some((t) => t.id.startsWith(`${namespace}.pong.`))).toBe(false);
+        expect(beforeTools.some((t) => t.name.startsWith("ping"))).toBe(true);
+        expect(beforeTools.some((t) => t.name.startsWith("pong"))).toBe(false);
 
         // Flip the remote to v2 (adds `pong`) and trigger refresh.
         server.setSpec(specV2);
@@ -144,8 +144,8 @@ describe("sources.refresh (HTTP)", () => {
           }),
         );
         expect(afterTools.length).toBe(2);
-        expect(afterTools.some((t) => t.id.startsWith(`${namespace}.ping.`))).toBe(true);
-        expect(afterTools.some((t) => t.id.startsWith(`${namespace}.pong.`))).toBe(true);
+        expect(afterTools.some((t) => t.name.startsWith("ping"))).toBe(true);
+        expect(afterTools.some((t) => t.name.startsWith("pong"))).toBe(true);
       }),
     ),
   );

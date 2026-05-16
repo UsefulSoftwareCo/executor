@@ -1065,29 +1065,28 @@ const runCallHelp = (
       ? tools.find((tool) => tool.id === inspection.exactPath)
       : undefined;
 
-    const exactToolSchema = exactTool
-      ? yield* client.tools
-          .schema({
-            params: {
-              scopeId: scopeInfo.id,
-              toolId: exactTool.id,
-            },
-          })
-          .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-      : undefined;
-
     if (exactTool && inspection.children.length === 0) {
+      const schema = yield* client.tools
+        .schema({
+          params: {
+            scopeId: scopeInfo.id,
+            toolId: exactTool.id,
+          },
+        })
+        .pipe(
+          Effect.map((result) => ({
+            inputTypeScript: result.inputTypeScript,
+            outputTypeScript: result.outputTypeScript,
+          })),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        );
+
       yield* printCallLeafHelp({
         tool: {
           id: exactTool.id,
-          description: exactToolSchema?.description,
+          description: exactTool.description,
         },
-        schema: exactToolSchema
-          ? {
-              inputTypeScript: exactToolSchema.inputTypeScript,
-              outputTypeScript: exactToolSchema.outputTypeScript,
-            }
-          : undefined,
+        schema,
       });
       return;
     }
@@ -1107,7 +1106,7 @@ const runCallHelp = (
       exactTool: exactTool
         ? {
             id: exactTool.id,
-            description: exactToolSchema?.description,
+            description: exactTool.description,
           }
         : undefined,
     });
