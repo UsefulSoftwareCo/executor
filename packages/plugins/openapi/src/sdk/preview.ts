@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Predicate } from "effect";
 import { Schema } from "effect";
 
 import { parse, resolveSpecText, type ParsedDocument } from "./parse";
@@ -255,7 +255,7 @@ const buildHeaderPresets = (
   return strategies.flatMap((strategy) => {
     const resolved = strategy.schemes
       .map((name) => schemeMap.get(name))
-      .filter((s): s is SecurityScheme => s !== undefined);
+      .filter(Predicate.isNotUndefined);
 
     if (resolved.length === 0) return [];
 

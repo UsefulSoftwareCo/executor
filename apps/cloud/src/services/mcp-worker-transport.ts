@@ -1,6 +1,6 @@
 import { WorkerTransport, type WorkerTransportOptions } from "agents/mcp";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Data, Effect, Exit, Match, Option } from "effect";
+import { Data, Effect, Exit, Match, Option, Predicate } from "effect";
 
 export class McpWorkerTransportError extends Data.TaggedError("McpWorkerTransportError")<{
   readonly cause: unknown;
@@ -100,7 +100,7 @@ export class JsonRpcRequestIdQueue {
     const ids = [...new Set(await extractJsonRpcRequestIdKeys(request))];
     if (ids.length === 0) return await run();
 
-    const previous = ids.map((id) => this.inFlight.get(id)).filter((p) => p !== undefined);
+    const previous = ids.map((id) => this.inFlight.get(id)).filter(Predicate.isNotUndefined);
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;

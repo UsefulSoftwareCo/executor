@@ -1,6 +1,6 @@
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerResponse } from "effect/unstable/http";
-import { Duration, Effect } from "effect";
+import { Duration, Effect, Predicate } from "effect";
 import { setCookie, deleteCookie } from "@tanstack/react-start/server";
 
 import { AUTH_PATHS, CloudAuthApi, CloudAuthPublicApi } from "./api";
@@ -12,6 +12,12 @@ import { ApiKeyManagementError } from "./api-key-errors";
 import { WorkOSError } from "./errors";
 import { WorkOSAuth } from "./workos";
 import { ApiKeyService } from "./api-keys";
+import { AutumnService } from "../services/autumn";
+import {
+  hasPaidOrganizationSubscription,
+  isOverFreeOrganizationLimit,
+  shouldApplyFreeOrganizationLimit,
+} from "./organization-limits";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -49,7 +55,6 @@ const DELETE_COOKIE_OPTIONS = {
   secure: true,
 };
 
-const MAX_ORGANIZATIONS_PER_USER = 3;
 const MAX_API_KEY_NAME_LENGTH = 80;
 
 const randomState = (): string => {
@@ -232,9 +237,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           );
 
           return {
-            organizations: organizations.filter(
-              (org): org is NonNullable<typeof org> => org !== null,
-            ),
+            organizations: organizations.filter(Predicate.isNotNull),
             activeOrganizationId: session.organizationId,
           };
         }),
@@ -258,11 +261,38 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const workos = yield* WorkOSAuth;
           const users = yield* UserStoreService;
           const session = yield* SessionContext;
+          const autumn = yield* AutumnService;
 
           const name = payload.name.trim();
           const memberships = yield* workos.listUserMemberships(session.accountId);
-          if (memberships.data.length >= MAX_ORGANIZATIONS_PER_USER) {
-            return yield* new WorkOSError();
+          const activeMemberships = memberships.data.filter(
+            (membership) => membership.status === "active",
+          );
+
+          if (isOverFreeOrganizationLimit(activeMemberships)) {
+            const paidOrganizationIds = yield* Effect.all(
+              activeMemberships.map((membership) =>
+                autumn
+                  .use((client) =>
+                    client.customers.getOrCreate({ customerId: membership.organizationId }),
+                  )
+                  .pipe(
+                    Effect.map((customer) =>
+                      hasPaidOrganizationSubscription(customer.subscriptions)
+                        ? membership.organizationId
+                        : null,
+                    ),
+                  ),
+              ),
+              { concurrency: 3 },
+            ).pipe(
+              Effect.catchTag("AutumnError", () => Effect.fail(new WorkOSError())),
+              Effect.map((ids) => new Set(ids.filter(Predicate.isNotNull))),
+            );
+
+            if (shouldApplyFreeOrganizationLimit(activeMemberships, paidOrganizationIds)) {
+              return yield* new WorkOSError();
+            }
           }
 
           const org = yield* workos.createOrganization(name);
@@ -342,7 +372,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           );
 
           return {
-            invitations: enriched.filter((i): i is NonNullable<typeof i> => i !== null),
+            invitations: enriched.filter(Predicate.isNotNull),
           };
         }),
       )

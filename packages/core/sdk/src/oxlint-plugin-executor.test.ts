@@ -139,4 +139,46 @@ describe("executor oxlint plugin", () => {
     expect(result.stdout).toContain("Found 0 warnings and 0 errors.");
     expect(result.stderr).toBe("");
   });
+
+  it("rejects hand-rolled null predicates in Effect files", async () => {
+    const result = await runOxlintOn(
+      "manual-null-predicate.ts",
+      `
+        import { Effect } from "effect";
+
+        const isNonNull = <A>(value: A | null): value is A => value !== null;
+
+        export const values = [Effect.void, null].filter(isNonNull);
+      `,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("executor(prefer-effect-predicate)");
+  });
+
+  it("rejects inline nullish filter predicates in Effect files", async () => {
+    const result = await runOxlintOn(
+      "inline-nullish-filter.ts",
+      `
+        import { Predicate } from "effect";
+
+        export const values = ["ok", null].filter((value): value is string => value !== null);
+      `,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("executor(prefer-effect-predicate)");
+  });
+
+  it("allows null filters in files that do not import Effect", async () => {
+    const result = await runOxlintOn(
+      "plain-null-filter.ts",
+      `
+        export const values = ["ok", null].filter((value): value is string => value !== null);
+      `,
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Found 0 warnings and 0 errors.");
+  });
 });

@@ -29,6 +29,7 @@
     "executor/no-try-catch-or-throw": "error",
     "executor/no-unknown-error-message": "error",
     "executor/no-unsupported-effect-api": "error",
+    "executor/prefer-effect-predicate": "error",
     "executor/prefer-schema-inferred-types": "error",
     "executor/prefer-value-inferred-extension-types": "error",
     "executor/prefer-yield-tagged-error": "error",

@@ -1,3 +1,5 @@
+import { ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES } from "../services/autumn-plans";
+
 const MEMBER_LIMITS: Record<string, number | null> = {
   free: 3,
   "free-pay-as-you-go": 3,
@@ -16,7 +18,7 @@ export const selectActiveMemberLimitPlan = (
 ): string => {
   const active =
     subscriptions.find((subscription) =>
-      ["active", "trialing"].includes(subscription.status ?? ""),
+      ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES.has(subscription.status ?? ""),
     ) ?? subscriptions[0];
   return active?.planId ?? "free";
 };

@@ -404,7 +404,7 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   const ranked = all
     .filter((tool: Tool) => matchesNamespace(tool, options?.namespace))
     .map((tool: Tool) => scoreToolMatch(tool, query))
-    .filter((tool): tool is ToolDiscoveryResult => tool !== null)
+    .filter(Predicate.isNotNull)
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
