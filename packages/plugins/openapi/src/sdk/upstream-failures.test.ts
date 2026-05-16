@@ -11,8 +11,11 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Effect, Exit, Schema } from "effect";
+import { FetchHttpClient, HttpServerResponse } from "effect/unstable/http";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+// The socket-drop and slow-response cases exercise Node transport behavior
+// that Effect's in-memory HTTP test server intentionally abstracts away.
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -22,7 +25,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 
@@ -53,34 +56,35 @@ const memorySecretsPlugin = definePlugin(() => ({
 type ResponseScript = (req: {
   url: string;
   method: string;
-  headers: Record<string, string | string[] | undefined>;
+  headers: Readonly<Record<string, string>>;
 }) => {
   status?: number;
   headers?: Record<string, string>;
-  body?: string | Buffer;
-  // If true, server destroys the socket mid-response without sending body.
-  drop?: boolean;
+  body?: string;
 };
 
 const startScriptedServer = (script: ResponseScript) =>
+  serveTestHttpApp((request) =>
+    Effect.sync(() => {
+      const result = script({
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+      });
+      return HttpServerResponse.text(result.body ?? '{"ok":true}', {
+        status: result.status ?? 200,
+        headers: result.headers ?? { "content-type": "application/json" },
+      });
+    }),
+  );
+
+const startDroppingServer = () =>
   Effect.acquireRelease(
     Effect.callback<{ baseUrl: string; close: () => void }>((resume) => {
-      const server = createServer((req, res) => {
-        const url = req.url ?? "/";
-        const result = script({ url, method: req.method ?? "GET", headers: req.headers });
-        if (result.drop) {
-          // Send headers then forcibly destroy the socket to simulate a
-          // real-world connection drop mid-body.
-          res.writeHead(result.status ?? 200, result.headers ?? {});
-          res.write("partial");
-          req.socket.destroy();
-          return;
-        }
-        res.writeHead(
-          result.status ?? 200,
-          result.headers ?? { "content-type": "application/json" },
-        );
-        res.end(result.body ?? '{"ok":true}');
+      const server = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.write("partial");
+        res.destroy();
       });
       server.listen(0, "127.0.0.1", () => {
         const port = (server.address() as AddressInfo).port;
@@ -95,30 +99,17 @@ const startScriptedServer = (script: ResponseScript) =>
     (s) => Effect.sync(() => s.close()),
   );
 
-const makeSpec = () =>
-  JSON.stringify({
-    openapi: "3.0.0",
-    info: { title: "FailuresTest", version: "1.0.0" },
-    paths: {
-      "/things": {
-        get: {
-          operationId: "listThings",
-          tags: ["things"],
-          responses: {
-            "200": {
-              description: "ok",
-              content: {
-                "application/json": {
-                  schema: { type: "array", items: { type: "object" } },
-                },
-              },
-            },
-            default: { description: "error" },
-          },
-        },
-      },
-    },
-  });
+const ThingsGroup = HttpApiGroup.make("things").add(
+  HttpApiEndpoint.get("listThings", "/things", {
+    success: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  }),
+);
+
+const FailureApi = HttpApi.make("failuresTest")
+  .add(ThingsGroup)
+  .annotateMerge(OpenApi.annotations({ title: "FailuresTest", version: "1.0.0" }));
+
+const makeSpec = () => JSON.stringify(OpenApi.fromApi(FailureApi));
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
@@ -221,11 +212,7 @@ describe("OpenAPI upstream failure modes", () => {
 
   it.effect("upstream connection drop mid-response surfaces as a failure", () =>
     Effect.gen(function* () {
-      const { baseUrl } = yield* startScriptedServer(() => ({
-        status: 200,
-        headers: { "content-type": "application/json" },
-        drop: true,
-      }));
+      const { baseUrl } = yield* startDroppingServer();
       const executor = yield* buildExecutor(baseUrl);
 
       const exit = yield* executor.tools

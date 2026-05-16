@@ -439,6 +439,23 @@
         "react",
       ],
     },
+    "packages/core/test-servers": {
+      "name": "@executor-js/test-servers",
+      "version": "1.4.0",
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "effect": "catalog:",
+        "graphql-yoga": "^5.17.0",
+        "zod": "^4.3.6",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250620.0",
+        "@effect/vitest": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+        "wrangler": "^4.81.0",
+      },
+    },
     "packages/core/vite-plugin": {
       "name": "@executor-js/vite-plugin",
       "version": "0.0.14",
@@ -1362,6 +1379,8 @@
     "@executor-js/runtime-quickjs": ["@executor-js/runtime-quickjs@workspace:packages/kernel/runtime-quickjs"],
 
     "@executor-js/sdk": ["@executor-js/sdk@workspace:packages/core/sdk"],
+
+    "@executor-js/test-servers": ["@executor-js/test-servers@workspace:packages/core/test-servers"],
 
     "@executor-js/vite-plugin": ["@executor-js/vite-plugin@workspace:packages/core/vite-plugin"],
 

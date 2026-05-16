@@ -7,10 +7,13 @@ import {
   HttpApiGroup,
   OpenApi,
 } from "effect/unstable/httpapi";
-import { HttpClient, HttpRouter, HttpServerRequest } from "effect/unstable/http";
+import {
+  HttpClient,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 
 import {
   createExecutor,
@@ -24,14 +27,14 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 import type { ConfigFileSink } from "@executor-js/config";
 
 const TEST_SCOPE = "test-scope";
 import { openApiPlugin } from "./plugin";
 import { ConfiguredHeaderBinding, OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
-import { makeOpenApiTestServer } from "../testing";
+import { serveOpenApiHttpApiTestServer } from "../testing";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
 
@@ -148,43 +151,37 @@ const ItemsGroupLive = HttpApiBuilder.group(TestApi, "items", (handlers) =>
 
 const ApiLive = HttpApiBuilder.layer(TestApi).pipe(Layer.provide(ItemsGroupLive));
 
+const servePluginTestApi = () =>
+  serveOpenApiHttpApiTestServer({
+    api: TestApi,
+    handlersLayer: ItemsGroupLive,
+  });
+
 const TestLayer = HttpRouter.serve(ApiLive, { disableListenLog: true, disableLogger: true }).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
 );
 
 const serveSpecRequiringHeader = () => {
   const state = { requests: 0, lastToken: null as string | null };
-  const server = http.createServer((req, res) => {
-    state.requests++;
-    state.lastToken = req.headers["x-spec-token"]?.toString() ?? null;
-    if (state.lastToken !== "org-token") {
-      res.writeHead(401, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "missing token" }));
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(specJson);
-  });
-
-  return new Promise<{
-    readonly specUrl: string;
-    readonly requestCount: () => number;
-    readonly lastToken: () => string | null;
-    readonly close: () => Promise<void>;
-  }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({
-        specUrl: `http://127.0.0.1:${port}/spec.json`,
-        requestCount: () => state.requests,
-        lastToken: () => state.lastToken,
-        close: () =>
-          new Promise((closeResolve) => {
-            server.close(() => closeResolve());
-          }),
+  return serveTestHttpApp((request) =>
+    Effect.sync(() => {
+      state.requests++;
+      state.lastToken = request.headers["x-spec-token"] ?? null;
+      if (state.lastToken !== "org-token") {
+        return HttpServerResponse.jsonUnsafe({ error: "missing token" }, { status: 401 });
+      }
+      return HttpServerResponse.text(specJson, {
+        status: 200,
+        contentType: "application/json",
       });
-    });
-  });
+    }),
+  ).pipe(
+    Effect.map((server) => ({
+      specUrl: server.url("/spec.json"),
+      requestCount: () => state.requests,
+      lastToken: () => state.lastToken,
+    })),
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -193,23 +190,25 @@ const serveSpecRequiringHeader = () => {
 
 layer(TestLayer)("OpenAPI Plugin", (it) => {
   it.effect("previewSpec returns metadata and header presets", () =>
-    Effect.gen(function* () {
-      const server = yield* makeOpenApiTestServer({ spec });
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
 
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: server.httpClientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              openApiPlugin({ httpClientLayer: server.httpClientLayer }),
+              memorySecretsPlugin(),
+            ] as const,
+          }),
+        );
 
-      const preview = yield* executor.openapi.previewSpec(server.specJson);
+        const preview = yield* executor.openapi.previewSpec(server.specJson);
 
-      expect(preview.operationCount).toBeGreaterThanOrEqual(2);
-      expect(preview.servers).toBeDefined();
-    }),
+        expect(preview.operationCount).toBeGreaterThanOrEqual(2);
+        expect(preview.servers).toBeDefined();
+      }),
+    ),
   );
 
   it.effect("registers static openapi executor tools", () =>
@@ -1112,55 +1111,57 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
   );
 
   it.effect("addSpec on user shadow cannot override the inherited base URL", () =>
-    Effect.gen(function* () {
-      const server = yield* makeOpenApiTestServer({ spec });
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: stackedScopes,
-          plugins: [
-            openApiPlugin({ httpClientLayer: server.httpClientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("org-api-token"),
-          scope: ORG_SCOPE,
-          name: "Org API token",
-          value: "org-secret",
-        }),
-      );
-
-      yield* executor.openapi.addSpec({
-        spec: server.specJson,
-        scope: String(ORG_SCOPE),
-        namespace: "shadow_auth",
-        baseUrl: "https://org.example.com",
-        credentialTargetScope: String(ORG_SCOPE),
-        headers: {
-          Authorization: { secretId: "org-api-token", prefix: "Bearer " },
-        },
-      });
-
-      const addResult = yield* executor.openapi
-        .addSpec({
-          spec: server.specJson,
-          scope: String(USER_SCOPE),
-          namespace: "shadow_auth",
-          baseUrl: server.baseUrl,
-          name: "User Shadow",
-        })
-        .pipe(
-          Effect.match({
-            onFailure: (error) => error,
-            onSuccess: () => null,
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            scopes: stackedScopes,
+            plugins: [
+              openApiPlugin({ httpClientLayer: server.httpClientLayer }),
+              memorySecretsPlugin(),
+            ] as const,
           }),
         );
 
-      expect(addResult).toMatchObject({ _tag: "OpenApiOAuthError" });
-    }),
+        yield* executor.secrets.set(
+          SetSecretInput.make({
+            id: SecretId.make("org-api-token"),
+            scope: ORG_SCOPE,
+            name: "Org API token",
+            value: "org-secret",
+          }),
+        );
+
+        yield* executor.openapi.addSpec({
+          spec: server.specJson,
+          scope: String(ORG_SCOPE),
+          namespace: "shadow_auth",
+          baseUrl: "https://org.example.com",
+          credentialTargetScope: String(ORG_SCOPE),
+          headers: {
+            Authorization: { secretId: "org-api-token", prefix: "Bearer " },
+          },
+        });
+
+        const addResult = yield* executor.openapi
+          .addSpec({
+            spec: server.specJson,
+            scope: String(USER_SCOPE),
+            namespace: "shadow_auth",
+            baseUrl: server.baseUrl,
+            name: "User Shadow",
+          })
+          .pipe(
+            Effect.match({
+              onFailure: (error) => error,
+              onSuccess: () => null,
+            }),
+          );
+
+        expect(addResult).toMatchObject({ _tag: "OpenApiOAuthError" });
+      }),
+    ),
   );
 
   it.effect(
@@ -1168,10 +1169,7 @@ layer(TestLayer)("OpenAPI Plugin", (it) => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const server = yield* Effect.acquireRelease(
-            Effect.promise(() => serveSpecRequiringHeader()),
-            (server) => Effect.promise(() => server.close()),
-          );
+          const server = yield* serveSpecRequiringHeader();
           const config = makeTestConfig({
             scopes: stackedScopes,
             plugins: [openApiPlugin(), memorySecretsPlugin()] as const,

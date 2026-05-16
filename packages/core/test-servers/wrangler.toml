@@ -1,0 +1,7 @@
+name = "executor-test-servers"
+main = "src/worker.ts"
+compatibility_date = "2026-05-01"
+workers_dev = true
+
+[observability]
+enabled = true

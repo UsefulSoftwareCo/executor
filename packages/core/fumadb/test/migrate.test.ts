@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "@effect/vitest";
 import { fumadb } from "../src";
 import { kyselyAdapter } from "../src/adapters/kysely";
 import { mongoAdapter } from "../src/adapters/mongodb";

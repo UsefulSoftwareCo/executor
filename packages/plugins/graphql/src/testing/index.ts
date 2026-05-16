@@ -9,9 +9,14 @@ import {
   Scope,
 } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { GraphQLNonNull, GraphQLObjectType, GraphQLSchema, GraphQLString } from "graphql";
-import { createYoga, type GraphQLParams, type YogaInitialContext } from "graphql-yoga";
-import { serveTestHttpApp } from "@executor-js/sdk/testing";
+import type { GraphQLSchema } from "graphql";
+import {
+  createSchema,
+  createYoga,
+  type GraphQLParams,
+  type YogaInitialContext,
+} from "graphql-yoga";
+import { OAuthTestServer, serveTestHttpApp } from "@executor-js/sdk/testing";
 
 const GraphqlRequestPayload = EffectSchema.Struct({
   query: EffectSchema.optional(EffectSchema.String),
@@ -36,6 +41,10 @@ export interface GraphqlTestContext {
 export interface GraphqlTestServerOptions {
   readonly schema: GraphQLSchema;
   readonly path?: string;
+  readonly auth?: {
+    readonly validateAuthorization: (authorization: string | null) => Effect.Effect<boolean>;
+    readonly wwwAuthenticate?: string;
+  };
 }
 
 export interface GraphqlTestServerShape {
@@ -108,6 +117,23 @@ export const serveGraphqlTestServer = (
 
     const server = yield* serveTestHttpApp((request) =>
       Effect.gen(function* () {
+        if (options.auth) {
+          const accepted = yield* options.auth.validateAuthorization(
+            request.headers.authorization ?? null,
+          );
+          if (!accepted) {
+            const responseOptions = options.auth.wwwAuthenticate
+              ? {
+                  status: 401,
+                  headers: { "www-authenticate": options.auth.wwwAuthenticate },
+                }
+              : { status: 401 };
+            return HttpServerResponse.jsonUnsafe(
+              { errors: [{ message: "Unauthorized" }] },
+              responseOptions,
+            );
+          }
+        }
         const webRequest = yield* HttpServerRequest.toWeb(request);
         const response = yield* Effect.promise(() => Promise.resolve(yoga.handle(webRequest, {})));
         return HttpServerResponse.fromWeb(response);
@@ -142,6 +168,21 @@ export class GraphqlTestServer extends Context.Service<GraphqlTestServer, Graphq
 ) {
   static readonly layer = (options: GraphqlTestServerOptions) =>
     Layer.effect(GraphqlTestServer, serveGraphqlTestServer(options));
+
+  static readonly layerWithOAuth = (options: Omit<GraphqlTestServerOptions, "auth">) =>
+    Layer.effect(
+      GraphqlTestServer,
+      Effect.gen(function* () {
+        const oauth = yield* OAuthTestServer;
+        return yield* serveGraphqlTestServer({
+          ...options,
+          auth: {
+            validateAuthorization: oauth.acceptsAuthorizationHeader,
+            wwwAuthenticate: 'Bearer error="invalid_token"',
+          },
+        });
+      }),
+    );
 }
 
 const stringArgument = (
@@ -153,38 +194,45 @@ const stringArgument = (
   return typeof value === "string" ? value : fallback;
 };
 
-export const makeGreetingGraphqlSchema = (): GraphQLSchema => {
-  const Query = new GraphQLObjectType<unknown, GraphqlTestContext>({
-    name: "Query",
-    fields: {
-      hello: {
-        type: GraphQLString,
-        description: "Say hello",
-        args: {
-          name: { type: GraphQLString },
-        },
-        resolve: (_source, args) => `Hello ${stringArgument(args, "name", "world")}`,
+export const makeGreetingGraphqlSchema = (
+  options: { readonly includeMutation?: boolean } = {},
+): GraphQLSchema => {
+  const includeMutation = options.includeMutation ?? true;
+  return createSchema<GraphqlTestContext>({
+    typeDefs: /* GraphQL */ `
+      type Query {
+        hello(name: String): String
+      }
+
+      ${
+        includeMutation
+          ? /* GraphQL */ `
+              type Mutation {
+                setGreeting(message: String!): String
+              }
+            `
+          : ""
+      }
+    `,
+    resolvers: {
+      Query: {
+        hello: (_source: unknown, args: Readonly<Record<string, unknown>>) =>
+          `Hello ${stringArgument(args, "name", "world")}`,
       },
+      ...(includeMutation
+        ? {
+            Mutation: {
+              setGreeting: (_source: unknown, args: Readonly<Record<string, unknown>>) =>
+                stringArgument(args, "message", ""),
+            },
+          }
+        : {}),
     },
   });
-
-  const Mutation = new GraphQLObjectType<unknown, GraphqlTestContext>({
-    name: "Mutation",
-    fields: {
-      setGreeting: {
-        type: GraphQLString,
-        description: "Set greeting message",
-        args: {
-          message: { type: new GraphQLNonNull(GraphQLString) },
-        },
-        resolve: (_source, args) => stringArgument(args, "message", ""),
-      },
-    },
-  });
-
-  return new GraphQLSchema({ query: Query, mutation: Mutation });
 };
 
 export const TestLayers = {
   greeting: () => GraphqlTestServer.layer({ schema: makeGreetingGraphqlSchema() }),
+  greetingWithOAuth: () =>
+    GraphqlTestServer.layerWithOAuth({ schema: makeGreetingGraphqlSchema() }),
 };

@@ -1,63 +1,258 @@
-import { Effect } from "effect";
+import { Context, Data, Effect, Layer, Ref, Scope } from "effect";
 import * as http from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { OAuthTestServer } from "@executor-js/sdk/testing";
 
 export type McpTestServer = {
   readonly url: string;
-  readonly httpServer: http.Server;
+  readonly endpoint: string;
   /** Number of MCP sessions created (each connect = 1 session) */
   readonly sessionCount: () => number;
+  readonly requests: Effect.Effect<readonly McpTestRequest[]>;
+  readonly clearRequests: Effect.Effect<void>;
 };
 
-export const serveMcpServer = (factory: () => McpServer) =>
+export type McpTestRequest = {
+  readonly method: string;
+  readonly url: string;
+  readonly authorization: string | undefined;
+  readonly sessionId: string | undefined;
+};
+
+export type McpTestServerOptions = {
+  readonly path?: string;
+  readonly auth?: {
+    readonly validateAuthorization: (authorization: string | undefined) => Effect.Effect<boolean>;
+    readonly authorizationServerUrls?: readonly string[];
+    readonly scopes?: readonly string[];
+    readonly wwwAuthenticate?: string;
+  };
+};
+
+export class McpTestServerError extends Data.TaggedError("McpTestServerError")<{
+  readonly cause: unknown;
+}> {}
+
+const writeJson = (
+  response: http.ServerResponse,
+  status: number,
+  body: Readonly<Record<string, unknown>>,
+  headers: Readonly<Record<string, string>> = {},
+) => {
+  response.writeHead(status, {
+    "content-type": "application/json",
+    ...headers,
+  });
+  response.end(JSON.stringify(body));
+};
+
+const writeText = (response: http.ServerResponse, status: number, body: string) => {
+  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.end(body);
+};
+
+const isMcpPath = (url: string, path: string): boolean => {
+  const parsed = new URL(url, "http://executor.test");
+  return parsed.pathname === path;
+};
+
+const protectedResourcePath = "/.well-known/oauth-protected-resource";
+
+export const serveMcpServer = (factory: () => McpServer, options: McpTestServerOptions = {}) =>
   Effect.acquireRelease(
-    Effect.callback<McpTestServer, Error>((resume) => {
+    Effect.gen(function* () {
       const transports = new Map<string, StreamableHTTPServerTransport>();
+      const requests = yield* Ref.make<readonly McpTestRequest[]>([]);
+      const path = options.path ?? "/";
       let sessions = 0;
 
-      const httpServer = http.createServer(async (req, res) => {
-        const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const handleMcpRequest = (
+        request: http.IncomingMessage,
+        response: http.ServerResponse,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const requestUrl = request.url ?? "/";
+          const sessionId = Array.isArray(request.headers["mcp-session-id"])
+            ? request.headers["mcp-session-id"][0]
+            : request.headers["mcp-session-id"];
+          const authorization = Array.isArray(request.headers.authorization)
+            ? request.headers.authorization[0]
+            : request.headers.authorization;
+          const origin = request.headers.host
+            ? `http://${request.headers.host}`
+            : "http://127.0.0.1";
 
-        if (sessionId) {
-          const transport = transports.get(sessionId);
-          if (!transport) {
-            res.writeHead(404);
-            res.end("Session not found");
+          yield* Ref.update(requests, (all) => [
+            ...all,
+            {
+              method: request.method ?? "GET",
+              url: requestUrl,
+              authorization,
+              sessionId,
+            },
+          ]);
+
+          if (
+            options.auth?.authorizationServerUrls &&
+            requestUrl.startsWith(protectedResourcePath)
+          ) {
+            const resourcePath = requestUrl.slice(protectedResourcePath.length);
+            writeJson(response, 200, {
+              resource: `${origin}${resourcePath}`,
+              authorization_servers: options.auth.authorizationServerUrls,
+              bearer_methods_supported: ["header"],
+              scopes_supported: options.auth.scopes ?? ["read"],
+            });
             return;
           }
-          await transport.handleRequest(req, res);
-          return;
-        }
 
-        const mcpServer = factory();
-        sessions++;
+          if (!isMcpPath(requestUrl, path)) {
+            writeJson(response, 404, { error: "not_found" });
+            return;
+          }
 
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => crypto.randomUUID(),
-          onsessioninitialized: (sid) => {
-            transports.set(sid, transport);
-          },
-        });
+          if (options.auth) {
+            const accepted = yield* options.auth.validateAuthorization(authorization);
+            if (!accepted) {
+              writeJson(
+                response,
+                401,
+                { error: "invalid_token" },
+                {
+                  "www-authenticate":
+                    options.auth.wwwAuthenticate ??
+                    `Bearer resource_metadata="${origin}${protectedResourcePath}${path}", error="invalid_token"`,
+                },
+              );
+              return;
+            }
+          }
 
-        await mcpServer.connect(transport);
-        await transport.handleRequest(req, res);
-      });
+          const existingTransport = sessionId ? transports.get(sessionId) : undefined;
+          if (sessionId && !existingTransport) {
+            writeText(response, 404, "Session not found");
+            return;
+          }
 
-      httpServer.listen(0, () => {
-        const addr = httpServer.address();
-        const port = typeof addr === "object" && addr ? addr.port : 0;
-        resume(
-          Effect.succeed({
-            url: `http://127.0.0.1:${port}`,
-            httpServer,
-            sessionCount: () => sessions,
-          }),
+          if (existingTransport) {
+            yield* Effect.tryPromise({
+              try: () => existingTransport.handleRequest(request, response),
+              catch: (cause) => new McpTestServerError({ cause }),
+            });
+            return;
+          }
+
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            onsessioninitialized: (sid) => {
+              transports.set(sid, transport);
+            },
+          });
+          sessions += 1;
+
+          const mcpServer = factory();
+          yield* Effect.tryPromise({
+            try: () => mcpServer.connect(transport),
+            catch: (cause) => new McpTestServerError({ cause }),
+          });
+          yield* Effect.tryPromise({
+            try: () => transport.handleRequest(request, response),
+            catch: (cause) => new McpTestServerError({ cause }),
+          });
+        }).pipe(
+          Effect.catch(() =>
+            Effect.sync(() => {
+              if (!response.headersSent) {
+                writeJson(response, 500, { error: "mcp_test_server_failed" });
+              } else if (!response.writableEnded) {
+                response.end();
+              }
+            }),
+          ),
         );
+
+      const nodeServer = http.createServer((request, response) => {
+        void Effect.runPromise(handleMcpRequest(request, response));
       });
+
+      const port = yield* Effect.callback<number, McpTestServerError>((resume) => {
+        const onError = (cause: Error) => {
+          nodeServer.off("error", onError);
+          resume(Effect.fail(new McpTestServerError({ cause })));
+        };
+        nodeServer.once("error", onError);
+        nodeServer.listen(0, () => {
+          nodeServer.off("error", onError);
+          const address = nodeServer.address();
+          if (typeof address === "object" && address) {
+            resume(Effect.succeed(address.port));
+            return;
+          }
+          resume(Effect.fail(new McpTestServerError({ cause: address })));
+        });
+      });
+
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const endpoint = path === "/" ? baseUrl : new URL(path, baseUrl).toString();
+      return {
+        url: endpoint,
+        endpoint,
+        sessionCount: () => sessions,
+        requests: Ref.get(requests),
+        clearRequests: Ref.set(requests, []),
+        close: Effect.gen(function* () {
+          for (const transport of transports.values()) {
+            yield* Effect.tryPromise({
+              try: () => transport.close(),
+              catch: (cause) => new McpTestServerError({ cause }),
+            }).pipe(Effect.ignore);
+          }
+          yield* Effect.sync(() => {
+            nodeServer.close();
+            nodeServer.closeAllConnections?.();
+          });
+        }),
+      };
     }),
-    ({ httpServer }) =>
-      Effect.sync(() => {
-        httpServer.close();
-      }),
-  );
+    (server) => server.close,
+  ).pipe(Effect.map(({ close: _close, ...server }) => server));
+
+export const serveMcpServerWithOAuth = (
+  factory: () => McpServer,
+  options: Omit<McpTestServerOptions, "auth"> & {
+    readonly scopes?: readonly string[];
+    readonly wwwAuthenticate?: string;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const oauth = yield* OAuthTestServer;
+    return yield* serveMcpServer(factory, {
+      path: options.path,
+      auth: {
+        validateAuthorization: oauth.acceptsAuthorizationHeader,
+        authorizationServerUrls: [oauth.issuerUrl],
+        scopes: options.scopes ?? ["read"],
+        wwwAuthenticate: options.wwwAuthenticate,
+      },
+    });
+  });
+
+export class McpTestServerLayer extends Context.Service<McpTestServerLayer, McpTestServer>()(
+  "@executor-js/plugin-mcp/testing/McpTestServer",
+) {
+  static readonly layer = (
+    factory: () => McpServer,
+    options?: McpTestServerOptions,
+  ): Layer.Layer<McpTestServerLayer, McpTestServerError, Scope.Scope> =>
+    Layer.effect(McpTestServerLayer, serveMcpServer(factory, options));
+
+  static readonly layerWithOAuth = (
+    factory: () => McpServer,
+    options?: Omit<McpTestServerOptions, "auth"> & {
+      readonly scopes?: readonly string[];
+      readonly wwwAuthenticate?: string;
+    },
+  ): Layer.Layer<McpTestServerLayer, McpTestServerError, Scope.Scope | OAuthTestServer> =>
+    Layer.effect(McpTestServerLayer, serveMcpServerWithOAuth(factory, options));
+}

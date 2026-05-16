@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "@effect/vitest";
 import * as Drizzle from "../src/adapters/drizzle/generate";
 import * as Prisma from "../src/adapters/prisma/generate";
 import * as TypeORM from "../src/adapters/typeorm/generate";

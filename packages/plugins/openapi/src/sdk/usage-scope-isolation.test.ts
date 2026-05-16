@@ -14,7 +14,7 @@ import {
   SetSecretInput,
   definePlugin,
 } from "@executor-js/sdk";
-import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
+import { makeTestWorkspaceLayer, TestWorkspace } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 import { OpenApiSourceBindingInput } from "./types";
@@ -74,12 +74,12 @@ const orgB = Scope.make({
 });
 const plugins = [memorySecretsPlugin(), connectionProviderPlugin(), openApiPlugin()] as const;
 
-layer(makeTestExecutorLayer({ scopes: [orgA], plugins }), { timeout: "15 seconds" })(
+layer(makeTestWorkspaceLayer({ scopes: [orgA], plugins }), { timeout: "15 seconds" })(
   "OpenAPI usage scope isolation",
   (it) => {
     it.effect("secrets.usages does not expose binding rows outside the scope stack", () =>
       Effect.gen(function* () {
-        const { config } = yield* TestExecutor;
+        const { config } = yield* TestWorkspace;
         const orgAExec = yield* createExecutor({ ...config, scopes: [orgA], plugins });
         const orgBExec = yield* createExecutor({ ...config, scopes: [orgB], plugins });
         const secretId = SecretId.make("org-a-api-key");
@@ -125,7 +125,7 @@ layer(makeTestExecutorLayer({ scopes: [orgA], plugins }), { timeout: "15 seconds
 
     it.effect("connections.usages does not expose binding rows outside the scope stack", () =>
       Effect.gen(function* () {
-        const { config } = yield* TestExecutor;
+        const { config } = yield* TestWorkspace;
         const orgAExec = yield* createExecutor({ ...config, scopes: [orgA], plugins });
         const orgBExec = yield* createExecutor({ ...config, scopes: [orgB], plugins });
         const connectionId = ConnectionId.make("org-a-connection");

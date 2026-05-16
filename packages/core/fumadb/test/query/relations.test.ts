@@ -1,5 +1,5 @@
 import { inspect } from "node:util";
-import { expect, test } from "vitest";
+import { expect, test } from "@effect/vitest";
 import { fumadb, type InferFumaDB } from "../../src";
 import { kyselyAdapter } from "../../src/adapters/kysely";
 import {

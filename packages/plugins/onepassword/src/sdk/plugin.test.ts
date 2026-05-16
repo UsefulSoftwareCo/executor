@@ -2,7 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { ScopeId, createExecutor } from "@executor-js/sdk";
-import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
+import { makeTestWorkspaceLayer, TestWorkspace } from "@executor-js/sdk/testing";
 
 import { onepasswordPlugin } from "./plugin";
 import { OnePasswordConfig, DesktopAppAuth } from "./types";
@@ -10,14 +10,14 @@ import { OnePasswordConfig, DesktopAppAuth } from "./types";
 const plugins = [onepasswordPlugin()] as const;
 
 layer(
-  makeTestExecutorLayer({
+  makeTestWorkspaceLayer({
     plugins,
   }),
   { timeout: "15 seconds" },
 )("onepassword plugin", (it) => {
   it.effect("registers onepassword as a secret provider", () =>
     Effect.gen(function* () {
-      const { config: harnessConfig } = yield* TestExecutor;
+      const { config: harnessConfig } = yield* TestWorkspace;
       const executor = yield* createExecutor({ ...harnessConfig, plugins });
       const providers = yield* executor.secrets.providers();
       expect(providers).toContain("onepassword");
@@ -26,7 +26,7 @@ layer(
 
   it.effect("configure / getConfig / removeConfig round-trip via blob store", () =>
     Effect.gen(function* () {
-      const { config: harnessConfig } = yield* TestExecutor;
+      const { config: harnessConfig } = yield* TestWorkspace;
       const executor = yield* createExecutor({ ...harnessConfig, plugins });
 
       const initial = yield* executor.onepassword.getConfig();
@@ -56,7 +56,7 @@ layer(
 
   it.effect("status reports not-configured before configure", () =>
     Effect.gen(function* () {
-      const { config: harnessConfig } = yield* TestExecutor;
+      const { config: harnessConfig } = yield* TestWorkspace;
       const executor = yield* createExecutor({ ...harnessConfig, plugins });
       const status = yield* executor.onepassword.status();
       expect(status.connected).toBe(false);

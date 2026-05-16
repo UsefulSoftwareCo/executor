@@ -5,91 +5,93 @@
 // operation set. Raw-text sources assert the no-op branch.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import http from "node:http";
-import { AddressInfo } from "node:net";
+import { Effect, Ref, Schema } from "effect";
+import { HttpServerResponse } from "effect/unstable/http";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { ScopeId } from "@executor-js/sdk";
+import { serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { asOrg } from "./__test-harness__/api-harness";
 
-const specV1 = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Refresh Fixture", version: "1.0.0" },
-  paths: {
-    "/ping": {
-      get: {
-        operationId: "ping",
-        summary: "ping",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-  },
-});
+const isJsonObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
-const specV2 = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Refresh Fixture", version: "2.0.0" },
-  paths: {
-    "/ping": {
-      get: {
-        operationId: "ping",
-        summary: "ping",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-    "/pong": {
-      get: {
-        operationId: "pong",
-        summary: "pong",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-  },
-});
+const stripDefaultOperationPrefix = (spec: unknown): unknown => {
+  if (!isJsonObject(spec) || !isJsonObject(spec.paths)) return spec;
+  for (const pathItem of Object.values(spec.paths)) {
+    if (!isJsonObject(pathItem)) continue;
+    for (const operation of Object.values(pathItem)) {
+      if (!isJsonObject(operation)) continue;
+      if (
+        typeof operation.operationId === "string" &&
+        operation.operationId.startsWith("default.")
+      ) {
+        operation.operationId = operation.operationId.slice("default.".length);
+      }
+      if (
+        Array.isArray(operation.tags) &&
+        operation.tags.length === 1 &&
+        operation.tags[0] === "default"
+      ) {
+        delete operation.tags;
+      }
+    }
+  }
+  return spec;
+};
+
+const specJsonFromApi = (api: HttpApi.Any): string =>
+  JSON.stringify(stripDefaultOperationPrefix(OpenApi.fromApi(api as HttpApi.AnyWithProps)));
+
+const PingEndpoint = HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown });
+const PongEndpoint = HttpApiEndpoint.get("pong", "/pong", { success: Schema.Unknown });
+
+const RefreshGroupV1 = HttpApiGroup.make("default").add(PingEndpoint);
+const RefreshGroupV2 = HttpApiGroup.make("default").add(PingEndpoint).add(PongEndpoint);
+
+const specV1 = specJsonFromApi(
+  HttpApi.make("refreshFixture")
+    .add(RefreshGroupV1)
+    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version: "1.0.0" })),
+);
+
+const specV2 = specJsonFromApi(
+  HttpApi.make("refreshFixture")
+    .add(RefreshGroupV2)
+    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version: "2.0.0" })),
+);
 
 // Mutable ref: tests flip `current` between v1 and v2 around the
 // refresh call. Using a single server keeps the URL stable across
 // both addSpec and refresh — the plugin persists the original URL,
 // so the second fetch goes back to the same endpoint.
-const serveMutableSpec = () => {
-  const state = { current: specV1, requests: 0 };
-  const server = http.createServer((req, res) => {
-    state.requests++;
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(state.current);
+const serveMutableSpec = () =>
+  Effect.gen(function* () {
+    const current = yield* Ref.make(specV1);
+    const requests = yield* Ref.make(0);
+    const server = yield* serveTestHttpApp(() =>
+      Effect.gen(function* () {
+        yield* Ref.update(requests, (count) => count + 1);
+        const spec = yield* Ref.get(current);
+        return HttpServerResponse.text(spec, {
+          status: 200,
+          contentType: "application/json",
+        });
+      }),
+    );
+    return {
+      baseUrl: server.baseUrl,
+      setSpec: (s: string) => Ref.set(current, s),
+      requestCount: Ref.get(requests),
+    };
   });
-  return new Promise<{
-    baseUrl: string;
-    setSpec: (s: string) => void;
-    requestCount: () => number;
-    close: () => Promise<void>;
-  }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({
-        baseUrl: `http://127.0.0.1:${port}`,
-        setSpec: (s) => {
-          state.current = s;
-        },
-        requestCount: () => state.requests,
-        close: () =>
-          new Promise((r) => {
-            server.close(() => r());
-          }),
-      });
-    });
-  });
-};
 
 describe("sources.refresh (HTTP)", () => {
   it.effect("addSpec from URL → canRefresh:true; refresh re-fetches and updates tools", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const server = yield* Effect.acquireRelease(
-          Effect.promise(() => serveMutableSpec()),
-          (server) => Effect.promise(() => server.close()),
-        );
+        const server = yield* serveMutableSpec();
         const org = `org_${crypto.randomUUID()}`;
         const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
 
@@ -127,8 +129,8 @@ describe("sources.refresh (HTTP)", () => {
         expect(beforeTools.some((t) => t.name.startsWith("pong"))).toBe(false);
 
         // Flip the remote to v2 (adds `pong`) and trigger refresh.
-        server.setSpec(specV2);
-        const requestsBefore = server.requestCount();
+        yield* server.setSpec(specV2);
+        const requestsBefore = yield* server.requestCount;
 
         const refreshResult = yield* asOrg(org, (client) =>
           client.sources.refresh({
@@ -136,7 +138,7 @@ describe("sources.refresh (HTTP)", () => {
           }),
         );
         expect(refreshResult.refreshed).toBe(true);
-        expect(server.requestCount()).toBeGreaterThan(requestsBefore);
+        expect(yield* server.requestCount).toBeGreaterThan(requestsBefore);
 
         const afterTools = yield* asOrg(org, (client) =>
           client.sources.tools({

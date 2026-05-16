@@ -148,24 +148,40 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
   };
 };
 
-export interface TestExecutorHarness<TPlugins extends readonly AnyPlugin[] = readonly AnyPlugin[]> {
+export interface TestWorkspaceHarness<
+  TPlugins extends readonly AnyPlugin[] = readonly AnyPlugin[],
+> {
   readonly config: ExecutorConfig<TPlugins> & { readonly testDb: TestFumaDb };
   readonly executor: Executor<TPlugins>;
   readonly testDb: TestFumaDb;
+  readonly scopes: readonly Scope[];
 }
 
-export class TestExecutor extends Context.Service<TestExecutor, TestExecutorHarness>()(
-  "executor-sdk/TestExecutor",
-) {}
+export class TestWorkspace extends Context.Service<TestWorkspace, TestWorkspaceHarness>()(
+  "executor-sdk/TestWorkspace",
+) {
+  static readonly current = <
+    const TPlugins extends readonly AnyPlugin[] = readonly AnyPlugin[],
+  >() =>
+    Effect.gen(function* () {
+      const workspace = yield* TestWorkspace;
+      return workspace as TestWorkspaceHarness<TPlugins>;
+    });
+}
 
-export const makeTestExecutorHarness = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
+export const makeTestWorkspaceHarness = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
   options?: TestConfigOptions<TPlugins>,
 ) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const config = makeTestConfig(options);
       const executor = yield* createExecutor(config);
-      return { config, executor, testDb: config.testDb } as const;
+      return {
+        config,
+        executor,
+        testDb: config.testDb,
+        scopes: config.scopes,
+      } as const;
     }),
     ({ executor, testDb }) =>
       executor
@@ -176,18 +192,18 @@ export const makeTestExecutorHarness = <const TPlugins extends readonly AnyPlugi
         ),
   );
 
-export const makeTestExecutorLayer = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
+export const makeTestWorkspaceLayer = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
   options?: TestConfigOptions<TPlugins>,
 ) =>
-  Layer.effect(TestExecutor)(
-    makeTestExecutorHarness(options).pipe(
+  Layer.effect(TestWorkspace)(
+    makeTestWorkspaceHarness(options).pipe(
       Effect.tap(({ testDb }) => Effect.promise(() => testDb.warm())),
     ),
   );
 
 export const makeTestExecutor = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
   options?: TestConfigOptions<TPlugins>,
-) => makeTestExecutorHarness(options).pipe(Effect.map(({ executor }) => executor));
+) => makeTestWorkspaceHarness(options).pipe(Effect.map(({ executor }) => executor));
 
 export const memorySecretsPlugin = definePlugin(() => {
   const store = new Map<string, string>();

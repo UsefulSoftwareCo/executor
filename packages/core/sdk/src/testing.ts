@@ -11,15 +11,26 @@ import {
 export {
   makeTestConfig,
   makeTestExecutor,
-  makeTestExecutorHarness,
-  makeTestExecutorLayer,
+  makeTestWorkspaceHarness,
+  makeTestWorkspaceLayer,
   memorySecretsPlugin,
-  TestExecutor,
+  TestWorkspace,
   type TestConfigOptions,
   type TestDatabaseBackend,
-  type TestExecutorHarness,
   type TestFumaDb,
+  type TestWorkspaceHarness,
 } from "./test-config";
+export {
+  OAuthTestServer,
+  serveOAuthTestServer,
+  OAuthTestServerAddressError,
+  OAuthTestServerFlowError,
+  type OAuthAuthorizationCompletion,
+  type OAuthTokenSet,
+  type OAuthTestServerOptions,
+  type OAuthTestServerRequest,
+  type OAuthTestServerShape,
+} from "./testing/oauth-test-server";
 export { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
 
 export class TestHttpServerAddressError extends Data.TaggedError("TestHttpServerAddressError")<{
@@ -67,8 +78,16 @@ export const serveTestHttpApp = (
     HttpServer.serve(HttpServerRequest.HttpServerRequest.asEffect().pipe(Effect.flatMap(handler))),
   );
 
+export const serveTestHttpServerLayer = (
+  serverLayer: Layer.Layer<never, any, any>,
+): Effect.Effect<
+  TestHttpServerShape,
+  TestHttpServerAddressError | TestHttpServerServeError,
+  EffectScope.Scope
+> => makeTestHttpServer(serverLayer);
+
 const makeTestHttpServer = (
-  serverLayer: Layer.Layer<never, never, HttpServer.HttpServer>,
+  serverLayer: Layer.Layer<never, any, any>,
 ): Effect.Effect<
   TestHttpServerShape,
   TestHttpServerAddressError | TestHttpServerServeError,

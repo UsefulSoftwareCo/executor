@@ -14,9 +14,7 @@
 
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { FetchHttpClient, HttpServerResponse } from "effect/unstable/http";
 
 import {
   createExecutor,
@@ -24,7 +22,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestExecutorLayer, TestExecutor } from "@executor-js/sdk/testing";
+import { makeTestWorkspaceLayer, serveTestHttpApp, TestWorkspace } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 
@@ -58,32 +56,17 @@ type Captured = {
 };
 
 const startEchoServer = () =>
-  Effect.acquireRelease(
-    Effect.callback<{ baseUrl: string; captured: Captured; close: () => void }>((resume) => {
-      const captured: Captured = { contentType: "", body: "" };
-      const server = createServer((req, res) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (c: Buffer) => chunks.push(c));
-        req.on("end", () => {
-          captured.contentType = req.headers["content-type"] ?? "";
-          captured.body = Buffer.concat(chunks).toString("utf8");
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
-        });
-      });
-      server.listen(0, "127.0.0.1", () => {
-        const port = (server.address() as AddressInfo).port;
-        resume(
-          Effect.succeed({
-            baseUrl: `http://127.0.0.1:${port}`,
-            captured,
-            close: () => server.close(),
-          }),
-        );
-      });
-    }),
-    (s) => Effect.sync(() => s.close()),
-  );
+  Effect.gen(function* () {
+    const captured: Captured = { contentType: "", body: "" };
+    const server = yield* serveTestHttpApp((request) =>
+      Effect.gen(function* () {
+        captured.contentType = request.headers["content-type"] ?? "";
+        captured.body = yield* request.text.pipe(Effect.catch(() => Effect.succeed("")));
+        return HttpServerResponse.jsonUnsafe({ ok: true });
+      }),
+    );
+    return { baseUrl: server.baseUrl, captured };
+  });
 
 const formSpec = JSON.stringify({
   openapi: "3.0.0",
@@ -131,7 +114,7 @@ const plugins = [
 ] as const;
 
 layer(
-  makeTestExecutorLayer({
+  makeTestWorkspaceLayer({
     plugins,
   }),
   { timeout: "15 seconds" },
@@ -139,7 +122,7 @@ layer(
   it.effect("form-urlencoded object body is properly encoded (no '[object Object]')", () =>
     Effect.gen(function* () {
       const { baseUrl, captured } = yield* startEchoServer();
-      const { config } = yield* TestExecutor;
+      const { config } = yield* TestWorkspace;
       const executor = yield* createExecutor({ ...config, plugins });
 
       yield* executor.openapi.addSpec({

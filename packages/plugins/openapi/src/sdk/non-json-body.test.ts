@@ -12,9 +12,7 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { FetchHttpClient, HttpServerResponse } from "effect/unstable/http";
 
 import {
   createExecutor,
@@ -22,7 +20,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 
@@ -62,32 +60,20 @@ type Captured = {
 };
 
 const startEchoServer = () =>
-  Effect.acquireRelease(
-    Effect.callback<{ baseUrl: string; captured: Captured; close: () => void }>((resume) => {
-      const captured: Captured = { contentType: "", body: Buffer.alloc(0) };
-      const server = createServer((req, res) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (c: Buffer) => chunks.push(c));
-        req.on("end", () => {
-          captured.contentType = req.headers["content-type"] ?? "";
-          captured.body = Buffer.concat(chunks);
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
-        });
-      });
-      server.listen(0, "127.0.0.1", () => {
-        const port = (server.address() as AddressInfo).port;
-        resume(
-          Effect.succeed({
-            baseUrl: `http://127.0.0.1:${port}`,
-            captured,
-            close: () => server.close(),
-          }),
+  Effect.gen(function* () {
+    const captured: Captured = { contentType: "", body: Buffer.alloc(0) };
+    const server = yield* serveTestHttpApp((request) =>
+      Effect.gen(function* () {
+        captured.contentType = request.headers["content-type"] ?? "";
+        const body = yield* request.arrayBuffer.pipe(
+          Effect.catch(() => Effect.succeed(new ArrayBuffer(0))),
         );
-      });
-    }),
-    (s) => Effect.sync(() => s.close()),
-  );
+        captured.body = Buffer.from(body);
+        return HttpServerResponse.jsonUnsafe({ ok: true });
+      }),
+    );
+    return { baseUrl: server.baseUrl, captured };
+  });
 
 const makeSpec = (contentType: string) =>
   JSON.stringify({
