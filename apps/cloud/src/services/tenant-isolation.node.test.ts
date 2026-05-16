@@ -3,24 +3,22 @@
 // on the full cloud module graph.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { ConnectionId, ScopeId, SecretId } from "@executor-js/sdk";
 
 import { asOrg } from "./__test-harness__/api-harness";
 
-const MINIMAL_OPENAPI_SPEC = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Tenant Test API", version: "1.0.0" },
-  paths: {
-    "/ping": {
-      get: {
-        operationId: "ping",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-  },
-});
+const PingGroup = HttpApiGroup.make("default", { topLevel: true }).add(
+  HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
+);
+
+const TenantIsolationApi = HttpApi.make("tenantIsolationTest")
+  .add(PingGroup)
+  .annotateMerge(OpenApi.annotations({ title: "Tenant Test API", version: "1.0.0" }));
+
+const MINIMAL_OPENAPI_SPEC = JSON.stringify(OpenApi.fromApi(TenantIsolationApi));
 
 describe("tenant isolation (HTTP)", () => {
   it.effect("write requests cannot target another org scope", () =>

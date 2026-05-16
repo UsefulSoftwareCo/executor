@@ -8,28 +8,43 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { previewSpec as previewSpecRaw } from "./preview";
 
 const previewSpec = (input: string) =>
   previewSpecRaw(input).pipe(Effect.provide(FetchHttpClient.layer));
 
+const PreviewGroup = HttpApiGroup.make("default", { topLevel: true }).add(
+  HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
+);
+
+const PreviewApi = HttpApi.make("previewOauth2Test")
+  .add(PreviewGroup)
+  .annotateMerge(
+    OpenApi.annotations({
+      title: "Test API",
+      version: "1.0.0",
+      servers: [{ url: "https://api.example.com" }],
+    }),
+  );
+
 const minimalSpec = (
   securitySchemes: Record<string, unknown>,
   components: Record<string, unknown> = {},
-) => ({
-  openapi: "3.0.0",
-  info: { title: "Test API", version: "1.0.0" },
-  servers: [{ url: "https://api.example.com" }],
-  paths: {
-    "/ping": {
-      get: { responses: { "200": { description: "ok" } } },
-    },
-  },
-  components: { ...components, securitySchemes },
-});
+) =>
+  OpenApi.fromApi(
+    PreviewApi.annotateMerge(
+      OpenApi.annotations({
+        transform: (spec) => ({
+          ...spec,
+          components: { ...components, securitySchemes },
+        }),
+      }),
+    ),
+  );
 
 describe("previewSpec OAuth2 extraction", () => {
   it.effect("extracts authorizationCode flow with URLs, scopes, refreshUrl", () =>
@@ -139,37 +154,17 @@ describe("previewSpec OAuth2 extraction", () => {
 
   it.effect("resolves security schemes defined via $ref", () =>
     Effect.gen(function* () {
-      const spec = minimalSpec(
-        {
-          api_token: { $ref: "#/components/securitySchemes/_api_token_impl" },
+      const spec = minimalSpec({
+        api_token: { $ref: "#/components/securitySchemes/_api_token_impl" },
+        _api_token_impl: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+          description: "Internal token scheme",
         },
-        {
-          securitySchemes: {
-            _api_token_impl: {
-              type: "http",
-              scheme: "bearer",
-              bearerFormat: "JWT",
-              description: "Internal token scheme",
-            },
-          },
-        },
-      );
-      // Note: the outer securitySchemes at `components.securitySchemes` is
-      // what previewSpec reads; the `_api_token_impl` shim inside
-      // components.securitySchemes allows $ref resolution via the resolver.
-      // The test spec above is slightly awkward because we have to nest both
-      // under the same key — adjust by merging.
-      spec.components = {
-        securitySchemes: {
-          api_token: { $ref: "#/components/securitySchemes/_api_token_impl" },
-          _api_token_impl: {
-            type: "http",
-            scheme: "bearer",
-            bearerFormat: "JWT",
-            description: "Internal token scheme",
-          },
-        },
-      };
+      });
+      // Note: `api_token` should resolve through the sibling
+      // `_api_token_impl` scheme in `components.securitySchemes`.
 
       const preview = yield* previewSpec(JSON.stringify(spec));
       // Both keys are present, but the `api_token` entry should resolve to
@@ -181,7 +176,6 @@ describe("previewSpec OAuth2 extraction", () => {
       expect(Option.getOrElse(apiToken!.bearerFormat, () => "")).toBe("JWT");
     }),
   );
-
   it.effect("captures openIdConnectUrl for openIdConnect schemes", () =>
     Effect.gen(function* () {
       const spec = minimalSpec({

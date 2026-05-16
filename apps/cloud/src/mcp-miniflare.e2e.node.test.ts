@@ -24,21 +24,14 @@ import { resolve } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import {
-  HttpApi,
-  HttpApiBuilder,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  OpenApi,
-} from "effect/unstable/httpapi";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Context, Data, Effect, Layer, Option, Predicate, Schema } from "effect";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { Context, Data, Effect, Exit, Layer, Option, Schema, Scope } from "effect";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
+import { serveOpenApiHttpApiTestServer } from "@executor-js/plugin-openapi/testing";
 
 import { makeTestBearer } from "./test-bearer";
 
@@ -64,22 +57,13 @@ const ApproveHandlers = HttpApiBuilder.group(UpstreamApi, "approve", (h) =>
   h.handle("approveThing", () => Effect.succeed(ApprovedResponse.make({ approved: true }))),
 );
 
-const UpstreamApiLive = HttpApiBuilder.layer(UpstreamApi).pipe(Layer.provide(ApproveHandlers));
-
-const UpstreamServeLayer = HttpRouter.serve(UpstreamApiLive).pipe(
-  Layer.provide(UpstreamApiLive),
-  Layer.provideMerge(HttpRouter.layer),
-  Layer.provideMerge(NodeHttpServer.layer(() => createServer(), { port: 0, host: "127.0.0.1" })),
-);
-
 // ---------------------------------------------------------------------------
 // Services
 // ---------------------------------------------------------------------------
 
-class Upstream extends Context.Service<
-  Upstream,
-  { readonly specJson: string; readonly url: string }
->()("MiniflareE2E/Upstream") {}
+class Upstream extends Context.Service<Upstream, { readonly specJson: string }>()(
+  "MiniflareE2E/Upstream",
+) {}
 
 class Worker extends Context.Service<
   Worker,
@@ -116,23 +100,18 @@ class MiniflareE2ETestError extends Data.TaggedError("MiniflareE2ETestError")<{
 
 const UpstreamLive = Layer.effect(
   Upstream,
-  Effect.gen(function* () {
-    const server = yield* HttpServer.HttpServer;
-    const addr = server.address;
-    if (!Predicate.isTagged("TcpAddress")(addr)) {
-      return yield* new MiniflareE2ETestError({
-        message: "upstream server bound to non-TCP address",
-        cause: addr,
-      });
-    }
-    const url = `http://127.0.0.1:${addr.port}`;
-    const specJson = JSON.stringify({
-      ...OpenApi.fromApi(UpstreamApi),
-      servers: [{ url }],
-    });
-    return { specJson, url };
-  }),
-).pipe(Layer.provide(UpstreamServeLayer));
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const server = yield* serveOpenApiHttpApiTestServer({
+        api: UpstreamApi,
+        handlersLayer: ApproveHandlers,
+      }).pipe(Scope.provide(scope));
+      return { server, scope };
+    }),
+    ({ scope }) => Scope.close(scope, Exit.void),
+  ).pipe(Effect.map(({ server }) => ({ specJson: server.specJson }))),
+);
 
 // ---------------------------------------------------------------------------
 // Telemetry receiver — a node HTTP server on a random port that speaks
