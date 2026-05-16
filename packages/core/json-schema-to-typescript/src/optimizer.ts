@@ -1,7 +1,8 @@
 import { uniqBy } from "lodash";
 import type { Options } from ".";
 import { generateType } from "./generator";
-import { AST, T_ANY, T_UNKNOWN } from "./types/AST";
+import { T_ANY, T_UNKNOWN } from "./types/AST";
+import type { AST } from "./types/AST";
 import { log } from "./utils";
 
 export function optimize(ast: AST, options: Options, processed = new Set<AST>()): AST {

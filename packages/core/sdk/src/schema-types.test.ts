@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 
@@ -21,6 +23,8 @@ const stripeBalanceTransactionsFixture = Schema.decodeUnknownSync(
     "utf8",
   ),
 );
+
+const sdkPackageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 describe("schema-types", () => {
   it("reuses referenced definitions instead of inlining them", async () => {
@@ -369,6 +373,38 @@ describe("schema-types", () => {
         Address: "{ city: string; }",
         Contact: "{ id: string; address: Address; }",
       },
+    });
+  });
+
+  it("loads the vendored compiler through Bun's TypeScript loader", () => {
+    const output = execFileSync(
+      "bun",
+      [
+        "-e",
+        `
+          import { buildToolTypeScriptPreview } from "./src/schema-types.ts";
+          const preview = await buildToolTypeScriptPreview({
+            inputSchema: {
+              type: "object",
+              properties: {
+                account_id: { type: "string" },
+                body: {}
+              },
+              required: ["account_id", "body"],
+              additionalProperties: false
+            },
+            outputSchema: {},
+            defs: new Map()
+          });
+          console.log(JSON.stringify(preview));
+        `,
+      ],
+      { cwd: sdkPackageRoot, encoding: "utf8" },
+    );
+
+    expect(JSON.parse(output)).toEqual({
+      inputTypeScript: "{ account_id: string; body: unknown; }",
+      outputTypeScript: "unknown",
     });
   });
 });

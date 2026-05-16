@@ -1,4 +1,4 @@
-import { JSONSchema, LinkedJSONSchema } from "./types/JSONSchema";
+import type { JSONSchema, LinkedJSONSchema } from "./types/JSONSchema";
 import { traverse } from "./utils";
 
 type Rule = (schema: JSONSchema) => boolean | void;

@@ -1,18 +1,15 @@
 import { memoize, omit } from "lodash";
 import { DEFAULT_OPTIONS, type Options } from "./index";
-import {
+import { hasComment, hasStandaloneName, T_ANY, T_UNKNOWN } from "./types/AST";
+import type {
   AST,
   ASTWithStandaloneName,
-  hasComment,
-  hasStandaloneName,
-  T_ANY,
   TArray,
   TEnum,
   TInterface,
   TIntersection,
   TNamedInterface,
   TUnion,
-  T_UNKNOWN,
 } from "./types/AST";
 import { log, toSafeString } from "./utils";
 

@@ -1,4 +1,5 @@
-import { JSONSchema, Parent, LinkedJSONSchema } from "./types/JSONSchema";
+import { Parent } from "./types/JSONSchema";
+import type { JSONSchema, LinkedJSONSchema } from "./types/JSONSchema";
 import { isPlainObject } from "lodash";
 import type { JSONSchema4Type } from "json-schema";
 

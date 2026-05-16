@@ -14,9 +14,9 @@ import { validate } from "./validator";
 import { isDeepStrictEqual } from "util";
 import { link } from "./linker";
 import { validateOptions } from "./optionValidator";
-import { JSONSchema as LinkedJSONSchema } from "./types/JSONSchema";
+import type { JSONSchema as LinkedJSONSchema } from "./types/JSONSchema";
 
-export {
+export type {
   EnumJSONSchema,
   JSONSchema,
   NamedEnumJSONSchema,

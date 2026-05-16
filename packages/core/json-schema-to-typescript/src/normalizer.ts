@@ -1,8 +1,8 @@
-import {
+import { Parent } from "./types/JSONSchema";
+import type {
   JSONSchemaTypeName,
   LinkedJSONSchema,
   NormalizedJSONSchema,
-  Parent,
 } from "./types/JSONSchema";
 import {
   appendToDescription,
@@ -14,7 +14,7 @@ import {
 } from "./utils";
 import type { Options } from "./";
 import { applySchemaTyping } from "./applySchemaTyping";
-import { DereferencedPaths } from "./resolver";
+import type { DereferencedPaths } from "./resolver";
 import { isDeepStrictEqual } from "util";
 
 type Rule = (

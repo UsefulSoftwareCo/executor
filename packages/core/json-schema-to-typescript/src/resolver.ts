@@ -1,5 +1,5 @@
 import { $RefParser, type ParserOptions as $RefOptions } from "@apidevtools/json-schema-ref-parser";
-import { JSONSchema } from "./types/JSONSchema";
+import type { JSONSchema } from "./types/JSONSchema";
 import { log } from "./utils";
 
 export type DereferencedPaths = WeakMap<JSONSchema, string>;
