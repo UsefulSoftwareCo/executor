@@ -59,17 +59,19 @@
     }
   },
   "scripts": {
-    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "build": "tsup && mkdir -p dist/vendor/json-schema-to-typescript && cp src/vendor/json-schema-to-typescript/LICENCE.md dist/vendor/json-schema-to-typescript/LICENCE.md && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
-    "@executor-js/json-schema-to-typescript": "workspace:*",
+    "@apidevtools/json-schema-ref-parser": "^11.9.3",
     "@standard-schema/spec": "^1.1.0",
     "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "fumadb": "workspace:*",
+    "js-yaml": "^4.1.1",
+    "lodash": "^4.18.1",
     "oauth4webapi": "^3.8.5"
   },
   "devDependencies": {
@@ -77,6 +79,9 @@
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
+    "@types/json-schema": "^7.0.15",
+    "@types/lodash": "^4.17.24",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "better-sqlite3": "^12.9.0",

@@ -7,6 +7,7 @@ export default defineConfig({
     shared: "src/shared.ts",
     client: "src/client.ts",
     testing: "src/testing.ts",
+    "vendor/json-schema-to-typescript/index": "src/vendor/json-schema-to-typescript/index.ts",
   },
   format: ["esm"],
   dts: false,

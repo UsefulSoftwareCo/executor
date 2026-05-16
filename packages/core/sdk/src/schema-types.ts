@@ -56,10 +56,13 @@ const DEFAULT_COMPILER_OPTIONS = {
   },
 } satisfies Partial<SchemaCompilerOptions>;
 
-const SCHEMA_COMPILER_MODULE: string = "@executor-js/json-schema-to-typescript";
+const schemaCompilerModulePath = (): string =>
+  import.meta.url.endsWith(".ts")
+    ? "./vendor/json-schema-to-typescript/index.ts"
+    : "./vendor/json-schema-to-typescript/index.js";
 
 const loadSchemaCompiler = async (): Promise<SchemaCompiler> => {
-  const compilerModule: unknown = await import(SCHEMA_COMPILER_MODULE);
+  const compilerModule: unknown = await import(schemaCompilerModulePath());
   return compilerModule as SchemaCompiler;
 };
 

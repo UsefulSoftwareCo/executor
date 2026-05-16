@@ -404,34 +404,17 @@
         "vitest": "catalog:",
       },
     },
-    "packages/core/json-schema-to-typescript": {
-      "name": "@executor-js/json-schema-to-typescript",
-      "version": "0.0.0",
-      "dependencies": {
-        "@apidevtools/json-schema-ref-parser": "^11.9.3",
-        "js-yaml": "^4.1.1",
-        "lodash": "^4.18.1",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@types/js-yaml": "^4.0.9",
-        "@types/json-schema": "^7.0.15",
-        "@types/lodash": "^4.17.24",
-        "@types/node": "catalog:",
-        "tsup": "catalog:",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
     "packages/core/sdk": {
       "name": "@executor-js/sdk",
       "version": "1.4.29",
       "dependencies": {
-        "@executor-js/json-schema-to-typescript": "workspace:*",
+        "@apidevtools/json-schema-ref-parser": "^11.9.3",
         "@standard-schema/spec": "^1.1.0",
         "effect": "catalog:",
         "fractional-indexing": "^3.2.0",
         "fumadb": "workspace:*",
+        "js-yaml": "^4.1.1",
+        "lodash": "^4.18.1",
         "oauth4webapi": "^3.8.5",
       },
       "devDependencies": {
@@ -439,6 +422,9 @@
         "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",
         "@types/better-sqlite3": "^7.6.13",
+        "@types/js-yaml": "^4.0.9",
+        "@types/json-schema": "^7.0.15",
+        "@types/lodash": "^4.17.24",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "better-sqlite3": "^12.9.0",
@@ -1348,8 +1334,6 @@
     "@executor-js/integrations-registry": ["@executor-js/integrations-registry@workspace:packages/core/integrations-registry"],
 
     "@executor-js/ir": ["@executor-js/ir@workspace:packages/kernel/ir"],
-
-    "@executor-js/json-schema-to-typescript": ["@executor-js/json-schema-to-typescript@workspace:packages/core/json-schema-to-typescript"],
 
     "@executor-js/local": ["@executor-js/local@workspace:apps/local"],
 

@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { readFileSync } from "fs";
 import type { JSONSchema4 } from "json-schema";
 import type { ParserOptions as $RefOptions } from "@apidevtools/json-schema-ref-parser";

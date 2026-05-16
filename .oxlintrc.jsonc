@@ -119,7 +119,7 @@
     "integrationsdotsh/",
     "node_modules/",
     "packages/core/fumadb/",
-    "packages/core/json-schema-to-typescript/",
+    "packages/core/sdk/src/vendor/json-schema-to-typescript/",
     "bun.lock",
     "*.tsbuildinfo",
     "executor-*.tgz",
