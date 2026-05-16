@@ -13,6 +13,7 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi";
 import { OAuthTestServer, serveTestHttpServerLayer } from "@executor-js/sdk/testing";
+import type { ScopeId } from "@executor-js/sdk/core";
 import type { OpenApiPluginExtension, OpenApiSpecConfig } from "../sdk/plugin";
 
 export class OpenApiTestServerAddressError extends Data.TaggedError(
@@ -83,6 +84,19 @@ export type OpenApiTestSourceOptions = Omit<OpenApiSpecConfig, "spec" | "baseUrl
   readonly baseUrl?: string | null;
 };
 
+export type OpenApiHttpApiTestSourceOptions = Omit<OpenApiSpecConfig, "spec"> & {
+  readonly specBaseUrl?: string;
+  readonly transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>;
+};
+
+export type OpenApiHttpApiTestAddSpecPayloadOptions = Omit<
+  OpenApiHttpApiTestSourceOptions,
+  "scope" | "credentialTargetScope"
+> & {
+  readonly targetScope: ScopeId;
+  readonly credentialTargetScope?: ScopeId;
+};
+
 export type OpenApiTestSourceExecutor = {
   readonly openapi: Pick<OpenApiPluginExtension, "addSpec">;
 };
@@ -122,6 +136,58 @@ export const addOpenApiTestSource = (
   options: OpenApiTestSourceOptions,
 ) => executor.openapi.addSpec(makeOpenApiTestSourceConfig(server, options));
 
+export const makeOpenApiHttpApiTestSourceConfig = (
+  api: HttpApi.Any,
+  options: OpenApiHttpApiTestSourceOptions,
+): OpenApiSpecConfig => {
+  const { specBaseUrl, transformSpec, ...config } = options;
+  return {
+    ...config,
+    spec: makeOpenApiTestSpecJson(api, { baseUrl: specBaseUrl, transformSpec }),
+  };
+};
+
+export const addOpenApiHttpApiTestSource = (
+  executor: OpenApiTestSourceExecutor,
+  api: HttpApi.Any,
+  options: OpenApiHttpApiTestSourceOptions,
+) => executor.openapi.addSpec(makeOpenApiHttpApiTestSourceConfig(api, options));
+
+export const makeOpenApiHttpApiTestAddSpecPayload = (
+  api: HttpApi.Any,
+  options: OpenApiHttpApiTestAddSpecPayloadOptions,
+) => {
+  const { targetScope, credentialTargetScope, ...sourceOptions } = options;
+  const config = makeOpenApiHttpApiTestSourceConfig(api, {
+    ...sourceOptions,
+    scope: String(targetScope),
+    ...(credentialTargetScope !== undefined
+      ? { credentialTargetScope: String(credentialTargetScope) }
+      : {}),
+  });
+  return {
+    targetScope,
+    spec: config.spec,
+    namespace: config.namespace,
+    ...(config.name !== undefined ? { name: config.name } : {}),
+    ...(config.baseUrl !== undefined ? { baseUrl: config.baseUrl } : {}),
+    ...(config.headers !== undefined ? { headers: config.headers } : {}),
+    ...(config.queryParams !== undefined ? { queryParams: config.queryParams } : {}),
+    ...(config.oauth2 !== undefined ? { oauth2: config.oauth2 } : {}),
+    ...(credentialTargetScope !== undefined ? { credentialTargetScope } : {}),
+    ...(config.specFetchCredentials !== undefined
+      ? { specFetchCredentials: config.specFetchCredentials }
+      : {}),
+  };
+};
+
+export const makeOpenApiHttpApiTestSpecPayload = (
+  api: HttpApi.Any,
+  options: OpenApiTestSpecOptions = {},
+) => ({
+  spec: makeOpenApiTestSpecJson(api, options),
+});
+
 const isJsonObject = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -142,8 +208,16 @@ const OpenApiEchoMessage = Schema.Struct({
 });
 
 const OpenApiEchoItemsGroup = HttpApiGroup.make("items")
-  .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(OpenApiEchoItem) }))
-  .add(HttpApiEndpoint.get("echoHeaders", "/echo-headers", { success: OpenApiEchoHeaders }));
+  .add(
+    HttpApiEndpoint.get("listItems", "/items", {
+      success: Schema.Array(OpenApiEchoItem),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("echoHeaders", "/echo-headers", {
+      success: OpenApiEchoHeaders,
+    }),
+  );
 
 const OpenApiEchoGroup = HttpApiGroup.make("echo").add(
   HttpApiEndpoint.get("echoMessage", "/echo/:message", {
@@ -267,7 +341,10 @@ export const serveMutableOpenApiSpecTestServer = (options: {
       ),
     ]);
     const server = yield* serveTestHttpServerLayer(
-      HttpRouter.serve(SpecRoute, { disableListenLog: true, disableLogger: true }),
+      HttpRouter.serve(SpecRoute, {
+        disableListenLog: true,
+        disableLogger: true,
+      }),
     ).pipe(
       Effect.mapError((error) =>
         Predicate.isTagged(error, "TestHttpServerAddressError")
@@ -398,7 +475,9 @@ const openApiUnauthorizedResponse = (
                 options.oauth2?.wwwAuthenticate
                   ? {
                       status: 401,
-                      headers: { "www-authenticate": options.oauth2.wwwAuthenticate },
+                      headers: {
+                        "www-authenticate": options.oauth2.wwwAuthenticate,
+                      },
                     }
                   : { status: 401 },
               ),

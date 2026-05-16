@@ -16,7 +16,8 @@ import {
 } from "@executor-js/plugin-graphql/testing";
 import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import {
-  makeOpenApiTestSpecJson,
+  makeOpenApiHttpApiTestAddSpecPayload,
+  makeOpenApiHttpApiTestSpecPayload,
   serveOpenApiEchoTestServer,
 } from "@executor-js/plugin-openapi/testing";
 
@@ -33,7 +34,21 @@ const MinimalSourceApi = HttpApi.make("sourcesApiTest")
   .add(PingGroup)
   .annotateMerge(OpenApi.annotations({ title: "Sources API Test", version: "1.0.0" }));
 
-const MINIMAL_OPENAPI_SPEC = makeOpenApiTestSpecJson(MinimalSourceApi);
+const makeMinimalOpenApiSourcePayload = (
+  targetScope: ScopeId,
+  namespace: string,
+  options: Omit<
+    Parameters<typeof makeOpenApiHttpApiTestAddSpecPayload>[1],
+    "targetScope" | "namespace"
+  > = {},
+) =>
+  makeOpenApiHttpApiTestAddSpecPayload(MinimalSourceApi, {
+    targetScope,
+    namespace,
+    ...options,
+  });
+
+const makeMinimalOpenApiPreviewPayload = () => makeOpenApiHttpApiTestSpecPayload(MinimalSourceApi);
 
 // The Cloudflare OpenAPI spec is the biggest real spec we care about:
 // 16MB, 2700+ operations, thousands of shared schemas. Exercising
@@ -57,11 +72,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           const result = yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: {
-              targetScope: ScopeId.make(org),
-              spec: MINIMAL_OPENAPI_SPEC,
-              namespace,
-            },
+            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
           });
           expect(result.namespace).toBe(namespace);
           expect(result.toolCount).toBeGreaterThan(0);
@@ -83,11 +94,7 @@ describe("sources api (HTTP)", () => {
       yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: {
-            targetScope: ScopeId.make(org),
-            spec: MINIMAL_OPENAPI_SPEC,
-            namespace,
-          },
+          payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
         }),
       );
 
@@ -105,7 +112,7 @@ describe("sources api (HTTP)", () => {
       const preview = yield* asOrg(org, (client) =>
         client.openapi.previewSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: { spec: MINIMAL_OPENAPI_SPEC },
+          payload: makeMinimalOpenApiPreviewPayload(),
         }),
       );
 
@@ -129,12 +136,11 @@ describe("sources api (HTTP)", () => {
       const result = yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: {
-            targetScope: ScopeId.make(org),
-            spec: MINIMAL_OPENAPI_SPEC,
-            namespace: `ns_${crypto.randomUUID().replace(/-/g, "_")}`,
-            baseUrl: "http://example.com",
-          },
+          payload: makeMinimalOpenApiSourcePayload(
+            ScopeId.make(org),
+            `ns_${crypto.randomUUID().replace(/-/g, "_")}`,
+            { baseUrl: "http://example.com" },
+          ),
         }),
       );
 
@@ -401,11 +407,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: {
-              targetScope: ScopeId.make(org),
-              spec: MINIMAL_OPENAPI_SPEC,
-              namespace,
-            },
+            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
           });
           yield* client.sources.remove({
             params: { scopeId: ScopeId.make(org), sourceId: namespace },
@@ -459,11 +461,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: {
-              targetScope: ScopeId.make(org),
-              spec: MINIMAL_OPENAPI_SPEC,
-              namespace,
-            },
+            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
           });
           yield* client.openapi.updateSource({
             params: { scopeId: ScopeId.make(org), namespace },
@@ -497,9 +495,7 @@ describe("sources api (HTTP)", () => {
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgId) },
           payload: {
-            targetScope: ScopeId.make(orgId),
-            spec: MINIMAL_OPENAPI_SPEC,
-            namespace,
+            ...makeMinimalOpenApiSourcePayload(ScopeId.make(orgId), namespace),
             headers: {
               Authorization: {
                 kind: "binding",

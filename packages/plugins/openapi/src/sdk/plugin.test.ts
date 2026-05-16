@@ -23,7 +23,7 @@ import { openApiPlugin } from "./plugin";
 import { ConfiguredHeaderBinding, OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
 import {
   addOpenApiTestSource,
-  makeOpenApiTestSpecJson,
+  makeOpenApiHttpApiTestSourceConfig,
   serveOpenApiHttpApiTestServer,
 } from "../testing";
 
@@ -81,7 +81,11 @@ const ItemsGroup = HttpApiGroup.make("items")
       success: Item,
     }),
   )
-  .add(HttpApiEndpoint.get("echoHeaders", "/echo-headers", { success: EchoHeaders }))
+  .add(
+    HttpApiEndpoint.get("echoHeaders", "/echo-headers", {
+      success: EchoHeaders,
+    }),
+  )
   .add(
     HttpApiEndpoint.get("queryRows", "/records/rows/:entryTypeId", {
       params: Schema.Struct({ entryTypeId: Schema.String }),
@@ -92,7 +96,20 @@ const ItemsGroup = HttpApiGroup.make("items")
 
 const TestApi = HttpApi.make("testApi").add(ItemsGroup);
 
-const specJson = makeOpenApiTestSpecJson(TestApi);
+type TestApiSourceOptions = Omit<
+  Parameters<typeof makeOpenApiHttpApiTestSourceConfig>[1],
+  "scope"
+> & {
+  readonly scope?: string;
+};
+
+const testApiSourceConfig = (options: TestApiSourceOptions = {}) =>
+  makeOpenApiHttpApiTestSourceConfig(TestApi, {
+    scope: TEST_SCOPE,
+    ...options,
+  });
+
+const testApiSpec = () => testApiSourceConfig().spec;
 
 // ---------------------------------------------------------------------------
 // Implement handlers
@@ -252,7 +269,7 @@ describe("OpenAPI Plugin", () => {
 
       const result = (yield* executor.tools.invoke(
         "executor.openapi.previewSpec",
-        { spec: specJson },
+        { spec: testApiSpec() },
         autoApprove,
       )) as { operationCount: number };
 
@@ -301,7 +318,7 @@ describe("OpenAPI Plugin", () => {
 
       const result = (yield* executor.tools.invoke(
         "executor.openapi.addSource",
-        { scope: String(orgScope), spec: specJson, namespace: "runtime" },
+        testApiSourceConfig({ scope: String(orgScope), namespace: "runtime" }),
         autoApprove,
       )) as { sourceId: string; toolCount: number };
 
@@ -323,8 +340,10 @@ describe("OpenAPI Plugin", () => {
       const declined = yield* executor.tools
         .invoke(
           "executor.openapi.addSource",
-          { scope: TEST_SCOPE, spec: specJson, namespace: "runtime_declined" },
-          { onElicitation: () => Effect.succeed({ action: "decline" as const }) },
+          testApiSourceConfig({ namespace: "runtime_declined" }),
+          {
+            onElicitation: () => Effect.succeed({ action: "decline" as const }),
+          },
         )
         .pipe(Effect.flip);
 
@@ -345,7 +364,11 @@ describe("OpenAPI Plugin", () => {
       const executor = yield* createExecutor(
         makeTestConfig({
           scopes: [
-            Scope.make({ id: userScope, name: "user", createdAt: new Date() }),
+            Scope.make({
+              id: userScope,
+              name: "user",
+              createdAt: new Date(),
+            }),
             Scope.make({ id: orgScope, name: "org", createdAt: new Date() }),
           ],
           plugins: [
@@ -364,13 +387,12 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      const input = {
-        spec: specJson,
+      const input = testApiSourceConfig({
         scope: String(orgScope),
         namespace: "org_direct_user_credential",
         queryParams: { token: { secretId: "user-query-token" } },
         credentialTargetScope: String(userScope),
-      };
+      });
 
       yield* executor.openapi.addSpec(input);
 
@@ -382,7 +404,10 @@ describe("OpenAPI Plugin", () => {
       expect(bindings[0]).toMatchObject({
         scopeId: userScope,
         slot: "query_param:token",
-        value: { kind: "secret", secretId: SecretId.make("user-query-token") },
+        value: {
+          kind: "secret",
+          secretId: SecretId.make("user-query-token"),
+        },
       });
     }),
   );
@@ -409,16 +434,16 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "stale_binding",
-        baseUrl: "",
-        credentialTargetScope: TEST_SCOPE,
-        headers: {
-          "X-Old": { secretId: "old-token" },
-        },
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "stale_binding",
+          baseUrl: "",
+          credentialTargetScope: TEST_SCOPE,
+          headers: {
+            "X-Old": { secretId: "old-token" },
+          },
+        }),
+      );
 
       yield* executor.openapi.updateSource("stale_binding", TEST_SCOPE, {
         headers: {},
@@ -462,13 +487,13 @@ describe("OpenAPI Plugin", () => {
         connectionSlot: "oauth2:old:connection",
         scopes: ["read"],
       });
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "stale_oauth",
-        baseUrl: "",
-        oauth2: oldOAuth,
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "stale_oauth",
+          baseUrl: "",
+          oauth2: oldOAuth,
+        }),
+      );
       yield* executor.openapi.setSourceBinding(
         OpenApiSourceBindingInput.make({
           sourceId: "stale_oauth",
@@ -536,7 +561,10 @@ describe("OpenAPI Plugin", () => {
           "authed.items.echoHeaders",
           {},
           autoApprove,
-        )) as { data: { authorization?: string; "x-static"?: string } | null; error: unknown };
+        )) as {
+          data: { authorization?: string; "x-static"?: string } | null;
+          error: unknown;
+        };
 
         expect(result.error).toBeNull();
         const data = result.data!;
@@ -573,15 +601,18 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "default_target_scope",
-        baseUrl: "",
-        headers: {
-          Authorization: { secretId: "config-sync-token", prefix: "Bearer " },
-        },
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "default_target_scope",
+          baseUrl: "",
+          headers: {
+            Authorization: {
+              secretId: "config-sync-token",
+              prefix: "Bearer ",
+            },
+          },
+        }),
+      );
 
       const bindings = yield* executor.openapi.listSourceBindings(
         "default_target_scope",
@@ -591,7 +622,10 @@ describe("OpenAPI Plugin", () => {
       expect(bindings[0]).toMatchObject({
         scopeId: ScopeId.make(TEST_SCOPE),
         slot: "header:authorization",
-        value: { kind: "secret", secretId: SecretId.make("config-sync-token") },
+        value: {
+          kind: "secret",
+          secretId: SecretId.make("config-sync-token"),
+        },
       });
     }),
   );
@@ -682,12 +716,12 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      const result = yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "test",
-        baseUrl: "",
-      });
+      const result = yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "test",
+          baseUrl: "",
+        }),
+      );
 
       expect(result.toolCount).toBeGreaterThanOrEqual(2);
 
@@ -809,12 +843,12 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "removable",
-        baseUrl: "",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "removable",
+          baseUrl: "",
+        }),
+      );
 
       expect((yield* executor.tools.list()).length).toBeGreaterThan(2);
 
@@ -852,15 +886,18 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "removable",
-        baseUrl: "",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "removable",
+          baseUrl: "",
+        }),
+      );
       expect(upsertCalls).toEqual(["removable"]);
 
-      yield* executor.sources.remove({ id: "removable", targetScope: TEST_SCOPE });
+      yield* executor.sources.remove({
+        id: "removable",
+        targetScope: TEST_SCOPE,
+      });
 
       expect(removeCalls).toEqual(["removable"]);
     }),
@@ -882,12 +919,12 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "removable",
-        baseUrl: "",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "removable",
+          baseUrl: "",
+        }),
+      );
       yield* executor.openapi.removeSpec("removable", TEST_SCOPE);
 
       const bindings = yield* executor.openapi.listSourceBindings("removable", TEST_SCOPE);
@@ -925,21 +962,23 @@ describe("OpenAPI Plugin", () => {
       );
 
       // Org-level base source
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(ORG_SCOPE),
-        namespace: "shared",
-        baseUrl: "",
-        name: "Org Source",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(ORG_SCOPE),
+          namespace: "shared",
+          baseUrl: "",
+          name: "Org Source",
+        }),
+      );
 
       // Per-user shadow with the same namespace
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(USER_SCOPE),
-        namespace: "shared",
-        name: "User Source",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(USER_SCOPE),
+          namespace: "shared",
+          name: "User Source",
+        }),
+      );
 
       const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
       const orgView = yield* executor.openapi.getSource("shared", String(ORG_SCOPE));
@@ -967,19 +1006,21 @@ describe("OpenAPI Plugin", () => {
         db: recordFumaQueries(config.db, queryCalls),
       });
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(ORG_SCOPE),
-        namespace: "shared",
-        baseUrl: "https://org.example.com",
-        name: "Org Source",
-      });
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(USER_SCOPE),
-        namespace: "shared",
-        name: "User Source",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(ORG_SCOPE),
+          namespace: "shared",
+          baseUrl: "https://org.example.com",
+          name: "Org Source",
+        }),
+      );
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(USER_SCOPE),
+          namespace: "shared",
+          name: "User Source",
+        }),
+      );
 
       queryCalls.length = 0;
       const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
@@ -1005,20 +1046,22 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(ORG_SCOPE),
-        namespace: "shared",
-        baseUrl: "",
-        name: "Org Source",
-      });
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(USER_SCOPE),
-        namespace: "shared",
-        baseUrl: "",
-        name: "User Source",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(ORG_SCOPE),
+          namespace: "shared",
+          baseUrl: "",
+          name: "Org Source",
+        }),
+      );
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(USER_SCOPE),
+          namespace: "shared",
+          baseUrl: "",
+          name: "User Source",
+        }),
+      );
 
       yield* executor.openapi.removeSpec("shared", String(USER_SCOPE));
 
@@ -1044,19 +1087,21 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(ORG_SCOPE),
-        namespace: "shared",
-        baseUrl: "https://org.example.com",
-        name: "Org Source",
-      });
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: String(USER_SCOPE),
-        namespace: "shared",
-        name: "User Source",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(ORG_SCOPE),
+          namespace: "shared",
+          baseUrl: "https://org.example.com",
+          name: "Org Source",
+        }),
+      );
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          scope: String(USER_SCOPE),
+          namespace: "shared",
+          name: "User Source",
+        }),
+      );
 
       const updateResult = yield* executor.openapi
         .updateSource("shared", String(USER_SCOPE), {
@@ -1168,12 +1213,13 @@ describe("OpenAPI Plugin", () => {
               },
             },
           });
-          yield* executor.openapi.addSpec({
-            spec: specJson,
-            scope: String(USER_SCOPE),
-            namespace: "shared_spec_fetch",
-            name: "User Shadow",
-          });
+          yield* executor.openapi.addSpec(
+            testApiSourceConfig({
+              scope: String(USER_SCOPE),
+              namespace: "shared_spec_fetch",
+              name: "User Shadow",
+            }),
+          );
 
           const userRowsBefore = yield* Effect.promise(() =>
             db.findMany("openapi_source_spec_fetch_header", {
@@ -1255,13 +1301,13 @@ describe("OpenAPI Plugin", () => {
         scopes: ["read:items"],
       });
 
-      const result = yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "deferred",
-        baseUrl: "https://api.example.com",
-        oauth2: deferredAuth,
-      });
+      const result = yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "deferred",
+          baseUrl: "https://api.example.com",
+          oauth2: deferredAuth,
+        }),
+      );
 
       expect(result.toolCount).toBeGreaterThan(0);
 
@@ -1277,7 +1323,10 @@ describe("OpenAPI Plugin", () => {
           sourceScope: ScopeId.make(TEST_SCOPE),
           scope: ScopeId.make(TEST_SCOPE),
           slot: stored!.config.oauth2!.clientIdSlot,
-          value: { kind: "secret", secretId: SecretId.make("acme-client-id") },
+          value: {
+            kind: "secret",
+            secretId: SecretId.make("acme-client-id"),
+          },
         }),
       );
 
@@ -1338,14 +1387,14 @@ describe("OpenAPI Plugin", () => {
       );
 
       // Add a source whose query params are canonicalized to a credential slot.
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "with_secret",
-        baseUrl: "http://example.com",
-        credentialTargetScope: TEST_SCOPE,
-        queryParams: { token: { secretId: "api-key" } },
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "with_secret",
+          baseUrl: "http://example.com",
+          credentialTargetScope: TEST_SCOPE,
+          queryParams: { token: { secretId: "api-key" } },
+        }),
+      );
 
       // Configure a slot binding pointing at the same secret.
       yield* executor.openapi.setSourceBinding(
@@ -1383,12 +1432,12 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      yield* executor.openapi.addSpec({
-        spec: specJson,
-        scope: TEST_SCOPE,
-        namespace: "ref",
-        baseUrl: "http://example.com",
-      });
+      yield* executor.openapi.addSpec(
+        testApiSourceConfig({
+          namespace: "ref",
+          baseUrl: "http://example.com",
+        }),
+      );
       yield* executor.openapi.setSourceBinding(
         OpenApiSourceBindingInput.make({
           sourceId: "ref",

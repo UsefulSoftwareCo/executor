@@ -33,8 +33,8 @@ import {
 } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import {
+  makeOpenApiHttpApiTestSourceConfig,
   makeOpenApiTestSourceConfig,
-  makeOpenApiTestSpecJson,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
 } from "../testing";
@@ -127,8 +127,6 @@ const FailureApi = HttpApi.make("failuresTest")
   .add(ThingsGroup)
   .annotateMerge(OpenApi.annotations({ title: "FailuresTest", version: "1.0.0" }));
 
-const makeSpec = () => makeOpenApiTestSpecJson(FailureApi);
-
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(
@@ -139,12 +137,13 @@ const buildExecutor = (baseUrl: string) =>
         ] as const,
       }),
     );
-    yield* executor.openapi.addSpec({
-      spec: makeSpec(),
-      scope: TEST_SCOPE,
-      namespace: "f",
-      baseUrl,
-    });
+    yield* executor.openapi.addSpec(
+      makeOpenApiHttpApiTestSourceConfig(FailureApi, {
+        scope: TEST_SCOPE,
+        namespace: "f",
+        baseUrl,
+      }),
+    );
     return executor;
   });
 
