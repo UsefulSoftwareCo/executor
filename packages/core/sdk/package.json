@@ -65,11 +65,11 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/json-schema-to-typescript": "workspace:*",
     "@standard-schema/spec": "^1.1.0",
     "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "fumadb": "workspace:*",
-    "json-schema-to-typescript": "15.0.4",
     "oauth4webapi": "^3.8.5"
   },
   "devDependencies": {

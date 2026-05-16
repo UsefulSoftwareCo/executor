@@ -1,7 +1,7 @@
 import type {
   JSONSchema,
   Options as JsonSchemaToTypeScriptOptions,
-} from "json-schema-to-typescript";
+} from "@executor-js/json-schema-to-typescript";
 
 import { hoistDefinitions, normalizeRefs } from "./schema-refs";
 
@@ -494,12 +494,7 @@ const containsTopLevelUnion = (source: string): boolean => {
         parenDepth += 1;
       } else if (current === ")") {
         parenDepth = Math.max(0, parenDepth - 1);
-      } else if (
-        current === "|" &&
-        braceDepth === 0 &&
-        bracketDepth === 0 &&
-        parenDepth === 0
-      ) {
+      } else if (current === "|" && braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) {
         return true;
       }
     }
@@ -741,7 +736,7 @@ const compileSchemaPreview = async (
   options: TypeScriptRenderOptions,
 ): Promise<TypeScriptSchemaPreview> => {
   const wrappedSchema = buildWrappedSchema(schema, defs);
-  const { compile } = await import("json-schema-to-typescript");
+  const { compile } = await import("@executor-js/json-schema-to-typescript");
   const source = await compile(
     wrappedSchema as JSONSchema,
     ROOT_WRAPPER_NAME,
@@ -797,7 +792,7 @@ export const buildToolTypeScriptPreview = async (input: {
   }
 
   const wrappedSchema = buildWrappedObjectSchema(properties, input.defs);
-  return import("json-schema-to-typescript")
+  return import("@executor-js/json-schema-to-typescript")
     .then(({ compile }) =>
       compile(
         wrappedSchema as JSONSchema,

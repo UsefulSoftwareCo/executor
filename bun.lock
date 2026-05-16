@@ -404,15 +404,34 @@
         "vitest": "catalog:",
       },
     },
+    "packages/core/json-schema-to-typescript": {
+      "name": "@executor-js/json-schema-to-typescript",
+      "version": "0.0.0",
+      "dependencies": {
+        "@apidevtools/json-schema-ref-parser": "^11.9.3",
+        "js-yaml": "^4.1.1",
+        "lodash": "^4.18.1",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/js-yaml": "^4.0.9",
+        "@types/json-schema": "^7.0.15",
+        "@types/lodash": "^4.17.24",
+        "@types/node": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/core/sdk": {
       "name": "@executor-js/sdk",
       "version": "1.4.29",
       "dependencies": {
+        "@executor-js/json-schema-to-typescript": "workspace:*",
         "@standard-schema/spec": "^1.1.0",
         "effect": "catalog:",
         "fractional-indexing": "^3.2.0",
         "fumadb": "workspace:*",
-        "json-schema-to-typescript": "15.0.4",
         "oauth4webapi": "^3.8.5",
       },
       "devDependencies": {
@@ -1329,6 +1348,8 @@
     "@executor-js/integrations-registry": ["@executor-js/integrations-registry@workspace:packages/core/integrations-registry"],
 
     "@executor-js/ir": ["@executor-js/ir@workspace:packages/kernel/ir"],
+
+    "@executor-js/json-schema-to-typescript": ["@executor-js/json-schema-to-typescript@workspace:packages/core/json-schema-to-typescript"],
 
     "@executor-js/local": ["@executor-js/local@workspace:apps/local"],
 
@@ -2369,6 +2390,8 @@
     "@types/http-cache-semantics": ["@types/http-cache-semantics@4.2.0", "", {}, "sha512-L3LgimLHXtGkWikKnsPg0/VFx9OGZaC+eN1u4r+OB1XRqH3meBIAVC2zr1WdMH+RHmnRkqliQAOHNJ/E0j/e0Q=="],
 
     "@types/js-cookie": ["@types/js-cookie@3.0.6", "", {}, "sha512-wkw9yd1kEXOPnvEeEV1Go1MmxtBJL0RR79aOTAApecWFVu7w0NNXNqhcWgvw2YgZDYadliXkl14pa3WXw5jlCQ=="],
+
+    "@types/js-yaml": ["@types/js-yaml@4.0.9", "", {}, "sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg=="],
 
     "@types/json-schema": ["@types/json-schema@7.0.15", "", {}, "sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA=="],
 
