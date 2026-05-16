@@ -82,7 +82,9 @@ stack-relevant it focuses on that stack instead of listing every local branch.
 When relaying a stack view to the user, always include the full PR URLs for
 every branch that has a PR, not just PR numbers or titles. If `stack status`
 does not print a URL for a branch, query GitHub with `gh pr view`/`gh pr list`
-and include the URL in the shown stack view.
+and include the URL in the shown stack view. Use Markdown links or plain URL
+lines for user-facing stack views so the PR links are clickable; do not hide the
+only copy of the PR URLs inside a fenced code block.
 
 Use `stack sync --dry-run`, not `stack status`, when you need GitHub PR-base
 inference before mutation.
@@ -134,7 +136,8 @@ Sync output is intentionally outcome-oriented. It should show the stack tree wit
 icons like `●`, `✓`, `◌`, and `✕`, plus changed PRs/backups/undo instructions. It
 should not default to internal phase logs like fetch, inspect, or reconcile.
 When you show a stack tree to the user, include full PR URLs alongside each PR
-entry so the stack view is directly actionable.
+entry so the stack view is directly actionable. Prefer Markdown list/tree output
+with clickable links over fenced code blocks when relaying PR URLs to a user.
 
 If a replay fails, `stack sync` aborts the failed cherry-pick, restores the
 original branch, deletes the temporary replay branch, keeps backups and the undo
