@@ -513,13 +513,43 @@ export default function AddMcpSource(props: {
     return args;
   };
 
+  const parseStdioEnvValue = (raw: string): string => {
+    const value = raw.trim();
+    if (value.length < 2) return value;
+
+    const quote = value[0];
+    if ((quote !== '"' && quote !== "'") || value[value.length - 1] !== quote) {
+      return value;
+    }
+
+    const inner = value.slice(1, -1);
+    if (quote === "'") return inner;
+
+    return inner.replace(/\\([\\nrt"])/g, (_, escaped: string) => {
+      switch (escaped) {
+        case "\\":
+          return "\\";
+        case "n":
+          return "\n";
+        case "r":
+          return "\r";
+        case "t":
+          return "\t";
+        case '"':
+          return '"';
+        default:
+          return escaped;
+      }
+    });
+  };
+
   const parseStdioEnv = (raw: string): Record<string, string> | undefined => {
     if (!raw.trim()) return undefined;
     const env: Record<string, string> = {};
     for (const line of raw.split("\n")) {
       const eq = line.indexOf("=");
       if (eq > 0) {
-        env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+        env[line.slice(0, eq).trim()] = parseStdioEnvValue(line.slice(eq + 1));
       }
     }
     return Object.keys(env).length > 0 ? env : undefined;
