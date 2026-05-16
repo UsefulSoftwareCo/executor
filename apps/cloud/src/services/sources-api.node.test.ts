@@ -4,59 +4,25 @@
 // single org.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Ref, Result, Schema } from "effect";
-import {
-  HttpApi,
-  HttpApiBuilder,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  OpenApi,
-} from "effect/unstable/httpapi";
+import { Effect, Result, Schema } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { ScopeId, SecretId } from "@executor-js/sdk";
 import {
   serveGraphqlTestServer,
   makeGreetingGraphqlSchema,
 } from "@executor-js/plugin-graphql/testing";
-import { serveMcpServer } from "@executor-js/plugin-mcp/testing";
-import { serveOpenApiHttpApiTestServer } from "@executor-js/plugin-openapi/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
+import { serveOpenApiEchoTestServer } from "@executor-js/plugin-openapi/testing";
 
 import { asOrg, asUser, testUserOrgScopeId } from "./__test-harness__/api-harness";
 
 const isJsonObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const stripDefaultOperationPrefix = (spec: unknown): unknown => {
-  if (!isJsonObject(spec) || !isJsonObject(spec.paths)) return spec;
-  for (const pathItem of Object.values(spec.paths)) {
-    if (!isJsonObject(pathItem)) continue;
-    for (const operation of Object.values(pathItem)) {
-      if (!isJsonObject(operation)) continue;
-      if (
-        typeof operation.operationId === "string" &&
-        operation.operationId.startsWith("default.")
-      ) {
-        operation.operationId = operation.operationId.slice("default.".length);
-      }
-      if (
-        Array.isArray(operation.tags) &&
-        operation.tags.length === 1 &&
-        operation.tags[0] === "default"
-      ) {
-        delete operation.tags;
-      }
-    }
-  }
-  return spec;
-};
-
-const specJsonFromApi = (api: HttpApi.Any): string =>
-  JSON.stringify(stripDefaultOperationPrefix(OpenApi.fromApi(api as HttpApi.AnyWithProps)));
-
-const PingGroup = HttpApiGroup.make("default").add(
+const PingGroup = HttpApiGroup.make("default", { topLevel: true }).add(
   HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
 );
 
@@ -64,65 +30,7 @@ const MinimalSourceApi = HttpApi.make("sourcesApiTest")
   .add(PingGroup)
   .annotateMerge(OpenApi.annotations({ title: "Sources API Test", version: "1.0.0" }));
 
-const MINIMAL_OPENAPI_SPEC = specJsonFromApi(MinimalSourceApi);
-
-const EchoResponse = Schema.Struct({
-  message: Schema.String,
-  suffix: Schema.optional(Schema.String),
-  path: Schema.String,
-});
-
-const EchoGroup = HttpApiGroup.make("echo").add(
-  HttpApiEndpoint.get("echoMessage", "/echo/:message", {
-    params: Schema.Struct({ message: Schema.String }),
-    query: Schema.Struct({ suffix: Schema.optional(Schema.String) }),
-    success: EchoResponse,
-  }),
-);
-
-const InvocableSourceApi = HttpApi.make("invocableSourceApi")
-  .add(EchoGroup)
-  .annotateMerge(OpenApi.annotations({ title: "Invocable Source API", version: "1.0.0" }));
-
-type EchoRequest = {
-  readonly path: string;
-  readonly suffix: string | null;
-};
-
-const makeInvocableOpenApiHandlers = (requests: Ref.Ref<readonly EchoRequest[]>) =>
-  HttpApiBuilder.group(InvocableSourceApi, "echo", (handlers) =>
-    handlers.handle("echoMessage", ({ params, query }) =>
-      Effect.gen(function* () {
-        const path = `/echo/${encodeURIComponent(params.message)}`;
-        yield* Ref.update(requests, (all) => [
-          ...all,
-          {
-            path,
-            suffix: query.suffix ?? null,
-          },
-        ]);
-        return EchoResponse.make({
-          message: params.message,
-          ...(query.suffix ? { suffix: query.suffix } : {}),
-          path,
-        });
-      }),
-    ),
-  );
-
-const createCloudMcpServer = () => {
-  const server = new McpServer({ name: "cloud-e2e-mcp", version: "1.0.0" }, { capabilities: {} });
-
-  server.registerTool(
-    "simple_echo",
-    { description: "Echoes from the cloud e2e MCP server", inputSchema: {} },
-    async () => ({
-      content: [{ type: "text" as const, text: "cloud-mcp-ok" }],
-    }),
-  );
-
-  return server;
-};
+const MINIMAL_OPENAPI_SPEC = JSON.stringify(OpenApi.fromApi(MinimalSourceApi));
 
 // The Cloudflare OpenAPI spec is the biggest real spec we care about:
 // 16MB, 2700+ operations, thousands of shared schemas. Exercising
@@ -233,10 +141,14 @@ describe("sources api (HTTP)", () => {
 
   it.effect("added OpenAPI source can be listed, inspected, and invoked through execution", () =>
     Effect.gen(function* () {
-      const requests = yield* Ref.make<readonly EchoRequest[]>([]);
-      const server = yield* serveOpenApiHttpApiTestServer({
-        api: InvocableSourceApi,
-        handlersLayer: makeInvocableOpenApiHandlers(requests),
+      const server = yield* serveOpenApiEchoTestServer({
+        transformSpec: (spec) => ({
+          ...spec,
+          info: { title: "Invocable Source API", version: "1.0.0" },
+          paths: {
+            "/echo/{message}": isJsonObject(spec.paths) ? spec.paths["/echo/{message}"] : {},
+          },
+        }),
       });
       const org = `org_${crypto.randomUUID()}`;
       const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
@@ -292,7 +204,9 @@ describe("sources api (HTTP)", () => {
         },
         logs: [],
       });
-      expect(yield* Ref.get(requests)).toEqual([{ path: "/echo/hello", suffix: "world" }]);
+      expect(yield* server.requests).toContainEqual(
+        expect.objectContaining({ path: "/echo/hello" }),
+      );
     }),
   );
 
@@ -406,7 +320,13 @@ describe("sources api (HTTP)", () => {
 
   it.effect("added MCP source can be inspected and invoked through execution", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer(createCloudMcpServer);
+      const server = yield* serveMcpServer(() =>
+        makeGreetingMcpServer({
+          name: "cloud-e2e-mcp",
+          toolDescription: "Echoes from the cloud e2e MCP server",
+          text: "cloud-mcp-ok",
+        }),
+      );
       const org = `org_${crypto.randomUUID()}`;
       const namespace = `mcp_${crypto.randomUUID().replace(/-/g, "_")}`;
       const scopeId = ScopeId.make(org);

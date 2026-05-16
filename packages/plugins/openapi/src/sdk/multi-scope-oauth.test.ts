@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { expect, layer } from "@effect/vitest";
-import { Data, Effect, Layer, Predicate, Ref, Schema } from "effect";
+import { Data, Effect, Layer, Predicate, Schema } from "effect";
 import {
   HttpApi,
   HttpApiBuilder,
@@ -17,13 +17,7 @@ import {
   HttpApiGroup,
   OpenApi,
 } from "effect/unstable/httpapi";
-import {
-  FetchHttpClient,
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 
 import {
@@ -37,8 +31,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
-import { serveTestHttpApp } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 import { OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
@@ -101,33 +94,12 @@ const TestLayer = HttpRouter.serve(ApiLive, { disableListenLog: true, disableLog
   Layer.provideMerge(NodeHttpServer.layerTest),
 );
 
-const json = (status: number, body: unknown): HttpServerResponse.HttpServerResponse =>
-  HttpServerResponse.jsonUnsafe(body, { status });
-
-const serveTokenEndpoint = (
-  handle: (params: URLSearchParams) => HttpServerResponse.HttpServerResponse,
+const tokenEndpointRequests = (
+  requests: readonly { readonly path: string; readonly body: string }[],
 ) =>
-  Effect.gen(function* () {
-    const clientIds = yield* Ref.make<readonly string[]>([]);
-    const server = yield* serveTestHttpApp((request) =>
-      Effect.gen(function* () {
-        const params = new URLSearchParams(yield* request.text);
-        const clientId = params.get("client_id");
-        if (clientId) {
-          yield* Ref.update(clientIds, (all) => [...all, clientId]);
-        }
-        return handle(params);
-      }).pipe(
-        Effect.catch(() =>
-          Effect.succeed(HttpServerResponse.text("token fixture request failed", { status: 500 })),
-        ),
-      ),
-    );
-    return {
-      tokenUrl: server.url("/token"),
-      clientIds: Ref.get(clientIds),
-    } as const;
-  });
+  requests
+    .filter((request) => request.path === "/token")
+    .map((request) => new URLSearchParams(request.body));
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -226,29 +198,17 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // 2. Each user runs startOAuth + centralized OAuth completion to mint a
       //    per-user Connection.
       // -------------------------------------------------------------
-      const tokenEndpoint = yield* serveTokenEndpoint((params) => {
-        const code = params.get("code") ?? "";
-        const tokenByCode: Record<string, string> = {
-          "code-alice": "alice-token",
-          "code-bob": "bob-token",
-        };
-        const token = tokenByCode[code];
-        if (!token) {
-          return json(400, { error: "invalid_grant", code });
-        }
-        return json(200, {
-          access_token: token,
-          token_type: "Bearer",
-          refresh_token: `${token}-refresh`,
-        });
+      const oauth = yield* serveOAuthTestServer({
+        defaultClientId: "client-abc",
+        defaultClientSecret: "secret-xyz",
       });
 
       const startInputFor = (user: string, scope: ScopeId) => ({
         sourceId: "petstore",
         displayName: `Petstore (${user})`,
         securitySchemeName: "oauth2",
-        authorizationUrl: "https://auth.example.com/authorize",
-        tokenUrl: tokenEndpoint.tokenUrl,
+        authorizationUrl: oauth.authorizationEndpoint,
+        tokenUrl: oauth.tokenEndpoint,
         redirectUrl: "https://app.example.com/oauth/callback",
         clientIdSecretId: "petstore_client_id",
         clientSecretSecretId: "petstore_client_secret",
@@ -294,13 +254,19 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         });
       }
 
+      const aliceCallback = yield* oauth.completeAuthorizationCodeFlow({
+        authorizationUrl: aliceStart.authorizationUrl,
+      });
+      const bobCallback = yield* oauth.completeAuthorizationCodeFlow({
+        authorizationUrl: bobStart.authorizationUrl,
+      });
       const aliceAuth = yield* aliceExec.oauth.complete({
         state: aliceStart.sessionId,
-        code: "code-alice",
+        code: aliceCallback.code,
       });
       const bobAuth = yield* bobExec.oauth.complete({
         state: bobStart.sessionId,
-        code: "code-bob",
+        code: bobCallback.code,
       });
 
       // With the stable-id fix both users derive the same row id
@@ -311,8 +277,8 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       expect(aliceAuth.connectionId).toBe(bobAuth.connectionId);
       const oauth2 = makeOauth2SourceConfig({
         flow: "authorizationCode",
-        tokenUrl: tokenEndpoint.tokenUrl,
-        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: oauth.tokenEndpoint,
+        authorizationUrl: oauth.authorizationEndpoint,
         scopes: ["read"],
       });
 
@@ -363,7 +329,9 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         autoApprove,
       )) as { data: { authorization?: string } | null; error: unknown };
       expect(aliceResult.error).toBeNull();
-      expect(aliceResult.data?.authorization).toBe("Bearer alice-token");
+      const aliceBearer = aliceResult.data?.authorization?.replace(/^Bearer\s+/i, "");
+      expect(aliceBearer).toBeDefined();
+      expect(yield* oauth.acceptsAccessToken(aliceBearer!)).toBe(true);
 
       const bobResult = (yield* bobExec.tools.invoke(
         "petstore.items.echoHeaders",
@@ -371,7 +339,10 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         autoApprove,
       )) as { data: { authorization?: string } | null; error: unknown };
       expect(bobResult.error).toBeNull();
-      expect(bobResult.data?.authorization).toBe("Bearer bob-token");
+      const bobBearer = bobResult.data?.authorization?.replace(/^Bearer\s+/i, "");
+      expect(bobBearer).toBeDefined();
+      expect(yield* oauth.acceptsAccessToken(bobBearer!)).toBe(true);
+      expect(bobBearer).not.toBe(aliceBearer);
 
       // -------------------------------------------------------------
       // 5. Each user's Connection is scoped to them; admin sees none.
@@ -522,23 +493,19 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         }),
       );
 
-      // client_credentials token endpoint stub. Issues a token that
-      // encodes which client_id was used, so we can assert each
-      // user's row ends up with a token minted from *their own*
-      // credential resolution.
-      const tokenEndpoint = yield* serveTokenEndpoint((params) => {
-        const clientId = params.get("client_id") ?? "unknown";
-        return json(200, {
-          access_token: `token-for-${clientId}`,
-          token_type: "Bearer",
-        });
+      const oauth = yield* serveOAuthTestServer({
+        defaultClientId: "org-client",
+        defaultClientSecret: "org-secret",
+        clients: {
+          "alice-client": "alice-secret",
+        },
       });
 
       const startInput = {
         connectionId: "shared-petstore-oauth",
         displayName: "Petstore",
         securitySchemeName: "oauth2",
-        tokenUrl: tokenEndpoint.tokenUrl,
+        tokenUrl: oauth.tokenEndpoint,
         clientIdSecretId: "client_id",
         clientSecretSecretId: "client_secret",
         scopes: ["read"],
@@ -572,7 +539,7 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
 
       const oauth2 = makeOauth2SourceConfig({
         flow: "clientCredentials",
-        tokenUrl: tokenEndpoint.tokenUrl,
+        tokenUrl: oauth.tokenEndpoint,
         authorizationUrl: null,
         scopes: startInput.scopes,
       });
@@ -654,7 +621,9 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
       // (3) Scope-stacked secret resolution produced per-user tokens.
       // The exchange call Alice made used her shadowed value; Bob's
       // fell through to the org default.
-      const tokenCalls = yield* tokenEndpoint.clientIds;
+      const tokenCalls = tokenEndpointRequests(yield* oauth.requests)
+        .map((request) => request.get("client_id"))
+        .filter((clientId): clientId is string => clientId !== null);
       expect(tokenCalls).toContain("alice-client");
       expect(tokenCalls.filter((v) => v === "org-client").length).toBeGreaterThan(0);
 
@@ -667,7 +636,9 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         autoApprove,
       )) as { data: { authorization?: string } | null; error: unknown };
       expect(aliceResult.error).toBeNull();
-      expect(aliceResult.data?.authorization).toBe("Bearer token-for-alice-client");
+      const aliceBearer = aliceResult.data?.authorization?.replace(/^Bearer\s+/i, "");
+      expect(aliceBearer).toBeDefined();
+      expect(yield* oauth.acceptsAccessToken(aliceBearer!)).toBe(true);
 
       const bobResult = (yield* bobExec.tools.invoke(
         "petstore.items.echoHeaders",
@@ -675,7 +646,10 @@ layer(TestLayer)("OpenAPI multi-scope OAuth", (it) => {
         autoApprove,
       )) as { data: { authorization?: string } | null; error: unknown };
       expect(bobResult.error).toBeNull();
-      expect(bobResult.data?.authorization).toBe("Bearer token-for-org-client");
+      const bobBearer = bobResult.data?.authorization?.replace(/^Bearer\s+/i, "");
+      expect(bobBearer).toBeDefined();
+      expect(yield* oauth.acceptsAccessToken(bobBearer!)).toBe(true);
+      expect(bobBearer).not.toBe(aliceBearer);
 
       // (5) Alice's sign-in is idempotent per-user — a repeat click
       // refreshes her one row instead of piling on orphans.

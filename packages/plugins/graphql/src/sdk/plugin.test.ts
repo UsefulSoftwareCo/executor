@@ -1,6 +1,5 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
 
 import {
   ConnectionId,
@@ -15,14 +14,18 @@ import {
   TokenMaterial,
 } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
-import { memorySecretsPlugin, serveTestHttpApp } from "@executor-js/sdk/testing";
+import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";
 import { endpointForTelemetry } from "./invoke";
 import { introspect } from "./introspect";
 import { GraphqlSourceBindingInput, graphqlHeaderSlot, graphqlQueryParamSlot } from "./types";
 import type { IntrospectionResult } from "./introspect";
-import { makeGreetingGraphqlSchema, serveGraphqlTestServer } from "../testing";
+import {
+  makeGreetingGraphqlSchema,
+  serveGraphqlFailureTestServer,
+  serveGraphqlTestServer,
+} from "../testing";
 
 const TEST_SCOPE = "test-scope";
 
@@ -132,16 +135,12 @@ describe("graphqlPlugin real protocol server", () => {
 
   it.effect("does not include upstream response bodies in introspection status errors", () =>
     Effect.gen(function* () {
-      const server = yield* serveTestHttpApp(() =>
-        Effect.succeed(
-          HttpServerResponse.text("internal token value", {
-            status: 500,
-            contentType: "text/plain",
-          }),
-        ),
-      );
+      const server = yield* serveGraphqlFailureTestServer({
+        status: 500,
+        body: "internal token value",
+      });
 
-      const error = yield* introspect(server.url("/graphql")).pipe(
+      const error = yield* introspect(server.endpoint).pipe(
         Effect.provide(server.httpClientLayer),
         Effect.flip,
       );

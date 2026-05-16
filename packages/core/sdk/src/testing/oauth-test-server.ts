@@ -48,6 +48,7 @@ export interface OAuthTestServerOptions {
   readonly defaultPassword?: string;
   readonly defaultClientId?: string;
   readonly defaultClientSecret?: string;
+  readonly clients?: Readonly<Record<string, string | null>>;
   readonly scopes?: readonly string[];
   readonly supportRefresh?: boolean;
 }
@@ -410,6 +411,13 @@ export const serveOAuthTestServer = (
       redirectUris: new Set(),
       tokenEndpointAuthMethod: "client_secret_post",
     });
+    for (const [clientId, clientSecret] of Object.entries(options.clients ?? {})) {
+      clients.set(clientId, {
+        clientSecret,
+        redirectUris: new Set(),
+        tokenEndpointAuthMethod: clientSecret === null ? "none" : "client_secret_post",
+      });
+    }
 
     let issuerUrl = "";
     const server = yield* serveOAuthTestHttpApp((request) =>

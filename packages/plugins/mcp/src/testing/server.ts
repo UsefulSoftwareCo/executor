@@ -256,3 +256,34 @@ export class McpTestServerLayer extends Context.Service<McpTestServerLayer, McpT
   ): Layer.Layer<McpTestServerLayer, McpTestServerError, Scope.Scope | OAuthTestServer> =>
     Layer.effect(McpTestServerLayer, serveMcpServerWithOAuth(factory, options));
 }
+
+export const makeGreetingMcpServer = (
+  options: {
+    readonly name?: string;
+    readonly version?: string;
+    readonly toolName?: string;
+    readonly toolDescription?: string;
+    readonly text?: string;
+  } = {},
+) => {
+  const server = new McpServer(
+    {
+      name: options.name ?? "executor-test-mcp",
+      version: options.version ?? "1.0.0",
+    },
+    { capabilities: {} },
+  );
+
+  server.registerTool(
+    options.toolName ?? "simple_echo",
+    {
+      description: options.toolDescription ?? "Echoes from the executor MCP test server",
+      inputSchema: {},
+    },
+    async () => ({
+      content: [{ type: "text" as const, text: options.text ?? "mcp-ok" }],
+    }),
+  );
+
+  return server;
+};

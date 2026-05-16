@@ -27,8 +27,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
-import { memorySecretsPlugin } from "@executor-js/sdk/testing";
+import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
 import type { ConfigFileSink } from "@executor-js/config";
 
 const TEST_SCOPE = "test-scope";
@@ -163,21 +162,25 @@ const TestLayer = HttpRouter.serve(ApiLive, { disableListenLog: true, disableLog
 
 const serveSpecRequiringHeader = () => {
   const state = { requests: 0, lastToken: null as string | null };
-  return serveTestHttpApp((request) =>
-    Effect.sync(() => {
-      state.requests++;
-      state.lastToken = request.headers["x-spec-token"] ?? null;
-      if (state.lastToken !== "org-token") {
-        return HttpServerResponse.jsonUnsafe({ error: "missing token" }, { status: 401 });
-      }
-      return HttpServerResponse.text(specJson, {
-        status: 200,
-        contentType: "application/json",
-      });
-    }),
-  ).pipe(
+  return serveOpenApiHttpApiTestServer({
+    api: TestApi,
+    handlersLayer: ItemsGroupLive,
+    transformSpec: (spec) => {
+      const { servers: _servers, ...rest } = spec;
+      return rest;
+    },
+    guardSpecRequest: (request) =>
+      Effect.sync(() => {
+        state.requests++;
+        state.lastToken = request.headers["x-spec-token"] ?? null;
+        if (state.lastToken !== "org-token") {
+          return HttpServerResponse.jsonUnsafe({ error: "missing token" }, { status: 401 });
+        }
+        return null;
+      }),
+  }).pipe(
     Effect.map((server) => ({
-      specUrl: server.url("/spec.json"),
+      specUrl: server.specUrl,
       requestCount: () => state.requests,
       lastToken: () => state.lastToken,
     })),

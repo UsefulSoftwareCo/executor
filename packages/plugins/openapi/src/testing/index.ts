@@ -38,10 +38,19 @@ export interface OpenApiHttpApiTestServerOptions {
   readonly captureSpecRequest?: (
     request: HttpServerRequest.HttpServerRequest,
   ) => Effect.Effect<void>;
+  readonly guardSpecRequest?: (
+    request: HttpServerRequest.HttpServerRequest,
+  ) => Effect.Effect<HttpServerResponse.HttpServerResponse | null>;
 }
 
 export interface OpenApiHttpApiTestServerShape extends OpenApiTestServerShape {
   readonly specUrl: string;
+}
+
+export interface MutableOpenApiSpecTestServerShape extends OpenApiTestServerShape {
+  readonly specUrl: string;
+  readonly setApi: (api: HttpApi.Any) => Effect.Effect<void, OpenApiTestServerSpecError>;
+  readonly requestCount: Effect.Effect<number>;
 }
 
 export interface OpenApiTestRequest {
@@ -82,12 +91,27 @@ const OpenApiEchoHeaders = Schema.Struct({
   "x-static": Schema.optional(Schema.String),
 });
 
+const OpenApiEchoMessage = Schema.Struct({
+  message: Schema.String,
+  suffix: Schema.optional(Schema.String),
+  path: Schema.String,
+});
+
 const OpenApiEchoItemsGroup = HttpApiGroup.make("items")
   .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(OpenApiEchoItem) }))
   .add(HttpApiEndpoint.get("echoHeaders", "/echo-headers", { success: OpenApiEchoHeaders }));
 
+const OpenApiEchoGroup = HttpApiGroup.make("echo").add(
+  HttpApiEndpoint.get("echoMessage", "/echo/:message", {
+    params: Schema.Struct({ message: Schema.String }),
+    query: Schema.Struct({ suffix: Schema.optional(Schema.String) }),
+    success: OpenApiEchoMessage,
+  }),
+);
+
 const OpenApiEchoApi = HttpApi.make("executorOpenApiTest")
   .add(OpenApiEchoItemsGroup)
+  .add(OpenApiEchoGroup)
   .annotateMerge(
     OpenApi.annotations({
       title: "Executor OpenAPI Test Server",
@@ -132,6 +156,10 @@ export const serveOpenApiHttpApiTestServer = (
           if (options.captureSpecRequest) {
             yield* options.captureSpecRequest(request);
           }
+          const guardResponse = options.guardSpecRequest
+            ? yield* options.guardSpecRequest(request)
+            : null;
+          if (guardResponse) return guardResponse;
           return HttpServerResponse.text(specJson, {
             status: 200,
             contentType: "application/json",
@@ -174,6 +202,56 @@ export class OpenApiHttpApiTestServer extends Context.Service<
   static readonly layer = (options: OpenApiHttpApiTestServerOptions) =>
     Layer.effect(OpenApiHttpApiTestServer, serveOpenApiHttpApiTestServer(options));
 }
+
+export const serveMutableOpenApiSpecTestServer = (options: {
+  readonly initialApi: HttpApi.Any;
+  readonly specPath?: `/${string}`;
+  readonly transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>;
+}): Effect.Effect<
+  MutableOpenApiSpecTestServerShape,
+  OpenApiTestServerAddressError | OpenApiTestServerSpecError,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const specPath = options.specPath ?? "/spec.json";
+    const specJson = yield* Ref.make("");
+    const requests = yield* Ref.make(0);
+    const SpecRoute = HttpRouter.addAll([
+      HttpRouter.route(
+        "GET",
+        specPath,
+        Effect.gen(function* () {
+          yield* Ref.update(requests, (count) => count + 1);
+          const current = yield* Ref.get(specJson);
+          return HttpServerResponse.text(current, {
+            status: 200,
+            contentType: "application/json",
+          });
+        }),
+      ),
+    ]);
+    const server = yield* serveTestHttpServerLayer(
+      HttpRouter.serve(SpecRoute, { disableListenLog: true, disableLogger: true }),
+    ).pipe(
+      Effect.mapError((error) =>
+        Predicate.isTagged(error, "TestHttpServerAddressError")
+          ? new OpenApiTestServerAddressError({ address: error.address })
+          : new OpenApiTestServerSpecError({ cause: error.cause }),
+      ),
+    );
+    const renderSpec = (api: HttpApi.Any) =>
+      openApiSpecJsonFromHttpApi(api, server.baseUrl, options.transformSpec);
+    yield* Ref.set(specJson, yield* renderSpec(options.initialApi));
+
+    return {
+      baseUrl: server.baseUrl,
+      specUrl: server.url(specPath),
+      specJson: yield* Ref.get(specJson),
+      httpClientLayer: server.httpClientLayer,
+      setApi: (api) => renderSpec(api).pipe(Effect.flatMap((next) => Ref.set(specJson, next))),
+      requestCount: Ref.get(requests),
+    };
+  });
 
 const openApiOperationMethods = new Set([
   "get",
@@ -328,6 +406,29 @@ const makeOpenApiEchoItemsGroupLive = (
       ),
   );
 
+const makeOpenApiEchoGroupLive = (
+  requests: Ref.Ref<readonly OpenApiTestRequest[]>,
+  options: OpenApiEchoTestServerOptions,
+) =>
+  HttpApiBuilder.group(OpenApiEchoApi, "echo", (handlers) =>
+    handlers.handle("echoMessage", ({ params, query }) =>
+      Effect.gen(function* () {
+        const request = yield* captureOpenApiRequest(requests);
+        const unauthorized = yield* openApiUnauthorizedResponse(
+          options,
+          request.headers.authorization ?? null,
+        );
+        if (unauthorized) return unauthorized;
+        const path = `/echo/${encodeURIComponent(params.message)}`;
+        return OpenApiEchoMessage.make({
+          message: params.message,
+          ...(query.suffix ? { suffix: query.suffix } : {}),
+          path,
+        });
+      }),
+    ),
+  );
+
 export const serveOpenApiEchoTestServer = (
   options: OpenApiEchoTestServerOptions = {},
 ): Effect.Effect<
@@ -340,7 +441,10 @@ export const serveOpenApiEchoTestServer = (
     let specJson = "";
     const server = yield* serveOpenApiHttpApiTestServer({
       api: OpenApiEchoApi,
-      handlersLayer: makeOpenApiEchoItemsGroupLive(requests, options),
+      handlersLayer: Layer.mergeAll(
+        makeOpenApiEchoItemsGroupLive(requests, options),
+        makeOpenApiEchoGroupLive(requests, options),
+      ),
       transformSpec: composeSpecTransforms(
         options.oauth2 ? withOAuth2Security(options.oauth2) : undefined,
         options.transformSpec,

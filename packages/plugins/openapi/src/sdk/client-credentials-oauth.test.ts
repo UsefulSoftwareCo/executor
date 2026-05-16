@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Ref, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import {
   HttpApi,
   HttpApiBuilder,
@@ -15,13 +15,7 @@ import {
   HttpApiGroup,
   OpenApi,
 } from "effect/unstable/httpapi";
-import {
-  FetchHttpClient,
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 
 import {
@@ -35,8 +29,7 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
-import { serveTestHttpApp } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { openApiPlugin } from "./plugin";
 import { OAuth2SourceConfig, OpenApiSourceBindingInput } from "./types";
@@ -83,53 +76,12 @@ const TestLayer = HttpRouter.serve(ApiLive, { disableListenLog: true, disableLog
   Layer.provideMerge(NodeHttpServer.layerTest),
 );
 
-type TokenCall = {
-  readonly grantType: string | null;
-  readonly clientId: string | null;
-  readonly clientSecret: string | null;
-  readonly scope: string | null;
-};
-
-const serveClientCredentialsTokenEndpoint = (args: {
-  readonly accessTokens: readonly string[];
-  readonly expiresIn?: number;
-}) =>
-  Effect.gen(function* () {
-    const calls = yield* Ref.make<readonly TokenCall[]>([]);
-    let callIndex = 0;
-    const server = yield* serveTestHttpApp((request) =>
-      Effect.gen(function* () {
-        const params = new URLSearchParams(yield* request.text);
-        yield* Ref.update(calls, (all) => [
-          ...all,
-          {
-            grantType: params.get("grant_type"),
-            clientId: params.get("client_id"),
-            clientSecret: params.get("client_secret"),
-            scope: params.get("scope"),
-          },
-        ]);
-        const token =
-          args.accessTokens[Math.min(callIndex, args.accessTokens.length - 1)] ?? "unknown";
-        callIndex += 1;
-        const body: Record<string, unknown> = {
-          access_token: token,
-          token_type: "Bearer",
-        };
-        if (typeof args.expiresIn === "number") body.expires_in = args.expiresIn;
-        return HttpServerResponse.jsonUnsafe(body);
-      }).pipe(
-        Effect.catch(() =>
-          Effect.succeed(HttpServerResponse.text("token fixture request failed", { status: 500 })),
-        ),
-      ),
-    );
-
-    return {
-      tokenUrl: server.url("/token"),
-      calls: Ref.get(calls),
-    } as const;
-  });
+const tokenEndpointRequests = (
+  requests: readonly { readonly path: string; readonly body: string }[],
+) =>
+  requests
+    .filter((request) => request.path === "/token")
+    .map((request) => new URLSearchParams(request.body));
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -213,8 +165,9 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
         }),
       );
 
-      const tokenEndpoint = yield* serveClientCredentialsTokenEndpoint({
-        accessTokens: ["alice-token-1"],
+      const oauth = yield* serveOAuthTestServer({
+        defaultClientId: "client-abc",
+        defaultClientSecret: "secret-xyz",
       });
 
       // ------------------------------------------------------------
@@ -224,15 +177,15 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
       // ------------------------------------------------------------
       const connectionId = "openapi-oauth2-app-petstore";
       const started = yield* userExec.oauth.start({
-        endpoint: tokenEndpoint.tokenUrl,
-        redirectUrl: tokenEndpoint.tokenUrl,
+        endpoint: oauth.tokenEndpoint,
+        redirectUrl: oauth.tokenEndpoint,
         connectionId,
         tokenScope: String(userScope.id),
         pluginId: "openapi",
         identityLabel: "Petstore OAuth",
         strategy: {
           kind: "client-credentials",
-          tokenEndpoint: tokenEndpoint.tokenUrl,
+          tokenEndpoint: oauth.tokenEndpoint,
           clientIdSecretId: "petstore_client_id",
           clientSecretSecretId: "petstore_client_secret",
           scopes: ["data"],
@@ -249,7 +202,7 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
         kind: "oauth2",
         securitySchemeName: "oauth2",
         flow: "clientCredentials",
-        tokenUrl: tokenEndpoint.tokenUrl,
+        tokenUrl: oauth.tokenEndpoint,
         authorizationUrl: null,
         clientIdSlot: "oauth2:oauth2:client-id",
         clientSecretSlot: "oauth2:oauth2:client-secret",
@@ -259,12 +212,12 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
       expect(completedConnection.connectionId).toBe(connectionId);
 
       // Token endpoint call is RFC 6749 §4.4 compliant.
-      const calls = yield* tokenEndpoint.calls;
+      const calls = tokenEndpointRequests(yield* oauth.requests);
       expect(calls).toHaveLength(1);
-      expect(calls[0]!.grantType).toBe("client_credentials");
-      expect(calls[0]!.clientId).toBe("client-abc");
-      expect(calls[0]!.clientSecret).toBe("secret-xyz");
-      expect(calls[0]!.scope).toBe("data");
+      expect(calls[0]!.get("grant_type")).toBe("client_credentials");
+      expect(calls[0]!.get("client_id")).toBe("client-abc");
+      expect(calls[0]!.get("client_secret")).toBe("secret-xyz");
+      expect(calls[0]!.get("scope")).toBe("data");
 
       // Add the source with source-owned OAuth structure, then bind the
       // per-user connection into the configured slot.
@@ -298,7 +251,9 @@ layer(TestLayer)("OpenAPI client_credentials OAuth", (it) => {
         error: unknown;
       };
       expect(result.error).toBeNull();
-      expect(result.data?.authorization).toBe("Bearer alice-token-1");
+      const bearer = result.data?.authorization?.replace(/^Bearer\s+/i, "");
+      expect(bearer).toBeDefined();
+      expect(yield* oauth.acceptsAccessToken(bearer!)).toBe(true);
 
       // The connection lives at the innermost (user) scope, which
       // preserves per-user credential resolution: if each user has

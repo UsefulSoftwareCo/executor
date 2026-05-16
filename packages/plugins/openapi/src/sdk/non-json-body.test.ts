@@ -12,7 +12,14 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpServerResponse } from "effect/unstable/http";
+import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import {
+  HttpApi,
+  HttpApiBuilder,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiSchema,
+} from "effect/unstable/httpapi";
 
 import {
   createExecutor,
@@ -20,7 +27,8 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
+import { makeTestConfig } from "@executor-js/sdk/testing";
+import { serveOpenApiHttpApiTestServer } from "@executor-js/plugin-openapi/testing";
 
 import { openApiPlugin } from "./plugin";
 
@@ -59,61 +67,96 @@ type Captured = {
   body: Buffer;
 };
 
-const startEchoServer = () =>
+const Ok = Schema.Struct({ ok: Schema.Boolean });
+
+const startEchoServer = (options: {
+  readonly name?: string;
+  readonly path?: `/${string}`;
+  readonly payload: Schema.Top | readonly Schema.Top[];
+  readonly transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>;
+}) =>
   Effect.gen(function* () {
     const captured: Captured = { contentType: "", body: Buffer.alloc(0) };
-    const server = yield* serveTestHttpApp((request) =>
-      Effect.gen(function* () {
-        captured.contentType = request.headers["content-type"] ?? "";
-        const body = yield* request.arrayBuffer.pipe(
-          Effect.catch(() => Effect.succeed(new ArrayBuffer(0))),
-        );
-        captured.body = Buffer.from(body);
-        return HttpServerResponse.jsonUnsafe({ ok: true });
+    const endpointName = options.name ?? "submit";
+    const path = options.path ?? "/submit";
+    const group = HttpApiGroup.make("body").add(
+      HttpApiEndpoint.post(endpointName, path, {
+        payload: options.payload,
+        success: Ok,
       }),
     );
-    return { baseUrl: server.baseUrl, captured };
+    const api = HttpApi.make(`bodyTest_${endpointName}`).add(group);
+    const handlersLayer = HttpApiBuilder.group(api, "body", (handlers) =>
+      handlers.handleRaw(endpointName, () =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          captured.contentType = request.headers["content-type"] ?? "";
+          const body = yield* request.arrayBuffer.pipe(
+            Effect.catch(() => Effect.succeed(new ArrayBuffer(0))),
+          );
+          captured.body = Buffer.from(body);
+          return HttpServerResponse.jsonUnsafe({ ok: true });
+        }),
+      ),
+    );
+    const server = yield* serveOpenApiHttpApiTestServer({
+      api,
+      handlersLayer,
+      transformSpec: options.transformSpec,
+    });
+    return { baseUrl: server.baseUrl, specJson: server.specJson, captured };
   });
 
-const makeSpec = (contentType: string) =>
-  JSON.stringify({
-    openapi: "3.0.0",
-    info: { title: "NonJsonTest", version: "1.0.0" },
-    paths: {
-      "/submit": {
-        post: {
-          operationId: "submit",
-          tags: ["body"],
-          requestBody: {
-            required: true,
-            content: {
-              [contentType]: {
-                schema: { type: "object" },
-              },
-            },
-          },
-          responses: {
-            "200": {
-              description: "ok",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: { ok: { type: "boolean" } },
-                  },
-                },
-              },
-            },
-          },
-        },
+const ObjectBody = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  flag: Schema.optional(Schema.Boolean),
+  count: Schema.optional(Schema.Number),
+});
+
+const JsonNameObject = Schema.Struct({ name: Schema.String });
+
+const contentFor = (contentType: string) => ({
+  [contentType]: {
+    schema: { type: "object" },
+  },
+});
+
+const replaceRequestBodyContent =
+  (
+    path: string,
+    operation: string,
+    content: Record<string, unknown>,
+    encoding?: Record<string, unknown>,
+  ) =>
+  (spec: Record<string, unknown>): Record<string, unknown> => {
+    const paths = { ...(spec.paths as Record<string, unknown>) };
+    const pathItem = { ...(paths[path] as Record<string, unknown>) };
+    const operationSpec = { ...(pathItem[operation] as Record<string, unknown>) };
+    const requestBody = { ...(operationSpec.requestBody as Record<string, unknown>) };
+    pathItem[operation] = {
+      ...operationSpec,
+      requestBody: {
+        ...requestBody,
+        content: encoding
+          ? Object.fromEntries(
+              Object.entries(content).map(([key, value]) => [
+                key,
+                { ...(value as Record<string, unknown>), encoding },
+              ]),
+            )
+          : content,
       },
-    },
-  });
+    };
+    paths[path] = pathItem;
+    return { ...spec, paths };
+  };
 
 describe("OpenAPI non-JSON request body dispatch", () => {
   it.effect("multipart/form-data: object body is encoded as real multipart", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -125,7 +168,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: makeSpec("multipart/form-data"),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "mp",
         baseUrl,
@@ -152,7 +195,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("application/xml: string body passes through with xml content-type", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/xml" })),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -164,7 +209,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: makeSpec("application/xml"),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "xml",
         baseUrl,
@@ -180,7 +225,10 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("text/xml: object body is JSON-stringified (never '[object Object]')", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: JsonNameObject,
+        transformSpec: replaceRequestBodyContent("/submit", "post", contentFor("text/xml")),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -192,7 +240,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: makeSpec("text/xml"),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "tx",
         baseUrl,
@@ -209,7 +257,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("text/plain: string body passes through with text/plain", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: Schema.String.pipe(HttpApiSchema.asText()),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -221,7 +271,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: makeSpec("text/plain"),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "tp",
         baseUrl,
@@ -236,7 +286,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("application/octet-stream: Uint8Array passes through as bytes", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -248,7 +300,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: makeSpec("application/octet-stream"),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "bin",
         baseUrl,
@@ -269,36 +321,16 @@ describe("OpenAPI non-JSON request body dispatch", () => {
   // and the caller can override via `args.contentType`.
   // -------------------------------------------------------------------------
 
-  const multiContentSpec = JSON.stringify({
-    openapi: "3.0.0",
-    info: { title: "MultiContentTest", version: "1.0.0" },
-    paths: {
-      "/submit": {
-        post: {
-          operationId: "submit",
-          tags: ["body"],
-          requestBody: {
-            required: true,
-            content: {
-              "multipart/form-data": {
-                schema: { type: "object" },
-              },
-              "application/json": {
-                schema: { type: "object" },
-              },
-            },
-          },
-          responses: {
-            "200": { description: "ok" },
-          },
-        },
-      },
-    },
-  });
+  const multiContentPayload = [
+    ObjectBody.pipe(HttpApiSchema.asMultipart()),
+    JsonNameObject,
+  ] as const;
 
   it.effect("multi-content: defaults to first-declared (not JSON-first)", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: multiContentPayload,
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -310,7 +342,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: multiContentSpec,
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "mc",
         baseUrl,
@@ -326,7 +358,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("multi-content: caller can override via args.contentType", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: multiContentPayload,
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -338,7 +372,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: multiContentSpec,
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "mc2",
         baseUrl,
@@ -359,6 +393,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("multi-content: tool input schema exposes contentType enum", () =>
     Effect.gen(function* () {
+      const { specJson } = yield* startEchoServer({
+        payload: multiContentPayload,
+      });
       const executor = yield* createExecutor(
         makeTestConfig({
           plugins: [
@@ -369,7 +406,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: multiContentSpec,
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "mc3",
         baseUrl: "https://example.com",
@@ -399,37 +436,21 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("multipart encoding.contentType: JSON metadata part has typed header", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
-
-      const spec = JSON.stringify({
-        openapi: "3.0.0",
-        info: { title: "MultipartEncodingTest", version: "1.0.0" },
-        paths: {
-          "/upload": {
-            post: {
-              operationId: "upload",
-              tags: ["body"],
-              requestBody: {
-                required: true,
-                content: {
-                  "multipart/form-data": {
-                    schema: {
-                      type: "object",
-                      properties: {
-                        metadata: { type: "object" },
-                        filename: { type: "string" },
-                      },
-                    },
-                    encoding: {
-                      metadata: { contentType: "application/json" },
-                    },
-                  },
-                },
-              },
-              responses: { "200": { description: "ok" } },
-            },
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        name: "upload",
+        path: "/upload",
+        payload: Schema.Struct({
+          metadata: Schema.Record(Schema.String, Schema.Unknown),
+          filename: Schema.String,
+        }).pipe(HttpApiSchema.asMultipart()),
+        transformSpec: replaceRequestBodyContent(
+          "/upload",
+          "post",
+          contentFor("multipart/form-data"),
+          {
+            metadata: { contentType: "application/json" },
           },
-        },
+        ),
       });
 
       const executor = yield* createExecutor(
@@ -442,7 +463,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec,
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "mpe",
         baseUrl,
@@ -476,33 +497,19 @@ describe("OpenAPI non-JSON request body dispatch", () => {
   // objects with style:deepObject use bracket notation.
   // -------------------------------------------------------------------------
 
-  const formStyleSpec = (encoding: Record<string, unknown>) =>
-    JSON.stringify({
-      openapi: "3.0.0",
-      info: { title: "FormStyleTest", version: "1.0.0" },
-      paths: {
-        "/submit": {
-          post: {
-            operationId: "submit",
-            tags: ["body"],
-            requestBody: {
-              required: true,
-              content: {
-                "application/x-www-form-urlencoded": {
-                  schema: { type: "object" },
-                  encoding,
-                },
-              },
-            },
-            responses: { "200": { description: "ok" } },
-          },
-        },
-      },
-    });
-
   it.effect("form-urlencoded explode:false: arrays comma-join", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: ObjectBody.pipe(HttpApiSchema.asFormUrlEncoded()),
+        transformSpec: replaceRequestBodyContent(
+          "/submit",
+          "post",
+          contentFor("application/x-www-form-urlencoded"),
+          {
+            tags: { style: "form", explode: false },
+          },
+        ),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -514,9 +521,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: formStyleSpec({
-          tags: { style: "form", explode: false },
-        }),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "fe",
         baseUrl,
@@ -539,7 +544,17 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("form-urlencoded deepObject: nested keys use bracket notation", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: ObjectBody.pipe(HttpApiSchema.asFormUrlEncoded()),
+        transformSpec: replaceRequestBodyContent(
+          "/submit",
+          "post",
+          contentFor("application/x-www-form-urlencoded"),
+          {
+            filter: { style: "deepObject", explode: true },
+          },
+        ),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -551,9 +566,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       );
 
       yield* executor.openapi.addSpec({
-        spec: formStyleSpec({
-          filter: { style: "deepObject", explode: true },
-        }),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "fd",
         baseUrl,
@@ -574,7 +587,15 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
   it.effect("form-urlencoded default: arrays use form+explode=true (repeat key)", () =>
     Effect.gen(function* () {
-      const { baseUrl, captured } = yield* startEchoServer();
+      const { baseUrl, specJson, captured } = yield* startEchoServer({
+        payload: ObjectBody.pipe(HttpApiSchema.asFormUrlEncoded()),
+        transformSpec: replaceRequestBodyContent(
+          "/submit",
+          "post",
+          contentFor("application/x-www-form-urlencoded"),
+          {},
+        ),
+      });
 
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -587,7 +608,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
 
       yield* executor.openapi.addSpec({
         // No encoding → OAS3 defaults: style=form, explode=true.
-        spec: formStyleSpec({}),
+        spec: specJson,
         scope: TEST_SCOPE,
         namespace: "fdx",
         baseUrl,

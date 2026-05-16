@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import {
   ConnectionId,
@@ -19,15 +20,11 @@ import { makeTestWorkspaceLayer, TestWorkspace } from "@executor-js/sdk/testing"
 import { openApiPlugin } from "./plugin";
 import { OpenApiSourceBindingInput } from "./types";
 
-const specJson = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Scoped Usage", version: "1.0.0" },
-  paths: {
-    "/ping": {
-      get: { operationId: "ping", responses: { "200": { description: "ok" } } },
-    },
-  },
-});
+const PingGroup = HttpApiGroup.make("default", { topLevel: true }).add(
+  HttpApiEndpoint.get("ping", "/ping"),
+);
+const UsageApi = HttpApi.make("usageScopeIsolation").add(PingGroup);
+const specJson = JSON.stringify(OpenApi.fromApi(UsageApi));
 
 const memorySecretsPlugin = definePlugin(() => {
   const store = new Map<string, string>();

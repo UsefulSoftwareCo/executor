@@ -5,93 +5,36 @@
 // operation set. Raw-text sources assert the no-op branch.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Ref, Schema } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { Effect, Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
 import { ScopeId } from "@executor-js/sdk";
-import { serveTestHttpApp } from "@executor-js/sdk/testing";
+import { serveMutableOpenApiSpecTestServer } from "@executor-js/plugin-openapi/testing";
 
 import { asOrg } from "./__test-harness__/api-harness";
-
-const isJsonObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const stripDefaultOperationPrefix = (spec: unknown): unknown => {
-  if (!isJsonObject(spec) || !isJsonObject(spec.paths)) return spec;
-  for (const pathItem of Object.values(spec.paths)) {
-    if (!isJsonObject(pathItem)) continue;
-    for (const operation of Object.values(pathItem)) {
-      if (!isJsonObject(operation)) continue;
-      if (
-        typeof operation.operationId === "string" &&
-        operation.operationId.startsWith("default.")
-      ) {
-        operation.operationId = operation.operationId.slice("default.".length);
-      }
-      if (
-        Array.isArray(operation.tags) &&
-        operation.tags.length === 1 &&
-        operation.tags[0] === "default"
-      ) {
-        delete operation.tags;
-      }
-    }
-  }
-  return spec;
-};
-
-const specJsonFromApi = (api: HttpApi.Any): string =>
-  JSON.stringify(stripDefaultOperationPrefix(OpenApi.fromApi(api as HttpApi.AnyWithProps)));
 
 const PingEndpoint = HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown });
 const PongEndpoint = HttpApiEndpoint.get("pong", "/pong", { success: Schema.Unknown });
 
-const RefreshGroupV1 = HttpApiGroup.make("default").add(PingEndpoint);
-const RefreshGroupV2 = HttpApiGroup.make("default").add(PingEndpoint).add(PongEndpoint);
+const RefreshGroupV1 = HttpApiGroup.make("default", { topLevel: true }).add(PingEndpoint);
+const RefreshGroupV2 = HttpApiGroup.make("default", { topLevel: true })
+  .add(PingEndpoint)
+  .add(PongEndpoint);
 
-const specV1 = specJsonFromApi(
+const refreshApi = (version: "1.0.0" | "2.0.0") =>
   HttpApi.make("refreshFixture")
-    .add(RefreshGroupV1)
-    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version: "1.0.0" })),
-);
+    .add(version === "1.0.0" ? RefreshGroupV1 : RefreshGroupV2)
+    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version }));
 
-const specV2 = specJsonFromApi(
-  HttpApi.make("refreshFixture")
-    .add(RefreshGroupV2)
-    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version: "2.0.0" })),
-);
-
-// Mutable ref: tests flip `current` between v1 and v2 around the
-// refresh call. Using a single server keeps the URL stable across
-// both addSpec and refresh — the plugin persists the original URL,
-// so the second fetch goes back to the same endpoint.
-const serveMutableSpec = () =>
-  Effect.gen(function* () {
-    const current = yield* Ref.make(specV1);
-    const requests = yield* Ref.make(0);
-    const server = yield* serveTestHttpApp(() =>
-      Effect.gen(function* () {
-        yield* Ref.update(requests, (count) => count + 1);
-        const spec = yield* Ref.get(current);
-        return HttpServerResponse.text(spec, {
-          status: 200,
-          contentType: "application/json",
-        });
-      }),
-    );
-    return {
-      baseUrl: server.baseUrl,
-      setSpec: (s: string) => Ref.set(current, s),
-      requestCount: Ref.get(requests),
-    };
-  });
+const specV1 = JSON.stringify(OpenApi.fromApi(refreshApi("1.0.0")));
 
 describe("sources.refresh (HTTP)", () => {
   it.effect("addSpec from URL → canRefresh:true; refresh re-fetches and updates tools", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const server = yield* serveMutableSpec();
+        const server = yield* serveMutableOpenApiSpecTestServer({
+          initialApi: refreshApi("1.0.0"),
+        });
         const org = `org_${crypto.randomUUID()}`;
         const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
 
@@ -100,7 +43,7 @@ describe("sources.refresh (HTTP)", () => {
             params: { scopeId: ScopeId.make(org) },
             payload: {
               targetScope: ScopeId.make(org),
-              spec: `${server.baseUrl}/spec.json`,
+              spec: server.specUrl,
               namespace,
             },
           }),
@@ -117,7 +60,7 @@ describe("sources.refresh (HTTP)", () => {
             params: { scopeId: ScopeId.make(org), namespace },
           }),
         );
-        expect(fetchedBefore?.config.sourceUrl).toBe(`${server.baseUrl}/spec.json`);
+        expect(fetchedBefore?.config.sourceUrl).toBe(server.specUrl);
 
         const beforeTools = yield* asOrg(org, (client) =>
           client.sources.tools({
@@ -125,11 +68,11 @@ describe("sources.refresh (HTTP)", () => {
           }),
         );
         expect(beforeTools.length).toBe(1);
-        expect(beforeTools.some((t) => t.name.startsWith("ping"))).toBe(true);
-        expect(beforeTools.some((t) => t.name.startsWith("pong"))).toBe(false);
+        expect(beforeTools.some((t) => t.id.endsWith(".default.ping"))).toBe(true);
+        expect(beforeTools.some((t) => t.id.endsWith(".default.pong"))).toBe(false);
 
         // Flip the remote to v2 (adds `pong`) and trigger refresh.
-        yield* server.setSpec(specV2);
+        yield* server.setApi(refreshApi("2.0.0"));
         const requestsBefore = yield* server.requestCount;
 
         const refreshResult = yield* asOrg(org, (client) =>
@@ -146,8 +89,8 @@ describe("sources.refresh (HTTP)", () => {
           }),
         );
         expect(afterTools.length).toBe(2);
-        expect(afterTools.some((t) => t.name.startsWith("ping"))).toBe(true);
-        expect(afterTools.some((t) => t.name.startsWith("pong"))).toBe(true);
+        expect(afterTools.some((t) => t.id.endsWith(".default.ping"))).toBe(true);
+        expect(afterTools.some((t) => t.id.endsWith(".default.pong"))).toBe(true);
       }),
     ),
   );

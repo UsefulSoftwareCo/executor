@@ -163,6 +163,26 @@ export const serveGraphqlTestServer = (
     };
   });
 
+export const serveGraphqlFailureTestServer = (options: {
+  readonly status: number;
+  readonly body: string;
+  readonly contentType?: string;
+  readonly path?: string;
+}) =>
+  serveTestHttpApp(() =>
+    Effect.succeed(
+      HttpServerResponse.text(options.body, {
+        status: options.status,
+        contentType: options.contentType ?? "text/plain",
+      }),
+    ),
+  ).pipe(
+    Effect.map((server) => ({
+      endpoint: server.url(options.path ?? "/graphql"),
+      httpClientLayer: server.httpClientLayer,
+    })),
+  );
+
 export class GraphqlTestServer extends Context.Service<GraphqlTestServer, GraphqlTestServerShape>()(
   "@executor-js/plugin-graphql/testing/GraphqlTestServer",
 ) {
