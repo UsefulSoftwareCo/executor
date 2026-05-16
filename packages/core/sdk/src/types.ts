@@ -84,11 +84,6 @@ export const ToolSchema = Schema.Struct({
 });
 export type ToolSchema = typeof ToolSchema.Type;
 
-export interface ToolSchemaOptions {
-  /** Include TypeScript preview strings. Defaults to true for SDK callers. */
-  readonly includeTypeScript?: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Source detection — optional capability on `PluginSpec.detect`. When a
 // user pastes a URL in the onboarding UI, `executor.sources.detect(url)`

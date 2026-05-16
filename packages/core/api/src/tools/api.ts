@@ -11,10 +11,6 @@ const PathParams = {
   toolId: ToolId,
 };
 
-const ToolSchemaQuery = Schema.Struct({
-  includeTypeScript: Schema.optional(Schema.Literal("true")),
-});
-
 // ---------------------------------------------------------------------------
 // Response schemas
 // ---------------------------------------------------------------------------
@@ -57,7 +53,6 @@ export const ToolsApi = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("schema", "/scopes/:scopeId/tools/:toolId/schema", {
       params: PathParams,
-      query: ToolSchemaQuery,
       success: ToolSchemaResponse,
       error: [InternalError, ToolNotFound],
     }),

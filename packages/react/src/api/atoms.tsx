@@ -42,7 +42,6 @@ export const sourceToolsAtom = (sourceId: string, scopeId: ScopeId) =>
 export const toolSchemaAtom = (scopeId: ScopeId, toolId: ToolId) =>
   ExecutorApiClient.query("tools", "schema", {
     params: { scopeId, toolId },
-    query: { includeTypeScript: "true" },
     timeToLive: "1 minute",
     reactivityKeys: [ReactivityKey.tools],
   });

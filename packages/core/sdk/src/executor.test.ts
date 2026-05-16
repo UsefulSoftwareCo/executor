@@ -283,9 +283,7 @@ describe("createExecutor", () => {
 
       yield* executor.schemaProbe.registerSource();
 
-      const schema = yield* executor.tools.schema("schema-source.inspect", {
-        includeTypeScript: false,
-      });
+      const schema = yield* executor.tools.schema("schema-source.inspect");
 
       expect(schema?.inputSchema).toEqual({
         type: "object",
@@ -303,14 +301,9 @@ describe("createExecutor", () => {
         Pet: expect.any(Object),
       });
       expect(schema?.schemaDefinitions).not.toHaveProperty("Unused");
-      expect(schema?.inputTypeScript).toBeUndefined();
-      expect(schema?.outputTypeScript).toBeUndefined();
-      expect(schema?.typeScriptDefinitions).toBeUndefined();
-
-      const schemaWithTypes = yield* executor.tools.schema("schema-source.inspect");
-      expect(schemaWithTypes?.inputTypeScript).toContain("pet: Pet");
-      expect(schemaWithTypes?.outputTypeScript).toBe("Owner");
-      expect(schemaWithTypes?.typeScriptDefinitions).toEqual(
+      expect(schema?.inputTypeScript).toContain("pet: Pet");
+      expect(schema?.outputTypeScript).toBe("Owner");
+      expect(schema?.typeScriptDefinitions).toEqual(
         expect.objectContaining({
           Pet: expect.any(String),
           Owner: expect.any(String),

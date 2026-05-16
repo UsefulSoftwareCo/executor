@@ -28,13 +28,11 @@ export const ToolsHandlers = HttpApiBuilder.group(ExecutorApi, "tools", (handler
         }),
       ),
     )
-    .handle("schema", ({ params: path, query }) =>
+    .handle("schema", ({ params: path }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const schema = yield* executor.tools.schema(path.toolId, {
-            includeTypeScript: query.includeTypeScript === "true",
-          });
+          const schema = yield* executor.tools.schema(path.toolId);
           if (schema === null) {
             return yield* new ToolNotFoundError({ toolId: path.toolId });
           }

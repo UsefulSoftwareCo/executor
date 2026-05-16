@@ -121,7 +121,6 @@ import {
   type SourceDetectionResult,
   type Tool,
   type ToolListFilter,
-  type ToolSchemaOptions,
 } from "./types";
 import { buildToolTypeScriptPreview, type ToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
@@ -183,11 +182,8 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
     /** Fetch a tool's schema view: JSON schemas with `$defs`
      *  attached from the core `definition` table, plus TypeScript
-     *  preview strings unless disabled. Returns `null` for unknown tool ids. */
-    readonly schema: (
-      toolId: string,
-      options?: ToolSchemaOptions,
-    ) => Effect.Effect<ToolSchema | null, StorageFailure>;
+     *  preview strings. Returns `null` for unknown tool ids. */
+    readonly schema: (toolId: string) => Effect.Effect<ToolSchema | null, StorageFailure>;
     /** Every `$defs` entry across every source, grouped by source id.
      *  Used for bulk schema export and downstream TypeScript rendering. */
     readonly definitions: () => Effect.Effect<
@@ -2984,7 +2980,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       sourceId: string | undefined;
       rawInput: unknown;
       rawOutput: unknown;
-      includeTypeScript: boolean;
     }) =>
       Effect.gen(function* () {
         const defs: Record<string, unknown> = opts.sourceId
@@ -2999,25 +2994,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           sourceDefsMap,
         );
         const schemaDefsMap = new Map<string, unknown>(Object.entries(schemaDefinitions));
-        const preview: ToolTypeScriptPreview = opts.includeTypeScript
-          ? yield* Effect.promise(() =>
-              buildToolTypeScriptPreview({
-                inputSchema: opts.rawInput,
-                outputSchema: opts.rawOutput,
-                defs: schemaDefsMap,
-              }),
-            ).pipe(
-              Effect.withSpan("schema.compile.preview", {
-                attributes: {
-                  "schema.kind": "tool.preview",
-                  "schema.has_input": opts.rawInput !== undefined,
-                  "schema.has_output": opts.rawOutput !== undefined,
-                  "schema.def_count": schemaDefsMap.size,
-                  "schema.source_def_count": sourceDefsMap.size,
-                },
-              }),
-            )
-          : {};
+        const preview: ToolTypeScriptPreview = yield* Effect.promise(() =>
+          buildToolTypeScriptPreview({
+            inputSchema: opts.rawInput,
+            outputSchema: opts.rawOutput,
+            defs: schemaDefsMap,
+          }),
+        ).pipe(
+          Effect.withSpan("schema.compile.preview", {
+            attributes: {
+              "schema.kind": "tool.preview",
+              "schema.has_input": opts.rawInput !== undefined,
+              "schema.has_output": opts.rawOutput !== undefined,
+              "schema.def_count": schemaDefsMap.size,
+              "schema.source_def_count": sourceDefsMap.size,
+            },
+          }),
+        );
 
         return ToolSchema.make({
           id: ToolId.make(opts.toolId),
@@ -3033,9 +3026,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
-    const toolSchema = (toolId: string, options?: ToolSchemaOptions) =>
+    const toolSchema = (toolId: string) =>
       Effect.gen(function* () {
-        const includeTypeScript = options?.includeTypeScript ?? true;
         // Static pool first — static tools have no source in the DB so
         // no `$defs` attach; just wrap the declared schemas.
         const staticEntry = staticTools.get(toolId);
@@ -3052,7 +3044,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             sourceId: undefined,
             rawInput: toToolJsonSchema(staticEntry.tool.inputSchema),
             rawOutput: toToolJsonSchema(staticEntry.tool.outputSchema, "output"),
-            includeTypeScript,
           });
         }
         // Innermost-wins lookup across every visible scope.
@@ -3075,7 +3066,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           sourceId: row.source_id,
           rawInput: decodeJsonColumn(row.input_schema),
           rawOutput: decodeJsonColumn(row.output_schema),
-          includeTypeScript,
         });
       }).pipe(
         Effect.withSpan("executor.tool.schema", {

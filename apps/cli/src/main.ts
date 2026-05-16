@@ -1072,7 +1072,6 @@ const runCallHelp = (
               scopeId: scopeInfo.id,
               toolId: exactTool.id,
             },
-            query: { includeTypeScript: "true" },
           })
           .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
       : undefined;
