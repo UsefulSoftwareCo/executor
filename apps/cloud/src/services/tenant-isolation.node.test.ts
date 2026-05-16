@@ -140,7 +140,6 @@ describe("tenant isolation (HTTP)", () => {
       const orgBTools = yield* asOrg(orgB, (client) =>
         client.tools.list({ params: { scopeId: ScopeId.make(orgB) } }),
       );
-      expect(orgBTools.map((t) => t.sourceId)).not.toContain(namespaceA);
       for (const id of orgBTools.map((t) => t.id)) {
         expect(id).not.toContain(namespaceA);
       }

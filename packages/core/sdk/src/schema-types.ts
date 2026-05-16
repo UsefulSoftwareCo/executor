@@ -1,14 +1,34 @@
-import type {
-  JSONSchema,
-  Options as JsonSchemaToTypeScriptOptions,
-} from "@executor-js/json-schema-to-typescript";
-
 import { hoistDefinitions, normalizeRefs } from "./schema-refs";
 
 type JsonSchemaRecord = Record<string, unknown>;
+type CompilerJsonSchema = JsonSchemaRecord | boolean;
+type CompilerFormatOptions = {
+  [key: string]: unknown;
+  printWidth?: number;
+  semi?: boolean;
+  singleQuote?: boolean;
+  trailingComma?: "none" | "es5" | "all";
+};
+type SchemaCompilerOptions = {
+  [key: string]: unknown;
+  additionalProperties?: boolean;
+  bannerComment?: string;
+  enableConstEnums?: boolean;
+  format?: boolean;
+  style?: CompilerFormatOptions;
+  unknownAny?: boolean;
+  unreachableDefinitions?: boolean;
+};
+type SchemaCompiler = {
+  compile: (
+    schema: CompilerJsonSchema,
+    name: string,
+    options: Partial<SchemaCompilerOptions>,
+  ) => Promise<string>;
+};
 
 export type TypeScriptRenderOptions = {
-  compilerOptions?: Partial<JsonSchemaToTypeScriptOptions>;
+  compilerOptions?: Partial<SchemaCompilerOptions>;
 };
 
 export type TypeScriptSchemaPreview = {
@@ -34,7 +54,14 @@ const DEFAULT_COMPILER_OPTIONS = {
     singleQuote: false,
     trailingComma: "none",
   },
-} satisfies Partial<JsonSchemaToTypeScriptOptions>;
+} satisfies Partial<SchemaCompilerOptions>;
+
+const SCHEMA_COMPILER_MODULE: string = "@executor-js/json-schema-to-typescript";
+
+const loadSchemaCompiler = async (): Promise<SchemaCompiler> => {
+  const compilerModule: unknown = await import(SCHEMA_COMPILER_MODULE);
+  return compilerModule as SchemaCompiler;
+};
 
 const DEFINITION_REF_PATTERN = /^#\/definitions\/(.+)$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -44,13 +71,13 @@ const asRecord = (value: unknown): JsonSchemaRecord =>
     ? (value as JsonSchemaRecord)
     : {};
 
-const asCompilerSchema = (value: unknown): unknown => {
+const asCompilerSchema = (value: unknown): CompilerJsonSchema => {
   if (typeof value === "boolean") {
     return value;
   }
 
   if (value !== null && typeof value === "object") {
-    return value;
+    return value as JsonSchemaRecord;
   }
 
   return {};
@@ -205,9 +232,7 @@ const buildWrappedSchema = (
   defs: ReadonlyMap<string, unknown>,
 ): JsonSchemaRecord => buildWrappedObjectSchema([[ROOT_PROPERTY_NAME, schema]], defs);
 
-const compilerOptionsFrom = (
-  options: TypeScriptRenderOptions,
-): Partial<JsonSchemaToTypeScriptOptions> => ({
+const compilerOptionsFrom = (options: TypeScriptRenderOptions): Partial<SchemaCompilerOptions> => ({
   ...DEFAULT_COMPILER_OPTIONS,
   ...options.compilerOptions,
   bannerComment: "",
@@ -736,12 +761,8 @@ const compileSchemaPreview = async (
   options: TypeScriptRenderOptions,
 ): Promise<TypeScriptSchemaPreview> => {
   const wrappedSchema = buildWrappedSchema(schema, defs);
-  const { compile } = await import("@executor-js/json-schema-to-typescript");
-  const source = await compile(
-    wrappedSchema as JSONSchema,
-    ROOT_WRAPPER_NAME,
-    compilerOptionsFrom(options),
-  );
+  const { compile } = await loadSchemaCompiler();
+  const source = await compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(options));
   return previewFromCompiledTypeScript(source);
 };
 
@@ -792,13 +813,9 @@ export const buildToolTypeScriptPreview = async (input: {
   }
 
   const wrappedSchema = buildWrappedObjectSchema(properties, input.defs);
-  return import("@executor-js/json-schema-to-typescript")
+  return loadSchemaCompiler()
     .then(({ compile }) =>
-      compile(
-        wrappedSchema as JSONSchema,
-        ROOT_WRAPPER_NAME,
-        compilerOptionsFrom(input.options ?? {}),
-      ),
+      compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(input.options ?? {})),
     )
     .then(
       (source) => previewToolFromCompiledTypeScript(source),

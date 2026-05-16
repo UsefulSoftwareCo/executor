@@ -25,6 +25,13 @@ const stripeBalanceTransactionsFixture = Schema.decodeUnknownSync(
 );
 
 const sdkPackageRoot = fileURLToPath(new URL("..", import.meta.url));
+const TypeScriptPreviewOutput = Schema.Struct({
+  inputTypeScript: Schema.String,
+  outputTypeScript: Schema.String,
+});
+const decodeTypeScriptPreviewOutput = Schema.decodeUnknownSync(
+  Schema.fromJsonString(TypeScriptPreviewOutput),
+);
 
 describe("schema-types", () => {
   it("reuses referenced definitions instead of inlining them", async () => {
@@ -402,7 +409,7 @@ describe("schema-types", () => {
       { cwd: sdkPackageRoot, encoding: "utf8" },
     );
 
-    expect(JSON.parse(output)).toEqual({
+    expect(decodeTypeScriptPreviewOutput(output)).toEqual({
       inputTypeScript: "{ account_id: string; body: unknown; }",
       outputTypeScript: "unknown",
     });
