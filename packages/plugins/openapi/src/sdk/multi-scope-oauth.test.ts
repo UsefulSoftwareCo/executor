@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Predicate, Schema } from "effect";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpServerRequest } from "effect/unstable/http";
 
@@ -603,7 +603,7 @@ describe("OpenAPI multi-scope OAuth", () => {
       // fell through to the org default.
       const tokenCalls = tokenEndpointRequests(yield* oauth.requests)
         .map((request) => request.get("client_id"))
-        .filter((clientId): clientId is string => clientId !== null);
+        .filter(Predicate.isNotNull);
       expect(tokenCalls).toContain("alice-client");
       expect(tokenCalls.filter((v) => v === "org-client").length).toBeGreaterThan(0);
 
