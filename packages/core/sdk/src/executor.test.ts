@@ -37,9 +37,7 @@ const txPlugin = definePlugin(() => ({
   schema: txSchema,
   storage: ({ fuma }) => ({
     create: (row: TxItemRow) =>
-      fuma
-        .use("tx.item.create", (db) => db.create("executor_tx_item", row))
-        .pipe(Effect.asVoid),
+      fuma.use("tx.item.create", (db) => db.create("executor_tx_item", row)).pipe(Effect.asVoid),
     list: () =>
       fuma.use("tx.item.list", (db) =>
         db.findMany("executor_tx_item", {
@@ -74,30 +72,18 @@ const txPlugin = definePlugin(() => ({
     catchDuplicateCreate: () =>
       Effect.gen(function* () {
         const scope = String(ctx.scopes[0]!.id);
-        yield* ctx.storage.create({
-          id: "dup",
-          scope_id: scope,
-          value: "first",
-        });
-        return yield* ctx.storage
-          .create({ id: "dup", scope_id: scope, value: "second" })
-          .pipe(
-            Effect.as({ caught: false as const, model: null as string | null }),
-            Effect.catchTag("UniqueViolationError", (error) =>
-              Effect.succeed({
-                caught: true as const,
-                model: error.model ?? null,
-              }),
-            ),
-          );
+        yield* ctx.storage.create({ id: "dup", scope_id: scope, value: "first" });
+        return yield* ctx.storage.create({ id: "dup", scope_id: scope, value: "second" }).pipe(
+          Effect.as({ caught: false as const, model: null as string | null }),
+          Effect.catchTag("UniqueViolationError", (error) =>
+            Effect.succeed({ caught: true as const, model: error.model ?? null }),
+          ),
+        );
       }),
   }),
 }))();
 
-const detector = (
-  id: string,
-  confidence: SourceDetectionResult["confidence"],
-) =>
+const detector = (id: string, confidence: SourceDetectionResult["confidence"]) =>
   definePlugin(() => ({
     id,
     storage: () => ({}),
@@ -186,33 +172,22 @@ const schemaProbePlugin = definePlugin(() => ({
 }))();
 
 describe("createExecutor", () => {
-  it.effect(
-    "rolls back plugin and core writes from ctx.transaction failures",
-    () =>
-      Effect.gen(function* () {
-        const executor = yield* makeTestExecutor({
-          plugins: [txPlugin] as const,
-        });
+  it.effect("rolls back plugin and core writes from ctx.transaction failures", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({ plugins: [txPlugin] as const });
 
-        const error = yield* executor.tx
-          .failAfterPluginAndCoreWrites()
-          .pipe(Effect.flip);
+      const error = yield* executor.tx.failAfterPluginAndCoreWrites().pipe(Effect.flip);
 
-        expect(error).toMatchObject({
-          _tag: "TestPluginError",
-          message: "rollback",
-        });
-        expect(yield* executor.tx.list()).toEqual([]);
-        expect(yield* executor.sources.list()).toEqual([]);
-        expect(yield* executor.tools.list()).toEqual([]);
-      }),
+      expect(error).toMatchObject({ _tag: "TestPluginError", message: "rollback" });
+      expect(yield* executor.tx.list()).toEqual([]);
+      expect(yield* executor.sources.list()).toEqual([]);
+      expect(yield* executor.tools.list()).toEqual([]);
+    }),
   );
 
   it.effect("keeps FumaDB unique violations catchable inside plugin code", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor({
-        plugins: [txPlugin] as const,
-      });
+      const executor = yield* makeTestExecutor({ plugins: [txPlugin] as const });
 
       const result = yield* executor.tx.catchDuplicateCreate();
 
@@ -254,71 +229,57 @@ describe("createExecutor", () => {
     }),
   );
 
-  it.effect(
-    "orders source detection results by confidence and applies configured bounds",
-    () =>
-      Effect.gen(function* () {
-        const executor = yield* createExecutor({
-          ...makeTestConfig({
-            plugins: [
-              detector("low", "low"),
-              detector("high", "high"),
-              detector("medium", "medium"),
-            ],
-          }),
-          sourceDetection: { maxDetectors: 2, maxResults: 1 },
-          onElicitation: "accept-all",
-        });
+  it.effect("orders source detection results by confidence and applies configured bounds", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor({
+        ...makeTestConfig({
+          plugins: [detector("low", "low"), detector("high", "high"), detector("medium", "medium")],
+        }),
+        sourceDetection: { maxDetectors: 2, maxResults: 1 },
+        onElicitation: "accept-all",
+      });
 
-        const results = yield* executor.sources.detect(
-          "https://example.com/source",
-        );
+      const results = yield* executor.sources.detect("https://example.com/source");
 
-        expect(results.map((result) => result.kind)).toEqual(["high"]);
-      }),
+      expect(results.map((result) => result.kind)).toEqual(["high"]);
+    }),
   );
 
-  it.effect(
-    "applies hosted outbound policy before source detection plugins run",
-    () =>
-      Effect.gen(function* () {
-        let called = false;
-        const hostedDetector = definePlugin(() => ({
-          id: "hosted-detector" as const,
-          storage: () => ({}),
-          detect: () =>
-            Effect.sync(() => {
-              called = true;
-              return SourceDetectionResult.make({
-                kind: "hosted-detector",
-                confidence: "high",
-                endpoint: "http://127.0.0.1/source",
-                name: "hosted detector",
-                namespace: "hosted_detector",
-              });
-            }),
-        }));
-        const executor = yield* createExecutor({
-          scopes: [testScope],
-          plugins: [hostedDetector()] as const,
-          httpClientLayer: FetchHttpClient.layer,
-          onElicitation: "accept-all",
-        });
+  it.effect("applies hosted outbound policy before source detection plugins run", () =>
+    Effect.gen(function* () {
+      let called = false;
+      const hostedDetector = definePlugin(() => ({
+        id: "hosted-detector" as const,
+        storage: () => ({}),
+        detect: () =>
+          Effect.sync(() => {
+            called = true;
+            return SourceDetectionResult.make({
+              kind: "hosted-detector",
+              confidence: "high",
+              endpoint: "http://127.0.0.1/source",
+              name: "hosted detector",
+              namespace: "hosted_detector",
+            });
+          }),
+      }));
+      const executor = yield* createExecutor({
+        scopes: [testScope],
+        plugins: [hostedDetector()] as const,
+        httpClientLayer: FetchHttpClient.layer,
+        onElicitation: "accept-all",
+      });
 
-        const results = yield* executor.sources.detect(
-          "http://127.0.0.1/source",
-        );
+      const results = yield* executor.sources.detect("http://127.0.0.1/source");
 
-        expect(results).toEqual([]);
-        expect(called).toBe(false);
-      }),
+      expect(results).toEqual([]);
+      expect(called).toBe(false);
+    }),
   );
 
   it.effect("returns schema roots with shared reachable definitions", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor({
-        plugins: [schemaProbePlugin] as const,
-      });
+      const executor = yield* makeTestExecutor({ plugins: [schemaProbePlugin] as const });
 
       yield* executor.schemaProbe.registerSource();
 
@@ -341,9 +302,13 @@ describe("createExecutor", () => {
       });
       expect(schema?.schemaDefinitions).not.toHaveProperty("Unused");
       expect(schema?.inputTypeScript).toContain("pet: Pet");
-      expect(schema?.outputTypeScript).toContain("__root: Owner");
-      expect(schema?.outputTypeScript).toContain("export interface Owner");
-      expect(schema?.typeScriptDefinitions).toBeUndefined();
+      expect(schema?.outputTypeScript).toBe("Owner");
+      expect(schema?.typeScriptDefinitions).toEqual(
+        expect.objectContaining({
+          Pet: expect.any(String),
+          Owner: expect.any(String),
+        }),
+      );
     }),
   );
 });

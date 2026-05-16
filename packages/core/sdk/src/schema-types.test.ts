@@ -19,10 +19,7 @@ const stripeBalanceTransactionsFixture = Schema.decodeUnknownSync(
   Schema.fromJsonString(StripeBalanceTransactionsFixture),
 )(
   readFileSync(
-    new URL(
-      "./__fixtures__/stripe-get-balance-transactions-id.json",
-      import.meta.url,
-    ),
+    new URL("./__fixtures__/stripe-get-balance-transactions-id.json", import.meta.url),
     "utf8",
   ),
 );
@@ -60,13 +57,12 @@ describe("schema-types", () => {
       },
     };
 
-    const preview = await schemaToTypeScriptPreview(schema);
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("export interface SchemaPreview");
-    expect(preview.type).toContain("__root");
-    expect(preview.type).toContain("homeAddress: Address");
-    expect(preview.type).toContain("workAddress: Address");
-    expect(preview.type).toContain("export interface Address");
+    expect(await schemaToTypeScriptPreview(schema)).toEqual({
+      type: "{ homeAddress: Address; workAddress: Address; }",
+      definitions: {
+        Address: "{ street: string; city: string; zip: string; }",
+      },
+    });
   });
 
   it("can render against shared definitions provided externally", async () => {
@@ -93,11 +89,12 @@ describe("schema-types", () => {
       ],
     ]);
 
-    const preview = await schemaToTypeScriptPreviewWithDefs(schema, defs);
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("headquarters: Address");
-    expect(preview.type).toContain("export interface Address");
-    expect(preview.type).toContain("city: string");
+    expect(await schemaToTypeScriptPreviewWithDefs(schema, defs)).toEqual({
+      type: "{ headquarters: Address; }",
+      definitions: {
+        Address: "{ city: string; }",
+      },
+    });
   });
 
   it("renders transitive referenced definitions", async () => {
@@ -148,17 +145,22 @@ describe("schema-types", () => {
       ],
     ]);
 
-    const preview = await schemaToTypeScriptPreviewWithDefs(
-      {
-        $ref: "#/$defs/LevelOne",
+    expect(
+      await schemaToTypeScriptPreviewWithDefs(
+        {
+          $ref: "#/$defs/LevelOne",
+        },
+        defs,
+      ),
+    ).toEqual({
+      type: "LevelOne",
+      definitions: {
+        LevelFour: "{ value: string; }",
+        LevelOne: "{ next: LevelTwo; }",
+        LevelThree: "{ next: LevelFour; }",
+        LevelTwo: "{ next: LevelThree; }",
       },
-      defs,
-    );
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("__root: LevelOne");
-    expect(preview.type).toContain("export interface LevelOne");
-    expect(preview.type).toContain("next: LevelTwo");
-    expect(preview.type).toContain("export interface LevelFour");
+    });
   });
 
   it("keeps ordinary unions expanded", async () => {
@@ -166,11 +168,7 @@ describe("schema-types", () => {
       [
         "Pet",
         {
-          anyOf: [
-            { $ref: "#/$defs/Dog" },
-            { $ref: "#/$defs/Cat" },
-            { $ref: "#/$defs/Lizard" },
-          ],
+          anyOf: [{ $ref: "#/$defs/Dog" }, { $ref: "#/$defs/Cat" }, { $ref: "#/$defs/Lizard" }],
         },
       ],
       [
@@ -208,16 +206,22 @@ describe("schema-types", () => {
       ],
     ]);
 
-    const preview = await schemaToTypeScriptPreviewWithDefs(
-      {
-        $ref: "#/$defs/Pet",
+    expect(
+      await schemaToTypeScriptPreviewWithDefs(
+        {
+          $ref: "#/$defs/Pet",
+        },
+        defs,
+      ),
+    ).toEqual({
+      type: "Pet",
+      definitions: {
+        Cat: "{ meow: boolean; }",
+        Dog: "{ bark: boolean; }",
+        Lizard: "{ scales: boolean; }",
+        Pet: "Dog | Cat | Lizard",
       },
-      defs,
-    );
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("export type Pet = (Dog | Cat | Lizard)");
-    expect(preview.type).toContain("__root: Pet");
-    expect(preview.type).toContain("export interface Dog");
+    });
   });
 
   it("renders large unions from real Stripe fixtures", async () => {
@@ -228,16 +232,17 @@ describe("schema-types", () => {
       defs,
     );
 
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("__root: BalanceTransaction");
-    expect(preview.type).toContain("export interface BalanceTransaction");
-    expect(preview.type).toContain("fee_details: Fee[]");
-    expect(preview.type).toContain("source: (string | Polymorphic | null)");
-    expect(preview.type).toContain("export interface Fee");
-    expect(preview.type).toContain("export type Polymorphic =");
-    expect(preview.type).toContain("Charge");
-    expect(preview.type).toContain("Refund");
-    expect(preview.type).toContain("Payout");
+    expect(preview.type).toBe("BalanceTransaction");
+    expect(preview.definitions.BalanceTransaction).toContain("fee_details: Fee[]");
+    expect(preview.definitions.BalanceTransaction).toContain("source: string | Polymorphic | null");
+    expect(preview.definitions.Fee).toBe(
+      "{ amount: number; application: string | null; currency: string; description: string | null; type: string; }",
+    );
+    expect(preview.definitions.Polymorphic).toContain("Charge");
+    expect(preview.definitions.Polymorphic).toContain("Refund");
+    expect(preview.definitions.Polymorphic).toContain("Payout");
+    expect(preview.definitions.Polymorphic).not.toContain("unknown");
+    expect(Object.keys(preview.definitions).length).toBeGreaterThan(100);
   });
 
   it("sanitizes dashed definition names and quotes dashed property keys", async () => {
@@ -261,10 +266,12 @@ describe("schema-types", () => {
       },
     });
 
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain('"dash-prop": (string | null)');
-    expect(preview.type).toContain("child: FooBar");
-    expect(preview.type).toContain("export interface FooBar");
+    expect(preview).toEqual({
+      type: '{ "dash-prop": string | null; child: FooBar; }',
+      definitions: {
+        FooBar: "{ id: string; }",
+      },
+    });
     expect(preview.definitions).not.toHaveProperty("foo-bar");
   });
 
@@ -294,10 +301,9 @@ describe("schema-types", () => {
       additionalProperties: false,
     });
 
-    expect(preview.type).toContain("maybeObject: ({");
-    expect(preview.type).toContain("} | null)");
-    expect(preview.type).toContain('maybeEnum: ("created" | "updated" | null)');
-    expect(preview.type).toContain('maybeConst: ("ok" | null)');
+    expect(preview.type).toBe(
+      '{ maybeObject: { id: string; } | null; maybeEnum: "created" | "updated" | null; maybeConst: "ok" | null; }',
+    );
   });
 
   it("handles recursive refs through the compiler wrapper", async () => {
@@ -317,10 +323,12 @@ describe("schema-types", () => {
       },
     });
 
-    expect(preview.definitions).toEqual({});
-    expect(preview.type).toContain("__root: IssueFilter");
-    expect(preview.type).toContain("export interface IssueFilter");
-    expect(preview.type).toContain("and?: IssueFilter[]");
+    expect(preview).toEqual({
+      type: "IssueFilter",
+      definitions: {
+        IssueFilter: "{ and?: IssueFilter[]; }",
+      },
+    });
   });
 
   it("merges input and output TypeScript definitions", async () => {
@@ -350,26 +358,29 @@ describe("schema-types", () => {
       ],
     ]);
 
-    const preview = await buildToolTypeScriptPreview({
-      inputSchema: {
-        type: "object",
-        properties: {
-          address: { $ref: "#/$defs/Address" },
+    expect(
+      await buildToolTypeScriptPreview({
+        inputSchema: {
+          type: "object",
+          properties: {
+            address: { $ref: "#/$defs/Address" },
+          },
+          required: ["address"],
+          additionalProperties: false,
         },
-        required: ["address"],
-        additionalProperties: false,
+        outputSchema: {
+          $ref: "#/$defs/Contact",
+        },
+        defs,
+      }),
+    ).toEqual({
+      inputTypeScript: "{ address: Address; }",
+      outputTypeScript: "Contact",
+      typeScriptDefinitions: {
+        Address: "{ city: string; }",
+        Contact: "{ id: string; address: Address; }",
       },
-      outputSchema: {
-        $ref: "#/$defs/Contact",
-      },
-      defs,
     });
-    expect(preview.typeScriptDefinitions).toBeUndefined();
-    expect(preview.inputTypeScript).toContain("export interface Input");
-    expect(preview.inputTypeScript).toContain("address: Address");
-    expect(preview.outputTypeScript).toContain("export interface Output");
-    expect(preview.outputTypeScript).toContain("__root: Contact");
-    expect(preview.outputTypeScript).toContain("export interface Contact");
   });
 
   it("loads the vendored compiler through Bun's TypeScript loader", () => {
@@ -398,11 +409,9 @@ describe("schema-types", () => {
       { cwd: sdkPackageRoot, encoding: "utf8" },
     );
 
-    const preview = decodeTypeScriptPreviewOutput(output);
-    expect(preview.inputTypeScript).toContain("export interface Input");
-    expect(preview.inputTypeScript).toContain("account_id: string");
-    expect(preview.inputTypeScript).toContain("body: unknown");
-    expect(preview.outputTypeScript).toContain("export interface Output");
-    expect(preview.outputTypeScript).toContain("__root: unknown");
+    expect(decodeTypeScriptPreviewOutput(output)).toEqual({
+      inputTypeScript: "{ account_id: string; body: unknown; }",
+      outputTypeScript: "unknown",
+    });
   });
 });

@@ -61,9 +61,7 @@ function EmptySection(props: { title: string; message: string }) {
     <CardStack>
       <CardStackHeader>{props.title}</CardStackHeader>
       <CardStackContent>
-        <p className="px-4 py-3 text-sm text-muted-foreground">
-          {props.message}
-        </p>
+        <p className="px-4 py-3 text-sm text-muted-foreground">{props.message}</p>
       </CardStackContent>
     </CardStack>
   );
@@ -89,16 +87,6 @@ const breadcrumbParts = (name: string): string[] =>
       .replace(/\b\w/g, (c) => c.toUpperCase()),
   );
 
-const renderTypeScriptPreview = (
-  name: "Input" | "Output",
-  source: string | undefined,
-): string | null => {
-  if (!source) return null;
-  return /^\s*export\s+(?:interface|type)\s+/u.test(source)
-    ? source
-    : `type ${name} = ${source}`;
-};
-
 // ---------------------------------------------------------------------------
 // ToolDetail
 // ---------------------------------------------------------------------------
@@ -115,28 +103,24 @@ export function ToolDetail(props: {
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
 }) {
-  const toolContract = useAtomValue(
-    toolSchemaAtom(props.scopeId, props.toolId as ToolId),
-  );
+  const toolContract = useAtomValue(toolSchemaAtom(props.scopeId, props.toolId as ToolId));
   const [tab, setTab] = useState<"schema" | "typescript">("schema");
 
   const data = useMemo(() => {
     if (!AsyncResult.isSuccess(toolContract)) return null;
     const v = toolContract.value;
-    const definitions = Object.entries(v.typeScriptDefinitions ?? {}).map(
-      ([name, body]) => ({
-        name,
-        code: String(body),
-      }),
-    );
+    const definitions = Object.entries(v.typeScriptDefinitions ?? {}).map(([name, body]) => ({
+      name,
+      code: String(body),
+    }));
 
     return {
       description: v.description,
       inputSchema: v.inputSchema,
       outputSchema: v.outputSchema,
       schemaDefinitions: v.schemaDefinitions,
-      inputTypeScript: renderTypeScriptPreview("Input", v.inputTypeScript),
-      outputTypeScript: renderTypeScriptPreview("Output", v.outputTypeScript),
+      inputTypeScript: v.inputTypeScript ? `type Input = ${v.inputTypeScript}` : null,
+      outputTypeScript: v.outputTypeScript ? `type Output = ${v.outputTypeScript}` : null,
       definitions,
     };
   }, [toolContract]);
@@ -160,9 +144,7 @@ export function ToolDetail(props: {
             </div>
           )}
           <div className="mt-1 flex items-center gap-2">
-            <h3 className="text-base font-semibold text-foreground truncate">
-              {displayName}
-            </h3>
+            <h3 className="text-base font-semibold text-foreground truncate">{displayName}</h3>
             <CopyButton value={props.toolId} label="Copy tool ID" />
             <PolicyBadgeMenu
               toolName={props.toolName}
@@ -214,14 +196,8 @@ export function ToolDetail(props: {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {AsyncResult.match(toolContract, {
-          onInitial: () => (
-            <div className="p-5 text-sm text-muted-foreground">Loading…</div>
-          ),
-          onFailure: () => (
-            <div className="p-5 text-sm text-destructive">
-              Something went wrong
-            </div>
-          ),
+          onInitial: () => <div className="p-5 text-sm text-muted-foreground">Loading…</div>,
+          onFailure: () => <div className="p-5 text-sm text-destructive">Something went wrong</div>,
           onSuccess: () =>
             tab === "schema" ? (
               <div className="px-5 py-5 space-y-5">
@@ -321,11 +297,7 @@ function PolicyBadgeMenu(props: {
     const badge = policyBadgeFor(props.policy);
     if (!badge) return null;
     return (
-      <Badge
-        variant={badge.variant}
-        title={badge.title}
-        className={badge.className}
-      >
+      <Badge variant={badge.variant} title={badge.title} className={badge.className}>
         {badge.text}
       </Badge>
     );
@@ -338,8 +310,7 @@ function PolicyBadgeMenu(props: {
   const triggerLabel = badge?.text ?? "Set policy";
   const triggerVariant = badge?.variant ?? "outline";
   const triggerTitle = badge?.title ?? "Set policy";
-  const triggerClassName =
-    badge?.className ?? "text-[10px] text-muted-foreground";
+  const triggerClassName = badge?.className ?? "text-[10px] text-muted-foreground";
 
   return (
     <DropdownMenu>
@@ -363,9 +334,7 @@ function PolicyBadgeMenu(props: {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        <DropdownMenuLabel className="font-mono text-xs">
-          {props.toolName}
-        </DropdownMenuLabel>
+        <DropdownMenuLabel className="font-mono text-xs">{props.toolName}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {POLICY_ACTIONS_IN_ORDER.map((action) => (
           <DropdownMenuItem
