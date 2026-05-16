@@ -66,6 +66,7 @@ executor.jsonc
 .vscode/mcp.json
 
 # reference repos (pulled via `bun run pull:references`)
+.reference
 .reference/
 .worktrees/
 
