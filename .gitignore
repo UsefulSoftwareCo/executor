@@ -71,7 +71,10 @@ executor.jsonc
 .worktrees/
 
 .mcp.json
-.codex/
+.codex/*
+!.codex/environments/
+.codex/environments/*
+!.codex/environments/environment.toml
 
 # Warden local scan outputs
 .warden/
