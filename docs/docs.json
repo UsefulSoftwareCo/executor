@@ -1,0 +1,93 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "aspen",
+  "name": "Executor",
+  "colors": {
+    "primary": "#009f83",
+    "light": "#009f83",
+    "dark": "#6ee7c8"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "groups": [
+          {
+            "group": "Start Here",
+            "pages": [
+              "index",
+              "getting-started/overview",
+              "getting-started/local",
+              "getting-started/cloud",
+              "getting-started/sdk"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Concepts",
+        "groups": [
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/executor",
+              "concepts/sources",
+              "concepts/tools",
+              "concepts/scopes",
+              "concepts/policies",
+              "concepts/secrets",
+              "concepts/connections"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SDK",
+        "groups": [
+          {
+            "group": "SDK",
+            "pages": [
+              "sdk/quickstart",
+              "sdk/create-executor",
+              "sdk/sources",
+              "sdk/tools",
+              "sdk/secrets",
+              "sdk/approvals",
+              "sdk/errors"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Local",
+        "groups": [
+          {
+            "group": "Local Product",
+            "pages": [
+              "local/install",
+              "local/web-ui",
+              "local/mcp-server",
+              "local/cli",
+              "local/auth-and-secrets"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Cloud",
+        "groups": [
+          {
+            "group": "Cloud Product",
+            "pages": [
+              "cloud/overview",
+              "cloud/workspaces",
+              "cloud/sources",
+              "cloud/api-keys",
+              "cloud/hosting-model"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

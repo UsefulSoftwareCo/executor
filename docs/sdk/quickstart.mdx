@@ -1,0 +1,70 @@
+---
+title: Quickstart
+description: Create an Executor, add a source, and inspect its tools.
+---
+
+import CreateExecutor from "/snippets/sdk/quickstart/create-executor.mdx";
+import AddSource from "/snippets/sdk/quickstart/add-source.mdx";
+import ListTools from "/snippets/sdk/quickstart/list-tools.mdx";
+import InspectSchema from "/snippets/sdk/quickstart/inspect-schema.mdx";
+import CloseExecutor from "/snippets/sdk/quickstart/close-executor.mdx";
+
+{/* Code snippets on this page are generated from examples/docs-sdk-quickstart/src/main.ts. */}
+
+The SDK lets you embed Executor in a TypeScript application.
+
+This quickstart creates an Executor, loads an OpenAPI source from a local spec, lists the tools it contributed, and inspects one tool schema. The snippets on this page are generated from a runnable example in `examples/docs-sdk-quickstart`.
+
+## Install
+
+<CodeGroup>
+
+```bash npm
+npm install @executor-js/sdk @executor-js/plugin-openapi
+```
+
+```bash pnpm
+pnpm add @executor-js/sdk @executor-js/plugin-openapi
+```
+
+```bash yarn
+yarn add @executor-js/sdk @executor-js/plugin-openapi
+```
+
+```bash bun
+bun add @executor-js/sdk @executor-js/plugin-openapi
+```
+
+</CodeGroup>
+
+## Create An Executor
+
+Import the SDK and configure the plugins you want to expose.
+
+<CreateExecutor />
+
+`onElicitation: "accept-all"` is convenient for scripts and examples. Applications with interactive approval flows should pass a handler instead.
+
+## Add A Source
+
+Sources add tools to the Executor catalog. This example registers an OpenAPI document under the `inventory` namespace.
+
+<AddSource />
+
+## List Tools
+
+After a source is registered, its tools appear in the unified tool catalog.
+
+<ListTools />
+
+## Inspect A Tool
+
+Tools expose schema metadata that agents and applications can use before invoking them.
+
+<InspectSchema />
+
+## Shut Down
+
+Close the Executor when your process is done with it.
+
+<CloseExecutor />

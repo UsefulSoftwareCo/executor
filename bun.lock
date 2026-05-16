@@ -249,6 +249,18 @@
         "typescript": "latest",
       },
     },
+    "examples/docs-sdk-quickstart": {
+      "name": "@executor-js/example-docs-sdk-quickstart",
+      "version": "0.0.0",
+      "dependencies": {
+        "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "examples/promise-sdk": {
       "name": "@executor-js/example-promise-sdk",
       "version": "0.0.2",
@@ -1318,6 +1330,8 @@
     "@executor-js/desktop": ["@executor-js/desktop@workspace:apps/desktop"],
 
     "@executor-js/example-all-plugins": ["@executor-js/example-all-plugins@workspace:examples/all-plugins"],
+
+    "@executor-js/example-docs-sdk-quickstart": ["@executor-js/example-docs-sdk-quickstart@workspace:examples/docs-sdk-quickstart"],
 
     "@executor-js/example-promise-sdk": ["@executor-js/example-promise-sdk@workspace:examples/promise-sdk"],
 

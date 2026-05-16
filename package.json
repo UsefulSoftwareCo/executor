@@ -42,6 +42,8 @@
     "lint:release-notes": "bun run scripts/check-release-notes.ts",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
+    "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
+    "docs:smoke:install": "bun run scripts/smoke-docs-install.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "pull:references": "bun run scripts/pull-references.ts",

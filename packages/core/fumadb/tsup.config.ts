@@ -8,6 +8,7 @@ export default defineConfig({
     "adapters/index": "src/adapters/index.ts",
     "adapters/drizzle/index": "src/adapters/drizzle/index.ts",
     "adapters/kysely/index": "src/adapters/kysely/index.ts",
+    "adapters/memory/index": "src/adapters/memory/index.ts",
     "cli/index": "src/cli/index.ts",
     cuid: "src/cuid.ts",
   },
