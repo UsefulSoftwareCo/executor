@@ -90,10 +90,22 @@ async function allocatePort(): Promise<number> {
 async function startViteChild(): Promise<ViteChild> {
   const vitePort = await allocatePort();
   const cwd = resolve(import.meta.dirname, "..");
+  const env = { ...process.env };
+  delete env.PORT;
   // `bunx --bun vite` runs vite under Bun, matching the `dev:vite` script
   // already in apps/local. --strictPort keeps the URL we hand back stable.
   const child: Subprocess = Bun.spawn(
-    ["bunx", "--bun", "vite", "dev", "--port", String(vitePort), "--strictPort", "--host", "127.0.0.1"],
+    [
+      "bunx",
+      "--bun",
+      "vite",
+      "dev",
+      "--port",
+      String(vitePort),
+      "--strictPort",
+      "--host",
+      "127.0.0.1",
+    ],
     {
       cwd,
       // EXECUTOR_DEV_VITE_PORT — vite.config reads this and points the
@@ -101,8 +113,7 @@ async function startViteChild(): Promise<ViteChild> {
       // the daemon proxy but opens the HMR WebSocket directly to vite,
       // sidestepping the daemon's lack of WS proxying.
       env: {
-        ...process.env,
-        PORT: undefined as unknown as string,
+        ...env,
         EXECUTOR_DEV_VITE_PORT: String(vitePort),
       },
       stdout: "inherit",
