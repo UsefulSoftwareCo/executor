@@ -202,6 +202,17 @@ const parseDaemonUrl = (baseUrl: string) =>
 const daemonBaseUrl = (hostname: string, port: number): string =>
   `http://${canonicalDaemonHost(hostname)}:${port}`;
 
+const installDefaultExecutorWebBaseUrl = (baseUrl: string): (() => void) => {
+  if (process.env.EXECUTOR_WEB_BASE_URL !== undefined) {
+    return () => {};
+  }
+
+  process.env.EXECUTOR_WEB_BASE_URL = baseUrl;
+  return () => {
+    delete process.env.EXECUTOR_WEB_BASE_URL;
+  };
+};
+
 const cleanupPointer = (input: { hostname: string; scopeId: string; port: number }) =>
   Effect.gen(function* () {
     yield* removeDaemonPointer({ hostname: input.hostname, scopeId: input.scopeId }).pipe(
@@ -543,41 +554,49 @@ const runForegroundSession = (input: {
   authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
-    const server = yield* Effect.promise(() =>
-      startServer({
-        port: input.port,
-        hostname: input.hostname,
-        allowedHosts: input.allowedHosts,
-        authToken: input.authToken,
-        authPassword: input.authPassword,
-        embeddedWebUI,
-      }),
-    );
-
     const displayHost =
       input.hostname === "0.0.0.0" || input.hostname === "::" ? "localhost" : input.hostname;
-    const baseUrl = `http://${displayHost}:${server.port}`;
-    console.log(`Executor is ready.`);
-    console.log(`Web:     ${baseUrl}`);
-    console.log(`MCP:     ${baseUrl}/mcp`);
-    console.log(`OpenAPI: ${baseUrl}/api/docs`);
-    if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
-      console.log(
-        `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
-      );
-      if (input.allowedHosts.length > 0) {
-        console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
-      }
-      if (input.authPassword) {
-        console.log("   Basic authentication is enabled.");
-      } else if (input.authToken) {
-        console.log("   Token authentication is enabled.");
-      }
-    }
-    console.log(`\nPress Ctrl+C to stop.`);
+    const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(
+      `http://${displayHost}:${input.port}`,
+    );
 
-    yield* waitForShutdownSignal();
-    yield* Effect.promise(() => server.stop());
+    try {
+      const server = yield* Effect.promise(() =>
+        startServer({
+          port: input.port,
+          hostname: input.hostname,
+          allowedHosts: input.allowedHosts,
+          authToken: input.authToken,
+          authPassword: input.authPassword,
+          embeddedWebUI,
+        }),
+      );
+
+      const baseUrl = `http://${displayHost}:${server.port}`;
+      console.log(`Executor is ready.`);
+      console.log(`Web:     ${baseUrl}`);
+      console.log(`MCP:     ${baseUrl}/mcp`);
+      console.log(`OpenAPI: ${baseUrl}/api/docs`);
+      if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
+        console.log(
+          `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
+        );
+        if (input.allowedHosts.length > 0) {
+          console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
+        }
+        if (input.authPassword) {
+          console.log("   Basic authentication is enabled.");
+        } else if (input.authToken) {
+          console.log("   Token authentication is enabled.");
+        }
+      }
+      console.log(`\nPress Ctrl+C to stop.`);
+
+      yield* waitForShutdownSignal();
+      yield* Effect.promise(() => server.stop());
+    } finally {
+      restoreWebBaseUrl();
+    }
   });
 
 const runDaemonSession = (input: {
@@ -589,67 +608,75 @@ const runDaemonSession = (input: {
 }) =>
   Effect.gen(function* () {
     const daemonHost = canonicalDaemonHost(input.hostname);
-    const scopeId = currentDaemonScopeId();
-    const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
-
-    if (existing) {
-      const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
-      if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-        return yield* Effect.fail(
-          new Error(
-            [
-              `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-              `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-              `Stop it first: ${cliPrefix} daemon stop`,
-            ].join("\n"),
-          ),
-        );
-      }
-      yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
-    }
-
-    const server = yield* Effect.promise(() =>
-      startServer({
-        port: input.port,
-        hostname: input.hostname,
-        allowedHosts: input.allowedHosts,
-        authToken: input.authToken,
-        authPassword: input.authPassword,
-        embeddedWebUI,
-      }),
+    const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(
+      daemonBaseUrl(daemonHost, input.port),
     );
-
-    const daemonPort = server.port;
-    const token = randomUUID();
-
-    yield* writeDaemonRecord({
-      hostname: daemonHost,
-      port: daemonPort,
-      pid: process.pid,
-      scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
-    });
-    yield* writeDaemonPointer({
-      hostname: daemonHost,
-      port: daemonPort,
-      pid: process.pid,
-      scopeId,
-      scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
-      token,
-    });
-
-    console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
-    if (input.authPassword) {
-      console.log("Basic authentication is enabled.");
-    } else if (input.authToken) {
-      console.log("Token authentication is enabled.");
-    }
+    const scopeId = currentDaemonScopeId();
 
     try {
-      yield* waitForShutdownSignal();
+      const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
+
+      if (existing) {
+        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+        if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
+          return yield* Effect.fail(
+            new Error(
+              [
+                `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                `Stop it first: ${cliPrefix} daemon stop`,
+              ].join("\n"),
+            ),
+          );
+        }
+        yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
+      }
+
+      const server = yield* Effect.promise(() =>
+        startServer({
+          port: input.port,
+          hostname: input.hostname,
+          allowedHosts: input.allowedHosts,
+          authToken: input.authToken,
+          authPassword: input.authPassword,
+          embeddedWebUI,
+        }),
+      );
+
+      const daemonPort = server.port;
+      const token = randomUUID();
+
+      try {
+        yield* writeDaemonRecord({
+          hostname: daemonHost,
+          port: daemonPort,
+          pid: process.pid,
+          scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
+        });
+        yield* writeDaemonPointer({
+          hostname: daemonHost,
+          port: daemonPort,
+          pid: process.pid,
+          scopeId,
+          scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
+          token,
+        });
+
+        console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
+        if (input.authPassword) {
+          console.log("Basic authentication is enabled.");
+        } else if (input.authToken) {
+          console.log("Token authentication is enabled.");
+        }
+
+        yield* waitForShutdownSignal();
+      } finally {
+        yield* Effect.promise(() => server.stop());
+        yield* removeDaemonRecord({ hostname: daemonHost, port: daemonPort });
+        yield* removeDaemonPointer({ hostname: daemonHost, scopeId }).pipe(Effect.ignore);
+      }
     } finally {
-      yield* Effect.promise(() => server.stop());
-      yield* removeDaemonRecord({ hostname: daemonHost, port: daemonPort });
-      yield* removeDaemonPointer({ hostname: daemonHost, scopeId }).pipe(Effect.ignore);
+      restoreWebBaseUrl();
     }
   });
 
