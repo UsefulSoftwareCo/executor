@@ -13,7 +13,7 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi";
 import { OAuthTestServer, serveTestHttpServerLayer } from "@executor-js/sdk/testing";
-import { isToolResult, type ScopeId } from "@executor-js/sdk/core";
+import { isToolResult } from "@executor-js/sdk/core";
 import type { OpenApiPluginExtension, OpenApiSpecConfig } from "../sdk/plugin";
 
 export class OpenApiTestServerAddressError extends Data.TaggedError(

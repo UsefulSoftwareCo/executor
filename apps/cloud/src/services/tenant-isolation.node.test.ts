@@ -20,12 +20,8 @@ const TenantIsolationApi = HttpApi.make("tenantIsolationTest")
   .annotateMerge(OpenApi.annotations({ title: "Tenant Test API", version: "1.0.0" }));
 
 const makeTenantOpenApiSourcePayload = (
-  _targetScope: ScopeId,
   namespace: string,
-  options: Omit<
-    Parameters<typeof makeOpenApiHttpApiTestAddSpecPayload>[1],
-    "namespace"
-  > = {},
+  options: Omit<Parameters<typeof makeOpenApiHttpApiTestAddSpecPayload>[1], "namespace"> = {},
 ) =>
   makeOpenApiHttpApiTestAddSpecPayload(TenantIsolationApi, {
     namespace,
@@ -115,7 +111,7 @@ describe("tenant isolation (HTTP)", () => {
       yield* asOrg(orgA, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgA) },
-          payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespaceA),
+          payload: makeTenantOpenApiSourcePayload(namespaceA),
         }),
       );
 
@@ -135,7 +131,7 @@ describe("tenant isolation (HTTP)", () => {
       yield* asOrg(orgA, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgA) },
-          payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespaceA),
+          payload: makeTenantOpenApiSourcePayload(namespaceA),
         }),
       );
 
@@ -158,7 +154,7 @@ describe("tenant isolation (HTTP)", () => {
       yield* asOrg(orgA, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgA) },
-          payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespaceA),
+          payload: makeTenantOpenApiSourcePayload(namespaceA),
         }),
       );
 
@@ -258,7 +254,7 @@ describe("tenant isolation (HTTP)", () => {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(orgA) },
             payload: {
-              ...makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespaceA),
+              ...makeTenantOpenApiSourcePayload(namespaceA),
               headers: {
                 Authorization: {
                   kind: "secret",
@@ -301,7 +297,7 @@ describe("tenant isolation (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(orgA) },
-            payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespaceA),
+            payload: makeTenantOpenApiSourcePayload(namespaceA),
           });
           yield* client.openapi.setSourceBinding({
             params: { scopeId: ScopeId.make(orgA) },
@@ -335,7 +331,7 @@ describe("tenant isolation (HTTP)", () => {
       yield* asOrg(orgA, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgA) },
-          payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgA), namespace, {
+          payload: makeTenantOpenApiSourcePayload(namespace, {
             name: "Org A API",
             baseUrl: "https://org-a.example.com",
           }),
@@ -344,7 +340,7 @@ describe("tenant isolation (HTTP)", () => {
       yield* asOrg(orgB, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgB) },
-          payload: makeTenantOpenApiSourcePayload(ScopeId.make(orgB), namespace, {
+          payload: makeTenantOpenApiSourcePayload(namespace, {
             name: "Org B API",
             baseUrl: "https://org-b.example.com",
           }),

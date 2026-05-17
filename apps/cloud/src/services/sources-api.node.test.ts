@@ -35,12 +35,8 @@ const MinimalSourceApi = HttpApi.make("sourcesApiTest")
   .annotateMerge(OpenApi.annotations({ title: "Sources API Test", version: "1.0.0" }));
 
 const makeMinimalOpenApiSourcePayload = (
-  _targetScope: ScopeId,
   namespace: string,
-  options: Omit<
-    Parameters<typeof makeOpenApiHttpApiTestAddSpecPayload>[1],
-    "namespace"
-  > = {},
+  options: Omit<Parameters<typeof makeOpenApiHttpApiTestAddSpecPayload>[1], "namespace"> = {},
 ) =>
   makeOpenApiHttpApiTestAddSpecPayload(MinimalSourceApi, {
     namespace,
@@ -71,7 +67,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           const result = yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
+            payload: makeMinimalOpenApiSourcePayload(namespace),
           });
           expect(result.namespace).toBe(namespace);
           expect(result.toolCount).toBeGreaterThan(0);
@@ -93,7 +89,7 @@ describe("sources api (HTTP)", () => {
       yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
+          payload: makeMinimalOpenApiSourcePayload(namespace),
         }),
       );
 
@@ -135,11 +131,9 @@ describe("sources api (HTTP)", () => {
       const result = yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(org) },
-          payload: makeMinimalOpenApiSourcePayload(
-            ScopeId.make(org),
-            `ns_${crypto.randomUUID().replace(/-/g, "_")}`,
-            { baseUrl: "http://example.com" },
-          ),
+          payload: makeMinimalOpenApiSourcePayload(`ns_${crypto.randomUUID().replace(/-/g, "_")}`, {
+            baseUrl: "http://example.com",
+          }),
         }),
       );
 
@@ -414,7 +408,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
+            payload: makeMinimalOpenApiSourcePayload(namespace),
           });
           yield* client.sources.remove({
             params: { scopeId: ScopeId.make(org), sourceId: namespace },
@@ -468,7 +462,7 @@ describe("sources api (HTTP)", () => {
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
             params: { scopeId: ScopeId.make(org) },
-            payload: makeMinimalOpenApiSourcePayload(ScopeId.make(org), namespace),
+            payload: makeMinimalOpenApiSourcePayload(namespace),
           });
           yield* client.openapi.updateSource({
             params: { scopeId: ScopeId.make(org), namespace },
@@ -502,7 +496,7 @@ describe("sources api (HTTP)", () => {
         client.openapi.addSpec({
           params: { scopeId: ScopeId.make(orgId) },
           payload: {
-            ...makeMinimalOpenApiSourcePayload(ScopeId.make(orgId), namespace),
+            ...makeMinimalOpenApiSourcePayload(namespace),
             headers: {
               Authorization: {
                 kind: "secret",

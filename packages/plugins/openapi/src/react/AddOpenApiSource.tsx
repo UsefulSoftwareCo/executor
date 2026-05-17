@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
+import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
@@ -131,13 +132,15 @@ export function inferOAuthIssuerUrl(authorizationUrl: string): string | null {
 
 const specInputForAdd = (input: string) => {
   const value = input.trim();
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor classifies user-provided spec input
-  try {
-    new URL(value);
-    return { kind: "url" as const, url: value };
-  } catch {
-    return { kind: "blob" as const, value };
-  }
+  const parsed = Effect.runSyncExit(
+    Effect.try({
+      try: () => new URL(value),
+      catch: () => null,
+    }),
+  );
+  return Exit.isSuccess(parsed)
+    ? { kind: "url" as const, url: value }
+    : { kind: "blob" as const, value };
 };
 
 type StrategySelection =
