@@ -31,10 +31,11 @@ const ResumeRequest = Schema.Struct({
   content: Schema.optional(Schema.Unknown),
 });
 
-const ResumeResponse = Schema.Struct({
+const ResumeResponse = Schema.Union([CompletedResult, PausedResult]);
+
+const PausedExecutionInfo = Schema.Struct({
   text: Schema.String,
   structured: Schema.Unknown,
-  isError: Schema.Boolean,
 });
 
 const ExecutionNotFoundError = Schema.TaggedStruct("ExecutionNotFoundError", {
@@ -52,6 +53,13 @@ const ExecutionParams = { executionId: Schema.String };
 // ---------------------------------------------------------------------------
 
 export const ExecutionsApi = HttpApiGroup.make("executions")
+  .add(
+    HttpApiEndpoint.get("getPaused", "/executions/:executionId", {
+      params: ExecutionParams,
+      success: PausedExecutionInfo,
+      error: [InternalError, ExecutionNotFoundError],
+    }),
+  )
   .add(
     HttpApiEndpoint.post("execute", "/executions", {
       payload: ExecuteRequest,

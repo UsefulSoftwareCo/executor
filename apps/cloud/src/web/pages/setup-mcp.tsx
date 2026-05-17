@@ -2,21 +2,44 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/react/components/button";
 import { CodeBlock } from "@executor-js/react/components/code-block";
+import {
+  buildMcpHttpEndpoint,
+  buildMcpInstallCommand,
+  type McpElicitationMode,
+} from "@executor-js/react/components/mcp-install-card";
 import { CopyButton } from "@executor-js/react/components/copy-button";
-
-const buildInstallCommand = (endpoint: string): string =>
-  `npx add-mcp ${endpoint} --transport http --name executor`;
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@executor-js/react/components/collapsible";
+import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
 
 export const SetupMcpPage = () => {
   const navigate = useNavigate();
   const [origin, setOrigin] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("browser");
 
   useEffect(() => {
     setOrigin(window.location.origin);
   }, []);
 
-  const endpoint = origin ? `${origin}/mcp` : "";
-  const command = endpoint ? buildInstallCommand(endpoint) : "";
+  const endpoint = origin
+    ? buildMcpHttpEndpoint({
+        origin,
+        desktop: null,
+        elicitationMode,
+      })
+    : "";
+  const command = origin
+    ? buildMcpInstallCommand({
+        mode: "http",
+        isDev: false,
+        origin,
+        elicitationMode,
+      })
+    : "";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
@@ -44,6 +67,39 @@ export const SetupMcpPage = () => {
           </div>
           <p className="text-xs text-muted-foreground">Paste this into your MCP client config.</p>
         </section>
+
+        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+            Advanced
+            <span
+              aria-hidden="true"
+              className={`text-[10px] transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+            >
+              v
+            </span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-card/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-foreground">Resume approvals</div>
+                <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                  Select how tool approvals are handled for this MCP connection.
+                </div>
+              </div>
+              <NativeSelect
+                size="sm"
+                value={elicitationMode}
+                onChange={(event) => setElicitationMode(event.target.value as McpElicitationMode)}
+                aria-label="Elicitation mode"
+                className="min-w-44"
+              >
+                <NativeSelectOption value="browser">Browser approval</NativeSelectOption>
+                <NativeSelectOption value="model">Model resume tool</NativeSelectOption>
+                <NativeSelectOption value="native">Native elicitation</NativeSelectOption>
+              </NativeSelect>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         <div className="relative flex items-center">
           <div className="h-px flex-1 bg-border" />

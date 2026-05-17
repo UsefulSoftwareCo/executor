@@ -808,6 +808,56 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
+  it.effect(
+    "resume drains concurrent elicitations that were queued before the first approval",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
+
+        const code = `
+          return await Promise.all([
+            tools.api.singleApproval({}),
+            tools.api.singleApproval({}),
+            tools.api.singleApproval({})
+          ]);
+        `;
+
+        const outcome1 = yield* engine.executeWithPause(code);
+        expect(outcome1.status).toBe("paused");
+        const paused1 = outcome1 as Extract<typeof outcome1, { status: "paused" }>;
+
+        const outcome2 = yield* Effect.race(
+          engine
+            .resume(paused1.execution.id, { action: "accept" })
+            .pipe(Effect.map((outcome) => ({ kind: "resumed" as const, outcome }))),
+          Effect.sleep("2 seconds").pipe(Effect.as({ kind: "hung" as const })),
+        );
+
+        expect(outcome2.kind).toBe("resumed");
+        if (outcome2.kind !== "resumed") return;
+        expect(outcome2.outcome?.status).toBe("paused");
+        const paused2 = outcome2.outcome as Extract<
+          NonNullable<typeof outcome2.outcome>,
+          { status: "paused" }
+        >;
+
+        const outcome3 = yield* engine.resume(paused2.execution.id, { action: "accept" });
+        expect(outcome3?.status).toBe("paused");
+        const paused3 = outcome3 as Extract<NonNullable<typeof outcome3>, { status: "paused" }>;
+
+        const outcome4 = yield* engine.resume(paused3.execution.id, { action: "accept" });
+        expect(outcome4?.status).toBe("completed");
+        const completed = outcome4 as Extract<
+          NonNullable<typeof outcome4>,
+          { status: "completed" }
+        >;
+        expect(completed.result.error).toBeUndefined();
+        expect(completed.result.result).toHaveLength(3);
+      }),
+    { timeout: 10000 },
+  );
+
   // Regression: use separate top-level runPromise calls to match HTTP/CLI
   // pause/resume, and a single-elicit tool so no later pause can mask a dead
   // sandbox fiber.

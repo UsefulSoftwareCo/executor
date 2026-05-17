@@ -15,6 +15,7 @@ import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as ConnectionsRouteImport } from './routes/connections'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesNamespaceRouteImport } from './routes/sources.$namespace'
+import { Route as ResumeExecutionIdRouteImport } from './routes/resume.$executionId'
 import { Route as SourcesAddPluginKeyRouteImport } from './routes/sources.add.$pluginKey'
 import { Route as PluginsPluginIdSplatRouteImport } from './routes/plugins.$pluginId.$'
 
@@ -48,6 +49,11 @@ const SourcesNamespaceRoute = SourcesNamespaceRouteImport.update({
   path: '/sources/$namespace',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResumeExecutionIdRoute = ResumeExecutionIdRouteImport.update({
+  id: '/resume/$executionId',
+  path: '/resume/$executionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SourcesAddPluginKeyRoute = SourcesAddPluginKeyRouteImport.update({
   id: '/sources/add/$pluginKey',
   path: '/sources/add/$pluginKey',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   PoliciesRoute: typeof PoliciesRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
+  ResumeExecutionIdRoute: typeof ResumeExecutionIdRoute
   SourcesNamespaceRoute: typeof SourcesNamespaceRoute
   PluginsPluginIdSplatRoute: typeof PluginsPluginIdSplatRoute
   SourcesAddPluginKeyRoute: typeof SourcesAddPluginKeyRoute
@@ -178,6 +191,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SourcesNamespaceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/resume/$executionId': {
+      id: '/resume/$executionId'
+      path: '/resume/$executionId'
+      fullPath: '/resume/$executionId'
+      preLoaderRoute: typeof ResumeExecutionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sources/add/$pluginKey': {
       id: '/sources/add/$pluginKey'
       path: '/sources/add/$pluginKey'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   PoliciesRoute: PoliciesRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,
+  ResumeExecutionIdRoute: ResumeExecutionIdRoute,
   SourcesNamespaceRoute: SourcesNamespaceRoute,
   PluginsPluginIdSplatRoute: PluginsPluginIdSplatRoute,
   SourcesAddPluginKeyRoute: SourcesAddPluginKeyRoute,

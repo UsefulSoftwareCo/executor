@@ -92,7 +92,10 @@ const ELICITATION_CAPS: ClientCapabilities = {
   elicitation: { form: {}, url: {} },
 };
 
-type BuildOptions = { readonly withElicitingPlugin?: boolean };
+type BuildOptions = {
+  readonly withElicitingPlugin?: boolean;
+  readonly elicitationMode?: "model" | "native";
+};
 
 const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildOptions = {}) =>
   Effect.gen(function* () {
@@ -134,7 +137,10 @@ const openSession = (
     Effect.gen(function* () {
       const executor = yield* buildScopedExecutor(orgId, `Org ${orgId}`, options);
       const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
-      const mcpServer = yield* createExecutorMcpServer({ engine });
+      const mcpServer = yield* createExecutorMcpServer({
+        engine,
+        elicitationMode: options.elicitationMode ? { mode: options.elicitationMode } : undefined,
+      });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       const client = new Client(
         { name: "cloud-e2e-test", version: "1.0.0" },
@@ -205,7 +211,10 @@ describe("cloud MCP session end-to-end", () => {
 
   it.effect("bridges a form elicitation from engine to client and back", () =>
     Effect.gen(function* () {
-      const { client } = yield* openSession(nextOrgId(), { withElicitingPlugin: true });
+      const { client } = yield* openSession(nextOrgId(), {
+        withElicitingPlugin: true,
+        elicitationMode: "native",
+      });
 
       client.setRequestHandler(ElicitRequestSchema, async () => ({
         action: "accept" as const,

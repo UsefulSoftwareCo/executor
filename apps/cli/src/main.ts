@@ -409,6 +409,7 @@ type ExecuteCodeOutcome =
       readonly status: "paused";
       readonly text: string;
       readonly executionId: string | undefined;
+      readonly approvalUrl: string | undefined;
       readonly interaction:
         | {
             readonly kind: "url" | "form";
@@ -418,6 +419,11 @@ type ExecuteCodeOutcome =
           }
         | undefined;
     };
+
+const buildResumeApprovalUrl = (baseUrl: string, executionId: string): string => {
+  const url = new URL(`/resume/${encodeURIComponent(executionId)}`, baseUrl);
+  return url.toString();
+};
 
 const executeCode = (input: {
   baseUrl: string;
@@ -433,10 +439,12 @@ const executeCode = (input: {
     });
 
     if (response.status === "paused") {
+      const executionId = extractExecutionId(response.structured);
       return {
         status: "paused" as const,
         text: response.text,
-        executionId: extractExecutionId(response.structured),
+        executionId,
+        approvalUrl: executionId ? buildResumeApprovalUrl(daemonUrl, executionId) : undefined,
         interaction: extractPausedInteraction(response.structured),
       };
     }
@@ -456,6 +464,10 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
     if (input.outcome.status === "paused") {
       console.log(input.outcome.text);
       if (input.outcome.executionId) {
+        if (input.outcome.approvalUrl) {
+          console.log("\nApprove in browser:");
+          console.log(`  ${input.outcome.approvalUrl}`);
+        }
         const commandPrefix = `${cliPrefix} resume --execution-id ${input.outcome.executionId} --base-url ${input.baseUrl}`;
         if (input.outcome.interaction?.kind === "form") {
           const requestedSchema = input.outcome.interaction.requestedSchema;
@@ -464,12 +476,12 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
           }
           const template = buildResumeContentTemplate(requestedSchema);
           const contentArg = shellQuoteArg(JSON.stringify(template));
-          console.log("\nResume commands:");
+          console.log("\nCLI fallback:");
           console.log(`  ${commandPrefix} --action accept --content ${contentArg}`);
           console.log(`  ${commandPrefix} --action decline`);
           console.log(`  ${commandPrefix} --action cancel`);
         } else {
-          console.log("\nResume command:");
+          console.log("\nCLI fallback:");
           console.log(`  ${commandPrefix} --action accept`);
         }
       }
@@ -681,11 +693,21 @@ const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A>
   }
 };
 
-const runStdioMcpSession = () =>
+const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
     const executor = yield* Effect.promise(() => withStdoutReroutedToStderr(() => getExecutor()));
     yield* Effect.promise(() =>
-      runMcpStdioServer({ executor, codeExecutor: makeQuickJsExecutor() }),
+      runMcpStdioServer({
+        executor,
+        codeExecutor: makeQuickJsExecutor(),
+        elicitationMode:
+          input.elicitationMode === "browser"
+            ? {
+                mode: "browser" as const,
+                approvalUrl: (executionId) => `/resume/${encodeURIComponent(executionId)}`,
+              }
+            : { mode: input.elicitationMode },
+      }),
     );
   });
 
@@ -1206,6 +1228,17 @@ const resumeCommand = Command.make(
         payload: { action, content: contentObj },
       });
 
+      if (result.status === "paused") {
+        console.log(result.text);
+        const nextExecutionId = extractExecutionId(result.structured);
+        if (nextExecutionId) {
+          console.log("");
+          console.log("Approval required:");
+          console.log(buildResumeApprovalUrl(daemonUrl, nextExecutionId));
+        }
+        process.exit(0);
+      }
+
       if (result.isError) {
         if (shouldPrintVerboseErrors(process.argv)) {
           console.error(result.text);
@@ -1456,11 +1489,23 @@ const daemonCommand = Command.make("daemon").pipe(
   Command.withDescription("Manage the local daemon"),
 );
 
-const mcpCommand = Command.make("mcp", { scope }, ({ scope }) =>
-  Effect.gen(function* () {
-    applyScope(scope);
-    yield* runStdioMcpSession();
-  }),
+const mcpCommand = Command.make(
+  "mcp",
+  {
+    scope,
+    elicitationMode: Options.choice("elicitation-mode", ["browser", "model"] as const)
+      .pipe(Options.withDefault("browser"))
+      .pipe(
+        Options.withDescription(
+          "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",
+        ),
+      ),
+  },
+  ({ scope, elicitationMode }) =>
+    Effect.gen(function* () {
+      applyScope(scope);
+      yield* runStdioMcpSession({ elicitationMode });
+    }),
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 
 // ---------------------------------------------------------------------------

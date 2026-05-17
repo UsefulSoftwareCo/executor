@@ -534,6 +534,37 @@ describe("/mcp session restore", () => {
 });
 
 describe("McpSessionDO alarm lifecycle", () => {
+  it("rejects browser approval reads and resumes from a different signed-in user", async () => {
+    const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
+    const sessionMeta = {
+      organizationId: "org_browser_resume_owner",
+      organizationName: "Browser Resume Owner",
+      userId: "user_browser_resume_owner",
+    };
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(SESSION_META_KEY, sessionMeta);
+      await state.storage.put(LAST_ACTIVITY_KEY, Date.now());
+    });
+
+    const attackerIdentity = {
+      accountId: "user_browser_resume_attacker",
+      organizationId: sessionMeta.organizationId,
+    };
+
+    await expect(
+      stub.getPausedExecutionForApproval("exec_approval", attackerIdentity),
+    ).resolves.toEqual({
+      status: "forbidden",
+    });
+
+    await expect(
+      stub.resumeExecutionForApproval("exec_approval", attackerIdentity, { action: "accept" }),
+    ).resolves.toEqual({
+      status: "forbidden",
+    });
+  });
+
   it("keeps a recently active session after a cold-started alarm", async () => {
     const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
     const sessionMeta = {

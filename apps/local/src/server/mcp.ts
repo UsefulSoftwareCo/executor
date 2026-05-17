@@ -1,9 +1,10 @@
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "@executor-js/host-mcp";
+import type { ResumeResponse } from "@executor-js/execution";
 
 import { startIntegrationsRefresh } from "./integrations";
 
@@ -13,6 +14,7 @@ import { startIntegrationsRefresh } from "./integrations";
 
 export type McpRequestHandler = {
   readonly handleRequest: (request: Request) => Promise<Response>;
+  readonly handleApprovalRequest: (request: Request) => Promise<Response>;
   readonly close: () => Promise<void>;
 };
 
@@ -28,6 +30,35 @@ const formatBoundaryError = (error: unknown): unknown => {
   return error;
 };
 
+type McpElicitationMode = "browser" | "model" | "native";
+
+const MCP_ELICITATION_MODES = new Set<McpElicitationMode>(["browser", "model", "native"]);
+const ResumeResponsePayload = Schema.Struct({
+  action: Schema.Literals(["accept", "decline", "cancel"]),
+  content: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
+const decodeResumeResponsePayload = Schema.decodeUnknownOption(ResumeResponsePayload);
+
+const readElicitationMode = (request: Request): McpElicitationMode => {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get("elicitation_mode");
+  if (mode && MCP_ELICITATION_MODES.has(mode as McpElicitationMode)) {
+    return mode as McpElicitationMode;
+  }
+
+  return "browser";
+};
+
+const approvalUrlForRequest = (
+  request: Request,
+  executionId: string,
+  sessionId: string | null,
+): string => {
+  const url = new URL(`/resume/${encodeURIComponent(executionId)}`, request.url);
+  if (sessionId) url.searchParams.set("mcp_session_id", sessionId);
+  return url.toString();
+};
+
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
     ? Effect.runPromise(
@@ -40,15 +71,57 @@ const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
       )
     : Promise.resolve();
 
+const approvalRequestPattern = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
+
+const json = (value: unknown, status = 200): Response =>
+  new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+const readResumeResponse = (request: Request): Promise<ResumeResponse | null> =>
+  Effect.runPromise(
+    Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => null,
+    }).pipe(
+      Effect.map((raw) =>
+        raw === null ? null : Option.getOrNull(decodeResumeResponsePayload(raw)),
+      ),
+    ),
+  );
+
+const resumeApprovalResult = (executionId: string, response: ResumeResponse) => {
+  const textByAction = {
+    accept: "I've approved it",
+    decline: "I've denied it",
+    cancel: "I've canceled it",
+  } satisfies Record<ResumeResponse["action"], string>;
+  const statusByAction = {
+    accept: "approved",
+    decline: "denied",
+    cancel: "canceled",
+  } satisfies Record<ResumeResponse["action"], string>;
+
+  return {
+    status: "completed",
+    text: textByAction[response.action],
+    structured: { status: statusByAction[response.action], executionId },
+    isError: false,
+  };
+};
+
 export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpRequestHandler => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
+  const approvalResponses = new Map<string, Map<string, ResumeResponse>>();
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
     const s = servers.get(id);
     transports.delete(id);
     servers.delete(id);
+    approvalResponses.delete(id);
     if (opts.transport) await ignoreClose(t ? () => t.close() : undefined);
     if (opts.server) await ignoreClose(s ? () => s.close() : undefined);
   };
@@ -64,10 +137,12 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
       }
 
       let created: McpServer | undefined;
+      let createdSessionId: string | null = null;
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
         enableJsonResponse: true,
         onsessioninitialized: (sid) => {
+          createdSessionId = sid;
           transports.set(sid, transport);
           if (created) servers.set(sid, created);
         },
@@ -81,7 +156,30 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
 
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK handler must return JSON-RPC errors from thrown Promise APIs
       try {
-        created = await Effect.runPromise(createExecutorMcpServer(config));
+        const elicitationMode = readElicitationMode(request);
+        created = await Effect.runPromise(
+          createExecutorMcpServer({
+            ...config,
+            browserApprovalStore: {
+              takeResponse: (executionId) =>
+                Effect.sync(() => {
+                  if (!createdSessionId) return null;
+                  const sessionApprovals = approvalResponses.get(createdSessionId);
+                  const response = sessionApprovals?.get(executionId) ?? null;
+                  sessionApprovals?.delete(executionId);
+                  return response;
+                }),
+            },
+            elicitationMode:
+              elicitationMode === "browser"
+                ? {
+                    mode: "browser" as const,
+                    approvalUrl: (executionId) =>
+                      approvalUrlForRequest(request, executionId, createdSessionId),
+                  }
+                : { mode: elicitationMode },
+          }),
+        );
         await created.connect(transport);
         const response = await transport.handleRequest(request);
 
@@ -100,6 +198,27 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
         }
         return jsonError(500, -32603, "Internal server error");
       }
+    },
+
+    handleApprovalRequest: async (request) => {
+      const url = new URL(request.url);
+      const match = approvalRequestPattern.exec(url.pathname);
+      if (!match) return json({ error: "Not found" }, 404);
+      if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+      const sessionId = decodeURIComponent(match[1]);
+      const executionId = decodeURIComponent(match[2]);
+      if (!servers.has(sessionId)) return json({ error: "MCP session not found" }, 404);
+
+      const response = await readResumeResponse(request);
+      if (!response) return json({ error: "Invalid approval response" }, 400);
+
+      const sessionApprovals =
+        approvalResponses.get(sessionId) ?? new Map<string, ResumeResponse>();
+      sessionApprovals.set(executionId, response);
+      approvalResponses.set(sessionId, sessionApprovals);
+
+      return json(resumeApprovalResult(executionId, response));
     },
 
     close: async () => {

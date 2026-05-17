@@ -327,7 +327,10 @@ const nextOrgId = () => `org_miniflare_${++orgCounter}`;
 const connectClient = async (
   baseUrl: URL,
   bearer: string,
-  options: { withElicitation?: boolean } = {},
+  options: {
+    withElicitation?: boolean;
+    elicitationMode?: "browser" | "model" | "native";
+  } = {},
 ): Promise<Client> => {
   const client = new Client(
     { name: "mcp-miniflare-e2e", version: "0.0.1" },
@@ -335,7 +338,10 @@ const connectClient = async (
       capabilities: options.withElicitation ? { elicitation: { form: {} } } : {},
     },
   );
-  const transport = new StreamableHTTPClientTransport(new URL("/mcp", baseUrl), {
+  const endpoint = new URL("/mcp", baseUrl);
+  if (options.elicitationMode)
+    endpoint.searchParams.set("elicitation_mode", options.elicitationMode);
+  const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: { headers: { authorization: `Bearer ${bearer}` } },
   });
   await client.connect(transport);
@@ -756,6 +762,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
         const client = yield* Effect.promise(() =>
           connectClient(baseUrl, makeTestBearer(nextAccountId(), orgId), {
             withElicitation: true,
+            elicitationMode: "native",
           }),
         );
 

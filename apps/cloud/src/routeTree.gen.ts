@@ -20,6 +20,7 @@ import { Route as BillingRouteImport } from './routes/billing'
 import { Route as ApiKeysRouteImport } from './routes/api-keys'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesNamespaceRouteImport } from './routes/sources.$namespace'
+import { Route as ResumeExecutionIdRouteImport } from './routes/resume.$executionId'
 import { Route as BillingPlansRouteImport } from './routes/billing_.plans'
 import { Route as SourcesAddPluginKeyRouteImport } from './routes/sources.add.$pluginKey'
 
@@ -78,6 +79,11 @@ const SourcesNamespaceRoute = SourcesNamespaceRouteImport.update({
   path: '/sources/$namespace',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResumeExecutionIdRoute = ResumeExecutionIdRouteImport.update({
+  id: '/resume/$executionId',
+  path: '/resume/$executionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BillingPlansRoute = BillingPlansRouteImport.update({
   id: '/billing_/plans',
   path: '/billing/plans',
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing/plans': typeof BillingPlansRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -116,6 +123,7 @@ export interface FileRoutesByTo {
   '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing/plans': typeof BillingPlansRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/setup-mcp': typeof SetupMcpRoute
   '/tools': typeof ToolsRoute
   '/billing_/plans': typeof BillingPlansRoute
+  '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/tools'
     | '/billing/plans'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/sources/add/$pluginKey'
   fileRoutesByTo: FileRoutesByTo
@@ -164,6 +174,7 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/tools'
     | '/billing/plans'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/sources/add/$pluginKey'
   id:
@@ -179,6 +190,7 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/tools'
     | '/billing_/plans'
+    | '/resume/$executionId'
     | '/sources/$namespace'
     | '/sources/add/$pluginKey'
   fileRoutesById: FileRoutesById
@@ -195,6 +207,7 @@ export interface RootRouteChildren {
   SetupMcpRoute: typeof SetupMcpRoute
   ToolsRoute: typeof ToolsRoute
   BillingPlansRoute: typeof BillingPlansRoute
+  ResumeExecutionIdRoute: typeof ResumeExecutionIdRoute
   SourcesNamespaceRoute: typeof SourcesNamespaceRoute
   SourcesAddPluginKeyRoute: typeof SourcesAddPluginKeyRoute
 }
@@ -278,6 +291,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SourcesNamespaceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/resume/$executionId': {
+      id: '/resume/$executionId'
+      path: '/resume/$executionId'
+      fullPath: '/resume/$executionId'
+      preLoaderRoute: typeof ResumeExecutionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/billing_/plans': {
       id: '/billing_/plans'
       path: '/billing/plans'
@@ -307,6 +327,7 @@ const rootRouteChildren: RootRouteChildren = {
   SetupMcpRoute: SetupMcpRoute,
   ToolsRoute: ToolsRoute,
   BillingPlansRoute: BillingPlansRoute,
+  ResumeExecutionIdRoute: ResumeExecutionIdRoute,
   SourcesNamespaceRoute: SourcesNamespaceRoute,
   SourcesAddPluginKeyRoute: SourcesAddPluginKeyRoute,
 }

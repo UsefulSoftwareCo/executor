@@ -107,6 +107,55 @@ const CreatedApiKeyResponse = Schema.Struct({
 
 const ApiKeyParams = { apiKeyId: Schema.String };
 
+const McpSessionExecutionParams = {
+  mcpSessionId: Schema.String,
+  executionId: Schema.String,
+};
+
+const ResumeMcpExecutionBody = Schema.Struct({
+  action: Schema.Literals(["accept", "decline", "cancel"]),
+  content: Schema.optional(Schema.Unknown),
+});
+
+const McpPausedExecutionResponse = Schema.Struct({
+  text: Schema.String,
+  structured: Schema.Unknown,
+});
+
+const McpResumeCompletedResponse = Schema.Struct({
+  status: Schema.Literal("completed"),
+  text: Schema.String,
+  structured: Schema.Unknown,
+  isError: Schema.Boolean,
+});
+
+const McpResumePausedResponse = Schema.Struct({
+  status: Schema.Literal("paused"),
+  text: Schema.String,
+  structured: Schema.Unknown,
+});
+
+const McpResumeExecutionResponse = Schema.Union([
+  McpResumeCompletedResponse,
+  McpResumePausedResponse,
+]);
+
+export class McpExecutionNotFoundError extends Schema.TaggedErrorClass<McpExecutionNotFoundError>()(
+  "McpExecutionNotFoundError",
+  {
+    executionId: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
+
+export class McpSessionForbiddenError extends Schema.TaggedErrorClass<McpSessionForbiddenError>()(
+  "McpSessionForbiddenError",
+  {
+    mcpSessionId: Schema.String,
+  },
+  { httpApiStatus: 403 },
+) {}
+
 export const AUTH_PATHS = {
   login: "/api/auth/login",
   logout: "/api/auth/logout",
@@ -116,6 +165,11 @@ export const AUTH_PATHS = {
 
 const AuthErrors = [UserStoreError, WorkOSError] as const;
 const ApiKeyErrors = [ApiKeyManagementError, NoOrganization, UserStoreError, WorkOSError] as const;
+const McpApprovalErrors = [
+  NoOrganization,
+  McpExecutionNotFoundError,
+  McpSessionForbiddenError,
+] as const;
 
 /** Public auth endpoints — no authentication required */
 export class CloudAuthPublicApi extends HttpApiGroup.make("cloudAuthPublic")
@@ -186,5 +240,24 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
       params: ApiKeyParams,
       error: ApiKeyErrors,
     }),
+  )
+  .add(
+    HttpApiEndpoint.get("getMcpPaused", "/mcp-sessions/:mcpSessionId/executions/:executionId", {
+      params: McpSessionExecutionParams,
+      success: McpPausedExecutionResponse,
+      error: McpApprovalErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "resumeMcpExecution",
+      "/mcp-sessions/:mcpSessionId/executions/:executionId/resume",
+      {
+        params: McpSessionExecutionParams,
+        payload: ResumeMcpExecutionBody,
+        success: McpResumeExecutionResponse,
+        error: McpApprovalErrors,
+      },
+    ),
   )
   .middleware(SessionAuth) {}

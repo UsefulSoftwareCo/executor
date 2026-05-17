@@ -168,6 +168,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         return handlers.mcp.handleRequest(req);
       }
 
+      if (url.pathname.startsWith("/api/mcp-sessions/")) {
+        return handlers.mcp.handleApprovalRequest(req);
+      }
+
       // OAuth result polling — local-only, served outside the typed API
       // because cloud (Cloudflare Workers, stateless) can't back the
       // in-memory store. See setOAuthCompletionListener above.

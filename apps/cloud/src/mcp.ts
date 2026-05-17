@@ -69,6 +69,8 @@ const CORS_PREFLIGHT_HEADERS = {
   "access-control-expose-headers": "mcp-session-id",
 } as const;
 
+const TRUE_QUERY_VALUES = new Set(["1", "true", "yes", "on"]);
+
 const MCP_PATH = "/mcp";
 const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 const PROTECTED_RESOURCE_METADATA_URL = `${RESOURCE_ORIGIN}${PROTECTED_RESOURCE_METADATA_PATH}`;
@@ -538,6 +540,25 @@ const withMcpResponseHeaders = (response: Response): Response => {
   });
 };
 
+type McpElicitationMode = "browser" | "model" | "native";
+
+const MCP_ELICITATION_MODES = new Set<McpElicitationMode>(["browser", "model", "native"]);
+
+const readElicitationMode = (request: Request): McpElicitationMode => {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get("elicitation_mode");
+  if (mode && MCP_ELICITATION_MODES.has(mode as McpElicitationMode)) {
+    return mode as McpElicitationMode;
+  }
+
+  const legacyModelResume = url.searchParams.get("allow_model_resume");
+  if (legacyModelResume !== null && TRUE_QUERY_VALUES.has(legacyModelResume.toLowerCase())) {
+    return "model";
+  }
+
+  return "browser";
+};
+
 /**
  * Forward a request to an existing session DO. Wrapping the DO's `Response`
  * with `HttpServerResponse.raw` lets streaming bodies (SSE) pass through
@@ -630,7 +651,14 @@ const dispatchPost = (request: Request, token: VerifiedToken) =>
     const stub = ns.get(ns.newUniqueId());
     const propagation = yield* currentPropagationHeaders(request);
     yield* Effect.promise(() =>
-      stub.init({ organizationId, userId: token.accountId }, propagation),
+      stub.init(
+        {
+          organizationId,
+          userId: token.accountId,
+          elicitationMode: readElicitationMode(request),
+        },
+        propagation,
+      ),
     ).pipe(
       Effect.withSpan("mcp.do.init", {
         attributes: { "mcp.request.session_id_present": false },

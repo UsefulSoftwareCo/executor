@@ -112,6 +112,12 @@ export const policiesAtom = (scopeId: ScopeId) =>
     reactivityKeys: [ReactivityKey.policies],
   });
 
+export const pausedExecutionAtom = (executionId: string) =>
+  ExecutorApiClient.query("executions", "getPaused", {
+    params: { executionId },
+    timeToLive: "5 seconds",
+  });
+
 // ---------------------------------------------------------------------------
 // Mutation atoms — reactivityKeys must be passed at call site (effect-atom
 // does not accept them at definition time). See `reactivity-keys.tsx` for the
@@ -151,6 +157,8 @@ export const createPolicy = ExecutorApiClient.mutation("policies", "create");
 export const updatePolicy = ExecutorApiClient.mutation("policies", "update");
 
 export const removePolicy = ExecutorApiClient.mutation("policies", "remove");
+
+export const resumeExecution = ExecutorApiClient.mutation("executions", "resume");
 
 // ---------------------------------------------------------------------------
 // Sources — optimistic surface.

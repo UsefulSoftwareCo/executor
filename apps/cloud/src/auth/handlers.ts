@@ -3,7 +3,13 @@ import { HttpServerResponse } from "effect/unstable/http";
 import { Duration, Effect, Predicate } from "effect";
 import { setCookie, deleteCookie } from "@tanstack/react-start/server";
 
-import { AUTH_PATHS, CloudAuthApi, CloudAuthPublicApi } from "./api";
+import {
+  AUTH_PATHS,
+  CloudAuthApi,
+  CloudAuthPublicApi,
+  McpExecutionNotFoundError,
+  McpSessionForbiddenError,
+} from "./api";
 import { NoOrganization, SessionContext } from "./middleware";
 import { UserStoreService } from "./context";
 import { authorizeOrganization } from "./authorize-organization";
@@ -18,6 +24,7 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "./organization-limits";
+import type { McpSessionApprovalResult, McpSessionResumeApprovalResult } from "../mcp-session";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -81,6 +88,45 @@ const requireSessionOrganization = Effect.gen(function* () {
   if (!org) return yield* new NoOrganization();
   return { session, org };
 });
+
+const requireSessionOrganizationId = Effect.gen(function* () {
+  const session = yield* SessionContext;
+  if (!session.organizationId) {
+    return yield* new NoOrganization();
+  }
+  return {
+    ...session,
+    organizationId: session.organizationId,
+  };
+});
+
+const getMcpSessionStub = (mcpSessionId: string) =>
+  Effect.try({
+    try: () => {
+      const ns = env.MCP_SESSION;
+      return ns.get(ns.idFromString(mcpSessionId));
+    },
+    catch: () => undefined,
+  }).pipe(Effect.orElseSucceed(() => null));
+
+const requireMcpSessionStub = (mcpSessionId: string, executionId: string) =>
+  Effect.gen(function* () {
+    const stub = yield* getMcpSessionStub(mcpSessionId);
+    if (!stub) {
+      return yield* new McpExecutionNotFoundError({ executionId });
+    }
+    return stub;
+  });
+
+const failMcpApprovalResult = (
+  result: { readonly status: "not_found" | "forbidden" },
+  params: { readonly mcpSessionId: string; readonly executionId: string },
+) => {
+  if (result.status === "forbidden") {
+    return Effect.fail(new McpSessionForbiddenError({ mcpSessionId: params.mcpSessionId }));
+  }
+  return Effect.fail(new McpExecutionNotFoundError({ executionId: params.executionId }));
+};
 
 const setResponseCookie = (
   response: HttpServerResponse.HttpServerResponse,
@@ -445,6 +491,67 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             organizationId: org.id,
             name,
           });
+        }),
+      )
+      .handle("getMcpPaused", ({ params }) =>
+        Effect.gen(function* () {
+          const owner = yield* requireSessionOrganizationId;
+          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const result = yield* Effect.promise(
+            () =>
+              stub.getPausedExecutionForApproval(params.executionId, {
+                accountId: owner.accountId,
+                organizationId: owner.organizationId,
+              }) as Promise<McpSessionApprovalResult>,
+          );
+
+          if (result.status !== "ok") {
+            return yield* failMcpApprovalResult(result, params);
+          }
+
+          return {
+            text: result.text,
+            structured: result.structured,
+          };
+        }),
+      )
+      .handle("resumeMcpExecution", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const owner = yield* requireSessionOrganizationId;
+          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const result = yield* Effect.promise(
+            () =>
+              stub.resumeExecutionForApproval(
+                params.executionId,
+                {
+                  accountId: owner.accountId,
+                  organizationId: owner.organizationId,
+                },
+                {
+                  action: payload.action,
+                  content: payload.content as Record<string, unknown> | undefined,
+                },
+              ) as Promise<McpSessionResumeApprovalResult>,
+          );
+
+          if (result.status !== "ok") {
+            return yield* failMcpApprovalResult(result, params);
+          }
+
+          if (result.executionStatus === "paused") {
+            return {
+              status: "paused" as const,
+              text: result.text,
+              structured: result.structured,
+            };
+          }
+
+          return {
+            status: "completed" as const,
+            text: result.text,
+            structured: result.structured,
+            isError: result.isError ?? false,
+          };
         }),
       )
       .handle("revokeApiKey", ({ params }) =>

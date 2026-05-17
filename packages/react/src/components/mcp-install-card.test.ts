@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { buildMcpInstallCommand, shellQuoteWord } from "./mcp-install-card";
+import { buildMcpHttpEndpoint, buildMcpInstallCommand, shellQuoteWord } from "./mcp-install-card";
 
 describe("MCP install command rendering", () => {
   it("quotes shell words without giving scope paths command syntax", () => {
@@ -28,5 +28,47 @@ describe("MCP install command rendering", () => {
         origin: "http://localhost:4788",
       }),
     ).toBe("npx add-mcp http://localhost:4788/mcp --transport http --name executor");
+  });
+
+  it("uses browser approval by default and encodes explicit elicitation modes", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+      }),
+    ).toBe("https://executor.example/mcp");
+
+    expect(
+      buildMcpInstallCommand({
+        mode: "http",
+        isDev: false,
+        origin: "https://executor.example",
+        elicitationMode: "model",
+      }),
+    ).toBe(
+      "npx add-mcp 'https://executor.example/mcp?elicitation_mode=model' --transport http --name executor",
+    );
+
+    expect(
+      buildMcpInstallCommand({
+        mode: "http",
+        isDev: false,
+        origin: "https://executor.example",
+        elicitationMode: "native",
+      }),
+    ).toBe(
+      "npx add-mcp 'https://executor.example/mcp?elicitation_mode=native' --transport http --name executor",
+    );
+  });
+
+  it("passes model-managed resume through stdio install commands", () => {
+    expect(
+      buildMcpInstallCommand({
+        mode: "stdio",
+        isDev: false,
+        origin: null,
+        elicitationMode: "model",
+      }),
+    ).toBe("npx add-mcp 'executor mcp --elicitation-mode model' --name executor");
   });
 });
