@@ -55,6 +55,13 @@ import { MCP_OAUTH_CONNECTION_SLOT, type McpCredentialInput } from "../sdk/types
 
 const ErrorMessage = Schema.Struct({ message: Schema.String });
 const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+const STDIO_ENV_ESCAPE_REPLACEMENTS: Readonly<Record<string, string>> = {
+  "\\": "\\",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  '"': '"',
+};
 
 const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
   Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
@@ -525,22 +532,10 @@ export default function AddMcpSource(props: {
     const inner = value.slice(1, -1);
     if (quote === "'") return inner;
 
-    return inner.replace(/\\([\\nrt"])/g, (_, escaped: string) => {
-      switch (escaped) {
-        case "\\":
-          return "\\";
-        case "n":
-          return "\n";
-        case "r":
-          return "\r";
-        case "t":
-          return "\t";
-        case '"':
-          return '"';
-        default:
-          return escaped;
-      }
-    });
+    return inner.replace(
+      /\\([\\nrt"])/g,
+      (_, escaped: string) => STDIO_ENV_ESCAPE_REPLACEMENTS[escaped] ?? escaped,
+    );
   };
 
   const parseStdioEnv = (raw: string): Record<string, string> | undefined => {

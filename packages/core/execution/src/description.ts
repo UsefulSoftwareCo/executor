@@ -48,6 +48,7 @@ const formatDescription = (sources: readonly Source[]): string => {
     "- `tools.search()` returns paginated, ranked matches: `{ items, total, hasMore, nextOffset }`. Best-first. Use short intent phrases like `github issues`, `repo details`, or `create calendar event`.",
     '- When you already know the namespace, narrow with `tools.search({ namespace: "github", query: "issues" })`.',
     "- `tools.executor.sources.list()` returns the same paged shape: `{ items: [{ id, toolCount, ... }], total, hasMore, nextOffset }`.",
+    "- Tool calls return a value union: `{ ok: true, data }` for success or `{ ok: false, error: { code, message, status?, details?, retryable? } }` for expected tool/domain failures. Branch on `result.ok`.",
     "- If `hasMore` is true and you didn't find what you need, fetch the next page: `tools.search({ query, offset: nextOffset, limit })`. Same `offset` parameter on `tools.executor.sources.list({ offset, limit })`.",
     "- Always use the namespace prefix when calling tools: `tools.<namespace>.<tool>(args)`. Example: `tools.home_assistant_rest_api.states.getState(...)` — not `tools.states.getState(...)`.",
     "- The `tools` object is a lazy proxy — `Object.keys(tools)` won't work. Use `tools.search()` or `tools.executor.sources.list()` instead.",

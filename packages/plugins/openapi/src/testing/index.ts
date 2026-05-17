@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Predicate, Ref, Schema, Scope } from "effect";
+import { Context, Data, Effect, Layer, Option, Predicate, Ref, Schema, Scope } from "effect";
 import {
   HttpClient,
   HttpRouter,
@@ -13,7 +13,7 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi";
 import { OAuthTestServer, serveTestHttpServerLayer } from "@executor-js/sdk/testing";
-import type { ScopeId } from "@executor-js/sdk/core";
+import { isToolResult, type ScopeId } from "@executor-js/sdk/core";
 import type { OpenApiPluginExtension, OpenApiSpecConfig } from "../sdk/plugin";
 
 export class OpenApiTestServerAddressError extends Data.TaggedError(
@@ -619,15 +619,15 @@ export const TestLayers = {
   echoWithOAuth: OpenApiEchoTestServer.layerWithOAuth,
 };
 
-// ---------------------------------------------------------------------------
-// Result unwrapping helper for tests written against the legacy
-// `{ status, headers, data, error }` envelope. Translates a ToolResult
-// emitted by the OpenAPI plugin's `invokeTool` back into that envelope
-// so assertions like `result.data?.X` / `expect(result.error).toBeNull()`
-// keep working.
-// ---------------------------------------------------------------------------
+const OpenApiTransportEnvelope = Schema.Struct({
+  status: Schema.Number,
+  headers: Schema.Record(Schema.String, Schema.String),
+  data: Schema.Unknown,
+});
 
-export interface LegacyInvocationEnvelope<TData = Record<string, unknown> | unknown[] | null> {
+const decodeOpenApiTransportEnvelope = Schema.decodeUnknownOption(OpenApiTransportEnvelope);
+
+export interface OpenApiInvocationResult<TData = Record<string, unknown> | unknown[] | null> {
   readonly status: number | null;
   readonly headers: Record<string, string> | null;
   readonly data: TData;
@@ -636,8 +636,8 @@ export interface LegacyInvocationEnvelope<TData = Record<string, unknown> | unkn
 
 export const unwrapInvocation = <TData = Record<string, unknown> | null>(
   raw: unknown,
-): LegacyInvocationEnvelope<TData> => {
-  if (raw === null || typeof raw !== "object" || !("ok" in raw)) {
+): OpenApiInvocationResult<TData> => {
+  if (!isToolResult(raw)) {
     return {
       status: null,
       headers: null,
@@ -645,26 +645,10 @@ export const unwrapInvocation = <TData = Record<string, unknown> | null>(
       error: null,
     };
   }
-  const r = raw as
-    | { readonly ok: true; readonly data: unknown }
-    | {
-        readonly ok: false;
-        readonly error: { readonly status?: number; readonly details?: unknown };
-      };
-  if (r.ok) {
-    const inner = r.data;
-    if (
-      inner !== null &&
-      typeof inner === "object" &&
-      "status" in inner &&
-      "headers" in inner &&
-      "data" in inner
-    ) {
-      const wrapped = inner as {
-        readonly status: number;
-        readonly headers: Record<string, string>;
-        readonly data: unknown;
-      };
+  if (raw.ok) {
+    const inner = raw.data;
+    const wrapped = Option.getOrUndefined(decodeOpenApiTransportEnvelope(inner));
+    if (wrapped !== undefined) {
       return {
         status: wrapped.status,
         headers: wrapped.headers,
@@ -672,8 +656,6 @@ export const unwrapInvocation = <TData = Record<string, unknown> | null>(
         error: null,
       };
     }
-    // Plain `Tool.ok(value)` (no status/headers wrapper). Expose the
-    // value through `.data`.
     return {
       status: null,
       headers: null,
@@ -682,9 +664,9 @@ export const unwrapInvocation = <TData = Record<string, unknown> | null>(
     };
   }
   return {
-    status: r.error.status ?? null,
+    status: raw.error.status ?? null,
     headers: null,
     data: null as TData,
-    error: r.error.details ?? r.error,
+    error: raw.error.details ?? raw.error,
   };
 };

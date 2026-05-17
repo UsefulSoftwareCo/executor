@@ -1,6 +1,6 @@
-// Reproduces the PR 706 bug class using Effect-native primitives only —
+// Covers the Option JSON boundary using Effect-native primitives only:
 // no JSON.parse, no JSON.stringify, no node:fs on our side. We split the
-// JSON boundary into two Effect schema steps:
+// boundary into two Effect schema steps:
 //
 //   1. Schema.encodeEffect(Inner)(value)            → encoded JS shape
 //   2. Schema.encodeEffect(UnknownFromJsonString)   → JSON string
@@ -13,7 +13,7 @@
 // step 2's JSON-stringify (driven by Effect, not us) flattens the Option
 // to {_id,_tag,value}, and step 5 rejects the shape.
 //
-// Run: vitest run packages/plugins/google-discovery/src/sdk/option-json-repro.test.ts
+// Run: vitest run packages/plugins/google-discovery/src/sdk/option-json.test.ts
 
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -28,7 +28,7 @@ const fixed = { description: Option.some("hello") };
 const withTmpFile = <A, E>(fn: (path: string) => Effect.Effect<A, E, FileSystem.FileSystem>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "option-repro-" });
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "option-json-" });
     return yield* fn(`${dir}/binding.json`);
   }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer));
 

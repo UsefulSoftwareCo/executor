@@ -4,6 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
+import { ExecutionToolError } from "@executor-js/execution";
 import {
   ToolDispatcher,
   makeDynamicWorkerExecutor,
@@ -255,6 +256,27 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.error).toBe("Internal tool error");
+  });
+
+  it("preserves public ExecutionToolError messages across the worker bridge", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = {
+      invoke: () =>
+        Effect.fail(
+          new ExecutionToolError({
+            message:
+              "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
+          }),
+        ),
+    } satisfies SandboxToolInvoker;
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.search('github')", invoker),
+    );
+
+    expect(result.error).toBe(
+      "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
+    );
   });
 
   it("does not expose host error stack details to sandbox error handlers", async () => {

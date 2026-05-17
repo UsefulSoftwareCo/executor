@@ -398,7 +398,7 @@ describe("sources api (HTTP)", () => {
         status: "completed",
         result: {
           ok: true,
-          data: [{ type: "text", text: "cloud-mcp-ok" }],
+          data: { content: [{ type: "text", text: "cloud-mcp-ok" }] },
         },
       });
       expect((yield* server.requests).length).toBeGreaterThanOrEqual(2);

@@ -35,6 +35,23 @@ import { GoogleDiscoveryStoredSourceData as GoogleDiscoveryStoredSourceDataSchem
 // ---------------------------------------------------------------------------
 
 const GOOGLE_BODY_CAP = 1024;
+const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
+const UpstreamErrorMessageBody = Schema.Struct({ errorMessage: Schema.String });
+const UpstreamNestedErrorBody = Schema.Struct({ error: UpstreamMessageBody });
+const UpstreamErrorsArrayBody = Schema.Struct({
+  errors: Schema.Array(
+    Schema.Struct({
+      detail: Schema.optional(Schema.String),
+      message: Schema.optional(Schema.String),
+      title: Schema.optional(Schema.String),
+    }),
+  ),
+});
+
+const decodeUpstreamMessageBody = Schema.decodeUnknownOption(UpstreamMessageBody);
+const decodeUpstreamErrorMessageBody = Schema.decodeUnknownOption(UpstreamErrorMessageBody);
+const decodeUpstreamNestedErrorBody = Schema.decodeUnknownOption(UpstreamNestedErrorBody);
+const decodeUpstreamErrorsArrayBody = Schema.decodeUnknownOption(UpstreamErrorsArrayBody);
 
 const googleClampedStringify = (value: unknown): string => {
   let s: string;
@@ -47,30 +64,30 @@ const googleClampedStringify = (value: unknown): string => {
   return s.length > GOOGLE_BODY_CAP ? `${s.slice(0, GOOGLE_BODY_CAP)}…` : s;
 };
 
+const firstNonEmpty = (...values: readonly (string | undefined)[]): string | undefined =>
+  values.find((value) => value !== undefined && value.length > 0);
+
 const googleExtractUpstreamMessage = (body: unknown, status: number): string => {
   if (typeof body === "string") {
     return body.length > 0 ? body : `Upstream returned HTTP ${status}`;
   }
+  const nested = Option.getOrUndefined(decodeUpstreamNestedErrorBody(body));
+  const messageBody = Option.getOrUndefined(decodeUpstreamMessageBody(body));
+  const errorMessageBody = Option.getOrUndefined(decodeUpstreamErrorMessageBody(body));
+  const errorsBody = Option.getOrUndefined(decodeUpstreamErrorsArrayBody(body));
+  const arrayMessage = errorsBody?.errors
+    .map(({ detail, message: upstreamMessage, title }) =>
+      firstNonEmpty(detail, upstreamMessage, title),
+    )
+    .find((message) => message !== undefined);
+  const message = firstNonEmpty(
+    nested?.error.message,
+    messageBody?.message,
+    errorMessageBody?.errorMessage,
+    arrayMessage,
+  );
+  if (message !== undefined) return message;
   if (body !== null && typeof body === "object") {
-    const obj = body as Record<string, unknown>;
-    const nested = obj.error;
-    if (nested !== null && typeof nested === "object" && "message" in nested) {
-      const m = (nested as { message: unknown }).message;
-      if (typeof m === "string" && m.length > 0) return m;
-    }
-    if (typeof obj.message === "string" && obj.message.length > 0) return obj.message;
-    if (typeof obj.errorMessage === "string" && obj.errorMessage.length > 0)
-      return obj.errorMessage;
-    if (Array.isArray(obj.errors) && obj.errors.length > 0) {
-      const first = obj.errors[0];
-      if (first !== null && typeof first === "object") {
-        const f = first as Record<string, unknown>;
-        for (const key of ["detail", "message", "title"]) {
-          const v = f[key];
-          if (typeof v === "string" && v.length > 0) return v;
-        }
-      }
-    }
     return googleClampedStringify(body);
   }
   return `Upstream returned HTTP ${status}`;

@@ -37,6 +37,7 @@ import {
   makeOpenApiTestSourceConfig,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
+  unwrapInvocation,
 } from "../testing";
 
 import { openApiPlugin } from "./plugin";
@@ -303,10 +304,10 @@ describe("OpenAPI upstream failure modes", () => {
       const { baseUrl } = yield* slowServer;
       const executor = yield* buildExecutor(baseUrl);
 
-      const result = yield* executor.tools.invoke("f.things.listThings", {}, autoApprove);
-      // Empty array via .data envelope or directly — accept either shape.
-      const data = (result as { data?: unknown }).data ?? result;
-      expect(data).toEqual([]);
+      const result = unwrapInvocation(
+        yield* executor.tools.invoke("f.things.listThings", {}, autoApprove),
+      );
+      expect(result.data).toEqual([]);
     }),
   );
 });

@@ -238,10 +238,10 @@ describe("OpenAPI client_credentials OAuth", () => {
 
       // The connection lives at the innermost (user) scope, which
       // preserves per-user credential resolution: if each user has
-      // their own `dealcloud_client_id`/`dealcloud_client_secret`
-      // shadowed at their user scope, each user mints their own
-      // token. A single shared connection slot still lets every caller
-      // reach the right physical row through scoped credential bindings.
+      // their own OAuth client credentials shadowed at their user
+      // scope, each user mints their own token. A single shared
+      // connection slot still lets every caller reach the right
+      // physical row through scoped credential bindings.
       const userConnections = yield* userExec.connections.list();
       const connection = userConnections.find((c) => c.id === completedConnection.connectionId);
       expect(connection).toBeDefined();

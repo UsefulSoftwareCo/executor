@@ -459,9 +459,7 @@ describe("OpenAPI multi-scope bearer (Vercel-style)", () => {
         yield* bobExec.tools.invoke("vercel.projects.list", {}, autoApprove),
       );
       expect(bobResult.error).toBeNull();
-      expect((bobResult.data as EchoHeaders | null)?.authorization).toBe(
-        "Bearer bob-vercel-token",
-      );
+      expect((bobResult.data as EchoHeaders | null)?.authorization).toBe("Bearer bob-vercel-token");
     }),
   );
 
@@ -602,9 +600,7 @@ describe("OpenAPI multi-scope bearer (Vercel-style)", () => {
           yield* aliceExec.tools.invoke("vercel.projects.list", {}, autoApprove),
         );
         expect(fallbackResult.error).toBeNull();
-        expect((fallbackResult.data as EchoHeaders | null)?.authorization).toBe(
-          "Bearer org-token",
-        );
+        expect((fallbackResult.data as EchoHeaders | null)?.authorization).toBe("Bearer org-token");
 
         yield* aliceExec.openapi.setSourceBinding(
           OpenApiSourceBindingInput.make({

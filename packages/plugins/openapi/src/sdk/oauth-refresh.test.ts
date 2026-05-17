@@ -315,10 +315,7 @@ describe("OpenAPI oauth refresh", () => {
       for (const r of invokes) {
         const res = unwrapInvocation(r);
         expect(res.error).toBeNull();
-        const bearer = (res.data as EchoHeaders | null)?.authorization?.replace(
-          /^Bearer\s+/i,
-          "",
-        );
+        const bearer = (res.data as EchoHeaders | null)?.authorization?.replace(/^Bearer\s+/i, "");
         expect(bearer).toBeDefined();
         expect(yield* oauth.acceptsAccessToken(bearer!)).toBe(true);
       }

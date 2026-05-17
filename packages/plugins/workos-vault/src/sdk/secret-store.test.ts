@@ -256,7 +256,7 @@ describe("WorkOS Vault secret provider", () => {
       const client = makeFakeClient({ rejectReadNamesLongerThan: 80 });
       const executor = yield* makeExecutor(client);
       const longSecretId = SecretId.make(
-        "openapi-oauth-dealcloud-api-oauth2-user-org-user-01kp6xm1zpvqvtpj77f0yv4eax.access_token",
+        "openapi-oauth-example-api-oauth2-user-org-user-01kp6xm1zpvqvtpj77f0yv4eax.access_token",
       );
 
       yield* executor.secrets.set(

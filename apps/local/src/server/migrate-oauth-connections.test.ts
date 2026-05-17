@@ -159,7 +159,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
     `);
 
     db.prepare("INSERT INTO `openapi_source` (id, scope_id, oauth2) VALUES (?, ?, ?)").run(
-      "dealcloud_api",
+      "example_api",
       "org-1",
       JSON.stringify({
         kind: "oauth2",
@@ -174,27 +174,27 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       "INSERT INTO `connection` (id, scope_id, provider, provider_state, scope, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
     insertConnection.run(
-      "openapi-oauth2-app-dealcloud_api",
+      "openapi-oauth2-app-example_api",
       "org-1",
       "oauth2",
       JSON.stringify({
         kind: "client-credentials",
-        tokenEndpoint: "https://resolve.dealcloud.com/oauth/token",
-        clientIdSecretId: "dealcloud-client-id",
-        clientSecretSecretId: "dealcloud-client-secret",
+        tokenEndpoint: "https://auth.example.test/oauth/token",
+        clientIdSecretId: "example-client-id",
+        clientSecretSecretId: "example-client-secret",
       }),
       null,
       now,
     );
     insertConnection.run(
-      "openapi-oauth2-app-dealcloud_api",
+      "openapi-oauth2-app-example_api",
       "user-org:user-jd:org-1",
       "openapi:oauth2",
       JSON.stringify({
         kind: "client-credentials",
-        tokenEndpoint: "https://resolve.dealcloud.com/oauth/token",
-        clientIdSecretId: "dealcloud-client-id-jd",
-        clientSecretSecretId: "dealcloud-client-secret-jd",
+        tokenEndpoint: "https://auth.example.test/oauth/token",
+        clientIdSecretId: "example-client-id-jd",
+        clientSecretSecretId: "example-client-secret-jd",
       }),
       null,
       now,
@@ -207,12 +207,12 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       "org-client-id",
       "org-1",
       "openapi",
-      "dealcloud_api",
+      "example_api",
       "org-1",
       "oauth2:oauth2:client-id",
       "secret",
       null,
-      "dealcloud-client-id-jd",
+      "example-client-id-jd",
       null,
       now,
       now,
@@ -221,12 +221,12 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       "org-client-secret",
       "org-1",
       "openapi",
-      "dealcloud_api",
+      "example_api",
       "org-1",
       "oauth2:oauth2:client-secret",
       "secret",
       null,
-      "dealcloud-client-secret-jd",
+      "example-client-secret-jd",
       null,
       now,
       now,
@@ -235,13 +235,13 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       "org-connection",
       "org-1",
       "openapi",
-      "dealcloud_api",
+      "example_api",
       "org-1",
       "oauth2:oauth2:connection",
       "connection",
       null,
       null,
-      "openapi-oauth2-app-dealcloud_api",
+      "openapi-oauth2-app-example_api",
       now,
       now,
     );
@@ -249,13 +249,13 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       "jd-connection",
       "user-org:user-jd:org-1",
       "openapi",
-      "dealcloud_api",
+      "example_api",
       "org-1",
       "oauth2:oauth2:connection",
       "connection",
       null,
       null,
-      "openapi-oauth2-app-dealcloud_api",
+      "openapi-oauth2-app-example_api",
       now,
       now,
     );
@@ -271,20 +271,20 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       .prepare(
         "SELECT scope_id, slot_key, kind, secret_id, connection_id FROM `credential_binding` WHERE source_id = ? ORDER BY scope_id, slot_key",
       )
-      .all("dealcloud_api");
+      .all("example_api");
     expect(bindings).toEqual([
       {
         scope_id: "org-1",
         slot_key: "oauth2:oauth2:client-id",
         kind: "secret",
-        secret_id: "dealcloud-client-id",
+        secret_id: "example-client-id",
         connection_id: null,
       },
       {
         scope_id: "org-1",
         slot_key: "oauth2:oauth2:client-secret",
         kind: "secret",
-        secret_id: "dealcloud-client-secret",
+        secret_id: "example-client-secret",
         connection_id: null,
       },
       {
@@ -292,20 +292,20 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
         slot_key: "oauth2:oauth2:connection",
         kind: "connection",
         secret_id: null,
-        connection_id: "openapi-oauth2-app-dealcloud_api",
+        connection_id: "openapi-oauth2-app-example_api",
       },
       {
         scope_id: "user-org:user-jd:org-1",
         slot_key: "oauth2:oauth2:client-id",
         kind: "secret",
-        secret_id: "dealcloud-client-id-jd",
+        secret_id: "example-client-id-jd",
         connection_id: null,
       },
       {
         scope_id: "user-org:user-jd:org-1",
         slot_key: "oauth2:oauth2:client-secret",
         kind: "secret",
-        secret_id: "dealcloud-client-secret-jd",
+        secret_id: "example-client-secret-jd",
         connection_id: null,
       },
       {
@@ -313,7 +313,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
         slot_key: "oauth2:oauth2:connection",
         kind: "connection",
         secret_id: null,
-        connection_id: "openapi-oauth2-app-dealcloud_api",
+        connection_id: "openapi-oauth2-app-example_api",
       },
     ]);
   });

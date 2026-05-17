@@ -116,7 +116,7 @@ describe("per-user MCP auth isolation", () => {
         );
         expect(userAResult).toMatchObject({
           ok: true,
-          data: [{ type: "text", text: "ok:from-user-a" }],
+          data: { content: [{ type: "text", text: "ok:from-user-a" }] },
         });
         expect(
           (yield* server.requests)
@@ -189,7 +189,7 @@ describe("per-user MCP auth isolation", () => {
       );
       expect(userAResult).toMatchObject({
         ok: true,
-        data: [{ type: "text", text: "ok:user-a-header" }],
+        data: { content: [{ type: "text", text: "ok:user-a-header" }] },
       });
       expect(
         (yield* server.requests)
@@ -270,7 +270,7 @@ describe("per-user MCP auth isolation", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        data: [{ type: "text", text: "ok:org-header" }],
+        data: { content: [{ type: "text", text: "ok:org-header" }] },
       });
       const invokeRequests = (yield* server.requests).slice(beforeInvoke);
       expect(

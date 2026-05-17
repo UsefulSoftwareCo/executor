@@ -5,13 +5,17 @@
 // the Effect failure channel.
 // ---------------------------------------------------------------------------
 
-export interface ToolError {
-  readonly code: string;
-  readonly message: string;
-  readonly status?: number;
-  readonly details?: unknown;
-  readonly retryable?: boolean;
-}
+import { Schema } from "effect";
+
+export const ToolErrorSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+  details: Schema.optional(Schema.Unknown),
+  retryable: Schema.optional(Schema.Boolean),
+});
+
+export type ToolError = typeof ToolErrorSchema.Type;
 
 export type ToolResult<T> =
   | { readonly ok: true; readonly data: T }
@@ -22,19 +26,12 @@ export const ToolResult = {
   fail: <T = never>(error: ToolError): ToolResult<T> => ({ ok: false, error }),
 } as const;
 
-export const isToolResult = (value: unknown): value is ToolResult<unknown> => {
-  if (value === null || typeof value !== "object") return false;
-  if (!("ok" in value)) return false;
-  const ok = (value as { ok: unknown }).ok;
-  if (ok === true) return "data" in value;
-  if (ok === false) {
-    if (!("error" in value)) return false;
-    const error = (value as { error: unknown }).error;
-    if (error === null || typeof error !== "object") return false;
-    if (!("code" in error) || !("message" in error)) return false;
-    const errorObj = error as { readonly code: unknown; readonly message: unknown };
-    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: structural type guard; `message` is a required ToolError field, not a thrown JS error
-    return typeof errorObj.code === "string" && typeof errorObj.message === "string";
-  }
-  return false;
-};
+const ToolResultSchema = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), data: Schema.Unknown }),
+  Schema.Struct({ ok: Schema.Literal(false), error: ToolErrorSchema }),
+]);
+
+const isUnknownToolResult = Schema.is(ToolResultSchema);
+
+export const isToolResult = (value: unknown): value is ToolResult<unknown> =>
+  isUnknownToolResult(value);

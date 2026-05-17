@@ -70,7 +70,7 @@ describe("MCP elicitation (end-to-end)", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        data: [{ type: "text", text: "approved:hello" }],
+        data: { content: [{ type: "text", text: "approved:hello" }] },
       });
       // At least one elicitation should be the MCP server's form
       expect(elicitationMessages.length).toBeGreaterThanOrEqual(1);
@@ -97,7 +97,7 @@ describe("MCP elicitation (end-to-end)", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        data: [{ type: "text", text: "denied:nope" }],
+        data: { content: [{ type: "text", text: "denied:nope" }] },
       });
     }),
   );
@@ -117,7 +117,31 @@ describe("MCP elicitation (end-to-end)", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        data: [{ type: "text", text: "plain" }],
+        data: { content: [{ type: "text", text: "plain" }] },
+      });
+    }),
+  );
+
+  it.effect("successful tool invocation preserves structured MCP result fields", () =>
+    Effect.gen(function* () {
+      const server = yield* serveElicitationTestServer;
+      const executor = yield* makeTestExecutor(server.url);
+      const tools = yield* executor.tools.list();
+      const structuredEcho = tools.find((t) => t.name === "structured_echo")!;
+
+      const result = yield* executor.tools.invoke(
+        structuredEcho.id,
+        { value: "plain" },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          content: [{ type: "text", text: "plain" }],
+          structuredContent: { value: "plain", upper: "PLAIN" },
+          _meta: { trace: "kept" },
+        },
       });
     }),
   );

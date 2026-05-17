@@ -13,6 +13,18 @@ import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
 
 const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
+
+const wrapOutputTypeScript = (outputTypeScript?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"} } | { ok: false; error: ToolError }`;
+
+const withToolResultDefinitions = (
+  definitions?: Record<string, string>,
+): Record<string, string> => ({
+  ...(definitions ?? {}),
+  ToolError: TOOL_ERROR_TYPESCRIPT,
+});
 
 const newCorrelationId = (): string => {
   // 8-hex-char correlation id; enough entropy to disambiguate within a
@@ -497,7 +509,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: schema.outputTypeScript,
-    typeScriptDefinitions: schema.typeScriptDefinitions,
+    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
 });

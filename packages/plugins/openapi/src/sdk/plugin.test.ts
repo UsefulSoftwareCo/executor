@@ -268,11 +268,13 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      const preview = unwrapInvocation(yield* executor.tools.invoke(
-        "executor.openapi.previewSpec",
-        { spec: testApiSpec() },
-        autoApprove,
-      )).data as { operationCount: number };
+      const preview = unwrapInvocation(
+        yield* executor.tools.invoke(
+          "executor.openapi.previewSpec",
+          { spec: testApiSpec() },
+          autoApprove,
+        ),
+      ).data as { operationCount: number };
 
       expect(preview.operationCount).toBeGreaterThanOrEqual(2);
     }),
@@ -317,11 +319,13 @@ describe("OpenAPI Plugin", () => {
         }),
       );
 
-      const result = unwrapInvocation(yield* executor.tools.invoke(
-        "executor.openapi.addSource",
-        testApiSourceConfig({ scope: String(orgScope), namespace: "runtime" }),
-        autoApprove,
-      )).data as { sourceId: string; toolCount: number };
+      const result = unwrapInvocation(
+        yield* executor.tools.invoke(
+          "executor.openapi.addSource",
+          testApiSourceConfig({ scope: String(orgScope), namespace: "runtime" }),
+          autoApprove,
+        ),
+      ).data as { sourceId: string; toolCount: number };
 
       expect(result).toEqual({ sourceId: "runtime", toolCount: 4 });
       expect(yield* executor.openapi.getSource("runtime", String(userScope))).toBeNull();

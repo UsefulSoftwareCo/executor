@@ -375,6 +375,23 @@ export const makeElicitationMcpServer = () => {
     }),
   );
 
+  server.registerTool(
+    "structured_echo",
+    {
+      description: "Returns text plus structured data",
+      inputSchema: { value: z.string() },
+      outputSchema: {
+        value: z.string(),
+        upper: z.string(),
+      },
+    },
+    async ({ value }: { value: string }) => ({
+      content: [{ type: "text" as const, text: value }],
+      structuredContent: { value, upper: value.toUpperCase() },
+      _meta: { trace: "kept" },
+    }),
+  );
+
   return server;
 };
 

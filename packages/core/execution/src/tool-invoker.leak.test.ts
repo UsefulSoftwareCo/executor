@@ -12,10 +12,10 @@ const EmptyInputSchema = Schema.toStandardSchemaV1(
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
 
-// Plugin-internal tagged error whose `cause` carries sensitive internal
-// context. The dispatcher must route this through the opaque-generic
-// path so none of that context reaches the sandbox via Error.message.
-class FakeOpenApiInvocationError extends Data.TaggedError("OpenApiInvocationError")<{
+// Plugin-internal tagged error whose `cause` carries internal diagnostics.
+// The dispatcher must route this through the opaque-generic path so none of
+// that context reaches the sandbox via Error.message.
+class FakePluginInvocationError extends Data.TaggedError("PluginInvocationError")<{
   readonly message: string;
   readonly cause: unknown;
 }> {}
@@ -35,18 +35,17 @@ const leakyPlugin = definePlugin(() => ({
           inputSchema: EmptyInputSchema,
           handler: () =>
             Effect.fail(
-              new FakeOpenApiInvocationError({
-                message: "HTTP request failed",
+              new FakePluginInvocationError({
+                message: "Upstream request failed",
                 cause: {
-                  _tag: "HttpClientError",
+                  _tag: "InternalTransportError",
                   request: {
                     method: "GET",
-                    url: "https://internal.dealcloud/v1/entities?accessToken=SECRET_TOKEN_xyz",
-                    headers: { Authorization: "Bearer SECRET_TOKEN_xyz" },
+                    url: "https://internal.service.local/v1/resources?trace=trace-123",
+                    headers: { "x-internal-routing": "private-cluster" },
                   },
-                  stack:
-                    "Error: ECONNREFUSED\n    at /home/svc/executor/packages/plugins/openapi/...:142:11",
-                  dbConnString: "postgres://app:p@ssw0rd@10.0.0.5:5432/executor",
+                  stack: "Error: connect failed\n    at plugin-transport.ts:42:11",
+                  note: "internal diagnostic detail",
                 },
               }),
             ),
@@ -87,11 +86,11 @@ describe("internal-error leak audit (opaque defects)", () => {
       // Must be the canonical opaque shape: "Internal tool error [<hex>]"
       expect(msg).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
       // Crucially, no internal context leaks
-      expect(msg).not.toContain("SECRET_TOKEN_xyz");
-      expect(msg).not.toContain("p@ssw0rd");
-      expect(msg).not.toContain("packages/plugins");
-      expect(msg).not.toContain("HttpClientError");
-      expect(msg).not.toContain("HTTP request failed");
+      expect(msg).not.toContain("trace-123");
+      expect(msg).not.toContain("private-cluster");
+      expect(msg).not.toContain("internal.service.local");
+      expect(msg).not.toContain("InternalTransportError");
+      expect(msg).not.toContain("Upstream request failed");
     }),
   );
 

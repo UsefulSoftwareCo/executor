@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
+import * as ts from "typescript";
 
 import {
   ElicitationResponse,
@@ -19,6 +20,10 @@ const RepoInputSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(Schema.Struct({ owner: Schema.String, repo: Schema.String })),
 );
 
+const RepoDetailsOutputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ defaultBranch: Schema.String })),
+);
+
 const ContactInputSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(Schema.Struct({ email: Schema.String })),
 );
@@ -28,6 +33,58 @@ const EmptyInputSchema = Schema.toStandardSchemaV1(
 );
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
+
+type DescribedToolContract = {
+  readonly outputTypeScript: string;
+  readonly typeScriptDefinitions: Record<string, string>;
+};
+
+const typeCheckDescribedInvocation = (
+  described: DescribedToolContract,
+  runtimeResult: unknown,
+  consumerSource: string,
+): readonly string[] => {
+  const fileName = "described-tool-contract.ts";
+  const source = [
+    ...Object.entries(described.typeScriptDefinitions).map(([name, definition]) => {
+      return `type ${name} = ${definition};`;
+    }),
+    `type ToolOutput = ${described.outputTypeScript};`,
+    `const invokedResult: ToolOutput = ${JSON.stringify(runtimeResult)};`,
+    consumerSource,
+  ].join("\n");
+
+  const options: ts.CompilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    noEmit: true,
+    skipLibCheck: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+  };
+  const host = ts.createCompilerHost(options);
+  const originalGetSourceFile = host.getSourceFile.bind(host);
+  const originalReadFile = host.readFile.bind(host);
+  const originalFileExists = host.fileExists.bind(host);
+
+  host.getSourceFile = (candidate, languageVersion, onError, shouldCreateNewSourceFile) => {
+    if (candidate === fileName) {
+      return ts.createSourceFile(candidate, source, languageVersion, true);
+    }
+    return originalGetSourceFile(candidate, languageVersion, onError, shouldCreateNewSourceFile);
+  };
+  host.readFile = (candidate) => (candidate === fileName ? source : originalReadFile(candidate));
+  host.fileExists = (candidate) => candidate === fileName || originalFileExists(candidate);
+
+  const program = ts.createProgram([fileName], options, host);
+  return ts.getPreEmitDiagnostics(program).map((diagnostic) => {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (!diagnostic.file || diagnostic.start === undefined) {
+      return message;
+    }
+    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    return `${diagnostic.file.fileName}:${position.line + 1}:${position.character + 1} ${message}`;
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Test plugins — each one declares a namespace as a static source with N
@@ -54,6 +111,7 @@ const githubPlugin = definePlugin(() => ({
           name: "getRepositoryDetails",
           description: "Get repository details including the default branch",
           inputSchema: RepoInputSchema,
+          outputSchema: RepoDetailsOutputSchema,
           handler: () => Effect.succeed({ defaultBranch: "main" }),
         },
         {
@@ -111,6 +169,72 @@ const errorPlugin = definePlugin(() => ({
               ToolResult.fail({
                 code: "invalid_query",
                 message: 'Field with name "DisplayName" does not exist',
+              }),
+            ),
+        },
+      ],
+    },
+  ],
+}));
+
+const structuredFailurePlugin = definePlugin(() => ({
+  id: "structured-failure-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "upstream",
+      kind: "in-memory",
+      name: "Upstream",
+      tools: [
+        {
+          name: "nestedErrorBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 400,
+                message: 'The expression "foo" is not valid. Provide a valid expression.',
+                details: {
+                  error: {
+                    code: "invalidRequest",
+                    message: 'The expression "foo" is not valid. Provide a valid expression.',
+                  },
+                },
+              }),
+            ),
+        },
+        {
+          name: "flatErrorBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 400,
+                message: "Field 'XYZ' does not exist",
+                details: {
+                  errorCode: 400,
+                  errorMessage: "Field 'XYZ' does not exist",
+                },
+              }),
+            ),
+        },
+        {
+          name: "errorsArrayBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 403,
+                message: "Insufficient scope",
+                details: {
+                  errors: [{ status: "403", title: "Forbidden", detail: "Insufficient scope" }],
+                },
               }),
             ),
         },
@@ -342,8 +466,102 @@ describe("tool discovery", () => {
       expect(described.name).toBe("listRepositoryIssues");
       expect(described.description).toBe("List issues for a repository");
       expect(described.inputTypeScript).toBe("{ owner: string; repo: string; }");
-      expect(described.outputTypeScript).toBeUndefined();
-      expect(described.typeScriptDefinitions).toBeUndefined();
+      expect(described.outputTypeScript).toBe(
+        "{ ok: true; data: unknown } | { ok: false; error: ToolError }",
+      );
+      expect(described.typeScriptDefinitions).toEqual({
+        ToolError:
+          "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+      });
+    }),
+  );
+
+  it.effect("describes a return type that accepts the sandbox invocation result", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute(
+        [
+          'const details = await tools.describe.tool({ path: "github.getRepositoryDetails" });',
+          "const result = await tools.github.getRepositoryDetails({ owner: 'executor', repo: 'executor' });",
+          "return {",
+          "  outputTypeScript: details.outputTypeScript,",
+          "  typeScriptDefinitions: details.typeScriptDefinitions,",
+          "  result,",
+          "};",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(execution.error).toBeUndefined();
+      const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+      const diagnostics = typeCheckDescribedInvocation(
+        observed,
+        observed.result,
+        [
+          "function readDefaultBranch(result: ToolOutput): string {",
+          "  if (!result.ok) return result.error.message;",
+          "  return result.data.defaultBranch;",
+          "}",
+          "readDefaultBranch(invokedResult);",
+        ].join("\n"),
+      );
+      expect(diagnostics).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "describes an error-as-value return type that accepts sandbox invocation failures",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [errorPlugin()] as const }),
+        );
+        const engine = createExecutionEngine({ executor, codeExecutor });
+
+        const execution = yield* engine.execute(
+          [
+            'const details = await tools.describe.tool({ path: "records.queryRows" });',
+            "const result = await tools.records.queryRows({});",
+            "return {",
+            "  outputTypeScript: details.outputTypeScript,",
+            "  typeScriptDefinitions: details.typeScriptDefinitions,",
+            "  result,",
+            "};",
+          ].join("\n"),
+          { onElicitation: acceptAll },
+        );
+
+        expect(execution.error).toBeUndefined();
+        const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+        const diagnostics = typeCheckDescribedInvocation(
+          observed,
+          observed.result,
+          [
+            "function readToolResult(result: ToolOutput): unknown {",
+            "  if (!result.ok) return result.error.message;",
+            "  return result.data;",
+            "}",
+            "readToolResult(invokedResult);",
+          ].join("\n"),
+        );
+        expect(diagnostics).toEqual([]);
+      }),
+  );
+
+  it.effect("describes the ToolResult wrapper through the direct describe helper", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const described = yield* describeTool(executor, "github.getRepositoryDetails");
+
+      expect(described.outputTypeScript).toBe(
+        "{ ok: true; data: { defaultBranch: string; } } | { ok: false; error: ToolError }",
+      );
+      expect(described.typeScriptDefinitions).toEqual({
+        ToolError:
+          "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+      });
     }),
   );
 
@@ -418,6 +636,82 @@ describe("tool discovery", () => {
         error: {
           code: "invalid_query",
           message: 'Field with name "DisplayName" does not exist',
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves nested upstream error bodies through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.nestedErrorBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 400,
+          message: 'The expression "foo" is not valid. Provide a valid expression.',
+          details: {
+            error: {
+              code: "invalidRequest",
+              message: 'The expression "foo" is not valid. Provide a valid expression.',
+            },
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves flat upstream error bodies through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.flatErrorBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 400,
+          message: "Field 'XYZ' does not exist",
+          details: {
+            errorCode: 400,
+            errorMessage: "Field 'XYZ' does not exist",
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves upstream errors arrays through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.errorsArrayBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 403,
+          message: "Insufficient scope",
+          details: {
+            errors: [{ status: "403", title: "Forbidden", detail: "Insufficient scope" }],
+          },
         },
       });
     }),
