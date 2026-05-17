@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 // Make sibling binaries (if any are added later) discoverable on $PATH so
 // child processes spawned without an absolute path still find them.
@@ -139,26 +140,50 @@ const waitForShutdownSignal = () =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
+interface DaemonScopeInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly dir: string;
+}
+
+const readDaemonScopeInfo = (baseUrl: string): Effect.Effect<DaemonScopeInfo | null> =>
   Effect.tryPromise(() =>
     fetch(`${baseUrl}/api/scope`, { signal: AbortSignal.timeout(2000) }),
   ).pipe(
     Effect.flatMap((res) => {
-      if (!res.ok) return Effect.succeed(false);
+      if (!res.ok) return Effect.succeed(null);
       return Effect.tryPromise(() => res.json()).pipe(
         Effect.map((payload) => {
-          if (!isRecord(payload)) return false;
-          return (
+          if (!isRecord(payload)) return null;
+          if (
             typeof payload.id === "string" &&
             typeof payload.name === "string" &&
             typeof payload.dir === "string"
-          );
+          ) {
+            return {
+              id: payload.id,
+              name: payload.name,
+              dir: payload.dir,
+            };
+          }
+          return null;
         }),
-        Effect.catchCause(() => Effect.succeed(false)),
+        Effect.catchCause(() => Effect.succeed(null)),
       );
     }),
-    Effect.catchCause(() => Effect.succeed(false)),
+    Effect.catchCause(() => Effect.succeed(null)),
   );
+
+const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
+  readDaemonScopeInfo(baseUrl).pipe(Effect.map((scopeInfo) => scopeInfo !== null));
+
+const normalizeDaemonScopeDir = (dir: string): string => {
+  const resolved = resolve(dir);
+  return existsSync(resolved) ? realpathSync.native(resolved) : resolved;
+};
+
+const currentDaemonScopeDir = (): string =>
+  normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR ?? process.cwd());
 
 const script = process.argv[1];
 const isDevMode = isDevCliEntrypoint(script);
@@ -302,7 +327,8 @@ const ensureDaemon = (
 ): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
     const resolvedTarget = yield* resolveDaemonTarget(baseUrl);
-    if (yield* isServerReachable(resolvedTarget.baseUrl)) {
+    const reachableScope = yield* readDaemonScopeInfo(resolvedTarget.baseUrl);
+    if (reachableScope && normalizeDaemonScopeDir(reachableScope.dir) === currentDaemonScopeDir()) {
       return resolvedTarget.baseUrl;
     }
 
