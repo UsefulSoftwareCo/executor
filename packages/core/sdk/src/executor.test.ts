@@ -3,6 +3,7 @@ import { Data, Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { scopedExecutorTable, textColumn } from "./core-schema";
+import { ElicitationResponse } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
 import { ScopeId } from "./ids";
@@ -339,6 +340,36 @@ describe("createExecutor", () => {
       const result = yield* executor.tools.invoke("case_source.listDashboards", {});
 
       expect(result).toEqual({ invokedToolId: "case_source.listdashboards" });
+    }),
+  );
+
+  it.effect("applies policies after case-insensitive dynamic tool id resolution", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [caseSensitiveDynamicPlugin] as const,
+      });
+      yield* executor.caseDynamic.registerSource();
+      yield* executor.policies.create({
+        targetScope: "test-scope",
+        pattern: "case_source.listdashboards",
+        action: "require_approval",
+      });
+      const calls = { count: 0 };
+
+      const result = yield* executor.tools.invoke(
+        "case_source.listDashboards",
+        {},
+        {
+          onElicitation: () =>
+            Effect.sync(() => {
+              calls.count += 1;
+              return ElicitationResponse.make({ action: "accept" });
+            }),
+        },
+      );
+
+      expect(result).toEqual({ invokedToolId: "case_source.listdashboards" });
+      expect(calls.count).toBe(1);
     }),
   );
 

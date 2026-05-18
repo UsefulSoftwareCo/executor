@@ -3249,22 +3249,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ),
             );
 
-        // Resolve the user-authored policy first. A `block` rule
-        // short-circuits both the static and dynamic paths before any
-        // plugin code runs.
-        const policy = yield* resolveToolPolicyForId(toolId).pipe(
-          Effect.withSpan("executor.tool.resolve_policy"),
-        );
-        if (policy?.action === "block") {
-          return yield* new ToolBlockedError({
-            toolId: ToolId.make(toolId),
-            pattern: policy.pattern,
-          });
-        }
-
         // Static path — O(1) map lookup, no DB hit.
         const staticEntry = staticTools.get(toolId);
         if (staticEntry) {
+          // Resolve the user-authored policy before static plugin code
+          // runs. Dynamic tools resolve policy after canonicalizing the
+          // stored tool id so casing aliases cannot bypass rules.
+          const policy = yield* resolveToolPolicyForId(toolId).pipe(
+            Effect.withSpan("executor.tool.resolve_policy"),
+          );
+          if (policy?.action === "block") {
+            return yield* new ToolBlockedError({
+              toolId: ToolId.make(toolId),
+              pattern: policy.pattern,
+            });
+          }
           yield* Effect.annotateCurrentSpan({
             "executor.tool.dispatch_path": "static",
             "executor.source_id": staticEntry.source.id,
@@ -3324,6 +3323,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           "executor.plugin_id": row.plugin_id,
           "executor.tool.resolved_id": resolvedToolId,
         });
+        const policy = yield* resolveToolPolicyForId(resolvedToolId).pipe(
+          Effect.withSpan("executor.tool.resolve_policy"),
+        );
+        if (policy?.action === "block") {
+          return yield* new ToolBlockedError({
+            toolId: ToolId.make(resolvedToolId),
+            pattern: policy.pattern,
+          });
+        }
         const runtime = runtimes.get(row.plugin_id);
         if (!runtime) {
           return yield* new PluginNotLoadedError({
