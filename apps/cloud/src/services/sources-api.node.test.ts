@@ -325,6 +325,66 @@ describe("sources api (HTTP)", () => {
     }),
   );
 
+  it.effect(
+    "GraphQL add accepts a user-scoped bearer credential for org source introspection",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* serveGraphqlTestServer({
+          schema: makeGreetingGraphqlSchema({ includeMutation: false }),
+          auth: {
+            validateAuthorization: (authorization) =>
+              Effect.succeed(authorization === "Bearer github-token"),
+          },
+        });
+        const orgId = `org_${crypto.randomUUID()}`;
+        const userId = `user_${crypto.randomUUID()}`;
+        const userScope = testUserOrgScopeId(userId, orgId);
+        const namespace = `github_graphql_${crypto.randomUUID().replace(/-/g, "_")}`;
+
+        yield* asUser(userId, orgId, (client) =>
+          client.secrets.set({
+            params: { scopeId: ScopeId.make(userScope) },
+            payload: {
+              id: SecretId.make("github-graphql-authorization"),
+              name: "Github GraphQL Authorization",
+              value: "github-token",
+            },
+          }),
+        );
+
+        const added = yield* asUser(userId, orgId, (client) =>
+          client.graphql.addSource({
+            params: { scopeId: ScopeId.make(orgId) },
+            payload: {
+              endpoint: server.endpoint,
+              namespace,
+              name: "Github GraphQL",
+              headers: {
+                Authorization: { kind: "secret", prefix: "Bearer " },
+              },
+              credentials: {
+                scope: ScopeId.make(userScope),
+                headers: {
+                  Authorization: {
+                    kind: "secret",
+                    secretId: "github-graphql-authorization",
+                    secretScope: userScope,
+                    prefix: "Bearer ",
+                  },
+                },
+              },
+            },
+          }),
+        );
+
+        expect(added).toEqual({ namespace, toolCount: 1 });
+        const requests = yield* server.requests;
+        expect(
+          requests.some((request) => request.headers.authorization === "Bearer github-token"),
+        ).toBe(true);
+      }),
+  );
+
   it.effect("added MCP source can be inspected and invoked through execution", () =>
     Effect.gen(function* () {
       const server = yield* serveMcpServer(() =>

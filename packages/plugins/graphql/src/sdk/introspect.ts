@@ -84,7 +84,7 @@ const INTROSPECTION_QUERY = `
 const IntrospectionTypeRefLeaf = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.Null,
+  ofType: Schema.optional(Schema.Null),
 });
 
 const IntrospectionTypeRef5 = Schema.Struct({
@@ -165,7 +165,11 @@ const IntrospectionJsonSchema = Schema.Union([
   IntrospectionResultSchema,
 ]);
 
-export type IntrospectionTypeRef = typeof IntrospectionTypeRefSchema.Type;
+export interface IntrospectionTypeRef {
+  readonly kind: string;
+  readonly name: string | null;
+  readonly ofType?: IntrospectionTypeRef | null;
+}
 export type IntrospectionInputValue = typeof IntrospectionInputValueSchema.Type;
 export type IntrospectionField = typeof IntrospectionFieldSchema.Type;
 export type IntrospectionEnumValue = NonNullable<

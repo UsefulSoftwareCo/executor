@@ -162,6 +162,78 @@ describe("graphqlPlugin real protocol server", () => {
     }),
   );
 
+  it.effect("accepts standard introspection responses with omitted deepest ofType", () =>
+    Effect.gen(function* () {
+      const deepType = {
+        kind: "NON_NULL",
+        name: null,
+        ofType: {
+          kind: "LIST",
+          name: null,
+          ofType: {
+            kind: "NON_NULL",
+            name: null,
+            ofType: {
+              kind: "LIST",
+              name: null,
+              ofType: {
+                kind: "NON_NULL",
+                name: null,
+                ofType: {
+                  kind: "SCALAR",
+                  name: "String",
+                },
+              },
+            },
+          },
+        },
+      };
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            data: {
+              __schema: {
+                queryType: { name: "Query" },
+                mutationType: null,
+                types: [
+                  {
+                    kind: "OBJECT",
+                    name: "Query",
+                    description: null,
+                    fields: [
+                      {
+                        name: "deep",
+                        description: null,
+                        args: [],
+                        type: deepType,
+                      },
+                    ],
+                    inputFields: null,
+                    enumValues: null,
+                  },
+                  {
+                    kind: "SCALAR",
+                    name: "String",
+                    description: null,
+                    fields: null,
+                    inputFields: null,
+                    enumValues: null,
+                  },
+                ],
+              },
+            },
+          }),
+        ),
+      );
+
+      const result = yield* introspect(server.url("/graphql")).pipe(
+        Effect.provide(server.httpClientLayer),
+      );
+
+      expect(result.__schema.queryType?.name).toBe("Query");
+    }),
+  );
+
   it.effect("adds a source by introspecting the live GraphQL endpoint", () =>
     Effect.gen(function* () {
       const server = yield* serveGreetingServer;
@@ -228,6 +300,73 @@ describe("graphqlPlugin real protocol server", () => {
         requests.some((request) => request.headers.authorization === "Bearer secret-token"),
       ).toBe(true);
     }),
+  );
+
+  it.effect(
+    "uses user-scoped initial credential bindings for org-scope add-time introspection",
+    () =>
+      Effect.gen(function* () {
+        const orgScope = "org-scope";
+        const userScope = "user-scope";
+        const server = yield* serveGraphqlTestServer({
+          schema: makeGreetingGraphqlSchema(),
+          auth: {
+            validateAuthorization: (authorization) =>
+              Effect.succeed(authorization === "Bearer user-secret-token"),
+          },
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            scopes: [
+              Scope.make({
+                id: ScopeId.make(userScope),
+                name: "user",
+                createdAt: new Date(),
+              }),
+              Scope.make({
+                id: ScopeId.make(orgScope),
+                name: "org",
+                createdAt: new Date(),
+              }),
+            ],
+            plugins: [memorySecretsPlugin(), graphqlPlugin()] as const,
+          }),
+        );
+        yield* executor.secrets.set({
+          id: SecretId.make("github-graphql-authorization"),
+          scope: ScopeId.make(userScope),
+          name: "GitHub GraphQL Authorization",
+          value: "user-secret-token",
+          provider: "memory",
+        });
+
+        const result = yield* executor.graphql.addSource({
+          endpoint: server.endpoint,
+          scope: orgScope,
+          name: "Github GraphQL",
+          namespace: "github_graphql",
+          headers: {
+            Authorization: { kind: "secret", prefix: "Bearer " },
+          },
+          credentials: {
+            scope: userScope,
+            headers: {
+              Authorization: {
+                kind: "secret",
+                secretId: "github-graphql-authorization",
+                secretScope: userScope,
+                prefix: "Bearer ",
+              },
+            },
+          },
+        });
+
+        expect(result).toEqual({ toolCount: 2, namespace: "github_graphql" });
+        const requests = yield* server.requests;
+        expect(
+          requests.some((request) => request.headers.authorization === "Bearer user-secret-token"),
+        ).toBe(true);
+      }),
   );
 
   it.effect("marks source oauth-backed when add-time credentials include oauth", () =>
