@@ -87,9 +87,7 @@ const jsonRpcRequestQueueKey = (message: JsonRpcLike): string | null => {
   return `${idKey}:tools/call:resume:${args.executionId}`;
 };
 
-const extractJsonRpcRequestQueueKeys = async (
-  request: Request,
-): Promise<ReadonlyArray<string>> => {
+const extractJsonRpcRequestQueueKeys = async (request: Request): Promise<ReadonlyArray<string>> => {
   if (request.method !== "POST") return [];
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) return [];

@@ -547,23 +547,19 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         ),
     });
 
-    await withClient(
-      engine,
-      NO_CAPS,
-      async (client) => {
-        const result = await client.callTool({
-          name: "execute",
-          arguments: { code: "pause-me" },
-        });
-        expect(textOf(result)).toContain("exec_42");
-        expect(textOf(result)).toContain("Need approval");
-        expect(result.isError).toBeFalsy();
+    await withClient(engine, NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "pause-me" },
+      });
+      expect(textOf(result)).toContain("exec_42");
+      expect(textOf(result)).toContain("Need approval");
+      expect(result.isError).toBeFalsy();
 
-        const structured = result.structuredContent as Record<string, unknown>;
-        expect(structured?.executionId).toBe("exec_42");
-        expect(structured?.status).toBe("waiting_for_interaction");
-      },
-    );
+      const structured = result.structuredContent as Record<string, unknown>;
+      expect(structured?.executionId).toBe("exec_42");
+      expect(structured?.status).toBe("waiting_for_interaction");
+    });
   });
 
   it("resume tool completes a paused execution when model resume is explicitly enabled", async () => {
