@@ -23,10 +23,9 @@ import {
   CardStackEntry,
   CardStackEntryContent,
   CardStackEntryDescription,
-  CardStackEntryField,
   CardStackEntryTitle,
+  CardStackEntryField,
 } from "@executor-js/react/components/card-stack";
-import { FilterTabs } from "@executor-js/react/components/filter-tabs";
 import { Input } from "@executor-js/react/components/input";
 import { sourceWriteKeys as openApiWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
@@ -44,12 +43,17 @@ import {
   type OAuthCompletionPayload,
 } from "@executor-js/react/plugins/oauth-sign-in";
 import {
+  CredentialControlField,
+  CredentialUsageRow,
+} from "@executor-js/react/plugins/credential-target-scope";
+import {
   effectiveCredentialBindingForScope,
   exactCredentialBindingForScope,
   isConnectionCredentialBindingValue,
   isSecretCredentialBindingValue,
 } from "@executor-js/react/plugins/credential-bindings";
 import { SecretCredentialSlotBindings } from "@executor-js/react/plugins/credential-slot-bindings";
+import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
 
 import { openApiSourceAtom, openApiSourceBindingsAtom } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
@@ -178,6 +182,9 @@ export default function EditOpenApiSource(props: {
   const [selectedOAuthTokenScope, setSelectedOAuthTokenScope] = useState<string>(
     userScope !== sourceScopeId ? userScope : sourceScopeId,
   );
+  const [selectedOAuthCredentialScope, setSelectedOAuthCredentialScope] =
+    useState<string>(sourceScopeId);
+  const [oauthEndpointsOpen, setOAuthEndpointsOpen] = useState(false);
   const [oauth2AuthorizationUrl, setOAuth2AuthorizationUrl] = useState(
     source?.config.oauth2?.authorizationUrl ?? "",
   );
@@ -200,6 +207,7 @@ export default function EditOpenApiSource(props: {
 
   useEffect(() => {
     setSelectedOAuthTokenScope(userScope !== sourceScopeId ? userScope : sourceScopeId);
+    setSelectedOAuthCredentialScope(sourceScopeId);
   }, [sourceScopeId, userScope]);
 
   useEffect(() => {
@@ -211,6 +219,7 @@ export default function EditOpenApiSource(props: {
     setOAuth2AuthorizationUrl(source.config.oauth2?.authorizationUrl ?? "");
     setOAuth2TokenUrl(source.config.oauth2?.tokenUrl ?? "");
     setOAuth2EndpointsSaveState("idle");
+    setOAuthEndpointsOpen(false);
     setSourceSaveState("idle");
     setLoadedSourceKey(sourceKey);
   }, [loadedSourceKey, source, sourceScopeId]);
@@ -351,6 +360,10 @@ export default function EditOpenApiSource(props: {
     credentialScopes[0]!;
   const activeOAuthTokenScopeId = activeOAuthTokenScope.scopeId;
   const activeOAuthTokenScopeLabel = activeOAuthTokenScope.label;
+  const activeOAuthCredentialScope =
+    credentialScopes.find((entry) => entry.scopeId === selectedOAuthCredentialScope) ??
+    organizationCredentialScope;
+  const activeOAuthCredentialScopeId = activeOAuthCredentialScope.scopeId;
 
   if (!source) {
     return (
@@ -360,6 +373,15 @@ export default function EditOpenApiSource(props: {
       </div>
     );
   }
+  const oauthClientSecretSlot = source.config.oauth2
+    ? effectiveClientSecretSlot(source.config.oauth2)
+    : null;
+  const nonOAuthSecretSlots = secretSlots.filter(
+    (slot) =>
+      slot.kind === "secret" &&
+      (!source.config.oauth2 ||
+        (slot.slot !== source.config.oauth2.clientIdSlot && slot.slot !== oauthClientSecretSlot)),
+  );
 
   const setSecretBinding = async (
     targetScope: ScopeId,
@@ -635,25 +657,32 @@ export default function EditOpenApiSource(props: {
 
       <CardStack>
         <CardStackContent className="border-t-0">
-          <CardStackEntry>
-            <CardStackEntryContent>
-              <CardStackEntryTitle>Secrets</CardStackEntryTitle>
-            </CardStackEntryContent>
-          </CardStackEntry>
+          {nonOAuthSecretSlots.length > 0 && (
+            <>
+              <CardStackEntry>
+                <CardStackEntryContent>
+                  <CardStackEntryTitle>Request credentials</CardStackEntryTitle>
+                  <CardStackEntryDescription>
+                    Headers and query parameters sent with every API request.
+                  </CardStackEntryDescription>
+                </CardStackEntryContent>
+              </CardStackEntry>
 
-          <SecretCredentialSlotBindings
-            slots={secretSlots.filter((slot) => slot.kind === "secret")}
-            bindingScopes={secretBindingScopes}
-            bindingRows={bindingRows}
-            scopeRanks={scopeRanks}
-            secrets={secretList}
-            sourceId={props.sourceId}
-            sourceName={source.name}
-            credentialScopeOptions={credentialScopeOptions}
-            busyKey={busyKey}
-            onSetSecretBinding={setSecretBinding}
-            onClearBinding={clearBinding}
-          />
+              <SecretCredentialSlotBindings
+                slots={nonOAuthSecretSlots}
+                bindingScopes={secretBindingScopes}
+                bindingRows={bindingRows}
+                scopeRanks={scopeRanks}
+                secrets={secretList}
+                sourceId={props.sourceId}
+                sourceName={source.name}
+                credentialScopeOptions={credentialScopeOptions}
+                busyKey={busyKey}
+                onSetSecretBinding={setSecretBinding}
+                onClearBinding={clearBinding}
+              />
+            </>
+          )}
 
           {source.config.oauth2 &&
             (() => {
@@ -755,15 +784,164 @@ export default function EditOpenApiSource(props: {
                         : "Organization connection is missing"
                     : `No ${activeOAuthTokenScopeLabel.toLowerCase()} connection`;
               const connectDisabled = isConnecting || endpointsDirty || saving;
+              const clientSecretSlot = effectiveClientSecretSlot(oauth2);
+              const renderAppSecret = (input: {
+                readonly slot: string;
+                readonly label: string;
+                readonly hint?: string;
+              }) => {
+                const exactSecret = exactCredentialBindingForScope(
+                  bindingRows,
+                  input.slot,
+                  activeOAuthCredentialScopeId,
+                );
+                const effectiveSecret = effectiveCredentialBindingForScope(
+                  bindingRows,
+                  input.slot,
+                  activeOAuthCredentialScopeId,
+                  scopeRanks,
+                );
+                const exactSecretId =
+                  exactSecret && isSecretCredentialBindingValue(exactSecret.value)
+                    ? exactSecret.value.secretId
+                    : null;
+                const inheritedSecret =
+                  !exactSecretId &&
+                  effectiveSecret &&
+                  effectiveSecret.scopeId !== activeOAuthCredentialScopeId &&
+                  isSecretCredentialBindingValue(effectiveSecret.value)
+                    ? effectiveSecret
+                    : null;
+                const status = exactSecretId
+                  ? `Saved to ${activeOAuthCredentialScope.label.toLowerCase()}`
+                  : inheritedSecret
+                    ? "Using organization credential"
+                    : "Not set";
+                const inputKey = `${activeOAuthCredentialScopeId}:${input.slot}`;
+                const clearKey = `${activeOAuthCredentialScopeId}:${input.slot}:clear`;
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">{input.label}</div>
+                        {input.hint && (
+                          <div className="text-xs text-muted-foreground">{input.hint}</div>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">{status}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <CreatableSecretPicker
+                          value={exactSecretId}
+                          onSelect={(secretId, secretScopeId) =>
+                            void setSecretBinding(
+                              activeOAuthCredentialScopeId,
+                              input.slot,
+                              secretId,
+                              secretScopeId ?? activeOAuthCredentialScopeId,
+                            )
+                          }
+                          secrets={secretList}
+                          placeholder="Select or create a secret"
+                          targetScope={activeOAuthCredentialScopeId}
+                          credentialScopeOptions={credentialScopeOptions}
+                          suggestedId={`source-binding-${slugify(props.sourceId)}-${slugify(
+                            input.slot,
+                          )}-${slugify(activeOAuthCredentialScopeId)}`}
+                          sourceName={source.name}
+                          secretLabel={input.label}
+                        />
+                      </div>
+                      {exactSecretId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            void clearBinding(activeOAuthCredentialScopeId, input.slot)
+                          }
+                          disabled={busyKey === clearKey}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                      {busyKey === inputKey && (
+                        <span className="text-xs text-muted-foreground">Saving…</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              };
 
               return (
                 <>
                   <CardStackEntry>
                     <CardStackEntryContent>
-                      <CardStackEntryTitle>OAuth Endpoints</CardStackEntryTitle>
+                      <CardStackEntryTitle>OAuth</CardStackEntryTitle>
                       <CardStackEntryDescription>
-                        Override the URLs from the OpenAPI spec when a provider publishes the wrong
-                        values.
+                        Configure app credentials and connect accounts for this source.
+                      </CardStackEntryDescription>
+                    </CardStackEntryContent>
+                  </CardStackEntry>
+                  <CardStackEntryField label="OAuth app credentials">
+                    <CredentialUsageRow
+                      value={activeOAuthCredentialScopeId}
+                      options={credentialScopeOptions}
+                      onChange={setSelectedOAuthCredentialScope}
+                      label="Used by"
+                      help="Choose where the OAuth app credentials are saved."
+                    >
+                      <div className="space-y-4 rounded-md border border-border bg-background/35 p-3">
+                        {renderAppSecret({ slot: oauth2.clientIdSlot, label: "Client ID" })}
+                        {renderAppSecret({
+                          slot: clientSecretSlot,
+                          label: "Client secret",
+                          hint:
+                            oauth2.flow === "authorizationCode"
+                              ? "Optional for public PKCE clients"
+                              : undefined,
+                        })}
+                      </div>
+                    </CredentialUsageRow>
+                  </CardStackEntryField>
+                  <CardStackEntryField label="Account connection">
+                    <CredentialUsageRow
+                      value={activeOAuthTokenScopeId}
+                      options={credentialScopeOptions}
+                      onChange={setSelectedOAuthTokenScope}
+                      label="Connection saved to"
+                      help="Choose where the signed-in OAuth token is saved."
+                    >
+                      <CredentialControlField
+                        label="OAuth connection"
+                        help="Start the provider OAuth flow."
+                      >
+                        <div className="flex min-h-9 items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+                          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                            {statusText}
+                          </span>
+                          <Button
+                            size="sm"
+                            onClick={() => void connectOAuth(activeOAuthTokenScopeId)}
+                            disabled={connectDisabled}
+                          >
+                            {isConnecting ? "Connecting…" : isConnected ? "Reconnect" : "Connect"}
+                          </Button>
+                        </div>
+                        {endpointsDirty && (
+                          <p className="text-xs text-muted-foreground">
+                            Save endpoint changes before reconnecting.
+                          </p>
+                        )}
+                      </CredentialControlField>
+                    </CredentialUsageRow>
+                  </CardStackEntryField>
+                  <CardStackEntry>
+                    <CardStackEntryContent>
+                      <CardStackEntryTitle>Advanced endpoints</CardStackEntryTitle>
+                      <CardStackEntryDescription>
+                        Override provider URLs only when the OpenAPI spec is wrong.
                       </CardStackEntryDescription>
                     </CardStackEntryContent>
                     <div className="flex items-center gap-2">
@@ -773,78 +951,63 @@ export default function EditOpenApiSource(props: {
                         </span>
                       )}
                       <Button
+                        variant="outline"
                         size="sm"
-                        onClick={() => void saveOAuth2Endpoints()}
-                        disabled={!canSave}
+                        onClick={() => setOAuthEndpointsOpen((open) => !open)}
                       >
-                        Save
+                        {oauthEndpointsOpen ? "Hide" : endpointsDirty ? "Review" : "Show"}
                       </Button>
                     </div>
                   </CardStackEntry>
-                  {isAuthCode && (
-                    <CardStackEntryField label="Authorization URL">
-                      <Input
-                        value={oauth2AuthorizationUrl}
-                        onChange={(e) =>
-                          setOAuth2AuthorizationUrl((e.target as HTMLInputElement).value)
-                        }
-                        className="font-mono text-sm"
-                      />
-                    </CardStackEntryField>
-                  )}
-                  <CardStackEntryField label="Token URL">
-                    <Input
-                      value={oauth2TokenUrl}
-                      onChange={(e) => setOAuth2TokenUrl((e.target as HTMLInputElement).value)}
-                      className="font-mono text-sm"
-                    />
-                  </CardStackEntryField>
-                  <CardStackEntryField label="Redirect URL">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5 font-mono text-[11px]">
-                        <span className="truncate flex-1 text-foreground">{oauth2RedirectUrl}</span>
-                        <CopyButton value={oauth2RedirectUrl} />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Add this to your OAuth app&apos;s allowed redirects.
-                      </p>
-                    </div>
-                  </CardStackEntryField>
-                  {credentialScopes.length > 1 && (
-                    <CardStackEntry>
-                      <CardStackEntryContent>
-                        <CardStackEntryTitle>OAuth token</CardStackEntryTitle>
-                        <CardStackEntryDescription>
-                          Choose where the signed-in OAuth token is saved.
-                        </CardStackEntryDescription>
-                      </CardStackEntryContent>
-                      <FilterTabs
-                        tabs={credentialScopes.map((entry) => ({
-                          value: entry.scopeId,
-                          label: entry.label,
-                        }))}
-                        value={activeOAuthTokenScopeId}
-                        onChange={setSelectedOAuthTokenScope}
-                      />
-                    </CardStackEntry>
-                  )}
-                  <CardStackEntryField label="OAuth Connection">
-                    <div className="space-y-2">
-                      <div className="text-sm text-muted-foreground">{statusText}</div>
-                      <Button
-                        size="sm"
-                        onClick={() => void connectOAuth(activeOAuthTokenScopeId)}
-                        disabled={connectDisabled}
-                      >
-                        {isConnecting ? "Connecting…" : isConnected ? "Reconnect" : "Connect"}
-                      </Button>
-                      {endpointsDirty && (
-                        <p className="text-xs text-muted-foreground">
-                          Save endpoint changes before reconnecting.
-                        </p>
+                  {oauthEndpointsOpen && (
+                    <>
+                      {isAuthCode && (
+                        <CardStackEntryField label="Authorization URL">
+                          <Input
+                            value={oauth2AuthorizationUrl}
+                            onChange={(e) =>
+                              setOAuth2AuthorizationUrl((e.target as HTMLInputElement).value)
+                            }
+                            className="font-mono text-sm"
+                          />
+                        </CardStackEntryField>
                       )}
-                    </div>
-                  </CardStackEntryField>
+                      <CardStackEntryField label="Token URL">
+                        <Input
+                          value={oauth2TokenUrl}
+                          onChange={(e) => setOAuth2TokenUrl((e.target as HTMLInputElement).value)}
+                          className="font-mono text-sm"
+                        />
+                      </CardStackEntryField>
+                      <CardStackEntryField label="Redirect URL">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5 font-mono text-[11px]">
+                            <span className="truncate flex-1 text-foreground">
+                              {oauth2RedirectUrl}
+                            </span>
+                            <CopyButton value={oauth2RedirectUrl} />
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Add this to your OAuth app&apos;s allowed redirects.
+                          </p>
+                        </div>
+                      </CardStackEntryField>
+                      <CardStackEntry>
+                        <CardStackEntryContent>
+                          <CardStackEntryDescription>
+                            Save endpoint changes before reconnecting.
+                          </CardStackEntryDescription>
+                        </CardStackEntryContent>
+                        <Button
+                          size="sm"
+                          onClick={() => void saveOAuth2Endpoints()}
+                          disabled={!canSave}
+                        >
+                          Save endpoints
+                        </Button>
+                      </CardStackEntry>
+                    </>
+                  )}
                 </>
               );
             })()}
