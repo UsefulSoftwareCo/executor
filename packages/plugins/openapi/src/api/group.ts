@@ -1,10 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import {
-  InternalError,
-  ScopeId,
-  SecretBackedValue,
-} from "@executor-js/sdk/shared";
+import { InternalError, ScopeId, SecretBackedValue } from "@executor-js/sdk/shared";
 
 import { OpenApiParseError, OpenApiExtractionError, OpenApiOAuthError } from "../sdk/errors";
 import { SpecPreview } from "../sdk/preview";

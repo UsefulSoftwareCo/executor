@@ -67,9 +67,9 @@ That changes the design center of any shared abstraction:
   substitution. `prefix` is a degenerate one-hole template; argv and
   URIs want full templating.
 
-The only protocol-agnostic primitive is: *"named slot at
+The only protocol-agnostic primitive is: _"named slot at
 (plugin, source, source_scope, scope) resolving to a value of kind
-text | secret | connection."* That's already what core
+text | secret | connection."_ That's already what core
 `credential_binding` provides.
 
 ## Revised consolidation thesis
@@ -87,7 +87,7 @@ Core should own the binding primitive, not just the storage.
   inner checks; the plugin-side `validate*BindingTarget` helpers can go.
 - HTTP endpoints for `setBinding` / `listBindings` / `removeBinding`,
   parameterised by `pluginId` in the path (or payload).
-- A small *slot manifest* concept: each plugin declares, for a given
+- A small _slot manifest_ concept: each plugin declares, for a given
   source, which slot keys exist, their human-readable labels, expected
   value kind, required/optional, and any rendering hints. The UI uses
   this to render a credential editor for any plugin without bespoke

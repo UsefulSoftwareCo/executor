@@ -83,9 +83,9 @@ await executor.openapi.configure(source, {
 The caller should not pass:
 
 ```ts
-kind: "binding"
-slot: "header:authorization"
-credentialTargetScope: user
+kind: "binding";
+slot: "header:authorization";
+credentialTargetScope: user;
 ```
 
 Those are internal implementation details.

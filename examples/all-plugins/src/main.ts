@@ -244,8 +244,9 @@ const program = Effect.gen(function* () {
   console.log("-".repeat(72));
 
   const addSpecResult = yield* executor.openapi.addSpec({
-    spec: exampleOpenApiSpec,
+    spec: { kind: "blob", value: exampleOpenApiSpec },
     namespace: "example-api",
+    name: "Example API",
     baseUrl: "https://example.com/api",
     scope: "example-scope",
   });

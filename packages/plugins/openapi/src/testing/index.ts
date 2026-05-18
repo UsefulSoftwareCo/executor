@@ -100,10 +100,25 @@ export type OpenApiHttpApiTestSourceOptions = Omit<
   readonly transformSpec?: (spec: Record<string, unknown>) => Record<string, unknown>;
 };
 
+type OpenApiHttpApiAddSpecCredentialInput =
+  | string
+  | {
+      readonly kind: "secret";
+      readonly prefix?: string;
+    };
+
+type OpenApiHttpApiAddSpecCredentialsInput = {
+  readonly headers?: Record<string, OpenApiHttpApiAddSpecCredentialInput>;
+  readonly queryParams?: Record<string, OpenApiHttpApiAddSpecCredentialInput>;
+};
+
 export type OpenApiHttpApiTestAddSpecPayloadOptions = Omit<
   OpenApiHttpApiTestSourceOptions,
-  "scope"
->;
+  "scope" | "headers" | "queryParams" | "specFetchCredentials"
+> &
+  OpenApiHttpApiAddSpecCredentialsInput & {
+    readonly specFetchCredentials?: OpenApiHttpApiAddSpecCredentialsInput;
+  };
 
 export type OpenApiTestSourceExecutor = {
   readonly openapi: Pick<OpenApiPluginExtension, "addSpec">;
@@ -183,11 +198,11 @@ export const makeOpenApiHttpApiTestAddSpecPayload = (
     namespace: config.namespace,
     name: config.name,
     baseUrl: config.baseUrl,
-    ...(config.headers !== undefined ? { headers: config.headers } : {}),
-    ...(config.queryParams !== undefined ? { queryParams: config.queryParams } : {}),
+    ...(sourceOptions.headers !== undefined ? { headers: sourceOptions.headers } : {}),
+    ...(sourceOptions.queryParams !== undefined ? { queryParams: sourceOptions.queryParams } : {}),
     ...(config.oauth2 !== undefined ? { oauth2: config.oauth2 } : {}),
-    ...(config.specFetchCredentials !== undefined
-      ? { specFetchCredentials: config.specFetchCredentials }
+    ...(sourceOptions.specFetchCredentials !== undefined
+      ? { specFetchCredentials: sourceOptions.specFetchCredentials }
       : {}),
   };
 };

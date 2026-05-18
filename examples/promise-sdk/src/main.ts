@@ -44,9 +44,14 @@ await executor.mcp.addSource({
 // ---------------------------------------------------------------------------
 
 await executor.openapi.addSpec({
-  spec: "https://petstore3.swagger.io/api/v3/openapi.json",
+  spec: {
+    kind: "url",
+    url: "https://petstore3.swagger.io/api/v3/openapi.json",
+  },
   namespace: "petstore",
   scope: "my-app",
+  name: "Petstore",
+  baseUrl: "https://petstore3.swagger.io/api/v3",
 });
 
 // With auth headers (static or secret-backed)

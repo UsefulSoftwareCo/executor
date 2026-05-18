@@ -117,9 +117,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           yield* ext.updateSource(path.namespace, payload.sourceScope, {
             name: payload.name,
             baseUrl: payload.baseUrl,
-            headers: payload.headers as
-              | Record<string, OpenApiConfiguredValueInput>
-              | undefined,
+            headers: payload.headers as Record<string, OpenApiConfiguredValueInput> | undefined,
             queryParams: payload.queryParams as
               | Record<string, OpenApiConfiguredValueInput>
               | undefined,

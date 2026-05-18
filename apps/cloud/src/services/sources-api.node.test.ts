@@ -159,12 +159,12 @@ describe("sources api (HTTP)", () => {
       const addResult = yield* asOrg(org, (client) =>
         client.openapi.addSpec({
           params: { scopeId },
-            payload: {
-              spec: { kind: "blob", value: server.specJson },
-              name: "Invocable Source API",
-              baseUrl: server.baseUrl,
-              namespace,
-            },
+          payload: {
+            spec: { kind: "blob", value: server.specJson },
+            name: "Invocable Source API",
+            baseUrl: server.baseUrl,
+            namespace,
+          },
         }),
       );
       expect(addResult).toEqual({ namespace, toolCount: 1 });

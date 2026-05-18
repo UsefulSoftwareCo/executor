@@ -68,9 +68,7 @@ Make the identity and request base explicit:
 Use a discriminated spec input instead of a string that guesses:
 
 ```ts
-type OpenApiSpecInput =
-  | { kind: "url"; url: string }
-  | { kind: "blob"; value: string };
+type OpenApiSpecInput = { kind: "url"; url: string } | { kind: "blob"; value: string };
 ```
 
 Remove `credentialTargetScope` from the HTTP payload. Scope should always be

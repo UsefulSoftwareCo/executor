@@ -128,14 +128,9 @@ export type HeaderValue = HeaderValueValue;
 export type ConfiguredHeaderValue = ConfiguredHeaderValueValue;
 export type OpenApiOAuthInput = OAuth2SourceConfig;
 
-export type OpenApiSpecInput =
-  | { readonly kind: "url"; readonly url: string }
-  | { readonly kind: "blob"; readonly value: string };
+export type OpenApiSpecInput = typeof OpenApiSpecInputSchema.Type;
 
-export interface OpenApiSecretShapeInput {
-  readonly kind: "secret";
-  readonly prefix?: string;
-}
+export type OpenApiSecretShapeInput = typeof OpenApiSecretShapeInputSchema.Type;
 
 export type OpenApiConfiguredValueInput =
   | string

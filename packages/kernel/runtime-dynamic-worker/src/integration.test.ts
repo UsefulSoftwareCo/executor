@@ -219,7 +219,13 @@ const buildSandboxBridge = (spec: string, namespace: string, baseUrl = "https://
         plugins,
         onElicitation: "accept-all",
       });
-      yield* executor.openapi.addSpec({ spec, scope: TEST_SCOPE, namespace, baseUrl });
+      yield* executor.openapi.addSpec({
+        spec: { kind: "blob", value: spec },
+        scope: TEST_SCOPE,
+        namespace,
+        name: namespace,
+        baseUrl,
+      });
       const invoker = makeExecutorToolInvoker(executor, { invokeOptions: autoApprove });
       return { executor, invoker, captured: recording.captured, sql };
     }),

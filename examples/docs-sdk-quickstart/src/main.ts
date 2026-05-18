@@ -81,7 +81,12 @@ const executor = await createExecutor({
 await executor.openapi.addSpec({
   namespace: "inventory",
   scope: "docs-workspace",
-  spec: JSON.stringify(inventoryApi),
+  name: "Inventory API",
+  baseUrl: "https://inventory.example.com",
+  spec: {
+    kind: "blob",
+    value: JSON.stringify(inventoryApi),
+  },
 });
 // docs:end add-source
 

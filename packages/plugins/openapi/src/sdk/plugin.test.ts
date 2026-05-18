@@ -298,7 +298,7 @@ describe("OpenAPI Plugin", () => {
 
       expect(schema).not.toBeNull();
       expect(schema!.inputTypeScript).toContain("scope: string");
-      expect(schema!.inputTypeScript).toContain("kind: \"url\"");
+      expect(schema!.inputTypeScript).toContain('kind: "url"');
       expect(
         (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
       ).not.toHaveProperty("credentialTargetScope");

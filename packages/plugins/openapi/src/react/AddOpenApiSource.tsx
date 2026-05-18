@@ -70,11 +70,7 @@ import {
   specFetchHeaderBindingSlot,
   specFetchQueryParamBindingSlot,
 } from "../sdk/source-contracts";
-import {
-  OAuth2SourceConfig,
-  OpenApiSourceBindingInput,
-  type ServerInfo,
-} from "../sdk/types";
+import { OAuth2SourceConfig, OpenApiSourceBindingInput, type ServerInfo } from "../sdk/types";
 import { expandServerUrlOptions } from "../sdk/openapi-utils";
 
 export const OPENAPI_OAUTH_POPUP_NAME = "openapi-oauth";
