@@ -21,10 +21,7 @@ import {
 } from "../components/select";
 import { SecretForm } from "./secret-form";
 import { SecretPicker, type SecretPickerSecret } from "./secret-picker";
-import {
-  CredentialTargetScopeSelector,
-  type CredentialTargetScopeOption,
-} from "./credential-target-scope";
+import type { CredentialTargetScopeOption } from "./credential-target-scope";
 import { secretsForCredentialTarget } from "./secret-credential-scope";
 
 export { secretsForCredentialTarget };
@@ -64,29 +61,16 @@ function CreateSecretContent(props: {
   onCancel?: () => void;
   fallbackId?: string;
   targetScope: ScopeId;
-  credentialScopeOptions?: readonly CredentialTargetScopeOption[];
 }) {
-  const [scopeId, setScopeId] = useState(props.targetScope);
-  const activeScope = props.credentialScopeOptions?.find((option) => option.scopeId === scopeId);
-
   return (
     <SecretForm.Provider
       existingSecretIds={props.existingSecretIds}
       suggestedName={props.suggestedName}
       fallbackId={props.fallbackId ?? "custom-header"}
-      scopeId={scopeId}
-      onCreated={(secretId) => props.onCreated(secretId, scopeId)}
+      scopeId={props.targetScope}
+      onCreated={(secretId) => props.onCreated(secretId, props.targetScope)}
     >
       <div className="space-y-3">
-        {props.credentialScopeOptions && props.credentialScopeOptions.length > 1 && (
-          <CredentialTargetScopeSelector
-            value={scopeId}
-            options={props.credentialScopeOptions}
-            onChange={setScopeId}
-            title="Save secret to"
-            description={activeScope?.description ?? "Choose where this secret is saved."}
-          />
-        )}
         <FieldGroup className="gap-3">
           <div className="grid grid-cols-2 gap-3">
             <SecretForm.NameField label="Label" placeholder="API Token" />
@@ -114,7 +98,6 @@ export function InlineCreateSecret(props: {
   onCancel: () => void;
   fallbackId?: string;
   targetScope: ScopeId;
-  credentialScopeOptions?: readonly CredentialTargetScopeOption[];
 }) {
   return (
     <div className="bg-primary/[0.03] px-4 py-3">
@@ -134,7 +117,6 @@ function CreateSecretDialog(props: {
   readonly onCreated: (secretId: string, scopeId: ScopeId) => void;
   readonly fallbackId?: string;
   readonly targetScope: ScopeId;
-  readonly credentialScopeOptions?: readonly CredentialTargetScopeOption[];
 }) {
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -152,7 +134,6 @@ function CreateSecretDialog(props: {
           onCreated={props.onCreated}
           onCancel={() => props.onOpenChange(false)}
           targetScope={props.targetScope}
-          credentialScopeOptions={props.credentialScopeOptions}
         />
       </DialogContent>
     </Dialog>
@@ -332,7 +313,6 @@ export function SecretHeaderAuthRow(props: {
    */
   sourceName?: string;
   targetScope: ScopeId;
-  credentialScopeOptions?: readonly CredentialTargetScopeOption[];
   bindingScopeOptions?: readonly CredentialTargetScopeOption[];
   restrictSecretsToTargetScope?: boolean;
 }) {
@@ -354,7 +334,6 @@ export function SecretHeaderAuthRow(props: {
     previewComponent: PreviewComponent = HeaderCredentialValuePreview,
     sourceName,
     targetScope,
-    credentialScopeOptions,
     bindingScopeOptions,
     restrictSecretsToTargetScope = false,
   } = props;
@@ -378,7 +357,6 @@ export function SecretHeaderAuthRow(props: {
           setCreating(false);
         }}
         targetScope={targetScope}
-        credentialScopeOptions={credentialScopeOptions}
       />
       <div className="flex w-full items-center justify-between gap-4">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -519,7 +497,6 @@ export function CreatableSecretPicker(props: {
     sourceName,
     secretLabel,
     targetScope,
-    credentialScopeOptions,
     onCreatedScope,
     suggestedId: suggestedIdProp,
   } = props;
@@ -542,7 +519,6 @@ export function CreatableSecretPicker(props: {
           setCreating(false);
         }}
         targetScope={targetScope}
-        credentialScopeOptions={credentialScopeOptions}
       />
     );
   }

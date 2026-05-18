@@ -64,7 +64,6 @@ export function HeadersList({
   rowPreviewComponent,
   sourceName,
   targetScope,
-  credentialScopeOptions,
   bindingScopeOptions,
   restrictSecretsToTargetScope,
   defaultValueKind = "secret",
@@ -153,7 +152,6 @@ export function HeadersList({
                 onRemove={singleHeader ? undefined : () => removeHeader(index)}
                 existingSecrets={existingSecrets}
                 sourceName={sourceName}
-                credentialScopeOptions={credentialScopeOptions}
                 bindingScopeOptions={bindingScopeOptions}
                 restrictSecretsToTargetScope={restrictSecretsToTargetScope}
                 copy={rowCopy}
@@ -189,7 +187,6 @@ function HeaderRow(props: {
   readonly onRemove?: () => void;
   readonly existingSecrets: readonly SecretPickerSecret[];
   readonly sourceName?: string;
-  readonly credentialScopeOptions?: readonly CredentialTargetScopeOption[];
   readonly bindingScopeOptions?: readonly CredentialTargetScopeOption[];
   readonly restrictSecretsToTargetScope?: boolean;
   readonly copy?: Partial<SecretCredentialRowCopy>;
@@ -222,7 +219,6 @@ function HeaderRow(props: {
       existingSecrets={props.existingSecrets}
       sourceName={props.sourceName}
       targetScope={props.header.targetScope ?? props.targetScope}
-      credentialScopeOptions={props.credentialScopeOptions}
       bindingScopeOptions={props.bindingScopeOptions}
       restrictSecretsToTargetScope={props.restrictSecretsToTargetScope}
       copy={props.copy}
