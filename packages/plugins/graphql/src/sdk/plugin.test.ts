@@ -162,6 +162,29 @@ describe("graphqlPlugin real protocol server", () => {
     }),
   );
 
+  it.effect("includes safe upstream JSON messages in introspection status errors", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { message: "Resource protected by organization SSO" },
+            { status: 403 },
+          ),
+        ),
+      );
+
+      const error = yield* introspect(server.url("/graphql")).pipe(
+        Effect.provide(server.httpClientLayer),
+        Effect.flip,
+      );
+
+      expect(error).toHaveProperty(
+        "message",
+        "Introspection failed with status 403: Resource protected by organization SSO",
+      );
+    }),
+  );
+
   it.effect("accepts standard introspection responses with omitted deepest ofType", () =>
     Effect.gen(function* () {
       const deepType = {

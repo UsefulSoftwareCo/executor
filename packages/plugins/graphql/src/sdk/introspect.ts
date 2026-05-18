@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { GraphqlIntrospectionError } from "./errors";
@@ -160,6 +160,17 @@ const IntrospectionResponseSchema = Schema.Struct({
   errors: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 
+const UpstreamErrorResponseSchema = Schema.Struct({
+  message: Schema.optional(Schema.String),
+  errors: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        message: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+
 const IntrospectionJsonSchema = Schema.Union([
   Schema.Struct({ data: IntrospectionResultSchema }),
   IntrospectionResultSchema,
@@ -178,6 +189,15 @@ export type IntrospectionEnumValue = NonNullable<
 export type IntrospectionType = typeof IntrospectionTypeSchema.Type;
 export type IntrospectionSchema = (typeof IntrospectionResultSchema.Type)["__schema"];
 export type IntrospectionResult = typeof IntrospectionResultSchema.Type;
+
+const firstUpstreamErrorMessage = (value: unknown): string | null => {
+  const decoded = Schema.decodeUnknownOption(UpstreamErrorResponseSchema)(value);
+  return Option.match(decoded, {
+    onNone: () => null,
+    onSome: (response) =>
+      response.message ?? response.errors?.find((error) => error.message)?.message ?? null,
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Introspect a GraphQL endpoint
@@ -224,8 +244,12 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (response.status !== 200) {
+    const raw = yield* response.json.pipe(Effect.catch(() => Effect.succeed(null)));
+    const upstreamMessage = raw === null ? null : firstUpstreamErrorMessage(raw);
     return yield* new GraphqlIntrospectionError({
-      message: `Introspection failed with status ${response.status}`,
+      message: upstreamMessage
+        ? `Introspection failed with status ${response.status}: ${upstreamMessage}`
+        : `Introspection failed with status ${response.status}`,
     });
   }
 
@@ -249,8 +273,11 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+    const upstreamMessage = firstUpstreamErrorMessage(json);
     return yield* new GraphqlIntrospectionError({
-      message: `Introspection returned ${json.errors.length} error(s)`,
+      message: upstreamMessage
+        ? `Introspection returned ${json.errors.length} error(s): ${upstreamMessage}`
+        : `Introspection returned ${json.errors.length} error(s)`,
     });
   }
 
