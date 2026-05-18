@@ -8,7 +8,7 @@ import {
   connectionsAtom,
   setSourceCredentialBinding,
 } from "@executor-js/react/api/atoms";
-import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
+import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
@@ -51,6 +51,7 @@ function EditForm(props: {
   onSave: () => void;
 }) {
   const displayScope = useScope();
+  const userScope = useUserScope();
   const scopeStack = useScopeStack();
   const sourceScope = ScopeId.make(props.initial.scope);
   const { credentialTargetScope, credentialScopeOptions } = useCredentialTargetScope({
@@ -62,12 +63,12 @@ function EditForm(props: {
     setCredentialTargetScope: setOAuthCredentialTargetScope,
   } = useCredentialTargetScope({
     sourceScope,
-    initialTargetScope: displayScope,
+    initialTargetScope: userScope,
   });
   const doConfigure = useAtomSet(configureSource, { mode: "promiseExit" });
   const setBinding = useAtomSet(setSourceCredentialBinding, { mode: "promise" });
   const secretList = useSecretPickerSecrets();
-  const connectionsResult = useAtomValue(connectionsAtom(displayScope));
+  const connectionsResult = useAtomValue(connectionsAtom(userScope));
 
   const identity = useSourceIdentity({
     fallbackName: props.initial.name,
@@ -272,12 +273,13 @@ function EditForm(props: {
 
 export default function EditGraphqlSource(props: { sourceId: string; onSave: () => void }) {
   const scopeId = useScope();
+  const userScope = useUserScope();
   const sourceResult = useAtomValue(graphqlSourceAtom(scopeId, props.sourceId));
   const source =
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
   const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
   const bindingsResult = useAtomValue(
-    graphqlSourceBindingsAtom(scopeId, props.sourceId, sourceScope),
+    graphqlSourceBindingsAtom(userScope, props.sourceId, sourceScope),
   );
 
   if (!AsyncResult.isSuccess(sourceResult) || !source || !AsyncResult.isSuccess(bindingsResult)) {

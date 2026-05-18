@@ -8,7 +8,7 @@ import {
   connectionsAtom,
   setSourceCredentialBinding,
 } from "@executor-js/react/api/atoms";
-import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
+import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
 import { useCredentialTargetScope } from "@executor-js/react/plugins/credential-target-scope";
@@ -43,6 +43,7 @@ function RemoteEditForm(props: {
   onSave: () => void;
 }) {
   const displayScope = useScope();
+  const userScope = useUserScope();
   const scopeStack = useScopeStack();
   const sourceScope = ScopeId.make(props.initial.scope);
   const { credentialTargetScope, credentialScopeOptions } = useCredentialTargetScope({
@@ -54,12 +55,12 @@ function RemoteEditForm(props: {
     setCredentialTargetScope: setOAuthCredentialTargetScope,
   } = useCredentialTargetScope({
     sourceScope,
-    initialTargetScope: displayScope,
+    initialTargetScope: userScope,
   });
   const doConfigure = useAtomSet(configureSource, { mode: "promiseExit" });
   const setBinding = useAtomSet(setSourceCredentialBinding, { mode: "promise" });
   const secretList = useSecretPickerSecrets();
-  const connectionsResult = useAtomValue(connectionsAtom(displayScope));
+  const connectionsResult = useAtomValue(connectionsAtom(userScope));
 
   const identity = useSourceIdentity({
     fallbackName: props.initial.name,
@@ -285,6 +286,7 @@ export default function EditMcpSource({
   readonly onSave: () => void;
 }) {
   const scopeId = useScope();
+  const userScope = useUserScope();
   const sourceResult = useAtomValue(mcpSourceAtom(scopeId, sourceId)) as AsyncResult.AsyncResult<
     McpStoredSourceSchemaType | null,
     unknown
@@ -292,7 +294,7 @@ export default function EditMcpSource({
   const source =
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
   const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
-  const bindingsResult = useAtomValue(mcpSourceBindingsAtom(scopeId, sourceId, sourceScope));
+  const bindingsResult = useAtomValue(mcpSourceBindingsAtom(userScope, sourceId, sourceScope));
 
   if (!AsyncResult.isSuccess(sourceResult) || !source || !AsyncResult.isSuccess(bindingsResult)) {
     return (
