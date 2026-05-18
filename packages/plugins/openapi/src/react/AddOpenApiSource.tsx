@@ -946,7 +946,6 @@ export default function AddOpenApiSource(props: {
                 targetScope={sourceScope}
                 credentialScopeOptions={credentialScopeOptions}
                 bindingScopeOptions={credentialScopeOptions}
-                restrictSecretsToTargetScope
                 labels={{
                   headers: "Spec fetch headers",
                   queryParams: "Spec fetch query parameters",
@@ -1085,7 +1084,6 @@ export default function AddOpenApiSource(props: {
                   targetScope={sourceScope}
                   credentialScopeOptions={credentialScopeOptions}
                   bindingScopeOptions={credentialScopeOptions}
-                  restrictSecretsToTargetScope
                   emptyLabel="No credentials yet. Add the header value this method should use."
                 />
               </div>
@@ -1099,7 +1097,6 @@ export default function AddOpenApiSource(props: {
               targetScope={sourceScope}
               credentialScopeOptions={credentialScopeOptions}
               bindingScopeOptions={credentialScopeOptions}
-              restrictSecretsToTargetScope
               sections={{ headers: false, queryParams: true }}
               labels={{ queryParams: "Runtime query parameters" }}
             />

@@ -314,7 +314,6 @@ export function SecretHeaderAuthRow(props: {
   sourceName?: string;
   targetScope: ScopeId;
   bindingScopeOptions?: readonly CredentialTargetScopeOption[];
-  restrictSecretsToTargetScope?: boolean;
 }) {
   const [creating, setCreating] = useState(false);
   const nameInputId = useId();
@@ -335,7 +334,6 @@ export function SecretHeaderAuthRow(props: {
     sourceName,
     targetScope,
     bindingScopeOptions,
-    restrictSecretsToTargetScope = false,
   } = props;
 
   const isCustom = presetKey === "custom" || presetKey === undefined;
@@ -343,7 +341,6 @@ export function SecretHeaderAuthRow(props: {
   const headerLabel = name.trim() || "Custom Header";
   const suggestedName = [sourceName?.trim(), headerLabel].filter(Boolean).join(" ");
   const scopedSecrets = secretsForCredentialTarget(existingSecrets, targetScope);
-  const selectableSecrets = restrictSecretsToTargetScope ? scopedSecrets : existingSecrets;
 
   return (
     <div className="space-y-2.5 px-4 py-3">
@@ -426,7 +423,7 @@ export function SecretHeaderAuthRow(props: {
             value={secretId}
             valueScopeId={secretScope ? String(secretScope) : undefined}
             onSelect={(id, scopeId) => onSelectSecret(id, ScopeId.make(scopeId))}
-            secrets={selectableSecrets}
+            secrets={scopedSecrets}
             onCreateNew={() => setCreating(true)}
           />
         </div>
@@ -528,7 +525,7 @@ export function CreatableSecretPicker(props: {
       value={value}
       valueScopeId={String(targetScope)}
       onSelect={(id, scopeId) => onSelect(id, ScopeId.make(scopeId))}
-      secrets={secrets}
+      secrets={scopedSecrets}
       placeholder={placeholder}
       onCreateNew={() => setCreating(true)}
     />

@@ -287,7 +287,6 @@ export function HttpCredentialsEditor(props: {
   readonly targetScope: ScopeId;
   readonly credentialScopeOptions?: readonly CredentialTargetScopeOption[];
   readonly bindingScopeOptions?: readonly CredentialTargetScopeOption[];
-  readonly restrictSecretsToTargetScope?: boolean;
   readonly sections?: {
     readonly headers?: boolean;
     readonly queryParams?: boolean;
@@ -314,7 +313,6 @@ export function HttpCredentialsEditor(props: {
             targetScope={props.targetScope}
             credentialScopeOptions={props.credentialScopeOptions}
             bindingScopeOptions={props.bindingScopeOptions}
-            restrictSecretsToTargetScope={props.restrictSecretsToTargetScope}
             presets={props.headerPresets}
           />
         </section>
@@ -331,7 +329,6 @@ export function HttpCredentialsEditor(props: {
             targetScope={props.targetScope}
             credentialScopeOptions={props.credentialScopeOptions}
             bindingScopeOptions={props.bindingScopeOptions}
-            restrictSecretsToTargetScope={props.restrictSecretsToTargetScope}
             presets={queryParamPresets}
             emptyLabel="No query parameters"
             addLabel="Add query parameter"

@@ -43,11 +43,10 @@ export interface HeadersListProps {
   readonly sourceName?: string;
   /** Inline-created secrets are written to this explicit scope. */
   readonly targetScope: ScopeId;
-  /** Scope choices shown only inside the inline "+ New secret" form. */
+  /** Scope choices available for where this source credential is used. */
   readonly credentialScopeOptions?: readonly CredentialTargetScopeOption[];
   /** Scope choices for where this source credential is used. */
   readonly bindingScopeOptions?: readonly CredentialTargetScopeOption[];
-  readonly restrictSecretsToTargetScope?: boolean;
   readonly defaultValueKind?: HeaderState["valueKind"];
 }
 
@@ -65,7 +64,6 @@ export function HeadersList({
   sourceName,
   targetScope,
   bindingScopeOptions,
-  restrictSecretsToTargetScope,
   defaultValueKind = "secret",
 }: HeadersListProps) {
   const [picking, setPicking] = useState(false);
@@ -153,7 +151,6 @@ export function HeadersList({
                 existingSecrets={existingSecrets}
                 sourceName={sourceName}
                 bindingScopeOptions={bindingScopeOptions}
-                restrictSecretsToTargetScope={restrictSecretsToTargetScope}
                 copy={rowCopy}
                 previewComponent={rowPreviewComponent}
               />
@@ -188,7 +185,6 @@ function HeaderRow(props: {
   readonly existingSecrets: readonly SecretPickerSecret[];
   readonly sourceName?: string;
   readonly bindingScopeOptions?: readonly CredentialTargetScopeOption[];
-  readonly restrictSecretsToTargetScope?: boolean;
   readonly copy?: Partial<SecretCredentialRowCopy>;
   readonly previewComponent?: SecretCredentialPreviewComponent;
 }) {
@@ -220,7 +216,6 @@ function HeaderRow(props: {
       sourceName={props.sourceName}
       targetScope={props.header.targetScope ?? props.targetScope}
       bindingScopeOptions={props.bindingScopeOptions}
-      restrictSecretsToTargetScope={props.restrictSecretsToTargetScope}
       copy={props.copy}
       previewComponent={props.previewComponent}
     />
