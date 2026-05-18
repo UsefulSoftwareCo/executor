@@ -65,6 +65,94 @@ describe("JsonRpcRequestIdQueue", () => {
     release();
   });
 
+  it("does not let a waiting resume block an unrelated same-id tool call", async () => {
+    const queue = new JsonRpcRequestIdQueue();
+    let releaseResume!: () => void;
+    const hungResume = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+
+    const resumeStarted = new Promise<void>((resolve) => {
+      queue.run(
+        jsonRpcRequest({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "resume", arguments: { executionId: "exec_1" } },
+        }),
+        async () => {
+          resolve();
+          await hungResume;
+        },
+      );
+    });
+    await resumeStarted;
+
+    const executeDone = await Promise.race([
+      queue
+        .run(
+          jsonRpcRequest({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "execute", arguments: { code: "return 1" } },
+          }),
+          async () => "done",
+        )
+        .then((v) => ({ kind: "settled" as const, v })),
+      new Promise<{ kind: "blocked" }>((r) => setTimeout(() => r({ kind: "blocked" }), 200)),
+    ]);
+
+    expect(executeDone.kind).toBe("settled");
+    releaseResume();
+  });
+
+  it("serialises same-id resume calls for the same execution", async () => {
+    const queue = new JsonRpcRequestIdQueue();
+    const order: string[] = [];
+
+    let releaseFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      const firstRunning = new Promise<void>((release) => {
+        releaseFirst = release;
+      });
+      queue.run(
+        jsonRpcRequest({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "resume", arguments: { executionId: "exec_1" } },
+        }),
+        async () => {
+          order.push("first:start");
+          resolve();
+          await firstRunning;
+          order.push("first:end");
+        },
+      );
+    });
+    await firstStarted;
+
+    const secondDone = queue.run(
+      jsonRpcRequest({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "resume", arguments: { executionId: "exec_1" } },
+      }),
+      async () => {
+        order.push("second");
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(["first:start"]);
+
+    releaseFirst();
+    await secondDone;
+    expect(order).toEqual(["first:start", "first:end", "second"]);
+  });
+
   it("regression: caps wait on a hung previous request and dispatches anyway", async () => {
     // Override the timeout for fast CI — the production default is
     // PREVIOUS_REQUEST_TIMEOUT_MS (60s) which we cap test-side to 100ms.

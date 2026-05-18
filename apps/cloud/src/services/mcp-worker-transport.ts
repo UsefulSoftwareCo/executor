@@ -16,6 +16,16 @@ export type McpWorkerTransport = Readonly<{
 type JsonRpcLike = {
   readonly id?: unknown;
   readonly method?: unknown;
+  readonly params?: unknown;
+};
+
+type ToolCallParamsLike = {
+  readonly name?: unknown;
+  readonly arguments?: unknown;
+};
+
+type ResumeArgumentsLike = {
+  readonly executionId?: unknown;
 };
 
 type HandleRequestResult = {
@@ -60,7 +70,26 @@ const jsonRpcRequestIdKey = (id: unknown): string | null =>
     Option.getOrNull,
   );
 
-const extractJsonRpcRequestIdKeys = async (request: Request): Promise<ReadonlyArray<string>> => {
+const jsonRpcRequestQueueKey = (message: JsonRpcLike): string | null => {
+  const idKey = jsonRpcRequestIdKey(message.id);
+  if (!idKey) return null;
+
+  if (message.method !== "tools/call") return idKey;
+  if (!message.params || typeof message.params !== "object") return idKey;
+
+  const params = message.params as ToolCallParamsLike;
+  if (params.name !== "resume") return idKey;
+  if (!params.arguments || typeof params.arguments !== "object") return idKey;
+
+  const args = params.arguments as ResumeArgumentsLike;
+  if (typeof args.executionId !== "string" || args.executionId.length === 0) return idKey;
+
+  return `${idKey}:tools/call:resume:${args.executionId}`;
+};
+
+const extractJsonRpcRequestQueueKeys = async (
+  request: Request,
+): Promise<ReadonlyArray<string>> => {
   if (request.method !== "POST") return [];
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) return [];
@@ -74,7 +103,7 @@ const extractJsonRpcRequestIdKeys = async (request: Request): Promise<ReadonlyAr
     if (!message || typeof message !== "object") return [];
     const rpc = message as JsonRpcLike;
     if (typeof rpc.method !== "string") return [];
-    const key = jsonRpcRequestIdKey(rpc.id);
+    const key = jsonRpcRequestQueueKey(rpc);
     return key ? [key] : [];
   });
 };
@@ -97,7 +126,7 @@ export class JsonRpcRequestIdQueue {
   }
 
   async run<A>(request: Request, run: () => Promise<A>): Promise<A> {
-    const ids = [...new Set(await extractJsonRpcRequestIdKeys(request))];
+    const ids = [...new Set(await extractJsonRpcRequestQueueKeys(request))];
     if (ids.length === 0) return await run();
 
     const previous = ids.map((id) => this.inFlight.get(id)).filter(Predicate.isNotUndefined);
