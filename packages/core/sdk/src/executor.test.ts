@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect } from "effect";
+import { Data, Effect, Predicate } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { scopedExecutorTable, textColumn } from "./core-schema";
@@ -385,7 +385,7 @@ describe("createExecutor", () => {
         .pipe(Effect.flip);
 
       expect(error).toBeInstanceOf(ToolNotFoundError);
-      if (!(error instanceof ToolNotFoundError)) return;
+      if (!Predicate.isTagged("ToolNotFoundError")(error)) return;
       expect(error.suggestions).toEqual(["case_source.listdashboards"]);
     }),
   );

@@ -3239,13 +3239,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           (resolvedToolId: string) =>
           <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, ToolInvocationError> =>
             effect.pipe(
-            Effect.mapError(
-              (cause) =>
-                new ToolInvocationError({
-                  toolId: ToolId.make(resolvedToolId),
-                  message: formatInvocationCauseMessage(cause),
-                  cause,
-                }),
+              Effect.mapError(
+                (cause) =>
+                  new ToolInvocationError({
+                    toolId: ToolId.make(resolvedToolId),
+                    message: formatInvocationCauseMessage(cause),
+                    cause,
+                  }),
               ),
             );
 
