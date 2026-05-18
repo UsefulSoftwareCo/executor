@@ -62,7 +62,7 @@ function EditForm(props: {
     setCredentialTargetScope: setOAuthCredentialTargetScope,
   } = useCredentialTargetScope({
     sourceScope,
-    initialTargetScope: initialCredentialTargetScope(sourceScope, props.bindings),
+    initialTargetScope: displayScope,
   });
   const doConfigure = useAtomSet(configureSource, { mode: "promiseExit" });
   const setBinding = useAtomSet(setSourceCredentialBinding, { mode: "promise" });
