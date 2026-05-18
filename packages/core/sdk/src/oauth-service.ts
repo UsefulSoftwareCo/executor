@@ -252,6 +252,19 @@ export const makeOAuth2Service = (
     params.scopeId && deps.secretsGetAtScope
       ? deps.secretsGetAtScope(params.secretId, params.scopeId)
       : deps.secretsGet(params.secretId);
+  const secretsGetResolvedAtScope = (params: {
+    readonly secretId: string;
+    readonly scopeId?: string | null;
+  }) =>
+    params.scopeId && deps.secretsGetAtScope
+      ? deps
+          .secretsGetAtScope(params.secretId, params.scopeId)
+          .pipe(
+            Effect.map((value) =>
+              value === null ? null : { value, scopeId: params.scopeId ?? null },
+            ),
+          )
+      : secretsGetResolved(params.secretId);
 
   // -------------------------------------------------------------------
   // probe
@@ -450,7 +463,10 @@ export const makeOAuth2Service = (
     strategy: OAuthAuthorizationCodeStrategy,
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
-      const clientIdRef = yield* secretsGetResolved(strategy.clientIdSecretId).pipe(
+      const clientIdRef = yield* secretsGetResolvedAtScope({
+        secretId: strategy.clientIdSecretId,
+        scopeId: strategy.clientIdSecretScopeId,
+      }).pipe(
         Effect.mapError(
           (err) =>
             // Storage failure propagates; null returns aren't errors — the
@@ -491,7 +507,10 @@ export const makeOAuth2Service = (
         clientIdSecretScopeId: clientIdRef.scopeId,
         clientSecretSecretId: strategy.clientSecretSecretId ?? null,
         clientSecretSecretScopeId: strategy.clientSecretSecretId
-          ? ((yield* secretsGetResolved(strategy.clientSecretSecretId))?.scopeId ?? null)
+          ? ((yield* secretsGetResolvedAtScope({
+              secretId: strategy.clientSecretSecretId,
+              scopeId: strategy.clientSecretSecretScopeId,
+            }))?.scopeId ?? null)
           : null,
         scopes: [...strategy.scopes],
         scopeSeparator: strategy.scopeSeparator,
@@ -517,8 +536,14 @@ export const makeOAuth2Service = (
     strategy: OAuthClientCredentialsStrategy,
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
-      const clientIdRef = yield* secretsGetResolved(strategy.clientIdSecretId);
-      const clientSecretRef = yield* secretsGetResolved(strategy.clientSecretSecretId);
+      const clientIdRef = yield* secretsGetResolvedAtScope({
+        secretId: strategy.clientIdSecretId,
+        scopeId: strategy.clientIdSecretScopeId,
+      });
+      const clientSecretRef = yield* secretsGetResolvedAtScope({
+        secretId: strategy.clientSecretSecretId,
+        scopeId: strategy.clientSecretSecretScopeId,
+      });
       if (clientIdRef === null || clientSecretRef === null) {
         return yield* new OAuthStartError({
           message: "client_id / client_secret secret not found",

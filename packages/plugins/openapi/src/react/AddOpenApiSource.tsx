@@ -281,6 +281,24 @@ export default function AddOpenApiSource(props: {
       setOAuthTokenTargetScope(defaultOAuthTokenTargetScope);
     }
   }, [credentialScopeOptions, defaultOAuthTokenTargetScope, oauthTokenTargetScope]);
+  useEffect(() => {
+    if (
+      oauth2ClientIdScope &&
+      !credentialScopeOptions.some((option) => option.scopeId === oauth2ClientIdScope)
+    ) {
+      setOauth2ClientIdScope(null);
+      setOauth2ClientIdSecretId(null);
+      setOauth2AuthState(null);
+    }
+    if (
+      oauth2ClientSecretScope &&
+      !credentialScopeOptions.some((option) => option.scopeId === oauth2ClientSecretScope)
+    ) {
+      setOauth2ClientSecretScope(null);
+      setOauth2ClientSecretSecretId(null);
+      setOauth2AuthState(null);
+    }
+  }, [credentialScopeOptions, oauth2ClientIdScope, oauth2ClientSecretScope]);
   const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
   const doAdd = useAtomSet(addOpenApiSpecOptimistic(scopeId), {
     mode: "promiseExit",
@@ -595,6 +613,8 @@ export default function AddOpenApiSource(props: {
     const displayName = identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
 
     const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
+    const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
+    const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
 
     if (selectedOAuth2Preset.flow === "clientCredentials") {
       // RFC 6749 §4.4: no user-interactive consent step. The client_secret
@@ -617,7 +637,9 @@ export default function AddOpenApiSource(props: {
             kind: "client-credentials",
             tokenEndpoint: tokenUrl,
             clientIdSecretId: oauth2ClientIdSecretId,
+            clientIdSecretScopeId: String(clientIdSecretScope),
             clientSecretSecretId: oauth2ClientSecretSecretId,
+            clientSecretSecretScopeId: String(clientSecretSecretScope),
             scopes: [...oauth2SelectedScopes],
           },
           pluginId: "openapi",
@@ -664,7 +686,11 @@ export default function AddOpenApiSource(props: {
               tokenEndpoint: tokenUrl,
               issuerUrl,
               clientIdSecretId: oauth2ClientIdSecretId,
+              clientIdSecretScopeId: String(clientIdSecretScope),
               clientSecretSecretId: oauth2ClientSecretSecretId ?? null,
+              clientSecretSecretScopeId: oauth2ClientSecretSecretId
+                ? String(clientSecretSecretScope)
+                : null,
               scopes: [...oauth2SelectedScopes],
             },
             pluginId: "openapi",
@@ -711,6 +737,9 @@ export default function AddOpenApiSource(props: {
     selectedOAuth2Fingerprint,
     oauth,
     oauthTokenTargetScope,
+    oauth2ClientIdScope,
+    oauth2ClientSecretScope,
+    sourceScope,
   ]);
 
   const handleCancelOAuth2 = useCallback(() => {
@@ -752,8 +781,8 @@ export default function AddOpenApiSource(props: {
 
     const sourceId = exit.value.namespace;
     const oauthTokenBindingScope = ScopeId.make(oauthTokenTargetScope);
-    const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
-    const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
+    const clientIdBindingScope = oauth2ClientIdScope ?? sourceScope;
+    const clientSecretBindingScope = oauth2ClientSecretScope ?? sourceScope;
 
     for (const binding of headerBindings) {
       const bindingExit = await doSetBinding({
@@ -826,12 +855,12 @@ export default function AddOpenApiSource(props: {
         params: { scopeId },
         payload: SetSourceCredentialBindingInput.make({
           source: { id: sourceId, scope: sourceScope },
-          scope: sourceScope,
+          scope: clientIdBindingScope,
           slotKey: configuredOAuth2.clientIdSlot,
           value: {
             kind: "secret",
             secretId: SecretId.make(oauth2ClientIdSecretId),
-            secretScopeId: clientIdSecretScope,
+            secretScopeId: clientIdBindingScope,
           },
         }),
         reactivityKeys: bindingWriteKeys,
@@ -848,12 +877,12 @@ export default function AddOpenApiSource(props: {
         params: { scopeId },
         payload: SetSourceCredentialBindingInput.make({
           source: { id: sourceId, scope: sourceScope },
-          scope: sourceScope,
+          scope: clientSecretBindingScope,
           slotKey: configuredOAuth2.clientSecretSlot,
           value: {
             kind: "secret",
             secretId: SecretId.make(oauth2ClientSecretSecretId),
-            secretScopeId: clientSecretSecretScope,
+            secretScopeId: clientSecretBindingScope,
           },
         }),
         reactivityKeys: bindingWriteKeys,
@@ -1142,6 +1171,17 @@ export default function AddOpenApiSource(props: {
                           onCreatedScope={setOauth2ClientIdScope}
                         />
                       </div>
+                      <CredentialScopeDropdown
+                        value={oauth2ClientIdScope ?? sourceScope}
+                        options={credentialScopeOptions}
+                        onChange={(targetScope) => {
+                          setOauth2ClientIdScope(targetScope);
+                          setOauth2ClientIdSecretId(null);
+                          setOauth2AuthState(null);
+                        }}
+                        label="Used by"
+                        help="Choose where this OAuth client ID credential lives."
+                      />
                     </div>
                   </div>
                   <div className="space-y-1.5">
@@ -1174,6 +1214,17 @@ export default function AddOpenApiSource(props: {
                           onCreatedScope={setOauth2ClientSecretScope}
                         />
                       </div>
+                      <CredentialScopeDropdown
+                        value={oauth2ClientSecretScope ?? sourceScope}
+                        options={credentialScopeOptions}
+                        onChange={(targetScope) => {
+                          setOauth2ClientSecretScope(targetScope);
+                          setOauth2ClientSecretSecretId(null);
+                          setOauth2AuthState(null);
+                        }}
+                        label="Used by"
+                        help="Choose where this OAuth client secret credential lives."
+                      />
                     </div>
                   </div>
                   <div className="space-y-1.5">

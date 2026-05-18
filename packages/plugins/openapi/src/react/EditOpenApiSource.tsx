@@ -431,6 +431,7 @@ export default function EditOpenApiSource(props: {
       return;
     }
     const clientIdSecretId = clientIdBinding.value.secretId;
+    const clientIdSecretScopeId = clientIdBinding.value.secretScopeId ?? clientIdBinding.scopeId;
     if (
       oauth2.flow === "clientCredentials" &&
       (!clientSecretBinding || !isSecretCredentialBindingValue(clientSecretBinding.value))
@@ -443,6 +444,10 @@ export default function EditOpenApiSource(props: {
       clientSecretBinding &&
       isSecretCredentialBindingValue(clientSecretBinding.value)
         ? clientSecretBinding.value
+        : null;
+    const clientSecretSecretScopeId =
+      clientSecretBinding && isSecretCredentialBindingValue(clientSecretBinding.value)
+        ? (clientSecretBinding.value.secretScopeId ?? clientSecretBinding.scopeId)
         : null;
 
     const existingConnection = exactCredentialBindingForScope(
@@ -481,7 +486,11 @@ export default function EditOpenApiSource(props: {
             kind: "client-credentials",
             tokenEndpoint: tokenUrl,
             clientIdSecretId,
+            clientIdSecretScopeId: String(clientIdSecretScopeId),
             clientSecretSecretId: clientSecretValue!.secretId,
+            clientSecretSecretScopeId: clientSecretSecretScopeId
+              ? String(clientSecretSecretScopeId)
+              : null,
             scopes: [...oauth2.scopes],
           },
           pluginId: "openapi",
@@ -537,10 +546,14 @@ export default function EditOpenApiSource(props: {
           tokenEndpoint: tokenUrl,
           issuerUrl,
           clientIdSecretId,
+          clientIdSecretScopeId: String(clientIdSecretScopeId),
           clientSecretSecretId:
             clientSecretBinding && isSecretCredentialBindingValue(clientSecretBinding.value)
               ? clientSecretBinding.value.secretId
               : null,
+          clientSecretSecretScopeId: clientSecretSecretScopeId
+            ? String(clientSecretSecretScopeId)
+            : null,
           scopes: [...oauth2.scopes],
         },
         pluginId: "openapi",

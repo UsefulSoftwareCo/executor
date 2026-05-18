@@ -60,9 +60,11 @@ export const OAuthAuthorizationCodeStrategy = Schema.Struct({
    *  an inline string so the value lives at the scope where the caller
    *  configured it and shadowing behaves consistently. */
   clientIdSecretId: Schema.String,
+  clientIdSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
   /** Secret id for `client_secret`. Null for public clients using
    *  PKCE without a confidential secret. */
   clientSecretSecretId: Schema.NullOr(Schema.String),
+  clientSecretSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   /** Separator between scopes. RFC 6749 says space; some providers
    *  (GitHub classic) use comma. */
@@ -84,7 +86,9 @@ export const OAuthClientCredentialsStrategy = Schema.Struct({
   kind: Schema.Literal("client-credentials"),
   tokenEndpoint: Schema.String,
   clientIdSecretId: Schema.String,
+  clientIdSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
   clientSecretSecretId: Schema.String,
+  clientSecretSecretScopeId: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.optional(Schema.Array(Schema.String)),
   scopeSeparator: Schema.optional(Schema.String),
   clientAuth: Schema.optional(Schema.Literals(["body", "basic"])),
