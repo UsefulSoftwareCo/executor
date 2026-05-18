@@ -562,6 +562,50 @@ const byScopedId =
   (b: ConditionBuilder<Record<string, AnyColumn>>): Condition =>
     b.and(b("scope_id", "=", scope), b("id", "=", id)) as Condition;
 
+const toolSourceId = (toolId: string): string | null => {
+  const dot = toolId.indexOf(".");
+  return dot === -1 ? null : toolId.slice(0, dot);
+};
+
+const levenshteinDistance = (left: string, right: string): number => {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = Array.from({ length: right.length + 1 }, () => 0);
+  for (let i = 0; i < left.length; i++) {
+    current[0] = i + 1;
+    for (let j = 0; j < right.length; j++) {
+      current[j + 1] =
+        left[i] === right[j]
+          ? previous[j]!
+          : Math.min(previous[j]!, previous[j + 1]!, current[j]!) + 1;
+    }
+    for (let j = 0; j < previous.length; j++) previous[j] = current[j]!;
+  }
+  return previous[right.length]!;
+};
+
+const missingToolSuggestionScore = (query: string, candidate: string): number => {
+  const normalizedQuery = query.toLowerCase();
+  const normalizedCandidate = candidate.toLowerCase();
+  if (normalizedCandidate === normalizedQuery) return 0;
+  if (normalizedCandidate.startsWith(normalizedQuery)) return 1;
+  if (normalizedQuery.startsWith(normalizedCandidate)) return 2;
+  if (normalizedCandidate.includes(normalizedQuery)) return 3;
+  const queryLeaf = normalizedQuery.split(".").at(-1) ?? normalizedQuery;
+  const candidateLeaf = normalizedCandidate.split(".").at(-1) ?? normalizedCandidate;
+  if (candidateLeaf.startsWith(queryLeaf) || queryLeaf.startsWith(candidateLeaf)) return 4;
+  return 10 + levenshteinDistance(normalizedQuery, normalizedCandidate);
+};
+
+const missingToolSuggestions = (
+  toolId: string,
+  rows: readonly { readonly id: string }[],
+): readonly ToolId[] =>
+  rows
+    .map((row) => ({ id: row.id, score: missingToolSuggestionScore(toolId, row.id) }))
+    .sort((left, right) => left.score - right.score || left.id.localeCompare(right.id))
+    .slice(0, 5)
+    .map((item) => ToolId.make(item.id));
+
 type CoreTableName = keyof CoreSchema & string;
 type CoreRow<TName extends CoreTableName> = FumaRow<CoreSchema[TName]>;
 type CoreWhere<_TName extends CoreTableName> = (
@@ -3191,19 +3235,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: preserve public invoke error message wrapping for unknown plugin failures
           return cause instanceof Error ? cause.message : String(cause);
         };
-        const wrapInvocationError = <A, E>(
-          effect: Effect.Effect<A, E>,
-        ): Effect.Effect<A, ToolInvocationError> =>
-          effect.pipe(
+        const wrapInvocationError =
+          (resolvedToolId: string) =>
+          <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, ToolInvocationError> =>
+            effect.pipe(
             Effect.mapError(
               (cause) =>
                 new ToolInvocationError({
-                  toolId: ToolId.make(toolId),
+                  toolId: ToolId.make(resolvedToolId),
                   message: formatInvocationCauseMessage(cause),
                   cause,
                 }),
-            ),
-          );
+              ),
+            );
 
         // Resolve the user-authored policy first. A `block` rule
         // short-circuits both the static and dynamic paths before any
@@ -3230,7 +3274,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* enforceApproval(staticEntry.tool.annotations, toolId, args, policy, handler).pipe(
             Effect.withSpan("executor.tool.enforce_approval"),
           );
-          return yield* wrapInvocationError(
+          return yield* wrapInvocationError(toolId)(
             staticEntry.tool.handler({
               ctx: staticEntry.ctx,
               args,
@@ -3242,21 +3286,43 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Dynamic path — DB lookup + delegate to owning plugin. Walk the
         // whole scope stack and pick the innermost-scope row so a user's
         // shadow of an outer tool actually wins on invoke.
-        const toolRows = yield* core
+        let toolRows = yield* core
           .findMany("tool", {
             where: scopedWhere(scopeIds, byId(toolId)),
           })
           .pipe(Effect.withSpan("executor.tool.resolve"));
-        const row = findInnermost(toolRows);
+        let row = findInnermost(toolRows);
+        let resolvedToolId = toolId;
+        let suggestionRows: readonly CoreRow<"tool">[] = toolRows;
+        if (!row) {
+          suggestionRows = yield* core
+            .findMany("tool", {
+              where: scopedWhere(scopeIds),
+            })
+            .pipe(Effect.withSpan("executor.tool.resolve_suggestions"));
+          const sourceId = toolSourceId(toolId);
+          if (sourceId) {
+            const normalizedToolId = toolId.toLowerCase();
+            row = findInnermost(
+              suggestionRows.filter(
+                (toolRow) =>
+                  toolRow.source_id === sourceId && toolRow.id.toLowerCase() === normalizedToolId,
+              ),
+            );
+            if (row) resolvedToolId = row.id;
+          }
+        }
         if (!row) {
           return yield* new ToolNotFoundError({
             toolId: ToolId.make(toolId),
+            suggestions: missingToolSuggestions(toolId, suggestionRows),
           });
         }
         yield* Effect.annotateCurrentSpan({
           "executor.tool.dispatch_path": "dynamic",
           "executor.source_id": row.source_id,
           "executor.plugin_id": row.plugin_id,
+          "executor.tool.resolved_id": resolvedToolId,
         });
         const runtime = runtimes.get(row.plugin_id);
         if (!runtime) {
@@ -3287,20 +3353,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               sourceId: row.source_id,
               toolRows: [row],
             })
-            .pipe(wrapInvocationError)
+            .pipe(wrapInvocationError(resolvedToolId))
             .pipe(Effect.withSpan("executor.tool.resolve_annotations"));
-          annotations = map[toolId];
+          annotations = map[resolvedToolId];
         }
-        yield* enforceApproval(annotations, toolId, args, policy, handler).pipe(
+        yield* enforceApproval(annotations, resolvedToolId, args, policy, handler).pipe(
           Effect.withSpan("executor.tool.enforce_approval"),
         );
 
-        return yield* wrapInvocationError(
+        return yield* wrapInvocationError(resolvedToolId)(
           runtime.plugin.invokeTool({
             ctx: runtime.ctx,
             toolRow: row,
             args,
-            elicit: buildElicit(toolId, args, handler),
+            elicit: buildElicit(resolvedToolId, args, handler),
           }),
         ).pipe(Effect.withSpan("executor.tool.handler"));
       }).pipe(

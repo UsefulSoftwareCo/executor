@@ -641,6 +641,26 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("returns missing tool dispatches as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "missing.sourceTool", args: {} });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "tool_not_found",
+          message: "Tool not found: missing.sourceTool",
+          details: { toolId: "missing.sourceTool", suggestions: [] },
+        },
+      });
+    }),
+  );
+
   it.effect("preserves nested upstream error bodies through ToolResult.fail", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(

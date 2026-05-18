@@ -3,6 +3,7 @@ import { Data, Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { scopedExecutorTable, textColumn } from "./core-schema";
+import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
 import { ScopeId } from "./ids";
 import { definePlugin } from "./plugin";
@@ -171,6 +172,22 @@ const schemaProbePlugin = definePlugin(() => ({
   }),
 }))();
 
+const caseSensitiveDynamicPlugin = definePlugin(() => ({
+  id: "caseDynamic" as const,
+  storage: () => ({}),
+  extension: (ctx) => ({
+    registerSource: () =>
+      ctx.core.sources.register({
+        id: "case_source",
+        scope: String(ctx.scopes[0]!.id),
+        kind: "case",
+        name: "Case Source",
+        tools: [{ name: "listdashboards", description: "list dashboards" }],
+      }),
+  }),
+  invokeTool: ({ toolRow }) => Effect.succeed({ invokedToolId: toolRow.id }),
+}))();
+
 describe("createExecutor", () => {
   it.effect("rolls back plugin and core writes from ctx.transaction failures", () =>
     Effect.gen(function* () {
@@ -309,6 +326,36 @@ describe("createExecutor", () => {
           Owner: expect.any(String),
         }),
       );
+    }),
+  );
+
+  it.effect("resolves dynamic tool ids case-insensitively before invoking plugins", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [caseSensitiveDynamicPlugin] as const,
+      });
+      yield* executor.caseDynamic.registerSource();
+
+      const result = yield* executor.tools.invoke("case_source.listDashboards", {});
+
+      expect(result).toEqual({ invokedToolId: "case_source.listdashboards" });
+    }),
+  );
+
+  it.effect("suggests visible tools for missing dynamic tool ids", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [caseSensitiveDynamicPlugin] as const,
+      });
+      yield* executor.caseDynamic.registerSource();
+
+      const error = yield* executor.tools
+        .invoke("case_source.listDashboardsWRONG", {})
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ToolNotFoundError);
+      if (!(error instanceof ToolNotFoundError)) return;
+      expect(error.suggestions).toEqual(["case_source.listdashboards"]);
     }),
   );
 });

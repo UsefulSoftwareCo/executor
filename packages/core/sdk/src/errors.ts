@@ -8,7 +8,10 @@ import { ConnectionId, ToolId, SecretId } from "./ids";
 
 export class ToolNotFoundError extends Schema.TaggedErrorClass<ToolNotFoundError>()(
   "ToolNotFoundError",
-  { toolId: ToolId },
+  {
+    toolId: ToolId,
+    suggestions: Schema.optional(Schema.Array(ToolId)),
+  },
 ) {}
 
 export class ToolInvocationError extends Data.TaggedError("ToolInvocationError")<{

@@ -8,7 +8,7 @@ import type {
   InvokeOptions,
   Source,
 } from "@executor-js/sdk/core";
-import { isToolResult } from "@executor-js/sdk/core";
+import { isToolResult, ToolResult } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
 
@@ -32,6 +32,28 @@ const newCorrelationId = (): string => {
   return Math.floor(Math.random() * 0x1_0000_0000)
     .toString(16)
     .padStart(8, "0");
+};
+
+const expectedToolFailure = (
+  value: unknown,
+): { readonly code: string; readonly message: string; readonly details?: unknown } | null => {
+  if (Predicate.isTagged(value, "ToolNotFoundError") && "toolId" in value) {
+    const suggestions =
+      "suggestions" in value && Array.isArray(value.suggestions) ? value.suggestions : undefined;
+    return {
+      code: "tool_not_found",
+      message: `Tool not found: ${String(value.toolId)}`,
+      details: { toolId: value.toolId, ...(suggestions ? { suggestions } : {}) },
+    };
+  }
+  if (Predicate.isTagged(value, "ToolBlockedError") && "toolId" in value) {
+    return {
+      code: "tool_blocked",
+      message: `Tool blocked by policy: ${String(value.toolId)}`,
+      details: value,
+    };
+  }
+  return null;
 };
 
 /**
@@ -70,8 +92,12 @@ export const makeExecutorToolInvoker = (
     });
 
     const result = yield* executor.tools.invoke(path as ToolId, args, options.invokeOptions).pipe(
-      Effect.catchCause((cause): Effect.Effect<never, ExecutionToolError> => {
+      Effect.catchCause((cause) => {
         const err = cause.reasons.find(Cause.isFailReason)?.error;
+        const expected = expectedToolFailure(err);
+        if (expected) {
+          return Effect.succeed(ToolResult.fail(expected));
+        }
         if (isElicitationDeclinedError(err)) {
           return Effect.fail(
             new ExecutionToolError({
