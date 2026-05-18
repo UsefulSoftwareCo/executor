@@ -1,5 +1,6 @@
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
+import type { ReactNode } from "react";
 export {
   effectiveSourceCredentialBinding,
   missingSourceCredentialLabels,
@@ -31,6 +32,7 @@ export function SourceCredentialStatusBadge(props: { readonly missing: readonly 
 
 export function SourceCredentialNotice(props: {
   readonly missing: readonly string[];
+  readonly action?: ReactNode;
   readonly onAction?: () => void;
 }) {
   if (props.missing.length === 0) return null;
@@ -44,11 +46,12 @@ export function SourceCredentialNotice(props: {
             Missing {props.missing.join(", ")}
           </div>
         </div>
-        {props.onAction && (
-          <Button size="sm" variant="outline" onClick={props.onAction}>
-            Configure
-          </Button>
-        )}
+        {props.action ??
+          (props.onAction && (
+            <Button size="sm" variant="outline" onClick={props.onAction}>
+              Configure
+            </Button>
+          ))}
       </div>
     </div>
   );

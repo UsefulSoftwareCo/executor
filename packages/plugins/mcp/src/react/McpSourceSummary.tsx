@@ -3,6 +3,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAtom } from "@executor-js/react/api/atoms";
 import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
+import { Button } from "@executor-js/react/components/button";
 import {
   SourceCredentialNotice,
   SourceCredentialStatusBadge,
@@ -12,6 +13,7 @@ import {
 import { ScopeId } from "@executor-js/sdk/shared";
 
 import { mcpSourceAtom, mcpSourceBindingsAtom } from "./atoms";
+import McpSignInButton from "./McpSignInButton";
 import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
 
 const sourceCredentialSlots = (
@@ -62,9 +64,9 @@ export default function McpSourceSummary(props: {
     AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
   const sourceScope = source ? ScopeId.make(source.scope) : displayScope;
   const bindingsResult = useAtomValue(
-    mcpSourceBindingsAtom(displayScope, props.sourceId, sourceScope),
+    mcpSourceBindingsAtom(userScope, props.sourceId, sourceScope),
   );
-  const connectionsResult = useAtomValue(connectionsAtom(displayScope));
+  const connectionsResult = useAtomValue(connectionsAtom(userScope));
 
   if (!source) return null;
   const slots = sourceCredentialSlots(source as McpStoredSourceSchemaType);
@@ -86,7 +88,23 @@ export default function McpSourceSummary(props: {
   });
 
   if (props.variant === "panel") {
-    return <SourceCredentialNotice missing={missing} onAction={props.onAction} />;
+    const needsOAuth = missing.includes("OAuth sign-in");
+    const needsConfiguration = missing.some((label) => label !== "OAuth sign-in");
+    return (
+      <SourceCredentialNotice
+        missing={missing}
+        action={
+          <div className="flex shrink-0 items-center gap-2">
+            {needsOAuth && <McpSignInButton sourceId={props.sourceId} />}
+            {needsConfiguration && props.onAction && (
+              <Button type="button" size="sm" variant="outline" onClick={props.onAction}>
+                Configure
+              </Button>
+            )}
+          </div>
+        }
+      />
+    );
   }
 
   return <SourceCredentialStatusBadge missing={missing} />;
