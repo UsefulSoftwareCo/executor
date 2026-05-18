@@ -14,7 +14,7 @@ type ConfiguredCredentialValueLike =
       readonly prefix?: string;
     };
 
-type CredentialBindingRefLike = {
+export type CredentialBindingRefLike = {
   readonly slot: string;
   readonly scopeId: ScopeId;
   readonly value: CredentialBindingValue;

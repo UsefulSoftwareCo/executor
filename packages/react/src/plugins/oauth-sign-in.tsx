@@ -386,6 +386,8 @@ export function SourceOAuthSignInButton(props: {
   readonly detectPopupClosed?: boolean;
   readonly reconnectingLabel?: string;
   readonly signingInLabel?: string;
+  readonly reconnectLabel?: string;
+  readonly signInLabel?: string;
 }) {
   const {
     connectionId,
@@ -400,7 +402,9 @@ export function SourceOAuthSignInButton(props: {
     popupName,
     queryParams,
     reconnectingLabel,
+    reconnectLabel,
     signingInLabel,
+    signInLabel,
     sourceLabel,
     tokenScope,
   } = props;
@@ -453,7 +457,9 @@ export function SourceOAuthSignInButton(props: {
       isConnected={isConnected}
       onSignIn={() => void handleSignIn()}
       reconnectingLabel={reconnectingLabel}
+      reconnectLabel={reconnectLabel}
       signingInLabel={signingInLabel}
+      signInLabel={signInLabel}
     />
   );
 }

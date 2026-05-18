@@ -20,11 +20,13 @@ import {
   type HttpCredentialsState,
 } from "@executor-js/plugin-http-source/react";
 import {
-  effectiveCredentialBindingForScope,
   httpCredentialsFromConfiguredCredentialBindings,
   initialCredentialTargetScope,
 } from "@executor-js/react/plugins/credential-bindings";
-import { SourceOAuthConnectionControl } from "@executor-js/react/plugins/source-oauth-connection";
+import {
+  SourceOAuthConnectionControl,
+  sourceOAuthConnectionUiState,
+} from "@executor-js/react/plugins/source-oauth-connection";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
 import { ScopeId } from "@executor-js/sdk/shared";
@@ -84,19 +86,16 @@ function RemoteEditForm(props: {
   const oauth2 = props.initial.config.auth.kind === "oauth2" ? props.initial.config.auth : null;
   const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
   const scopeRanks = new Map(scopeStack.map((scope, index) => [scope.id, index] as const));
-  const connectionBinding = oauth2
-    ? effectiveCredentialBindingForScope(
-        props.bindings,
-        oauth2.connectionSlot,
-        oauthCredentialTargetScope,
+  const oauthConnectionState = oauth2
+    ? sourceOAuthConnectionUiState({
+        bindings: props.bindings,
+        connectionSlot: oauth2.connectionSlot,
+        tokenScope: oauthCredentialTargetScope,
         scopeRanks,
-      )
+        credentialScopeOptions,
+        connections,
+      })
     : null;
-  const boundConnectionId =
-    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
-  const isConnected =
-    boundConnectionId !== null &&
-    connections.some((connection) => connection.id === boundConnectionId);
   const oauthRequestCredentials = serializeHttpCredentials(credentials);
 
   const handleCredentialsChange = (next: HttpCredentialsState) => {
@@ -185,7 +184,7 @@ function RemoteEditForm(props: {
         bindingScopeOptions={credentialScopeOptions}
       />
 
-      {oauth2 && (
+      {oauth2 && oauthConnectionState && (
         <SourceOAuthConnectionControl
           popupName="mcp-oauth"
           pluginId="mcp"
@@ -195,11 +194,13 @@ function RemoteEditForm(props: {
           tokenScope={oauthCredentialTargetScope}
           onTokenScopeChange={setOAuthCredentialTargetScope}
           credentialScopeOptions={credentialScopeOptions}
-          connectionId={boundConnectionId}
+          connectionId={oauthConnectionState.connectionId}
           sourceLabel={`${identity.name.trim() || props.initial.namespace || "MCP"} OAuth`}
           headers={oauthRequestCredentials.headers}
           queryParams={oauthRequestCredentials.queryParams}
-          isConnected={isConnected}
+          isConnected={oauthConnectionState.isConnected}
+          buttonIsConnected={oauthConnectionState.buttonIsConnected}
+          statusLabel={oauthConnectionState.statusLabel}
           onConnected={async (connectionId) => {
             await setBinding({
               params: { scopeId: oauthCredentialTargetScope },
@@ -213,6 +214,8 @@ function RemoteEditForm(props: {
             });
           }}
           reconnectingLabel="Reconnecting…"
+          reconnectLabel="Reconnect"
+          signInLabel={oauthConnectionState.signInLabel}
           signingInLabel="Signing in…"
         />
       )}
