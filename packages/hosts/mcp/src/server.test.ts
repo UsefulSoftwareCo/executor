@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect } from "effect";
+import { Data, Deferred, Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -460,10 +460,15 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         expect(result.isError).toBeFalsy();
         expect(textOf(result)).toContain("User approval required");
         expect(textOf(result)).toContain("https://executor.test/resume/exec_1");
+        expect(textOf(result)).toContain(
+          "Return text to the user telling them to approve the action at this approvalUrl. Only after you have prompted the user, call the `resume` tool with this executionId; `resume` will wait for the user's browser decision.",
+        );
         expect(result.structuredContent).toMatchObject({
           status: "user_approval_required",
           executionId: "exec_1",
           approvalUrl: "https://executor.test/resume/exec_1",
+          resumePrompt:
+            "Return text to the user telling them to approve the action at this approvalUrl. Only after you have prompted the user, call the `resume` tool with this executionId; `resume` will wait for the user's browser decision.",
         });
       },
       {
@@ -477,6 +482,9 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
 
   it("browser approval mode consumes a user-approved response and returns the resumed result", async () => {
     const approved = new Map<string, { action: "accept"; content?: Record<string, unknown> }>();
+    const waiter = await Effect.runPromise(
+      Deferred.make<{ action: "accept"; content?: Record<string, unknown> }>(),
+    );
     const engine = makeStubEngine({
       resume: (executionId, response) =>
         Effect.succeed(
@@ -490,20 +498,14 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
       engine,
       NO_CAPS,
       async (client) => {
-        const waiting = await client.callTool({
+        const waiting = client.callTool({
           name: "resume",
           arguments: { executionId: "exec_1" },
         });
-        expect(waiting.structuredContent).toMatchObject({
-          status: "user_approval_required",
-          executionId: "exec_1",
-        });
-
-        approved.set("exec_1", { action: "accept", content: {} });
-        const resumed = await client.callTool({
-          name: "resume",
-          arguments: { executionId: "exec_1" },
-        });
+        const response = { action: "accept" as const, content: {} };
+        approved.set("exec_1", response);
+        await Effect.runPromise(Deferred.succeed(waiter, response));
+        const resumed = await waiting;
         expect(resumed.content).toEqual([{ type: "text", text: "resumed-after-browser" }]);
         expect(resumed.structuredContent).toMatchObject({
           status: "completed",
@@ -517,6 +519,12 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         },
         browserApprovalStore: {
           takeResponse: (executionId) => Effect.succeed(approved.get(executionId) ?? null),
+          waitForResponse: (executionId) =>
+            Effect.gen(function* () {
+              const response = approved.get(executionId);
+              if (response) return response;
+              return yield* Deferred.await(waiter);
+            }),
         },
       },
     );

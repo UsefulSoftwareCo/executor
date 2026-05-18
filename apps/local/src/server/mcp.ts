@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Deferred, Effect, Option, Schema } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -115,6 +115,7 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
   const approvalResponses = new Map<string, Map<string, ResumeResponse>>();
+  const approvalWaiters = new Map<string, Map<string, Deferred.Deferred<ResumeResponse>>>();
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
@@ -122,6 +123,7 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
     transports.delete(id);
     servers.delete(id);
     approvalResponses.delete(id);
+    approvalWaiters.delete(id);
     if (opts.transport) await ignoreClose(t ? () => t.close() : undefined);
     if (opts.server) await ignoreClose(s ? () => s.close() : undefined);
   };
@@ -168,6 +170,38 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
                   const response = sessionApprovals?.get(executionId) ?? null;
                   sessionApprovals?.delete(executionId);
                   return response;
+                }),
+              waitForResponse: (executionId) =>
+                Effect.gen(function* () {
+                  if (!createdSessionId) return null;
+                  const sessionApprovals = approvalResponses.get(createdSessionId);
+                  const response = sessionApprovals?.get(executionId) ?? null;
+                  if (response) {
+                    sessionApprovals?.delete(executionId);
+                    return response;
+                  }
+
+                  const sessionWaiters =
+                    approvalWaiters.get(createdSessionId) ??
+                    new Map<string, Deferred.Deferred<ResumeResponse>>();
+                  const waiter =
+                    sessionWaiters.get(executionId) ?? (yield* Deferred.make<ResumeResponse>());
+                  sessionWaiters.set(executionId, waiter);
+                  approvalWaiters.set(createdSessionId, sessionWaiters);
+
+                  yield* Deferred.await(waiter).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        if (sessionWaiters.get(executionId) === waiter) {
+                          sessionWaiters.delete(executionId);
+                        }
+                      }),
+                    ),
+                  );
+                  const approvals = approvalResponses.get(createdSessionId);
+                  const approved = approvals?.get(executionId) ?? null;
+                  approvals?.delete(executionId);
+                  return approved;
                 }),
             },
             elicitationMode:
@@ -217,6 +251,8 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
         approvalResponses.get(sessionId) ?? new Map<string, ResumeResponse>();
       sessionApprovals.set(executionId, response);
       approvalResponses.set(sessionId, sessionApprovals);
+      const waiter = approvalWaiters.get(sessionId)?.get(executionId);
+      if (waiter) await Effect.runPromise(Deferred.succeed(waiter, response));
 
       return json(resumeApprovalResult(executionId, response));
     },

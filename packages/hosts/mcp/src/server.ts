@@ -98,6 +98,7 @@ export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.Yield
 
 export type BrowserApprovalStore = {
   readonly takeResponse: (executionId: string) => Effect.Effect<ResumeResponse | null>;
+  readonly waitForResponse?: (executionId: string) => Effect.Effect<ResumeResponse | null>;
 };
 
 // ---------------------------------------------------------------------------
@@ -291,6 +292,9 @@ const newCorrelationId = (): string =>
 const defaultResumeApprovalUrl = (executionId: string): string =>
   `/resume/${encodeURIComponent(executionId)}`;
 
+const browserApprovalReturnPrompt =
+  "Return text to the user telling them to approve the action at this approvalUrl. Only after you have prompted the user, call the `resume` tool with this executionId; `resume` will wait for the user's browser decision.";
+
 const formatResumeApprovalRequired = (input: {
   readonly executionId: string;
   readonly approvalUrl: string;
@@ -304,7 +308,8 @@ const formatResumeApprovalRequired = (input: {
         "Tell the user to open this URL while signed in and approve or decline the paused interaction:",
         input.approvalUrl,
         "",
-        "Do not choose accept, decline, cancel, or response content on the user's behalf.",
+        "Required next steps for this agent:",
+        browserApprovalReturnPrompt,
       ].join("\n"),
     },
   ],
@@ -312,6 +317,7 @@ const formatResumeApprovalRequired = (input: {
     status: "user_approval_required",
     executionId: input.executionId,
     approvalUrl: input.approvalUrl,
+    resumePrompt: browserApprovalReturnPrompt,
   },
 });
 
@@ -509,9 +515,23 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       return config.browserApprovalStore?.takeResponse(executionId) ?? Effect.succeed(null);
     };
 
+    const waitForBrowserApprovalResponse = (
+      executionId: string,
+    ): Effect.Effect<ResumeResponse | null> => {
+      const waitForResponse = config.browserApprovalStore?.waitForResponse;
+      if (!waitForResponse) return takeBrowserApprovalResponse(executionId);
+
+      return waitForResponse(executionId).pipe(
+        Effect.timeoutOrElse({
+          duration: "10 minutes",
+          orElse: () => Effect.succeed(null),
+        }),
+      );
+    };
+
     const resumeAfterBrowserApproval = (executionId: string): Effect.Effect<McpToolResult, E> =>
       Effect.gen(function* () {
-        const response = yield* takeBrowserApprovalResponse(executionId);
+        const response = yield* waitForBrowserApprovalResponse(executionId);
         if (!response) return yield* requireUserResumeApproval(executionId);
 
         const outcome = yield* engine.resume(executionId, response);

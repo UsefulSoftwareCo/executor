@@ -4,7 +4,7 @@
 
 import { DurableObject, env } from "cloudflare:workers";
 import { createTraceState } from "@opentelemetry/api";
-import { Cause, Data, Effect, Layer } from "effect";
+import { Cause, Data, Deferred, Effect, Layer } from "effect";
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
 import type * as Tracer from "effect/Tracer";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -264,6 +264,7 @@ export class McpSessionDO extends DurableObject {
   private sessionMeta: SessionMeta | null = null;
   private transportJsonResponseMode: boolean | null = null;
   private approvalResponses = new Map<string, ResumeResponse>();
+  private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
   // Updated at the start of each `handleRequest` so the host-mcp server's
   // `parentSpan` getter — invoked by the MCP SDK's deferred tool callbacks
   // after `transport.handleRequest()` has already returned its streaming
@@ -371,21 +372,8 @@ export class McpSessionDO extends DurableObject {
         parentSpan: () => self.currentRequestSpan ?? undefined,
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: {
-          takeResponse: (executionId) =>
-            Effect.promise(async () => {
-              const memoryResponse = self.approvalResponses.get(executionId);
-              if (memoryResponse) {
-                self.approvalResponses.delete(executionId);
-                await self.ctx.storage.delete(approvalResponseKey(executionId));
-                return memoryResponse;
-              }
-              const stored = await self.ctx.storage.get<ResumeResponse>(
-                approvalResponseKey(executionId),
-              );
-              if (!stored) return null;
-              await self.ctx.storage.delete(approvalResponseKey(executionId));
-              return stored;
-            }),
+          takeResponse: (executionId) => self.takeApprovalResponse(executionId),
+          waitForResponse: (executionId) => self.waitForApprovalResponse(executionId),
         },
         elicitationMode:
           sessionElicitationMode === "browser"
@@ -762,6 +750,44 @@ export class McpSessionDO extends DurableObject {
     );
   }
 
+  private takeApprovalResponse(executionId: string): Effect.Effect<ResumeResponse | null> {
+    const self = this;
+    return Effect.promise(async () => {
+      const memoryResponse = self.approvalResponses.get(executionId);
+      if (memoryResponse) {
+        self.approvalResponses.delete(executionId);
+        await self.ctx.storage.delete(approvalResponseKey(executionId));
+        return memoryResponse;
+      }
+      const stored = await self.ctx.storage.get<ResumeResponse>(approvalResponseKey(executionId));
+      if (!stored) return null;
+      await self.ctx.storage.delete(approvalResponseKey(executionId));
+      return stored;
+    });
+  }
+
+  private waitForApprovalResponse(executionId: string): Effect.Effect<ResumeResponse | null> {
+    const self = this;
+    return Effect.gen(function* () {
+      const existing = yield* self.takeApprovalResponse(executionId);
+      if (existing) return existing;
+
+      const waiter =
+        self.approvalWaiters.get(executionId) ?? (yield* Deferred.make<ResumeResponse>());
+      self.approvalWaiters.set(executionId, waiter);
+      yield* Deferred.await(waiter).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (self.approvalWaiters.get(executionId) === waiter) {
+              self.approvalWaiters.delete(executionId);
+            }
+          }),
+        ),
+      );
+      return yield* self.takeApprovalResponse(executionId);
+    });
+  }
+
   async resumeExecutionForApproval(
     executionId: string,
     identity: McpSessionApprovalIdentity,
@@ -784,6 +810,8 @@ export class McpSessionDO extends DurableObject {
         yield* Effect.promise(() =>
           self.ctx.storage.put(approvalResponseKey(executionId), response),
         );
+        const waiter = self.approvalWaiters.get(executionId);
+        if (waiter) yield* Deferred.succeed(waiter, response);
         return resumeApprovalResult(executionId, response);
       }).pipe(
         Effect.withSpan("McpSessionDO.resumeExecutionForApproval", {
