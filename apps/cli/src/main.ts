@@ -1494,7 +1494,7 @@ const mcpCommand = Command.make(
   {
     scope,
     elicitationMode: Options.choice("elicitation-mode", ["browser", "model"] as const)
-      .pipe(Options.withDefault("browser"))
+      .pipe(Options.withDefault("model"))
       .pipe(
         Options.withDescription(
           "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",

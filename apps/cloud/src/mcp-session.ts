@@ -364,8 +364,7 @@ export class McpSessionDO extends DurableObject {
       // `Effect.runPromise(engine.getDescription)` at its async
       // MCP-SDK boundary and orphan the sub-span.
       const description = yield* buildExecuteDescription(executor);
-      const sessionElicitationMode =
-        sessionMeta.elicitationMode ?? (sessionMeta.allowModelResume ? "model" : "browser");
+      const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
@@ -583,7 +582,7 @@ export class McpSessionDO extends DurableObject {
       return yield* resolveSessionMeta(
         token.organizationId,
         token.userId,
-        token.elicitationMode ?? (token.allowModelResume ? "model" : "browser"),
+        token.elicitationMode ?? "model",
       ).pipe(
         Effect.provide(makeResolveOrganizationServices(dbHandle)),
         Effect.tap((sessionMeta) =>

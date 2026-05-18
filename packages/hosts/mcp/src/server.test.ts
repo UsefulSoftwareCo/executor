@@ -437,7 +437,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
     });
   });
 
-  it("resume tool requires user approval by default", async () => {
+  it("browser approval mode requires user approval before resume", async () => {
     let resumeCalled = false;
     const engine = makeStubEngine({
       resume: () =>
@@ -530,7 +530,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
     );
   });
 
-  it("model resume mode paused execution returns interaction metadata with executionId", async () => {
+  it("default model resume mode paused execution returns interaction metadata with executionId", async () => {
     const engine = makeStubEngine({
       executeWithPause: () =>
         Effect.succeed(
@@ -563,7 +563,6 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         expect(structured?.executionId).toBe("exec_42");
         expect(structured?.status).toBe("waiting_for_interaction");
       },
-      { elicitationMode: { mode: "model" } },
     );
   });
 

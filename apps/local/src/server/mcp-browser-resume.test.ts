@@ -169,7 +169,10 @@ describe("local MCP browser approval resume", () => {
       { name: "browser-resume-test-client", version: "1.0.0" },
       { capabilities: {} },
     );
-    const transport = new StreamableHTTPClientTransport(new URL("/mcp", TEST_BASE_URL), { fetch });
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=browser", TEST_BASE_URL),
+      { fetch },
+    );
 
     await mcpClient.connect(transport);
 

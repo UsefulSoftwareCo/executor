@@ -59,7 +59,7 @@ export const buildMcpHttpEndpoint = (input: {
     : input.origin
       ? `${input.origin}/mcp`
       : "<this-server>/mcp";
-  if (!input.elicitationMode || input.elicitationMode === "browser") return endpoint;
+  if (!input.elicitationMode || input.elicitationMode === "model") return endpoint;
 
   if (endpoint.startsWith("<")) return `${endpoint}?elicitation_mode=${input.elicitationMode}`;
   const url = new URL(endpoint);
@@ -109,10 +109,8 @@ export const buildMcpInstallCommand = (input: {
   if (input.scopeDir) {
     innerArgs.push("--scope", input.scopeDir);
   }
-  if (input.elicitationMode && input.elicitationMode !== "browser") {
-    if (input.elicitationMode !== "native") {
-      innerArgs.push("--elicitation-mode", input.elicitationMode);
-    }
+  if (input.elicitationMode && input.elicitationMode !== "model") {
+    innerArgs.push("--elicitation-mode", input.elicitationMode);
   }
   return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
 };
@@ -125,7 +123,7 @@ export function McpInstallCard(props: { className?: string }) {
   const showStdio = isLocal && readDesktopBridge() === null;
   const [mode, setMode] = useState<TransportMode>("http");
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("browser");
+  const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
   const [origin, setOrigin] = useState<string | null>(null);
   const [desktop, setDesktop] = useState<{
     readonly port: number;

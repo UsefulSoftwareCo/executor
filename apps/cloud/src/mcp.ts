@@ -556,7 +556,7 @@ const readElicitationMode = (request: Request): McpElicitationMode => {
     return "model";
   }
 
-  return "browser";
+  return "model";
 };
 
 /**

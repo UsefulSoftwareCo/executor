@@ -46,7 +46,7 @@ const readElicitationMode = (request: Request): McpElicitationMode => {
     return mode as McpElicitationMode;
   }
 
-  return "browser";
+  return "model";
 };
 
 const approvalUrlForRequest = (

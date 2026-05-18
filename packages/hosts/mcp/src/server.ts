@@ -72,9 +72,9 @@ type SharedMcpServerConfig = {
    */
   readonly debug?: boolean;
   /**
-   * Controls how elicitation is handled for this MCP connection. The secure
-   * default is browser approval: `execute` pauses, and `resume` returns a URL
-   * for the signed-in user instead of letting the model answer directly.
+   * Controls how elicitation is handled for this MCP connection. The default
+   * is model-managed resume, where paused executions expose interaction
+   * metadata and the model can call `resume` with the user's response.
    */
   readonly elicitationMode?:
     | {
@@ -379,8 +379,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const elicitationMode =
       config.elicitationMode ??
       ({
-        mode: "browser",
-        approvalUrl: defaultResumeApprovalUrl,
+        mode: "model",
       } as const);
 
     const resolveParentSpan = (): Tracer.AnySpan | undefined => {

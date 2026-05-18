@@ -30,7 +30,7 @@ describe("MCP install command rendering", () => {
     ).toBe("npx add-mcp http://localhost:4788/mcp --transport http --name executor");
   });
 
-  it("uses browser approval by default and encodes explicit elicitation modes", () => {
+  it("uses model-managed resume by default and encodes explicit elicitation modes", () => {
     expect(
       buildMcpHttpEndpoint({
         origin: "https://executor.example",
@@ -43,10 +43,10 @@ describe("MCP install command rendering", () => {
         mode: "http",
         isDev: false,
         origin: "https://executor.example",
-        elicitationMode: "model",
+        elicitationMode: "browser",
       }),
     ).toBe(
-      "npx add-mcp 'https://executor.example/mcp?elicitation_mode=model' --transport http --name executor",
+      "npx add-mcp 'https://executor.example/mcp?elicitation_mode=browser' --transport http --name executor",
     );
 
     expect(
@@ -69,6 +69,17 @@ describe("MCP install command rendering", () => {
         origin: null,
         elicitationMode: "model",
       }),
-    ).toBe("npx add-mcp 'executor mcp --elicitation-mode model' --name executor");
+    ).toBe("npx add-mcp 'executor mcp' --name executor");
+  });
+
+  it("passes browser approval through stdio install commands when explicitly selected", () => {
+    expect(
+      buildMcpInstallCommand({
+        mode: "stdio",
+        isDev: false,
+        origin: null,
+        elicitationMode: "browser",
+      }),
+    ).toBe("npx add-mcp 'executor mcp --elicitation-mode browser' --name executor");
   });
 });

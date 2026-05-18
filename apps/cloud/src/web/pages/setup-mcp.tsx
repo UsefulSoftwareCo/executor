@@ -19,7 +19,7 @@ export const SetupMcpPage = () => {
   const navigate = useNavigate();
   const [origin, setOrigin] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("browser");
+  const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("model");
 
   useEffect(() => {
     setOrigin(window.location.origin);
