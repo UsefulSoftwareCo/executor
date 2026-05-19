@@ -138,6 +138,17 @@ const SourceConfigureInputSchema = Schema.Struct({
   queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
   auth: Schema.optional(GraphqlSourceAuthInputSchema),
 });
+const StaticConfigureSourceInputSchema = Schema.Struct({
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
+  scope: Schema.String,
+  ...SourceConfigureInputSchema.fields,
+});
+const StaticConfigureSourceOutputSchema = Schema.Struct({
+  configured: Schema.Boolean,
+});
 const StaticGetSourceInputSchema = Schema.Struct({
   namespace: Schema.String,
   scope: Schema.String,
@@ -166,6 +177,12 @@ const StaticGetSourceInputStandardSchema = Schema.toStandardSchemaV1(
 );
 const StaticGetSourceOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticGetSourceOutputSchema),
+);
+const StaticConfigureSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticConfigureSourceInputSchema),
+);
+const StaticConfigureSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticConfigureSourceOutputSchema),
 );
 
 const graphqlToolFailure = (code: string, message: string, details?: unknown) =>
@@ -964,7 +981,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           tool({
             name: "getSource",
             description:
-              "Inspect an existing GraphQL source, including endpoint, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+              "Inspect an existing GraphQL source, including endpoint, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `graphql.configureSource`, `secrets.create`, or `oauth.start`.",
             inputSchema: StaticGetSourceInputStandardSchema,
             outputSchema: StaticGetSourceOutputStandardSchema,
             execute: (input, { ctx }) =>
@@ -976,7 +993,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection through `credentials` or `sources.configure`.",
+              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection through `credentials` or `graphql.configureSource`.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add a GraphQL source",
@@ -1006,6 +1023,29 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
                   GraphqlExtractionError: ({ message }) =>
                     Effect.succeed(graphqlToolFailure("graphql_extraction_failed", message)),
                 }),
+              );
+            },
+          }),
+          tool({
+            name: "configureSource",
+            description:
+              'Configure an existing GraphQL source with concrete fields. Use `source` returned by `graphql.addSource` or `sources.list`. The top-level `scope` is the credential target scope for bindings; in cloud, choose the user or organization credential scope deliberately. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}`.',
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Configure a GraphQL source",
+            },
+            inputSchema: StaticConfigureSourceInputStandardSchema,
+            outputSchema: StaticConfigureSourceOutputStandardSchema,
+            execute: (input, { ctx }) => {
+              const { source, ...config } = input as typeof StaticConfigureSourceInputSchema.Type;
+              const sourceScope = resolveStaticScopeInput(ctx, source.scope);
+              const targetScope = resolveStaticScopeInput(ctx, config.scope);
+              return Effect.as(
+                self.configure(
+                  { id: source.id, scope: sourceScope },
+                  { ...config, scope: targetScope },
+                ),
+                ToolResult.ok({ configured: true }),
               );
             },
           }),

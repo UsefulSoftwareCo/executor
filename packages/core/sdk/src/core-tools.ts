@@ -140,16 +140,6 @@ const SourcesPresetsOutput = Schema.Struct({
   presets: Schema.Array(SourcePresetOutput),
 });
 
-const SourcesConfigureSchemasOutput = Schema.Struct({
-  schemas: Schema.Array(
-    Schema.Struct({
-      pluginId: Schema.String,
-      type: Schema.String,
-      schema: Schema.optional(Schema.Unknown),
-    }),
-  ),
-});
-
 const SourcePointer = Schema.Struct({
   id: Schema.String,
   scope: Schema.String,
@@ -334,7 +324,6 @@ const SourcesPresetsInputStd = schemaToStandard<
   typeof SourcesPresetsInput.Encoded
 >(SourcesPresetsInput);
 const SourcesPresetsOutputStd = schemaToStandard(SourcesPresetsOutput);
-const SourcesConfigureSchemasOutputStd = schemaToStandard(SourcesConfigureSchemasOutput);
 const SourcesConfigureInputStd = schemaToStandard<
   typeof SourcesConfigureInput.Type,
   typeof SourcesConfigureInput.Encoded
@@ -629,7 +618,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "sources.list",
           description:
-            "List configured and built-in sources. Use this to find source ids/scopes before calling `sources.configure`, `sources.bindings.*`, refresh, remove, or tool discovery.",
+            "List configured and built-in sources. Use this to find source ids/scopes before calling plugin-specific configureSource tools, `sources.bindings.*`, refresh, remove, or tool discovery.",
           outputSchema: SourcesListOutputStd,
           execute: (_args, { ctx }) =>
             Effect.map(ctx.core.sources.list(), (sources) => ({ sources })),
@@ -670,17 +659,9 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
             }),
         }),
         tool({
-          name: "sources.configureSchemas",
-          description:
-            "Return the plugin-specific payload schemas accepted by `sources.configure`. Use this before configuring a source unless you already know the plugin flow. The `type` field should be passed back to `sources.configure`.",
-          outputSchema: SourcesConfigureSchemasOutputStd,
-          execute: (_args, { ctx }) =>
-            Effect.succeed({ schemas: ctx.core.sources.configureSchemas() }),
-        }),
-        tool({
           name: "sources.configure",
           description:
-            'Configure an existing source through its owning plugin. Use `sources.list` to get source id/scope, `sources.configureSchemas` to inspect the config schema, and `secrets.create`/`oauth.start` first for sensitive inputs. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}` when the plugin schema supports them.',
+            'Low-level escape hatch for configuring an existing source through its owning plugin. Prefer plugin-specific tools such as `openapi.configureSource`, `graphql.configureSource`, `mcp.configureSource`, or `googleDiscovery.configureSource`; this accepts plugin config as `unknown` for repair and compatibility cases. Use `secrets.create`/`oauth.start` first for sensitive inputs. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}` when the plugin schema supports them.',
           annotations: {
             requiresApproval: true,
             approvalDescription: "Configure an Executor source",
@@ -738,7 +719,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "sources.bindings.list",
           description:
-            "List credential bindings for a source. Use this to verify that secrets or OAuth connections were bound after `sources.configure`.",
+            "List credential bindings for a source. Use this to verify that secrets or OAuth connections were bound after a plugin-specific configureSource tool.",
           inputSchema: SourceBindingsListInputStd,
           outputSchema: SourceBindingsListOutputStd,
           execute: (input, { ctx }) =>
@@ -769,7 +750,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "sources.bindings.set",
           description:
-            "Set one credential binding for a source slot. Prefer `sources.configure` for normal flows because plugin schemas name the right slots. Use this low-level tool only when a plugin or status output has given an exact slot key.",
+            "Set one credential binding for a source slot. Prefer plugin-specific configureSource tools for normal flows because they name the right credential fields. Use this low-level tool only when a plugin or status output has given an exact slot key.",
           annotations: {
             requiresApproval: true,
             approvalDescription: "Set a source credential binding",
@@ -814,7 +795,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "connections.list",
           description:
-            "List OAuth/sign-in connections. This returns metadata and token secret ids, never token values. Use it to verify that `oauth.start` completed, then bind the connection id with `sources.configure`.",
+            "List OAuth/sign-in connections. This returns metadata and token secret ids, never token values. Use it to verify that `oauth.start` completed, then bind the connection id with the relevant plugin-specific configureSource tool.",
           outputSchema: ConnectionsListOutputStd,
           execute: (_args, { ctx }) =>
             Effect.map(ctx.connections.list(), (connections) => ({ connections })),

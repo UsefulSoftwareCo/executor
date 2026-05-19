@@ -239,6 +239,7 @@ describe("OpenAPI Plugin", () => {
       expect(ids).toContain("executor.openapi.previewSpec");
       expect(ids).toContain("executor.openapi.getSource");
       expect(ids).toContain("executor.openapi.addSource");
+      expect(ids).toContain("executor.openapi.configureSource");
     }),
   );
 
@@ -929,6 +930,7 @@ describe("OpenAPI Plugin", () => {
       const ids = remaining.map((t) => t.id).sort();
       expect(ids).toEqual([
         "executor.openapi.addSource",
+        "executor.openapi.configureSource",
         "executor.openapi.getSource",
         "executor.openapi.previewSpec",
       ]);

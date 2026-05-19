@@ -511,15 +511,9 @@ describe("createExecutor", () => {
 
       yield* executor.configurable.registerSource("org");
 
-      const schemas = yield* executor.tools.invoke(
+      expect((yield* executor.tools.list()).map((tool) => tool.id)).not.toContain(
         "executor.coreTools.sources.configureSchemas",
-        {},
       );
-      expect(schemas).toMatchObject({
-        schemas: expect.arrayContaining([
-          expect.objectContaining({ pluginId: "configurable", type: "configurable" }),
-        ]),
-      });
       const presets = yield* executor.tools.invoke("executor.coreTools.sources.presets", {
         query: "demo",
       });

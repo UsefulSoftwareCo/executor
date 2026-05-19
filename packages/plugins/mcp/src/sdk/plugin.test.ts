@@ -216,6 +216,9 @@ describe("mcpPlugin", () => {
       expect(executor.mcp.refreshSource).toBeTypeOf("function");
       expect(executor.mcp.probeEndpoint).toBeTypeOf("function");
       expect(executor.mcp.getSource).toBeTypeOf("function");
+      expect((yield* executor.tools.list()).map((tool) => tool.id)).toContain(
+        "executor.mcp.configureSource",
+      );
       expect(executor.oauth.start).toBeTypeOf("function");
       expect(executor.oauth.complete).toBeTypeOf("function");
     }),

@@ -187,6 +187,16 @@ const GoogleDiscoveryConfigureInputSchema = Schema.Struct({
   name: Schema.optional(Schema.String),
   auth: Schema.optional(GoogleDiscoveryAuth),
 });
+const GoogleDiscoveryConfigureSourceInputSchema = Schema.Struct({
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
+  ...GoogleDiscoveryConfigureInputSchema.fields,
+});
+const GoogleDiscoveryConfigureSourceOutputSchema = Schema.Struct({
+  configured: Schema.Boolean,
+});
 
 const schemaToStaticToolSchema = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
   Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
@@ -211,6 +221,12 @@ const GoogleDiscoveryGetSourceInputStandardSchema = schemaToStaticToolSchema(
 );
 const GoogleDiscoveryGetSourceOutputStandardSchema = schemaToStaticToolSchema(
   GoogleDiscoveryGetSourceOutputSchema,
+);
+const GoogleDiscoveryConfigureSourceInputStandardSchema = schemaToStaticToolSchema(
+  GoogleDiscoveryConfigureSourceInputSchema,
+);
+const GoogleDiscoveryConfigureSourceOutputStandardSchema = schemaToStaticToolSchema(
+  GoogleDiscoveryConfigureSourceOutputSchema,
 );
 
 const resolveStaticScopeInput = (
@@ -578,7 +594,7 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
         tool({
           name: "getSource",
           description:
-            "Inspect an existing Google Discovery source, including discovery URL, service metadata, auth mode, OAuth scopes, connection id, and credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+            "Inspect an existing Google Discovery source, including discovery URL, service metadata, auth mode, OAuth scopes, connection id, and credential slots. Use this before repairing an existing source with `googleDiscovery.configureSource`, `secrets.create`, or `oauth.start`.",
           inputSchema: GoogleDiscoveryGetSourceInputStandardSchema,
           outputSchema: GoogleDiscoveryGetSourceOutputStandardSchema,
           execute: (input, { ctx }) => {
@@ -586,6 +602,26 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
             return Effect.map(
               self.getSource(args.namespace, resolveStaticScopeInput(ctx, args.scope)),
               (source) => ToolResult.ok({ source }),
+            );
+          },
+        }),
+        tool({
+          name: "configureSource",
+          description:
+            "Configure an existing Google Discovery source with concrete fields. Use `source` returned by `googleDiscovery.addSource` or `sources.list`. For OAuth, call `oauth.start` in the browser first, then pass the returned connection id and client secret ids through `auth`.",
+          annotations: {
+            requiresApproval: true,
+            approvalDescription: "Configure a Google Discovery source",
+          },
+          inputSchema: GoogleDiscoveryConfigureSourceInputStandardSchema,
+          outputSchema: GoogleDiscoveryConfigureSourceOutputStandardSchema,
+          execute: (input, { ctx }) => {
+            const { source, ...config } =
+              input as typeof GoogleDiscoveryConfigureSourceInputSchema.Type;
+            const sourceScope = resolveStaticScopeInput(ctx, source.scope);
+            return Effect.as(
+              self.updateSource(source.id, sourceScope, config),
+              ToolResult.ok({ configured: true }),
             );
           },
         }),

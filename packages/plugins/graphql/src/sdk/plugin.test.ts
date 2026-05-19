@@ -632,6 +632,7 @@ describe("graphqlPlugin", () => {
       // static executor tool also present under the executor namespace
       expect(ids).toContain("executor.graphql.getSource");
       expect(ids).toContain("executor.graphql.addSource");
+      expect(ids).toContain("executor.graphql.configureSource");
 
       const queryTool = tools.find((t) => t.id === "test_api.query.hello");
       expect(queryTool?.description).toBe("Say hello");

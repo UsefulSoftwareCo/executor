@@ -231,6 +231,19 @@ const McpGetSourceOutputSchema = Schema.Struct({
   source: Schema.NullOr(Schema.Unknown),
 });
 
+const McpStaticConfigureSourceInputSchema = Schema.Struct({
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
+  scope: Schema.String,
+  ...McpConfigureSourcePayloadSchema.fields,
+});
+
+const McpStaticConfigureSourceOutputSchema = Schema.Struct({
+  configured: Schema.Boolean,
+});
+
 const schemaToStaticToolSchema = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
   Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
     A,
@@ -250,6 +263,12 @@ const McpProbeEndpointInputStandardSchema = schemaToStaticToolSchema(McpProbeEnd
 const McpProbeEndpointOutputStandardSchema = schemaToStaticToolSchema(McpProbeEndpointOutputSchema);
 const McpGetSourceInputStandardSchema = schemaToStaticToolSchema(McpGetSourceInputSchema);
 const McpGetSourceOutputStandardSchema = schemaToStaticToolSchema(McpGetSourceOutputSchema);
+const McpStaticConfigureSourceInputStandardSchema = schemaToStaticToolSchema(
+  McpStaticConfigureSourceInputSchema,
+);
+const McpStaticConfigureSourceOutputStandardSchema = schemaToStaticToolSchema(
+  McpStaticConfigureSourceOutputSchema,
+);
 
 export type McpProbeEndpointInput = typeof McpProbeEndpointInputSchema.Type;
 
@@ -1697,7 +1716,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "probeEndpoint",
             description:
-              "Probe a remote MCP endpoint before adding it. If the result requires OAuth, call `executor.coreTools.oauth.probe` and `executor.coreTools.oauth.start` first, then pass the resulting connection through `addSource` credentials or `sources.configure`.",
+              "Probe a remote MCP endpoint before adding it. If the result requires OAuth, call `executor.coreTools.oauth.probe` and `executor.coreTools.oauth.start` first, then pass the resulting connection through `addSource` credentials or `mcp.configureSource`.",
             inputSchema: McpProbeEndpointInputStandardSchema,
             outputSchema: McpProbeEndpointOutputStandardSchema,
             execute: (input) =>
@@ -1711,7 +1730,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "getSource",
             description:
-              "Inspect an existing MCP source, including transport, endpoint/command, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+              "Inspect an existing MCP source, including transport, endpoint/command, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `mcp.configureSource`, `secrets.create`, or `oauth.start`.",
             inputSchema: McpGetSourceInputStandardSchema,
             outputSchema: McpGetSourceOutputStandardSchema,
             execute: (input, { ctx }) => {
@@ -1725,7 +1744,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an MCP source and register its tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start`), then bind the completed connection with `sources.configure` if needed. For header/API-key auth, first call `secrets.create` at the user's chosen credential scope so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
+              "Add an MCP source and register its tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start`), then bind the completed connection with `mcp.configureSource` if needed. For header/API-key auth, first call `secrets.create` at the user's chosen credential scope so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an MCP source",
@@ -1819,6 +1838,39 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 }),
               );
             },
+          }),
+          tool({
+            name: "configureSource",
+            description:
+              'Configure an existing remote MCP source with concrete fields. Use `source` returned by `mcp.addSource` or `sources.list`. The top-level `scope` is the credential target scope for bindings; in cloud, choose the user or organization credential scope deliberately. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}`.',
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Configure an MCP source",
+            },
+            inputSchema: McpStaticConfigureSourceInputStandardSchema,
+            outputSchema: McpStaticConfigureSourceOutputStandardSchema,
+            execute: (rawInput, { ctx }) =>
+              Effect.gen(function* () {
+                const { source, ...config } =
+                  rawInput as typeof McpStaticConfigureSourceInputSchema.Type;
+                const sourceScope = resolveStaticScopeInput(ctx, source.scope);
+                const targetScope = resolveStaticScopeInput(ctx, config.scope);
+                yield* ctx.core.sources.configure({
+                  source: { id: source.id, scope: sourceScope },
+                  scope: targetScope,
+                  type: "mcp",
+                  config: {
+                    ...(config.name !== undefined ? { name: config.name } : {}),
+                    ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
+                    ...(config.headers !== undefined ? { headers: config.headers } : {}),
+                    ...(config.queryParams !== undefined
+                      ? { queryParams: config.queryParams }
+                      : {}),
+                    ...(config.auth !== undefined ? { auth: config.auth } : {}),
+                  },
+                });
+                return ToolResult.ok({ configured: true });
+              }),
           }),
         ],
       },

@@ -4,6 +4,7 @@ import { HttpClient } from "effect/unstable/http";
 
 import {
   ConnectionId,
+  CredentialBindingRef,
   ScopeId,
   SecretId,
   SourceDetectionResult,
@@ -14,7 +15,6 @@ import {
   tool,
   resolveSecretBackedMap,
   type CredentialBindingValue,
-  type CredentialBindingRef,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
@@ -303,6 +303,13 @@ const OpenApiConfigureInputSchema = Schema.Struct({
   oauth2Source: Schema.optional(OAuth2SourceConfig),
 });
 export type OpenApiConfigureInput = typeof OpenApiConfigureInputSchema.Type;
+const OpenApiConfigureSourceInputSchema = Schema.Struct({
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
+  ...OpenApiConfigureInputSchema.fields,
+});
 const OpenApiOAuthInputSchema = OAuth2SourceConfig;
 
 const AddSourceInputSchema = Schema.Struct({
@@ -348,6 +355,12 @@ const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
 );
 const AddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddSourceOutputSchema),
+);
+const OpenApiConfigureSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(OpenApiConfigureSourceInputSchema),
+);
+const OpenApiConfigureSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ result: Schema.Array(CredentialBindingRef) })),
 );
 const GetSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(GetSourceInputSchema),
@@ -1293,7 +1306,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "getSource",
             description:
-              "Inspect an existing OpenAPI source, including effective base URL, configured headers/query params, OAuth settings, and stored credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+              "Inspect an existing OpenAPI source, including effective base URL, configured headers/query params, OAuth settings, and stored credential slots. Use this before repairing an existing source with `openapi.configureSource`, `secrets.create`, or `oauth.start`.",
             inputSchema: GetSourceInputStandardSchema,
             outputSchema: GetSourceOutputStandardSchema,
             execute: (input, { ctx }) =>
@@ -1305,7 +1318,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an OpenAPI source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), declare credential slots here for sensitive headers/query params, then call `secrets.create` and `sources.configure` with the user's chosen credential scope for per-scope bindings. Use `oauth.start` for browser OAuth sign-in.",
+              "Add an OpenAPI source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), declare credential slots here for sensitive headers/query params, then call `secrets.create` and `openapi.configureSource` with the user's chosen credential scope for per-scope bindings. Use `oauth.start` for browser OAuth sign-in.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI source",
@@ -1337,6 +1350,29 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                   OpenApiOAuthError: ({ message }) =>
                     Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
                 }),
+              );
+            },
+          }),
+          tool({
+            name: "configureSource",
+            description:
+              'Configure an existing OpenAPI source with concrete fields. Use `source` returned by `openapi.addSource` or `sources.list`. The top-level `scope` is the credential target scope for bindings; in cloud, choose the user or organization credential scope deliberately. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}`.',
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Configure an OpenAPI source",
+            },
+            inputSchema: OpenApiConfigureSourceInputStandardSchema,
+            outputSchema: OpenApiConfigureSourceOutputStandardSchema,
+            execute: (input, { ctx }) => {
+              const { source, ...config } = input as typeof OpenApiConfigureSourceInputSchema.Type;
+              const sourceScope = resolveStaticScopeInput(ctx, source.scope);
+              const targetScope = resolveStaticScopeInput(ctx, config.scope);
+              return Effect.map(
+                self.configure(
+                  { id: source.id, scope: sourceScope },
+                  { ...config, scope: targetScope },
+                ),
+                (result) => ToolResult.ok({ result }),
               );
             },
           }),

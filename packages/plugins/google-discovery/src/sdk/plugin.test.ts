@@ -430,6 +430,7 @@ describe("Google Discovery plugin", () => {
           "executor.googleDiscovery.probeDiscovery",
           "executor.googleDiscovery.addSource",
           "executor.googleDiscovery.getSource",
+          "executor.googleDiscovery.configureSource",
         ]),
       );
 
