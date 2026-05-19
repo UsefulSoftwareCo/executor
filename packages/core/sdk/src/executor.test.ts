@@ -6,11 +6,16 @@ import { scopedExecutorTable, textColumn } from "./core-schema";
 import { ElicitationResponse } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
-import { ScopeId } from "./ids";
+import { ScopeId, SecretId } from "./ids";
 import { definePlugin } from "./plugin";
 import { Scope } from "./scope";
 import { SourceDetectionResult } from "./types";
-import { makeTestConfig, makeTestExecutor } from "./testing";
+import {
+  makeTestConfig,
+  makeTestExecutor,
+  memorySecretsPlugin,
+  serveOAuthTestServer,
+} from "./testing";
 
 class TestPluginError extends Data.TaggedError("TestPluginError")<{
   readonly message: string;
@@ -472,5 +477,374 @@ describe("createExecutor", () => {
       expect(orgConfig?.data).toEqual({ header: "org-token", sourceScope: "org" });
       expect(visibleConfig?.data).toEqual({ header: "user-token", sourceScope: "org" });
     }),
+  );
+
+  it.effect("core tools configure sources through agent-visible tool calls", () =>
+    Effect.gen(function* () {
+      const orgScope = Scope.make({
+        id: ScopeId.make("org"),
+        name: "Org",
+        createdAt: new Date(),
+      });
+      const userScope = Scope.make({
+        id: ScopeId.make("user"),
+        name: "User",
+        createdAt: new Date(),
+      });
+      const config = makeTestConfig({
+        scopes: [userScope, orgScope],
+        plugins: [configurableSourcePlugin] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        coreTools: { webBaseUrl: "http://executor.test" },
+      });
+
+      yield* executor.configurable.registerSource("org");
+
+      const schemas = yield* executor.tools.invoke(
+        "executor.coreTools.sources.configureSchemas",
+        {},
+      );
+      expect(schemas).toMatchObject({
+        schemas: expect.arrayContaining([
+          expect.objectContaining({ pluginId: "configurable", type: "configurable" }),
+        ]),
+      });
+
+      yield* executor.tools.invoke("executor.coreTools.sources.configure", {
+        source: { id: "configured-source", scope: "org" },
+        scope: "user",
+        type: "configurable",
+        config: { header: "agent-token" },
+      });
+
+      const visibleConfig = yield* executor.configurable.getVisibleConfig();
+      expect(visibleConfig?.data).toEqual({ header: "agent-token", sourceScope: "org" });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  it.effect("core tools generate browser handoff URLs for secret values", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [memorySecretsPlugin()] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        coreTools: { webBaseUrl: "http://executor.test" },
+      });
+
+      const result = yield* executor.tools.invoke("executor.coreTools.secrets.create", {
+        name: "api-token",
+        provider: "memory",
+      });
+
+      expect(result).toMatchObject({ id: expect.any(String), url: expect.any(String) });
+      const url = new URL((result as { readonly url: string }).url);
+      expect(url.origin).toBe("http://executor.test");
+      expect(url.pathname).toBe("/secrets");
+      expect(url.searchParams.get("scope")).toBe("test-scope");
+      expect(url.searchParams.get("name")).toBe("api-token");
+      expect(url.searchParams.get("provider")).toBe("memory");
+      expect(url.searchParams.get("secretId")).toBe((result as { readonly id: string }).id);
+
+      const idResult = yield* executor.tools.invoke("executor.coreTools.secrets.create", {
+        scope: "test-scope",
+        name: "api-token-by-id",
+        provider: "memory",
+      });
+      const idUrl = new URL((idResult as { readonly url: string }).url);
+      expect(idUrl.searchParams.get("scope")).toBe("test-scope");
+      expect(idUrl.searchParams.get("name")).toBe("api-token-by-id");
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  it.effect("core tools require an explicit secret scope when multiple scopes are visible", () =>
+    Effect.gen(function* () {
+      const orgScope = Scope.make({
+        id: ScopeId.make("org"),
+        name: "Org",
+        createdAt: new Date(),
+      });
+      const userScope = Scope.make({
+        id: ScopeId.make("user"),
+        name: "User",
+        createdAt: new Date(),
+      });
+      const config = makeTestConfig({
+        scopes: [userScope, orgScope],
+        plugins: [memorySecretsPlugin()] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        coreTools: { webBaseUrl: "http://executor.test" },
+      });
+
+      const error = yield* executor.tools
+        .invoke("executor.coreTools.secrets.create", {
+          name: "api-token",
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        message:
+          "Multiple scopes are visible. Call scopes.list and pass the target scope id or name.",
+      });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  it.effect("core tools cover web UI source secret and policy management flows", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({
+        plugins: [memorySecretsPlugin(), configurableSourcePlugin] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        coreTools: { webBaseUrl: "http://executor.test" },
+      });
+
+      yield* executor.configurable.registerSource("test-scope");
+      yield* executor.secrets.set({
+        id: SecretId.make("agent-secret"),
+        name: "Agent secret",
+        value: "secret-value",
+        scope: ScopeId.make("test-scope"),
+        provider: "memory",
+      });
+
+      expect(
+        yield* executor.tools.invoke("executor.coreTools.secrets.providers", {}),
+      ).toMatchObject({
+        providers: expect.arrayContaining(["memory"]),
+      });
+      expect(
+        yield* executor.tools.invoke("executor.coreTools.secrets.status", {
+          id: "agent-secret",
+        }),
+      ).toEqual({ id: "agent-secret", status: "resolved" });
+      expect(
+        yield* executor.tools.invoke("executor.coreTools.secrets.usages", {
+          id: "agent-secret",
+        }),
+      ).toEqual({ usages: [] });
+
+      const createdPolicy = yield* executor.tools.invoke("executor.coreTools.policies.create", {
+        targetScope: "test-scope",
+        pattern: "configured-source.*",
+        action: "require_approval",
+      });
+      const policyId = (createdPolicy as { readonly policy: { readonly id: string } }).policy.id;
+      expect(createdPolicy).toMatchObject({
+        policy: {
+          id: expect.any(String),
+          scopeId: "test-scope",
+          pattern: "configured-source.*",
+          action: "require_approval",
+        },
+      });
+      expect(yield* executor.tools.invoke("executor.coreTools.policies.list", {})).toMatchObject({
+        policies: [expect.objectContaining({ id: policyId })],
+      });
+      expect(
+        yield* executor.tools.invoke("executor.coreTools.policies.update", {
+          id: policyId,
+          targetScope: "test-scope",
+          action: "approve",
+        }),
+      ).toMatchObject({ policy: { id: policyId, action: "approve" } });
+      yield* executor.tools.invoke("executor.coreTools.policies.remove", {
+        id: policyId,
+        targetScope: "test-scope",
+      });
+      expect(yield* executor.policies.list()).toEqual([]);
+
+      yield* executor.tools.invoke("executor.coreTools.sources.refresh", {
+        id: "configured-source",
+        targetScope: "test-scope",
+      });
+      yield* executor.tools.invoke("executor.coreTools.sources.remove", {
+        id: "configured-source",
+        targetScope: "test-scope",
+      });
+      expect((yield* executor.sources.list()).map((source) => source.id)).not.toContain(
+        "configured-source",
+      );
+
+      yield* executor.tools.invoke("executor.coreTools.secrets.remove", {
+        id: "agent-secret",
+        targetScope: "test-scope",
+      });
+      expect(yield* executor.secrets.list()).toEqual([]);
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  it.effect("core tools start OAuth and expose completed connections", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oauthServer = yield* serveOAuthTestServer();
+        const config = makeTestConfig({ plugins: [memorySecretsPlugin()] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          coreTools: { webBaseUrl: "http://executor.test" },
+          oauthEndpointUrlPolicy: { allowHttp: true },
+        });
+
+        yield* executor.secrets.set({
+          id: SecretId.make("client-id"),
+          name: "OAuth client id",
+          value: "test-client",
+          scope: ScopeId.make("test-scope"),
+          provider: "memory",
+        });
+        yield* executor.secrets.set({
+          id: SecretId.make("client-secret"),
+          name: "OAuth client secret",
+          value: "test-secret",
+          scope: ScopeId.make("test-scope"),
+          provider: "memory",
+        });
+
+        const started = yield* executor.tools.invoke("executor.coreTools.oauth.start", {
+          scope: "test-scope",
+          endpoint: oauthServer.resourceUrl,
+          connectionId: "agent-oauth",
+          pluginId: "test-plugin",
+          strategy: {
+            kind: "client-credentials",
+            tokenEndpoint: oauthServer.tokenEndpoint,
+            clientIdSecretId: "client-id",
+            clientSecretSecretId: "client-secret",
+            scopes: ["read"],
+          },
+        });
+
+        expect(started).toMatchObject({
+          authorizationUrl: null,
+          completedConnection: { connectionId: "agent-oauth" },
+        });
+
+        const listed = yield* executor.tools.invoke("executor.coreTools.connections.list", {});
+        expect(listed).toMatchObject({
+          connections: [expect.objectContaining({ id: "agent-oauth", provider: "oauth2" })],
+        });
+        expect(
+          yield* executor.tools.invoke("executor.coreTools.connections.providers", {}),
+        ).toMatchObject({
+          providers: expect.arrayContaining(["oauth2"]),
+        });
+        expect(
+          yield* executor.tools.invoke("executor.coreTools.connections.usages", {
+            id: "agent-oauth",
+          }),
+        ).toEqual({ usages: [] });
+        yield* executor.tools.invoke("executor.coreTools.connections.remove", {
+          id: "agent-oauth",
+          targetScope: "test-scope",
+        });
+        expect(yield* executor.connections.list()).toEqual([]);
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+
+  it.effect("core OAuth tools return actionable tool failures for expected errors", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [memorySecretsPlugin()] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        coreTools: { webBaseUrl: "http://executor.test" },
+        oauthEndpointUrlPolicy: { allowHttp: true },
+      });
+
+      const result = yield* executor.tools.invoke("executor.coreTools.oauth.probe", {
+        endpoint: "http://127.0.0.1:1/mcp",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "oauth_probe_failed",
+        },
+      });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
+    }),
+  );
+
+  it.effect("core tools start browser OAuth and expose the completed connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oauthServer = yield* serveOAuthTestServer();
+        const config = makeTestConfig({ plugins: [memorySecretsPlugin()] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          coreTools: { webBaseUrl: "http://executor.test" },
+          oauthEndpointUrlPolicy: { allowHttp: true },
+        });
+
+        yield* executor.secrets.set({
+          id: SecretId.make("browser-client-id"),
+          name: "OAuth client id",
+          value: "test-client",
+          scope: ScopeId.make("test-scope"),
+          provider: "memory",
+        });
+        yield* executor.secrets.set({
+          id: SecretId.make("browser-client-secret"),
+          name: "OAuth client secret",
+          value: "test-secret",
+          scope: ScopeId.make("test-scope"),
+          provider: "memory",
+        });
+
+        const started = yield* executor.tools.invoke("executor.coreTools.oauth.start", {
+          scope: "test",
+          endpoint: oauthServer.resourceUrl,
+          connectionId: "agent-browser-oauth",
+          pluginId: "test-plugin",
+          strategy: {
+            kind: "authorization-code",
+            authorizationEndpoint: oauthServer.authorizationEndpoint,
+            tokenEndpoint: oauthServer.tokenEndpoint,
+            clientIdSecretId: "browser-client-id",
+            clientSecretSecretId: "browser-client-secret",
+            scopes: ["read"],
+          },
+        });
+        expect(started).toMatchObject({
+          authorizationUrl: expect.stringContaining(oauthServer.authorizationEndpoint),
+          completedConnection: null,
+        });
+
+        const authorizationUrl = (started as { authorizationUrl: string }).authorizationUrl;
+        const callback = yield* oauthServer.completeAuthorizationCodeFlow({ authorizationUrl });
+        const completed = yield* executor.oauth.complete({
+          state: callback.state,
+          code: callback.code,
+        });
+        expect(completed.connectionId).toBe("agent-browser-oauth");
+
+        const listed = yield* executor.tools.invoke("executor.coreTools.connections.list", {});
+        expect(listed).toMatchObject({
+          connections: [expect.objectContaining({ id: "agent-browser-oauth", provider: "oauth2" })],
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
   );
 });

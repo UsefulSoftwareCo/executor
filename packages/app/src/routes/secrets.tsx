@@ -18,8 +18,8 @@ const SearchParams = Schema.toStandardSchemaV1(
 export const Route = createFileRoute("/secrets")({
   validateSearch: SearchParams,
   component: () => {
-    const { name, secretId, provider } = Route.useSearch();
+    const { name, secretId, provider, scope } = Route.useSearch();
     const hasPrefill = name != null || secretId != null;
-    return <SecretsPage prefill={hasPrefill ? { name, secretId, provider } : undefined} />;
+    return <SecretsPage prefill={hasPrefill ? { name, secretId, provider, scope } : undefined} />;
   },
 });

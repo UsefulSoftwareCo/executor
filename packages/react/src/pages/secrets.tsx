@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { removeSecretOptimistic, secretsOptimisticAtom, secretUsagesAtom } from "../api/atoms";
 import { secretWriteKeys } from "../api/reactivity-keys";
 import { useSecretProviderPlugins } from "@executor-js/sdk/client";
-import { SecretId, SecretInUseError, type ScopeId } from "@executor-js/sdk/shared";
+import { ScopeId, SecretId, SecretInUseError } from "@executor-js/sdk/shared";
 import { SecretForm } from "../plugins/secret-form";
 import { useScope } from "../hooks/use-scope";
 import { useScopeStack } from "../api/scope-context";
@@ -66,7 +66,11 @@ interface SecretPrefill {
   readonly name?: string;
   readonly secretId?: string;
   readonly provider?: string;
+  readonly scope?: string;
 }
+
+export const secretFormScopeId = (currentScopeId: ScopeId, prefill?: SecretPrefill): ScopeId =>
+  prefill?.scope ? ScopeId.make(prefill.scope) : currentScopeId;
 
 function AddSecretDialog(props: {
   open: boolean;
@@ -257,6 +261,7 @@ export function SecretsPage(props: {
   const secretProviderPlugins = useSecretProviderPlugins();
   const [addOpen, setAddOpen] = useState(props.prefill != null);
   const scopeId = useScope();
+  const formScopeId = secretFormScopeId(scopeId, props.prefill);
   const scopeStack = useScopeStack();
   const secrets = useAtomValue(secretsOptimisticAtom(scopeId));
   const scopeLabel = (secretScopeId: ScopeId): string => {
@@ -410,7 +415,7 @@ export function SecretsPage(props: {
           description={addSecretDescription}
           storageOptions={storageOptions}
           existingSecretIds={existingSecretIds}
-          scopeId={scopeId}
+          scopeId={formScopeId}
           prefill={props.prefill}
         />
       </div>

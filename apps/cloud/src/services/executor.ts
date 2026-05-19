@@ -95,5 +95,8 @@ export const createScopedExecutor = (
       plugins,
       httpClientLayer,
       onElicitation: "accept-all",
+      coreTools: {
+        webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+      },
     });
   });

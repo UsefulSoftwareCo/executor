@@ -45,6 +45,7 @@ personal-notes/
 *.har.executor
 executor.har
 .executor/
+apps/local/.executor-dev/
 
 # desktop app build artifacts
 apps/desktop/resources/

@@ -21,6 +21,7 @@ const SUPPORTED_AGENTS = [
 ] as const;
 
 const isDev = import.meta.env.DEV;
+const devCliCwd = import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD as string | undefined;
 const isLocal =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" ||
@@ -87,6 +88,7 @@ export const buildMcpInstallCommand = (input: {
     readonly password: string;
   } | null;
   readonly elicitationMode?: McpElicitationMode;
+  readonly devCliCwd?: string;
 }): string => {
   if (input.mode === "http") {
     const endpoint = buildMcpHttpEndpoint({
@@ -105,7 +107,11 @@ export const buildMcpInstallCommand = (input: {
     return parts.join(" ");
   }
 
-  const innerArgs = input.isDev ? ["bun", "run", "dev:cli", "mcp"] : ["executor", "mcp"];
+  const innerArgs = input.isDev
+    ? input.devCliCwd
+      ? ["bun", "run", "--cwd", input.devCliCwd, "dev:cli", "mcp"]
+      : ["bun", "run", "dev:cli", "mcp"]
+    : ["executor", "mcp"];
   if (input.scopeDir) {
     innerArgs.push("--scope", input.scopeDir);
   }
@@ -149,12 +155,13 @@ export function McpInstallCard(props: { className?: string }) {
     scopeDir: scopeInfo.dir,
     desktop,
     elicitationMode,
+    devCliCwd,
   });
 
   const subtitle =
     mode === "stdio"
       ? isDev
-        ? "Uses the repo-local dev CLI. Run from the repository root."
+        ? "Uses the repo-local dev CLI from any agent working directory."
         : "Requires the executor CLI on your PATH."
       : "Connect to executor as a remote MCP server over streamable HTTP.";
 

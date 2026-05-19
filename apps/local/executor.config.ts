@@ -27,6 +27,9 @@ export default defineExecutorConfig({
       keychainPlugin(),
       fileSecretsPlugin(),
       onepasswordHttpPlugin(),
-      desktopSettingsPlugin(),
+      desktopSettingsPlugin({
+        webBaseUrl:
+          process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`,
+      }),
     ] as const,
 });

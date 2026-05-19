@@ -215,24 +215,25 @@ describe("mcpPlugin", () => {
       expect(executor.mcp.removeSource).toBeTypeOf("function");
       expect(executor.mcp.refreshSource).toBeTypeOf("function");
       expect(executor.mcp.probeEndpoint).toBeTypeOf("function");
+      expect(executor.mcp.getSource).toBeTypeOf("function");
       expect(executor.oauth.start).toBeTypeOf("function");
       expect(executor.oauth.complete).toBeTypeOf("function");
     }),
   );
 
-  it.effect("sources list is initially empty", () =>
+  it.effect("sources list has no configured MCP sources initially", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const sources = yield* executor.sources.list();
-      expect(sources).toHaveLength(0);
+      expect(sources.filter((source) => !source.runtime)).toHaveLength(0);
     }),
   );
 
-  it.effect("tools list is initially empty", () =>
+  it.effect("tools list has no configured MCP source tools initially", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const tools = yield* executor.tools.list();
-      expect(tools).toHaveLength(0);
+      expect(tools.filter((tool) => !tool.id.startsWith("executor.mcp."))).toHaveLength(0);
     }),
   );
 
@@ -268,6 +269,69 @@ describe("mcpPlugin", () => {
 
       const tools = yield* executor.tools.list();
       expect(tools.filter((t) => t.sourceId === "broken_source")).toHaveLength(0);
+      const inspected = yield* executor.tools.invoke(
+        "executor.mcp.getSource",
+        { namespace: "broken_source", scope: "test-scope" },
+        { onElicitation: "accept-all" },
+      );
+      expect(inspected).toMatchObject({
+        ok: true,
+        data: { source: { namespace: "broken_source", scope: "test-scope" } },
+      });
+    }),
+  );
+
+  it.effect("static addSource reports saved remote source when discovery fails", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      const result = yield* executor.tools.invoke(
+        "executor.mcp.addSource",
+        {
+          transport: "remote",
+          scope: "test-scope",
+          name: "broken static",
+          endpoint: "http://127.0.0.1:1/mcp",
+          remoteTransport: "auto",
+          namespace: "broken_static_source",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          namespace: "broken_static_source",
+          toolCount: 0,
+          discovery: {
+            status: "failed",
+          },
+        },
+      });
+
+      const source = yield* executor.mcp.getSource("broken_static_source", "test-scope");
+      expect(source?.namespace).toBe("broken_static_source");
+    }),
+  );
+
+  it.effect("static probeEndpoint returns actionable tool failures", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+      const executor = yield* createExecutor(config);
+
+      const result = yield* executor.tools.invoke("executor.mcp.probeEndpoint", {
+        endpoint: "http://127.0.0.1:1/mcp",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "mcp_connection_failed",
+        },
+      });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
     }),
   );
 

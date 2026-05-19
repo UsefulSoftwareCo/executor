@@ -31,7 +31,7 @@
   "scripts": {
     "dev": "turbo run dev --filter='!@executor-js/desktop' --filter='!@executor-js/cloud'",
     "dev:desktop": "turbo run dev",
-    "dev:cli": "EXECUTOR_DEV=1 bun run apps/cli/src/main.ts",
+    "dev:cli": "EXECUTOR_DEV=1 EXECUTOR_DATA_DIR=${EXECUTOR_DATA_DIR:-apps/local/.executor-dev} bun run apps/cli/src/main.ts",
     "test": "turbo run test",
     "test:release:bootstrap": "vitest run tests/release-bootstrap-smoke.test.ts",
     "build:packages": "bun run --filter='fumadb' build && bun run --filter='@executor-js/codemode-core' build && bun run --filter='@executor-js/runtime-quickjs' build && bun run --filter='@executor-js/sdk' build && bun run --filter='@executor-js/config' build && bun run --filter='@executor-js/execution' build && bun run --filter='@executor-js/cli' build && bun run --filter='@executor-js/plugin-*' build",
@@ -44,6 +44,7 @@
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
     "docs:smoke:install": "bun run scripts/smoke-docs-install.ts",
+    "smoke:agent-config": "bun run scripts/agent-config-smoke.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "pull:references": "bun run scripts/pull-references.ts",

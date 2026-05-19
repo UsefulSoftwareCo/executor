@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun run dev:proxy && bun run dev:vite",
     "dev:proxy": "portless proxy start --multiplex --port 1355 || true",
-    "dev:vite": "portless --name executor-local bunx --bun vite dev",
+    "dev:vite": "EXECUTOR_DATA_DIR=${EXECUTOR_DATA_DIR:-.executor-dev} portless --name executor-local bunx --bun vite dev",
     "build": "turbo run build --filter @executor-js/vite-plugin && bunx --bun vite build",
     "start": "bun run src/serve.ts",
     "db:generate": "drizzle-kit generate",

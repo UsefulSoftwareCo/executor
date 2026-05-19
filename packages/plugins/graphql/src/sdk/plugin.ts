@@ -137,6 +137,13 @@ const SourceConfigureInputSchema = Schema.Struct({
   queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
   auth: Schema.optional(GraphqlSourceAuthInputSchema),
 });
+const StaticGetSourceInputSchema = Schema.Struct({
+  namespace: Schema.String,
+  scope: Schema.String,
+});
+const StaticGetSourceOutputSchema = Schema.Struct({
+  source: Schema.NullOr(Schema.Unknown),
+});
 
 const StaticAddSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticAddSourceInputSchema),
@@ -144,6 +151,27 @@ const StaticAddSourceInputStandardSchema = Schema.toStandardSchemaV1(
 const StaticAddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(Schema.Struct({ toolCount: Schema.Number })),
 );
+const StaticGetSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticGetSourceInputSchema),
+);
+const StaticGetSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticGetSourceOutputSchema),
+);
+
+const graphqlToolFailure = (code: string, message: string, details?: unknown) =>
+  ToolResult.fail({
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  });
+
+const resolveStaticScopeInput = (
+  ctx: { readonly scopes: readonly { readonly id: ScopeId; readonly name: string }[] },
+  value: string,
+): string =>
+  String(
+    ctx.scopes.find((scope) => scope.name === value || String(scope.id) === value)?.id ?? value,
+  );
 
 // ---------------------------------------------------------------------------
 // Plugin extension
@@ -923,15 +951,37 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         name: "GraphQL",
         tools: [
           tool({
+            name: "getSource",
+            description:
+              "Inspect an existing GraphQL source, including endpoint, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+            inputSchema: StaticGetSourceInputStandardSchema,
+            outputSchema: StaticGetSourceOutputStandardSchema,
+            execute: (input, { ctx }) =>
+              Effect.map(
+                self.getSource(input.namespace, resolveStaticScopeInput(ctx, input.scope)),
+                (source) => ToolResult.ok({ source }),
+              ),
+          }),
+          tool({
             name: "addSource",
-            description: "Add a GraphQL endpoint and register its operations as tools",
+            description:
+              "Add a GraphQL endpoint and register its operations as tools. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection via this input or `sources.configure`.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add a GraphQL source",
             },
             inputSchema: StaticAddSourceInputStandardSchema,
             outputSchema: StaticAddSourceOutputStandardSchema,
-            execute: (input) => Effect.map(self.addSource(input), ToolResult.ok),
+            execute: (input, { ctx }) =>
+              self.addSource({ ...input, scope: resolveStaticScopeInput(ctx, input.scope) }).pipe(
+                Effect.map(ToolResult.ok),
+                Effect.catchTags({
+                  GraphqlIntrospectionError: ({ message }) =>
+                    Effect.succeed(graphqlToolFailure("graphql_introspection_failed", message)),
+                  GraphqlExtractionError: ({ message }) =>
+                    Effect.succeed(graphqlToolFailure("graphql_extraction_failed", message)),
+                }),
+              ),
           }),
         ],
       },

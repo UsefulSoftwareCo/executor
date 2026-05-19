@@ -237,6 +237,7 @@ describe("OpenAPI Plugin", () => {
       const tools = yield* executor.tools.list();
       const ids = tools.map((t) => t.id);
       expect(ids).toContain("executor.openapi.previewSpec");
+      expect(ids).toContain("executor.openapi.getSource");
       expect(ids).toContain("executor.openapi.addSource");
     }),
   );
@@ -288,6 +289,23 @@ describe("OpenAPI Plugin", () => {
     }),
   );
 
+  it.effect("describes static previewSpec output from Standard Schema", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
+        }),
+      );
+
+      const schema = yield* executor.tools.schema("executor.openapi.previewSpec");
+
+      expect(schema).not.toBeNull();
+      expect(schema!.outputTypeScript).toContain("servers:");
+      expect(schema!.outputTypeScript).toContain("securitySchemes:");
+      expect(schema!.outputTypeScript).toContain("oauth2Presets:");
+    }),
+  );
+
   it.effect("describes static addSource parameters from Standard Schema", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
@@ -330,7 +348,7 @@ describe("OpenAPI Plugin", () => {
       const result = unwrapInvocation(
         yield* executor.tools.invoke(
           "executor.openapi.addSource",
-          testApiSourceConfig({ scope: String(orgScope), namespace: "runtime" }),
+          testApiSourceConfig({ scope: "org", namespace: "runtime" }),
           autoApprove,
         ),
       ).data as { sourceId: string; toolCount: number };
@@ -340,7 +358,36 @@ describe("OpenAPI Plugin", () => {
       expect((yield* executor.openapi.getSource("runtime", String(orgScope)))?.scope).toBe(
         orgScope,
       );
+      const inspected = unwrapInvocation(
+        yield* executor.tools.invoke(
+          "executor.openapi.getSource",
+          { namespace: "runtime", scope: "org" },
+          autoApprove,
+        ),
+      ).data as { source: { namespace: string; scope: string } | null };
+      expect(inspected.source).toMatchObject({ namespace: "runtime", scope: String(orgScope) });
       expect((yield* executor.tools.list()).map((t) => t.id)).toContain("runtime.items.listItems");
+    }),
+  );
+
+  it.effect("static previewSpec returns actionable tool failures", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [openApiPlugin()] as const });
+      const executor = yield* createExecutor(config);
+
+      const result = yield* executor.tools.invoke("executor.openapi.previewSpec", {
+        spec: "not openapi",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "openapi_parse_failed",
+        },
+      });
+
+      yield* executor.close();
+      yield* Effect.promise(() => config.testDb.close());
     }),
   );
 
@@ -872,7 +919,11 @@ describe("OpenAPI Plugin", () => {
 
       const remaining = yield* executor.tools.list();
       const ids = remaining.map((t) => t.id).sort();
-      expect(ids).toEqual(["executor.openapi.addSource", "executor.openapi.previewSpec"]);
+      expect(ids).toEqual([
+        "executor.openapi.addSource",
+        "executor.openapi.getSource",
+        "executor.openapi.previewSpec",
+      ]);
     }),
   );
 

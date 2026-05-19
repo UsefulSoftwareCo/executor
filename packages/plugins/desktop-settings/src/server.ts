@@ -3,15 +3,58 @@
  *
  * Zero-server-state plugin. The Desktop Settings panel reads and writes
  * its configuration via Electron IPC (`window.executor.*`), not through
- * the executor server. This file exists so the host can register the
- * plugin's `packageName` and the vite plugin can find the `./client`
- * bundle — that's the entire server contribution.
+ * the executor server. The server contribution exposes an agent-facing
+ * browser handoff tool so a chat flow can still route the user to the
+ * Desktop-only settings UI without moving the Basic-auth password
+ * through the model context.
  */
 
-import { definePlugin } from "@executor-js/sdk/core";
+import { Effect, Schema } from "effect";
 
-export const desktopSettingsPlugin = definePlugin(() => ({
+import { definePlugin, tool, type StaticToolSchema } from "@executor-js/sdk/core";
+
+export interface DesktopSettingsPluginOptions {
+  readonly webBaseUrl?: string;
+}
+
+const schemaToStaticToolSchema = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
+  Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
+    A,
+    I
+  >;
+
+const DesktopSettingsOpenOutput = Schema.Struct({
+  url: Schema.String,
+  flow: Schema.String,
+});
+
+const DesktopSettingsOpenOutputStd = schemaToStaticToolSchema(DesktopSettingsOpenOutput);
+
+const resolveWebBaseUrl = (configured: string | undefined): string =>
+  (configured ?? "http://localhost:4788").replace(/\/$/, "");
+
+export const desktopSettingsPlugin = definePlugin((options: DesktopSettingsPluginOptions = {}) => ({
   id: "desktop-settings" as const,
   packageName: "@executor-js/plugin-desktop-settings",
   storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "desktopSettings",
+      kind: "executor",
+      name: "Desktop Settings",
+      tools: [
+        tool({
+          name: "openSettings",
+          description:
+            "Return the Desktop Settings browser URL for configuring the local sidecar port, Basic-auth requirement, and generated password. This flow must stay in the Desktop UI because password display/regeneration and server restart are Electron IPC operations; never ask the user to paste the password in chat.",
+          outputSchema: DesktopSettingsOpenOutputStd,
+          execute: () =>
+            Effect.succeed({
+              url: `${resolveWebBaseUrl(options.webBaseUrl)}/plugins/desktop-settings/`,
+              flow: "Open this URL in Executor Desktop. The user can change port/auth or regenerate the password there; then rerun discovery/list tools to observe the restarted server.",
+            }),
+        }),
+      ],
+    },
+  ],
 }));

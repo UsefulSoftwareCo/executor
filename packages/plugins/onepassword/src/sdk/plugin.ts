@@ -3,14 +3,16 @@ import { Effect, Schema } from "effect";
 import {
   definePlugin,
   StorageError,
+  ToolResult,
+  tool,
   type PluginCtx,
   type PluginBlobStore,
   type SecretProvider,
+  type StaticToolSchema,
   type StorageFailure,
 } from "@executor-js/sdk/core";
 
-import { OnePasswordConfig, Vault, ConnectionStatus } from "./types";
-import type { OnePasswordAuth } from "./types";
+import { OnePasswordAuth, OnePasswordConfig, Vault, ConnectionStatus } from "./types";
 import { OnePasswordError } from "./errors";
 import { makeOnePasswordService, type ResolvedAuth, type OnePasswordService } from "./service";
 
@@ -21,6 +23,61 @@ import { makeOnePasswordService, type ResolvedAuth, type OnePasswordService } fr
 const CREDENTIAL_FIELD = "credential";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const CONFIG_KEY = "config";
+
+const schemaToStaticToolSchema = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
+  Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
+    A,
+    I
+  >;
+
+const OnePasswordConfigureInput = Schema.Struct({
+  scope: Schema.String,
+  auth: OnePasswordAuth,
+  vaultId: Schema.String,
+  name: Schema.String,
+});
+
+const OnePasswordConfigureOutput = Schema.Struct({
+  configured: Schema.Boolean,
+});
+
+const OnePasswordGetConfigOutput = Schema.Struct({
+  config: Schema.NullOr(OnePasswordConfig),
+});
+
+const OnePasswordListVaultsInput = OnePasswordAuth;
+
+const OnePasswordListVaultsOutput = Schema.Struct({
+  vaults: Schema.Array(Vault),
+});
+
+const OnePasswordRemoveConfigInput = Schema.Struct({
+  targetScope: Schema.String,
+});
+
+const OnePasswordRemoveConfigOutput = Schema.Struct({
+  removed: Schema.Boolean,
+});
+
+const OnePasswordStatusOutput = ConnectionStatus;
+
+const OnePasswordConfigureInputStd = schemaToStaticToolSchema<
+  typeof OnePasswordConfigureInput.Type,
+  typeof OnePasswordConfigureInput.Encoded
+>(OnePasswordConfigureInput);
+const OnePasswordConfigureOutputStd = schemaToStaticToolSchema(OnePasswordConfigureOutput);
+const OnePasswordGetConfigOutputStd = schemaToStaticToolSchema(OnePasswordGetConfigOutput);
+const OnePasswordListVaultsInputStd = schemaToStaticToolSchema<
+  typeof OnePasswordListVaultsInput.Type,
+  typeof OnePasswordListVaultsInput.Encoded
+>(OnePasswordListVaultsInput);
+const OnePasswordListVaultsOutputStd = schemaToStaticToolSchema(OnePasswordListVaultsOutput);
+const OnePasswordRemoveConfigInputStd = schemaToStaticToolSchema<
+  typeof OnePasswordRemoveConfigInput.Type,
+  typeof OnePasswordRemoveConfigInput.Encoded
+>(OnePasswordRemoveConfigInput);
+const OnePasswordRemoveConfigOutputStd = schemaToStaticToolSchema(OnePasswordRemoveConfigOutput);
+const OnePasswordStatusOutputStd = schemaToStaticToolSchema(OnePasswordStatusOutput);
 
 // ---------------------------------------------------------------------------
 // Shared failure alias.
@@ -303,6 +360,71 @@ export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOption
     storage: ({ blobs }) => makeOnePasswordStore(blobs),
 
     extension: (ctx) => makeOnePasswordExtension(ctx, timeoutMs, preferSdk),
+
+    staticSources: (self) => [
+      {
+        id: "onepassword",
+        kind: "executor",
+        name: "1Password",
+        tools: [
+          tool({
+            name: "status",
+            description:
+              "Check whether the 1Password secret provider is configured and can reach its selected vault. This returns status only, never secret values.",
+            outputSchema: OnePasswordStatusOutputStd,
+            execute: () => Effect.map(self.status(), ToolResult.ok),
+          }),
+          tool({
+            name: "getConfig",
+            description:
+              "Read the current 1Password provider configuration. This returns account/vault metadata and secret ids only; service-account token values are never returned.",
+            outputSchema: OnePasswordGetConfigOutputStd,
+            execute: () => Effect.map(self.getConfig(), (config) => ToolResult.ok({ config })),
+          }),
+          tool({
+            name: "listVaults",
+            description:
+              "List available 1Password vaults before configuring the provider. For service-account auth, first call `executor.coreTools.secrets.create` so the token is entered in the browser, then pass that token secret id here.",
+            inputSchema: OnePasswordListVaultsInputStd,
+            outputSchema: OnePasswordListVaultsOutputStd,
+            execute: (input) =>
+              Effect.map(self.listVaults(input), (vaults) => ToolResult.ok({ vaults })),
+          }),
+          tool({
+            name: "configure",
+            description:
+              "Configure the 1Password secret provider for a target executor scope. Use desktop-app auth for local biometric access, or service-account auth with a token secret id created through `executor.coreTools.secrets.create`; never ask the user to paste the token in chat.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Configure the 1Password secret provider",
+            },
+            inputSchema: OnePasswordConfigureInputStd,
+            outputSchema: OnePasswordConfigureOutputStd,
+            execute: (input) =>
+              Effect.as(
+                self.configure(
+                  { auth: input.auth, vaultId: input.vaultId, name: input.name },
+                  input.scope,
+                ),
+                ToolResult.ok({ configured: true }),
+              ),
+          }),
+          tool({
+            name: "removeConfig",
+            description:
+              "Remove the 1Password provider configuration from a target scope. Existing secrets are not revealed; future 1Password secret resolution will stop until reconfigured.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Remove the 1Password secret provider configuration",
+            },
+            inputSchema: OnePasswordRemoveConfigInputStd,
+            outputSchema: OnePasswordRemoveConfigOutputStd,
+            execute: (input) =>
+              Effect.as(self.removeConfig(input.targetScope), ToolResult.ok({ removed: true })),
+          }),
+        ],
+      },
+    ],
 
     secretProviders: (ctx) => [makeProvider(ctx, timeoutMs, preferSdk)],
   };

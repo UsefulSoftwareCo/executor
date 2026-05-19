@@ -324,9 +324,19 @@ const AddSourceOutputSchema = Schema.Struct({
   sourceId: Schema.String,
   toolCount: Schema.Number,
 });
+const GetSourceInputSchema = Schema.Struct({
+  namespace: Schema.String,
+  scope: Schema.String,
+});
+const GetSourceOutputSchema = Schema.Struct({
+  source: Schema.NullOr(Schema.Unknown),
+});
 
 const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(PreviewSpecInputSchema),
+);
+const PreviewSpecOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(SpecPreview),
 );
 const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddSourceInputSchema),
@@ -334,6 +344,27 @@ const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
 const AddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddSourceOutputSchema),
 );
+const GetSourceInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(GetSourceInputSchema),
+);
+const GetSourceOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(GetSourceOutputSchema),
+);
+
+const openApiToolFailure = (code: string, message: string, details?: unknown) =>
+  ToolResult.fail({
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  });
+
+const resolveStaticScopeInput = (
+  ctx: { readonly scopes: readonly { readonly id: ScopeId; readonly name: string }[] },
+  value: string,
+): string =>
+  String(
+    ctx.scopes.find((scope) => scope.name === value || String(scope.id) === value)?.id ?? value,
+  );
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1236,20 +1267,57 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         tools: [
           tool({
             name: "previewSpec",
-            description: "Preview an OpenAPI document before adding it as a source",
+            description:
+              "Preview an OpenAPI document before adding it as a source. Call this first when the user provides a spec URL/blob so you can inspect servers, auth schemes, operation count, and credential slots before `addSource`. Do not collect API keys or OAuth client secrets in chat; use `executor.coreTools.secrets.create` for those values.",
             inputSchema: PreviewSpecInputStandardSchema,
-            execute: (input) => Effect.map(self.previewSpec(input), ToolResult.ok),
+            outputSchema: PreviewSpecOutputStandardSchema,
+            execute: (input) =>
+              self.previewSpec(input).pipe(
+                Effect.map(ToolResult.ok),
+                Effect.catchTags({
+                  OpenApiParseError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),
+                  OpenApiExtractionError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
+                  OpenApiOAuthError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                }),
+              ),
+          }),
+          tool({
+            name: "getSource",
+            description:
+              "Inspect an existing OpenAPI source, including effective base URL, configured headers/query params, OAuth settings, and stored credential slots. Use this before repairing an existing source with `sources.configure`, `secrets.create`, or `oauth.start`.",
+            inputSchema: GetSourceInputStandardSchema,
+            outputSchema: GetSourceOutputStandardSchema,
+            execute: (input, { ctx }) =>
+              Effect.map(
+                self.getSource(input.namespace, resolveStaticScopeInput(ctx, input.scope)),
+                (source) => ToolResult.ok({ source }),
+              ),
           }),
           tool({
             name: "addSource",
-            description: "Add an OpenAPI source and register its operations as tools",
+            description:
+              "Add an OpenAPI source and register its operations as tools. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), use `secrets.create` for sensitive header/query/client-secret values, use `oauth.start` for browser OAuth sign-in, then call this tool and follow with `sources.configure` for per-scope credential bindings.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI source",
             },
             inputSchema: AddSourceInputStandardSchema,
             outputSchema: AddSourceOutputStandardSchema,
-            execute: (input) => Effect.map(self.addSpec(input), ToolResult.ok),
+            execute: (input, { ctx }) =>
+              self.addSpec({ ...input, scope: resolveStaticScopeInput(ctx, input.scope) }).pipe(
+                Effect.map(ToolResult.ok),
+                Effect.catchTags({
+                  OpenApiParseError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),
+                  OpenApiExtractionError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
+                  OpenApiOAuthError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                }),
+              ),
           }),
         ],
       },

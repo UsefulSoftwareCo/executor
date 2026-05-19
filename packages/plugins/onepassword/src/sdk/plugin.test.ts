@@ -54,6 +54,39 @@ layer(
     }),
   );
 
+  it.effect("exposes provider configuration as agent-callable static tools", () =>
+    Effect.gen(function* () {
+      const { config: harnessConfig } = yield* TestWorkspace;
+      const executor = yield* createExecutor({ ...harnessConfig, plugins });
+
+      const configured = yield* executor.tools.invoke(
+        "executor.onepassword.configure",
+        {
+          scope: "test-scope",
+          auth: { kind: "desktop-app", accountName: "my.1password.com" },
+          vaultId: "vault-123",
+          name: "Personal",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(configured).toEqual({ ok: true, data: { configured: true } });
+      expect(yield* executor.tools.invoke("executor.onepassword.getConfig", {})).toMatchObject({
+        ok: true,
+        data: { config: { vaultId: "vault-123", name: "Personal" } },
+      });
+
+      const removed = yield* executor.tools.invoke(
+        "executor.onepassword.removeConfig",
+        { targetScope: "test-scope" },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(removed).toEqual({ ok: true, data: { removed: true } });
+      expect(yield* executor.onepassword.getConfig()).toBeNull();
+    }),
+  );
+
   it.effect("status reports not-configured before configure", () =>
     Effect.gen(function* () {
       const { config: harnessConfig } = yield* TestWorkspace;

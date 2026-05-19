@@ -27,6 +27,7 @@ const EXECUTOR_GITHUB_URL = (
   .replace(/^git\+/, "")
   .replace(/\.git$/, "");
 
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
 
 /**
@@ -113,6 +114,7 @@ export default defineConfig({
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify(EXECUTOR_GITHUB_URL),
+    "import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD": JSON.stringify(REPO_ROOT),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
   resolve: {

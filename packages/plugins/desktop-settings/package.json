@@ -38,6 +38,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "test": "vitest run",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit"
   },

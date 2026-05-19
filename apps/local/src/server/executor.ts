@@ -252,6 +252,12 @@ const removeSqliteFileSet = (path: string) => {
   }
 };
 
+const removeSqliteSidecars = (path: string) => {
+  for (const suffix of ["-wal", "-shm"]) {
+    fs.rmSync(`${path}${suffix}`, { force: true });
+  }
+};
+
 const moveSqliteFileSet = (source: string, target: string) => {
   fs.renameSync(source, target);
   for (const suffix of ["-wal", "-shm"]) {
@@ -335,6 +341,7 @@ const replaceSqliteFileSetWithRollback = (input: {
   readonly targetPath: string;
 }): string => {
   const backupPath = moveSqliteFileSetToBackup(input.sourcePath);
+  removeSqliteSidecars(backupPath);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: local DB replacement must restore the original file set if the swap fails halfway
   try {
     moveSqliteFileSet(input.targetPath, input.sourcePath);
@@ -401,6 +408,8 @@ const prepareLegacySqliteForFumaImport = (input: {
           `Skipping legacy Drizzle replay and importing the existing schema as-is.`,
       );
     }
+    sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    sqlite.exec("PRAGMA journal_mode = DELETE");
     return { legacySecrets: [] };
   } finally {
     sqlite.close();
@@ -446,8 +455,10 @@ const importMissingMarkedTables = async (input: {
       tables: pickedTables,
       scopeId: input.scopeId,
     });
-    target.sqlite.exec("PRAGMA wal_checkpoint(FULL)");
+    target.sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    target.sqlite.exec("PRAGMA journal_mode = DELETE");
     await target.close();
+    removeSqliteSidecars(input.storage.sqlitePath);
 
     if (result.imported) {
       const importedTables = [
@@ -511,9 +522,11 @@ export const importLegacySqliteIfNeeded = async (options: {
             await withQueryContext(target.db, {
               allowedScopeIds: new Set([scopeId]),
             }).createMany("secret", createLegacySecretRows(scopeId, prepared.legacySecrets));
-            target.sqlite.exec("PRAGMA wal_checkpoint(FULL)");
+            target.sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+            target.sqlite.exec("PRAGMA journal_mode = DELETE");
           } finally {
             await target.close();
+            removeSqliteSidecars(storage.sqlitePath);
           }
         }
         writeSqliteImportMarker(storage.importMarkerPath, {
@@ -576,8 +589,10 @@ export const importLegacySqliteIfNeeded = async (options: {
       tables,
       scopeId,
     });
-    target.sqlite.exec("PRAGMA wal_checkpoint(FULL)");
+    target.sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    target.sqlite.exec("PRAGMA journal_mode = DELETE");
     await target.close();
+    removeSqliteSidecars(targetPath);
 
     if (result.imported) {
       const backupPath = replaceSqliteFileSetWithRollback({

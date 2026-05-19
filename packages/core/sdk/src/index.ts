@@ -293,6 +293,7 @@ export {
   type StorageDeps,
   type StaticSourceDecl,
   type StaticToolDecl,
+  type StaticToolSchema,
   type StaticToolExecuteContext,
   type StaticToolHandlerInput,
   type StaticToolInput,

@@ -748,20 +748,50 @@ const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A>
 
 const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
-    const executor = yield* Effect.promise(() => withStdoutReroutedToStderr(() => getExecutor()));
-    yield* Effect.promise(() =>
-      runMcpStdioServer({
-        executor,
-        codeExecutor: makeQuickJsExecutor(),
-        elicitationMode:
-          input.elicitationMode === "browser"
-            ? {
-                mode: "browser" as const,
-                approvalUrl: (executionId) => `/resume/${encodeURIComponent(executionId)}`,
-              }
-            : { mode: input.elicitationMode },
+    const web = yield* Effect.promise(() =>
+      withStdoutReroutedToStderr(async () => {
+        const host = "127.0.0.1";
+        const port = await Effect.runPromise(
+          chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
+        );
+        const baseUrl = `http://localhost:${port}`;
+        const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
+
+        try {
+          const executor = await getExecutor();
+          const server = await startServer({
+            port,
+            hostname: host,
+            embeddedWebUI,
+          });
+          const serverBaseUrl = `http://localhost:${server.port}`;
+          return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
+        } catch (cause) {
+          restoreWebBaseUrl();
+          throw cause;
+        }
       }),
     );
+
+    try {
+      yield* Effect.promise(() =>
+        runMcpStdioServer({
+          executor: web.executor,
+          codeExecutor: makeQuickJsExecutor(),
+          elicitationMode:
+            input.elicitationMode === "browser"
+              ? {
+                  mode: "browser" as const,
+                  approvalUrl: (executionId) =>
+                    `${web.baseUrl}/resume/${encodeURIComponent(executionId)}`,
+                }
+              : { mode: input.elicitationMode },
+        }),
+      );
+    } finally {
+      web.restoreWebBaseUrl();
+      yield* Effect.promise(() => web.server.stop());
+    }
   });
 
 const scope = Options.string("scope").pipe(

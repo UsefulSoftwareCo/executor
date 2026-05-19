@@ -72,6 +72,20 @@ describe("MCP install command rendering", () => {
     ).toBe("npx add-mcp 'executor mcp' --name executor");
   });
 
+  it("pins dev stdio install commands to the repo cwd", () => {
+    expect(
+      buildMcpInstallCommand({
+        mode: "stdio",
+        isDev: true,
+        origin: null,
+        scopeDir: "/Users/rhyssullivan/src/executor/apps/local",
+        devCliCwd: "/Users/rhyssullivan/src/executor",
+      }),
+    ).toBe(
+      "npx add-mcp 'bun run --cwd /Users/rhyssullivan/src/executor dev:cli mcp --scope /Users/rhyssullivan/src/executor/apps/local' --name executor",
+    );
+  });
+
   it("passes browser approval through stdio install commands when explicitly selected", () => {
     expect(
       buildMcpInstallCommand({
