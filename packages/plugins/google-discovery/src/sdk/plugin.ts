@@ -5,6 +5,7 @@ import {
   SourceDetectionResult,
   ToolResult,
   Usage,
+  defaultSourceInstallScopeId,
   definePlugin,
   tool,
   resolveSecretBackedMap,
@@ -154,11 +155,22 @@ const GoogleDiscoveryAddSourceInputSchema = Schema.Struct({
   namespace: Schema.optional(Schema.String),
   auth: GoogleDiscoveryAuth,
 });
+const GoogleDiscoveryStaticAddSourceInputSchema = Schema.Struct({
+  name: Schema.String,
+  discoveryUrl: Schema.String,
+  credentials: Schema.optional(GoogleDiscoveryFetchCredentials),
+  namespace: Schema.optional(Schema.String),
+  auth: GoogleDiscoveryAuth,
+});
 export type GoogleDiscoveryProbeInput = typeof GoogleDiscoveryProbeInputSchema.Type;
 export type GoogleDiscoveryAddSourceInput = typeof GoogleDiscoveryAddSourceInputSchema.Type;
 
 const GoogleDiscoveryAddSourceOutputSchema = Schema.Struct({
   namespace: Schema.String,
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
   toolCount: Schema.Number,
 });
 
@@ -189,7 +201,7 @@ const GoogleDiscoveryProbeOutputStandardSchema = schemaToStaticToolSchema(
   GoogleDiscoveryProbeOutputSchema,
 );
 const GoogleDiscoveryAddSourceInputStandardSchema = schemaToStaticToolSchema(
-  GoogleDiscoveryAddSourceInputSchema,
+  GoogleDiscoveryStaticAddSourceInputSchema,
 );
 const GoogleDiscoveryAddSourceOutputStandardSchema = schemaToStaticToolSchema(
   GoogleDiscoveryAddSourceOutputSchema,
@@ -536,7 +548,7 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
         tool({
           name: "addSource",
           description:
-            'Add a Google Discovery source and register its operations as tools. Recommended flow: call `probeDiscovery`, create any OAuth client id/client secret values through `secrets.create`, call `oauth.start` in the browser for OAuth sources, then pass `{kind:"oauth2", connectionId, clientIdSecretId, clientSecretSecretId, scopes}` or `{kind:"none"}` here.',
+            'Add a Google Discovery source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `probeDiscovery`, create any OAuth client id/client secret values through `secrets.create` at the user\'s chosen credential scope, call `oauth.start` in the browser for OAuth sources, then pass `{kind:"oauth2", connectionId, clientIdSecretId, clientSecretSecretId, scopes}` or `{kind:"none"}` here.',
           annotations: {
             requiresApproval: true,
             approvalDescription: "Add a Google Discovery source",
@@ -544,10 +556,22 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
           inputSchema: GoogleDiscoveryAddSourceInputStandardSchema,
           outputSchema: GoogleDiscoveryAddSourceOutputStandardSchema,
           execute: (input, { ctx }) => {
-            const args = input as GoogleDiscoveryAddSourceInput;
-            return Effect.map(
-              self.addSource({ ...args, scope: resolveStaticScopeInput(ctx, args.scope) }),
-              ToolResult.ok,
+            const args = input as typeof GoogleDiscoveryStaticAddSourceInputSchema.Type;
+            const sourceScope = defaultSourceInstallScopeId(ctx.scopes);
+            if (sourceScope === null) {
+              return Effect.succeed(
+                ToolResult.fail({
+                  code: "source_scope_unavailable",
+                  message:
+                    "Cannot add a Google Discovery source because this executor has no source install scope.",
+                }),
+              );
+            }
+            return Effect.map(self.addSource({ ...args, scope: sourceScope }), (result) =>
+              ToolResult.ok({
+                ...result,
+                source: { id: result.namespace, scope: sourceScope },
+              }),
             );
           },
         }),

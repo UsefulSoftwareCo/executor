@@ -7,6 +7,7 @@ import {
   type CredentialBindingValue,
   definePlugin,
   tool,
+  defaultSourceInstallScopeId,
   ScopeId,
   SourceDetectionResult,
   StorageError,
@@ -121,7 +122,6 @@ const GraphqlInitialCredentialsInputSchema = Schema.Struct({
 type GraphqlInitialCredentialsInput = typeof GraphqlInitialCredentialsInputSchema.Type;
 
 const StaticAddSourceInputSchema = Schema.Struct({
-  scope: Schema.String,
   endpoint: Schema.String,
   name: Schema.String,
   introspectionJson: Schema.optional(Schema.String),
@@ -150,7 +150,16 @@ const StaticAddSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticAddSourceInputSchema),
 );
 const StaticAddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(Schema.Struct({ toolCount: Schema.Number })),
+  Schema.toStandardJSONSchemaV1(
+    Schema.Struct({
+      namespace: Schema.String,
+      source: Schema.Struct({
+        id: Schema.String,
+        scope: Schema.String,
+      }),
+      toolCount: Schema.Number,
+    }),
+  ),
 );
 const StaticGetSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(StaticGetSourceInputSchema),
@@ -967,23 +976,38 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add a GraphQL endpoint and register its operations as tools. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection via this input or `sources.configure`.",
+              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection through `credentials` or `sources.configure`.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add a GraphQL source",
             },
             inputSchema: StaticAddSourceInputStandardSchema,
             outputSchema: StaticAddSourceOutputStandardSchema,
-            execute: (input, { ctx }) =>
-              self.addSource({ ...input, scope: resolveStaticScopeInput(ctx, input.scope) }).pipe(
-                Effect.map(ToolResult.ok),
+            execute: (input, { ctx }) => {
+              const sourceScope = defaultSourceInstallScopeId(ctx.scopes);
+              if (sourceScope === null) {
+                return Effect.succeed(
+                  graphqlToolFailure(
+                    "source_scope_unavailable",
+                    "Cannot add a GraphQL source because this executor has no source install scope.",
+                  ),
+                );
+              }
+              return self.addSource({ ...input, scope: sourceScope }).pipe(
+                Effect.map((result) =>
+                  ToolResult.ok({
+                    ...result,
+                    source: { id: result.namespace, scope: sourceScope },
+                  }),
+                ),
                 Effect.catchTags({
                   GraphqlIntrospectionError: ({ message }) =>
                     Effect.succeed(graphqlToolFailure("graphql_introspection_failed", message)),
                   GraphqlExtractionError: ({ message }) =>
                     Effect.succeed(graphqlToolFailure("graphql_extraction_failed", message)),
                 }),
-              ),
+              );
+            },
           }),
         ],
       },

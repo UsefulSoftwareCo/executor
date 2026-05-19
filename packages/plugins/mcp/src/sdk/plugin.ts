@@ -21,6 +21,7 @@ import {
   ScopeId,
   SourceDetectionResult,
   ToolResult,
+  defaultSourceInstallScopeId,
   definePlugin,
   tool,
   resolveSecretBackedMap as resolveSharedSecretBackedMap,
@@ -163,7 +164,6 @@ const McpInitialCredentialsInputSchema = Schema.Struct({
 type McpInitialCredentialsInput = typeof McpInitialCredentialsInputSchema.Type;
 
 const McpRemoteAddSourceInputSchema = Schema.Struct({
-  scope: Schema.String,
   transport: Schema.Literal("remote"),
   name: Schema.String,
   endpoint: Schema.String,
@@ -176,7 +176,6 @@ const McpRemoteAddSourceInputSchema = Schema.Struct({
 });
 
 const McpStdioAddSourceInputSchema = Schema.Struct({
-  scope: Schema.String,
   transport: Schema.Literal("stdio"),
   name: Schema.String,
   command: Schema.String,
@@ -193,6 +192,10 @@ const McpAddSourceInputSchema = Schema.Union([
 
 const McpAddSourceOutputSchema = Schema.Struct({
   namespace: Schema.String,
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
   toolCount: Schema.Number,
   discovery: Schema.optional(
     Schema.Struct({
@@ -1722,7 +1725,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an MCP source and register its tools. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start`), then bind the completed connection with `sources.configure` if needed. For header/API-key auth, first call `secrets.create` so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
+              "Add an MCP source and register its tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start`), then bind the completed connection with `sources.configure` if needed. For header/API-key auth, first call `secrets.create` at the user's chosen credential scope so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an MCP source",
@@ -1730,16 +1733,29 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             inputSchema: McpAddSourceInputStandardSchema,
             outputSchema: McpAddSourceOutputStandardSchema,
             execute: (rawInput, { ctx }) => {
-              const input = rawInput as McpSourceConfig;
+              const input = rawInput as typeof McpAddSourceInputSchema.Type;
+              const sourceScope = defaultSourceInstallScopeId(ctx.scopes);
+              if (sourceScope === null) {
+                return Effect.succeed(
+                  mcpToolFailure(
+                    "source_scope_unavailable",
+                    "Cannot add an MCP source because this executor has no source install scope.",
+                  ),
+                );
+              }
               const normalizedInput = {
                 ...input,
-                scope: resolveStaticScopeInput(ctx, input.scope),
+                scope: sourceScope,
               } as McpSourceConfig;
-              const added = self
-                .addSource(normalizedInput)
-                .pipe(
-                  Effect.map((result) => ToolResult.ok({ ...result, discovery: { status: "ok" } })),
-                );
+              const added = self.addSource(normalizedInput).pipe(
+                Effect.map((result) =>
+                  ToolResult.ok({
+                    ...result,
+                    source: { id: result.namespace, scope: sourceScope },
+                    discovery: { status: "ok" },
+                  }),
+                ),
+              );
               if (normalizedInput.transport !== "remote") return added;
 
               const savedWithDiscoveryFailure = (failure: {
@@ -1754,6 +1770,15 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                         name: normalizedInput.name,
                         endpoint: normalizedInput.endpoint,
                       }),
+                    source: {
+                      id:
+                        normalizedInput.namespace ??
+                        deriveMcpNamespace({
+                          name: normalizedInput.name,
+                          endpoint: normalizedInput.endpoint,
+                        }),
+                      scope: sourceScope,
+                    },
                     toolCount: 0,
                     discovery: {
                       status: "failed" as const,
@@ -1775,6 +1800,15 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                             name: normalizedInput.name,
                             endpoint: normalizedInput.endpoint,
                           }),
+                        source: {
+                          id:
+                            normalizedInput.namespace ??
+                            deriveMcpNamespace({
+                              name: normalizedInput.name,
+                              endpoint: normalizedInput.endpoint,
+                            }),
+                          scope: sourceScope,
+                        },
                         toolCount: 0,
                         discovery: {
                           status: "failed" as const,

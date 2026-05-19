@@ -41,7 +41,7 @@ export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-run
 export { ScopeId, ToolId, SecretId, PolicyId, ConnectionId, CredentialBindingId } from "./ids";
 
 // Scope
-export { Scope } from "./scope";
+export { Scope, defaultSourceInstallScopeId } from "./scope";
 
 // Errors (tagged)
 export {

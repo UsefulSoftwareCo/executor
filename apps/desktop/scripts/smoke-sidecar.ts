@@ -234,8 +234,8 @@ const main = async () => {
     // inside QuickJS.
     const code = `
 await tools.executor.openapi.addSource({
-  scope: ${JSON.stringify(scopeDir)},
-  spec: ${JSON.stringify(`${openapi.origin}/openapi.json`)},
+  spec: { kind: "url", url: ${JSON.stringify(`${openapi.origin}/openapi.json`)} },
+  name: "Petstore Smoke API",
   baseUrl: ${JSON.stringify(openapi.origin)},
   namespace: "petstore",
 });

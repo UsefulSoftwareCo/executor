@@ -289,7 +289,6 @@ describe("mcpPlugin", () => {
         "executor.mcp.addSource",
         {
           transport: "remote",
-          scope: "test-scope",
           name: "broken static",
           endpoint: "http://127.0.0.1:1/mcp",
           remoteTransport: "auto",
@@ -302,6 +301,7 @@ describe("mcpPlugin", () => {
         ok: true,
         data: {
           namespace: "broken_static_source",
+          source: { id: "broken_static_source", scope: "test-scope" },
           toolCount: 0,
           discovery: {
             status: "failed",

@@ -9,6 +9,7 @@ import {
   SourceDetectionResult,
   StorageError,
   ToolResult,
+  defaultSourceInstallScopeId,
   definePlugin,
   tool,
   resolveSecretBackedMap,
@@ -305,7 +306,6 @@ export type OpenApiConfigureInput = typeof OpenApiConfigureInputSchema.Type;
 const OpenApiOAuthInputSchema = OAuth2SourceConfig;
 
 const AddSourceInputSchema = Schema.Struct({
-  scope: Schema.String,
   spec: OpenApiSpecInputSchema,
   name: Schema.String,
   baseUrl: Schema.String,
@@ -323,6 +323,10 @@ const AddSourceInputSchema = Schema.Struct({
 
 const AddSourceOutputSchema = Schema.Struct({
   sourceId: Schema.String,
+  source: Schema.Struct({
+    id: Schema.String,
+    scope: Schema.String,
+  }),
   toolCount: Schema.Number,
 });
 const GetSourceInputSchema = Schema.Struct({
@@ -1301,16 +1305,30 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an OpenAPI source and register its operations as tools. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), use `secrets.create` for sensitive header/query/client-secret values, use `oauth.start` for browser OAuth sign-in, then call this tool and follow with `sources.configure` for per-scope credential bindings.",
+              "Add an OpenAPI source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), declare credential slots here for sensitive headers/query params, then call `secrets.create` and `sources.configure` with the user's chosen credential scope for per-scope bindings. Use `oauth.start` for browser OAuth sign-in.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI source",
             },
             inputSchema: AddSourceInputStandardSchema,
             outputSchema: AddSourceOutputStandardSchema,
-            execute: (input, { ctx }) =>
-              self.addSpec({ ...input, scope: resolveStaticScopeInput(ctx, input.scope) }).pipe(
-                Effect.map(ToolResult.ok),
+            execute: (input, { ctx }) => {
+              const sourceScope = defaultSourceInstallScopeId(ctx.scopes);
+              if (sourceScope === null) {
+                return Effect.succeed(
+                  openApiToolFailure(
+                    "source_scope_unavailable",
+                    "Cannot add an OpenAPI source because this executor has no source install scope.",
+                  ),
+                );
+              }
+              return self.addSpec({ ...input, scope: sourceScope }).pipe(
+                Effect.map((result) =>
+                  ToolResult.ok({
+                    ...result,
+                    source: { id: result.sourceId, scope: sourceScope },
+                  }),
+                ),
                 Effect.catchTags({
                   OpenApiParseError: ({ message }) =>
                     Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),
@@ -1319,7 +1337,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                   OpenApiOAuthError: ({ message }) =>
                     Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
                 }),
-              ),
+              );
+            },
           }),
         ],
       },

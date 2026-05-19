@@ -771,7 +771,6 @@ describe("graphqlPlugin", () => {
       const result = yield* executor.tools.invoke(
         "executor.graphql.addSource",
         {
-          scope: "org",
           endpoint: "http://localhost:4000/graphql",
           name: "Via Static",
           introspectionJson,
@@ -779,7 +778,14 @@ describe("graphqlPlugin", () => {
         },
         { onElicitation: "accept-all" },
       );
-      expect(result).toEqual({ ok: true, data: { toolCount: 2, namespace: "via_static" } });
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          namespace: "via_static",
+          source: { id: "via_static", scope: String(orgScope) },
+          toolCount: 2,
+        },
+      });
       expect(yield* executor.graphql.getSource("via_static", String(userScope))).toBeNull();
       expect((yield* executor.graphql.getSource("via_static", String(orgScope)))?.scope).toBe(
         orgScope,
@@ -807,7 +813,6 @@ describe("graphqlPlugin", () => {
       const result = yield* executor.tools.invoke(
         "executor.graphql.addSource",
         {
-          scope: TEST_SCOPE,
           endpoint: "http://127.0.0.1:1/graphql",
           name: "Broken GraphQL",
           namespace: "broken_graphql",
@@ -834,8 +839,11 @@ describe("graphqlPlugin", () => {
       const schema = yield* executor.tools.schema("executor.graphql.addSource");
 
       expect(schema).not.toBeNull();
-      expect(schema!.inputTypeScript).toContain("scope: string");
       expect(schema!.inputTypeScript).toContain("endpoint: string");
+      expect(schema!.inputTypeScript).toContain("credentials?: { scope: string");
+      expect(
+        (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
+      ).not.toHaveProperty("scope");
       expect(
         (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
       ).not.toHaveProperty("targetScope");
@@ -861,7 +869,6 @@ describe("graphqlPlugin", () => {
           "executor.graphql.addSource",
           {
             endpoint: server.endpoint,
-            scope: TEST_SCOPE,
             introspectionJson,
             namespace: "runtime_graphql",
           },

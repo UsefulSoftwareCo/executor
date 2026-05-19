@@ -317,7 +317,7 @@ describe("OpenAPI Plugin", () => {
       const schema = yield* executor.tools.schema("executor.openapi.addSource");
 
       expect(schema).not.toBeNull();
-      expect(schema!.inputTypeScript).toContain("scope: string");
+      expect(schema!.inputTypeScript).not.toContain("scope: string");
       expect(schema!.inputTypeScript).toContain('kind: "url"');
       expect(
         (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
@@ -348,12 +348,18 @@ describe("OpenAPI Plugin", () => {
       const result = unwrapInvocation(
         yield* executor.tools.invoke(
           "executor.openapi.addSource",
-          testApiSourceConfig({ scope: "org", namespace: "runtime" }),
+          (({ scope: _scope, ...input }) => input)(
+            testApiSourceConfig({ scope: "org", namespace: "runtime" }),
+          ),
           autoApprove,
         ),
-      ).data as { sourceId: string; toolCount: number };
+      ).data as { sourceId: string; source: { id: string; scope: string }; toolCount: number };
 
-      expect(result).toEqual({ sourceId: "runtime", toolCount: 4 });
+      expect(result).toEqual({
+        sourceId: "runtime",
+        source: { id: "runtime", scope: String(orgScope) },
+        toolCount: 4,
+      });
       expect(yield* executor.openapi.getSource("runtime", String(userScope))).toBeNull();
       expect((yield* executor.openapi.getSource("runtime", String(orgScope)))?.scope).toBe(
         orgScope,
@@ -400,7 +406,9 @@ describe("OpenAPI Plugin", () => {
       const declined = yield* executor.tools
         .invoke(
           "executor.openapi.addSource",
-          testApiSourceConfig({ namespace: "runtime_declined" }),
+          (({ scope: _scope, ...input }) => input)(
+            testApiSourceConfig({ namespace: "runtime_declined" }),
+          ),
           {
             onElicitation: () => Effect.succeed({ action: "decline" as const }),
           },
