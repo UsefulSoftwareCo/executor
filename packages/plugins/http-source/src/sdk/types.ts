@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 export const HttpCredentialInput = Schema.Union([
   Schema.String,
@@ -37,7 +37,10 @@ export const OAuth2SourceConfig = Schema.Struct({
   securitySchemeName: Schema.String,
   flow: OAuth2Flow,
   tokenUrl: Schema.String,
-  authorizationUrl: Schema.NullOr(Schema.String),
+  authorizationUrl: Schema.NullOr(Schema.String).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
   clientIdSlot: Schema.String,
   clientSecretSlot: Schema.NullOr(Schema.String),

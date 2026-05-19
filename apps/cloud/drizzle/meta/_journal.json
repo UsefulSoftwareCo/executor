@@ -127,6 +127,13 @@
       "when": 1779087600000,
       "tag": "0017_plugin_storage_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1779199200000,
+      "tag": "0018_repair_openapi_oauth_authorization_url",
+      "breakpoints": true
     }
   ]
 }

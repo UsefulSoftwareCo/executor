@@ -108,7 +108,6 @@ describe("OpenAPI client_credentials OAuth", () => {
         openApiPlugin({ httpClientLayer: clientLayer }),
         memorySecretsPlugin(),
       ] as const;
-      const config = makeTestConfig({ plugins });
 
       const now = new Date();
       const orgScope = Scope.make({
@@ -121,6 +120,7 @@ describe("OpenAPI client_credentials OAuth", () => {
         name: "alice",
         createdAt: now,
       });
+      const config = makeTestConfig({ plugins, scopes: [userScope, orgScope] });
 
       const adminExec = yield* createExecutor({
         ...config,
@@ -214,6 +214,62 @@ describe("OpenAPI client_credentials OAuth", () => {
         namespace: "petstore",
         oauth2,
       });
+      const storedSourceRow = yield* Effect.promise(() =>
+        config.db.findFirst("plugin_storage", {
+          where: (b) =>
+            b.and(
+              b("scope_id", "=", String(userScope.id)),
+              b("plugin_id", "=", "openapi"),
+              b("collection", "=", "source"),
+              b("key", "=", "petstore"),
+            ),
+        }),
+      );
+      const storedData = storedSourceRow?.data as
+        | {
+            readonly config?: Record<string, unknown>;
+          }
+        | undefined;
+      const storedOAuth2 = storedData?.config?.oauth2;
+      if (
+        !storedSourceRow ||
+        !storedData?.config ||
+        typeof storedOAuth2 !== "object" ||
+        storedOAuth2 === null ||
+        Array.isArray(storedOAuth2)
+      ) {
+        return yield* new OpenApiClientCredentialsTestSetupError({
+          message: "Expected stored OpenAPI source OAuth config",
+        });
+      }
+      const { authorizationUrl: _authorizationUrl, ...oauth2WithoutAuthorizationUrl } =
+        storedOAuth2 as Record<string, unknown>;
+      yield* Effect.promise(() =>
+        config.db.updateMany("plugin_storage", {
+          where: (b) =>
+            b.and(
+              b("scope_id", "=", String(userScope.id)),
+              b("plugin_id", "=", "openapi"),
+              b("collection", "=", "source"),
+              b("key", "=", "petstore"),
+            ),
+          set: {
+            data: {
+              ...storedData,
+              config: {
+                ...storedData.config,
+                oauth2: oauth2WithoutAuthorizationUrl,
+              },
+            },
+          },
+        }),
+      );
+      const sourceAfterLegacyShape = yield* userExec.openapi.getSource(
+        "petstore",
+        String(userScope.id),
+      );
+      expect(sourceAfterLegacyShape?.config.oauth2?.authorizationUrl).toBeNull();
+
       yield* userExec.sources.setBinding(
         SetSourceCredentialBindingInput.make({
           source: { id: "petstore", scope: userScope.id },
