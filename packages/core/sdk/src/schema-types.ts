@@ -165,7 +165,15 @@ const normalizeSchema = (node: unknown): unknown => {
     normalized[key] = normalizeSchema(value);
   }
 
-  return normalizeNullable(normalized);
+  const nullable = normalizeNullable(normalized);
+  if (
+    nullable.type === "object" &&
+    nullable.properties === undefined &&
+    nullable.additionalProperties === undefined
+  ) {
+    return { ...nullable, additionalProperties: {} };
+  }
+  return nullable;
 };
 
 const mergeDefinitions = (

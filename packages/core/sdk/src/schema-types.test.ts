@@ -405,4 +405,33 @@ describe("schema-types", () => {
       outputTypeScript: "unknown",
     });
   });
+
+  it("renders open object schemas as unknown-key records", async () => {
+    await expect(
+      buildToolTypeScriptPreview({
+        inputSchema: {
+          type: "object",
+          properties: {
+            resourceMetadata: {
+              anyOf: [{ type: "object" }, { type: "null" }],
+            },
+          },
+          required: ["resourceMetadata"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            metadata: { type: "object" },
+          },
+          required: ["metadata"],
+          additionalProperties: false,
+        },
+        defs: new Map(),
+      }),
+    ).resolves.toEqual({
+      inputTypeScript: "{ resourceMetadata: { [k: string]: unknown; } | null; }",
+      outputTypeScript: "{ metadata: { [k: string]: unknown; }; }",
+    });
+  });
 });
