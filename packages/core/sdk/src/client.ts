@@ -96,6 +96,9 @@ export interface SourcePreset {
   /** URL passed as `initialUrl` to the add form. Omit for presets that
    *  don't use a URL (e.g. stdio MCP presets). */
   readonly url?: string;
+  /** Endpoint passed to agent-facing probe/add tools when their schema
+   *  uses `endpoint` instead of `url`. */
+  readonly endpoint?: string;
   /** Optional icon URL (favicon, logo). */
   readonly icon?: string;
   /** Shown in the top-level grid on the sources page when true. */

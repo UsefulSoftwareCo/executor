@@ -107,19 +107,31 @@ export const formatPausedExecution = (
   const lines: string[] = [`Execution paused: ${req.message}`];
   const isUrlElicitation = Predicate.isTagged(req, "UrlElicitation");
   const isFormElicitation = Predicate.isTagged(req, "FormElicitation");
+  const requestedSchema = isFormElicitation ? req.requestedSchema : undefined;
+  const hasRequestedSchema =
+    requestedSchema !== undefined && Object.keys(requestedSchema).length > 0;
+  const instructions = isUrlElicitation
+    ? `The user needs to open this URL in a browser and complete the flow. After the user finishes, call the resume tool with executionId "${paused.id}" and action "accept".`
+    : hasRequestedSchema
+      ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
+      : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
 
   if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
-    lines.push("\nAfter the browser flow, resume with the executionId below:");
+    lines.push('\nAfter the browser flow, call the resume tool with action "accept".');
+  } else if (hasRequestedSchema) {
+    lines.push(
+      "\nAsk the user for a response matching the requested schema, then call the resume tool.",
+    );
+    lines.push(`\nRequested schema:\n${JSON.stringify(requestedSchema, null, 2)}`);
   } else {
-    lines.push("\nResume with the executionId below and a response matching the requested schema:");
-    const schema = req.requestedSchema;
-    if (schema && Object.keys(schema).length > 0) {
-      lines.push(`\nRequested schema:\n${JSON.stringify(schema, null, 2)}`);
-    }
+    lines.push(
+      '\nThis is a model-side confirmation gate; no browser form is waiting. Ask the user whether to approve, then call the resume tool with action "accept", "decline", or "cancel".',
+    );
   }
 
   lines.push(`\nexecutionId: ${paused.id}`);
+  lines.push(`\ninstructions: ${instructions}`);
 
   return {
     text: lines.join("\n"),
@@ -129,6 +141,7 @@ export const formatPausedExecution = (
       interaction: {
         kind: isUrlElicitation ? "url" : "form",
         message: req.message,
+        instructions,
         toolId: String(paused.elicitationContext.toolId),
         args: paused.elicitationContext.args,
         ...(isUrlElicitation ? { url: req.url } : {}),

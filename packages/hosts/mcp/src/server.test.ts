@@ -559,6 +559,35 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
       const structured = result.structuredContent as Record<string, unknown>;
       expect(structured?.executionId).toBe("exec_42");
       expect(structured?.status).toBe("waiting_for_interaction");
+      const interaction = structured.interaction as Record<string, unknown>;
+      expect(interaction.instructions).toContain(
+        "Ask the user for values matching requestedSchema",
+      );
+    });
+  });
+
+  it("default model resume mode explains empty form schemas as model-side confirmation", async () => {
+    const engine = makeStubEngine({
+      executeWithPause: () =>
+        Effect.succeed(
+          makePausedResult(
+            "exec_confirm",
+            FormElicitation.make({ message: "Confirm source add", requestedSchema: {} }),
+          ),
+        ),
+    });
+
+    await withClient(engine, NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "confirm-me" },
+      });
+
+      expect(textOf(result)).toContain("no browser form is waiting");
+      const structured = result.structuredContent as Record<string, unknown>;
+      const interaction = structured.interaction as Record<string, unknown>;
+      expect(interaction.instructions).toContain("model-side confirmation gate");
+      expect(interaction.instructions).toContain('action "accept"');
     });
   });
 

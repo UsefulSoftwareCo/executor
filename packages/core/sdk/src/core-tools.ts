@@ -122,6 +122,7 @@ const SourcePresetOutput = Schema.Struct({
   name: Schema.String,
   summary: Schema.String,
   url: Schema.optional(Schema.String),
+  endpoint: Schema.optional(Schema.String),
   icon: Schema.optional(Schema.String),
   featured: Schema.optional(Schema.Boolean),
   transport: Schema.optional(Schema.Literals(["remote", "stdio"])),
@@ -642,7 +643,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "sources.presets",
           description:
-            "List the same popular source presets shown in Executor web's Connect dialog. Use this before asking the user what to connect; filter with `query` for names like GitHub, Stripe, Axiom, Google Calendar, Linear, or OpenAI. Use the returned `pluginId`, `url`, and optional stdio command to choose the matching add flow (`openapi.previewSpec`/`openapi.addSource`, `graphql.addSource`, `mcp.probeEndpoint`/`mcp.addSource`, or `googleDiscovery.probeDiscovery`/`googleDiscovery.addSource`).",
+            "List the same popular source presets shown in Executor web's Connect dialog. Use this before asking the user what to connect; filter with `query` for names like GitHub, Stripe, Axiom, Google Calendar, Linear, or OpenAI. For MCP and GraphQL presets, pass `endpoint` to the probe/add tools. For OpenAPI and Google Discovery presets, pass `url` to the preview/probe and add tools. For stdio MCP presets, use the returned command/args/env.",
           inputSchema: SourcesPresetsInputStd,
           outputSchema: SourcesPresetsOutputStd,
           execute: (input, { ctx }) =>

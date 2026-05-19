@@ -448,6 +448,7 @@ export interface SourcePreset {
   readonly name: string;
   readonly summary: string;
   readonly url?: string;
+  readonly endpoint?: string;
   readonly icon?: string;
   readonly featured?: boolean;
   readonly transport?: "remote" | "stdio";
