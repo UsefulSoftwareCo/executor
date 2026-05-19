@@ -57,15 +57,14 @@ export const CredentialBindingRef = Schema.Struct({
 });
 export type CredentialBindingRef = typeof CredentialBindingRef.Type;
 
-export const SetCredentialBindingInput = Schema.Struct({
-  targetScope: ScopeId,
-  pluginId: Schema.String,
-  sourceId: Schema.String,
-  sourceScope: ScopeId,
-  slotKey: Schema.String,
-  value: CredentialBindingValue,
-});
-export type SetCredentialBindingInput = typeof SetCredentialBindingInput.Type;
+export type SetPluginCredentialBindingInput = {
+  readonly targetScope: ScopeId;
+  readonly pluginId: string;
+  readonly sourceId: string;
+  readonly sourceScope: ScopeId;
+  readonly slotKey: string;
+  readonly value: CredentialBindingValue;
+};
 
 export const CredentialBindingSourceInput = Schema.Struct({
   pluginId: Schema.String,
@@ -176,7 +175,7 @@ export interface CredentialBindingsFacade {
     input: CredentialBindingSlotInput,
   ) => Effect.Effect<ResolvedCredentialSlot, StorageFailure>;
   readonly set: (
-    input: SetCredentialBindingInput,
+    input: SetPluginCredentialBindingInput,
   ) => Effect.Effect<CredentialBindingRef, StorageFailure>;
   readonly remove: (input: RemoveCredentialBindingInput) => Effect.Effect<void, StorageFailure>;
   readonly replaceForSource: (

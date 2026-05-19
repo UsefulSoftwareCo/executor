@@ -15,7 +15,7 @@ export type SourceCredentialSlot =
     };
 
 export type SourceCredentialBindingRef = {
-  readonly slot: string;
+  readonly slotKey: string;
   readonly scopeId: ScopeId;
   readonly value: CredentialBindingValue;
 };
@@ -31,7 +31,8 @@ export const effectiveSourceCredentialBinding = (
 ): SourceCredentialBindingRef | null =>
   rows
     .filter(
-      (row) => row.slot === slot && scopeRank(ranks, row.scopeId) >= scopeRank(ranks, targetScope),
+      (row) =>
+        row.slotKey === slot && scopeRank(ranks, row.scopeId) >= scopeRank(ranks, targetScope),
     )
     .sort((a, b) => scopeRank(ranks, a.scopeId) - scopeRank(ranks, b.scopeId))[0] ?? null;
 

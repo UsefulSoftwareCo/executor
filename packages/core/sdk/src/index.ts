@@ -141,8 +141,6 @@ export {
   ConfiguredCredentialValue,
   ScopedSecretCredentialInput,
   CredentialBindingRef,
-  SetCredentialBindingInput,
-  CredentialBindingSourceInput,
   CredentialBindingSlotInput,
   RemoveCredentialBindingInput,
   RemoveSourceCredentialBindingInput,

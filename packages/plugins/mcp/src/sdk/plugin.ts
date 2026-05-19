@@ -54,12 +54,10 @@ import {
   McpConnectionAuthInput,
   McpCredentialInput,
   McpToolBinding,
-  McpSourceBindingRef,
   mcpHeaderSlot,
   mcpQueryParamSlot,
   type McpConnectionAuth,
   type McpConfiguredValueInput as McpConfiguredValueInputType,
-  type McpSourceBindingValue,
   type SecretBackedValue,
   type McpStoredSourceData,
   type ConfiguredMcpCredentialValue,
@@ -275,23 +273,12 @@ const scopeRanks = (ctx: PluginCtx<McpBindingStore>): ReadonlyMap<string, number
 const scopeRank = (ranks: ReadonlyMap<string, number>, scopeId: string): number =>
   ranks.get(scopeId) ?? Infinity;
 
-const coreBindingToMcpBinding = (binding: CredentialBindingRef): McpSourceBindingRef =>
-  McpSourceBindingRef.make({
-    sourceId: binding.sourceId,
-    sourceScopeId: binding.sourceScopeId,
-    scopeId: binding.scopeId,
-    slot: binding.slotKey,
-    value: binding.value,
-    createdAt: binding.createdAt,
-    updatedAt: binding.updatedAt,
-  });
-
 const resolveMcpSourceBinding = (
   ctx: PluginCtx<McpBindingStore>,
   sourceId: string,
   sourceScope: string,
   slot: string,
-): Effect.Effect<McpSourceBindingRef | null, StorageFailure> =>
+): Effect.Effect<CredentialBindingRef | null, StorageFailure> =>
   Effect.gen(function* () {
     const ranks = scopeRanks(ctx);
     const sourceSourceRank = scopeRank(ranks, sourceScope);
@@ -307,7 +294,7 @@ const resolveMcpSourceBinding = (
           candidate.slotKey === slot && scopeRank(ranks, candidate.scopeId) <= sourceSourceRank,
       )
       .sort((a, b) => scopeRank(ranks, a.scopeId) - scopeRank(ranks, b.scopeId))[0];
-    return binding ? coreBindingToMcpBinding(binding) : null;
+    return binding ?? null;
   });
 
 const validateMcpBindingTarget = (
@@ -398,13 +385,13 @@ const canonicalizeAuth = (
   readonly auth: McpConnectionAuth;
   readonly bindings: ReadonlyArray<{
     readonly slot: string;
-    readonly value: McpSourceBindingValue;
+    readonly value: CredentialBindingValue;
     readonly targetScope?: string;
   }>;
 } => {
   if (!auth || "kind" in auth || !auth.oauth2) return { auth: { kind: "none" }, bindings: [] };
   const oauth = auth.oauth2;
-  const bindings: Array<{ slot: string; value: McpSourceBindingValue; targetScope?: string }> = [];
+  const bindings: Array<{ slot: string; value: CredentialBindingValue; targetScope?: string }> = [];
   if (oauth.connection) {
     bindings.push({
       slot: MCP_OAUTH_CONNECTION_SLOT,

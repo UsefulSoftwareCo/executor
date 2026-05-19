@@ -1,6 +1,7 @@
 export {
   emptyHttpCredentials,
   HttpCredentialsEditor,
+  httpCredentialsFromConfiguredCredentialBindings,
   httpCredentialsFromValues,
   httpCredentialsValid,
   serializeHeaderCredentials,
@@ -20,4 +21,4 @@ export {
   type HttpTemplateCredentialInput,
   type QueryParamState,
   type SecretBackedValue,
-} from "@executor-js/react/plugins/http-credentials";
+} from "./http-credentials";

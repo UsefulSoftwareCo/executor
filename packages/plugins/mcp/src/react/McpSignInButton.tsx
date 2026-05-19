@@ -42,7 +42,7 @@ export default function McpSignInButton(props: { sourceId: string }) {
     : null;
   const bindings = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : null;
   const connectionBinding = bindings?.find(
-    (binding) => binding.slot === oauth2?.connectionSlot && binding.value.kind === "connection",
+    (binding) => binding.slotKey === oauth2?.connectionSlot && binding.value.kind === "connection",
   );
   const connectionId =
     connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;

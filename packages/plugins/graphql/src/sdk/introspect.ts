@@ -84,7 +84,7 @@ const INTROSPECTION_QUERY = `
 const IntrospectionTypeRefLeaf = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.optional(Schema.Null),
+  ofType: Schema.Null,
 });
 
 const IntrospectionTypeRef5 = Schema.Struct({
@@ -175,12 +175,11 @@ const IntrospectionJsonSchema = Schema.Union([
   Schema.Struct({ data: IntrospectionResultSchema }),
   IntrospectionResultSchema,
 ]);
+const JsonTextSchema = Schema.fromJsonString(Schema.Unknown);
 
-export interface IntrospectionTypeRef {
-  readonly kind: string;
-  readonly name: string | null;
-  readonly ofType?: IntrospectionTypeRef | null;
-}
+const decodeUpstreamErrorResponse = Schema.decodeUnknownOption(UpstreamErrorResponseSchema);
+
+export type IntrospectionTypeRef = typeof IntrospectionTypeRefSchema.Type;
 export type IntrospectionInputValue = typeof IntrospectionInputValueSchema.Type;
 export type IntrospectionField = typeof IntrospectionFieldSchema.Type;
 export type IntrospectionEnumValue = NonNullable<
@@ -191,12 +190,39 @@ export type IntrospectionSchema = (typeof IntrospectionResultSchema.Type)["__sch
 export type IntrospectionResult = typeof IntrospectionResultSchema.Type;
 
 const firstUpstreamErrorMessage = (value: unknown): string | null => {
-  const decoded = Schema.decodeUnknownOption(UpstreamErrorResponseSchema)(value);
+  const decoded = decodeUpstreamErrorResponse(value);
   return Option.match(decoded, {
     onNone: () => null,
-    onSome: (response) =>
-      response.message ?? response.errors?.find((error) => error.message)?.message ?? null,
+    onSome: (response) => {
+      if (response.message) return response.message;
+      for (const entry of response.errors ?? []) {
+        const message = entry.message;
+        if (message) return message;
+      }
+      return null;
+    },
   });
+};
+
+const redactUpstreamBody = (body: string): string =>
+  body
+    .replaceAll(
+      /("(?:access_token|refresh_token|id_token|client_secret|token|authorization)"\s*:\s*")[^"]*(")/gi,
+      "$1[redacted]$2",
+    )
+    .replaceAll(
+      /((?:access_token|refresh_token|id_token|client_secret|token|authorization)=)[^&\s]*/gi,
+      "$1[redacted]",
+    )
+    .replaceAll(
+      /((?:authorization|access-token|refresh-token|id-token|client-secret|token)\s*:\s*)(?:bearer\s+)?[^\s,;]+/gi,
+      "$1[redacted]",
+    );
+
+const upstreamTextMessage = (body: string): string | null => {
+  const text = redactUpstreamBody(body.replaceAll(/\s+/g, " ").trim());
+  if (text.length === 0) return null;
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 };
 
 // ---------------------------------------------------------------------------
@@ -222,6 +248,8 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
 
   let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
+    HttpClientRequest.setHeader("Accept", "application/json"),
+    HttpClientRequest.setHeader("User-Agent", "executor-graphql"),
     HttpClientRequest.bodyJsonUnsafe({
       query: INTROSPECTION_QUERY,
     }),
@@ -244,8 +272,15 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (response.status !== 200) {
-    const raw = yield* response.json.pipe(Effect.catch(() => Effect.succeed(null)));
-    const upstreamMessage = raw === null ? null : firstUpstreamErrorMessage(raw);
+    const responseText = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")));
+    const raw = responseText
+      ? yield* Schema.decodeUnknownEffect(JsonTextSchema)(responseText).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        )
+      : null;
+    const upstreamMessage = upstreamTextMessage(
+      (raw === null ? null : firstUpstreamErrorMessage(raw)) ?? responseText,
+    );
     return yield* new GraphqlIntrospectionError({
       message: upstreamMessage
         ? `Introspection failed with status ${response.status}: ${upstreamMessage}`

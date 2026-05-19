@@ -8,12 +8,11 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   connectionsAtom,
   configureSource,
-  removeSourceCredentialBinding,
   setSourceCredentialBinding,
   sourceAtom,
   startOAuth,
 } from "@executor-js/react/api/atoms";
-import { useScope, useScopeStack, useUserScope } from "@executor-js/react/api/scope-context";
+import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { Button } from "@executor-js/react/components/button";
 import { CopyButton } from "@executor-js/react/components/copy-button";
@@ -33,9 +32,7 @@ import { sourceWriteKeys as openApiWriteKeys } from "@executor-js/react/api/reac
 import {
   ConnectionId,
   CredentialBindingRef,
-  RemoveSourceCredentialBindingInput,
   ScopeId,
-  SecretId,
   SetSourceCredentialBindingInput,
 } from "@executor-js/sdk/shared";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
@@ -56,6 +53,10 @@ import {
   isSecretCredentialBindingValue,
 } from "@executor-js/react/plugins/credential-bindings";
 import { SecretCredentialSlotBindings } from "@executor-js/react/plugins/credential-slot-bindings";
+import {
+  useSourceCredentialBindingScopes,
+  useSourceCredentialBindingWriter,
+} from "@executor-js/react/plugins/source-credential-bindings";
 import { CreatableSecretPicker } from "@executor-js/react/plugins/secret-header-auth";
 
 import { openApiSourceAtom, openApiSourceBindingsAtom } from "./atoms";
@@ -91,7 +92,7 @@ type SlotDef =
       readonly label: string;
     };
 
-type OpenApiCredentialBindingRow = CredentialBindingRef & { readonly slot: string };
+type OpenApiCredentialBindingRow = CredentialBindingRef;
 
 const slugify = (value: string): string =>
   value
@@ -128,7 +129,6 @@ export default function EditOpenApiSource(props: {
   readonly onSave: () => void;
 }) {
   const displayScope = useScope();
-  const scopeStack = useScopeStack();
   const userScope = useUserScope();
   const sourceSummaryResult = useAtomValue(sourceAtom(props.sourceId, displayScope));
   const sourceSummary =
@@ -137,10 +137,13 @@ export default function EditOpenApiSource(props: {
       : null;
   const sourceScopeId = sourceSummary?.scopeId ?? displayScope;
   const sourceScope = ScopeId.make(sourceScopeId);
-  const scopeRanks = useMemo(
-    () => new Map(scopeStack.map((scope, index) => [scope.id, index] as const)),
-    [scopeStack],
-  );
+  const {
+    credentialScopes,
+    credentialScopeOptions,
+    organizationCredentialScope,
+    secretBindingScopes,
+    scopeRanks,
+  } = useSourceCredentialBindingScopes({ sourceScope });
 
   const sourceResult = useAtomValue(openApiSourceAtom(sourceScope, props.sourceId));
   const bindingsResult = useAtomValue(
@@ -151,9 +154,6 @@ export default function EditOpenApiSource(props: {
 
   const doConfigure = useAtomSet(configureSource, { mode: "promiseExit" });
   const doSetBinding = useAtomSet(setSourceCredentialBinding, {
-    mode: "promiseExit",
-  });
-  const doRemoveBinding = useAtomSet(removeSourceCredentialBinding, {
     mode: "promiseExit",
   });
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
@@ -176,6 +176,12 @@ export default function EditOpenApiSource(props: {
   const [sourceSaveState, setSourceSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const sourceBindingWriter = useSourceCredentialBindingWriter({
+    displayScope,
+    source: { id: props.sourceId, scope: sourceScope },
+    onError: setError,
+    errorMessageFromExit,
+  });
   const [pendingOAuthConnection, setPendingOAuthConnection] = useState<{
     readonly scopeId: ScopeId;
     readonly slot: string;
@@ -328,39 +334,6 @@ export default function EditOpenApiSource(props: {
     return slots;
   }, [source]);
 
-  const credentialScopes = useMemo(() => {
-    const entries = [{ scopeId: ScopeId.make(sourceScopeId), label: "Organization" }];
-    if (userScope !== sourceScopeId) {
-      entries.unshift({ scopeId: ScopeId.make(userScope), label: "Personal" });
-    } else {
-      entries[0] = {
-        scopeId: ScopeId.make(sourceScopeId),
-        label: "Credentials",
-      };
-    }
-    return entries;
-  }, [sourceScopeId, userScope]);
-  const credentialScopeOptions = useMemo(
-    () =>
-      credentialScopes.map((entry) => ({
-        scopeId: entry.scopeId,
-        label: entry.label,
-        description:
-          entry.label === "Personal"
-            ? "Saved only for your account."
-            : "Shared with everyone who can use this source.",
-      })),
-    [credentialScopes],
-  );
-  const organizationCredentialScope =
-    credentialScopes.find((entry) => entry.label === "Organization") ?? credentialScopes[0]!;
-  const personalCredentialScope =
-    credentialScopes.find((entry) => entry.label === "Personal") ?? null;
-  const secretBindingScopes =
-    personalCredentialScope &&
-    personalCredentialScope.scopeId !== organizationCredentialScope.scopeId
-      ? [organizationCredentialScope, personalCredentialScope]
-      : [organizationCredentialScope];
   const activeOAuthTokenScope =
     credentialScopes.find((entry) => entry.scopeId === selectedOAuthTokenScope) ??
     credentialScopes[0]!;
@@ -384,55 +357,6 @@ export default function EditOpenApiSource(props: {
       (!source.config.oauth2 ||
         (slot.slot !== source.config.oauth2.clientIdSlot && slot.slot !== oauthClientSecretSlot)),
   );
-
-  const setSecretBinding = async (
-    targetScope: ScopeId,
-    slot: string,
-    secretId: string,
-    secretScope: ScopeId,
-  ) => {
-    const inputKey = `${targetScope}:${slot}`;
-    const trimmed = secretId.trim();
-    if (!trimmed) return;
-    setBusyKey(inputKey);
-    setError(null);
-    const exit = await doSetBinding({
-      params: { scopeId: displayScope },
-      payload: SetSourceCredentialBindingInput.make({
-        source: { id: props.sourceId, scope: sourceScope },
-        scope: targetScope,
-        slotKey: slot,
-        value: {
-          kind: "secret",
-          secretId: SecretId.make(trimmed),
-          secretScopeId: secretScope,
-        },
-      }),
-      reactivityKeys: sourceWriteKeys,
-    });
-    if (Exit.isFailure(exit)) {
-      setError(errorMessageFromExit(exit, "Failed to save credential binding"));
-    }
-    setBusyKey(null);
-  };
-
-  const clearBinding = async (targetScope: ScopeId, slot: string) => {
-    setBusyKey(`${targetScope}:${slot}:clear`);
-    setError(null);
-    const exit = await doRemoveBinding({
-      params: { scopeId: displayScope },
-      payload: RemoveSourceCredentialBindingInput.make({
-        source: { id: props.sourceId, scope: sourceScope },
-        scope: targetScope,
-        slotKey: slot,
-      }),
-      reactivityKeys: sourceWriteKeys,
-    });
-    if (Exit.isFailure(exit)) {
-      setError(errorMessageFromExit(exit, "Failed to clear credential binding"));
-    }
-    setBusyKey(null);
-  };
 
   const connectOAuth = async (targetScope: ScopeId) => {
     const oauth2 = source.config.oauth2;
@@ -679,9 +603,9 @@ export default function EditOpenApiSource(props: {
                 sourceId={props.sourceId}
                 sourceName={source.name}
                 credentialScopeOptions={credentialScopeOptions}
-                busyKey={busyKey}
-                onSetSecretBinding={setSecretBinding}
-                onClearBinding={clearBinding}
+                busyKey={sourceBindingWriter.busyKey}
+                onSetSecretBinding={sourceBindingWriter.setSecretBinding}
+                onClearBinding={sourceBindingWriter.clearBinding}
               />
             </>
           )}
@@ -849,7 +773,7 @@ export default function EditOpenApiSource(props: {
                             <CreatableSecretPicker
                               value={exactSecretId}
                               onSelect={(secretId, secretScopeId) =>
-                                void setSecretBinding(
+                                void sourceBindingWriter.setSecretBinding(
                                   activeScope.scopeId,
                                   input.slot,
                                   secretId,
@@ -871,13 +795,18 @@ export default function EditOpenApiSource(props: {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => void clearBinding(activeScope.scopeId, input.slot)}
-                              disabled={busyKey === clearKey}
+                              onClick={() =>
+                                void sourceBindingWriter.clearBinding(
+                                  activeScope.scopeId,
+                                  input.slot,
+                                )
+                              }
+                              disabled={sourceBindingWriter.busyKey === clearKey}
                             >
                               Clear
                             </Button>
                           )}
-                          {busyKey === inputKey && (
+                          {sourceBindingWriter.busyKey === inputKey && (
                             <span className="text-xs text-muted-foreground">Saving…</span>
                           )}
                         </div>

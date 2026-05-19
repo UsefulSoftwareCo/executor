@@ -22,7 +22,7 @@ const slots: readonly SourceCredentialSlot[] = [
 
 const bindings = (scopeId: ScopeId): readonly SourceCredentialBindingRef[] => [
   {
-    slot: "header:authorization",
+    slotKey: "header:authorization",
     scopeId,
     value: {
       kind: "secret",
@@ -30,7 +30,7 @@ const bindings = (scopeId: ScopeId): readonly SourceCredentialBindingRef[] => [
     },
   },
   {
-    slot: "auth:oauth2:connection",
+    slotKey: "auth:oauth2:connection",
     scopeId,
     value: {
       kind: "connection",

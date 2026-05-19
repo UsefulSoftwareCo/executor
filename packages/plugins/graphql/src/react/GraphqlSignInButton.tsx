@@ -27,7 +27,7 @@ export default function GraphqlSignInButton(props: { sourceId: string }) {
   const oauth2 = source?.auth.kind === "oauth2" ? source.auth : null;
   const bindings = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : null;
   const connectionBinding = bindings?.find(
-    (binding) => oauth2 !== null && binding.slot === oauth2.connectionSlot,
+    (binding) => oauth2 !== null && binding.slotKey === oauth2.connectionSlot,
   );
   const boundConnectionId =
     connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;

@@ -11,6 +11,19 @@ import {
 import { CreatableSecretPicker } from "./secret-header-auth";
 import type { SecretPickerSecret } from "./secret-picker";
 
+type ConfiguredHttpCredentialValue =
+  | string
+  | {
+      readonly kind: "binding";
+      readonly slot: string;
+      readonly prefix?: string;
+    };
+
+export type ConfiguredHttpCredentialMap =
+  | Readonly<Record<string, ConfiguredHttpCredentialValue>>
+  | undefined
+  | null;
+
 export type SecretCredentialSlot = {
   readonly slot: string;
   readonly label: string;
@@ -23,7 +36,7 @@ export type CredentialBindingScope = {
 };
 
 type CredentialSlotBindingRef = {
-  readonly slot: string;
+  readonly slotKey: string;
   readonly scopeId: ScopeId;
   readonly value: CredentialBindingValue;
 };
@@ -44,6 +57,30 @@ const rowTitle = (bindingScope: CredentialBindingScope, bindingScopeCount: numbe
     : bindingScopeCount === 1
       ? "Source credential"
       : "Organization default";
+
+export const secretCredentialSlotsFromHttpConfig = (input: {
+  readonly headers?: ConfiguredHttpCredentialMap;
+  readonly queryParams?: ConfiguredHttpCredentialMap;
+}): readonly SecretCredentialSlot[] => {
+  const slots: SecretCredentialSlot[] = [];
+  for (const [name, value] of Object.entries(input.headers ?? {})) {
+    if (typeof value === "string") continue;
+    slots.push({
+      slot: value.slot,
+      label: name,
+      hint: value.prefix ? `Prefix: ${value.prefix}` : undefined,
+    });
+  }
+  for (const [name, value] of Object.entries(input.queryParams ?? {})) {
+    if (typeof value === "string") continue;
+    slots.push({
+      slot: value.slot,
+      label: name,
+      hint: value.prefix ? `Prefix: ${value.prefix}` : undefined,
+    });
+  }
+  return slots;
+};
 
 export function SecretCredentialSlotBindings(props: {
   readonly slots: readonly SecretCredentialSlot[];

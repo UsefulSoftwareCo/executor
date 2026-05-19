@@ -1,9 +1,7 @@
 import { Effect, Schema } from "effect";
 import {
   ConfiguredCredentialValue,
-  CredentialBindingValue,
   credentialSlotKey,
-  ScopeId,
   SecretBackedMap,
   SecretBackedValue,
 } from "@executor-js/sdk/shared";
@@ -79,20 +77,6 @@ export const McpConnectionAuthInput = Schema.Union([
   }),
 ]);
 export type McpConnectionAuthInput = typeof McpConnectionAuthInput.Type;
-
-export const McpSourceBindingValue = CredentialBindingValue;
-export type McpSourceBindingValue = typeof McpSourceBindingValue.Type;
-
-export const McpSourceBindingRef = Schema.Struct({
-  sourceId: Schema.String,
-  sourceScopeId: ScopeId,
-  scopeId: ScopeId,
-  slot: Schema.String,
-  value: McpSourceBindingValue,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
-});
-export type McpSourceBindingRef = typeof McpSourceBindingRef.Type;
 
 // ---------------------------------------------------------------------------
 // Stored source data — discriminated union on transport

@@ -13,7 +13,7 @@ describe("source OAuth connection UI state", () => {
       sourceOAuthConnectionUiState({
         bindings: [
           {
-            slot: "auth:oauth2:connection",
+            slotKey: "auth:oauth2:connection",
             scopeId: organizationScope,
             value: { kind: "connection", connectionId },
           },

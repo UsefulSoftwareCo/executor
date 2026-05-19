@@ -53,7 +53,6 @@ import {
   GRAPHQL_OAUTH_CONNECTION_SLOT,
   GraphqlCredentialInput as GraphqlCredentialInputSchema,
   GraphqlSourceAuthInput as GraphqlSourceAuthInputSchema,
-  GraphqlSourceBindingRef,
   graphqlHeaderSlot,
   graphqlQueryParamSlot,
   OperationBinding,
@@ -63,7 +62,6 @@ import {
   type GraphqlSourceAuth,
   type HeaderValue as HeaderValueValue,
   type GraphqlSourceAuthInput,
-  type GraphqlSourceBindingValue,
   type GraphqlOperationKind,
 } from "./types";
 
@@ -365,23 +363,12 @@ const scopeRanks = (ctx: PluginCtx<GraphqlStore>): ReadonlyMap<string, number> =
 const scopeRank = (ranks: ReadonlyMap<string, number>, scopeId: string): number =>
   ranks.get(scopeId) ?? Infinity;
 
-const coreBindingToGraphqlBinding = (binding: CredentialBindingRef): GraphqlSourceBindingRef =>
-  GraphqlSourceBindingRef.make({
-    sourceId: binding.sourceId,
-    sourceScopeId: binding.sourceScopeId,
-    scopeId: binding.scopeId,
-    slot: binding.slotKey,
-    value: binding.value,
-    createdAt: binding.createdAt,
-    updatedAt: binding.updatedAt,
-  });
-
 const resolveGraphqlSourceBinding = (
   ctx: PluginCtx<GraphqlStore>,
   sourceId: string,
   sourceScope: string,
   slot: string,
-): Effect.Effect<GraphqlSourceBindingRef | null, StorageFailure> =>
+): Effect.Effect<CredentialBindingRef | null, StorageFailure> =>
   Effect.gen(function* () {
     const ranks = scopeRanks(ctx);
     const sourceSourceRank = scopeRank(ranks, sourceScope);
@@ -397,7 +384,7 @@ const resolveGraphqlSourceBinding = (
           candidate.slotKey === slot && scopeRank(ranks, candidate.scopeId) <= sourceSourceRank,
       )
       .sort((a, b) => scopeRank(ranks, a.scopeId) - scopeRank(ranks, b.scopeId))[0];
-    return binding ? coreBindingToGraphqlBinding(binding) : null;
+    return binding ?? null;
   });
 
 const validateGraphqlBindingTarget = (
@@ -481,7 +468,7 @@ const canonicalizeAuth = (
   readonly auth: GraphqlSourceAuth;
   readonly bindings: ReadonlyArray<{
     readonly slot: string;
-    readonly value: GraphqlSourceBindingValue;
+    readonly value: CredentialBindingValue;
     readonly targetScope?: string;
   }>;
 } => {

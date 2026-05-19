@@ -32,8 +32,6 @@ export {
   GraphqlOperationKind,
   GraphqlSourceAuth,
   GraphqlSourceAuthInput,
-  GraphqlSourceBindingRef,
-  GraphqlSourceBindingValue,
   InvocationConfig,
   InvocationResult,
   OperationBinding,

@@ -1,5 +1,16 @@
 import { Schema } from "effect";
 import { ScopedSecretCredentialInput, SecretBackedValue } from "@executor-js/sdk/shared";
+import {
+  OAuth2Flow as HttpOAuth2Flow,
+  OAuth2SourceConfig as SharedOAuth2SourceConfig,
+  type OAuth2FlowType,
+  type OAuth2SourceConfigType,
+} from "@executor-js/plugin-http-source/sdk";
+
+export const OAuth2Flow = HttpOAuth2Flow;
+export type OAuth2Flow = OAuth2FlowType;
+export const OAuth2SourceConfig = SharedOAuth2SourceConfig;
+export type OAuth2SourceConfig = OAuth2SourceConfigType;
 
 // ---------------------------------------------------------------------------
 // Branded IDs
@@ -181,23 +192,6 @@ export type OpenApiCredentialInput = typeof OpenApiCredentialInput.Type;
 // connection providerState). The values are static per source so the two
 // copies can't drift under normal reconnect flows.
 // ---------------------------------------------------------------------------
-
-export const OAuth2Flow = Schema.Literals(["authorizationCode", "clientCredentials"]);
-export type OAuth2Flow = typeof OAuth2Flow.Type;
-
-export const OAuth2SourceConfig = Schema.Struct({
-  kind: Schema.Literal("oauth2"),
-  securitySchemeName: Schema.String,
-  flow: OAuth2Flow,
-  tokenUrl: Schema.String,
-  authorizationUrl: Schema.NullOr(Schema.String),
-  issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
-  clientIdSlot: Schema.String,
-  clientSecretSlot: Schema.NullOr(Schema.String),
-  connectionSlot: Schema.String,
-  scopes: Schema.Array(Schema.String),
-}).annotate({ identifier: "OpenApiOAuth2SourceConfig" });
-export type OAuth2SourceConfig = typeof OAuth2SourceConfig.Type;
 
 export const InvocationResult = Schema.Struct({
   status: Schema.Number,

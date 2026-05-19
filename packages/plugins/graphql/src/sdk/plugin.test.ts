@@ -145,11 +145,11 @@ describe("graphqlPlugin real protocol server", () => {
     );
   });
 
-  it.effect("does not include upstream response bodies in introspection status errors", () =>
+  it.effect("includes redacted upstream text in introspection status errors", () =>
     Effect.gen(function* () {
       const server = yield* serveGraphqlFailureTestServer({
         status: 500,
-        body: "internal token value",
+        body: 'upstream failed {"access_token":"secret-value"} token=another-secret',
       });
 
       const error = yield* introspect(server.endpoint).pipe(
@@ -157,8 +157,12 @@ describe("graphqlPlugin real protocol server", () => {
         Effect.flip,
       );
 
-      expect(error).toHaveProperty("message", "Introspection failed with status 500");
-      expect(error).not.toHaveProperty("message", expect.stringContaining("internal token value"));
+      expect(error).toHaveProperty(
+        "message",
+        'Introspection failed with status 500: upstream failed {"access_token":"[redacted]"} token=[redacted]',
+      );
+      expect(error).not.toHaveProperty("message", expect.stringContaining("secret-value"));
+      expect(error).not.toHaveProperty("message", expect.stringContaining("another-secret"));
     }),
   );
 
@@ -182,6 +186,30 @@ describe("graphqlPlugin real protocol server", () => {
         "message",
         "Introspection failed with status 403: Resource protected by organization SSO",
       );
+    }),
+  );
+
+  it.effect("redacts secrets from upstream JSON messages in introspection status errors", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp(() =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { message: "Authorization: Bearer github-secret-token" },
+            { status: 403 },
+          ),
+        ),
+      );
+
+      const error = yield* introspect(server.url("/graphql")).pipe(
+        Effect.provide(server.httpClientLayer),
+        Effect.flip,
+      );
+
+      expect(error).toHaveProperty(
+        "message",
+        "Introspection failed with status 403: Authorization: [redacted]",
+      );
+      expect(error).not.toHaveProperty("message", expect.stringContaining("github-secret-token"));
     }),
   );
 

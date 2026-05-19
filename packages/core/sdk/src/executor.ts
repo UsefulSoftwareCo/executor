@@ -50,7 +50,7 @@ import {
   type ReplaceCredentialBindingsInput,
   type ReplaceSourceCredentialBindingsInput,
   ResolvedCredentialSlot,
-  type SetCredentialBindingInput,
+  type SetPluginCredentialBindingInput,
   type SetSourceCredentialBindingInput,
   type SourceCredentialBindingSlotInput,
   type SourceCredentialBindingSourceInput,
@@ -2381,7 +2381,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           .map(credentialBindingRowToRef);
       });
 
-    const credentialBindingSet = (input: SetCredentialBindingInput) =>
+    const credentialBindingSet = (input: SetPluginCredentialBindingInput) =>
       Effect.gen(function* () {
         yield* assertScopeInStack("credential binding targetScope", input.targetScope);
         yield* assertScopeInStack("credential binding sourceScope", input.sourceScope);

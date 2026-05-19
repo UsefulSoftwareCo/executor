@@ -4,17 +4,21 @@ import type {
   SecretBackedValue,
 } from "@executor-js/sdk/shared";
 
-import { FieldLabel } from "../components/field";
-import { HeadersList } from "./headers-list";
+import { FieldLabel } from "@executor-js/react/components/field";
+import { HeadersList } from "@executor-js/react/plugins/headers-list";
 import {
   headerValueToState,
   headersFromState,
   QueryParamCredentialValuePreview,
   type HeaderAuthPreset,
   type HeaderState,
-} from "./secret-header-auth";
-import type { CredentialTargetScopeOption } from "./credential-target-scope";
-import type { SecretPickerSecret } from "./secret-picker";
+} from "@executor-js/react/plugins/secret-header-auth";
+import type { CredentialTargetScopeOption } from "@executor-js/react/plugins/credential-target-scope";
+import {
+  type ConfiguredCredentialValueLike,
+  type CredentialBindingRefLike,
+} from "@executor-js/react/plugins/credential-bindings";
+import type { SecretPickerSecret } from "@executor-js/react/plugins/secret-picker";
 
 export type { SecretBackedValue };
 
@@ -260,6 +264,86 @@ export const serializeTemplateQueryCredentials = (
     }
   }
   return result;
+};
+
+const bindingBySlot = (
+  bindings: readonly CredentialBindingRefLike[],
+): ReadonlyMap<string, CredentialBindingRefLike> =>
+  new Map(bindings.map((binding) => [binding.slotKey, binding]));
+
+const headerFromConfiguredCredential = (
+  name: string,
+  value: ConfiguredCredentialValueLike,
+  bindings: ReadonlyMap<string, CredentialBindingRefLike>,
+): HeaderState | null => {
+  if (typeof value === "string") {
+    return headerValueToState(name, value);
+  }
+
+  const binding = bindings.get(value.slot);
+  if (binding?.value.kind === "secret") {
+    return {
+      ...headerValueToState(name, {
+        secretId: binding.value.secretId,
+        prefix: value.prefix,
+      }),
+      targetScope: binding.scopeId,
+      secretScope: binding.value.secretScopeId,
+    };
+  }
+
+  if (binding?.value.kind === "text") {
+    return headerValueToState(name, binding.value.text);
+  }
+
+  return null;
+};
+
+const queryParamFromConfiguredCredential = (
+  name: string,
+  value: ConfiguredCredentialValueLike,
+  bindings: ReadonlyMap<string, CredentialBindingRefLike>,
+): QueryParamState | null => {
+  if (typeof value === "string") {
+    return { name, secretId: null, literalValue: value, valueKind: "text" };
+  }
+
+  const binding = bindings.get(value.slot);
+  if (binding?.value.kind === "secret") {
+    return {
+      name,
+      secretId: binding.value.secretId,
+      valueKind: "secret",
+      prefix: value.prefix,
+      targetScope: binding.scopeId,
+      secretScope: binding.value.secretScopeId,
+    };
+  }
+
+  if (binding?.value.kind === "text") {
+    return { name, secretId: null, literalValue: binding.value.text, valueKind: "text" };
+  }
+
+  return null;
+};
+
+export const httpCredentialsFromConfiguredCredentialBindings = (input: {
+  readonly headers?: Record<string, ConfiguredCredentialValueLike> | null;
+  readonly queryParams?: Record<string, ConfiguredCredentialValueLike> | null;
+  readonly bindings: readonly CredentialBindingRefLike[];
+}): HttpCredentialsState => {
+  const bindings = bindingBySlot(input.bindings);
+
+  return {
+    headers: Object.entries(input.headers ?? {}).flatMap(([name, value]) => {
+      const state = headerFromConfiguredCredential(name, value, bindings);
+      return state ? [state] : [];
+    }),
+    queryParams: Object.entries(input.queryParams ?? {}).flatMap(([name, value]) => {
+      const state = queryParamFromConfiguredCredential(name, value, bindings);
+      return state ? [state] : [];
+    }),
+  };
 };
 
 export const serializeTemplateHttpCredentials = (credentials: HttpCredentialsState) => ({

@@ -4,7 +4,6 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { sourceCredentialBindingsAtom, sourcesOptimisticAtom } from "@executor-js/react/api/atoms";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
 import { GraphqlClient } from "./client";
-import { GraphqlSourceBindingRef } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Query atoms
@@ -21,20 +20,7 @@ export const graphqlSourceBindingsAtom = (
   scopeId: ScopeId,
   namespace: string,
   sourceScopeId: ScopeId,
-) =>
-  Atom.mapResult(sourceCredentialBindingsAtom(scopeId, namespace, sourceScopeId), (rows) =>
-    rows.map((row) =>
-      GraphqlSourceBindingRef.make({
-        sourceId: row.sourceId,
-        sourceScopeId: row.sourceScopeId,
-        scopeId: row.scopeId,
-        slot: row.slotKey,
-        value: row.value,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }),
-    ),
-  );
+) => sourceCredentialBindingsAtom(scopeId, namespace, sourceScopeId);
 
 // ---------------------------------------------------------------------------
 // Mutation atoms
