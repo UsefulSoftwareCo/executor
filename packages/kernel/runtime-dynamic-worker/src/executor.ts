@@ -267,6 +267,7 @@ const rehydrateBinary = (value: unknown, seen = new WeakSet<object>()): unknown 
   }
   seen.add(value);
   if (isBinaryEnvelope(value)) {
+    seen.delete(value);
     if (value.kind === "file" && typeof value.name === "string") {
       return new File([value.buffer], value.name, {
         type: value.type,
@@ -275,12 +276,20 @@ const rehydrateBinary = (value: unknown, seen = new WeakSet<object>()): unknown 
     }
     return new Blob([value.buffer], { type: value.type });
   }
-  if (Array.isArray(value)) return value.map((item) => rehydrateBinary(item, seen));
-  if (!isPlainObject(value)) return value;
+  if (Array.isArray(value)) {
+    const out = value.map((item) => rehydrateBinary(item, seen));
+    seen.delete(value);
+    return out;
+  }
+  if (!isPlainObject(value)) {
+    seen.delete(value);
+    return value;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     out[k] = rehydrateBinary(v, seen);
   }
+  seen.delete(value);
   return out;
 };
 
@@ -294,7 +303,7 @@ const encodeBinary = async (value: unknown, seen = new WeakSet<object>()): Promi
   }
   seen.add(value);
   if (typeof File !== "undefined" && value instanceof File) {
-    return {
+    const out = {
       __executorBinary: 1 as const,
       kind: "file" as const,
       type: value.type,
@@ -302,21 +311,33 @@ const encodeBinary = async (value: unknown, seen = new WeakSet<object>()): Promi
       lastModified: value.lastModified,
       buffer: await value.arrayBuffer(),
     };
+    seen.delete(value);
+    return out;
   }
   if (value instanceof Blob) {
-    return {
+    const out = {
       __executorBinary: 1 as const,
       kind: "blob" as const,
       type: value.type,
       buffer: await value.arrayBuffer(),
     };
+    seen.delete(value);
+    return out;
   }
-  if (Array.isArray(value)) return Promise.all(value.map((item) => encodeBinary(item, seen)));
-  if (!isPlainObject(value)) return value;
+  if (Array.isArray(value)) {
+    const out = await Promise.all(value.map((item) => encodeBinary(item, seen)));
+    seen.delete(value);
+    return out;
+  }
+  if (!isPlainObject(value)) {
+    seen.delete(value);
+    return value;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     out[k] = await encodeBinary(v, seen);
   }
+  seen.delete(value);
   return out;
 };
 

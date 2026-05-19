@@ -304,6 +304,8 @@ describe("OpenAPI Plugin", () => {
       expect(schema!.outputTypeScript).toContain("servers:");
       expect(schema!.outputTypeScript).toContain("securitySchemes:");
       expect(schema!.outputTypeScript).toContain("oauth2Presets:");
+      expect(schema!.outputTypeScript).toContain("title: string | null");
+      expect(schema!.outputTypeScript).not.toContain("_tag");
     }),
   );
 

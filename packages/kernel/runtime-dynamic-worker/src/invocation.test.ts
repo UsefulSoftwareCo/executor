@@ -114,6 +114,19 @@ describe("ToolDispatcher", () => {
     });
   });
 
+  it("allows shared object references in RPC args", async () => {
+    const invoker = makeInvoker(({ args }) => args);
+    const dispatcher = new ToolDispatcher(invoker, Effect.runPromise);
+    const shared = { value: 1 };
+
+    const result = await dispatcher.call("test.tool", { first: shared, second: shared });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { first: { value: 1 }, second: { value: 1 } },
+    });
+  });
+
   it("passes the tool path correctly", async () => {
     let capturedPath = "";
     const invoker = makeInvoker(({ path }) => {
@@ -402,6 +415,19 @@ describe("makeDynamicWorkerExecutor", () => {
 
     expect(result.result).toBeNull();
     expect(result.error).toBe("Internal tool error");
+  });
+
+  it("returns shared object references from tool results", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const shared = { _tag: "None" };
+    const invoker = makeInvoker(() => ({ first: shared, second: shared }));
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.shared.read({})", invoker),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toEqual({ first: { _tag: "None" }, second: { _tag: "None" } });
   });
 
   it("respects timeout", async () => {

@@ -32,7 +32,7 @@ import { parse, resolveSpecText } from "./parse";
 import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
-import { previewSpec, SpecPreview } from "./preview";
+import { previewSpec, type SpecPreview } from "./preview";
 import { openApiPresets } from "./presets";
 import {
   makeDefaultOpenapiStore,
@@ -249,6 +249,79 @@ const PreviewSpecInputSchema = Schema.Struct({
   ),
 });
 
+const StaticPreviewOperationSchema = Schema.Struct({
+  operationId: Schema.String,
+  method: Schema.Literals(["get", "put", "post", "delete", "patch", "head", "options", "trace"]),
+  path: Schema.String,
+  summary: Schema.NullOr(Schema.String),
+  tags: Schema.Array(Schema.String),
+  deprecated: Schema.Boolean,
+});
+const StaticPreviewServerVariableSchema = Schema.Struct({
+  default: Schema.String,
+  enum: Schema.NullOr(Schema.Array(Schema.String)),
+  description: Schema.NullOr(Schema.String),
+});
+const StaticPreviewServerSchema = Schema.Struct({
+  url: Schema.String,
+  description: Schema.NullOr(Schema.String),
+  variables: Schema.NullOr(Schema.Record(Schema.String, StaticPreviewServerVariableSchema)),
+});
+const StaticPreviewOAuthAuthorizationCodeFlowSchema = Schema.Struct({
+  authorizationUrl: Schema.String,
+  tokenUrl: Schema.String,
+  refreshUrl: Schema.NullOr(Schema.String),
+  scopes: Schema.Record(Schema.String, Schema.String),
+});
+const StaticPreviewOAuthClientCredentialsFlowSchema = Schema.Struct({
+  tokenUrl: Schema.String,
+  refreshUrl: Schema.NullOr(Schema.String),
+  scopes: Schema.Record(Schema.String, Schema.String),
+});
+const StaticPreviewOAuthFlowsSchema = Schema.Struct({
+  authorizationCode: Schema.NullOr(StaticPreviewOAuthAuthorizationCodeFlowSchema),
+  clientCredentials: Schema.NullOr(StaticPreviewOAuthClientCredentialsFlowSchema),
+});
+const StaticPreviewSecuritySchemeSchema = Schema.Struct({
+  name: Schema.String,
+  type: Schema.Literals(["http", "apiKey", "oauth2", "openIdConnect"]),
+  scheme: Schema.NullOr(Schema.String),
+  bearerFormat: Schema.NullOr(Schema.String),
+  in: Schema.NullOr(Schema.Literals(["header", "query", "cookie"])),
+  headerName: Schema.NullOr(Schema.String),
+  description: Schema.NullOr(Schema.String),
+  flows: Schema.NullOr(StaticPreviewOAuthFlowsSchema),
+  openIdConnectUrl: Schema.NullOr(Schema.String),
+});
+const StaticPreviewOAuth2PresetSchema = Schema.Struct({
+  label: Schema.String,
+  securitySchemeName: Schema.String,
+  flow: Schema.Literals(["authorizationCode", "clientCredentials"]),
+  authorizationUrl: Schema.NullOr(Schema.String),
+  tokenUrl: Schema.String,
+  refreshUrl: Schema.NullOr(Schema.String),
+  scopes: Schema.Record(Schema.String, Schema.String),
+});
+const StaticPreviewSpecOutputSchema = Schema.Struct({
+  title: Schema.NullOr(Schema.String),
+  version: Schema.NullOr(Schema.String),
+  servers: Schema.Array(StaticPreviewServerSchema),
+  operationCount: Schema.Number,
+  operations: Schema.Array(StaticPreviewOperationSchema),
+  tags: Schema.Array(Schema.String),
+  securitySchemes: Schema.Array(StaticPreviewSecuritySchemeSchema),
+  authStrategies: Schema.Array(Schema.Struct({ schemes: Schema.Array(Schema.String) })),
+  headerPresets: Schema.Array(
+    Schema.Struct({
+      label: Schema.String,
+      headers: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
+      secretHeaders: Schema.Array(Schema.String),
+    }),
+  ),
+  oauth2Presets: Schema.Array(StaticPreviewOAuth2PresetSchema),
+});
+type StaticPreviewSpecOutput = typeof StaticPreviewSpecOutputSchema.Type;
+
 const OpenApiSpecInputSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("blob"), value: Schema.String }),
@@ -348,7 +421,7 @@ const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(PreviewSpecInputSchema),
 );
 const PreviewSpecOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(SpecPreview),
+  Schema.toStandardJSONSchemaV1(StaticPreviewSpecOutputSchema),
 );
 const AddSourceInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddSourceInputSchema),
@@ -375,6 +448,77 @@ const openApiToolFailure = (code: string, message: string, details?: unknown) =>
     message,
     ...(details === undefined ? {} : { details }),
   });
+
+const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => ({
+  title: Option.getOrNull(preview.title),
+  version: Option.getOrNull(preview.version),
+  servers: preview.servers.map((server) => ({
+    url: server.url,
+    description: Option.getOrNull(server.description),
+    variables: Option.getOrNull(server.variables)
+      ? Object.fromEntries(
+          Object.entries(Option.getOrNull(server.variables) ?? {}).map(([name, variable]) => [
+            name,
+            {
+              default: variable.default,
+              enum: Option.getOrNull(variable.enum),
+              description: Option.getOrNull(variable.description),
+            },
+          ]),
+        )
+      : null,
+  })),
+  operationCount: preview.operationCount,
+  operations: preview.operations.map((operation) => ({
+    operationId: operation.operationId,
+    method: operation.method,
+    path: operation.path,
+    summary: Option.getOrNull(operation.summary),
+    tags: operation.tags,
+    deprecated: operation.deprecated,
+  })),
+  tags: preview.tags,
+  securitySchemes: preview.securitySchemes.map((scheme) => ({
+    name: scheme.name,
+    type: scheme.type,
+    scheme: Option.getOrNull(scheme.scheme),
+    bearerFormat: Option.getOrNull(scheme.bearerFormat),
+    in: Option.getOrNull(scheme.in),
+    headerName: Option.getOrNull(scheme.headerName),
+    description: Option.getOrNull(scheme.description),
+    flows: Option.isSome(scheme.flows)
+      ? {
+          authorizationCode: Option.isSome(scheme.flows.value.authorizationCode)
+            ? {
+                authorizationUrl: scheme.flows.value.authorizationCode.value.authorizationUrl,
+                tokenUrl: scheme.flows.value.authorizationCode.value.tokenUrl,
+                refreshUrl: Option.getOrNull(scheme.flows.value.authorizationCode.value.refreshUrl),
+                scopes: scheme.flows.value.authorizationCode.value.scopes,
+              }
+            : null,
+          clientCredentials: Option.isSome(scheme.flows.value.clientCredentials)
+            ? {
+                tokenUrl: scheme.flows.value.clientCredentials.value.tokenUrl,
+                refreshUrl: Option.getOrNull(scheme.flows.value.clientCredentials.value.refreshUrl),
+                scopes: scheme.flows.value.clientCredentials.value.scopes,
+              }
+            : null,
+        }
+      : null,
+    openIdConnectUrl: Option.getOrNull(scheme.openIdConnectUrl),
+  })),
+  authStrategies: preview.authStrategies,
+  headerPresets: preview.headerPresets,
+  oauth2Presets: preview.oauth2Presets.map((preset) => ({
+    label: preset.label,
+    securitySchemeName: preset.securitySchemeName,
+    flow: preset.flow,
+    authorizationUrl: Option.getOrNull(preset.authorizationUrl),
+    tokenUrl: preset.tokenUrl,
+    refreshUrl: Option.getOrNull(preset.refreshUrl),
+    scopes: preset.scopes,
+  })),
+});
 
 const resolveStaticScopeInput = (
   ctx: { readonly scopes: readonly { readonly id: ScopeId; readonly name: string }[] },
@@ -1292,7 +1436,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             outputSchema: PreviewSpecOutputStandardSchema,
             execute: (input) =>
               self.previewSpec(input).pipe(
-                Effect.map(ToolResult.ok),
+                Effect.map((preview) => ToolResult.ok(staticPreviewOutput(preview))),
                 Effect.catchTags({
                   OpenApiParseError: ({ message }) =>
                     Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),

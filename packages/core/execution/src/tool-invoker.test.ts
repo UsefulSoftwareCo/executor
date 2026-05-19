@@ -8,6 +8,7 @@ import {
   ToolResult,
   createExecutor,
   definePlugin,
+  tool,
 } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
@@ -172,6 +173,27 @@ const errorPlugin = definePlugin(() => ({
               }),
             ),
         },
+      ],
+    },
+  ],
+}));
+
+const validatedInputPlugin = definePlugin(() => ({
+  id: "validated-input-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "validated",
+      kind: "in-memory",
+      name: "Validated",
+      tools: [
+        tool({
+          name: "getRepositoryDetails",
+          description: "Get repository details including the default branch",
+          inputSchema: RepoInputSchema,
+          outputSchema: RepoDetailsOutputSchema,
+          execute: () => Effect.succeed({ defaultBranch: "main" }),
+        }),
       ],
     },
   ],
@@ -656,6 +678,36 @@ describe("tool discovery", () => {
           code: "tool_not_found",
           message: "Tool not found: missing.sourceTool",
           details: { toolId: "missing.sourceTool", suggestions: [] },
+        },
+      });
+    }),
+  );
+
+  it.effect("returns invalid static tool arguments as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [validatedInputPlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({
+        path: "validated.getRepositoryDetails",
+        args: { url: "https://example.com/repo" },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "invalid_tool_arguments",
+          message: "Tool arguments did not match the input schema.",
+          details: {
+            issues: expect.arrayContaining([
+              expect.objectContaining({ path: ["owner"], message: "Missing key" }),
+              expect.objectContaining({ path: ["repo"], message: "Missing key" }),
+            ]),
+          },
         },
       });
     }),

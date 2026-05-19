@@ -34,6 +34,12 @@ const newCorrelationId = (): string => {
     .padStart(8, "0");
 };
 
+const validationIssues = (value: unknown): readonly unknown[] | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const issues = (value as { readonly issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
+};
+
 const expectedToolFailure = (
   value: unknown,
 ): { readonly code: string; readonly message: string; readonly details?: unknown } | null => {
@@ -52,6 +58,16 @@ const expectedToolFailure = (
       message: `Tool blocked by policy: ${String(value.toolId)}`,
       details: value,
     };
+  }
+  if (Predicate.isTagged(value, "ToolInvocationError")) {
+    const issues = validationIssues((value as { readonly cause?: unknown }).cause);
+    if (issues) {
+      return {
+        code: "invalid_tool_arguments",
+        message: "Tool arguments did not match the input schema.",
+        details: { issues },
+      };
+    }
   }
   return null;
 };
