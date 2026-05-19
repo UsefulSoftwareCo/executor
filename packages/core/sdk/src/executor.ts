@@ -3134,6 +3134,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     : undefined,
                 )
                 .filter(Predicate.isNotUndefined),
+            presets: () =>
+              Array.from(runtimes.values()).flatMap(({ plugin }) =>
+                (plugin.sourcePresets ?? []).map((preset) => ({
+                  ...preset,
+                  pluginId: plugin.id,
+                })),
+              ),
           },
           policies: {
             list: () => policiesList(),

@@ -196,6 +196,15 @@ const caseSensitiveDynamicPlugin = definePlugin(() => ({
 
 const configurableSourcePlugin = definePlugin(() => ({
   id: "configurable" as const,
+  sourcePresets: [
+    {
+      id: "configurable-demo",
+      name: "Configurable Demo",
+      summary: "Demo source preset for agent and web discovery.",
+      url: "https://example.com/configurable.json",
+      featured: true,
+    },
+  ],
   storage: ({ pluginStorage }) => ({
     get: (scope: string, sourceId = "configured-source") =>
       pluginStorage.getAtScope<{ readonly header: string; readonly sourceScope: string }>({
@@ -510,6 +519,20 @@ describe("createExecutor", () => {
         schemas: expect.arrayContaining([
           expect.objectContaining({ pluginId: "configurable", type: "configurable" }),
         ]),
+      });
+      const presets = yield* executor.tools.invoke("executor.coreTools.sources.presets", {
+        query: "demo",
+      });
+      expect(presets).toMatchObject({
+        presets: [
+          expect.objectContaining({
+            pluginId: "configurable",
+            id: "configurable-demo",
+            name: "Configurable Demo",
+            url: "https://example.com/configurable.json",
+            featured: true,
+          }),
+        ],
       });
 
       yield* executor.tools.invoke("executor.coreTools.sources.configure", {

@@ -32,6 +32,7 @@ import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
 import { previewSpec, SpecPreview } from "./preview";
+import { openApiPresets } from "./presets";
 import {
   makeDefaultOpenapiStore,
   openapiSchema,
@@ -1140,6 +1141,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
   return {
     id: "openapi" as const,
     packageName: "@executor-js/plugin-openapi",
+    sourcePresets: openApiPresets,
     schema: openapiSchema,
     storage: (deps): OpenapiStore => makeDefaultOpenapiStore(deps),
 

@@ -115,6 +115,31 @@ const SourcesDetectOutput = Schema.Struct({
   results: Schema.Array(SourceDetectionResult),
 });
 
+const SourcePresetOutput = Schema.Struct({
+  pluginId: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  summary: Schema.String,
+  url: Schema.optional(Schema.String),
+  icon: Schema.optional(Schema.String),
+  featured: Schema.optional(Schema.Boolean),
+  transport: Schema.optional(Schema.Literals(["remote", "stdio"])),
+  command: Schema.optional(Schema.String),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+
+const SourcesPresetsInput = Schema.Struct({
+  query: Schema.optional(Schema.String),
+  pluginId: Schema.optional(Schema.String),
+  featuredOnly: Schema.optional(Schema.Boolean),
+  limit: Schema.optional(Schema.Number),
+});
+
+const SourcesPresetsOutput = Schema.Struct({
+  presets: Schema.Array(SourcePresetOutput),
+});
+
 const SourcesConfigureSchemasOutput = Schema.Struct({
   schemas: Schema.Array(
     Schema.Struct({
@@ -304,6 +329,11 @@ const SourcesDetectInputStd = schemaToStandard<
   typeof SourcesDetectInput.Encoded
 >(SourcesDetectInput);
 const SourcesDetectOutputStd = schemaToStandard(SourcesDetectOutput);
+const SourcesPresetsInputStd = schemaToStandard<
+  typeof SourcesPresetsInput.Type,
+  typeof SourcesPresetsInput.Encoded
+>(SourcesPresetsInput);
+const SourcesPresetsOutputStd = schemaToStandard(SourcesPresetsOutput);
 const SourcesConfigureSchemasOutputStd = schemaToStandard(SourcesConfigureSchemasOutput);
 const SourcesConfigureInputStd = schemaToStandard<
   typeof SourcesConfigureInput.Type,
@@ -590,11 +620,37 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "sources.detect",
           description:
-            "Detect which plugin can add or configure a URL. Use this when the user gives a URL but not a source type; then call the matching plugin add tool such as `openapi.previewSpec` + `openapi.addSource`, `graphql.addSource`, or `mcp.addSource`.",
+            "Detect which plugin can add or configure a URL. This is the same URL auto-detection used by the Executor web Connect dialog. Use this when the user gives a URL but not a source type; then call the matching plugin add tool such as `openapi.previewSpec` + `openapi.addSource`, `graphql.addSource`, or `mcp.addSource`.",
           inputSchema: SourcesDetectInputStd,
           outputSchema: SourcesDetectOutputStd,
           execute: (input, { ctx }) =>
             Effect.map(ctx.core.sources.detect(input.url), (results) => ({ results })),
+        }),
+        tool({
+          name: "sources.presets",
+          description:
+            "List the same popular source presets shown in Executor web's Connect dialog. Use this before asking the user what to connect; filter with `query` for names like GitHub, Stripe, Axiom, Google Calendar, Linear, or OpenAI. Use the returned `pluginId`, `url`, and optional stdio command to choose the matching add flow (`openapi.previewSpec`/`openapi.addSource`, `graphql.addSource`, `mcp.probeEndpoint`/`mcp.addSource`, or `googleDiscovery.probeDiscovery`/`googleDiscovery.addSource`).",
+          inputSchema: SourcesPresetsInputStd,
+          outputSchema: SourcesPresetsOutputStd,
+          execute: (input, { ctx }) =>
+            Effect.sync(() => {
+              const query = input.query?.trim().toLowerCase() ?? "";
+              const pluginId = input.pluginId?.trim();
+              const featuredOnly = input.featuredOnly ?? false;
+              const limit = Math.max(0, Math.trunc(input.limit ?? 50));
+              const presets = ctx.core.sources
+                .presets()
+                .filter((preset) => (pluginId ? preset.pluginId === pluginId : true))
+                .filter((preset) => (featuredOnly ? preset.featured === true : true))
+                .filter((preset) => {
+                  if (query.length === 0) return true;
+                  const corpus =
+                    `${preset.name} ${preset.summary} ${preset.pluginId} ${preset.id}`.toLowerCase();
+                  return corpus.includes(query);
+                })
+                .slice(0, limit);
+              return { presets };
+            }),
         }),
         tool({
           name: "sources.configureSchemas",

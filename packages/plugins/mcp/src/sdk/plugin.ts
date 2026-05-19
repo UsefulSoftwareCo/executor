@@ -48,6 +48,7 @@ import { discoverTools } from "./discover";
 import { McpConnectionError, McpInvocationError, McpToolDiscoveryError } from "./errors";
 import { invokeMcpTool } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifest, type McpToolManifestEntry } from "./manifest";
+import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
 import {
   MCP_OAUTH_CLIENT_ID_SLOT,
@@ -1095,6 +1096,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
   return {
     id: "mcp" as const,
     packageName: "@executor-js/plugin-mcp",
+    sourcePresets: allowStdio
+      ? mcpPresets.map((preset) => ({
+          ...preset,
+          transport: "transport" in preset ? preset.transport : "remote",
+        }))
+      : mcpPresets
+          .filter((preset) => !("transport" in preset && preset.transport === "stdio"))
+          .map((preset) => ({
+            ...preset,
+            transport: "remote" as const,
+          })),
     // Surfaced to the client bundle via the Vite plugin (see
     // `@executor-js/vite-plugin`). The MCP `./client` factory reads
     // `allowStdio` and gates the stdio tab + presets in AddMcpSource —

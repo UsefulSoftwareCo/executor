@@ -148,6 +148,7 @@ export interface PluginCtx<TStore = unknown> {
        *  so agent-facing configuration surfaces can describe the
        *  plugin-specific payload shape before dispatching a write. */
       readonly configureSchemas: () => readonly SourceConfigureSchema[];
+      readonly presets: () => readonly SourcePresetCatalogEntry[];
     };
     readonly policies: {
       readonly list: () => Effect.Effect<readonly ToolPolicy[], StorageFailure>;
@@ -442,6 +443,23 @@ export interface SourceConfigureSchema {
   readonly schema?: unknown;
 }
 
+export interface SourcePreset {
+  readonly id: string;
+  readonly name: string;
+  readonly summary: string;
+  readonly url?: string;
+  readonly icon?: string;
+  readonly featured?: boolean;
+  readonly transport?: "remote" | "stdio";
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+export interface SourcePresetCatalogEntry extends SourcePreset {
+  readonly pluginId: string;
+}
+
 // ---------------------------------------------------------------------------
 // PluginSpec — what a `definePlugin(factory)` call returns.
 // ---------------------------------------------------------------------------
@@ -502,6 +520,12 @@ export interface PluginSpec<
    *  with no runtime fetch and no parallel client-side flag to keep in
    *  sync. */
   readonly clientConfig?: unknown;
+
+  /** Source presets shown by the web UI's "Popular sources" list and
+   *  exposed through core tools for agents. Keep this server-safe:
+   *  no React components, only JSON-serializable metadata and optional
+   *  add-flow hints such as URL or stdio command. */
+  readonly sourcePresets?: readonly SourcePreset[];
 
   /** Build the plugin's extension API. The returned object becomes
    *  `executor[plugin.id]` and is also the `self` passed to

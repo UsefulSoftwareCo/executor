@@ -19,6 +19,7 @@ import {
   makeGoogleDiscoveryStore,
   type GoogleDiscoveryStore,
 } from "./binding-store";
+import { googleDiscoveryPresets } from "./presets";
 import { extractGoogleDiscoveryManifest } from "./document";
 import { annotationsForOperation, invokeGoogleDiscoveryTool } from "./invoke";
 import { GoogleDiscoveryParseError, GoogleDiscoverySourceError } from "./errors";
@@ -512,6 +513,7 @@ export type GoogleDiscoveryPluginExtension = ReturnType<typeof makeGoogleDiscove
 export const googleDiscoveryPlugin = definePlugin(() => ({
   id: "googleDiscovery" as const,
   packageName: "@executor-js/plugin-google-discovery",
+  sourcePresets: googleDiscoveryPresets,
   schema: googleDiscoverySchema,
   storage: (deps) => makeGoogleDiscoveryStore(deps),
 

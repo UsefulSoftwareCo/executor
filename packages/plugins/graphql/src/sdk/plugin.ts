@@ -40,6 +40,7 @@ import {
 import { extract } from "./extract";
 import { GraphqlIntrospectionError, GraphqlInvocationError } from "./errors";
 import { invokeWithLayer } from "./invoke";
+import { graphqlPresets } from "./presets";
 import {
   graphqlSchema,
   makeDefaultGraphqlStore,
@@ -918,6 +919,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
   return {
     id: "graphql" as const,
     packageName: "@executor-js/plugin-graphql",
+    sourcePresets: graphqlPresets,
     schema: graphqlSchema,
     storage: (deps): GraphqlStore => makeDefaultGraphqlStore(deps),
 
