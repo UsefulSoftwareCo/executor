@@ -20,6 +20,7 @@ import {
   makeOpenApiHttpApiTestSpecPayload,
   serveOpenApiEchoTestServer,
 } from "@executor-js/plugin-openapi/testing";
+import { secretsForCredentialTarget } from "@executor-js/react/plugins/secret-header-auth";
 
 import { asOrg, asUser, testUserOrgScopeId } from "./__test-harness__/api-harness";
 
@@ -693,6 +694,62 @@ describe("sources api (HTTP)", () => {
         client.sources.list({ params: { scopeId: ScopeId.make(orgId) } }),
       );
       expect(sources.find((source) => source.id === namespace)?.scopeId).toBe(ScopeId.make(orgId));
+    }),
+  );
+
+  it.effect("personal source override picker can see org-owned secrets over HTTP", () =>
+    Effect.gen(function* () {
+      const orgId = `org_${crypto.randomUUID()}`;
+      const aliceId = `user_${crypto.randomUUID().slice(0, 8)}`;
+      const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
+      const aliceScope = testUserOrgScopeId(aliceId, orgId);
+
+      yield* asOrg(orgId, (client) =>
+        Effect.gen(function* () {
+          yield* client.openapi.addSpec({
+            params: { scopeId: ScopeId.make(orgId) },
+            payload: {
+              ...makeMinimalOpenApiSourcePayload(namespace),
+              headers: {
+                Authorization: {
+                  kind: "secret",
+                  prefix: "Bearer ",
+                },
+              },
+            },
+          });
+
+          yield* client.secrets.set({
+            params: { scopeId: ScopeId.make(orgId) },
+            payload: {
+              id: SecretId.make("shared_pat"),
+              name: "Shared PAT",
+              value: "org-secret",
+            },
+          });
+        }),
+      );
+
+      const secrets = yield* asUser(aliceId, orgId, (client) =>
+        client.secrets.listAll({ params: { scopeId: ScopeId.make(aliceScope) } }),
+      );
+
+      const pickerSecrets = secrets.map((secret) => ({
+        id: String(secret.id),
+        scopeId: String(secret.scopeId),
+        name: secret.name,
+        provider: secret.provider ? String(secret.provider) : undefined,
+      }));
+
+      expect(pickerSecrets).toContainEqual(
+        expect.objectContaining({ id: "shared_pat", scopeId: orgId }),
+      );
+      expect(
+        secretsForCredentialTarget(pickerSecrets, ScopeId.make(aliceScope), [
+          { id: ScopeId.make(aliceScope) },
+          { id: ScopeId.make(orgId) },
+        ]).map((secret) => secret.id),
+      ).toContain("shared_pat");
     }),
   );
 

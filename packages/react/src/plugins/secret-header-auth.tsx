@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
 import { ScopeId } from "@executor-js/sdk/shared";
 import { Button } from "../components/button";
@@ -19,10 +19,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select";
+import { useScopeStack } from "../api/scope-context";
 import { SecretForm } from "./secret-form";
 import { SecretPicker, type SecretPickerSecret } from "./secret-picker";
 import type { CredentialTargetScopeOption } from "./credential-target-scope";
-import { secretsForCredentialTarget } from "./secret-credential-scope";
+import {
+  secretsForCredentialTarget,
+  secretScopeOptionsForCredentialTarget,
+} from "./secret-credential-scope";
 
 export { secretsForCredentialTarget };
 
@@ -61,9 +65,12 @@ function CreateSecretContent(props: {
   onCancel?: () => void;
   fallbackId?: string;
   targetScope: ScopeId;
+  secretScopeOptions?: readonly CredentialTargetScopeOption[];
+  onTargetScopeChange?: (scopeId: ScopeId) => void;
 }) {
   return (
     <SecretForm.Provider
+      key={String(props.targetScope)}
       existingSecretIds={props.existingSecretIds}
       suggestedName={props.suggestedName}
       fallbackId={props.fallbackId ?? "custom-header"}
@@ -72,6 +79,26 @@ function CreateSecretContent(props: {
     >
       <div className="space-y-3">
         <FieldGroup className="gap-3">
+          {props.secretScopeOptions && props.secretScopeOptions.length > 1 && (
+            <Field>
+              <FieldLabel>Save in</FieldLabel>
+              <Select
+                value={String(props.targetScope)}
+                onValueChange={(scopeId) => props.onTargetScopeChange?.(ScopeId.make(scopeId))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Save in" />
+                </SelectTrigger>
+                <SelectContent>
+                  {props.secretScopeOptions.map((option) => (
+                    <SelectItem key={option.scopeId} value={option.scopeId}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <SecretForm.NameField label="Label" placeholder="API Token" />
             <SecretForm.IdField placeholder="my-api-token" />
@@ -113,11 +140,34 @@ function CreateSecretDialog(props: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly suggestedName: string;
-  readonly existingSecretIds: readonly string[];
+  readonly existingSecrets: readonly SecretPickerSecret[];
   readonly onCreated: (secretId: string, scopeId: ScopeId) => void;
   readonly fallbackId?: string;
   readonly targetScope: ScopeId;
+  readonly secretScopeOptions?: readonly CredentialTargetScopeOption[];
 }) {
+  const [selectedScope, setSelectedScope] = useState(props.targetScope);
+  const allowedScopeOptions = props.secretScopeOptions?.length
+    ? props.secretScopeOptions
+    : [
+        {
+          scopeId: props.targetScope,
+          label: "Current",
+          description: "Saved for this credential.",
+        },
+      ];
+  const selectedExistingSecretIds = useMemo(
+    () =>
+      props.existingSecrets
+        .filter((secret) => secret.scopeId === String(selectedScope))
+        .map((secret) => secret.id),
+    [props.existingSecrets, selectedScope],
+  );
+
+  useEffect(() => {
+    if (props.open) setSelectedScope(props.targetScope);
+  }, [props.open, props.targetScope]);
+
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent>
@@ -129,11 +179,13 @@ function CreateSecretDialog(props: {
         </DialogHeader>
         <CreateSecretContent
           suggestedName={props.suggestedName}
-          existingSecretIds={props.existingSecretIds}
+          existingSecretIds={selectedExistingSecretIds}
           fallbackId={props.fallbackId}
           onCreated={props.onCreated}
           onCancel={() => props.onOpenChange(false)}
-          targetScope={props.targetScope}
+          targetScope={selectedScope}
+          secretScopeOptions={allowedScopeOptions}
+          onTargetScopeChange={setSelectedScope}
         />
       </DialogContent>
     </Dialog>
@@ -340,7 +392,8 @@ export function SecretHeaderAuthRow(props: {
   const copy = { ...defaultSecretCredentialRowCopy, ...copyOverride };
   const headerLabel = name.trim() || "Custom Header";
   const suggestedName = [sourceName?.trim(), headerLabel].filter(Boolean).join(" ");
-  const scopedSecrets = secretsForCredentialTarget(existingSecrets, targetScope);
+  const scopeStack = useScopeStack();
+  const scopedSecrets = secretsForCredentialTarget(existingSecrets, targetScope, scopeStack);
 
   return (
     <div className="space-y-2.5 px-4 py-3">
@@ -348,12 +401,17 @@ export function SecretHeaderAuthRow(props: {
         open={creating}
         onOpenChange={setCreating}
         suggestedName={suggestedName}
-        existingSecretIds={scopedSecrets.map((secret) => secret.id)}
+        existingSecrets={existingSecrets}
         onCreated={(id, scopeId) => {
           onSelectSecret(id, scopeId);
           setCreating(false);
         }}
         targetScope={targetScope}
+        secretScopeOptions={
+          bindingScopeOptions
+            ? secretScopeOptionsForCredentialTarget(bindingScopeOptions, targetScope, scopeStack)
+            : undefined
+        }
       />
       <div className="flex w-full items-center justify-between gap-4">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -496,11 +554,13 @@ export function CreatableSecretPicker(props: {
     targetScope,
     onCreatedScope,
     suggestedId: suggestedIdProp,
+    credentialScopeOptions,
   } = props;
   const [creating, setCreating] = useState(false);
 
   const suggestedName = [sourceName?.trim(), secretLabel].filter(Boolean).join(" ");
-  const scopedSecrets = secretsForCredentialTarget(secrets, targetScope);
+  const scopeStack = useScopeStack();
+  const scopedSecrets = secretsForCredentialTarget(secrets, targetScope, scopeStack);
 
   if (creating) {
     return (
@@ -508,7 +568,7 @@ export function CreatableSecretPicker(props: {
         open={creating}
         onOpenChange={setCreating}
         suggestedName={suggestedName}
-        existingSecretIds={scopedSecrets.map((secret) => secret.id)}
+        existingSecrets={secrets}
         fallbackId={suggestedIdProp?.trim() || "secret"}
         onCreated={(id, scopeId) => {
           onCreatedScope?.(scopeId);
@@ -516,6 +576,11 @@ export function CreatableSecretPicker(props: {
           setCreating(false);
         }}
         targetScope={targetScope}
+        secretScopeOptions={
+          credentialScopeOptions
+            ? secretScopeOptionsForCredentialTarget(credentialScopeOptions, targetScope, scopeStack)
+            : undefined
+        }
       />
     );
   }
