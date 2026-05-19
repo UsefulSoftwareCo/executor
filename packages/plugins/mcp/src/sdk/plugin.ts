@@ -1716,7 +1716,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "probeEndpoint",
             description:
-              "Probe a remote MCP endpoint before adding it. If the result requires OAuth, call `executor.coreTools.oauth.probe` and `executor.coreTools.oauth.start` first, then pass the resulting connection through `addSource` credentials or `mcp.configureSource`.",
+              "Probe a remote MCP endpoint before adding it. If the result requires OAuth, call `executor.coreTools.oauth.probe` and `executor.coreTools.oauth.start` with `credentialScope` set to the user's chosen personal or organization credential scope first, then pass the resulting connection through `addSource` credentials or `mcp.configureSource`.",
             inputSchema: McpProbeEndpointInputStandardSchema,
             outputSchema: McpProbeEndpointOutputStandardSchema,
             execute: (input) =>
@@ -1744,7 +1744,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an MCP source and register its tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start`), then bind the completed connection with `mcp.configureSource` if needed. For header/API-key auth, first call `secrets.create` at the user's chosen credential scope so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
+              "Add an MCP source and register its tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For remote OAuth-protected servers, first use `probeEndpoint` and the core OAuth browser handoff (`oauth.probe`, `oauth.start` with the user's chosen `credentialScope`), then bind the completed connection with `mcp.configureSource` if needed. For header/API-key auth, first call `secrets.create` at the user's chosen credential scope so the value is entered in the browser, then pass the secret reference in `credentials`. Remote sources are still saved if discovery fails; inspect the returned `discovery` field and use `sources.refresh` after credentials or network access are fixed.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an MCP source",

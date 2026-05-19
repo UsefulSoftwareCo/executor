@@ -564,7 +564,7 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
         tool({
           name: "addSource",
           description:
-            'Add a Google Discovery source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `probeDiscovery`, create any OAuth client id/client secret values through `secrets.create` at the user\'s chosen credential scope, call `oauth.start` in the browser for OAuth sources, then pass `{kind:"oauth2", connectionId, clientIdSecretId, clientSecretSecretId, scopes}` or `{kind:"none"}` here.',
+            'Add a Google Discovery source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `probeDiscovery`, create any OAuth client id/client secret values through `secrets.create` at the user\'s chosen credential scope, call `oauth.start` with `credentialScope` set to the user\'s chosen personal or organization credential scope for OAuth sources, then pass `{kind:"oauth2", connectionId, clientIdSecretId, clientSecretSecretId, scopes}` or `{kind:"none"}` here.',
           annotations: {
             requiresApproval: true,
             approvalDescription: "Add a Google Discovery source",
@@ -608,7 +608,7 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
         tool({
           name: "configureSource",
           description:
-            "Configure an existing Google Discovery source with concrete fields. Use `source` returned by `googleDiscovery.addSource` or `sources.list`. For OAuth, call `oauth.start` in the browser first, then pass the returned connection id and client secret ids through `auth`.",
+            "Configure an existing Google Discovery source with concrete fields. Use `source` returned by `googleDiscovery.addSource` or `sources.list`. For OAuth, call `oauth.start` with the target `credentialScope` first, then pass the returned connection id and client secret ids through `auth`.",
           annotations: {
             requiresApproval: true,
             approvalDescription: "Configure a Google Discovery source",

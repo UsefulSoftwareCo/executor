@@ -993,7 +993,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start`, verify completion with `connections.list`, then bind the connection through `credentials` or `graphql.configureSource`.",
+              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start` using `credentialScope` set to the user's chosen personal or organization credential scope, verify completion with `connections.list`, then bind the connection through `credentials` or `graphql.configureSource`.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add a GraphQL source",

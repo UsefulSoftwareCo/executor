@@ -751,8 +751,12 @@ describe("createExecutor", () => {
           provider: "memory",
         });
 
+        const schema = yield* executor.tools.schema("executor.coreTools.oauth.start");
+        expect(schema?.inputTypeScript).toContain("credentialScope?: string");
+        expect(schema?.inputTypeScript).not.toContain("scope: string; endpoint");
+
         const started = yield* executor.tools.invoke("executor.coreTools.oauth.start", {
-          scope: "test-scope",
+          credentialScope: "test-scope",
           endpoint: oauthServer.resourceUrl,
           connectionId: "agent-oauth",
           pluginId: "test-plugin",
@@ -849,7 +853,7 @@ describe("createExecutor", () => {
         });
 
         const started = yield* executor.tools.invoke("executor.coreTools.oauth.start", {
-          scope: "test",
+          credentialScope: "test",
           endpoint: oauthServer.resourceUrl,
           connectionId: "agent-browser-oauth",
           pluginId: "test-plugin",

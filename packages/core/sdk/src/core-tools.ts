@@ -268,7 +268,7 @@ const OAuthProbeOutput = Schema.Struct({
 });
 
 const OAuthStartInput = Schema.Struct({
-  scope: Schema.String,
+  credentialScope: Schema.optional(Schema.String),
   endpoint: Schema.String,
   connectionId: Schema.String,
   pluginId: Schema.String,
@@ -287,7 +287,7 @@ const OAuthStartOutput = Schema.Struct({
 });
 
 const OAuthCancelInput = Schema.Struct({
-  scope: Schema.String,
+  credentialScope: Schema.optional(Schema.String),
   sessionId: Schema.String,
 });
 
@@ -926,13 +926,13 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.start",
           description:
-            "Start an OAuth flow and return the authorization URL the user must open in a browser. Never put OAuth passwords, authorization codes, or client secrets in chat. For confidential clients, first call `secrets.create` for client id/secret and pass those secret ids in the strategy. After the browser callback completes, call `connections.list`, then configure the source with the returned connection id.",
+            "Start an OAuth flow and return the authorization URL the user must open in a browser. `credentialScope` chooses where Executor stores the OAuth connection/token secrets; omit it only in a single-scope local executor, otherwise call `scopes.list` and ask whether the connection should be personal/user-scoped or organization-scoped. OAuth permission scopes belong in `strategy.scopes`. Never put OAuth passwords, authorization codes, or client secrets in chat. For confidential clients, first call `secrets.create` for client id/secret and pass those secret ids in the strategy. After the browser callback completes, call `connections.list`, then configure the source with the returned connection id.",
           inputSchema: OAuthStartInputStd,
           outputSchema: OAuthStartOutputStd,
           execute: (input, { ctx }) =>
             Effect.gen(function* () {
               const webBaseUrl = yield* requireWebBaseUrl(options.webBaseUrl);
-              const tokenScope = yield* resolveScopeInput(ctx.scopes, input.scope);
+              const tokenScope = yield* resolveScopeInput(ctx.scopes, input.credentialScope);
               const result = yield* ctx.oauth.start({
                 endpoint: input.endpoint,
                 headers: input.headers,
@@ -948,8 +948,8 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 ...result,
                 instructions:
                   result.authorizationUrl === null
-                    ? "This OAuth flow completed without a browser handoff. Call connections.list to verify the connection id, then pass that connection id to the relevant source configuration tool."
-                    : "The user needs to open this authorization URL in a browser and complete the OAuth/sign-in flow. Until the browser callback completes, no connection is available for binding. After the user finishes sign-in, call connections.list to find the connection id, then pass that connection id to the relevant source configuration tool.",
+                    ? "This OAuth flow completed without a browser handoff. The OAuth connection/token secrets were saved to the selected credential scope. Call connections.list to verify the connection id, then pass that connection id to the relevant source configuration tool."
+                    : "The user needs to open this authorization URL in a browser and complete the OAuth/sign-in flow. Until the browser callback completes, no connection is available for binding. After the user finishes sign-in, call connections.list to find the connection id, then pass that connection id to the relevant source configuration tool. The OAuth connection/token secrets are saved to the selected credential scope.",
               };
             }).pipe(
               Effect.catchTags({
@@ -970,12 +970,12 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.cancel",
           description:
-            "Cancel a pending OAuth browser handoff if the user declines or the wrong flow was started.",
+            "`credentialScope` must match where `oauth.start` saved the pending browser handoff. Cancel it if the user declines or the wrong flow was started.",
           inputSchema: OAuthCancelInputStd,
           outputSchema: OAuthCancelOutputStd,
           execute: (input, { ctx }) =>
             Effect.gen(function* () {
-              const scope = yield* resolveScopeInput(ctx.scopes, input.scope);
+              const scope = yield* resolveScopeInput(ctx.scopes, input.credentialScope);
               return yield* Effect.as(ctx.oauth.cancel(input.sessionId, scope), {
                 cancelled: true,
               });

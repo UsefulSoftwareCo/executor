@@ -1445,7 +1445,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "addSource",
             description:
-              "Add an OpenAPI source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), declare credential slots here for sensitive headers/query params, then call `secrets.create` and `openapi.configureSource` with the user's chosen credential scope for per-scope bindings. Use `oauth.start` for browser OAuth sign-in.",
+              "Add an OpenAPI source and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. Recommended flow: call `previewSpec`, choose or confirm namespace/name/baseUrl from the preview (baseUrl is only needed when the spec cannot infer one or the user wants an override), declare credential slots here for sensitive headers/query params, then call `secrets.create` and `openapi.configureSource` with the user's chosen credential scope for per-scope bindings. Use `oauth.start` with `credentialScope` set to the user's chosen personal or organization credential scope for browser OAuth sign-in.",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI source",
