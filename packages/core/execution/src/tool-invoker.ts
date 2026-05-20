@@ -8,7 +8,7 @@ import type {
   InvokeOptions,
   Source,
 } from "@executor-js/sdk/core";
-import { isToolResult, ToolResult } from "@executor-js/sdk/core";
+import { isToolResult, schemaToTypeScriptPreviewWithDefs, ToolResult } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
 
@@ -25,6 +25,40 @@ const withToolResultDefinitions = (
   ...(definitions ?? {}),
   ToolError: TOOL_ERROR_TYPESCRIPT,
 });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const recordProperty = (
+  value: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | null => (isRecord(value[key]) ? value[key] : null);
+
+const stringArrayProperty = (value: Record<string, unknown>, key: string): readonly string[] =>
+  Array.isArray(value[key]) && value[key].every((item) => typeof item === "string")
+    ? value[key]
+    : [];
+
+const getRequiredMcpStructuredContentSchema = (schema: unknown): unknown | undefined => {
+  if (!isRecord(schema)) return undefined;
+  const properties = recordProperty(schema, "properties");
+  if (!properties) return undefined;
+  const required = stringArrayProperty(schema, "required");
+  if (!required.includes("content") || !required.includes("structuredContent")) return undefined;
+  if (!("content" in properties) || !("structuredContent" in properties)) return undefined;
+  return properties.structuredContent;
+};
+
+const projectMcpToolResultForSandbox = <T>(
+  result: ToolResult<T>,
+  outputSchema: unknown,
+): ToolResult<unknown> => {
+  if (getRequiredMcpStructuredContentSchema(outputSchema) === undefined) return result;
+  if (!result.ok || !isRecord(result.data)) return result;
+  if (!Array.isArray(result.data.content)) return result;
+  if (!("structuredContent" in result.data) || result.data.structuredContent == null) return result;
+  return ToolResult.ok(result.data.structuredContent);
+};
 
 const newCorrelationId = (): string => {
   // 8-hex-char correlation id; enough entropy to disambiguate within a
@@ -151,7 +185,8 @@ export const makeExecutorToolInvoker = (
     // uniform without forcing every tiny test plugin to import
     // `ToolResult.ok`.
     if (isToolResult(result)) {
-      return result;
+      const schema = result.ok ? yield* executor.tools.schema(path) : null;
+      return projectMcpToolResultForSandbox(result, schema?.outputSchema);
     }
     return { ok: true, data: result };
   }),
@@ -546,12 +581,26 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
 
   // The schema's id is the tool path; name/description come from the
   // tool row which tools.schema() already loaded.
+  const projectedOutputSchema = getRequiredMcpStructuredContentSchema(schema.outputSchema);
+  const projectedOutputPreview =
+    projectedOutputSchema === undefined
+      ? null
+      : yield* Effect.promise(() =>
+          schemaToTypeScriptPreviewWithDefs(
+            projectedOutputSchema,
+            new Map(Object.entries(schema.schemaDefinitions ?? {})),
+          ),
+        );
+
   return {
     path,
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
-    typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
+    outputTypeScript: wrapOutputTypeScript(projectedOutputPreview?.type ?? schema.outputTypeScript),
+    typeScriptDefinitions: withToolResultDefinitions({
+      ...(schema.typeScriptDefinitions ?? {}),
+      ...(projectedOutputPreview?.definitions ?? {}),
+    }),
   };
 });

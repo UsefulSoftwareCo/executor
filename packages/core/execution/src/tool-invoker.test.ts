@@ -4,6 +4,7 @@ import { Effect, Fiber, Schema } from "effect";
 import {
   ElicitationResponse,
   FormElicitation,
+  type StaticToolSchema,
   ToolResult,
   createExecutor,
   definePlugin,
@@ -33,6 +34,18 @@ const EmptyInputSchema = Schema.toStandardSchemaV1(
 );
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
+
+const rawJsonSchema = (schema: Record<string, unknown>): StaticToolSchema => ({
+  "~standard": {
+    version: 1,
+    vendor: "executor-test",
+    validate: (value) => ({ value }),
+    jsonSchema: {
+      input: () => schema,
+      output: () => schema,
+    },
+  },
+});
 
 type DescribedToolContract = {
   readonly outputTypeScript: string;
@@ -221,6 +234,76 @@ const structuredFailurePlugin = definePlugin(() => ({
                 details: {
                   errors: [{ status: "403", title: "Forbidden", detail: "Insufficient scope" }],
                 },
+              }),
+            ),
+        },
+      ],
+    },
+  ],
+}));
+
+const mcpProjectionOutputSchema = rawJsonSchema({
+  type: "object",
+  properties: {
+    content: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          type: { const: "text" },
+          text: { type: "string" },
+        },
+        required: ["type", "text"],
+        additionalProperties: true,
+      },
+    },
+    structuredContent: {
+      type: "object",
+      properties: {
+        value: { type: "string" },
+      },
+      required: ["value"],
+      additionalProperties: false,
+    },
+    isError: { const: false },
+  },
+  required: ["content", "structuredContent"],
+  additionalProperties: true,
+});
+
+const mcpProjectionPlugin = definePlugin(() => ({
+  id: "mcp-projection-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "remote",
+      kind: "mcp",
+      name: "Remote MCP",
+      tools: [
+        {
+          name: "typedStructured",
+          description: "Returns a normal MCP CallToolResult with structured content",
+          inputSchema: EmptyInputSchema,
+          outputSchema: mcpProjectionOutputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.ok({
+                content: [{ type: "text", text: "fallback text" }],
+                structuredContent: { value: "projected" },
+                isError: false,
+                _meta: { source: "test" },
+              }),
+            ),
+        },
+        {
+          name: "untypedStructured",
+          description: "Returns MCP-shaped data without a typed structured output",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.ok({
+                content: [{ type: "text", text: "fallback text" }],
+                structuredContent: { value: "raw" },
               }),
             ),
         },
@@ -547,6 +630,69 @@ describe("tool discovery", () => {
       expect(described.typeScriptDefinitions).toEqual({
         ToolError:
           "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+      });
+    }),
+  );
+
+  it.effect("projects typed MCP structuredContent for sandbox tool calls", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [mcpProjectionPlugin()] as const }),
+      );
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute(
+        [
+          'const details = await tools.describe.tool({ path: "remote.typedStructured" });',
+          "const result = await tools.remote.typedStructured({});",
+          "return {",
+          "  outputTypeScript: details.outputTypeScript,",
+          "  typeScriptDefinitions: details.typeScriptDefinitions,",
+          "  result,",
+          "};",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(execution.error).toBeUndefined();
+      const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+      expect(observed.result).toEqual({ ok: true, data: { value: "projected" } });
+      expect(observed.outputTypeScript).toBe(
+        "{ ok: true; data: { value: string; } } | { ok: false; error: ToolError }",
+      );
+      const diagnostics = typeCheckDescribedInvocation(
+        observed,
+        observed.result,
+        [
+          "function readToolResult(result: ToolOutput): string {",
+          "  if (!result.ok) return result.error.message;",
+          "  return result.data.value;",
+          "}",
+          "readToolResult(invokedResult);",
+        ].join("\n"),
+      );
+      expect(diagnostics).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps untyped MCP-shaped sandbox results raw", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [mcpProjectionPlugin()] as const }),
+      );
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute("return await tools.remote.untypedStructured({});", {
+        onElicitation: acceptAll,
+      });
+
+      expect(execution.error).toBeUndefined();
+      expect(execution.result).toEqual({
+        ok: true,
+        data: {
+          content: [{ type: "text", text: "fallback text" }],
+          structuredContent: { value: "raw" },
+        },
       });
     }),
   );
