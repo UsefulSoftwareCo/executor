@@ -2,7 +2,6 @@
 // because `makeExecutionStack` imports `cloudflare:workers`, which the test
 // harness can't load in the workerd test runtime.
 
-import { HttpApiSwagger } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
@@ -24,7 +23,7 @@ import { DbService } from "../services/db";
 import { makeExecutionStack } from "../services/execution-stack";
 import { HttpResponseError } from "./error-response";
 import { RequestScopedServicesLive } from "./layers";
-import { ProtectedCloudApi, ProtectedCloudApiLive, RouterConfig } from "./protected-layers";
+import { ProtectedCloudApiLive, RouterConfig } from "./protected-layers";
 import { requestScopedMiddleware } from "./request-scoped";
 
 // Pre-compute the per-plugin `Effect.provideService(extensionService,
@@ -207,7 +206,6 @@ export const makeProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreSe
   return ProtectedCloudApiLive.pipe(
     Layer.provide(protectedMiddleware),
     Layer.provideMerge(ApiKeyService.WorkOS),
-    Layer.provideMerge(HttpApiSwagger.layer(ProtectedCloudApi, { path: "/docs" })),
     Layer.provideMerge(RouterConfig),
   );
 };

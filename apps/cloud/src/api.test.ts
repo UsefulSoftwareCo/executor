@@ -4,6 +4,8 @@ import {
   HttpApiClient,
   HttpApiEndpoint,
   HttpApiGroup,
+  HttpApiSwagger,
+  OpenApi,
 } from "effect/unstable/httpapi";
 import {
   FetchHttpClient,
@@ -47,6 +49,7 @@ const ProtectedGroup = HttpApiGroup.make("protected")
     }),
   );
 const ProtectedTestApi = HttpApi.make("protectedApi").add(ProtectedGroup);
+const DocumentationTestApi = ProtectedTestApi.add(AuthGroup).add(OrgGroup);
 
 // ---------------------------------------------------------------------------
 // Stub handlers
@@ -127,9 +130,19 @@ const AutumnTestRoutesLive = HttpRouter.add(
   Effect.succeed(HttpServerResponse.jsonUnsafe({ source: "autumn" })),
 );
 
+const TestDocsLive = Layer.mergeAll(
+  HttpApiSwagger.layer(DocumentationTestApi, { path: "/docs" }),
+  HttpRouter.add(
+    "GET",
+    "/openapi.json",
+    Effect.succeed(HttpServerResponse.jsonUnsafe(OpenApi.fromApi(DocumentationTestApi))),
+  ),
+);
+
 const TestApiLive = Layer.mergeAll(
   OrgTestLive,
   AuthTestLive,
+  TestDocsLive,
   ProtectedTestLive,
   AutumnTestRoutesLive,
 ).pipe(Layer.provideMerge(RouterConfig), Layer.provideMerge(HttpServer.layerServices));
@@ -187,6 +200,35 @@ layer(TestClientLayer)("handleApiRequest", (it) => {
       const client = yield* getClient();
       const result = yield* client.autumn.plans();
       expect(result).toEqual({ source: "autumn" });
+    }),
+  );
+
+  it.effect("serves docs without the protected gate", () =>
+    Effect.gen(function* () {
+      resetState();
+      testState.mode = "none";
+
+      const response = yield* HttpClient.get(`${TEST_BASE_URL}/docs`);
+      expect(response.status).toBe(200);
+      const body = yield* response.text;
+      expect(body).toContain("swagger-ui");
+      expect(body).toContain("/auth/me");
+      expect(body).toContain("/org/ping");
+      expect(body).toContain("/scope");
+    }),
+  );
+
+  it.effect("serves raw OpenAPI JSON without the protected gate", () =>
+    Effect.gen(function* () {
+      resetState();
+      testState.mode = "none";
+
+      const response = yield* HttpClient.get(`${TEST_BASE_URL}/openapi.json`);
+      expect(response.status).toBe(200);
+      const body = (yield* response.json) as { readonly paths?: Record<string, unknown> };
+      expect(body.paths).toHaveProperty("/auth/me");
+      expect(body.paths).toHaveProperty("/org/ping");
+      expect(body.paths).toHaveProperty("/scope");
     }),
   );
 

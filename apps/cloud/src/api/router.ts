@@ -4,6 +4,7 @@ import { UserStoreService } from "../auth/context";
 import { DbService } from "../services/db";
 
 import { AutumnRoutesLive } from "./autumn";
+import { CloudDocsLive } from "./docs";
 import { ApiErrorLoggingLive } from "./error-logging";
 import {
   BootSharedServices,
@@ -29,6 +30,7 @@ export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStore
   Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
     makeOrgApiLive(requestScopedLive),
+    CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),
     AutumnRoutesLive,
     ApiErrorLoggingLive,
