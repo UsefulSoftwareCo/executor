@@ -9,7 +9,8 @@ import type * as Cause from "effect/Cause";
 
 import { FormElicitation, ToolId, UrlElicitation } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
-import { dynamicUiPlugin, filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
+// oxlint-disable-next-line executor/no-cross-package-relative-imports -- boundary: host integration test uses the real plugin without adding a package-graph cycle
+import { dynamicUiPlugin, filterDynamicUiMcpPlugins } from "../../../plugins/dynamic-ui/src";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./server";
 

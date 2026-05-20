@@ -81,7 +81,25 @@
     {
       "files": ["packages/core/vite-plugin/src/**/*.{ts,tsx}"],
       "rules": {
+        "executor/no-error-constructor": "off",
         "executor/no-try-catch-or-throw": "off",
+      },
+    },
+    {
+      "files": [
+        "packages/plugins/dynamic-ui/src/client.tsx",
+        "packages/plugins/dynamic-ui/src/shell/**/*.{ts,tsx}",
+        "packages/plugins/dynamic-ui/vite.config.shell.ts",
+      ],
+      "rules": {
+        "executor/no-double-cast": "off",
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-json-parse": "off",
+        "executor/no-promise-catch": "off",
+        "executor/no-promise-reject": "off",
+        "executor/no-try-catch-or-throw": "off",
+        "executor/no-unknown-error-message": "off",
       },
     },
     {

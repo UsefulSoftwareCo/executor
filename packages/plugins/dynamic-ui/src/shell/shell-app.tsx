@@ -546,14 +546,16 @@ function TrustedInteractionModal({
           >
             <div className="text-sm">{message}</div>
             {url && (
-              <button
+              <Components.Button
                 type="button"
                 onClick={openUrl}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-muted"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 px-2.5 text-xs"
               >
                 <Components.ExternalLink className="h-3.5 w-3.5" />
                 Open link
-              </button>
+              </Components.Button>
             )}
             {approval.hasFields && approval.fields}
           </div>

@@ -476,7 +476,7 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
   return defineMcpContribution({
     id: "dynamic-ui",
     register: (ctx: McpPluginRegisterContext) =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         renderUiTool = registerAppTool(
           ctx.server,
           "render-ui",
