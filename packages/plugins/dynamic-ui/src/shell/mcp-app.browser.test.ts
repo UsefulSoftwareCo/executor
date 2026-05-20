@@ -224,6 +224,72 @@ function App() {
 }
 `;
 
+const generatedAutoMutationCode = `
+function App() {
+  const [status, setStatus] = useState("idle");
+  const createItem = useMutation((input) => tools.inventory.items.createItem(input), {
+    onSuccess: (result) => {
+      const created = result?.ok ? result.data : result;
+      setStatus(created.name + ":" + created.created);
+    },
+    onError: (error) => setStatus(error.message),
+  });
+
+  useEffect(() => {
+    createItem.mutate({ body: { name: "Mount Widget" } });
+  }, []);
+
+  return (
+    <Card>
+      <CardContent>
+        <div id="auto-mutation-status">{status}</div>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
+const generatedEscapeAttemptCode = `
+const escapeResults = [];
+
+try {
+  escapeResults.push("popup:" + String(window.open("https://example.com/popup") === null));
+} catch (err) {
+  escapeResults.push("popup:" + (err instanceof Error ? err.name : String(err)));
+}
+
+try {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = "https://example.com/form";
+  form.target = "_blank";
+  document.body.appendChild(form);
+  form.submit();
+  escapeResults.push("form:submitted");
+} catch (err) {
+  escapeResults.push("form:" + (err instanceof Error ? err.name : String(err)));
+}
+
+try {
+  const frame = document.createElement("iframe");
+  frame.src = "https://example.com/frame";
+  document.body.appendChild(frame);
+  escapeResults.push("iframe:" + String(frame.contentWindow === null));
+} catch (err) {
+  escapeResults.push("iframe:" + (err instanceof Error ? err.name : String(err)));
+}
+
+function App() {
+  return (
+    <Card>
+      <CardContent>
+        <pre id="escape-results">{escapeResults.join("\\n")}</pre>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
 const generatedSchemaApprovalCode = `
 function App() {
   const [status, setStatus] = useState("idle");
@@ -996,6 +1062,29 @@ describe("MCP app generated UI browser isolation", () => {
     }
   }, 30_000);
 
+  it("blocks popup, form, and nested-frame escape attempts from generated UI", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedEscapeAttemptCode);
+      await innerFrame.locator("#escape-results").waitFor({ timeout: 10_000 });
+
+      const escapeText = (await innerFrame.locator("#escape-results").textContent()) ?? "";
+      expect(escapeText).toContain("popup:true");
+      expect(escapeText).toContain("form:");
+      expect(escapeText).toContain("iframe:");
+
+      const pages = browser.contexts().flatMap((context) => context.pages());
+      expect(pages).toHaveLength(1);
+
+      const hostState = await getHostState(page);
+      expect(hostState.toolCalls).toHaveLength(0);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
   it("rejects spoofed renderer messages unless the iframe window and token match", async () => {
     if (!browser || !hostServer) throw new Error("Browser harness did not start.");
     const { page, shellFrame } = await openHarness(browser, hostServer.url);
@@ -1097,6 +1186,83 @@ describe("MCP app generated UI browser isolation", () => {
           },
         }),
       ]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("resumes declined and canceled approvals without performing the mutation", async () => {
+    if (!browser || !hostServer || !openApiServer) {
+      throw new Error("Browser harness did not start.");
+    }
+
+    for (const action of ["Decline", "Cancel"] as const) {
+      const { page, shellFrame } = await openHarness(browser, hostServer.url);
+      const initialPostCount = openApiServer.postRequests.length;
+
+      try {
+        const innerFrame = await renderGeneratedUi(page, shellFrame, generatedApprovalCode);
+        await innerFrame.locator("#ask").click({ timeout: 10_000 });
+        await shellFrame.locator("text=Approve action").waitFor({ timeout: 10_000 });
+
+        await shellFrame.getByRole("button", { name: action }).click({ timeout: 10_000 });
+        await page.waitForFunction(
+          () => (window as unknown as BrowserHostWindow).__mcpHostState.resumeCalls.length === 1,
+          undefined,
+          { timeout: 10_000 },
+        );
+
+        expect(openApiServer.postRequests).toHaveLength(initialPostCount);
+        const hostState = await getHostState(page);
+        expect(hostState.resumeCalls).toEqual([
+          expect.objectContaining({
+            name: "execute-action-resume",
+            arguments: {
+              executionId: expect.any(String),
+              action: action === "Decline" ? "decline" : "cancel",
+              content: "{}",
+            },
+          }),
+        ]);
+      } finally {
+        await page.close();
+      }
+    }
+  }, 30_000);
+
+  it("blocks generated UI mutations that run on mount until trusted approval", async () => {
+    if (!browser || !hostServer || !openApiServer) {
+      throw new Error("Browser harness did not start.");
+    }
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const initialPostCount = openApiServer.postRequests.length;
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedAutoMutationCode);
+      await innerFrame.locator("#auto-mutation-status").waitFor({ timeout: 10_000 });
+      await shellFrame.locator("text=Approve action").waitFor({ timeout: 10_000 });
+
+      expect(openApiServer.postRequests).toHaveLength(initialPostCount);
+      const hostStateBeforeApproval = await getHostState(page);
+      expect(hostStateBeforeApproval.toolCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "execute-action",
+            arguments: {
+              code: 'return await tools.inventory.items.createItem({"body":{"name":"Mount Widget"}})',
+            },
+          }),
+        ]),
+      );
+
+      await shellFrame.getByRole("button", { name: "Approve" }).click({ timeout: 10_000 });
+      await innerFrame.waitForFunction(
+        () => document.querySelector("#auto-mutation-status")?.textContent === "Mount Widget:true",
+        undefined,
+        { timeout: 10_000 },
+      );
+      expect(openApiServer.postRequests).toHaveLength(initialPostCount + 1);
+      expect(openApiServer.postRequests.at(-1)).toBe(JSON.stringify({ name: "Mount Widget" }));
     } finally {
       await page.close();
     }

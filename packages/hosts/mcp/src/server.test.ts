@@ -169,6 +169,21 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("does not expose dynamic UI app tools to clients without MCP Apps support", async () => {
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        const names = tools.map((tool) => tool.name);
+        expect(names).not.toContain("render-ui");
+        expect(names).not.toContain("execute-action");
+        expect(names).not.toContain("execute-action-resume");
+      },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
+    );
+  });
+
   it("render-ui tool routes React code to the MCP app shell", async () => {
     await withClient(
       makeStubEngine({}),
