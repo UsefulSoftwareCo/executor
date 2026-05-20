@@ -319,6 +319,26 @@ const normalizeNamespace = (config: McpSourceConfig): string =>
     command: config.transport === "stdio" ? config.command : undefined,
   });
 
+const mcpCallToolResultOutputSchema = (
+  structuredContentSchema?: unknown,
+): Record<string, unknown> => ({
+  type: "object",
+  properties: {
+    content: {
+      type: "array",
+      items: {},
+    },
+    structuredContent: structuredContentSchema ?? {},
+    isError: { const: false },
+    _meta: {
+      type: "object",
+      additionalProperties: {},
+    },
+  },
+  required: structuredContentSchema === undefined ? ["content"] : ["content", "structuredContent"],
+  additionalProperties: {},
+});
+
 const toBinding = (entry: McpToolManifestEntry): McpToolBinding =>
   McpToolBinding.make({
     toolId: entry.toolId,
@@ -1440,7 +1460,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                     name: e.toolId,
                     description: e.description ?? `MCP tool: ${e.toolName}`,
                     inputSchema: e.inputSchema,
-                    outputSchema: e.outputSchema,
+                    outputSchema: mcpCallToolResultOutputSchema(e.outputSchema),
                   })),
                 });
                 if (initialRemote && initialBindings.length > 0) {
@@ -1582,7 +1602,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                     name: e.toolId,
                     description: e.description ?? `MCP tool: ${e.toolName}`,
                     inputSchema: e.inputSchema,
-                    outputSchema: e.outputSchema,
+                    outputSchema: mcpCallToolResultOutputSchema(e.outputSchema),
                   })),
                 });
               }),
