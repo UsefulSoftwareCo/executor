@@ -685,6 +685,8 @@ export interface BeginDynamicAuthorizationInput {
     readonly resourceMetadata?: OAuthProtectedResourceMetadata | null;
     readonly resourceMetadataUrl?: string | null;
     readonly clientInformation?: OAuthClientInformation | null;
+    readonly resource?: string | null;
+    readonly scopes?: readonly string[] | null;
   };
 }
 
@@ -780,6 +782,7 @@ export const beginDynamicAuthorization = (
     // them explicitly via `input.scopes`.
     const scopes: readonly string[] =
       input.scopes ??
+      prior.scopes ??
       (resource?.metadata.scopes_supported && resource.metadata.scopes_supported.length > 0
         ? resource.metadata.scopes_supported
         : []);
@@ -824,9 +827,11 @@ export const beginDynamicAuthorization = (
         );
       })());
 
-    const resourceValue = resource?.metadata.resource
-      ? yield* validateResourceIndicator(resource.metadata.resource, expectedResource)
-      : expectedResource;
+    const resourceValue = prior.resource
+      ? yield* validateResourceIndicator(prior.resource, expectedResource)
+      : resource?.metadata.resource
+        ? yield* validateResourceIndicator(resource.metadata.resource, expectedResource)
+        : expectedResource;
 
     const codeVerifier = createPkceCodeVerifier();
     const codeChallenge = yield* Effect.promise(() => createPkceCodeChallenge(codeVerifier));

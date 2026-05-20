@@ -430,6 +430,8 @@ export const makeOAuth2Service = (
       return {
         authorizationServerUrl: state.authorizationServerUrl ?? null,
         authorizationServerMetadataUrl: state.authorizationServerMetadataUrl,
+        resource: state.resource ?? null,
+        scopes: state.scopes,
         clientInformation: {
           client_id: state.clientId,
           token_endpoint_auth_method: dynamicClientAuthMethod(state),
@@ -473,6 +475,8 @@ export const makeOAuth2Service = (
             payload.authorizationServerMetadata as OAuthAuthorizationServerMetadata,
           resourceMetadata: payload.resourceMetadata as OAuthProtectedResourceMetadata | null,
           resourceMetadataUrl: payload.resourceMetadataUrl,
+          resource: payload.resource,
+          scopes: payload.scopes,
           clientInformation: payload.clientInformation as OAuthClientInformation,
         };
       }

@@ -144,6 +144,10 @@ layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
       expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("client_id")).toBe(
         new URL(startedA.authorizationUrl ?? "").searchParams.get("client_id"),
       );
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("scope")).toBe("read");
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("resource")).toBe(
+        oauth.mcpResourceUrl,
+      );
     }),
   );
 
@@ -183,6 +187,10 @@ layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
       ).toHaveLength(1);
       expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("client_id")).toBe(
         new URL(startedA.authorizationUrl ?? "").searchParams.get("client_id"),
+      );
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("scope")).toBe("read");
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("resource")).toBe(
+        oauth.mcpResourceUrl,
       );
     }),
   );
