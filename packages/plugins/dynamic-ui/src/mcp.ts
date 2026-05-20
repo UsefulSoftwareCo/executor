@@ -480,6 +480,7 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
   let renderUiTool: ToggleableMcpRegistration | undefined;
   let executeActionTool: ToggleableMcpRegistration | undefined;
   let executeActionResumeTool: ToggleableMcpRegistration | undefined;
+  let appsEnabled = false;
 
   return defineMcpContribution({
     id: "dynamic-ui",
@@ -501,15 +502,44 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
           },
           ({ code }) => {
             const rejection = validateRenderUiCode(code);
+            if (rejection) {
+              return Promise.resolve(toMcpRenderUiRejectedResult(rejection));
+            }
+
+            if (!appsEnabled) {
+              const url = ctx.renderUiFallbackUrl?.(code);
+              return Promise.resolve(
+                url
+                  ? ({
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: `Rendered interactive UI component. Open this URL to view it in Executor:\n${url}`,
+                        },
+                      ],
+                      structuredContent: { status: "fallback_url", url },
+                    } satisfies McpToolResult)
+                  : ({
+                      content: [
+                        {
+                          type: "text" as const,
+                          text: "Rendered interactive UI component, but this MCP client cannot display MCP Apps and no Executor fallback URL is configured.",
+                        },
+                      ],
+                      structuredContent: {
+                        status: "fallback_unavailable",
+                        reason: "mcp_apps_unsupported",
+                      },
+                      isError: true,
+                    } satisfies McpToolResult),
+              );
+            }
+
             return Promise.resolve(
-              rejection
-                ? toMcpRenderUiRejectedResult(rejection)
-                : ({
-                    content: [
-                      { type: "text" as const, text: "Rendered interactive UI component." },
-                    ],
-                    structuredContent: { code },
-                  } satisfies McpToolResult),
+              {
+                content: [{ type: "text" as const, text: "Rendered interactive UI component." }],
+                structuredContent: { code },
+              } satisfies McpToolResult,
             );
           },
         );
@@ -588,21 +618,21 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
       }).pipe(Effect.withSpan("mcp.host.dynamic_ui.register")),
     onClientCapabilitiesChanged: ({ clientCapabilities, debugLog }) => {
       const uiCap = getUiCapability(clientCapabilities as McpAppsClientCapabilities | undefined);
-      const appsEnabled = Boolean(uiCap?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
+      appsEnabled = Boolean(uiCap?.mimeTypes?.includes(RESOURCE_MIME_TYPE));
 
       if (appsEnabled) {
         renderUiTool?.enable();
         executeActionTool?.enable();
         executeActionResumeTool?.enable();
       } else {
-        renderUiTool?.disable();
+        renderUiTool?.enable();
         executeActionTool?.disable();
         executeActionResumeTool?.disable();
       }
 
       debugLog("dynamic_ui.visibility", {
         appsSupport: uiCap ?? null,
-        renderUiEnabled: appsEnabled,
+        renderUiEnabled: true,
         executeActionEnabled: appsEnabled,
       });
     },

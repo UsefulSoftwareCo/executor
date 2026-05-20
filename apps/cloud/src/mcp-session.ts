@@ -371,6 +371,12 @@ export class McpSessionDO extends DurableObject {
         plugins,
         parentSpan: () => self.currentRequestSpan ?? undefined,
         debug: env.EXECUTOR_MCP_DEBUG === "true",
+        renderUiFallbackUrl: (code) => {
+          const origin = env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh";
+          const url = new URL("/plugins/dynamic-ui/render", origin);
+          url.hash = `code=${encodeURIComponent(code)}`;
+          return url.toString();
+        },
         browserApprovalStore: {
           takeResponse: (executionId) => self.takeApprovalResponse(executionId),
           waitForResponse: (executionId) => self.waitForApprovalResponse(executionId),

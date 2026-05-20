@@ -32,6 +32,8 @@ import type { ExecutorCliConfig } from "@executor-js/sdk";
 
 const VIRTUAL_ID = "virtual:executor/plugins-client";
 const RESOLVED_ID = `\0${VIRTUAL_ID}`;
+const INNER_RENDERER_ID = "virtual:executor-inner-renderer";
+const RESOLVED_INNER_RENDERER_ID = `\0${INNER_RENDERER_ID}`;
 
 const DEFAULT_CONFIG_CANDIDATES = [
   "executor.config.ts",
@@ -63,6 +65,35 @@ const tryResolveClient = (packageName: string, fromDir: string): string | null =
   } catch {
     return null;
   }
+};
+
+const tryResolveDynamicUiInnerRenderer = (fromDir: string): string | null => {
+  const require = createRequire(resolvePath(fromDir, "_anchor.js"));
+  try {
+    const clientEntry = require.resolve("@executor-js/plugin-dynamic-ui/client");
+    return resolvePath(dirname(clientEntry), "shell/inner-renderer.tsx");
+  } catch {
+    return null;
+  }
+};
+
+type EsbuildApi = {
+  readonly build: (options: {
+    readonly entryPoints: readonly string[];
+    readonly absWorkingDir: string;
+    readonly bundle: boolean;
+    readonly write: boolean;
+    readonly format: "iife";
+    readonly platform: "browser";
+    readonly target: "es2022";
+    readonly jsx: "automatic";
+    readonly define: Record<string, string>;
+  }) => Promise<{ readonly outputFiles: readonly { readonly text: string }[] }>;
+};
+
+const loadEsbuild = (anchor: string): EsbuildApi => {
+  const require = createRequire(anchor);
+  return require("esbuild") as EsbuildApi;
 };
 
 interface ExecutorVitePluginOptions {
@@ -218,10 +249,39 @@ export default function executorVitePlugin(options: ExecutorVitePluginOptions = 
       projectRoot = config.root;
     },
     resolveId(id) {
+      if (id === INNER_RENDERER_ID) return RESOLVED_INNER_RENDERER_ID;
       if (id === VIRTUAL_ID) return RESOLVED_ID;
       return undefined;
     },
     async load(id) {
+      if (id === RESOLVED_INNER_RENDERER_ID) {
+        const configPath = resolveConfigPath();
+        const fromDir = configPath ? dirname(configPath) : projectRoot;
+        const entryPoint = tryResolveDynamicUiInnerRenderer(fromDir);
+        if (!entryPoint) {
+          throw new Error(
+            "virtual:executor-inner-renderer was requested but @executor-js/plugin-dynamic-ui could not be resolved.",
+          );
+        }
+
+        const result = await loadEsbuild(entryPoint).build({
+          entryPoints: [entryPoint],
+          absWorkingDir: dirname(entryPoint),
+          bundle: true,
+          write: false,
+          format: "iife",
+          platform: "browser",
+          target: "es2022",
+          jsx: "automatic",
+          define: {
+            "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
+          },
+        });
+
+        const js = result.outputFiles[0];
+        if (!js) throw new Error("Failed to bundle Executor inner renderer.");
+        return `export default ${JSON.stringify(js.text)};`;
+      }
       if (id !== RESOLVED_ID) return undefined;
       return loadVirtualSource();
     },

@@ -45,7 +45,7 @@ const withClient = async <E extends Cause.YieldableError>(
   fn: (client: Client) => Promise<void>,
   config?: Pick<
     ExecutorMcpServerConfig<E>,
-    "debug" | "elicitationMode" | "browserApprovalStore" | "plugins"
+    "debug" | "elicitationMode" | "browserApprovalStore" | "plugins" | "renderUiFallbackUrl"
   >,
 ) => {
   const mcpServer = await Effect.runPromise(createExecutorMcpServer({ engine, ...config }));
@@ -169,18 +169,31 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
-  it("does not expose dynamic UI app tools to clients without MCP Apps support", async () => {
+  it("exposes render-ui fallback but not app-only tools to clients without MCP Apps support", async () => {
     await withClient(
       makeStubEngine({}),
       NO_CAPS,
       async (client) => {
         const { tools } = await client.listTools();
         const names = tools.map((tool) => tool.name);
-        expect(names).not.toContain("render-ui");
+        expect(names).toContain("render-ui");
         expect(names).not.toContain("execute-action");
         expect(names).not.toContain("execute-action-resume");
+
+        const result = await client.callTool({
+          name: "render-ui",
+          arguments: { code: 'function App() { return <Card className="p-4" />; }' },
+        });
+        expect(textOf(result)).toContain("https://executor.test/render?code=42");
+        expect(result.structuredContent).toEqual({
+          status: "fallback_url",
+          url: "https://executor.test/render?code=42",
+        });
       },
-      { plugins: [DYNAMIC_UI_PLUGIN] },
+      {
+        plugins: [DYNAMIC_UI_PLUGIN],
+        renderUiFallbackUrl: () => "https://executor.test/render?code=42",
+      },
     );
   });
 

@@ -59,6 +59,12 @@ const approvalUrlForRequest = (
   return url.toString();
 };
 
+const renderUiFallbackUrlForRequest = (request: Request, code: string): string => {
+  const url = new URL("/plugins/dynamic-ui/render", new URL(request.url).origin);
+  url.hash = `code=${encodeURIComponent(code)}`;
+  return url.toString();
+};
+
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
     ? Effect.runPromise(
@@ -162,6 +168,8 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
         created = await Effect.runPromise(
           createExecutorMcpServer({
             ...config,
+            renderUiFallbackUrl:
+              config.renderUiFallbackUrl ?? ((code) => renderUiFallbackUrlForRequest(request, code)),
             browserApprovalStore: {
               takeResponse: (executionId) =>
                 Effect.sync(() => {

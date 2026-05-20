@@ -778,6 +778,11 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
         runMcpStdioServer({
           executor: web.executor,
           codeExecutor: makeQuickJsExecutor(),
+          renderUiFallbackUrl: (code) => {
+            const url = new URL("/plugins/dynamic-ui/render", web.baseUrl);
+            url.hash = `code=${encodeURIComponent(code)}`;
+            return url.toString();
+          },
           elicitationMode:
             input.elicitationMode === "browser"
               ? {

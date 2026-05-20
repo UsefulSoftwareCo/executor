@@ -16,7 +16,8 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./client": "./src/client.tsx"
   },
   "publishConfig": {
     "access": "public",
@@ -25,6 +26,12 @@
         "import": {
           "types": "./dist/index.d.ts",
           "default": "./dist/index.js"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
         }
       }
     }
@@ -44,6 +51,7 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@tanstack/react-query": "^5.99.0",
     "effect": "catalog:",
+    "esbuild": "^0.27.7",
     "sucrase": "^3.35.1",
     "zod": "^4.3.0"
   },
@@ -60,7 +68,6 @@
     "bun-types": "catalog:",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "esbuild": "^0.27.7",
     "lucide-react": "^1.8.0",
     "playwright-core": "^1.59.1",
     "radix-ui": "^1.4.3",

@@ -1,5 +1,11 @@
-import type { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+export type ToolCallHost = {
+  readonly callServerTool: (params: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }) => Promise<CallToolResult>;
+};
 
 export type TrustedInteraction = {
   executionId: string;
@@ -28,7 +34,7 @@ export type RequestTrustedInteraction = (
  * becomes: app.callServerTool("execute-action", { code: "return await tools.github.issues.create({\"title\":\"Bug\"})" })
  */
 export function createToolsProxy(
-  app: App,
+  app: ToolCallHost,
   requestTrustedInteraction: RequestTrustedInteraction,
 ): Record<string, unknown> {
   function nest(path: string[]): unknown {
@@ -68,7 +74,7 @@ export function createToolsProxy(
  * `)
  */
 export function createRunFn(
-  app: App,
+  app: ToolCallHost,
   requestTrustedInteraction: RequestTrustedInteraction,
 ): (code: string) => Promise<unknown> {
   return (code: string) =>
@@ -81,7 +87,7 @@ export function createRunFn(
 }
 
 async function resolveToolResult(
-  app: App,
+  app: ToolCallHost,
   result: CallToolResult,
   requestTrustedInteraction: RequestTrustedInteraction,
 ): Promise<unknown> {

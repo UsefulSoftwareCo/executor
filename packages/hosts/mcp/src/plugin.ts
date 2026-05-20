@@ -25,6 +25,7 @@ export type McpPluginRegisterContext<E extends Cause.YieldableError = Cause.Yiel
   readonly debugLog: McpDebugLog;
   readonly runToolEffect: McpRunToolEffect;
   readonly executeCodeFromApp: (code: string) => Effect.Effect<McpToolResult, E>;
+  readonly renderUiFallbackUrl?: (code: string) => string;
   readonly resumeExecution: (
     executionId: string,
     action: "accept" | "decline" | "cancel",

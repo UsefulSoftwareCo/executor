@@ -16,6 +16,7 @@ export {
  */
 export const dynamicUiPlugin = definePlugin(() => ({
   id: "dynamic-ui" as const,
+  packageName: "@executor-js/plugin-dynamic-ui",
   storage: () => ({}),
   mcp: () => dynamicUiMcpContribution(),
 }));

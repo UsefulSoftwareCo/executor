@@ -91,6 +91,11 @@ type SharedMcpServerConfig = {
       };
   readonly browserApprovalStore?: BrowserApprovalStore;
   /**
+   * Browser URL used by generative UI MCP contributions when the connected
+   * client cannot mount MCP Apps resources directly.
+   */
+  readonly renderUiFallbackUrl?: (code: string) => string;
+  /**
    * Executor plugins whose host-protocol MCP contributions should be mounted.
    * Core SDK treats the field as opaque; this host interprets `plugin.mcp`.
    */
@@ -672,6 +677,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             debugLog,
             runToolEffect,
             executeCodeFromApp,
+            renderUiFallbackUrl: config.renderUiFallbackUrl,
             resumeExecution,
             parseJsonContent,
           })
