@@ -98,7 +98,7 @@ export const createServerHandlers = async (): Promise<ServerHandlers> => {
     dispose: api.dispose,
   };
 
-  const mcp = createMcpRequestHandler({ engine });
+  const mcp = createMcpRequestHandler({ engine, plugins });
 
   return { api: apiHandler, mcp };
 };

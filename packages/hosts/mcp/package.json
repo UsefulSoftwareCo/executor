@@ -22,6 +22,9 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/plugin-dynamic-ui": "workspace:*",
+    "@executor-js/runtime-quickjs": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "^1.6.0",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
     "vitest": "catalog:"

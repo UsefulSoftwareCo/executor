@@ -136,6 +136,7 @@ export default defineConfig({
           protocol: "ws",
         }
       : undefined,
+    allowedHosts: true,
     watch: {
       // Workspace packages live under packages/ and are symlinked into
       // node_modules. Without this, chokidar treats them as ordinary

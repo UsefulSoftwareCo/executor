@@ -31,6 +31,7 @@
     "@executor-js/api": "workspace:*",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/plugin-dynamic-ui": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",

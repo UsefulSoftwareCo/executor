@@ -32,7 +32,7 @@ import { createDrizzleFumaDb } from "./fuma";
 
 export type CloudPlugins = ReturnType<typeof executorConfig.plugins>;
 
-const orgPlugins = (): CloudPlugins =>
+export const createCloudPlugins = (): CloudPlugins =>
   executorConfig.plugins({
     workosCredentials: {
       apiKey: env.WORKOS_API_KEY,
@@ -59,11 +59,11 @@ export const createScopedExecutor = (
   userId: string,
   organizationId: string,
   organizationName: string,
+  plugins: CloudPlugins = createCloudPlugins(),
 ) =>
   Effect.gen(function* () {
     const { db } = yield* DbService;
 
-    const plugins = orgPlugins();
     const httpClientLayer = makeHostedHttpClientLayer({
       allowLocalNetwork: env.NODE_ENV === "test",
     });

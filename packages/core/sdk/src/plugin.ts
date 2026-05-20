@@ -542,6 +542,13 @@ export interface PluginSpec<
    *  `({ args }) => self.addSpec(args)`. */
   readonly staticSources?: (self: NoInfer<TExtension>) => readonly StaticSourceDecl<TStore>[];
 
+  /** Optional host-protocol contributions. The core SDK intentionally
+   *  treats this as opaque data so protocol packages can define their
+   *  own contracts without pulling host-specific dependencies into every
+   *  plugin. For MCP, `@executor-js/host-mcp` interprets this field as an
+   *  MCP contribution factory. */
+  readonly mcp?: unknown;
+
   /** HttpApiGroup contributed by this plugin. Composed into the host's
    *  `HttpApi` via the `addGroup` helper at runtime. The host mounts
    *  the group at `/_executor/plugins/{id}/...` (or wherever the

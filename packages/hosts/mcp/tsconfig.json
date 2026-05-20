@@ -6,8 +6,9 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ES2022"],
-    "types": ["bun-types", "node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun-types", "node", "react", "react-dom", "vite/client"],
+    "jsx": "react-jsx",
     "noUnusedLocals": true,
     "noImplicitOverride": true,
     "plugins": [
@@ -21,5 +22,5 @@
       }
     ]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

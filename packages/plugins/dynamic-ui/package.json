@@ -1,0 +1,78 @@
+{
+  "name": "@executor-js/plugin-dynamic-ui",
+  "version": "1.4.25",
+  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/dynamic-ui",
+  "bugs": {
+    "url": "https://github.com/RhysSullivan/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "directory": "packages/plugins/dynamic-ui"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup && bun run build:shell",
+    "build:shell": "vite build --config vite.config.shell.ts",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "typecheck:slow": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/react": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "^1.6.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@tanstack/react-query": "^5.99.0",
+    "effect": "catalog:",
+    "sucrase": "^3.35.1",
+    "zod": "^4.3.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/runtime-quickjs": "workspace:*",
+    "@tailwindcss/browser": "^4.2.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "^6.0.1",
+    "bun-types": "catalog:",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "esbuild": "^0.27.7",
+    "lucide-react": "^1.8.0",
+    "playwright-core": "^1.59.1",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.2",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vite": "^8.0.8",
+    "vite-plugin-singlefile": "^2.3.2",
+    "vitest": "catalog:"
+  }
+}

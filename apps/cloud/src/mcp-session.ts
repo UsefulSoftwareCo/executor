@@ -353,7 +353,7 @@ export class McpSessionDO extends DurableObject {
   ) {
     const self = this;
     return Effect.gen(function* () {
-      const { executor, engine } = yield* makeExecutionStack(
+      const { executor, engine, plugins } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
@@ -368,6 +368,7 @@ export class McpSessionDO extends DurableObject {
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
+        plugins,
         parentSpan: () => self.currentRequestSpan ?? undefined,
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: {

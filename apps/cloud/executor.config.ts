@@ -1,5 +1,6 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
+import { dynamicUiPlugin } from "@executor-js/plugin-dynamic-ui";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-workos-vault";
@@ -39,6 +40,7 @@ export default defineExecutorConfig({
   plugins: ({ workosCredentials, workosVaultClient }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin(),
+      dynamicUiPlugin(),
       mcpHttpPlugin({
         dangerouslyAllowStdioMCP: false,
       }),
