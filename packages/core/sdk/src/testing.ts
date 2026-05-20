@@ -32,6 +32,11 @@ export {
   type OAuthTestServerShape,
 } from "./testing/oauth-test-server";
 export { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
+export {
+  typeCheckOutputTypeScript,
+  type OutputTypeScriptContract,
+  type TypeCheckOutputTypeScriptOptions,
+} from "./testing/tool-output-contract";
 
 export class TestHttpServerAddressError extends Data.TaggedError("TestHttpServerAddressError")<{
   readonly address: unknown;

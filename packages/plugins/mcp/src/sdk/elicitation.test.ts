@@ -1,13 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation/types";
 
 import {
   createExecutor,
   FormElicitation,
   ElicitationResponse,
+  isToolResult,
   type InvokeOptions,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, typeCheckOutputTypeScript } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 import { makeElicitationMcpServer, serveMcpServer } from "../testing";
@@ -15,6 +18,24 @@ import { makeElicitationMcpServer, serveMcpServer } from "../testing";
 const isFormElicitation = Schema.is(FormElicitation);
 
 const serveElicitationTestServer = serveMcpServer(makeElicitationMcpServer);
+
+const schemaValidator = new CfWorkerJsonSchemaValidator({ shortcircuit: false });
+
+const expectMatchesOutputSchema = (outputSchema: unknown, value: unknown): void => {
+  expect(outputSchema).toBeDefined();
+  const result = schemaValidator.getValidator(outputSchema as JsonSchemaType)(value);
+  expect(result).toEqual({
+    valid: true,
+    data: value,
+    errorMessage: undefined,
+  });
+};
+
+const expectToolResultOkData = (result: unknown): unknown => {
+  expect(isToolResult(result)).toBe(true);
+  expect(result).toMatchObject({ ok: true });
+  return (result as { readonly ok: true; readonly data: unknown }).data;
+};
 
 // ---------------------------------------------------------------------------
 // Helper — create executor with MCP plugin pointed at test server
@@ -122,12 +143,84 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
+  it.effect("registered tools without MCP outputSchema still describe CallToolResult", () =>
+    Effect.gen(function* () {
+      const server = yield* serveElicitationTestServer;
+      const executor = yield* makeTestExecutor(server.url);
+      const tools = yield* executor.tools.list();
+      const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
+      const schema = yield* executor.tools.schema(simpleEcho.id);
+
+      expect(schema?.outputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          content: { type: "array" },
+          structuredContent: {},
+          isError: { const: false },
+          _meta: { type: "object" },
+        },
+        required: ["content"],
+      });
+      const outputSchema = schema?.outputSchema as {
+        readonly properties: {
+          readonly content: {
+            readonly items: {
+              readonly anyOf: readonly unknown[];
+            };
+          };
+        };
+      };
+      expect(outputSchema.properties.content.items.anyOf).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            properties: expect.objectContaining({
+              type: { const: "text", type: "string" },
+              text: { type: "string" },
+            }),
+            required: ["type", "text"],
+          }),
+        ]),
+      );
+      expect(schema?.outputTypeScript).toContain('type: "text"');
+      expect(schema?.outputTypeScript).toContain("structuredContent?: { [k: string]: unknown; }");
+
+      const result = yield* executor.tools.invoke(
+        simpleEcho.id,
+        { value: "plain" },
+        { onElicitation: "accept-all" },
+      );
+
+      const data = expectToolResultOkData(result);
+      expectMatchesOutputSchema(schema?.outputSchema, data);
+      expect(typeCheckOutputTypeScript(schema, data)).toEqual([]);
+    }),
+  );
+
   it.effect("successful tool invocation preserves structured MCP result fields", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const structuredEcho = tools.find((t) => t.name === "structured_echo")!;
+      const schema = yield* executor.tools.schema(structuredEcho.id);
+
+      expect(schema?.outputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          content: { type: "array" },
+          structuredContent: {
+            type: "object",
+            properties: {
+              value: { type: "string" },
+              upper: { type: "string" },
+            },
+          },
+          _meta: { type: "object" },
+        },
+        required: ["content", "structuredContent"],
+      });
+      expect(schema?.outputTypeScript).toContain("structuredContent");
+      expect(schema?.outputTypeScript).toContain("value: string");
 
       const result = yield* executor.tools.invoke(
         structuredEcho.id,
@@ -143,6 +236,55 @@ describe("MCP elicitation (end-to-end)", () => {
           _meta: { trace: "kept" },
         },
       });
+      const data = expectToolResultOkData(result);
+      expectMatchesOutputSchema(schema?.outputSchema, data);
+      expect(typeCheckOutputTypeScript(schema, data)).toEqual([]);
+    }),
+  );
+
+  it.effect("refreshSource keeps MCP outputSchema nested under structuredContent", () =>
+    Effect.gen(function* () {
+      const server = yield* serveElicitationTestServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [mcpPlugin()] as const,
+        }),
+      );
+
+      yield* executor.mcp.addSource({
+        transport: "remote",
+        scope: "test-scope",
+        name: "test-mcp",
+        namespace: "schema_refresh",
+        endpoint: server.url,
+      });
+      yield* executor.mcp.refreshSource("schema_refresh", "test-scope");
+
+      const schema = yield* executor.tools.schema("schema_refresh.structured_echo");
+      expect(schema?.outputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          content: { type: "array" },
+          structuredContent: {
+            type: "object",
+            properties: {
+              value: { type: "string" },
+              upper: { type: "string" },
+            },
+          },
+        },
+        required: ["content", "structuredContent"],
+      });
+      expect(schema?.outputTypeScript).toContain("structuredContent");
+      expect(schema?.outputTypeScript).toContain("upper: string");
+
+      const result = yield* executor.tools.invoke(
+        "schema_refresh.structured_echo",
+        { value: "plain" },
+        { onElicitation: "accept-all" },
+      );
+      const data = expectToolResultOkData(result);
+      expect(typeCheckOutputTypeScript(schema, data)).toEqual([]);
     }),
   );
 

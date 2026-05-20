@@ -66,7 +66,8 @@
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@effect/atom-react": "catalog:",
@@ -78,8 +79,7 @@
     "bun-types": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
-    "vitest": "catalog:",
-    "zod": "^4.3.6"
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "@effect/atom-react": "catalog:",

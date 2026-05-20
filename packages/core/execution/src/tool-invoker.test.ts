@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
-import * as ts from "typescript";
 
 import {
   ElicitationResponse,
@@ -10,7 +9,7 @@ import {
   definePlugin,
   tool,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, typeCheckOutputTypeScript } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
 import { describeTool, makeExecutorToolInvoker, searchTools } from "./tool-invoker";
@@ -44,48 +43,13 @@ const typeCheckDescribedInvocation = (
   described: DescribedToolContract,
   runtimeResult: unknown,
   consumerSource: string,
-): readonly string[] => {
-  const fileName = "described-tool-contract.ts";
-  const source = [
-    ...Object.entries(described.typeScriptDefinitions).map(([name, definition]) => {
-      return `type ${name} = ${definition};`;
-    }),
-    `type ToolOutput = ${described.outputTypeScript};`,
-    `const invokedResult: ToolOutput = ${JSON.stringify(runtimeResult)};`,
+): readonly string[] =>
+  typeCheckOutputTypeScript(described, runtimeResult, {
     consumerSource,
-  ].join("\n");
-
-  const options: ts.CompilerOptions = {
-    module: ts.ModuleKind.ESNext,
-    noEmit: true,
-    skipLibCheck: true,
-    strict: true,
-    target: ts.ScriptTarget.ES2022,
-  };
-  const host = ts.createCompilerHost(options);
-  const originalGetSourceFile = host.getSourceFile.bind(host);
-  const originalReadFile = host.readFile.bind(host);
-  const originalFileExists = host.fileExists.bind(host);
-
-  host.getSourceFile = (candidate, languageVersion, onError, shouldCreateNewSourceFile) => {
-    if (candidate === fileName) {
-      return ts.createSourceFile(candidate, source, languageVersion, true);
-    }
-    return originalGetSourceFile(candidate, languageVersion, onError, shouldCreateNewSourceFile);
-  };
-  host.readFile = (candidate) => (candidate === fileName ? source : originalReadFile(candidate));
-  host.fileExists = (candidate) => candidate === fileName || originalFileExists(candidate);
-
-  const program = ts.createProgram([fileName], options, host);
-  return ts.getPreEmitDiagnostics(program).map((diagnostic) => {
-    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
-    if (!diagnostic.file || diagnostic.start === undefined) {
-      return message;
-    }
-    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
-    return `${diagnostic.file.fileName}:${position.line + 1}:${position.character + 1} ${message}`;
+    fileName: "described-tool-contract.ts",
+    typeName: "ToolOutput",
+    valueName: "invokedResult",
   });
-};
 
 // ---------------------------------------------------------------------------
 // Test plugins — each one declares a namespace as a static source with N
