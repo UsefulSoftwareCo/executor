@@ -341,7 +341,8 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
           : structuredContentSchema,
       isError: { const: false },
     },
-    required: structuredContentSchema === undefined ? ["content"] : ["content", "structuredContent"],
+    required:
+      structuredContentSchema === undefined ? ["content"] : ["content", "structuredContent"],
   };
 };
 

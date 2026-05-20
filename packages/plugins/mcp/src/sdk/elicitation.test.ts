@@ -182,9 +182,7 @@ describe("MCP elicitation (end-to-end)", () => {
         ]),
       );
       expect(schema?.outputTypeScript).toContain('type: "text"');
-      expect(schema?.outputTypeScript).toContain(
-        "structuredContent?: { [k: string]: unknown; }",
-      );
+      expect(schema?.outputTypeScript).toContain("structuredContent?: { [k: string]: unknown; }");
 
       const result = yield* executor.tools.invoke(
         simpleEcho.id,

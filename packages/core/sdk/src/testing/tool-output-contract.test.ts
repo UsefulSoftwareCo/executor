@@ -10,7 +10,7 @@ describe("typeCheckOutputTypeScript", () => {
         typeScriptDefinitions: {
           Payload: "{ answer: string }",
           ResultData:
-            "{ content: readonly { type: \"text\"; text: string }[]; structuredContent: Payload }",
+            '{ content: readonly { type: "text"; text: string }[]; structuredContent: Payload }',
         },
       },
       {
