@@ -138,6 +138,7 @@ import {
 import { buildToolTypeScriptPreview, type ToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
 import { assertExecutorScopePolicyTable, type ExecutorScopePolicyContext } from "./scope-policy";
+import { isToolResult, ToolResult } from "./tool-result";
 import { validateHostedOutboundUrl } from "./hosted-http-client";
 
 const MAX_ANNOTATION_GROUPS = 64;
@@ -577,6 +578,40 @@ const toToolJsonSchema = (
   return schema["~standard"].jsonSchema[direction]({
     target: "draft-2020-12",
   });
+};
+
+const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const projectAgentOutputSchema = (schema: unknown): unknown => {
+  if (!isJsonRecord(schema)) return schema;
+  const properties = schema.properties;
+  if (!isJsonRecord(properties)) return schema;
+  const required = schema.required;
+  if (
+    !Array.isArray(required) ||
+    !required.includes("content") ||
+    !required.includes("structuredContent")
+  ) {
+    return schema;
+  }
+  if (!("content" in properties) || !("structuredContent" in properties)) return schema;
+  return properties.structuredContent;
+};
+
+const isProjectedAgentOutputSchema = (schema: unknown): boolean =>
+  projectAgentOutputSchema(schema) !== schema;
+
+const projectAgentOutputValue = (schema: unknown, value: unknown): unknown => {
+  if (!isProjectedAgentOutputSchema(schema)) return value;
+  if (isToolResult(value)) {
+    return value.ok ? ToolResult.ok(projectAgentOutputValue(schema, value.data)) : value;
+  }
+  if (!isJsonRecord(value)) return value;
+  if (!Array.isArray(value.content)) return value;
+  return "structuredContent" in value && value.structuredContent != null
+    ? value.structuredContent
+    : value;
 };
 
 const toConfigureJsonSchema = (
@@ -3490,15 +3525,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           : {};
 
         const sourceDefsMap = new Map<string, unknown>(Object.entries(defs));
+        const outputSchema = projectAgentOutputSchema(opts.rawOutput);
         const schemaDefinitions = collectReferencedDefinitions(
-          [opts.rawInput, opts.rawOutput],
+          [opts.rawInput, outputSchema],
           sourceDefsMap,
         );
         const schemaDefsMap = new Map<string, unknown>(Object.entries(schemaDefinitions));
         const preview: ToolTypeScriptPreview = yield* Effect.promise(() =>
           buildToolTypeScriptPreview({
             inputSchema: opts.rawInput,
-            outputSchema: opts.rawOutput,
+            outputSchema,
             defs: schemaDefsMap,
           }),
         ).pipe(
@@ -3518,7 +3554,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           name: opts.name,
           description: opts.description,
           inputSchema: opts.rawInput,
-          outputSchema: opts.rawOutput,
+          outputSchema,
           schemaDefinitions:
             Object.keys(schemaDefinitions).length > 0 ? schemaDefinitions : undefined,
           inputTypeScript: preview.inputTypeScript ?? undefined,
@@ -3730,13 +3766,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* enforceApproval(staticEntry.tool.annotations, toolId, args, policy, handler).pipe(
             Effect.withSpan("executor.tool.enforce_approval"),
           );
-          return yield* wrapInvocationError(toolId)(
+          const rawOutput = toToolJsonSchema(staticEntry.tool.outputSchema, "output");
+          const result = yield* wrapInvocationError(toolId)(
             staticEntry.tool.handler({
               ctx: staticEntry.ctx,
               args,
               elicit: buildElicit(toolId, args, handler),
             }),
           ).pipe(Effect.withSpan("executor.tool.handler"));
+          return projectAgentOutputValue(rawOutput, result);
         }
 
         // Dynamic path — DB lookup + delegate to owning plugin. Walk the
@@ -3826,7 +3864,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.withSpan("executor.tool.enforce_approval"),
         );
 
-        return yield* wrapInvocationError(resolvedToolId)(
+        const result = yield* wrapInvocationError(resolvedToolId)(
           runtime.plugin.invokeTool({
             ctx: runtime.ctx,
             toolRow: row,
@@ -3834,6 +3872,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             elicit: buildElicit(resolvedToolId, args, handler),
           }),
         ).pipe(Effect.withSpan("executor.tool.handler"));
+        return projectAgentOutputValue(decodeJsonColumn(row.output_schema), result);
       }).pipe(
         Effect.withSpan("executor.tool.invoke", {
           attributes: {

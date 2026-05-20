@@ -196,7 +196,7 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("successful tool invocation preserves structured MCP result fields", () =>
+  it.effect("successful tool schema describes the agent-visible structuredContent", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
@@ -207,19 +207,11 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
         properties: {
-          content: { type: "array" },
-          structuredContent: {
-            type: "object",
-            properties: {
-              value: { type: "string" },
-              upper: { type: "string" },
-            },
-          },
-          _meta: { type: "object" },
+          value: { type: "string" },
+          upper: { type: "string" },
         },
-        required: ["content", "structuredContent"],
+        required: ["value", "upper"],
       });
-      expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("value: string");
 
       const result = yield* executor.tools.invoke(
@@ -230,11 +222,7 @@ describe("MCP elicitation (end-to-end)", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        data: {
-          content: [{ type: "text", text: "plain" }],
-          structuredContent: { value: "plain", upper: "PLAIN" },
-          _meta: { trace: "kept" },
-        },
+        data: { value: "plain", upper: "PLAIN" },
       });
       const data = expectToolResultOkData(result);
       expectMatchesOutputSchema(schema?.outputSchema, data);
@@ -242,7 +230,7 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("refreshSource keeps MCP outputSchema nested under structuredContent", () =>
+  it.effect("refreshSource keeps agent-visible schema as structuredContent", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* createExecutor(
@@ -264,18 +252,11 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
         properties: {
-          content: { type: "array" },
-          structuredContent: {
-            type: "object",
-            properties: {
-              value: { type: "string" },
-              upper: { type: "string" },
-            },
-          },
+          value: { type: "string" },
+          upper: { type: "string" },
         },
-        required: ["content", "structuredContent"],
+        required: ["value", "upper"],
       });
-      expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("upper: string");
 
       const result = yield* executor.tools.invoke(

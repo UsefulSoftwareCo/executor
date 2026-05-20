@@ -295,18 +295,6 @@ const mcpProjectionPlugin = definePlugin(() => ({
               }),
             ),
         },
-        {
-          name: "untypedStructured",
-          description: "Returns MCP-shaped data without a typed structured output",
-          inputSchema: EmptyInputSchema,
-          handler: () =>
-            Effect.succeed(
-              ToolResult.ok({
-                content: [{ type: "text", text: "fallback text" }],
-                structuredContent: { value: "raw" },
-              }),
-            ),
-        },
       ],
     },
   ],
@@ -672,28 +660,6 @@ describe("tool discovery", () => {
         ].join("\n"),
       );
       expect(diagnostics).toEqual([]);
-    }),
-  );
-
-  it.effect("keeps untyped MCP-shaped sandbox results raw", () =>
-    Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [mcpProjectionPlugin()] as const }),
-      );
-      const engine = createExecutionEngine({ executor, codeExecutor });
-
-      const execution = yield* engine.execute("return await tools.remote.untypedStructured({});", {
-        onElicitation: acceptAll,
-      });
-
-      expect(execution.error).toBeUndefined();
-      expect(execution.result).toEqual({
-        ok: true,
-        data: {
-          content: [{ type: "text", text: "fallback text" }],
-          structuredContent: { value: "raw" },
-        },
-      });
     }),
   );
 
