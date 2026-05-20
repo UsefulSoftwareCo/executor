@@ -363,3 +363,8 @@ export { InternalError } from "./api-errors";
 // TypeScript permits the two to share a name because one is purely a
 // value and the other purely a type.
 export { ToolResult, isToolResult, type ToolError } from "./tool-result";
+export {
+  authToolFailure,
+  type AuthToolFailureCode,
+  type AuthToolFailureInput,
+} from "./auth-tool-failure";

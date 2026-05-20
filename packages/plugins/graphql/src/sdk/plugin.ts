@@ -12,6 +12,7 @@ import {
   SourceDetectionResult,
   StorageError,
   ToolResult,
+  authToolFailure,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
@@ -39,7 +40,11 @@ import {
   type IntrospectionTypeRef,
 } from "./introspect";
 import { extract } from "./extract";
-import { GraphqlIntrospectionError, GraphqlInvocationError } from "./errors";
+import {
+  GraphqlAuthRequiredError,
+  GraphqlIntrospectionError,
+  GraphqlInvocationError,
+} from "./errors";
 import { invokeWithLayer } from "./invoke";
 import { graphqlPresets } from "./presets";
 import {
@@ -190,6 +195,30 @@ const graphqlToolFailure = (code: string, message: string, details?: unknown) =>
     code,
     message,
     ...(details === undefined ? {} : { details }),
+  });
+
+const graphqlAuthToolFailure = (failure: GraphqlAuthRequiredError) =>
+  authToolFailure({
+    code: failure.code,
+    message: failure.message,
+    source: { id: failure.sourceId, scope: failure.sourceScope },
+    credential: {
+      kind: failure.credentialKind,
+      ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),
+      ...(failure.slotKey ? { slotKey: failure.slotKey } : {}),
+      ...(failure.secretId ? { secretId: failure.secretId } : {}),
+      ...(failure.connectionId ? { connectionId: failure.connectionId } : {}),
+    },
+    ...(failure.status !== undefined ? { status: failure.status } : {}),
+    ...(failure.details !== undefined
+      ? {
+          upstream: {
+            ...(failure.status !== undefined ? { status: failure.status } : {}),
+            details: failure.details,
+          },
+        }
+      : {}),
+    recovery: { configureSourceTool: "executor.graphql.configureSource" },
   });
 
 const resolveStaticScopeInput = (
@@ -609,16 +638,15 @@ const resolveInitialOAuthHeaders = (
     return { Authorization: `Bearer ${accessToken}` };
   });
 
-const resolveGraphqlBindingValueMap = <E>(
+const resolveGraphqlBindingValueMap = (
   ctx: PluginCtx<GraphqlStore>,
   values: Record<string, ConfiguredGraphqlCredentialValue> | undefined,
   params: {
     readonly sourceId: string;
     readonly sourceScope: string;
     readonly missingLabel: string;
-    readonly makeError: (message: string) => E;
   },
-): Effect.Effect<Record<string, string> | undefined, E | StorageFailure> =>
+): Effect.Effect<Record<string, string> | undefined, GraphqlAuthRequiredError | StorageFailure> =>
   Effect.gen(function* () {
     if (!values) return undefined;
     const resolved: Record<string, string> = {};
@@ -634,21 +662,34 @@ const resolveGraphqlBindingValueMap = <E>(
         value.slot,
       );
       if (binding?.value.kind === "secret") {
-        const secret = yield* ctx.secrets
-          .getAtScope(binding.value.secretId, binding.scopeId)
-          .pipe(
-            Effect.catchTag("SecretOwnedByConnectionError", () =>
-              Effect.fail(
-                params.makeError(`Secret not found for ${params.missingLabel} "${name}"`),
-              ),
+        const secretBinding = binding.value;
+        const secret = yield* ctx.secrets.getAtScope(secretBinding.secretId, binding.scopeId).pipe(
+          Effect.catchTag("SecretOwnedByConnectionError", () =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "credential_secret_missing",
+                sourceId: params.sourceId,
+                sourceScope: params.sourceScope,
+                credentialKind: "secret",
+                credentialLabel: name,
+                slotKey: value.slot,
+                secretId: String(secretBinding.secretId),
+                message: `Secret not found for ${params.missingLabel} "${name}"`,
+              }),
             ),
-          );
+          ),
+        );
         if (secret === null) {
-          return yield* Effect.fail(
-            params.makeError(
-              `Missing secret "${binding.value.secretId}" for ${params.missingLabel} "${name}"`,
-            ),
-          );
+          return yield* new GraphqlAuthRequiredError({
+            code: "credential_secret_missing",
+            sourceId: params.sourceId,
+            sourceScope: params.sourceScope,
+            credentialKind: "secret",
+            credentialLabel: name,
+            slotKey: value.slot,
+            secretId: String(secretBinding.secretId),
+            message: `Missing secret "${secretBinding.secretId}" for ${params.missingLabel} "${name}"`,
+          });
         }
         resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
         continue;
@@ -657,9 +698,15 @@ const resolveGraphqlBindingValueMap = <E>(
         resolved[name] = value.prefix ? `${value.prefix}${binding.value.text}` : binding.value.text;
         continue;
       }
-      return yield* Effect.fail(
-        params.makeError(`Missing binding for ${params.missingLabel} "${name}"`),
-      );
+      return yield* new GraphqlAuthRequiredError({
+        code: "credential_binding_missing",
+        sourceId: params.sourceId,
+        sourceScope: params.sourceScope,
+        credentialKind: "secret",
+        credentialLabel: name,
+        slotKey: value.slot,
+        message: `Missing binding for ${params.missingLabel} "${name}"`,
+      });
     }
     return Object.keys(resolved).length > 0 ? resolved : undefined;
   });
@@ -679,15 +726,88 @@ const resolveGraphqlStoredOAuthHeader = (
       auth.connectionSlot,
     );
     if (binding?.value.kind !== "connection") {
-      return yield* new GraphqlInvocationError({
+      return yield* new GraphqlAuthRequiredError({
+        code: "oauth_connection_missing",
+        sourceId,
+        sourceScope,
+        credentialKind: "connection",
+        credentialLabel: "OAuth sign-in",
+        slotKey: auth.connectionSlot,
         message: `Missing OAuth connection binding for GraphQL source "${sourceId}"`,
-        statusCode: Option.none(),
       });
     }
-    const accessToken = yield* ctx.connections.accessTokenAtScope(
-      binding.value.connectionId,
-      binding.scopeId,
-    );
+    const connectionId = binding.value.connectionId;
+    const accessToken = yield* ctx.connections
+      .accessTokenAtScope(connectionId, binding.scopeId)
+      .pipe(
+        Effect.catchTags({
+          ConnectionReauthRequiredError: ({ message, connectionId }) =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "oauth_reauth_required",
+                sourceId,
+                sourceScope,
+                credentialKind: "oauth",
+                credentialLabel: "OAuth sign-in",
+                slotKey: auth.connectionSlot,
+                connectionId: String(connectionId),
+                message: `OAuth connection "${connectionId}" needs re-authentication: ${message}`,
+              }),
+            ),
+          ConnectionNotFoundError: ({ connectionId }) =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "oauth_connection_missing",
+                sourceId,
+                sourceScope,
+                credentialKind: "connection",
+                credentialLabel: "OAuth sign-in",
+                slotKey: auth.connectionSlot,
+                connectionId: String(connectionId),
+                message: `OAuth connection "${connectionId}" was not found for GraphQL source "${sourceId}"`,
+              }),
+            ),
+          ConnectionProviderNotRegisteredError: ({ provider }) =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "oauth_connection_failed",
+                sourceId,
+                sourceScope,
+                credentialKind: "oauth",
+                credentialLabel: "OAuth sign-in",
+                slotKey: auth.connectionSlot,
+                connectionId: String(connectionId),
+                message: `OAuth provider "${provider}" is not registered`,
+              }),
+            ),
+          ConnectionRefreshNotSupportedError: ({ provider, connectionId }) =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "oauth_connection_failed",
+                sourceId,
+                sourceScope,
+                credentialKind: "oauth",
+                credentialLabel: "OAuth sign-in",
+                slotKey: auth.connectionSlot,
+                connectionId: String(connectionId),
+                message: `OAuth provider "${provider}" cannot refresh connection "${connectionId}"`,
+              }),
+            ),
+          ConnectionRefreshError: ({ message, connectionId }) =>
+            Effect.fail(
+              new GraphqlAuthRequiredError({
+                code: "oauth_connection_failed",
+                sourceId,
+                sourceScope,
+                credentialKind: "oauth",
+                credentialLabel: "OAuth sign-in",
+                slotKey: auth.connectionSlot,
+                connectionId: String(connectionId),
+                message: `OAuth connection "${connectionId}" refresh failed: ${message}`,
+              }),
+            ),
+        }),
+      );
     return { Authorization: `Bearer ${accessToken}` };
   });
 
@@ -1082,16 +1202,12 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
             sourceId: source.namespace,
             sourceScope: source.scope,
             missingLabel: "header",
-            makeError: (message) =>
-              new GraphqlInvocationError({ message, statusCode: Option.none() }),
           })) ?? {};
         const resolvedQueryParams =
           (yield* resolveGraphqlBindingValueMap(ctx, source.queryParams, {
             sourceId: source.namespace,
             sourceScope: source.scope,
             missingLabel: "query parameter",
-            makeError: (message) =>
-              new GraphqlInvocationError({ message, statusCode: Option.none() }),
           })) ?? {};
         const oauthHeader = yield* resolveGraphqlStoredOAuthHeader(
           ctx,
@@ -1120,6 +1236,23 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           });
         }
         if (result.status < 200 || result.status >= 300) {
+          if (result.status === 401 || result.status === 403) {
+            return authToolFailure({
+              code: "credential_rejected",
+              status: result.status,
+              message: `Upstream rejected credentials for GraphQL source "${source.namespace}" with HTTP ${result.status}. Re-authenticate or update the source credentials before retrying this tool.`,
+              source: { id: source.namespace, scope: source.scope },
+              credential: { kind: "upstream", label: "Upstream authorization" },
+              upstream: {
+                status: result.status,
+                details: {
+                  data: result.data,
+                  errors: result.errors,
+                },
+              },
+              recovery: { configureSourceTool: "executor.graphql.configureSource" },
+            });
+          }
           return ToolResult.fail({
             code: "graphql_http_error",
             status: result.status,
@@ -1132,7 +1265,11 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           });
         }
         return ToolResult.ok(result.data);
-      }),
+      }).pipe(
+        Effect.catchTag("GraphqlAuthRequiredError", (error) =>
+          Effect.succeed(graphqlAuthToolFailure(error)),
+        ),
+      ),
 
     resolveAnnotations: ({ ctx, sourceId, toolRows }) =>
       Effect.gen(function* () {

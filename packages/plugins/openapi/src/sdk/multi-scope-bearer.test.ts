@@ -31,7 +31,6 @@ import {
   SetSecretInput,
   SetSourceCredentialBindingInput,
   RemoveSourceCredentialBindingInput,
-  ToolInvocationError,
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
@@ -627,15 +626,21 @@ describe("OpenAPI multi-scope bearer (Vercel-style)", () => {
         });
         expect(bindingsAfterReadd).toEqual([]);
 
-        const error = yield* Effect.flip(
-          aliceExec.tools.invoke("vercel.projects.list", {}, autoApprove),
-        );
-        expect(error).toBeInstanceOf(ToolInvocationError);
-        expect(error).toEqual(
-          expect.objectContaining({
+        const result = yield* aliceExec.tools.invoke("vercel.projects.list", {}, autoApprove);
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "credential_binding_missing",
             message: expect.stringContaining('Missing binding for header "Authorization"'),
-          }),
-        );
+            details: {
+              category: "authentication",
+              credential: {
+                label: "Authorization",
+                slotKey: "auth:token",
+              },
+            },
+          },
+        });
       }),
   );
 

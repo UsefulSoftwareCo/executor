@@ -607,6 +607,42 @@ describe("graphqlPlugin real protocol server", () => {
       expect(requests[0]?.headers.authorization).toBe("Bearer secret-token");
     }),
   );
+
+  it.effect("returns an auth failure when an OAuth-backed source has no connection binding", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [memorySecretsPlugin(), graphqlPlugin()] as const,
+        }),
+      );
+
+      yield* executor.graphql.addSource({
+        endpoint: server.endpoint,
+        scope: TEST_SCOPE,
+        namespace: "oauth_missing_connection",
+        oauth2: graphqlOAuth2Config,
+      });
+
+      const result = yield* executor.tools.invoke("oauth_missing_connection.query.hello", {
+        name: "Ada",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "oauth_connection_missing",
+          message: expect.stringContaining("Missing OAuth connection binding"),
+          details: {
+            category: "authentication",
+            recovery: {
+              startOAuthTool: "executor.coreTools.oauth.start",
+            },
+          },
+        },
+      });
+    }),
+  );
 });
 
 describe("graphqlPlugin", () => {

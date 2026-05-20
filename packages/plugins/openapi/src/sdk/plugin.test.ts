@@ -769,13 +769,21 @@ describe("OpenAPI Plugin", () => {
         );
         secretStore.delete(key(TEST_SCOPE, "missing-token"));
 
-        const error = yield* Effect.flip(
-          executor.tools.invoke("noauth.items.listItems", {}, autoApprove),
-        );
+        const result = yield* executor.tools.invoke("noauth.items.listItems", {}, autoApprove);
 
-        expect(Predicate.isTagged(error, "ToolInvocationError")).toBe(true);
-        expect(error).toMatchObject({
-          message: expect.stringContaining("missing-token"),
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "credential_secret_missing",
+            message: expect.stringContaining("missing-token"),
+            details: {
+              category: "authentication",
+              recovery: {
+                createSecretTool: "executor.coreTools.secrets.create",
+                secretsUrl: "https://executor.sh/secrets",
+              },
+            },
+          },
         });
       }),
     ),

@@ -1,5 +1,6 @@
 import { Data, Schema } from "effect";
 import type { Option } from "effect";
+import type { AuthToolFailureCode } from "@executor-js/sdk/core";
 
 // HTTP status lives on the class declaration so HttpApiBuilder's error
 // encoder (which reads `ast.annotations` off the schema it stored on
@@ -37,3 +38,18 @@ export class OpenApiOAuthError extends Schema.TaggedErrorClass<OpenApiOAuthError
   },
   { httpApiStatus: 400 },
 ) {}
+
+export class OpenApiAuthRequiredError extends Data.TaggedError("OpenApiAuthRequiredError")<{
+  readonly code: AuthToolFailureCode;
+  readonly message: string;
+  readonly sourceId: string;
+  readonly sourceScope: string;
+  readonly credentialKind: "secret" | "connection" | "oauth" | "upstream";
+  readonly credentialLabel?: string;
+  readonly slotKey?: string;
+  readonly secretId?: string;
+  readonly connectionId?: string;
+  readonly status?: number;
+  readonly details?: unknown;
+  readonly cause?: unknown;
+}> {}

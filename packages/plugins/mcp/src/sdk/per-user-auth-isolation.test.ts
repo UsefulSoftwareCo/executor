@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Predicate } from "effect";
+import { Effect } from "effect";
 
 import {
   ConnectionId,
@@ -11,7 +11,6 @@ import {
   SetSecretInput,
   TokenMaterial,
   createExecutor,
-  type ToolInvocationError,
 } from "@executor-js/sdk";
 import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
 
@@ -39,12 +38,6 @@ const mcpOAuth2Config = {
 };
 
 const scope = (id: ScopeId, name: string): Scope => Scope.make({ id, name, createdAt: new Date() });
-
-const failureError = <E>(exit: Exit.Exit<unknown, E>): E | undefined =>
-  Exit.isFailure(exit) ? exit.cause.reasons.find(Cause.isFailReason)?.error : undefined;
-
-const isToolInvocationError = (error: unknown): error is ToolInvocationError =>
-  Predicate.isTagged(error, "ToolInvocationError");
 
 const createAuthRecordingMcpServer = () =>
   makeEchoMcpServer({
@@ -156,19 +149,25 @@ describe("per-user MCP auth isolation", () => {
         const whoamiForB = userBTools.find((tool) => tool.name === "whoami");
         expect(whoamiForB).toBeDefined();
 
-        const userBResult = yield* Effect.exit(
-          execUserB.tools.invoke(
-            whoamiForB!.id,
-            { marker: "from-user-b" },
-            { onElicitation: "accept-all" },
-          ),
+        const userBResult = yield* execUserB.tools.invoke(
+          whoamiForB!.id,
+          { marker: "from-user-b" },
+          { onElicitation: "accept-all" },
         );
 
-        expect(Exit.isFailure(userBResult)).toBe(true);
-        const outer = failureError(userBResult);
-        expect(isToolInvocationError(outer)).toBe(true);
-        const inner = isToolInvocationError(outer) ? outer.cause : undefined;
-        expect(Predicate.isTagged(inner, "McpConnectionError")).toBe(true);
+        expect(userBResult).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_connection_missing",
+            message: expect.stringContaining("Missing OAuth connection binding"),
+            details: {
+              category: "authentication",
+              recovery: {
+                startOAuthTool: "executor.coreTools.oauth.start",
+              },
+            },
+          },
+        });
 
         for (const request of (yield* server.requests).slice(recordedBeforeUserB)) {
           expect(request.authorization).not.toBe("Bearer token-user-a");
@@ -233,19 +232,25 @@ describe("per-user MCP auth isolation", () => {
       const recordedBeforeUserB = (yield* server.requests).length;
       const userBTools = yield* execUserB.tools.list();
       const whoamiForB = userBTools.find((tool) => tool.name === "whoami")!;
-      const userBResult = yield* Effect.exit(
-        execUserB.tools.invoke(
-          whoamiForB.id,
-          { marker: "user-b-header" },
-          { onElicitation: "accept-all" },
-        ),
+      const userBResult = yield* execUserB.tools.invoke(
+        whoamiForB.id,
+        { marker: "user-b-header" },
+        { onElicitation: "accept-all" },
       );
 
-      expect(Exit.isFailure(userBResult)).toBe(true);
-      const outer = failureError(userBResult);
-      expect(isToolInvocationError(outer)).toBe(true);
-      const inner = isToolInvocationError(outer) ? outer.cause : undefined;
-      expect(Predicate.isTagged(inner, "McpConnectionError")).toBe(true);
+      expect(userBResult).toMatchObject({
+        ok: false,
+        error: {
+          code: "credential_binding_missing",
+          message: expect.stringContaining("Missing binding"),
+          details: {
+            category: "authentication",
+            recovery: {
+              createSecretTool: "executor.coreTools.secrets.create",
+            },
+          },
+        },
+      });
 
       for (const request of (yield* server.requests).slice(recordedBeforeUserB)) {
         expect(request.authorization).not.toBe("Bearer token-user-a-header");

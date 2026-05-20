@@ -224,6 +224,34 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
+  it.effect("upstream 401 is classified as credential_rejected", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 401,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"message":"invalid token"}}',
+      }));
+      const executor = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.tools.invoke("f.things.listThings", {}, autoApprove);
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "credential_rejected",
+          status: 401,
+          message: expect.stringContaining("Upstream rejected credentials"),
+          details: {
+            category: "authentication",
+            upstream: {
+              status: 401,
+            },
+          },
+        },
+      });
+    }),
+  );
+
   it.effect("upstream returns malformed JSON despite Content-Type: application/json", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({

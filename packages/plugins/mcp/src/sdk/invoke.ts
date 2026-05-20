@@ -21,7 +21,7 @@ import {
   type ElicitationRequest,
 } from "@executor-js/sdk/core";
 
-import { McpConnectionError, McpInvocationError } from "./errors";
+import { McpAuthRequiredError, McpConnectionError, McpInvocationError } from "./errors";
 import type { McpConnection } from "./connection";
 import type { McpStoredSourceData } from "./types";
 
@@ -190,15 +190,25 @@ export interface InvokeMcpToolInput {
    *  connection cache key so per-user OAuth/secret resolution doesn't
    *  collapse multiple users onto one shared connection. */
   readonly invokerScope: string;
-  readonly resolveConnector: () => Effect.Effect<McpConnection, McpConnectionError>;
-  readonly connectionCache: ScopedCache.ScopedCache<string, McpConnection, McpConnectionError>;
-  readonly pendingConnectors: Map<string, Effect.Effect<McpConnection, McpConnectionError>>;
+  readonly resolveConnector: () => Effect.Effect<
+    McpConnection,
+    McpAuthRequiredError | McpConnectionError
+  >;
+  readonly connectionCache: ScopedCache.ScopedCache<
+    string,
+    McpConnection,
+    McpAuthRequiredError | McpConnectionError
+  >;
+  readonly pendingConnectors: Map<
+    string,
+    Effect.Effect<McpConnection, McpAuthRequiredError | McpConnectionError>
+  >;
   readonly elicit: Elicit;
 }
 
 export const invokeMcpTool = (
   input: InvokeMcpToolInput,
-): Effect.Effect<unknown, McpConnectionError | McpInvocationError> => {
+): Effect.Effect<unknown, McpAuthRequiredError | McpConnectionError | McpInvocationError> => {
   const transport: string =
     input.sourceData.transport === "stdio" ? "stdio" : (input.sourceData.remoteTransport ?? "auto");
   return Effect.gen(function* () {

@@ -10,6 +10,7 @@ import {
   SourceDetectionResult,
   StorageError,
   ToolResult,
+  authToolFailure,
   defaultSourceInstallScopeId,
   definePlugin,
   tool,
@@ -27,7 +28,12 @@ import {
   type OpenApiSourceConfig,
 } from "@executor-js/config";
 
-import { OpenApiExtractionError, OpenApiOAuthError, OpenApiParseError } from "./errors";
+import {
+  OpenApiAuthRequiredError,
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  OpenApiParseError,
+} from "./errors";
 import { parse, resolveSpecText } from "./parse";
 import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
@@ -438,6 +444,30 @@ const openApiToolFailure = (code: string, message: string, details?: unknown) =>
     code,
     message,
     ...(details === undefined ? {} : { details }),
+  });
+
+const openApiAuthToolFailure = (failure: OpenApiAuthRequiredError) =>
+  authToolFailure({
+    code: failure.code,
+    message: failure.message,
+    source: { id: failure.sourceId, scope: failure.sourceScope },
+    credential: {
+      kind: failure.credentialKind,
+      ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),
+      ...(failure.slotKey ? { slotKey: failure.slotKey } : {}),
+      ...(failure.secretId ? { secretId: failure.secretId } : {}),
+      ...(failure.connectionId ? { connectionId: failure.connectionId } : {}),
+    },
+    ...(failure.status !== undefined ? { status: failure.status } : {}),
+    ...(failure.details !== undefined
+      ? {
+          upstream: {
+            ...(failure.status !== undefined ? { status: failure.status } : {}),
+            details: failure.details,
+          },
+        }
+      : {}),
+    recovery: { configureSourceTool: "executor.openapi.configureSource" },
   });
 
 const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => ({
@@ -941,7 +971,7 @@ const resolveConfiguredValueMap = (
     readonly values: Record<string, ConfiguredHeaderValue>;
     readonly missingLabel: string;
   },
-): Effect.Effect<Record<string, string>, OpenApiOAuthError | StorageFailure> =>
+): Effect.Effect<Record<string, string>, OpenApiAuthRequiredError | StorageFailure> =>
   Effect.gen(function* () {
     const resolved: Record<string, string> = {};
     for (const [name, value] of Object.entries(params.values)) {
@@ -956,20 +986,35 @@ const resolveConfiguredValueMap = (
         value.slot,
       );
       if (binding?.value.kind === "secret") {
+        const secretBinding = binding.value;
         const secret = yield* ctx.secrets
-          .getAtScope(binding.value.secretId, binding.value.secretScopeId ?? binding.scopeId)
+          .getAtScope(secretBinding.secretId, secretBinding.secretScopeId ?? binding.scopeId)
           .pipe(
             Effect.catchTag("SecretOwnedByConnectionError", () =>
               Effect.fail(
-                new OpenApiOAuthError({
-                  message: `Secret not found for header "${name}"`,
+                new OpenApiAuthRequiredError({
+                  code: "credential_secret_missing",
+                  sourceId: params.sourceId,
+                  sourceScope: params.sourceScope,
+                  credentialKind: "secret",
+                  credentialLabel: name,
+                  slotKey: value.slot,
+                  secretId: String(secretBinding.secretId),
+                  message: `Secret not found for ${params.missingLabel} "${name}"`,
                 }),
               ),
             ),
           );
         if (secret === null) {
-          return yield* new OpenApiOAuthError({
-            message: `Missing secret "${binding.value.secretId}" for ${params.missingLabel} "${name}"`,
+          return yield* new OpenApiAuthRequiredError({
+            code: "credential_secret_missing",
+            sourceId: params.sourceId,
+            sourceScope: params.sourceScope,
+            credentialKind: "secret",
+            credentialLabel: name,
+            slotKey: value.slot,
+            secretId: String(secretBinding.secretId),
+            message: `Missing secret "${secretBinding.secretId}" for ${params.missingLabel} "${name}"`,
           });
         }
         resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
@@ -979,7 +1024,13 @@ const resolveConfiguredValueMap = (
         resolved[name] = value.prefix ? `${value.prefix}${binding.value.text}` : binding.value.text;
         continue;
       }
-      return yield* new OpenApiOAuthError({
+      return yield* new OpenApiAuthRequiredError({
+        code: "credential_binding_missing",
+        sourceId: params.sourceId,
+        sourceScope: params.sourceScope,
+        credentialKind: "secret",
+        credentialLabel: name,
+        slotKey: value.slot,
         message: `Missing binding for ${params.missingLabel} "${name}"`,
       });
     }
@@ -993,7 +1044,7 @@ const resolveConfiguredHeaders = (
     readonly sourceScope: string;
     readonly headers: Record<string, ConfiguredHeaderValue>;
   },
-): Effect.Effect<Record<string, string>, OpenApiOAuthError | StorageFailure> =>
+): Effect.Effect<Record<string, string>, OpenApiAuthRequiredError | StorageFailure> =>
   resolveConfiguredValueMap(ctx, {
     sourceId: params.sourceId,
     sourceScope: params.sourceScope,
@@ -1089,7 +1140,11 @@ const resolveStoredSpecFetchCredentials = (
         missingLabel: "spec fetch query parameter",
       }),
     };
-  });
+  }).pipe(
+    Effect.catchTag("OpenApiAuthRequiredError", ({ message }) =>
+      Effect.fail(new OpenApiOAuthError({ message })),
+    ),
+  );
 
 // ---------------------------------------------------------------------------
 // OAuth2 token exchange / refresh is owned by `ctx.oauth`, which registers
@@ -1548,25 +1603,109 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         // Authorization header (wins over a manually-set one). All the
         // refresh complexity lives in the SDK — the plugin just asks.
         if (config.oauth2) {
+          const oauth2 = config.oauth2;
           const connection = yield* resolveOAuthConnectionId(ctx, {
             sourceId: op.sourceId,
             sourceScope: effective.oauth2Source.scope,
-            oauth2: config.oauth2,
+            oauth2,
           });
           if (!connection) {
-            return yield* new OpenApiOAuthError({
+            return yield* new OpenApiAuthRequiredError({
+              code: "oauth_connection_missing",
+              sourceId: op.sourceId,
+              sourceScope: effective.oauth2Source.scope,
+              credentialKind: "connection",
+              credentialLabel:
+                oauth2.flow === "clientCredentials" ? "OAuth client connection" : "OAuth sign-in",
+              slotKey: oauth2.connectionSlot,
               message: `OAuth configuration for "${op.sourceId}" is missing a connection binding`,
             });
           }
           const accessToken = yield* ctx.connections
             .accessTokenAtScope(connection.connectionId, connection.scopeId)
             .pipe(
-              Effect.mapError(
-                () =>
-                  new OpenApiOAuthError({
-                    message: "OAuth connection resolution failed",
-                  }),
-              ),
+              Effect.catchTags({
+                ConnectionReauthRequiredError: ({ message, connectionId }) =>
+                  Effect.fail(
+                    new OpenApiAuthRequiredError({
+                      code: "oauth_reauth_required",
+                      sourceId: op.sourceId,
+                      sourceScope: effective.oauth2Source.scope,
+                      credentialKind: "oauth",
+                      credentialLabel:
+                        oauth2.flow === "clientCredentials"
+                          ? "OAuth client connection"
+                          : "OAuth sign-in",
+                      slotKey: oauth2.connectionSlot,
+                      connectionId: String(connectionId),
+                      message: `OAuth connection "${connectionId}" needs re-authentication: ${message}`,
+                    }),
+                  ),
+                ConnectionNotFoundError: ({ connectionId }) =>
+                  Effect.fail(
+                    new OpenApiAuthRequiredError({
+                      code: "oauth_connection_missing",
+                      sourceId: op.sourceId,
+                      sourceScope: effective.oauth2Source.scope,
+                      credentialKind: "connection",
+                      credentialLabel:
+                        oauth2.flow === "clientCredentials"
+                          ? "OAuth client connection"
+                          : "OAuth sign-in",
+                      slotKey: oauth2.connectionSlot,
+                      connectionId: String(connectionId),
+                      message: `OAuth connection "${connectionId}" was not found for "${op.sourceId}"`,
+                    }),
+                  ),
+                ConnectionProviderNotRegisteredError: ({ provider }) =>
+                  Effect.fail(
+                    new OpenApiAuthRequiredError({
+                      code: "oauth_connection_failed",
+                      sourceId: op.sourceId,
+                      sourceScope: effective.oauth2Source.scope,
+                      credentialKind: "oauth",
+                      credentialLabel:
+                        oauth2.flow === "clientCredentials"
+                          ? "OAuth client connection"
+                          : "OAuth sign-in",
+                      slotKey: oauth2.connectionSlot,
+                      connectionId: connection.connectionId,
+                      message: `OAuth provider "${provider}" is not registered`,
+                    }),
+                  ),
+                ConnectionRefreshNotSupportedError: ({ provider, connectionId }) =>
+                  Effect.fail(
+                    new OpenApiAuthRequiredError({
+                      code: "oauth_connection_failed",
+                      sourceId: op.sourceId,
+                      sourceScope: effective.oauth2Source.scope,
+                      credentialKind: "oauth",
+                      credentialLabel:
+                        oauth2.flow === "clientCredentials"
+                          ? "OAuth client connection"
+                          : "OAuth sign-in",
+                      slotKey: oauth2.connectionSlot,
+                      connectionId: String(connectionId),
+                      message: `OAuth provider "${provider}" cannot refresh connection "${connectionId}"`,
+                    }),
+                  ),
+                ConnectionRefreshError: ({ message, connectionId }) =>
+                  Effect.fail(
+                    new OpenApiAuthRequiredError({
+                      code: "oauth_connection_failed",
+                      sourceId: op.sourceId,
+                      sourceScope: effective.oauth2Source.scope,
+                      credentialKind: "oauth",
+                      credentialLabel:
+                        oauth2.flow === "clientCredentials"
+                          ? "OAuth client connection"
+                          : "OAuth sign-in",
+                      slotKey: oauth2.connectionSlot,
+                      connectionId: String(connectionId),
+                      message: `OAuth connection "${connectionId}" refresh failed: ${message}`,
+                    }),
+                  ),
+              }),
             );
           resolvedHeaders.authorization = `Bearer ${accessToken}`;
         }
@@ -1582,6 +1721,17 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
         const ok = result.status >= 200 && result.status < 300;
         if (!ok) {
+          if (result.status === 401 || result.status === 403) {
+            return authToolFailure({
+              code: "credential_rejected",
+              status: result.status,
+              message: `Upstream rejected credentials for "${op.sourceId}" with HTTP ${result.status}. Re-authenticate or update the source credentials before retrying this tool.`,
+              source: { id: op.sourceId, scope: toolScope },
+              credential: { kind: "upstream", label: "Upstream authorization" },
+              upstream: { status: result.status, details: result.error },
+              recovery: { configureSourceTool: "executor.openapi.configureSource" },
+            });
+          }
           return ToolResult.fail({
             code: "upstream_http_error",
             status: result.status,
@@ -1594,7 +1744,11 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           headers: result.headers,
           data: result.data,
         });
-      }),
+      }).pipe(
+        Effect.catchTag("OpenApiAuthRequiredError", (error) =>
+          Effect.succeed(openApiAuthToolFailure(error)),
+        ),
+      ),
 
     resolveAnnotations: ({ ctx, sourceId, toolRows }) =>
       Effect.gen(function* () {

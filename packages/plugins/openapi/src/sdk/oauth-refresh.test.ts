@@ -351,10 +351,25 @@ describe("OpenAPI oauth refresh", () => {
       });
       yield* bindOAuthConnection(executor, scopeId, "conn-refresh-dead", auth);
 
-      // Tool invocation currently wraps connection errors in a
-      // generic Error (see openapi invokeTool), so we assert against
-      // the `accessToken` call directly too — that's the surface
-      // the UI bridges use to trigger re-auth.
+      const invocation = yield* executor.tools.invoke(
+        "petstore.items.echoHeaders",
+        {},
+        autoApprove,
+      );
+      expect(invocation).toMatchObject({
+        ok: false,
+        error: {
+          code: "oauth_reauth_required",
+          message: expect.stringContaining("needs re-authentication"),
+          details: {
+            category: "authentication",
+            recovery: {
+              startOAuthTool: "executor.coreTools.oauth.start",
+            },
+          },
+        },
+      });
+
       const flipped = yield* executor.connections.accessToken("conn-refresh-dead").pipe(
         Effect.flip,
         Effect.flatMap((error) =>

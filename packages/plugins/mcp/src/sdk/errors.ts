@@ -3,7 +3,8 @@
 // these and HttpApi encodes them as 4xx responses with a typed body. No
 // per-handler sanitisation step.
 
-import { Schema } from "effect";
+import { Data, Schema } from "effect";
+import type { AuthToolFailureCode } from "@executor-js/sdk/core";
 
 export class McpConnectionError extends Schema.TaggedErrorClass<McpConnectionError>()(
   "McpConnectionError",
@@ -39,3 +40,18 @@ export class McpOAuthError extends Schema.TaggedErrorClass<McpOAuthError>()(
   },
   { httpApiStatus: 400 },
 ) {}
+
+export class McpAuthRequiredError extends Data.TaggedError("McpAuthRequiredError")<{
+  readonly code: AuthToolFailureCode;
+  readonly message: string;
+  readonly sourceId: string;
+  readonly sourceScope: string;
+  readonly credentialKind: "secret" | "connection" | "oauth" | "upstream";
+  readonly credentialLabel?: string;
+  readonly slotKey?: string;
+  readonly secretId?: string;
+  readonly connectionId?: string;
+  readonly status?: number;
+  readonly details?: unknown;
+  readonly cause?: unknown;
+}> {}
