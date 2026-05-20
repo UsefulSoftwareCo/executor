@@ -115,6 +115,78 @@ layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
     }),
   );
 
+  it.effect("dynamic client registration is reused across OAuth start retries", () =>
+    Effect.gen(function* () {
+      const workspace = yield* TestWorkspace.current<typeof plugins>();
+      const oauth = yield* OAuthTestServer;
+      const scope = workspace.scopes[0]!;
+      yield* oauth.clearRequests;
+
+      const start = () =>
+        workspace.executor.oauth.start({
+          endpoint: oauth.mcpResourceUrl,
+          connectionId: "test-oauth-dcr-retry",
+          tokenScope: String(scope.id),
+          redirectUrl: "http://127.0.0.1/callback",
+          pluginId: "test",
+          identityLabel: "MCP OAuth Test",
+          strategy: { kind: "dynamic-dcr", scopes: ["read"] },
+        });
+
+      const startedA = yield* start();
+      const startedB = yield* start();
+
+      expect(startedA.authorizationUrl).not.toBeNull();
+      expect(startedB.authorizationUrl).not.toBeNull();
+      expect(
+        (yield* oauth.requests).filter((request) => request.path === "/register"),
+      ).toHaveLength(1);
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("client_id")).toBe(
+        new URL(startedA.authorizationUrl ?? "").searchParams.get("client_id"),
+      );
+    }),
+  );
+
+  it.effect("dynamic client registration is reused after a completed connection reconnect", () =>
+    Effect.gen(function* () {
+      const workspace = yield* TestWorkspace.current<typeof plugins>();
+      const oauth = yield* OAuthTestServer;
+      const scope = workspace.scopes[0]!;
+      yield* oauth.clearRequests;
+
+      const start = () =>
+        workspace.executor.oauth.start({
+          endpoint: oauth.mcpResourceUrl,
+          connectionId: "test-oauth-dcr-reconnect",
+          tokenScope: String(scope.id),
+          redirectUrl: "http://127.0.0.1/callback",
+          pluginId: "test",
+          identityLabel: "MCP OAuth Test",
+          strategy: { kind: "dynamic-dcr", scopes: ["read"] },
+        });
+
+      const startedA = yield* start();
+      const callback = yield* oauth.completeAuthorizationCodeFlow({
+        authorizationUrl: startedA.authorizationUrl ?? "",
+      });
+      yield* workspace.executor.oauth.complete({
+        state: callback.state,
+        code: callback.code,
+        tokenScope: String(scope.id),
+      });
+
+      const startedB = yield* start();
+
+      expect(startedB.authorizationUrl).not.toBeNull();
+      expect(
+        (yield* oauth.requests).filter((request) => request.path === "/register"),
+      ).toHaveLength(1);
+      expect(new URL(startedB.authorizationUrl ?? "").searchParams.get("client_id")).toBe(
+        new URL(startedA.authorizationUrl ?? "").searchParams.get("client_id"),
+      );
+    }),
+  );
+
   it.effect(
     "OAuthTestServer can mint a bearer token through the full authorization-code flow",
     () =>

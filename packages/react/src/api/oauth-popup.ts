@@ -72,15 +72,9 @@ export const reserveOAuthPopup = (input: {
 }): ReservedOAuthPopup | null => {
   const popup = window.open("about:blank", input.popupName, oauthPopupFeatures(input));
   if (!popup) return null;
-  // The app keeps a WindowProxy for navigation/closed polling, but the
-  // provider should not receive opener access after the reserved window
-  // is navigated cross-origin. The callback uses BroadcastChannel.
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: popup opener access can throw in browser-specific states
-  try {
-    popup.opener = null;
-  } catch {
-    // Best-effort hardening; the popup handle is still usable for the flow.
-  }
+  // Keep opener available for the same-origin callback page. Browser
+  // BroadcastChannel delivery can be partitioned in popup flows, so the
+  // callback's postMessage path is the primary completion signal.
   return { popup };
 };
 

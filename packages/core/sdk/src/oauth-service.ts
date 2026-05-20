@@ -76,6 +76,10 @@ import {
   beginDynamicAuthorization,
   discoverAuthorizationServerMetadata,
   discoverProtectedResourceMetadata,
+  type BeginDynamicAuthorizationInput,
+  type OAuthAuthorizationServerMetadata,
+  type OAuthClientInformation,
+  type OAuthProtectedResourceMetadata,
 } from "./oauth-discovery";
 import {
   buildAuthorizationUrl,
@@ -111,6 +115,14 @@ const DynamicDcrSessionPayload = Schema.Struct({
   resource: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultType(Effect.succeed(null))),
 });
 
+const PendingDynamicDcrSessionRows = Schema.Array(
+  Schema.Struct({
+    payload: Schema.Unknown,
+    expires_at: Schema.Union([Schema.Number, Schema.BigInt, Schema.String]),
+    created_at: Schema.Union([Schema.Date, Schema.String, Schema.Number]),
+  }),
+);
+
 const AuthorizationCodeSessionPayload = Schema.Struct({
   kind: Schema.Literal("authorization-code"),
   identityLabel: Schema.NullOr(Schema.String),
@@ -141,14 +153,17 @@ const OAuthSessionPayload = Schema.Union([
   AuthorizationCodeSessionPayload,
 ]);
 type OAuthSessionPayload = typeof OAuthSessionPayload.Type;
+type PreviousDynamicAuthorizationState = BeginDynamicAuthorizationInput["previousState"];
 
 const decodeSessionPayload = Schema.decodeUnknownSync(OAuthSessionPayload);
 const encodeSessionPayload = Schema.encodeSync(OAuthSessionPayload);
+const isPendingDynamicDcrSessionRows = Schema.is(PendingDynamicDcrSessionRows);
 
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeUnknownJsonOption = Schema.decodeUnknownOption(UnknownFromJsonString);
 
 const decodeProviderStateSync = Schema.decodeUnknownSync(OAuthProviderStateSchema);
+const decodeProviderStateOption = Schema.decodeUnknownOption(OAuthProviderStateSchema);
 const encodeProviderStateSync = Schema.encodeSync(OAuthProviderStateSchema);
 
 const coerceJson = (value: unknown): unknown => {
@@ -187,6 +202,10 @@ export interface OAuthServiceDeps {
   readonly connectionsCreate: (
     input: CreateConnectionInput,
   ) => Effect.Effect<ConnectionRef, ConnectionProviderNotRegisteredError | StorageFailure>;
+  /** Reads an existing Connection so dynamic-DCR retries can reuse the
+   *  registered OAuth client instead of registering a new client every
+   *  time the user restarts a browser flow. */
+  readonly connectionsGet?: (id: string) => Effect.Effect<ConnectionRef | null, StorageFailure>;
   /** Random session id generator. Tests override to make outputs
    *  deterministic. */
   readonly newSessionId?: () => string;
@@ -239,6 +258,7 @@ export const makeOAuth2Service = (
   const newSessionId = deps.newSessionId ?? defaultSessionId;
   const httpClientLayer = deps.httpClientLayer;
   const endpointUrlPolicy = deps.endpointUrlPolicy;
+  const connectionsGet = deps.connectionsGet ?? (() => Effect.succeed(null));
   const secretsGetResolved =
     deps.secretsGetResolved ??
     ((id: string) =>
@@ -372,17 +392,119 @@ export const makeOAuth2Service = (
   // -------------------------------------------------------------------
   // start — branches on strategy.kind
   // -------------------------------------------------------------------
+
+  const dynamicClientAuthMethod = (
+    state: Extract<OAuthProviderState, { kind: "dynamic-dcr" }>,
+  ): "none" | "client_secret_basic" | "client_secret_post" =>
+    state.clientSecretSecretId
+      ? state.clientAuth === "basic"
+        ? "client_secret_basic"
+        : "client_secret_post"
+      : "none";
+
+  const timestampMillis = (value: unknown): number => {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "string" || typeof value === "number") return new Date(value).getTime();
+    return 0;
+  };
+
+  const previousDynamicStateFromConnection = (
+    connectionId: string,
+  ): Effect.Effect<PreviousDynamicAuthorizationState | undefined, StorageFailure> =>
+    Effect.gen(function* () {
+      const existing = yield* connectionsGet(connectionId);
+      const state = existing?.providerState
+        ? Option.getOrNull(decodeProviderStateOption(coerceJson(existing.providerState)))
+        : null;
+      if (!state || state.kind !== "dynamic-dcr") return undefined;
+
+      const clientSecret =
+        state.clientSecretSecretId !== null
+          ? yield* getSecretFromRecordedScope({
+              secretId: state.clientSecretSecretId,
+              scopeId: state.clientSecretSecretScopeId ?? null,
+            })
+          : null;
+      if (state.clientSecretSecretId !== null && !clientSecret) return undefined;
+
+      return {
+        authorizationServerUrl: state.authorizationServerUrl ?? null,
+        authorizationServerMetadataUrl: state.authorizationServerMetadataUrl,
+        clientInformation: {
+          client_id: state.clientId,
+          token_endpoint_auth_method: dynamicClientAuthMethod(state),
+          ...(clientSecret ? { client_secret: clientSecret } : {}),
+        },
+      };
+    });
+
+  const previousDynamicStateFromPendingSession = (input: {
+    readonly connectionId: string;
+    readonly tokenScope: string;
+  }): Effect.Effect<PreviousDynamicAuthorizationState | undefined, StorageFailure> =>
+    Effect.gen(function* () {
+      const rowsRaw = yield* deps.fuma.use("oauth2_session.findReusableDynamicDcr", (db) =>
+        db.findMany("oauth2_session", {
+          where: (b) =>
+            b.and(
+              b("connection_id", "=", input.connectionId),
+              b("token_scope", "=", input.tokenScope),
+              b("strategy", "=", "dynamic-dcr"),
+            ),
+        }),
+      );
+      const rows = isPendingDynamicDcrSessionRows(rowsRaw) ? rowsRaw : [];
+
+      const reusable = rows
+        .filter((row) => Number(row.expires_at) > now())
+        .sort((a, b) => {
+          const aTime = timestampMillis(a.created_at);
+          const bTime = timestampMillis(b.created_at);
+          return bTime - aTime;
+        });
+
+      for (const row of reusable) {
+        const payload = decodeSessionPayload(row.payload);
+        if (payload.kind !== "dynamic-dcr") continue;
+        return {
+          authorizationServerUrl: payload.authorizationServerUrl,
+          authorizationServerMetadataUrl: payload.authorizationServerMetadataUrl,
+          authorizationServerMetadata:
+            payload.authorizationServerMetadata as OAuthAuthorizationServerMetadata,
+          resourceMetadata: payload.resourceMetadata as OAuthProtectedResourceMetadata | null,
+          resourceMetadataUrl: payload.resourceMetadataUrl,
+          clientInformation: payload.clientInformation as OAuthClientInformation,
+        };
+      }
+      return undefined;
+    });
+
+  const previousDynamicState = (input: {
+    readonly connectionId: string;
+    readonly tokenScope: string;
+  }) =>
+    previousDynamicStateFromPendingSession(input).pipe(
+      Effect.flatMap((pending) =>
+        pending ? Effect.succeed(pending) : previousDynamicStateFromConnection(input.connectionId),
+      ),
+    );
+
   const startDynamicDcr = (
     input: OAuthStartInput,
     strategy: OAuthDynamicDcrStrategy,
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
+      const previousState = yield* previousDynamicState({
+        connectionId: input.connectionId,
+        tokenScope: input.tokenScope,
+      });
       const started = yield* beginDynamicAuthorization(
         {
           endpoint: input.endpoint,
           redirectUrl: input.redirectUrl,
           state: "",
           scopes: strategy.scopes,
+          previousState,
         },
         {
           httpClientLayer,

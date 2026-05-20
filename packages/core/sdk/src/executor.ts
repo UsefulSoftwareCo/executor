@@ -3021,6 +3021,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         ),
       secretsSet: (input) => secretsSet(input),
       connectionsCreate: (input) => connectionsCreate(input),
+      connectionsGet: (id) => connectionsGet(id),
       httpClientLayer: config.httpClientLayer,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
     });
