@@ -9,7 +9,7 @@ import {
   HttpConfiguredValueInput,
   HttpCredentialInput,
   HttpOAuthConfigureInput,
-} from "@executor-js/plugin-http-source/sdk";
+} from "@executor-js/sdk/http-source";
 
 export { SecretBackedMap, SecretBackedValue };
 

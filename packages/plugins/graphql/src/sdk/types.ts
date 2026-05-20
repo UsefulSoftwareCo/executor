@@ -4,7 +4,7 @@ import {
   credentialSlotKey,
   SecretBackedValue,
 } from "@executor-js/sdk/shared";
-import { HttpConfiguredValueInput, HttpCredentialInput } from "@executor-js/plugin-http-source/sdk";
+import { HttpConfiguredValueInput, HttpCredentialInput } from "@executor-js/sdk/http-source";
 
 // ---------------------------------------------------------------------------
 // GraphQL operation kind

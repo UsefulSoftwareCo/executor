@@ -64,7 +64,6 @@
     "@cfworker/json-schema": "^4.1.1",
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
-    "@executor-js/plugin-http-source": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "effect": "catalog:"

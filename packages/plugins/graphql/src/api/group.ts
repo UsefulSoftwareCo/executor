@@ -10,7 +10,7 @@ import {
   GraphqlSourceAuth,
   GraphqlSourceAuthInput,
 } from "../sdk/types";
-import { OAuth2SourceConfig } from "@executor-js/plugin-http-source/sdk";
+import { OAuth2SourceConfig } from "@executor-js/sdk/http-source";
 
 // StoredGraphqlSource shape as an HTTP response schema. Kept local to the
 // api layer because the sdk-side `StoredGraphqlSource` is a plain interface.

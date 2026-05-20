@@ -684,7 +684,6 @@
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/plugin-http-source": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
         "graphql": "^16.12.0",
@@ -717,32 +716,6 @@
         "react",
       ],
     },
-    "packages/plugins/http-source": {
-      "name": "@executor-js/plugin-http-source",
-      "version": "1.4.29",
-      "dependencies": {
-        "@executor-js/sdk": "workspace:*",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@executor-js/react": "workspace:*",
-        "@types/node": "catalog:",
-        "@types/react": "catalog:",
-        "bun-types": "catalog:",
-        "react": "catalog:",
-        "tsup": "catalog:",
-        "vitest": "catalog:",
-      },
-      "peerDependencies": {
-        "@executor-js/react": "workspace:*",
-        "react": "catalog:",
-      },
-      "optionalPeers": [
-        "@executor-js/react",
-        "react",
-      ],
-    },
     "packages/plugins/keychain": {
       "name": "@executor-js/plugin-keychain",
       "version": "1.4.29",
@@ -766,7 +739,6 @@
         "@cfworker/json-schema": "^4.1.1",
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/plugin-http-source": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "effect": "catalog:",
@@ -838,7 +810,6 @@
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/plugin-http-source": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
         "openapi-types": "^12.1.3",
@@ -1402,8 +1373,6 @@
     "@executor-js/plugin-google-discovery": ["@executor-js/plugin-google-discovery@workspace:packages/plugins/google-discovery"],
 
     "@executor-js/plugin-graphql": ["@executor-js/plugin-graphql@workspace:packages/plugins/graphql"],
-
-    "@executor-js/plugin-http-source": ["@executor-js/plugin-http-source@workspace:packages/plugins/http-source"],
 
     "@executor-js/plugin-keychain": ["@executor-js/plugin-keychain@workspace:packages/plugins/keychain"],
 

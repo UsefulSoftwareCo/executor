@@ -25,7 +25,7 @@ import {
   serializeConfigureHttpCredentials,
   serializeHttpCredentials,
   serializeTemplateHttpCredentials,
-} from "@executor-js/plugin-http-source/react";
+} from "@executor-js/react/plugins/http-credentials";
 import {
   sourceDisplayNameFromUrl,
   slugifyNamespace,

@@ -5,7 +5,7 @@ import {
   OAuth2SourceConfig as SharedOAuth2SourceConfig,
   type OAuth2FlowType,
   type OAuth2SourceConfigType,
-} from "@executor-js/plugin-http-source/sdk";
+} from "@executor-js/sdk/http-source";
 
 export const OAuth2Flow = HttpOAuth2Flow;
 export type OAuth2Flow = OAuth2FlowType;

@@ -3,7 +3,7 @@ import { Context, Effect } from "effect";
 
 import { addGroup, capture } from "@executor-js/api";
 import { ScopeId } from "@executor-js/sdk/core";
-import type { OAuth2SourceConfigType } from "@executor-js/plugin-http-source/sdk";
+import type { OAuth2SourceConfigType } from "@executor-js/sdk/http-source";
 import type { McpPluginExtension, McpProbeEndpointInput, McpSourceConfig } from "../sdk/plugin";
 import type { McpConfiguredValueInput } from "../sdk/types";
 import { McpStoredSourceSchema } from "../sdk/stored-source";

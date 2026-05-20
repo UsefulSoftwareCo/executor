@@ -19,6 +19,7 @@
     ".": "./src/index.ts",
     "./core": "./src/index.ts",
     "./shared": "./src/shared.ts",
+    "./http-source": "./src/http-source.ts",
     "./promise": "./src/promise.ts",
     "./client": "./src/client.ts",
     "./testing": "./src/testing.ts"
@@ -42,6 +43,12 @@
         "import": {
           "types": "./dist/shared.d.ts",
           "default": "./dist/shared.js"
+        }
+      },
+      "./http-source": {
+        "import": {
+          "types": "./dist/http-source.d.ts",
+          "default": "./dist/http-source.js"
         }
       },
       "./client": {

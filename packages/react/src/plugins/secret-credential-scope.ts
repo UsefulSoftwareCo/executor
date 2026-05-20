@@ -7,10 +7,8 @@ type ScopeStackEntryLike = {
   readonly id: ScopeId | string;
 };
 
-const scopeRank = (
-  scopeStack: readonly ScopeStackEntryLike[],
-  scopeId: ScopeId | string,
-): number => scopeStack.findIndex((entry) => String(entry.id) === String(scopeId));
+const scopeRank = (scopeStack: readonly ScopeStackEntryLike[], scopeId: ScopeId | string): number =>
+  scopeStack.findIndex((entry) => String(entry.id) === String(scopeId));
 
 export const secretsForCredentialTarget = (
   secrets: readonly SecretPickerSecret[],

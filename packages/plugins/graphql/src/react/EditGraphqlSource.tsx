@@ -15,7 +15,7 @@ import {
   httpCredentialsFromConfiguredCredentialBindings,
   serializeHttpCredentials,
   type HttpCredentialsState,
-} from "@executor-js/plugin-http-source/react";
+} from "@executor-js/react/plugins/http-credentials";
 import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
 import { useCredentialTargetScope } from "@executor-js/react/plugins/credential-target-scope";
 import {

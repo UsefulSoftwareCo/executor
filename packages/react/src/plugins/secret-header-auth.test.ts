@@ -28,10 +28,7 @@ describe("secretsForCredentialTarget", () => {
           { id: "personal-token", scopeId: "user", name: "Personal token" },
         ],
         ScopeId.make("user"),
-        [
-          { id: ScopeId.make("user") },
-          { id: ScopeId.make("org") },
-        ],
+        [{ id: ScopeId.make("user") }, { id: ScopeId.make("org") }],
       ).map((secret) => secret.id),
     ).toEqual(["shared-token", "personal-token"]);
   });
@@ -44,10 +41,7 @@ describe("secretsForCredentialTarget", () => {
           { id: "personal-token", scopeId: "user", name: "Personal token" },
         ],
         ScopeId.make("org"),
-        [
-          { id: ScopeId.make("user") },
-          { id: ScopeId.make("org") },
-        ],
+        [{ id: ScopeId.make("user") }, { id: ScopeId.make("org") }],
       ).map((secret) => secret.id),
     ).toEqual(["shared-token"]);
   });

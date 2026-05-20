@@ -22,7 +22,7 @@ import {
   OAuth2SourceConfig,
   httpCredentialInputToBindingValue,
   type HttpConfiguredValueInput,
-} from "@executor-js/plugin-http-source/sdk";
+} from "@executor-js/sdk/http-source";
 
 import {
   headersToConfigValues,

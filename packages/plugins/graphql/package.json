@@ -63,7 +63,6 @@
   "dependencies": {
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
-    "@executor-js/plugin-http-source": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "effect": "catalog:",
     "graphql": "^16.12.0",

@@ -5,7 +5,7 @@ import { InternalError, ScopeId, SecretBackedMap } from "@executor-js/sdk/shared
 import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
 import { McpStoredSourceSchema } from "../sdk/stored-source";
 import { McpConfiguredValueInput, McpConnectionAuthInput, McpCredentialInput } from "../sdk/types";
-import { OAuth2SourceConfig } from "@executor-js/plugin-http-source/sdk";
+import { OAuth2SourceConfig } from "@executor-js/sdk/http-source";
 
 // ---------------------------------------------------------------------------
 // Params

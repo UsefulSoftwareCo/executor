@@ -4,21 +4,21 @@ import type {
   SecretBackedValue,
 } from "@executor-js/sdk/shared";
 
-import { FieldLabel } from "@executor-js/react/components/field";
-import { HeadersList } from "@executor-js/react/plugins/headers-list";
+import { FieldLabel } from "../components/field";
+import { HeadersList } from "./headers-list";
 import {
   headerValueToState,
   headersFromState,
   QueryParamCredentialValuePreview,
   type HeaderAuthPreset,
   type HeaderState,
-} from "@executor-js/react/plugins/secret-header-auth";
-import type { CredentialTargetScopeOption } from "@executor-js/react/plugins/credential-target-scope";
+} from "./secret-header-auth";
+import type { CredentialTargetScopeOption } from "./credential-target-scope";
 import {
   type ConfiguredCredentialValueLike,
   type CredentialBindingRefLike,
-} from "@executor-js/react/plugins/credential-bindings";
-import type { SecretPickerSecret } from "@executor-js/react/plugins/secret-picker";
+} from "./credential-bindings";
+import type { SecretPickerSecret } from "./secret-picker";
 
 export type { SecretBackedValue };
 
