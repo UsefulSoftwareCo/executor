@@ -26,6 +26,65 @@ const withToolResultDefinitions = (
   ToolError: TOOL_ERROR_TYPESCRIPT,
 });
 
+type DescribedTool = {
+  readonly path: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly inputTypeScript?: string;
+  readonly outputTypeScript?: string;
+  readonly typeScriptDefinitions?: Record<string, string>;
+};
+
+const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
+  string,
+  DescribedTool
+>([
+  [
+    "search",
+    {
+      path: "search",
+      name: "search",
+      description: "Search available Executor tools.",
+      inputTypeScript: "{ query: string; namespace?: string; limit?: number; offset?: number; }",
+      outputTypeScript:
+        "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+      typeScriptDefinitions: {
+        ToolDiscoveryResult:
+          "{ path: string; name: string; description?: string; sourceId: string; score: number; }",
+      },
+    },
+  ],
+  [
+    "executor.sources.list",
+    {
+      path: "executor.sources.list",
+      name: "executor.sources.list",
+      description: "List configured and built-in Executor sources.",
+      inputTypeScript: "{ query?: string; limit?: number; offset?: number; }",
+      outputTypeScript:
+        "{ items: ExecutorSourceListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+      typeScriptDefinitions: {
+        ExecutorSourceListItem:
+          "{ id: string; name: string; kind: string; runtime?: boolean; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
+      },
+    },
+  ],
+  [
+    "describe.tool",
+    {
+      path: "describe.tool",
+      name: "describe.tool",
+      description: "Describe a tool's compact TypeScript input and output shapes.",
+      inputTypeScript: "{ path: string; }",
+      outputTypeScript: "DescribedTool",
+      typeScriptDefinitions: {
+        DescribedTool:
+          "{ path: string; name: string; description?: string; inputTypeScript?: string; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; }",
+      },
+    },
+  ],
+]);
+
 const newCorrelationId = (): string => {
   // 8-hex-char correlation id; enough entropy to disambiguate within a
   // single deployment without leaking host process info.
@@ -533,6 +592,9 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
   path: string,
 ) {
   yield* Effect.annotateCurrentSpan({ "mcp.tool.name": path });
+
+  const builtin = BUILTIN_TOOL_DESCRIPTIONS.get(path);
+  if (builtin) return builtin;
 
   // Single tools.schema() call — it already fetches the tool row
   // internally. No need to also call tools.list() just for name/description.

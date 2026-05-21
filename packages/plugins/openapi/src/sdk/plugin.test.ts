@@ -17,7 +17,11 @@ import {
   type InvokeOptions,
   type SecretProvider,
 } from "@executor-js/sdk";
-import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
+import {
+  makeTestConfig,
+  memorySecretsPlugin,
+  typeCheckOutputTypeScript,
+} from "@executor-js/sdk/testing";
 import type { ConfigFileSink } from "@executor-js/config";
 
 const TEST_SCOPE = "test-scope";
@@ -31,6 +35,8 @@ import {
 } from "../testing";
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
 
 type FumaQueryCall = {
   readonly method: "findFirst" | "findMany";
@@ -841,6 +847,56 @@ describe("OpenAPI Plugin", () => {
         );
         expect(result.error).toBeNull();
         expect(result.data).toEqual(ITEMS);
+      }),
+    ),
+  );
+
+  it.effect("describes OpenAPI invocation results with the transport envelope", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const clientLayer = FetchHttpClient.layer;
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              openApiPlugin({ httpClientLayer: clientLayer }),
+              memorySecretsPlugin(),
+            ] as const,
+          }),
+        );
+
+        yield* addOpenApiTestSource(executor, server, {
+          scope: TEST_SCOPE,
+          namespace: "test",
+        });
+
+        const schema = yield* executor.tools.schema("test.items.listItems");
+        expect(schema?.outputTypeScript).toContain("status: number");
+        expect(schema?.outputTypeScript).toContain("headers:");
+        expect(schema?.outputTypeScript).toContain("data:");
+
+        const result = yield* executor.tools.invoke("test.items.listItems", {}, autoApprove);
+        const diagnostics = typeCheckOutputTypeScript(
+          {
+            outputTypeScript: `{ ok: true; data: ${schema?.outputTypeScript ?? "unknown"} } | { ok: false; error: ToolError }`,
+            typeScriptDefinitions: {
+              ...(schema?.typeScriptDefinitions ?? {}),
+              ToolError: TOOL_ERROR_TYPESCRIPT,
+            },
+          },
+          result,
+          {
+            consumerSource: [
+              "if (invokedOutput.ok) {",
+              "  const status: number = invokedOutput.data.status;",
+              "  const items = invokedOutput.data.data;",
+              "  items.map((item) => item.name);",
+              "}",
+            ].join("\n"),
+          },
+        );
+
+        expect(diagnostics).toEqual([]);
       }),
     ),
   );

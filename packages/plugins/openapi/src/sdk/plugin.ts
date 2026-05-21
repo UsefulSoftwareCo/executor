@@ -1205,6 +1205,20 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     readonly oauth2?: OpenApiOAuthInput;
   };
 
+  const openApiTransportOutputSchema = (dataSchema: unknown): Record<string, unknown> => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "headers", "data"],
+    properties: {
+      status: { type: "integer" },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+      },
+      data: dataSchema ?? {},
+    },
+  });
+
   // ctx comes from the plugin runtime — the same instance is passed to
   // `extension(ctx)` and to every lifecycle hook (`refreshSource`, etc.),
   // so helpers parameterised on ctx can be called from either surface.
@@ -1284,7 +1298,9 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               name: def.toolPath,
               description: descriptionFor(def),
               inputSchema: normalizeOpenApiRefs(Option.getOrUndefined(def.operation.inputSchema)),
-              outputSchema: normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+              outputSchema: openApiTransportOutputSchema(
+                normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+              ),
             })),
           });
 

@@ -551,6 +551,50 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("describes built-in discovery tool shapes that accept their runtime output", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute(
+        [
+          "const searchDetails = await tools.describe.tool({ path: 'search' });",
+          "const sourceDetails = await tools.describe.tool({ path: 'executor.sources.list' });",
+          "const describeDetails = await tools.describe.tool({ path: 'describe.tool' });",
+          "return {",
+          "  searchDetails,",
+          "  searchResult: await tools.search({ query: 'repo details', limit: 2 }),",
+          "  sourceDetails,",
+          "  sourceResult: await tools.executor.sources.list({ limit: 2 }),",
+          "  describeDetails,",
+          "  describeResult: await tools.describe.tool({ path: 'github.getRepositoryDetails' }),",
+          "};",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(execution.error).toBeUndefined();
+      const observed = execution.result as {
+        readonly searchDetails: DescribedToolContract;
+        readonly searchResult: unknown;
+        readonly sourceDetails: DescribedToolContract;
+        readonly sourceResult: unknown;
+        readonly describeDetails: DescribedToolContract;
+        readonly describeResult: unknown;
+      };
+
+      expect(
+        typeCheckDescribedInvocation(observed.searchDetails, observed.searchResult, ""),
+      ).toEqual([]);
+      expect(
+        typeCheckDescribedInvocation(observed.sourceDetails, observed.sourceResult, ""),
+      ).toEqual([]);
+      expect(
+        typeCheckDescribedInvocation(observed.describeDetails, observed.describeResult, ""),
+      ).toEqual([]);
+    }),
+  );
+
   it.effect("rejects malformed discover calls inside the sandbox", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();
