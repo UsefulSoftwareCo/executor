@@ -1,12 +1,13 @@
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-import type { PluginCtx, StorageFailure } from "@executor-js/sdk/core";
+import { resolveSecretBackedMap, type PluginCtx, type StorageFailure } from "@executor-js/sdk/core";
 
 import { GoogleDiscoveryInvocationError, GoogleDiscoveryOAuthError } from "./errors";
 import type { GoogleDiscoveryStore } from "./binding-store";
 import {
   GoogleDiscoveryInvocationResult,
+  type GoogleDiscoveryFetchCredentials,
   type GoogleDiscoveryParameter,
   type GoogleDiscoveryStoredSourceData,
 } from "./types";
@@ -59,7 +60,9 @@ const replacePathParameters = (input: {
 }): Effect.Effect<string, GoogleDiscoveryInvocationError> =>
   Effect.gen(function* () {
     let failure: GoogleDiscoveryInvocationError | undefined;
-    const resolved = input.pathTemplate.replaceAll(/\{([^}]+)\}/g, (_, name: string) => {
+    const resolved = input.pathTemplate.replaceAll(/\{([^}]+)\}/g, (_, rawName: string) => {
+      const allowReserved = rawName.startsWith("+");
+      const name = allowReserved ? rawName.slice(1) : rawName;
       const parameter = input.parameters.find(
         (entry) => entry.location === "path" && entry.name === name,
       );
@@ -73,7 +76,7 @@ const replacePathParameters = (input: {
         }
         return "";
       }
-      return encodeURIComponent(values[0]!);
+      return allowReserved ? encodeURI(values[0]!) : encodeURIComponent(values[0]!);
     });
     if (failure) return yield* failure;
     return resolved;
@@ -90,6 +93,68 @@ const isJsonContentType = (contentType: string | null | undefined): boolean => {
   );
 };
 
+const resolveInvocationCredentials = (
+  ctx: PluginCtx<GoogleDiscoveryStore>,
+  credentials: GoogleDiscoveryFetchCredentials | undefined,
+): Effect.Effect<
+  { readonly headers: Record<string, string>; readonly queryParams: Record<string, string> },
+  GoogleDiscoveryInvocationError | StorageFailure
+> =>
+  Effect.gen(function* () {
+    const headers = yield* resolveSecretBackedMap({
+      values: credentials?.headers,
+      getSecret: ctx.secrets.get,
+      onMissing: (name) =>
+        new GoogleDiscoveryInvocationError({
+          message: `Secret not found for header "${name}"`,
+          statusCode: Option.none(),
+        }),
+      onError: (_error, name) =>
+        new GoogleDiscoveryInvocationError({
+          message: `Secret not found for header "${name}"`,
+          statusCode: Option.none(),
+        }),
+    }).pipe(
+      Effect.mapError((err) =>
+        Predicate.isTagged("SecretOwnedByConnectionError")(err)
+          ? new GoogleDiscoveryInvocationError({
+              message: "Secret resolution failed",
+              statusCode: Option.none(),
+              cause: err,
+            })
+          : err,
+      ),
+    );
+    const queryParams = yield* resolveSecretBackedMap({
+      values: credentials?.queryParams,
+      getSecret: ctx.secrets.get,
+      onMissing: (name) =>
+        new GoogleDiscoveryInvocationError({
+          message: `Secret not found for query parameter "${name}"`,
+          statusCode: Option.none(),
+        }),
+      onError: (_error, name) =>
+        new GoogleDiscoveryInvocationError({
+          message: `Secret not found for query parameter "${name}"`,
+          statusCode: Option.none(),
+        }),
+    }).pipe(
+      Effect.mapError((err) =>
+        Predicate.isTagged("SecretOwnedByConnectionError")(err)
+          ? new GoogleDiscoveryInvocationError({
+              message: "Secret resolution failed",
+              statusCode: Option.none(),
+              cause: err,
+            })
+          : err,
+      ),
+    );
+    return {
+      headers: headers ?? {},
+      queryParams: queryParams ?? {},
+    };
+  });
+
 // ---------------------------------------------------------------------------
 // HTTP request builder / executor
 // ---------------------------------------------------------------------------
@@ -102,6 +167,8 @@ const performRequest = Effect.fn("GoogleDiscovery.invoke")(function* (input: {
   source: GoogleDiscoveryStoredSourceData;
   args: Record<string, unknown>;
   authorizationHeader?: string;
+  credentialHeaders?: Record<string, string>;
+  credentialQueryParams?: Record<string, string>;
 }) {
   const client = yield* HttpClient.HttpClient;
 
@@ -111,6 +178,10 @@ const performRequest = Effect.fn("GoogleDiscovery.invoke")(function* (input: {
     parameters: input.parameters,
   });
   const requestUrl = new URL(resolvedPath.replace(/^\//, ""), resolveBaseUrl(input.source));
+
+  for (const [name, value] of Object.entries(input.credentialQueryParams ?? {})) {
+    requestUrl.searchParams.append(name, value);
+  }
 
   for (const parameter of input.parameters) {
     if (parameter.location === "path") continue;
@@ -142,6 +213,10 @@ const performRequest = Effect.fn("GoogleDiscovery.invoke")(function* (input: {
       parameter.name,
       parameter.repeated ? values.join(",") : values[0]!,
     );
+  }
+
+  for (const [name, value] of Object.entries(input.credentialHeaders ?? {})) {
+    request = HttpClientRequest.setHeader(request, name, value);
   }
 
   if (input.authorizationHeader) {
@@ -222,6 +297,7 @@ export const invokeGoogleDiscoveryTool = (input: {
       });
     }
     const source = stored.config;
+    const credentials = yield* resolveInvocationCredentials(input.ctx, source.credentials);
 
     const authHeader =
       source.auth.kind === "oauth2"
@@ -245,6 +321,8 @@ export const invokeGoogleDiscoveryTool = (input: {
       source,
       args: (input.args ?? {}) as Record<string, unknown>,
       authorizationHeader: authHeader,
+      credentialHeaders: credentials.headers,
+      credentialQueryParams: credentials.queryParams,
     }).pipe(Effect.provide(layer)) as Effect.Effect<
       GoogleDiscoveryInvocationResult,
       GoogleDiscoveryInvocationError,

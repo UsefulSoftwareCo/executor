@@ -28,6 +28,8 @@ const DiscoveryFixtureJson = Schema.Record(Schema.String, Schema.Unknown);
 const fixtureJson = Schema.decodeUnknownSync(Schema.fromJsonString(DiscoveryFixtureJson))(
   fixtureText,
 );
+const asRecord = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
 // ---------------------------------------------------------------------------
 // Test HTTP server — serves the discovery document and echoes API calls.
@@ -64,16 +66,33 @@ const startServer = (): Promise<ServerHandle> =>
         body,
       });
 
-      if (url === "/$discovery/rest?version=v3") {
+      if (url.startsWith("/$discovery/rest?")) {
         const address = server.address();
         if (!address || typeof address === "string") {
           response.statusCode = 500;
           response.end();
           return;
         }
+        const resources = asRecord(fixtureJson.resources);
+        const files = asRecord(resources.files);
+        const methods = asRecord(files.methods);
+        const get = asRecord(methods.get);
         const dynamicFixture = JSON.stringify({
           ...fixtureJson,
           rootUrl: `http://127.0.0.1:${address.port}/`,
+          resources: {
+            ...resources,
+            files: {
+              ...files,
+              methods: {
+                ...methods,
+                get: {
+                  ...get,
+                  path: "files/{+fileId}",
+                },
+              },
+            },
+          },
         });
         response.statusCode = 200;
         response.setHeader("content-type", "application/json");
@@ -388,6 +407,14 @@ describe("Google Discovery plugin", () => {
       // A connection wraps the access token (+ optional refresh) and
       // the invoke path resolves via ctx.connections.accessToken.
       const connectionId = ConnectionId.make("google-discovery-oauth2-test");
+      yield* executor.secrets.set(
+        SetSecretInput.make({
+          id: SecretId.make("google-ads-developer-token"),
+          scope: "test-scope" as SetSecretInput["scope"],
+          name: "Google Ads Developer Token",
+          value: "developer-token-value",
+        }),
+      );
       yield* executor.connections.create(
         CreateConnectionInput.make({
           id: connectionId,
@@ -421,6 +448,14 @@ describe("Google Discovery plugin", () => {
           clientIdSecretId: "drive-client-id",
           clientSecretSecretId: null,
           scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+        },
+        credentials: {
+          headers: {
+            "developer-token": { secretId: "google-ads-developer-token" },
+          },
+          queryParams: {
+            sourceCredential: "source-value",
+          },
         },
       });
 
@@ -458,8 +493,10 @@ describe("Google Discovery plugin", () => {
       );
       expect(apiRequest).toBeDefined();
       expect(apiRequest!.headers.authorization).toBe("Bearer secret-token");
+      expect(apiRequest!.headers["developer-token"]).toBe("developer-token-value");
       expect(apiRequest!.url).toContain("fields=id%2Cname");
       expect(apiRequest!.url).toContain("prettyPrint=true");
+      expect(apiRequest!.url).toContain("sourceCredential=source-value");
     }),
   );
 
