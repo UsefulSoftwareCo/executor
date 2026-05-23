@@ -139,9 +139,23 @@ const waitForShutdownSignal = () =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
+
+const executorApiBaseUrl = (baseUrl: string): string => {
+  const trimmed = stripTrailingSlash(baseUrl);
+  const url = new URL(trimmed);
+  const pathname = stripTrailingSlash(url.pathname);
+  return pathname === "/api" || pathname.endsWith("/api/executor") ? trimmed : `${trimmed}/api`;
+};
+
+const hasExplicitApiPath = (baseUrl: string): boolean => {
+  const pathname = stripTrailingSlash(new URL(baseUrl).pathname);
+  return pathname === "/api" || pathname.endsWith("/api/executor");
+};
+
 const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
   Effect.tryPromise(() =>
-    fetch(`${baseUrl}/api/scope`, { signal: AbortSignal.timeout(2000) }),
+    fetch(`${executorApiBaseUrl(baseUrl)}/scope`, { signal: AbortSignal.timeout(2000) }),
   ).pipe(
     Effect.flatMap((res) => {
       if (!res.ok) return Effect.succeed(false);
@@ -301,6 +315,16 @@ const ensureDaemon = (
   baseUrl: string,
 ): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
+    if (yield* isServerReachable(baseUrl)) {
+      return baseUrl;
+    }
+
+    if (hasExplicitApiPath(baseUrl)) {
+      return yield* Effect.fail(
+        new Error(`Executor API is not reachable at ${executorApiBaseUrl(baseUrl)}.`),
+      );
+    }
+
     const resolvedTarget = yield* resolveDaemonTarget(baseUrl);
     if (yield* isServerReachable(resolvedTarget.baseUrl)) {
       return resolvedTarget.baseUrl;
@@ -489,7 +513,7 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
 // ---------------------------------------------------------------------------
 
 const makeApiClient = (baseUrl: string) =>
-  HttpApiClient.make(ExecutorApi, { baseUrl: `${baseUrl}/api` }).pipe(
+  HttpApiClient.make(ExecutorApi, { baseUrl: executorApiBaseUrl(baseUrl) }).pipe(
     Effect.provide(FetchHttpClient.layer),
   );
 
