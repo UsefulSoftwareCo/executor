@@ -1,0 +1,52 @@
+version = 1
+
+default_stack = "app"
+
+[tasks.local-env]
+cmd = "bash -lc 'set -euo pipefail; env_file=apps/open-agents/.env.development.local; touch \"$env_file\"; grep -q \"^BETTER_AUTH_SECRET=\" \"$env_file\" || printf \"BETTER_AUTH_SECRET=%s\\n\" \"$(openssl rand -base64 32)\" >> \"$env_file\"; grep -q \"^BETTER_AUTH_URL=\" \"$env_file\" || printf \"BETTER_AUTH_URL=http://localhost:3000\\n\" >> \"$env_file\"'"
+
+[tasks.datastores-up]
+cmd = "docker compose up --wait --wait-timeout 60"
+
+[tasks.bun-install]
+cmd = "bun install --frozen-lockfile"
+watch = [
+  "bun.lock",
+  "package.json",
+  "apps/*/package.json",
+  "packages/*/package.json",
+  "packages/*/*/package.json",
+]
+
+[stacks.app]
+description = "Open Agents web app with local Postgres, Redis, and embedded Executor admin UI"
+
+[stacks.app.services.web]
+cmd = "bun run db:migrate:apply && bun run dev --hostname 0.0.0.0 --port $PORT"
+cwd = "apps/open-agents"
+env_file = ".env.development.local"
+port = 3000
+init = ["local-env", "datastores-up", "bun-install"]
+readiness = { http = { path = "/api/health", expect_status = [200, 399] }, timeout_ms = 120000 }
+watch = [
+  "app/**",
+  "components/**",
+  "hooks/**",
+  "lib/**",
+  "public/**",
+  "scripts/**",
+  "next.config.ts",
+  "package.json",
+  "tsconfig.json",
+  "postcss.config.mjs",
+  "../../packages/**",
+]
+ignore = [".next/**", "*.test.ts", "*.test.tsx"]
+
+[stacks.app.services.web.env]
+POSTGRES_URL = "postgres://open_agents:open_agents@127.0.0.1:54329/open_agents"
+REDIS_URL = "redis://127.0.0.1:63799"
+OPEN_AGENTS_RESOURCE_PROFILE = "hobby"
+OPEN_AGENTS_AUTH_MODE = "local"
+OPEN_AGENTS_GITHUB_AUTH_MODE = "gh-cli"
+GH_CLI_PATH = "/snap/bin/gh"

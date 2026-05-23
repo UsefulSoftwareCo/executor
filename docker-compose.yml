@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: open_agents
+      POSTGRES_USER: open_agents
+      POSTGRES_PASSWORD: open_agents
+    ports:
+      - "54329:5432"
+    volumes:
+      - open_agents_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U open_agents -d open_agents"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "63799:6379"
+    volumes:
+      - open_agents_redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  open_agents_postgres_data:
+  open_agents_redis_data:
