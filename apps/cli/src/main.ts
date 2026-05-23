@@ -112,7 +112,9 @@ import embeddedWebUI from "./embedded-web-ui.gen";
 
 const { version: CLI_VERSION } = await import("../package.json");
 const DEFAULT_PORT = 4788;
-const DEFAULT_BASE_URL = `http://localhost:${DEFAULT_PORT}`;
+const DEFAULT_DAEMON_BASE_URL = `http://localhost:${DEFAULT_PORT}`;
+const OPEN_AGENTS_EXECUTOR_BASE_URL =
+  process.env.OPEN_AGENTS_EXECUTOR_BASE_URL ?? "http://localhost:3000/api/executor";
 const DAEMON_BOOT_TIMEOUT_MS = 15_000;
 const DAEMON_BOOT_POLL_MS = 150;
 const DAEMON_STOP_TIMEOUT_MS = 10_000;
@@ -729,10 +731,39 @@ const scope = Options.string("scope").pipe(
   Options.withDescription("Path to workspace directory containing executor.jsonc"),
 );
 
+const baseUrlOption = Options.string("base-url").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Executor API base URL. Defaults to OPEN_AGENTS_EXECUTOR_BASE_URL when reachable, then the local daemon.",
+  ),
+);
+
 const applyScope = (s: Option.Option<string>) => {
   const dir = Option.getOrUndefined(s);
   if (dir) process.env.EXECUTOR_SCOPE_DIR = resolve(dir);
 };
+
+const resolveApiCommandBaseUrl = (
+  baseUrl: Option.Option<string> | string | undefined,
+): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const explicit =
+      typeof baseUrl === "string"
+        ? baseUrl
+        : baseUrl === undefined
+          ? undefined
+          : Option.getOrUndefined(baseUrl);
+    if (explicit) return explicit;
+
+    const envBaseUrl = process.env.EXECUTOR_BASE_URL?.trim();
+    if (envBaseUrl) return envBaseUrl;
+
+    if (yield* isServerReachable(OPEN_AGENTS_EXECUTOR_BASE_URL)) {
+      return OPEN_AGENTS_EXECUTOR_BASE_URL;
+    }
+
+    return DEFAULT_DAEMON_BASE_URL;
+  });
 
 const parseOptionalJsonObject = (
   raw: string | undefined,
@@ -796,7 +827,7 @@ const parsePositiveIntegerOption = (name: string, raw: string): number => {
 
 interface ParsedCallHelpArgs {
   readonly pathParts: ReadonlyArray<string>;
-  readonly baseUrl: string;
+  readonly baseUrl: string | undefined;
   readonly scopeDir: string | undefined;
   readonly match: string | undefined;
   readonly limit: number | undefined;
@@ -807,7 +838,7 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
 const isHelpFlag = (value: string): boolean => HELP_FLAGS.has(value);
 
 const parseCallHelpArgs = (args: ReadonlyArray<string>): ParsedCallHelpArgs => {
-  let baseUrl = DEFAULT_BASE_URL;
+  let baseUrl: string | undefined = undefined;
   let scopeDir: string | undefined = undefined;
   let match: string | undefined = undefined;
   let limit: number | undefined = undefined;
@@ -1027,7 +1058,8 @@ const runCallHelp = (
   Effect.gen(function* () {
     if (args.scopeDir) process.env.EXECUTOR_SCOPE_DIR = resolve(args.scopeDir);
 
-    const daemonUrl = yield* ensureDaemon(args.baseUrl);
+    const baseUrl = yield* resolveApiCommandBaseUrl(args.baseUrl);
+    const daemonUrl = yield* ensureDaemon(baseUrl);
     const client = yield* makeApiClient(daemonUrl);
     const scopeInfo = yield* client.scope.info();
     const tools = yield* client.tools.list({ params: { scopeId: scopeInfo.id } });
@@ -1187,7 +1219,7 @@ const callCommand = Command.make(
   "call",
   {
     pathParts: Args.string("tool-path-segment").pipe(Args.variadic({})),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: baseUrlOption,
     scope,
   },
   ({ pathParts, baseUrl, scope }) =>
@@ -1202,8 +1234,9 @@ const callCommand = Command.make(
           cause instanceof Error ? cause : new Error(`Invalid tool path: ${String(cause)}`),
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const resolvedBaseUrl = yield* resolveApiCommandBaseUrl(baseUrl);
+      const outcome = yield* executeCode({ baseUrl: resolvedBaseUrl, code });
+      yield* printExecutionOutcome({ baseUrl: resolvedBaseUrl, outcome });
     }),
 ).pipe(
   Command.withDescription(
@@ -1225,13 +1258,14 @@ const resumeCommand = Command.make(
       Options.optional,
       Options.withDescription("JSON object to send when action=accept"),
     ),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: baseUrlOption,
     scope,
   },
   ({ executionId, action, content, baseUrl, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      const daemonUrl = yield* ensureDaemon(baseUrl);
+      const resolvedBaseUrl = yield* resolveApiCommandBaseUrl(baseUrl);
+      const daemonUrl = yield* ensureDaemon(resolvedBaseUrl);
 
       const contentObj = yield* parseOptionalJsonObject(Option.getOrUndefined(content));
 
@@ -1266,7 +1300,7 @@ const toolsSearchCommand = Command.make(
     query: Args.string("query"),
     namespace: Options.string("namespace").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(12)),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: baseUrlOption,
     scope,
   },
   ({ query, namespace, limit, baseUrl, scope }) =>
@@ -1278,8 +1312,9 @@ const toolsSearchCommand = Command.make(
         limit,
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const resolvedBaseUrl = yield* resolveApiCommandBaseUrl(baseUrl);
+      const outcome = yield* executeCode({ baseUrl: resolvedBaseUrl, code });
+      yield* printExecutionOutcome({ baseUrl: resolvedBaseUrl, outcome });
     }),
 ).pipe(Command.withDescription("Search tools by natural-language query"));
 
@@ -1288,7 +1323,7 @@ const toolsSourcesCommand = Command.make(
   {
     query: Options.string("query").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(50)),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: baseUrlOption,
     scope,
   },
   ({ query, limit, baseUrl, scope }) =>
@@ -1299,8 +1334,9 @@ const toolsSourcesCommand = Command.make(
         limit,
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const resolvedBaseUrl = yield* resolveApiCommandBaseUrl(baseUrl);
+      const outcome = yield* executeCode({ baseUrl: resolvedBaseUrl, code });
+      yield* printExecutionOutcome({ baseUrl: resolvedBaseUrl, outcome });
     }),
 ).pipe(Command.withDescription("List configured sources and tool counts"));
 
@@ -1308,15 +1344,16 @@ const toolsDescribeCommand = Command.make(
   "describe",
   {
     path: Args.string("path"),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: baseUrlOption,
     scope,
   },
   ({ path, baseUrl, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
       const code = buildDescribeToolCode(path);
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const resolvedBaseUrl = yield* resolveApiCommandBaseUrl(baseUrl);
+      const outcome = yield* executeCode({ baseUrl: resolvedBaseUrl, code });
+      yield* printExecutionOutcome({ baseUrl: resolvedBaseUrl, outcome });
     }),
 ).pipe(Command.withDescription("Describe a tool's TypeScript and JSON schema"));
 
@@ -1417,7 +1454,7 @@ const daemonRunCommand = Command.make(
 const daemonStatusCommand = Command.make(
   "status",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_DAEMON_BASE_URL)),
   },
   ({ baseUrl }) =>
     Effect.gen(function* () {
@@ -1469,7 +1506,7 @@ const daemonStatusCommand = Command.make(
 const daemonStopCommand = Command.make(
   "stop",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_DAEMON_BASE_URL)),
   },
   ({ baseUrl }) => stopDaemon(baseUrl),
 ).pipe(Command.withDescription("Stop the local daemon"));
@@ -1477,7 +1514,7 @@ const daemonStopCommand = Command.make(
 const daemonRestartCommand = Command.make(
   "restart",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_DAEMON_BASE_URL)),
     scope,
   },
   ({ baseUrl, scope }) =>
