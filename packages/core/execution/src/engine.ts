@@ -12,10 +12,11 @@ import { CodeExecutionError } from "@executor-js/codemode-core";
 import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
 import {
+  defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
-  searchTools,
   listExecutorSources,
   describeTool,
+  type ToolDiscoveryProvider,
 } from "./tool-invoker";
 import { ExecutionToolError } from "./errors";
 import { buildExecuteDescription } from "./description";
@@ -27,6 +28,7 @@ import { buildExecuteDescription } from "./description";
 export type ExecutionEngineConfig<E extends Cause.YieldableError = CodeExecutionError> = {
   readonly executor: Executor;
   readonly codeExecutor: CodeExecutor<E>;
+  readonly toolDiscoveryProvider?: ToolDiscoveryProvider;
 };
 
 export type ExecutionResult =
@@ -186,7 +188,11 @@ const readOptionalOffset = (value: unknown, toolName: string): number | Executio
   return Math.floor(value);
 };
 
-const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): SandboxToolInvoker => {
+const makeFullInvoker = (
+  executor: Executor,
+  invokeOptions: InvokeOptions,
+  toolDiscoveryProvider: ToolDiscoveryProvider,
+): SandboxToolInvoker => {
   const base = makeExecutorToolInvoker(executor, { invokeOptions });
   return {
     invoke: ({ path, args }) => {
@@ -226,7 +232,10 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
           return Effect.fail(offset);
         }
 
-        return searchTools(executor, args.query ?? "", limit, {
+        return toolDiscoveryProvider.searchTools({
+          executor,
+          query: args.query ?? "",
+          limit,
           namespace: args.namespace,
           offset,
         }).pipe(
@@ -364,7 +373,11 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
 export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
   config: ExecutionEngineConfig<E>,
 ): ExecutionEngine<E> => {
-  const { executor, codeExecutor } = config;
+  const {
+    executor,
+    codeExecutor,
+    toolDiscoveryProvider = defaultToolDiscoveryProvider,
+  } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
   let nextId = 0;
 
@@ -433,7 +446,11 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         return yield* Deferred.await(responseDeferred);
       });
 
-    const invoker = makeFullInvoker(executor, { onElicitation: elicitationHandler });
+    const invoker = makeFullInvoker(
+      executor,
+      { onElicitation: elicitationHandler },
+      toolDiscoveryProvider,
+    );
     fiber = yield* Effect.forkDetach(
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
@@ -477,9 +494,13 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.mode": "inline",
       "mcp.execute.code_length": code.length,
     });
-    const invoker = makeFullInvoker(executor, {
-      onElicitation: options.onElicitation,
-    });
+    const invoker = makeFullInvoker(
+      executor,
+      {
+        onElicitation: options.onElicitation,
+      },
+      toolDiscoveryProvider,
+    );
     return yield* codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec"));
   });
 

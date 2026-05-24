@@ -249,6 +249,20 @@ export type ExecutorSourceListItem = {
   readonly toolCount: number;
 };
 
+export type ToolDiscoveryInput = {
+  readonly executor: Executor;
+  readonly query: string;
+  readonly namespace?: string;
+  readonly limit: number;
+  readonly offset: number;
+};
+
+export interface ToolDiscoveryProvider {
+  readonly searchTools: (
+    input: ToolDiscoveryInput,
+  ) => Effect.Effect<PagedResult<ToolDiscoveryResult>, ExecutionToolError>;
+}
+
 /**
  * Page of results from a list-style discovery tool. Shared by
  * `tools.search` and `tools.executor.sources.list` so the model sees one
@@ -514,6 +528,11 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   });
   return page;
 });
+
+export const defaultToolDiscoveryProvider: ToolDiscoveryProvider = {
+  searchTools: ({ executor, query, namespace, limit, offset }) =>
+    searchTools(executor, query, limit, { namespace, offset }),
+};
 
 /** What `tools.executor.sources.list()` calls inside the sandbox. */
 export const listExecutorSources = Effect.fn("executor.sources.list")(function* (

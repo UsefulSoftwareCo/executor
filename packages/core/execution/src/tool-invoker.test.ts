@@ -12,7 +12,12 @@ import {
 import { makeTestConfig, typeCheckOutputTypeScript } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
-import { describeTool, makeExecutorToolInvoker, searchTools } from "./tool-invoker";
+import {
+  describeTool,
+  makeExecutorToolInvoker,
+  searchTools,
+  type ToolDiscoveryProvider,
+} from "./tool-invoker";
 
 const codeExecutor = makeQuickJsExecutor();
 
@@ -331,6 +336,79 @@ describe("tool discovery", () => {
           nextOffset: null,
         }),
       );
+    }),
+  );
+
+  it.effect("lets execution hosts provide custom tool discovery", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const calls: Array<{
+        readonly query: string;
+        readonly namespace?: string;
+        readonly limit: number;
+        readonly offset: number;
+      }> = [];
+      const provider: ToolDiscoveryProvider = {
+        searchTools: ({ query, namespace, limit, offset }) =>
+          Effect.sync(() => {
+            calls.push({ query, namespace, limit, offset });
+            return {
+              items: [
+                {
+                  path: "custom.searchResult",
+                  name: "searchResult",
+                  description: "Provided by the host",
+                  sourceId: "custom",
+                  score: 999,
+                },
+              ],
+              total: 1,
+              hasMore: false,
+              nextOffset: null,
+            };
+          }),
+      };
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor,
+        toolDiscoveryProvider: provider,
+      });
+
+      const result = yield* engine.execute(
+        [
+          "return await tools.search({",
+          '  query: "calendar events",',
+          '  namespace: "calendar",',
+          "  limit: 7,",
+          "  offset: 2,",
+          "});",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        items: [
+          {
+            path: "custom.searchResult",
+            name: "searchResult",
+            description: "Provided by the host",
+            sourceId: "custom",
+            score: 999,
+          },
+        ],
+        total: 1,
+        hasMore: false,
+        nextOffset: null,
+      });
+      expect(calls).toEqual([
+        {
+          query: "calendar events",
+          namespace: "calendar",
+          limit: 7,
+          offset: 2,
+        },
+      ]);
     }),
   );
 
