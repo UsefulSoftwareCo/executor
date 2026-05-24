@@ -232,17 +232,19 @@ const makeFullInvoker = (
           return Effect.fail(offset);
         }
 
-        return toolDiscoveryProvider.searchTools({
-          executor,
-          query: args.query ?? "",
-          limit,
-          namespace: args.namespace,
-          offset,
-        }).pipe(
-          Effect.withSpan("mcp.tool.dispatch", {
-            attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
-          }),
-        );
+        return toolDiscoveryProvider
+          .searchTools({
+            executor,
+            query: args.query ?? "",
+            limit,
+            namespace: args.namespace,
+            offset,
+          })
+          .pipe(
+            Effect.withSpan("mcp.tool.dispatch", {
+              attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
+            }),
+          );
       }
       if (path === "executor.sources.list") {
         if (args !== undefined && !isRecord(args)) {
@@ -373,11 +375,7 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
 export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
   config: ExecutionEngineConfig<E>,
 ): ExecutionEngine<E> => {
-  const {
-    executor,
-    codeExecutor,
-    toolDiscoveryProvider = defaultToolDiscoveryProvider,
-  } = config;
+  const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
   let nextId = 0;
 
