@@ -11,6 +11,9 @@ describe("organization limits", () => {
   it("treats active and trialing paid org subscriptions as paid", () => {
     expect(hasPaidOrganizationSubscription([{ planId: "team", status: "active" }])).toBe(true);
     expect(hasPaidOrganizationSubscription([{ planId: "team", status: "trialing" }])).toBe(true);
+    expect(hasPaidOrganizationSubscription([{ planId: "enterprise", status: "active" }])).toBe(
+      true,
+    );
   });
 
   it("does not treat inactive paid plans or free plans as paid", () => {

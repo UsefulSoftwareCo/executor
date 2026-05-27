@@ -12,6 +12,7 @@ export const Route = createFileRoute("/billing")({
 const PLAN_TAGLINES: Record<string, string> = {
   free: "Free for up to 3 members",
   team: "$49 per organization",
+  enterprise: "Custom enterprise agreement",
 };
 
 function BillingPage() {
