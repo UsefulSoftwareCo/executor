@@ -4,6 +4,7 @@ const MEMBER_LIMITS: Record<string, number | null> = {
   free: 3,
   "free-pay-as-you-go": 3,
   team: null,
+  enterprise: null,
 };
 
 export const DEFAULT_MEMBER_LIMIT = 3;

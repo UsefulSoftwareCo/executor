@@ -33,6 +33,7 @@ describe("member limits", () => {
   it("resolves member limits from the selected plan", () => {
     expect(getMemberLimitForPlan("free")).toBe(3);
     expect(getMemberLimitForPlan("team")).toBeNull();
+    expect(getMemberLimitForPlan("enterprise")).toBeNull();
     expect(getMemberLimitForPlan("unknown")).toBe(3);
   });
 });

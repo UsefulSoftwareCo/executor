@@ -83,3 +83,22 @@ export const team = plan({
     }),
   ],
 });
+
+export const enterprise = plan({
+  id: "enterprise",
+  name: "Enterprise",
+  addOn: false,
+  autoEnable: false,
+  items: [
+    item({
+      featureId: executions.id,
+      unlimited: true,
+      reset: {
+        interval: "month",
+      },
+    }),
+    item({
+      featureId: domainVerification.id,
+    }),
+  ],
+});

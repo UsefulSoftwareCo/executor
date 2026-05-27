@@ -20,6 +20,14 @@ export const Route = createFileRoute("/billing_/plans")({
   component: PlansPage,
 });
 
+const ENTERPRISE_FEATURES = [
+  "Self-hosted or dedicated cloud deployment support",
+  "SSO / SAML & SCIM provisioning",
+  "Audit logs for every tool call",
+  "Dedicated support & onboarding",
+  "Security reviews, DPA & SOC 2 on request",
+];
+
 const PLAN_META: Record<string, { tagline: string; inherits?: string; features: string[] }> = {
   free: {
     tagline: "For small teams getting started",
@@ -40,6 +48,11 @@ const PLAN_META: Record<string, { tagline: string; inherits?: string; features: 
       "$0.20 per 1,000 additional executions",
     ],
   },
+  enterprise: {
+    tagline: "For orgs with custom needs",
+    inherits: "Team",
+    features: ENTERPRISE_FEATURES,
+  },
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -50,28 +63,7 @@ const ACTION_LABELS: Record<string, string> = {
   purchase: "Purchase",
 };
 
-const ENTERPRISE_FEATURES = [
-  "Self-hosted or dedicated cloud deployment support",
-  "SSO / SAML & SCIM provisioning",
-  "Audit logs for every tool call",
-  "Dedicated support & onboarding",
-  "Security reviews, DPA & SOC 2 on request",
-];
-
-const ENTERPRISE_MAILTO = `mailto:rhys@executor.sh?subject=${encodeURIComponent(
-  "Executor Enterprise inquiry",
-)}&body=${encodeURIComponent(
-  [
-    "Hi,",
-    "",
-    "We're interested in Executor Enterprise.",
-    "",
-    "Company:",
-    "Team size:",
-    "Use case:",
-    "Requirements (SSO, self-hosted, compliance, etc.):",
-  ].join("\n"),
-)}`;
+const PLAN_ORDER = ["free", "team", "enterprise"];
 
 function PlansPage() {
   const { attach, openCustomerPortal, isLoading: customerLoading } = useCustomer();
@@ -80,8 +72,8 @@ function PlansPage() {
 
   const isLoading = customerLoading || plansLoading;
 
-  const selfServePlans = (plans ?? ([] as Plan[])).filter(
-    (p: Plan) => p.id === "free" || p.id === "team",
+  const selfServePlans = PLAN_ORDER.flatMap((id) =>
+    (plans ?? ([] as Plan[])).filter((plan: Plan) => plan.id === id),
   );
 
   return (
@@ -136,6 +128,7 @@ function PlansPage() {
               const isScheduled = status === "scheduled";
               const label = isCanceling ? "Resume" : (ACTION_LABELS[action] ?? "Select");
               const isUpgradeAction = action === "upgrade" || action === "activate";
+              const isEnterprise = plan.id === "enterprise";
 
               return (
                 <div
@@ -173,14 +166,14 @@ function PlansPage() {
 
                   <div className="mt-4 flex items-baseline gap-1.5">
                     <span className="text-2xl font-semibold text-foreground tabular-nums">
-                      ${plan.price?.amount ?? 0}
+                      {plan.id === "enterprise" ? "Custom" : `$${plan.price?.amount ?? 0}`}
                     </span>
-                    {plan.price?.interval && (
+                    {plan.id !== "enterprise" && plan.price?.interval && (
                       <span className="text-sm text-muted-foreground">
                         USD / org / {plan.price.interval}
                       </span>
                     )}
-                    {!plan.price?.interval && (
+                    {plan.id !== "enterprise" && !plan.price?.interval && (
                       <span className="text-sm text-muted-foreground">USD</span>
                     )}
                   </div>
@@ -190,6 +183,8 @@ function PlansPage() {
                       <div className="flex h-9 items-center justify-center rounded-md border border-border bg-muted/30 text-sm font-medium text-muted-foreground">
                         {isCurrent ? "Current plan" : "Scheduled"}
                       </div>
+                    ) : isEnterprise ? (
+                      <EnterpriseContactDialog />
                     ) : isCanceling ? (
                       <Button
                         type="button"
@@ -251,54 +246,54 @@ function PlansPage() {
                 </div>
               );
             })}
-
-            <div className="flex flex-col rounded-xl border border-border p-5">
-              <div className="flex h-6 items-center justify-between">
-                <p className="text-base font-semibold text-foreground leading-none">Enterprise</p>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">For orgs with custom needs</p>
-
-              <div className="mt-4 flex items-baseline gap-1.5">
-                <span className="text-2xl font-semibold text-foreground tabular-nums">Custom</span>
-              </div>
-
-              <div className="mt-4">
-                <a
-                  href={ENTERPRISE_MAILTO}
-                  className="flex h-9 w-full items-center justify-center rounded-md border border-border bg-background text-sm font-medium text-foreground transition-colors hover:bg-muted"
-                >
-                  Contact us
-                </a>
-              </div>
-
-              <p className="mt-5 text-xs font-medium text-foreground">Everything in Team, plus</p>
-              <ul role="list" className="mt-2 space-y-2">
-                {ENTERPRISE_FEATURES.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-xs text-muted-foreground">
-                    <svg
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      className="mt-px size-3.5 shrink-0 text-primary/60"
-                    >
-                      <path
-                        d="M3.5 8.5L6.5 11.5L12.5 5"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                    <span>{f}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
           </div>
         )}
 
         <SlackContactCta />
       </div>
     </div>
+  );
+}
+
+function EnterpriseContactDialog() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="flex h-9 w-full items-center justify-center rounded-md text-sm font-medium"
+        >
+          Contact us
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Talk to us about Enterprise</DialogTitle>
+          <DialogDescription>
+            Add{" "}
+            <a className="font-medium text-foreground underline" href="mailto:rhys@executor.sh">
+              rhys@executor.sh
+            </a>{" "}
+            on Slack Connect and send the org name, team size, and anything you need covered.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button type="button" variant="outline">
+              Done
+            </Button>
+          </DialogClose>
+          <Button asChild>
+            <a href="mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry">
+              Email instead
+            </a>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
