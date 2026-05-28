@@ -23,8 +23,18 @@ import {
   SidecarPortInUseError,
   type SidecarConnection,
 } from "./sidecar";
-import { getServerSettings, regeneratePassword, updateServerSettings } from "./settings";
-import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
+import {
+  getServerProfiles,
+  getServerSettings,
+  regeneratePassword,
+  setServerProfiles,
+  updateServerSettings,
+} from "./settings";
+import {
+  SERVER_SETTINGS_USERNAME,
+  type DesktopServerConnection,
+  type DesktopServerSettings,
+} from "../shared/server-settings";
 
 // Pin userData to a friendly app-name-scoped dir BEFORE app.ready so every
 // Electron-side consumer (electron-store, electron-log, window-state) lands
@@ -215,7 +225,7 @@ const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => 
   }
 };
 
-const restartSidecarAndReload = async (): Promise<{ port: number; baseUrl: string }> => {
+const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
   if (connection) {
     await stopSidecar(connection.child);
     connection = null;
@@ -228,10 +238,30 @@ const restartSidecarAndReload = async (): Promise<{ port: number; baseUrl: strin
   connection = next;
   installBasicAuthHeader(next.baseUrl, next.authPassword);
   if (mainWindow) await mainWindow.loadURL(next.baseUrl);
-  return { port: next.port, baseUrl: next.baseUrl };
+  return toDesktopServerConnection(next);
 };
 
+const toDesktopServerConnection = (conn: SidecarConnection): DesktopServerConnection => ({
+  kind: "desktop-sidecar",
+  key: "desktop-sidecar",
+  origin: conn.baseUrl,
+  apiBaseUrl: `${conn.baseUrl.replace(/\/+$/, "")}/api`,
+  displayName: "Desktop sidecar",
+  ...(conn.authPassword
+    ? {
+        auth: {
+          kind: "basic" as const,
+          username: SERVER_SETTINGS_USERNAME,
+          password: conn.authPassword,
+        },
+      }
+    : {}),
+});
+
 const registerIpcHandlers = () => {
+  ipcMain.handle("executor:server:connection", (): DesktopServerConnection | null =>
+    connection ? toDesktopServerConnection(connection) : null,
+  );
   ipcMain.handle("executor:settings:get", (): DesktopServerSettings => getServerSettings());
   ipcMain.handle(
     "executor:settings:update",
@@ -242,6 +272,11 @@ const registerIpcHandlers = () => {
     "executor:settings:regenerate-password",
     (): DesktopServerSettings => regeneratePassword(),
   );
+  ipcMain.handle("executor:server-profiles:get", (): string | null => getServerProfiles());
+  ipcMain.handle("executor:server-profiles:set", (_evt, value: unknown): void => {
+    if (typeof value !== "string") return;
+    setServerProfiles(value);
+  });
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;

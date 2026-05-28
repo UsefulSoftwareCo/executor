@@ -6,6 +6,8 @@
  * renderer (Settings UI + Connect-an-agent surface) need to agree on it.
  */
 
+import type { ExecutorServerConnection } from "@executor-js/sdk/shared";
+
 export interface DesktopServerSettings {
   /** TCP port the sidecar listens on. Default 4789. */
   readonly port: number;
@@ -21,6 +23,16 @@ export interface DesktopServerSettings {
    */
   readonly password: string;
 }
+
+export type DesktopServerConnection = ExecutorServerConnection & {
+  readonly kind: "desktop-sidecar";
+  readonly key: "desktop-sidecar";
+  readonly auth?: {
+    readonly kind: "basic";
+    readonly username: string;
+    readonly password: string;
+  };
+};
 
 export const DEFAULT_SERVER_SETTINGS: DesktopServerSettings = {
   port: 4789,

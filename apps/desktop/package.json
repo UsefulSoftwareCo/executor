@@ -37,6 +37,7 @@
     "@executor-js/plugin-onepassword": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
     "@jitl/quickjs-wasmfile-release-sync": "catalog:",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "catalog:",

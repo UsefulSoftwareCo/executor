@@ -1,7 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopServerSettings } from "../shared/server-settings";
+import type { DesktopServerConnection, DesktopServerSettings } from "../shared/server-settings";
 
 const api = {
+  /** Read the active Executor server connection backing this desktop window. */
+  getServerConnection(): Promise<DesktopServerConnection | null> {
+    return ipcRenderer.invoke("executor:server:connection");
+  },
+  /** Read the desktop-persisted server profile payload. */
+  getServerProfiles(): Promise<string | null> {
+    return ipcRenderer.invoke("executor:server-profiles:get");
+  },
+  /** Persist the server profile payload in desktop storage. */
+  setServerProfiles(value: string): Promise<void> {
+    return ipcRenderer.invoke("executor:server-profiles:set", value);
+  },
   /** Read the persisted server settings (port, requireAuth, password). */
   getSettings(): Promise<DesktopServerSettings> {
     return ipcRenderer.invoke("executor:settings:get");
@@ -16,10 +28,9 @@ const api = {
   },
   /**
    * Stop + restart the sidecar so settings changes take effect.
-   * Renderer should reload its location after this resolves to point at
-   * the (possibly new) port.
+   * Main reloads the window and returns the refreshed server connection.
    */
-  restartServer(): Promise<{ readonly port: number; readonly baseUrl: string }> {
+  restartServer(): Promise<DesktopServerConnection> {
     return ipcRenderer.invoke("executor:server:restart");
   },
   /**

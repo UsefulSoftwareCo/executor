@@ -4,6 +4,7 @@ import { DEFAULT_SERVER_SETTINGS, type DesktopServerSettings } from "../shared/s
 
 interface PersistedShape {
   readonly server: DesktopServerSettings;
+  readonly serverProfiles?: string;
 }
 
 const generatePassword = (): string => randomBytes(24).toString("base64url");
@@ -42,4 +43,10 @@ export const regeneratePassword = (): DesktopServerSettings => {
   const next = { ...getServerSettings(), password: generatePassword() };
   store.set("server", next);
   return next;
+};
+
+export const getServerProfiles = (): string | null => store.get("serverProfiles") ?? null;
+
+export const setServerProfiles = (value: string): void => {
+  store.set("serverProfiles", value);
 };

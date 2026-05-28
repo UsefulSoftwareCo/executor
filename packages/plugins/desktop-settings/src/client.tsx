@@ -3,8 +3,9 @@
  * @executor-js/plugin-desktop-settings/client
  *
  * A single page mounted at `/plugins/desktop-settings/` that lets the user
- * configure the Electron sidecar's port, auth, and password. Talks to the
- * main process via `window.executor.*` (exposed by `apps/desktop/src/preload`).
+ * inspect and configure the Electron sidecar's server connection. Talks to
+ * the main process via `window.executor.*` (exposed by
+ * `apps/desktop/src/preload`).
  *
  * The plugin is bundled into apps/local's renderer too (because executor
  * web + desktop share the same client bundle pipeline), but the page
@@ -29,19 +30,39 @@ interface DesktopServerSettings {
   readonly password: string;
 }
 
+interface DesktopServerConnection {
+  readonly kind: "desktop-sidecar";
+  readonly key: "desktop-sidecar";
+  readonly origin: string;
+  readonly apiBaseUrl: string;
+  readonly displayName: string;
+  readonly auth?: {
+    readonly kind: "basic";
+    readonly username: string;
+    readonly password: string;
+  };
+}
+
 interface ExecutorBridge {
+  readonly getServerConnection: () => Promise<DesktopServerConnection | null>;
   readonly getSettings: () => Promise<DesktopServerSettings>;
   readonly updateSettings: (
     patch: Partial<DesktopServerSettings>,
   ) => Promise<DesktopServerSettings>;
   readonly regeneratePassword: () => Promise<DesktopServerSettings>;
-  readonly restartServer: () => Promise<{ readonly port: number; readonly baseUrl: string }>;
+  readonly restartServer: () => Promise<DesktopServerConnection>;
 }
 
 const readBridge = (): ExecutorBridge | null => {
   if (typeof window === "undefined") return null;
   const candidate = (window as Window & { readonly executor?: ExecutorBridge }).executor;
-  if (!candidate || typeof candidate.getSettings !== "function") return null;
+  if (
+    !candidate ||
+    typeof candidate.getSettings !== "function" ||
+    typeof candidate.getServerConnection !== "function"
+  ) {
+    return null;
+  }
   return candidate;
 };
 
@@ -60,6 +81,7 @@ const describeIpcError = (_err: unknown): string =>
 
 function SettingsPage() {
   const bridge = readBridge();
+  const [connection, setConnection] = useState<DesktopServerConnection | null>(null);
   const [settings, setSettings] = useState<DesktopServerSettings | null>(null);
   const [draft, setDraft] = useState<DesktopServerSettings | null>(null);
   const [status, setStatus] = useState<"idle" | "saving" | "restarting" | "error">("idle");
@@ -67,10 +89,27 @@ function SettingsPage() {
 
   useEffect(() => {
     if (!bridge) return;
-    void bridge.getSettings().then((s) => {
-      setSettings(s);
-      setDraft(s);
-    });
+    void Promise.all([bridge.getSettings(), bridge.getServerConnection()]).then(
+      ([nextSettings, nextConnection]) => {
+        setSettings(nextSettings);
+        setDraft(nextSettings);
+        setConnection(nextConnection);
+      },
+    );
+  }, [bridge]);
+
+  const restartAndRefreshConnection = useCallback(async () => {
+    if (!bridge) return;
+    setStatus("restarting");
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC, errors surface in the form
+    try {
+      setConnection(await bridge.restartServer());
+    } catch (err) {
+      setError(describeIpcError(err));
+      setStatus("error");
+      return;
+    }
+    setStatus("idle");
   }, [bridge]);
 
   const apply = useCallback(
@@ -89,19 +128,9 @@ function SettingsPage() {
       }
       setSettings(next);
       setDraft(next);
-      setStatus("restarting");
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: same as above
-      try {
-        await bridge.restartServer();
-      } catch (err) {
-        setError(describeIpcError(err));
-        setStatus("error");
-        return;
-      }
-      // Window reload happens on the main side after restart resolves.
-      setStatus("idle");
+      await restartAndRefreshConnection();
     },
-    [bridge],
+    [bridge, restartAndRefreshConnection],
   );
 
   const regenerate = useCallback(async () => {
@@ -118,31 +147,21 @@ function SettingsPage() {
     }
     setSettings(next);
     setDraft(next);
-    setStatus("restarting");
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC
-    try {
-      await bridge.restartServer();
-    } catch (err) {
-      setError(describeIpcError(err));
-      setStatus("error");
-      return;
-    }
-    setStatus("idle");
-  }, [bridge]);
+    await restartAndRefreshConnection();
+  }, [bridge, restartAndRefreshConnection]);
 
   if (!bridge) {
     return (
       <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>
         <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Desktop server settings</h1>
         <p style={{ color: "var(--muted-foreground, #888)" }}>
-          This panel configures the Executor Desktop app's local server. Open this page from the
-          desktop app to change the port, auth, or password.
+          Open this page from Executor Desktop to inspect and change the active server connection.
         </p>
       </div>
     );
   }
 
-  if (!settings || !draft) {
+  if (!settings || !draft || !connection) {
     return <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>;
   }
 
@@ -151,10 +170,20 @@ function SettingsPage() {
     draft.requireAuth !== settings.requireAuth ||
     draft.password !== settings.password;
 
+  const authLabel =
+    connection.auth?.kind === "basic"
+      ? `Basic auth as ${connection.auth.username}`
+      : "No HTTP auth";
+  const cliProfileCommand = `executor server add desktop ${connection.origin} --default`;
+  const cliUseCommand =
+    connection.auth?.kind === "basic"
+      ? `EXECUTOR_AUTH_PASSWORD=${connection.auth.password} executor tools sources --server desktop`
+      : "executor tools sources --server desktop";
+
   return (
-    <div style={{ maxWidth: 640, margin: "2rem auto", padding: "1.5rem" }}>
+    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "1.5rem" }}>
       <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.25rem" }}>
-        Desktop server
+        Desktop server connection
       </h1>
       <p
         style={{
@@ -163,9 +192,43 @@ function SettingsPage() {
           marginBottom: "1.5rem",
         }}
       >
-        Configure how the local HTTP server in the desktop app accepts connections. Changes restart
-        the server immediately.
+        {connection.displayName}
       </p>
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))",
+          gap: "0.75rem",
+          marginBottom: "1.5rem",
+        }}
+      >
+        <ConnectionField label="Origin" value={connection.origin} />
+        <ConnectionField label="API" value={connection.apiBaseUrl} />
+        <ConnectionField label="Auth" value={authLabel} />
+        <ConnectionField label="Kind" value={connection.kind} />
+      </section>
+
+      <section
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.5rem",
+          marginBottom: "1.5rem",
+          padding: "0.85rem",
+          borderRadius: 6,
+          border: "1px solid var(--border, #ddd)",
+          background: "var(--muted, #f5f5f5)",
+        }}
+      >
+        <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>CLI profile</div>
+        <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+          {cliProfileCommand}
+        </code>
+        <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+          {cliUseCommand}
+        </code>
+      </section>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
         <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
@@ -187,7 +250,7 @@ function SettingsPage() {
             }}
           />
           <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-            Default 4789. The desktop opens at <code>http://127.0.0.1:{draft.port}</code>.
+            Changes restart the connection at <code>http://127.0.0.1:{draft.port}</code>.
           </span>
         </label>
 
@@ -203,8 +266,7 @@ function SettingsPage() {
             <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Use without a password</span>
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
               Disables HTTP Basic auth on the sidecar. Any process running as you on this machine
-              can hit <code>/api</code> directly. The host allowlist still blocks browser-based
-              attacks. Recommended only on personal devices.
+              can hit <code>/api</code> directly.
             </span>
           </span>
         </label>
@@ -246,9 +308,8 @@ function SettingsPage() {
               </button>
             </div>
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              The renderer sends this as <code>Authorization: Basic</code>. AI clients using the
-              HTTP MCP integration need this value too — regenerating invalidates existing client
-              configs.
+              Regenerating this changes the active server connection and invalidates existing HTTP
+              MCP client configs.
             </span>
           </div>
         )}
@@ -286,6 +347,29 @@ function SettingsPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ConnectionField(props: { readonly label: string; readonly value: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        minWidth: 0,
+        flexDirection: "column",
+        gap: "0.2rem",
+        padding: "0.75rem",
+        borderRadius: 6,
+        border: "1px solid var(--border, #ddd)",
+      }}
+    >
+      <span style={{ fontSize: "0.7rem", color: "var(--muted-foreground, #888)" }}>
+        {props.label}
+      </span>
+      <code style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {props.value}
+      </code>
     </div>
   );
 }

@@ -18,7 +18,7 @@ describe("desktopSettingsPlugin", () => {
 
       expect(result).toEqual({
         url: "http://executor.test/base/plugins/desktop-settings/",
-        flow: "Open this URL in Executor Desktop. The user can change port/auth or regenerate the password there; then rerun discovery/list tools to observe the restarted server.",
+        flow: "Open this URL in Executor Desktop. The user can inspect the active server connection, change port/auth, or regenerate the password there; then rerun discovery/list tools to observe the refreshed connection.",
       });
 
       yield* executor.close();

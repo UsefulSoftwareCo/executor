@@ -1,12 +1,12 @@
 /**
  * @executor-js/plugin-desktop-settings/server
  *
- * Zero-server-state plugin. The Desktop Settings panel reads and writes
- * its configuration via Electron IPC (`window.executor.*`), not through
- * the executor server. The server contribution exposes an agent-facing
- * browser handoff tool so a chat flow can still route the user to the
- * Desktop-only settings UI without moving the Basic-auth password
- * through the model context.
+ * Zero-server-state plugin. The Desktop Settings panel reads the active
+ * Desktop sidecar Executor Server Connection and writes connection settings
+ * via Electron IPC (`window.executor.*`), not through the executor server.
+ * The server contribution exposes an agent-facing browser handoff tool so a
+ * chat flow can still route the user to the Desktop-only settings UI without
+ * moving the Basic-auth password through the model context.
  */
 
 import { Effect, Schema } from "effect";
@@ -46,12 +46,12 @@ export const desktopSettingsPlugin = definePlugin((options: DesktopSettingsPlugi
         tool({
           name: "openSettings",
           description:
-            "Return the Desktop Settings browser URL for configuring the local sidecar port, Basic-auth requirement, and generated password. This flow must stay in the Desktop UI because password display/regeneration and server restart are Electron IPC operations; never ask the user to paste the password in chat.",
+            "Return the Desktop Settings browser URL for inspecting and configuring the desktop-sidecar Executor Server Connection. This flow must stay in the Desktop UI because password display/regeneration and server restart are Electron IPC operations; never ask the user to paste the password in chat.",
           outputSchema: DesktopSettingsOpenOutputStd,
           execute: () =>
             Effect.succeed({
               url: `${resolveWebBaseUrl(options.webBaseUrl)}/plugins/desktop-settings/`,
-              flow: "Open this URL in Executor Desktop. The user can change port/auth or regenerate the password there; then rerun discovery/list tools to observe the restarted server.",
+              flow: "Open this URL in Executor Desktop. The user can inspect the active server connection, change port/auth, or regenerate the password there; then rerun discovery/list tools to observe the refreshed connection.",
             }),
         }),
       ],
