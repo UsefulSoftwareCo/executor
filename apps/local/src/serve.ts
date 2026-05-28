@@ -200,6 +200,36 @@ export interface ServerInstance {
 
 type ServerHandlers = Awaited<ReturnType<typeof getServerHandlers>>;
 
+const corsHeaders = {
+  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  "access-control-allow-headers":
+    "authorization, content-type, x-executor-token, x-requested-with, traceparent, tracestate, baggage, b3",
+  "access-control-allow-credentials": "true",
+  "access-control-expose-headers": "*",
+} as const;
+
+const withCorsHeaders = (req: Request, response: Response): Response => {
+  const origin = req.headers.get("origin");
+  if (!origin) return response;
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  for (const [key, value] of Object.entries(corsHeaders)) headers.set(key, value);
+  headers.set(
+    "access-control-allow-headers",
+    req.headers.get("access-control-request-headers") ??
+      corsHeaders["access-control-allow-headers"],
+  );
+  headers.append("vary", "Origin");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const corsPreflightResponse = (req: Request): Response =>
+  withCorsHeaders(req, new Response(null, { status: 204 }));
+
 export async function startServer(opts: StartServerOptions = {}): Promise<ServerInstance> {
   const port = opts.port ?? parseInt(process.env.PORT ?? "4788", 10);
   const hostname = opts.hostname ?? "127.0.0.1";
@@ -264,8 +294,15 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
     idleTimeout: 0,
     routes: { ...staticRoutes },
     async fetch(req) {
+      const maybeWithCorsHeaders = (response: Response): Response =>
+        requiresAuth ? withCorsHeaders(req, response) : response;
+
       if (!isAllowedHost(req)) {
-        return new Response("Forbidden", { status: 403 });
+        return maybeWithCorsHeaders(new Response("Forbidden", { status: 403 }));
+      }
+
+      if (requiresAuth && req.method === "OPTIONS" && req.headers.has("origin")) {
+        return corsPreflightResponse(req);
       }
 
       const url = new URL(req.url);
@@ -276,18 +313,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
       const skipAuth = isUnauthenticatedOAuthCallbackPath(url.pathname);
 
       if (requiresAuth && !skipAuth && !isAuthorized(req)) {
-        return new Response("Unauthorized", {
-          status: 401,
-          headers: { "www-authenticate": 'Bearer realm="executor", Basic realm="executor"' },
-        });
+        return maybeWithCorsHeaders(
+          new Response("Unauthorized", {
+            status: 401,
+            headers: { "www-authenticate": 'Bearer realm="executor", Basic realm="executor"' },
+          }),
+        );
       }
 
       if (url.pathname.startsWith("/mcp")) {
-        return handlers.mcp.handleRequest(req);
+        return maybeWithCorsHeaders(await handlers.mcp.handleRequest(req));
       }
 
       if (url.pathname.startsWith("/api/mcp-sessions/")) {
-        return handlers.mcp.handleApprovalRequest(req);
+        return maybeWithCorsHeaders(await handlers.mcp.handleApprovalRequest(req));
       }
 
       // OAuth result polling — local-only, served outside the typed API
@@ -296,31 +335,33 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
       const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(url.pathname);
       if (awaitMatch && req.method === "GET") {
         const result = consumeOAuthResult(awaitMatch[1]);
-        return new Response(JSON.stringify(result), {
-          headers: { "content-type": "application/json" },
-        });
+        return maybeWithCorsHeaders(
+          new Response(JSON.stringify(result), {
+            headers: { "content-type": "application/json" },
+          }),
+        );
       }
 
       if (url.pathname.startsWith("/api/") || url.pathname === "/api") {
         url.pathname = url.pathname.slice("/api".length) || "/";
-        return handlers.api.handler(new Request(url, req));
+        return maybeWithCorsHeaders(await handlers.api.handler(new Request(url, req)));
       }
 
       // Dev mode: forward everything else (SPA + hashed assets) to the
       // vite child so source edits show up without a rebuild.
       if (viteChild) {
-        return proxyToVite(req, viteChild.url);
+        return maybeWithCorsHeaders(await proxyToVite(req, viteChild.url));
       }
 
       // If a path looks like a static asset (has a file extension), do not
       // fall back to SPA HTML. Returning index.html here causes browser module
       // MIME errors when hashed chunks are stale/missing.
       if (hasFileExtension(url.pathname)) {
-        return new Response("Not Found", { status: 404 });
+        return maybeWithCorsHeaders(new Response("Not Found", { status: 404 }));
       }
 
       // SPA fallback
-      return serveIndex();
+      return maybeWithCorsHeaders(await serveIndex());
     },
     error(error) {
       console.error("Server error:", error);

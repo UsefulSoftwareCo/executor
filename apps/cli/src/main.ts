@@ -52,13 +52,23 @@ if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
 import { Argument as Args, Command, Flag as Options } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { FileSystem, Path as PlatformPath } from "effect";
+import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 
 import { ExecutorApi } from "@executor-js/api";
+import {
+  DEFAULT_EXECUTOR_SERVER_USERNAME,
+  getExecutorServerAuthorizationHeader,
+  normalizeExecutorServerConnection,
+  type ExecutorLocalServerKind,
+  type ExecutorLocalServerManifest,
+  type ExecutorServerConnection,
+  type ExecutorServerConnectionInput,
+} from "@executor-js/sdk/shared";
 import { startServer, runMcpStdioServer, getExecutor } from "@executor-js/local";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { fetchIntegrations } from "./integrations";
@@ -86,6 +96,30 @@ import {
   writeDaemonPointer,
   writeDaemonRecord,
 } from "./daemon-state";
+import {
+  canAutoStartCliServerConnection,
+  chooseCliServerConnectionWithActiveLocal,
+  parseCliExecutorServerConnection,
+  type CliServerConnectionSource,
+  withCliServerAuthFallback,
+} from "./server-connection";
+import {
+  acquireLocalServerStartLock,
+  readLocalServerManifest,
+  releaseLocalServerStartLock,
+  removeLocalServerManifestIfOwnedBy,
+  resolveExecutorDataDir,
+  writeLocalServerManifest,
+} from "./local-server-manifest";
+import {
+  defaultCliServerConnectionProfile,
+  findCliServerConnectionProfile,
+  readCliServerConnectionStore,
+  removeCliServerConnectionProfile,
+  setDefaultCliServerConnectionProfile,
+  upsertCliServerConnectionProfile,
+  validateCliServerConnectionProfileName,
+} from "./server-profile";
 import {
   buildResumeContentTemplate,
   buildToolPath,
@@ -146,9 +180,15 @@ interface DaemonScopeInfo {
   readonly dir: string;
 }
 
-const readDaemonScopeInfo = (baseUrl: string): Effect.Effect<DaemonScopeInfo | null> =>
+const readDaemonScopeInfo = (
+  baseUrl: string,
+  authorization?: string,
+): Effect.Effect<DaemonScopeInfo | null> =>
   Effect.tryPromise(() =>
-    fetch(`${baseUrl}/api/scope`, { signal: AbortSignal.timeout(2000) }),
+    fetch(`${baseUrl}/api/scope`, {
+      ...(authorization ? { headers: { authorization } } : {}),
+      signal: AbortSignal.timeout(2000),
+    }),
   ).pipe(
     Effect.flatMap((res) => {
       if (!res.ok) return Effect.succeed(null);
@@ -174,8 +214,38 @@ const readDaemonScopeInfo = (baseUrl: string): Effect.Effect<DaemonScopeInfo | n
     Effect.catchCause(() => Effect.succeed(null)),
   );
 
-const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
-  readDaemonScopeInfo(baseUrl).pipe(Effect.map((scopeInfo) => scopeInfo !== null));
+const isServerReachable = (baseUrl: string, authorization?: string): Effect.Effect<boolean> =>
+  readDaemonScopeInfo(baseUrl, authorization).pipe(Effect.map((scopeInfo) => scopeInfo !== null));
+
+const readActiveLocalServerManifest = (): Effect.Effect<
+  ExecutorLocalServerManifest | null,
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    const manifest = yield* readLocalServerManifest();
+    if (!manifest) return null;
+
+    if (!isPidAlive(manifest.pid)) {
+      yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
+      return null;
+    }
+
+    const authorization = getExecutorServerAuthorizationHeader(manifest.connection) ?? undefined;
+    if (yield* isServerReachable(manifest.connection.origin, authorization)) {
+      return manifest;
+    }
+
+    return yield* Effect.fail(
+      new Error(
+        [
+          `A local Executor ${manifest.kind} is registered at ${manifest.connection.origin} (pid ${manifest.pid}) but is not reachable.`,
+          "Refusing to start another local server against the same data directory.",
+          "Stop the existing process or remove the stale server-control manifest after verifying the process is not using the database.",
+        ].join("\n"),
+      ),
+    );
+  });
 
 const normalizeDaemonScopeDir = (dir: string): string => {
   const resolved = resolve(dir);
@@ -185,12 +255,30 @@ const normalizeDaemonScopeDir = (dir: string): string => {
 const currentDaemonScopeDir = (): string =>
   normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR ?? process.cwd());
 
+const currentScopeDirForManifest = (): string | null =>
+  process.env.EXECUTOR_SCOPE_DIR ? normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR) : null;
+
 const script = process.argv[1];
 const isDevMode = isDevCliEntrypoint(script);
 const cliPrefix = isDevMode ? `bun run ${script}` : "executor";
 
 const toError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
+
+interface ServerTarget {
+  readonly baseUrl?: string;
+  readonly serverName?: string;
+}
+
+interface RequestedExecutorServerConnection {
+  readonly connection: ExecutorServerConnection;
+  readonly source: CliServerConnectionSource;
+}
+
+interface ExecuteCodeResult {
+  readonly connection: ExecutorServerConnection;
+  readonly outcome: ExecuteCodeOutcome;
+}
 
 const parseDaemonUrl = (baseUrl: string) =>
   Effect.try({
@@ -199,8 +287,80 @@ const parseDaemonUrl = (baseUrl: string) =>
       cause instanceof Error ? cause : new Error(`Invalid base URL: ${String(cause)}`),
   });
 
+const parseExecutorServerConnection = (baseUrl: string) =>
+  Effect.try({
+    try: () => parseCliExecutorServerConnection(baseUrl),
+    catch: (cause) =>
+      cause instanceof Error ? cause : new Error(`Invalid server URL: ${String(cause)}`),
+  });
+
 const daemonBaseUrl = (hostname: string, port: number): string =>
   `http://${canonicalDaemonHost(hostname)}:${port}`;
+
+const serverAuthFromInputs = (input: {
+  readonly authToken: string | undefined;
+  readonly authPassword: string | undefined;
+}): ExecutorServerConnection["auth"] | undefined => {
+  if (input.authPassword) {
+    return {
+      kind: "basic",
+      username: DEFAULT_EXECUTOR_SERVER_USERNAME,
+      password: input.authPassword,
+    };
+  }
+  if (input.authToken) return { kind: "bearer", token: input.authToken };
+  return undefined;
+};
+
+const makeLocalServerManifest = (input: {
+  readonly kind: ExecutorLocalServerKind;
+  readonly connection: ExecutorServerConnection;
+}): Effect.Effect<ExecutorLocalServerManifest, never, PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const path = yield* PlatformPath.Path;
+    return {
+      version: 1,
+      kind: input.kind,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      dataDir: resolveExecutorDataDir(path),
+      scopeDir: currentScopeDirForManifest(),
+      connection: input.connection,
+      owner: {
+        client: "cli",
+        version: CLI_VERSION,
+        executablePath: isDevMode ? (script ?? null) : process.execPath,
+      },
+    };
+  });
+
+const assertNoOtherActiveLocalServer = (): Effect.Effect<
+  void,
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    const active = yield* readActiveLocalServerManifest();
+    if (!active || active.pid === process.pid) return;
+    return yield* Effect.fail(
+      new Error(
+        [
+          `A local Executor ${active.kind} is already running at ${active.connection.origin} (pid ${active.pid}).`,
+          `It owns the current data directory: ${active.dataDir}`,
+          "Stop it before starting another local server.",
+        ].join("\n"),
+      ),
+    );
+  });
+
+const publishLocalServerManifest = (input: {
+  readonly kind: ExecutorLocalServerKind;
+  readonly connection: ExecutorServerConnection;
+}): Effect.Effect<void, PlatformError, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const manifest = yield* makeLocalServerManifest(input);
+    yield* writeLocalServerManifest(manifest);
+  });
 
 const installDefaultExecutorWebBaseUrl = (baseUrl: string): (() => void) => {
   if (process.env.EXECUTOR_WEB_BASE_URL !== undefined) {
@@ -343,6 +503,23 @@ const ensureDaemon = (
       return resolvedTarget.baseUrl;
     }
 
+    const active = yield* readActiveLocalServerManifest();
+    if (
+      active &&
+      normalizeExecutorServerConnection({ origin: active.connection.origin }).origin !==
+        normalizeExecutorServerConnection({ origin: resolvedTarget.baseUrl }).origin
+    ) {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `A local Executor ${active.kind} is already running at ${active.connection.origin} (pid ${active.pid}).`,
+            `It owns the current data directory: ${active.dataDir}`,
+            "Refusing to start another local daemon against the same database.",
+          ].join("\n"),
+        ),
+      );
+    }
+
     const parsed = yield* parseDaemonUrl(baseUrl);
     const host = canonicalDaemonHost(parsed.hostname);
 
@@ -363,6 +540,99 @@ const ensureDaemon = (
       scopeId: resolvedTarget.scopeId,
       preferredPort: parsed.port,
       allowedHosts: [],
+    });
+  }).pipe(Effect.mapError(toError));
+
+const resolveRequestedExecutorServerConnection = (
+  target: ServerTarget,
+): Effect.Effect<
+  RequestedExecutorServerConnection,
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    if (target.baseUrl && target.serverName) {
+      return yield* Effect.fail(new Error("Use either --server or --base-url, not both."));
+    }
+
+    if (target.serverName) {
+      const store = yield* readCliServerConnectionStore();
+      const profile = findCliServerConnectionProfile(store, target.serverName);
+      if (!profile) {
+        return yield* Effect.fail(new Error(`No server profile named "${target.serverName}".`));
+      }
+      return { connection: withCliServerAuthFallback(profile.connection), source: "explicit" };
+    }
+
+    if (!target.baseUrl) {
+      const store = yield* readCliServerConnectionStore();
+      const profile = defaultCliServerConnectionProfile(store);
+      if (profile) {
+        return {
+          connection: withCliServerAuthFallback(profile.connection),
+          source: "default-profile",
+        };
+      }
+
+      const active = yield* readActiveLocalServerManifest();
+      if (active) return { connection: active.connection, source: "active-local" };
+    }
+
+    return {
+      connection: yield* parseExecutorServerConnection(target.baseUrl ?? DEFAULT_BASE_URL),
+      source: target.baseUrl ? "explicit" : "implicit-default",
+    };
+  });
+
+const resolveExecutorServerConnection = (
+  target: ServerTarget,
+): Effect.Effect<ExecutorServerConnection, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const requestedResult = yield* resolveRequestedExecutorServerConnection(target);
+    const active = yield* readActiveLocalServerManifest();
+    const decision = chooseCliServerConnectionWithActiveLocal({
+      requested: requestedResult.connection,
+      source: requestedResult.source,
+      active,
+    });
+
+    if (decision.kind === "conflict") {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `A local Executor ${decision.active.kind} is already running at ${decision.active.connection.origin} (pid ${decision.active.pid}).`,
+            `It owns the current data directory: ${decision.active.dataDir}`,
+            "Refusing to auto-start another local server against the same database.",
+            `Use the active server, or stop it before starting ${cliPrefix} daemon run.`,
+          ].join("\n"),
+        ),
+      );
+    }
+
+    const requested = decision.connection;
+    if (decision.kind === "use-active") return requested;
+
+    if (!canAutoStartCliServerConnection(requested)) {
+      const authorization = getExecutorServerAuthorizationHeader(requested) ?? undefined;
+      if (yield* isServerReachable(requested.origin, authorization)) {
+        return requested;
+      }
+      return yield* Effect.fail(
+        new Error(
+          [
+            `Executor server is not reachable at ${requested.origin}.`,
+            "For hosted Executor, set EXECUTOR_API_KEY to a bearer API key.",
+            "For password-protected local or desktop servers, set EXECUTOR_AUTH_PASSWORD.",
+            "For unauthenticated local Executor, use an http://localhost or http://127.0.0.1 server URL.",
+          ].join("\n"),
+        ),
+      );
+    }
+
+    const daemonUrl = yield* ensureDaemon(requested.origin);
+    return normalizeExecutorServerConnection({
+      ...requested,
+      origin: daemonUrl,
     });
   }).pipe(Effect.mapError(toError));
 
@@ -434,6 +704,7 @@ const stopDaemon = (
 
     yield* removeDaemonRecord({ hostname: host, port: target.port });
     yield* removeDaemonPointer({ hostname: host, scopeId }).pipe(Effect.ignore);
+    yield* removeLocalServerManifestIfOwnedBy({ pid: record.pid }).pipe(Effect.ignore);
     console.log(`Daemon stopped at ${target.baseUrl}.`);
   }).pipe(Effect.mapError(toError));
 
@@ -463,12 +734,12 @@ const buildResumeApprovalUrl = (baseUrl: string, executionId: string): string =>
 };
 
 const executeCode = (input: {
-  baseUrl: string;
+  target: ServerTarget;
   code: string;
-}): Effect.Effect<ExecuteCodeOutcome, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+}): Effect.Effect<ExecuteCodeResult, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
-    const daemonUrl = yield* ensureDaemon(input.baseUrl);
-    const client = yield* makeApiClient(daemonUrl);
+    const connection = yield* resolveExecutorServerConnection(input.target);
+    const client = yield* makeApiClient(connection);
     const response = yield* client.executions.execute({
       payload: {
         code: input.code,
@@ -478,11 +749,16 @@ const executeCode = (input: {
     if (response.status === "paused") {
       const executionId = extractExecutionId(response.structured);
       return {
-        status: "paused" as const,
-        text: response.text,
-        executionId,
-        approvalUrl: executionId ? buildResumeApprovalUrl(daemonUrl, executionId) : undefined,
-        interaction: extractPausedInteraction(response.structured),
+        connection,
+        outcome: {
+          status: "paused" as const,
+          text: response.text,
+          executionId,
+          approvalUrl: executionId
+            ? buildResumeApprovalUrl(connection.origin, executionId)
+            : undefined,
+          interaction: extractPausedInteraction(response.structured),
+        },
       };
     }
 
@@ -491,12 +767,27 @@ const executeCode = (input: {
     }
 
     return {
-      status: "completed" as const,
-      result: extractExecutionResult(response.structured),
+      connection,
+      outcome: {
+        status: "completed" as const,
+        result: extractExecutionResult(response.structured),
+      },
     };
   }).pipe(Effect.mapError(toError));
 
-const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOutcome }) =>
+const serverTargetResumeFlag = (
+  target: ServerTarget,
+  connection: ExecutorServerConnection,
+): string =>
+  target.serverName
+    ? `--server ${shellQuoteArg(target.serverName)}`
+    : `--base-url ${shellQuoteArg(target.baseUrl ?? connection.origin)}`;
+
+const printExecutionOutcome = (input: {
+  target: ServerTarget;
+  connection: ExecutorServerConnection;
+  outcome: ExecuteCodeOutcome;
+}) =>
   Effect.sync(() => {
     if (input.outcome.status === "paused") {
       console.log(input.outcome.text);
@@ -505,7 +796,7 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
           console.log("\nApprove in browser:");
           console.log(`  ${input.outcome.approvalUrl}`);
         }
-        const commandPrefix = `${cliPrefix} resume --execution-id ${input.outcome.executionId} --base-url ${input.baseUrl}`;
+        const commandPrefix = `${cliPrefix} resume --execution-id ${input.outcome.executionId} ${serverTargetResumeFlag(input.target, input.connection)}`;
         if (input.outcome.interaction?.kind === "form") {
           const requestedSchema = input.outcome.interaction.requestedSchema;
           if (requestedSchema && Object.keys(requestedSchema).length > 0) {
@@ -537,10 +828,19 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
 // Typed API client
 // ---------------------------------------------------------------------------
 
-const makeApiClient = (baseUrl: string) =>
-  HttpApiClient.make(ExecutorApi, { baseUrl: `${baseUrl}/api` }).pipe(
-    Effect.provide(FetchHttpClient.layer),
-  );
+const makeApiClient = (connection: ExecutorServerConnection) => {
+  const authorization = getExecutorServerAuthorizationHeader(connection);
+  return HttpApiClient.make(ExecutorApi, {
+    baseUrl: connection.apiBaseUrl,
+    ...(authorization
+      ? {
+          transformClient: HttpClient.mapRequest((request) =>
+            HttpClientRequest.setHeader(request, "authorization", authorization),
+          ),
+        }
+      : {}),
+  }).pipe(Effect.provide(FetchHttpClient.layer));
+};
 
 // ---------------------------------------------------------------------------
 // Foreground session
@@ -561,39 +861,65 @@ const runForegroundSession = (input: {
     );
 
     try {
-      const server = yield* Effect.promise(() =>
-        startServer({
-          port: input.port,
-          hostname: input.hostname,
-          allowedHosts: input.allowedHosts,
-          authToken: input.authToken,
-          authPassword: input.authPassword,
-          embeddedWebUI,
-        }),
-      );
+      const startupLock = yield* acquireLocalServerStartLock();
+      let server: Awaited<ReturnType<typeof startServer>> | null = null;
+      let baseUrl: string | null = null;
 
-      const baseUrl = `http://${displayHost}:${server.port}`;
-      console.log(`Executor is ready.`);
-      console.log(`Web:     ${baseUrl}`);
-      console.log(`MCP:     ${baseUrl}/mcp`);
-      console.log(`OpenAPI: ${baseUrl}/api/docs`);
-      if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
-        console.log(
-          `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
+      try {
+        yield* assertNoOtherActiveLocalServer();
+        server = yield* Effect.promise(() =>
+          startServer({
+            port: input.port,
+            hostname: input.hostname,
+            allowedHosts: input.allowedHosts,
+            authToken: input.authToken,
+            authPassword: input.authPassword,
+            embeddedWebUI,
+          }),
         );
-        if (input.allowedHosts.length > 0) {
-          console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
-        }
-        if (input.authPassword) {
-          console.log("   Basic authentication is enabled.");
-        } else if (input.authToken) {
-          console.log("   Token authentication is enabled.");
-        }
+        baseUrl = `http://${displayHost}:${server.port}`;
+        yield* publishLocalServerManifest({
+          kind: "foreground",
+          connection: normalizeExecutorServerConnection({
+            kind: "http",
+            origin: baseUrl,
+            displayName: "CLI web",
+            auth: serverAuthFromInputs(input),
+          }),
+        });
+      } finally {
+        yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
       }
-      console.log(`\nPress Ctrl+C to stop.`);
 
-      yield* waitForShutdownSignal();
-      yield* Effect.promise(() => server.stop());
+      if (!server || !baseUrl) {
+        return yield* Effect.fail(new Error("Failed to start local Executor server."));
+      }
+
+      try {
+        console.log(`Executor is ready.`);
+        console.log(`Web:     ${baseUrl}`);
+        console.log(`MCP:     ${baseUrl}/mcp`);
+        console.log(`OpenAPI: ${baseUrl}/api/docs`);
+        if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
+          console.log(
+            `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
+          );
+          if (input.allowedHosts.length > 0) {
+            console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
+          }
+          if (input.authPassword) {
+            console.log("   Basic authentication is enabled.");
+          } else if (input.authToken) {
+            console.log("   Token authentication is enabled.");
+          }
+        }
+        console.log(`\nPress Ctrl+C to stop.`);
+
+        yield* waitForShutdownSignal();
+      } finally {
+        yield* Effect.promise(() => server.stop());
+        yield* removeLocalServerManifestIfOwnedBy({ pid: process.pid }).pipe(Effect.ignore);
+      }
     } finally {
       restoreWebBaseUrl();
     }
@@ -614,37 +940,62 @@ const runDaemonSession = (input: {
     const scopeId = currentDaemonScopeId();
 
     try {
-      const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
+      const startupLock = yield* acquireLocalServerStartLock();
+      let server: Awaited<ReturnType<typeof startServer>> | null = null;
+      let daemonPort: number | null = null;
+      let token: string | null = null;
 
-      if (existing) {
-        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
-        if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-          return yield* Effect.fail(
-            new Error(
-              [
-                `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-                `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-                `Stop it first: ${cliPrefix} daemon stop`,
-              ].join("\n"),
-            ),
-          );
+      try {
+        yield* assertNoOtherActiveLocalServer();
+
+        const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
+
+        if (existing) {
+          const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+          if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
+            return yield* Effect.fail(
+              new Error(
+                [
+                  `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                  `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                  `Stop it first: ${cliPrefix} daemon stop`,
+                ].join("\n"),
+              ),
+            );
+          }
+          yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
         }
-        yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
+
+        server = yield* Effect.promise(() =>
+          startServer({
+            port: input.port,
+            hostname: input.hostname,
+            allowedHosts: input.allowedHosts,
+            authToken: input.authToken,
+            authPassword: input.authPassword,
+            embeddedWebUI,
+          }),
+        );
+
+        daemonPort = server.port;
+        token = randomUUID();
+        const daemonUrl = daemonBaseUrl(daemonHost, daemonPort);
+        yield* publishLocalServerManifest({
+          kind: "cli-daemon",
+          connection: normalizeExecutorServerConnection({
+            kind: "http",
+            origin: daemonUrl,
+            displayName: "CLI daemon",
+            auth: serverAuthFromInputs(input),
+          }),
+        });
+      } finally {
+        yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
       }
 
-      const server = yield* Effect.promise(() =>
-        startServer({
-          port: input.port,
-          hostname: input.hostname,
-          allowedHosts: input.allowedHosts,
-          authToken: input.authToken,
-          authPassword: input.authPassword,
-          embeddedWebUI,
-        }),
-      );
-
-      const daemonPort = server.port;
-      const token = randomUUID();
+      if (!server || daemonPort === null || token === null) {
+        return yield* Effect.fail(new Error("Failed to start local Executor daemon."));
+      }
 
       try {
         yield* writeDaemonRecord({
@@ -674,6 +1025,7 @@ const runDaemonSession = (input: {
         yield* Effect.promise(() => server.stop());
         yield* removeDaemonRecord({ hostname: daemonHost, port: daemonPort });
         yield* removeDaemonPointer({ hostname: daemonHost, scopeId }).pipe(Effect.ignore);
+        yield* removeLocalServerManifestIfOwnedBy({ pid: process.pid }).pipe(Effect.ignore);
       }
     } finally {
       restoreWebBaseUrl();
@@ -748,30 +1100,57 @@ const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A>
 
 const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
-    const web = yield* Effect.promise(() =>
-      withStdoutReroutedToStderr(async () => {
-        const host = "127.0.0.1";
-        const port = await Effect.runPromise(
-          chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
-        );
-        const baseUrl = `http://localhost:${port}`;
-        const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
+    const startupLock = yield* acquireLocalServerStartLock();
+    let web: Awaited<
+      ReturnType<
+        typeof withStdoutReroutedToStderr<{
+          readonly executor: Awaited<ReturnType<typeof getExecutor>>;
+          readonly server: Awaited<ReturnType<typeof startServer>>;
+          readonly baseUrl: string;
+          readonly restoreWebBaseUrl: () => void;
+        }>
+      >
+    > | null = null;
 
-        try {
-          const executor = await getExecutor();
-          const server = await startServer({
-            port,
-            hostname: host,
-            embeddedWebUI,
-          });
-          const serverBaseUrl = `http://localhost:${server.port}`;
-          return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
-        } catch (cause) {
-          restoreWebBaseUrl();
-          throw cause;
-        }
-      }),
-    );
+    try {
+      yield* assertNoOtherActiveLocalServer();
+      web = yield* Effect.promise(() =>
+        withStdoutReroutedToStderr(async () => {
+          const host = "127.0.0.1";
+          const port = await Effect.runPromise(
+            chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
+          );
+          const baseUrl = `http://localhost:${port}`;
+          const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
+
+          try {
+            const executor = await getExecutor();
+            const server = await startServer({
+              port,
+              hostname: host,
+              embeddedWebUI,
+            });
+            const serverBaseUrl = `http://localhost:${server.port}`;
+            return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
+          } catch (cause) {
+            restoreWebBaseUrl();
+            throw cause;
+          }
+        }),
+      );
+      yield* publishLocalServerManifest({
+        kind: "foreground",
+        connection: normalizeExecutorServerConnection({
+          kind: "http",
+          origin: web.baseUrl,
+          displayName: "CLI MCP",
+        }),
+      });
+    } finally {
+      yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
+    }
+
+    if (!web) return yield* Effect.fail(new Error("Failed to start local Executor MCP server."));
 
     try {
       yield* Effect.promise(() =>
@@ -791,6 +1170,7 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
     } finally {
       web.restoreWebBaseUrl();
       yield* Effect.promise(() => web.server.stop());
+      yield* removeLocalServerManifestIfOwnedBy({ pid: process.pid }).pipe(Effect.ignore);
     }
   });
 
@@ -798,6 +1178,31 @@ const scope = Options.string("scope").pipe(
   Options.optional,
   Options.withDescription("Path to workspace directory containing executor.jsonc"),
 );
+
+const serverBaseUrl = Options.string("base-url").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Executor server origin. Overrides the default profile; local URLs auto-start the daemon.",
+  ),
+);
+
+const serverProfile = Options.string("server").pipe(
+  Options.optional,
+  Options.withDescription("Named Executor server profile."),
+);
+
+const daemonBaseUrlOption = Options.string("base-url").pipe(
+  Options.withDefault(DEFAULT_BASE_URL),
+  Options.withDescription("Local daemon origin."),
+);
+
+const serverTargetFromOptions = (input: {
+  readonly baseUrl: Option.Option<string>;
+  readonly server: Option.Option<string>;
+}): ServerTarget => ({
+  baseUrl: Option.getOrUndefined(input.baseUrl),
+  serverName: Option.getOrUndefined(input.server),
+});
 
 const applyScope = (s: Option.Option<string>) => {
   const dir = Option.getOrUndefined(s);
@@ -866,7 +1271,8 @@ const parsePositiveIntegerOption = (name: string, raw: string): number => {
 
 interface ParsedCallHelpArgs {
   readonly pathParts: ReadonlyArray<string>;
-  readonly baseUrl: string;
+  readonly baseUrl: string | undefined;
+  readonly serverName: string | undefined;
   readonly scopeDir: string | undefined;
   readonly match: string | undefined;
   readonly limit: number | undefined;
@@ -877,7 +1283,8 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
 const isHelpFlag = (value: string): boolean => HELP_FLAGS.has(value);
 
 const parseCallHelpArgs = (args: ReadonlyArray<string>): ParsedCallHelpArgs => {
-  let baseUrl = DEFAULT_BASE_URL;
+  let baseUrl: string | undefined = undefined;
+  let serverName: string | undefined = undefined;
   let scopeDir: string | undefined = undefined;
   let match: string | undefined = undefined;
   let limit: number | undefined = undefined;
@@ -896,6 +1303,18 @@ const parseCallHelpArgs = (args: ReadonlyArray<string>): ParsedCallHelpArgs => {
     }
     if (token.startsWith("--base-url=")) {
       baseUrl = token.slice("--base-url=".length);
+      continue;
+    }
+
+    if (token === "--server") {
+      const value = args[index + 1];
+      if (!value) throw new Error("Missing value for --server");
+      serverName = value;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--server=")) {
+      serverName = token.slice("--server=".length);
       continue;
     }
 
@@ -958,7 +1377,7 @@ const parseCallHelpArgs = (args: ReadonlyArray<string>): ParsedCallHelpArgs => {
     pathParts.pop();
   }
 
-  return { pathParts, baseUrl, scopeDir, match, limit };
+  return { pathParts, baseUrl, serverName, scopeDir, match, limit };
 };
 
 const printCallBrowseHelp = (input: {
@@ -1097,8 +1516,11 @@ const runCallHelp = (
   Effect.gen(function* () {
     if (args.scopeDir) process.env.EXECUTOR_SCOPE_DIR = resolve(args.scopeDir);
 
-    const daemonUrl = yield* ensureDaemon(args.baseUrl);
-    const client = yield* makeApiClient(daemonUrl);
+    const connection = yield* resolveExecutorServerConnection({
+      baseUrl: args.baseUrl,
+      serverName: args.serverName,
+    });
+    const client = yield* makeApiClient(connection);
     const scopeInfo = yield* client.scope.info();
     const tools = yield* client.tools.list({ params: { scopeId: scopeInfo.id } });
     const toolPaths = tools.map((tool) => tool.id);
@@ -1257,12 +1679,14 @@ const callCommand = Command.make(
   "call",
   {
     pathParts: Args.string("tool-path-segment").pipe(Args.variadic({})),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
     scope,
   },
-  ({ pathParts, baseUrl, scope }) =>
+  ({ pathParts, baseUrl, server, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
       const { path, args } = yield* resolveToolInvocation({
         rawPathParts: pathParts,
       });
@@ -1272,8 +1696,12 @@ const callCommand = Command.make(
           cause instanceof Error ? cause : new Error(`Invalid tool path: ${String(cause)}`),
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const result = yield* executeCode({ target, code });
+      yield* printExecutionOutcome({
+        target,
+        connection: result.connection,
+        outcome: result.outcome,
+      });
     }),
 ).pipe(
   Command.withDescription(
@@ -1295,17 +1723,19 @@ const resumeCommand = Command.make(
       Options.optional,
       Options.withDescription("JSON object to send when action=accept"),
     ),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
     scope,
   },
-  ({ executionId, action, content, baseUrl, scope }) =>
+  ({ executionId, action, content, baseUrl, server, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      const daemonUrl = yield* ensureDaemon(baseUrl);
+      const target = serverTargetFromOptions({ baseUrl, server });
+      const connection = yield* resolveExecutorServerConnection(target);
 
       const contentObj = yield* parseOptionalJsonObject(Option.getOrUndefined(content));
 
-      const client = yield* makeApiClient(daemonUrl);
+      const client = yield* makeApiClient(connection);
       const result = yield* client.executions.resume({
         params: { executionId },
         payload: { action, content: contentObj },
@@ -1317,7 +1747,7 @@ const resumeCommand = Command.make(
         if (nextExecutionId) {
           console.log("");
           console.log("Approval required:");
-          console.log(buildResumeApprovalUrl(daemonUrl, nextExecutionId));
+          console.log(buildResumeApprovalUrl(connection.origin, nextExecutionId));
         }
         process.exit(0);
       }
@@ -1347,20 +1777,26 @@ const toolsSearchCommand = Command.make(
     query: Args.string("query"),
     namespace: Options.string("namespace").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(12)),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
     scope,
   },
-  ({ query, namespace, limit, baseUrl, scope }) =>
+  ({ query, namespace, limit, baseUrl, server, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
       const code = buildSearchToolsCode({
         query,
         namespace: Option.getOrUndefined(namespace),
         limit,
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const result = yield* executeCode({ target, code });
+      yield* printExecutionOutcome({
+        target,
+        connection: result.connection,
+        outcome: result.outcome,
+      });
     }),
 ).pipe(Command.withDescription("Search tools by natural-language query"));
 
@@ -1369,19 +1805,25 @@ const toolsSourcesCommand = Command.make(
   {
     query: Options.string("query").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(50)),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
     scope,
   },
-  ({ query, limit, baseUrl, scope }) =>
+  ({ query, limit, baseUrl, server, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
       const code = buildListSourcesCode({
         query: Option.getOrUndefined(query),
         limit,
       });
 
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const result = yield* executeCode({ target, code });
+      yield* printExecutionOutcome({
+        target,
+        connection: result.connection,
+        outcome: result.outcome,
+      });
     }),
 ).pipe(Command.withDescription("List configured sources and tool counts"));
 
@@ -1389,21 +1831,152 @@ const toolsDescribeCommand = Command.make(
   "describe",
   {
     path: Args.string("path"),
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
     scope,
   },
-  ({ path, baseUrl, scope }) =>
+  ({ path, baseUrl, server, scope }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
       const code = buildDescribeToolCode(path);
-      const outcome = yield* executeCode({ baseUrl, code });
-      yield* printExecutionOutcome({ baseUrl, outcome });
+      const result = yield* executeCode({ target, code });
+      yield* printExecutionOutcome({
+        target,
+        connection: result.connection,
+        outcome: result.outcome,
+      });
     }),
 ).pipe(Command.withDescription("Describe a tool's TypeScript and JSON schema"));
 
 const toolsCommand = Command.make("tools").pipe(
   Command.withSubcommands([toolsSearchCommand, toolsSourcesCommand, toolsDescribeCommand] as const),
   Command.withDescription("Discover available tools and sources"),
+);
+
+const profileConnectionInput = (input: {
+  readonly origin: string;
+  readonly displayName: Option.Option<string>;
+  readonly kind: Option.Option<"http" | "desktop-sidecar">;
+}): ExecutorServerConnectionInput => {
+  const selectedKind = Option.getOrUndefined(input.kind);
+  const displayName = Option.getOrUndefined(input.displayName);
+  return {
+    kind: selectedKind ?? "http",
+    origin: input.origin,
+    ...(displayName ? { displayName } : {}),
+  };
+};
+
+const printServerProfiles = () =>
+  Effect.gen(function* () {
+    const store = yield* readCliServerConnectionStore();
+    if (store.profiles.length === 0) {
+      console.log("No server profiles configured.");
+      console.log(`Add one: ${cliPrefix} server add local ${DEFAULT_BASE_URL} --default`);
+      return;
+    }
+
+    const rows = store.profiles.map((profile) => ({
+      marker: profile.name === store.defaultProfile ? "*" : " ",
+      name: profile.name,
+      kind: profile.connection.kind,
+      origin: profile.connection.origin,
+      displayName: profile.connection.displayName,
+      auth: profile.connection.auth ? "stored-auth" : "env-auth",
+    }));
+    const nameWidth = rows.reduce((max, row) => Math.max(max, row.name.length), 4);
+    const kindWidth = rows.reduce((max, row) => Math.max(max, row.kind.length), 4);
+
+    for (const row of rows) {
+      console.log(
+        `${row.marker} ${row.name.padEnd(nameWidth)}  ${row.kind.padEnd(kindWidth)}  ${row.origin}  ${row.displayName}  ${row.auth}`,
+      );
+    }
+  });
+
+const serverAddCommand = Command.make(
+  "add",
+  {
+    name: Args.string("name"),
+    origin: Args.string("origin"),
+    displayName: Options.string("display-name").pipe(
+      Options.optional,
+      Options.withDescription("Display label for this server profile."),
+    ),
+    kind: Options.choice("kind", ["http", "desktop-sidecar"] as const).pipe(
+      Options.optional,
+      Options.withDescription("Server kind. Defaults to http."),
+    ),
+    makeDefault: Options.boolean("default").pipe(
+      Options.withDefault(false),
+      Options.withDescription("Make this profile the default server."),
+    ),
+  },
+  ({ name, origin, displayName, kind, makeDefault }) =>
+    Effect.gen(function* () {
+      const profileName = validateCliServerConnectionProfileName(name);
+      const store = yield* upsertCliServerConnectionProfile({
+        name: profileName,
+        connection: profileConnectionInput({ origin, displayName, kind }),
+        makeDefault,
+      });
+      const profile = findCliServerConnectionProfile(store, profileName);
+      if (!profile) return yield* Effect.fail(new Error(`Failed to save "${profileName}".`));
+      console.log(`Saved server profile "${profile.name}" (${profile.connection.origin}).`);
+      if (store.defaultProfile === profile.name) {
+        console.log(`Default server profile: ${profile.name}`);
+      }
+    }),
+).pipe(Command.withDescription("Add or update a named Executor server profile"));
+
+const serverListCommand = Command.make("list", {}, () => printServerProfiles()).pipe(
+  Command.withDescription("List configured Executor server profiles"),
+);
+
+const serverUseCommand = Command.make(
+  "use",
+  {
+    name: Args.string("name"),
+  },
+  ({ name }) =>
+    Effect.gen(function* () {
+      const store = yield* setDefaultCliServerConnectionProfile(name);
+      const profile = defaultCliServerConnectionProfile(store);
+      if (!profile) return yield* Effect.fail(new Error(`No server profile named "${name}".`));
+      console.log(`Default server profile: ${profile.name} (${profile.connection.origin}).`);
+    }),
+).pipe(Command.withDescription("Set the default Executor server profile"));
+
+const serverRemoveCommand = Command.make(
+  "remove",
+  {
+    name: Args.string("name"),
+  },
+  ({ name }) =>
+    Effect.gen(function* () {
+      const profileName = validateCliServerConnectionProfileName(name);
+      const store = yield* readCliServerConnectionStore();
+      const profile = findCliServerConnectionProfile(store, profileName);
+      if (!profile) {
+        return yield* Effect.fail(new Error(`No server profile named "${profileName}".`));
+      }
+      const nextStore = yield* removeCliServerConnectionProfile(profileName);
+      console.log(`Removed server profile "${profileName}".`);
+      if (nextStore.defaultProfile === null) {
+        console.log("No default server profile is configured.");
+      }
+    }),
+).pipe(Command.withDescription("Remove an Executor server profile"));
+
+const serverCommand = Command.make("server").pipe(
+  Command.withSubcommands([
+    serverAddCommand,
+    serverListCommand,
+    serverUseCommand,
+    serverRemoveCommand,
+  ] as const),
+  Command.withDescription("Manage named Executor server profiles"),
 );
 
 const webCommand = Command.make(
@@ -1490,7 +2063,7 @@ const daemonRunCommand = Command.make(
 const daemonStatusCommand = Command.make(
   "status",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: daemonBaseUrlOption,
   },
   ({ baseUrl }) =>
     Effect.gen(function* () {
@@ -1542,7 +2115,7 @@ const daemonStatusCommand = Command.make(
 const daemonStopCommand = Command.make(
   "stop",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: daemonBaseUrlOption,
   },
   ({ baseUrl }) => stopDaemon(baseUrl),
 ).pipe(Command.withDescription("Stop the local daemon"));
@@ -1550,7 +2123,7 @@ const daemonStopCommand = Command.make(
 const daemonRestartCommand = Command.make(
   "restart",
   {
-    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: daemonBaseUrlOption,
     scope,
   },
   ({ baseUrl, scope }) =>
@@ -1600,6 +2173,7 @@ const root = Command.make("executor").pipe(
     callCommand,
     resumeCommand,
     toolsCommand,
+    serverCommand,
     webCommand,
     daemonCommand,
     mcpCommand,
