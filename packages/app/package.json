@@ -24,6 +24,7 @@
     "@executor-js/vite-plugin": "workspace:*",
     "@tanstack/react-router": "catalog:",
     "effect": "catalog:",
+    "lucide-react": "^1.7.0",
     "react": "catalog:",
     "react-dom": "catalog:"
   },
