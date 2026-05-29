@@ -38,8 +38,7 @@ export const shellQuoteWord = (value: string): string => {
 };
 
 const hasDesktopConnectionBridge = (): boolean => {
-  const candidate = globalThis.window?.executor;
-  return typeof candidate?.getServerConnection === "function";
+  return Boolean(globalThis.window?.executor?.getServerConnection);
 };
 
 export const buildMcpHttpEndpoint = (input: {
