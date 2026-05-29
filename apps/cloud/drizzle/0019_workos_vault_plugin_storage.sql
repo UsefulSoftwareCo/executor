@@ -23,5 +23,6 @@ FROM "workos_vault_metadata" m
 ON CONFLICT ("scope_id", "id") DO UPDATE SET
   "data" = EXCLUDED."data",
   "updated_at" = EXCLUDED."updated_at";
+--> statement-breakpoint
 
 DROP TABLE IF EXISTS "workos_vault_metadata";
