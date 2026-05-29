@@ -23,6 +23,7 @@ export const SourcesHandlers = HttpApiBuilder.group(ExecutorApi, "sources", (han
             canRemove: s.canRemove,
             canRefresh: s.canRefresh,
             canEdit: s.canEdit,
+            connectionIds: s.connectionIds,
           }));
         }),
       ),

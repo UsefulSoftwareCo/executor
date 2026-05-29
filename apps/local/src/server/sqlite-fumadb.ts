@@ -53,6 +53,15 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
   })) {
     sqlite.exec(statement);
   }
+  const connectionColumns = sqlite
+    .prepare("PRAGMA table_info('connection')")
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  if (
+    connectionColumns.length > 0 &&
+    !connectionColumns.some((column) => column.name === "identity_override")
+  ) {
+    sqlite.exec("ALTER TABLE connection ADD COLUMN identity_override TEXT");
+  }
 
   const latestSchema = fumaSchema({
     version,

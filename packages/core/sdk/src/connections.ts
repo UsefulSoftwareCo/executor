@@ -18,6 +18,13 @@ import { ConnectionId, ScopeId, SecretId } from "./ids";
 export const ConnectionProviderState = Schema.Record(Schema.String, Schema.Unknown);
 export type ConnectionProviderState = typeof ConnectionProviderState.Type;
 
+export const ConnectionIdentityOverride = Schema.Struct({
+  displayName: Schema.NullOr(Schema.String),
+  email: Schema.NullOr(Schema.String),
+  avatarUrl: Schema.NullOr(Schema.String),
+});
+export type ConnectionIdentityOverride = typeof ConnectionIdentityOverride.Type;
+
 // ---------------------------------------------------------------------------
 // ConnectionRef — metadata projection returned from `ctx.connections.list`
 // / `executor.connections.list`. Holds token secret ids (so a plugin can
@@ -37,6 +44,7 @@ export const ConnectionRef = Schema.Struct({
    *  `oauthScope` to avoid collision with the executor scope id. */
   oauthScope: Schema.NullOr(Schema.String),
   providerState: Schema.NullOr(ConnectionProviderState),
+  identityOverride: Schema.NullOr(ConnectionIdentityOverride),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 });
@@ -177,6 +185,13 @@ export const UpdateConnectionTokensInput = Schema.Struct({
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type UpdateConnectionTokensInput = typeof UpdateConnectionTokensInput.Type;
+
+export const UpdateConnectionIdentityInput = Schema.Struct({
+  id: ConnectionId,
+  targetScope: ScopeId,
+  identityOverride: Schema.NullOr(ConnectionIdentityOverride),
+});
+export type UpdateConnectionIdentityInput = typeof UpdateConnectionIdentityInput.Type;
 
 export const RemoveConnectionInput = Schema.Struct({
   id: ConnectionId,

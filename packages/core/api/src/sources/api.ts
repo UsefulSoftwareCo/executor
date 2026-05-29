@@ -37,6 +37,7 @@ const SourceResponse = Schema.Struct({
   canRemove: Schema.optional(Schema.Boolean),
   canRefresh: Schema.optional(Schema.Boolean),
   canEdit: Schema.optional(Schema.Boolean),
+  connectionIds: Schema.optional(Schema.Array(Schema.String)),
 });
 
 const SourceRemoveResponse = Schema.Struct({

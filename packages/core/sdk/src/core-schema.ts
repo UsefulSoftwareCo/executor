@@ -180,6 +180,7 @@ export const coreTables = defineTables({
     expires_at: nullableBigintColumn("expires_at"),
     scope: nullableTextColumn("scope"),
     provider_state: nullableJsonColumn("provider_state"),
+    identity_override: nullableJsonColumn("identity_override"),
     created_at: dateColumn("created_at"),
     updated_at: dateColumn("updated_at"),
   }),

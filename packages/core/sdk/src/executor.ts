@@ -32,11 +32,13 @@ import { makeFumaBlobStore, pluginBlobStore } from "./blob";
 import { coreToolsPlugin } from "./core-tools";
 import {
   ConnectionProviderState,
+  ConnectionIdentityOverride,
   ConnectionRef,
   ConnectionRefreshError,
   type ConnectionProvider,
   type ConnectionRefreshResult,
   type CreateConnectionInput,
+  type UpdateConnectionIdentityInput,
   type RemoveConnectionInput,
   type UpdateConnectionTokensInput,
 } from "./connections";
@@ -317,6 +319,9 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       id: string,
       label: string | null,
     ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    readonly setIdentityOverride: (
+      input: UpdateConnectionIdentityInput,
+    ) => Effect.Effect<ConnectionRef, ConnectionNotFoundError | StorageFailure>;
     readonly accessToken: (
       id: string,
     ) => Effect.Effect<
@@ -495,7 +500,7 @@ const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
 // Row → public projection conversions
 // ---------------------------------------------------------------------------
 
-const rowToSource = (row: SourceRow): Source => ({
+const rowToSource = (row: SourceRow, connectionIds: readonly string[] = []): Source => ({
   id: row.id,
   scopeId: row.scope_id,
   kind: row.kind,
@@ -505,6 +510,7 @@ const rowToSource = (row: SourceRow): Source => ({
   canRemove: Boolean(row.can_remove),
   canRefresh: Boolean(row.can_refresh),
   canEdit: Boolean(row.can_edit),
+  connectionIds,
   runtime: false,
 });
 
@@ -518,6 +524,7 @@ const staticDeclToSource = (decl: StaticSourceDecl, pluginId: string): Source =>
   canRemove: decl.canRemove ?? false,
   canRefresh: decl.canRefresh ?? false,
   canEdit: decl.canEdit ?? false,
+  connectionIds: [],
   runtime: true,
 });
 
@@ -530,6 +537,7 @@ const decodeJsonColumn = (value: unknown): unknown => {
 };
 
 const decodeProviderState = Schema.decodeUnknownOption(ConnectionProviderState);
+const decodeConnectionIdentityOverride = Schema.decodeUnknownOption(ConnectionIdentityOverride);
 
 const rowToTool = (row: ToolRow, annotations?: ToolAnnotations): Tool => ({
   id: row.id,
@@ -1998,6 +2006,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         expiresAt: row.expires_at != null ? Number(row.expires_at) : null,
         oauthScope: row.scope ?? null,
         providerState: Option.getOrNull(decodeProviderState(decodeJsonColumn(row.provider_state))),
+        identityOverride: Option.getOrNull(
+          decodeConnectionIdentityOverride(decodeJsonColumn(row.identity_override)),
+        ),
         createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
         updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(row.updated_at),
       });
@@ -2173,6 +2184,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt ?? null,
               scope: input.oauthScope ?? null,
               provider_state: input.providerState ?? null,
+              identity_override: null,
               created_at: now,
               updated_at: now,
             });
@@ -2187,6 +2199,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expiresAt: input.expiresAt,
               oauthScope: input.oauthScope,
               providerState: input.providerState,
+              identityOverride: null,
               createdAt: now,
               updatedAt: now,
             });
@@ -2284,6 +2297,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             updated_at: new Date(),
           },
         });
+      });
+
+    const connectionsSetIdentityOverride = (
+      input: UpdateConnectionIdentityInput,
+    ): Effect.Effect<ConnectionRef, ConnectionNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        yield* assertScopeInStack("connection identity targetScope", input.targetScope);
+        const row = yield* findConnectionRowAtScope({
+          connectionId: input.id,
+          scopeId: input.targetScope,
+        });
+        if (!row) {
+          return yield* new ConnectionNotFoundError({
+            connectionId: input.id,
+          });
+        }
+        yield* core.updateMany("connection", {
+          where: byScopedId(input.targetScope, input.id),
+          set: {
+            identity_override: input.identityOverride,
+            updated_at: new Date(),
+          },
+        });
+        const updated = yield* findConnectionRowAtScope({
+          connectionId: input.id,
+          scopeId: input.targetScope,
+        });
+        if (!updated) {
+          return yield* new ConnectionNotFoundError({
+            connectionId: input.id,
+          });
+        }
+        return rowToConnection(updated);
       });
 
     const connectionsRemove = (
@@ -3411,6 +3457,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           create: (input) => connectionsCreate(input),
           updateTokens: (input) => connectionsUpdateTokens(input),
           setIdentityLabel: (id, label) => connectionsSetIdentityLabel(id, label),
+          setIdentityOverride: (input) => connectionsSetIdentityOverride(input),
           accessToken: (id) => connectionsAccessToken(id),
           accessTokenAtScope: (id, scope) => connectionsAccessTokenAtScope(id, scope),
           remove: (input) => connectionsRemove(input),
@@ -3550,11 +3597,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
         }
         const dynamicDeduped = [...byId.values()];
+        const sourceKeys = new Set(dynamicDeduped.map((row) => `${row.scope_id}\u0000${row.id}`));
+        const sourceConnectionIds = new Map<string, string[]>();
+        if (sourceKeys.size > 0) {
+          const bindingRows = yield* core.findMany("credential_binding", {
+            where: scopedWhere(scopeIds, (b) => b("kind", "=", "connection")),
+          });
+          for (const row of bindingRows as readonly CredentialBindingRow[]) {
+            if (!row.connection_id) continue;
+            const key = `${String(row.source_scope_id)}\u0000${String(row.source_id)}`;
+            if (!sourceKeys.has(key)) continue;
+            const connectionId = String(row.connection_id);
+            const values = sourceConnectionIds.get(key) ?? [];
+            if (!values.includes(connectionId)) values.push(connectionId);
+            sourceConnectionIds.set(key, values);
+          }
+        }
         const staticList: Source[] = [];
         for (const { source, pluginId } of staticSources.values()) {
           staticList.push(staticDeclToSource(source, pluginId));
         }
-        const merged = [...staticList, ...dynamicDeduped.map(rowToSource)];
+        const merged = [
+          ...staticList,
+          ...dynamicDeduped.map((row) =>
+            rowToSource(row, sourceConnectionIds.get(`${row.scope_id}\u0000${row.id}`) ?? []),
+          ),
+        ];
         yield* Effect.annotateCurrentSpan({
           "executor.sources.static_count": staticList.length,
           "executor.sources.dynamic_count": dynamicDeduped.length,
@@ -4431,6 +4499,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         create: connectionsCreate,
         updateTokens: connectionsUpdateTokens,
         setIdentityLabel: connectionsSetIdentityLabel,
+        setIdentityOverride: connectionsSetIdentityOverride,
         accessToken: connectionsAccessToken,
         accessTokenAtScope: connectionsAccessTokenAtScope,
         remove: connectionsRemove,

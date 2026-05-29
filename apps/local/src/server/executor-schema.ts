@@ -93,6 +93,7 @@ export const connection = sqliteTable(
     expires_at: integer("expires_at"),
     scope: text("scope"),
     provider_state: text("provider_state", { mode: "json" }),
+    identity_override: text("identity_override", { mode: "json" }),
     created_at: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updated_at: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },

@@ -167,9 +167,11 @@ export { Usage, type UsagesForSecretInput, type UsagesForConnectionInput } from 
 // Connections
 export {
   ConnectionRef,
+  ConnectionIdentityOverride,
   ConnectionProviderState,
   CreateConnectionInput,
   RemoveConnectionInput,
+  UpdateConnectionIdentityInput,
   UpdateConnectionTokensInput,
   TokenMaterial,
   ConnectionRefreshError,

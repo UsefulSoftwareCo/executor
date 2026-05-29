@@ -12,6 +12,7 @@ import type {
   ConnectionRefreshError,
   CreateConnectionInput,
   RemoveConnectionInput,
+  UpdateConnectionIdentityInput,
   UpdateConnectionTokensInput,
 } from "./connections";
 import type {
@@ -229,6 +230,9 @@ export interface PluginCtx<TStore = unknown> {
       id: string,
       label: string | null,
     ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    readonly setIdentityOverride: (
+      input: UpdateConnectionIdentityInput,
+    ) => Effect.Effect<ConnectionRef, ConnectionNotFoundError | StorageFailure>;
     /** Get a guaranteed-fresh access token. Calls the provider's
      *  `refresh` handler if `expires_at` is in the past / within the
      *  refresh skew window. */

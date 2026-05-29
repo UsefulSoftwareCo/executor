@@ -15,6 +15,7 @@ export {
   SecretResolutionError,
   SecretOwnedByConnectionError,
   SecretInUseError,
+  ConnectionNotFoundError,
   ConnectionInUseError,
 } from "./errors";
 
@@ -89,6 +90,8 @@ export {
 export { SourceDetectionResult, type Source } from "./types";
 
 export { Usage } from "./usages";
+
+export { ConnectionIdentityOverride, UpdateConnectionIdentityInput } from "./connections";
 
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,

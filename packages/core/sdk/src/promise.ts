@@ -16,7 +16,7 @@ export {
 // these to type arguments they pass in (e.g. SetSecretInput, filters).
 export { ScopeId, ToolId, SecretId, PolicyId } from "./ids";
 export { Scope } from "./scope";
-export { RemoveConnectionInput } from "./connections";
+export { RemoveConnectionInput, UpdateConnectionIdentityInput } from "./connections";
 export { RemoveSecretInput, SecretRef, SetSecretInput } from "./secrets";
 export type {
   CreateToolPolicyInput,

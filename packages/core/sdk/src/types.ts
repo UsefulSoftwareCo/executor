@@ -30,6 +30,8 @@ export interface Source {
    *  (`executor.openapi.updateSource(id, patch)` etc.) — this flag is
    *  just a UI signal. */
   readonly canEdit: boolean;
+  /** Connection ids currently bound to this source through shared credential slots. */
+  readonly connectionIds: readonly string[];
   /** True if the source was declared statically by a plugin at startup
    *  (in-memory only, no DB row). False if it was added at runtime via
    *  `ctx.core.sources.register(...)`. UI differentiates built-in vs

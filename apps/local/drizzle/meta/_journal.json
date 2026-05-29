@@ -85,6 +85,13 @@
       "when": 1779087600000,
       "tag": "0011_plugin_storage_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779998400000,
+      "tag": "0012_connection_identity_override",
+      "breakpoints": true
     }
   ]
 }
