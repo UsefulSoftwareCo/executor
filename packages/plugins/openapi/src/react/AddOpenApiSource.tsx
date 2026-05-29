@@ -351,22 +351,21 @@ function entriesFromSpecPreset(preset: HeaderPreset): HeaderState[] {
 function OAuthConnectedAccount(props: {
   readonly scopeId: ScopeId;
   readonly connectionId: string;
-  readonly fallbackLabel: string;
+  readonly scopeSummary: string;
   readonly sourceName: string;
   readonly onSetSourceName: (name: string) => void;
 }) {
   const identityResult = useAtomValue(
     connectionIdentityAtom(props.scopeId, ConnectionId.make(props.connectionId)),
   );
-  const identity =
-    AsyncResult.isSuccess(identityResult) && identityResult.value.status === "available"
-      ? identityResult.value
-      : null;
-  const label = identity?.email ?? identity?.name ?? props.fallbackLabel;
-  const sourceNameWithAccount = props.sourceName.includes(label)
-    ? props.sourceName
-    : `${props.sourceName} - ${label}`;
-  const accountIsInSourceName = props.sourceName === sourceNameWithAccount;
+  const identityResponse = AsyncResult.isSuccess(identityResult) ? identityResult.value : null;
+  const identity = identityResponse?.status === "available" ? identityResponse : null;
+  const accountLabel = identity?.email ?? identity?.name ?? identity?.username ?? null;
+  const sourceNameWithAccount =
+    accountLabel && !props.sourceName.includes(accountLabel)
+      ? `${props.sourceName} - ${accountLabel}`
+      : props.sourceName;
+  const accountIsInSourceName = accountLabel !== null && props.sourceName === sourceNameWithAccount;
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3">
       <div className="min-w-0 flex-1">
@@ -379,15 +378,18 @@ function OAuthConnectedAccount(props: {
               className="size-5 shrink-0 rounded-full"
             />
           ) : null}
-          <span className="min-w-0 truncate text-foreground">Connected as {label}</span>
+          <span className="min-w-0 truncate text-foreground">
+            {accountLabel ? `Connected as ${accountLabel}` : "Connected"}
+            <span className="text-muted-foreground"> · {props.scopeSummary}</span>
+          </span>
         </div>
-        {identity ? (
+        {accountLabel ? (
           <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
             Source name: {sourceNameWithAccount}
           </div>
         ) : null}
       </div>
-      {identity ? (
+      {accountLabel ? (
         <Button
           variant="secondary"
           size="sm"
@@ -1681,7 +1683,7 @@ export default function AddOpenApiSource(props: {
                         <OAuthConnectedAccount
                           scopeId={oauthTokenTargetScope}
                           connectionId={oauth2Auth.connectionId}
-                          fallbackLabel={`${selectedOAuth2Scopes.length} scope${
+                          scopeSummary={`${selectedOAuth2Scopes.length} scope${
                             selectedOAuth2Scopes.length === 1 ? "" : "s"
                           } granted`}
                           sourceName={resolvedDisplayName}
