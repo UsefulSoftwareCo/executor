@@ -162,7 +162,7 @@ function ConnectionDetails(props: {
         );
       }
       return (
-        <div className="mt-3 space-y-3 rounded-md border border-border/50 bg-muted/10 p-3">
+        <div className="w-full space-y-4">
           <div className="space-y-2">
             <div className="text-[11px] font-medium text-muted-foreground">Linked sources</div>
             {linkedSources.length === 0 ? (
@@ -291,7 +291,7 @@ function ConnectionRow(props: {
 
   return (
     <>
-      <CardStackEntry>
+      <CardStackEntry className="flex-wrap items-start">
         <CardStackEntryContent>
           <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
             {identity?.picture ? (
@@ -312,11 +312,8 @@ function ConnectionRow(props: {
               {identityStatus.message ?? "Connection needs re-authentication"}
             </CardStackEntryDescription>
           ) : null}
-          <Suspense fallback={null}>
-            <ConnectionDetails scopeId={props.scopeId} connection={connection} open={expanded} />
-          </Suspense>
         </CardStackEntryContent>
-        <CardStackEntryActions>
+        <CardStackEntryActions className="self-start pt-0.5">
           <Button
             variant="ghost"
             size="sm"
@@ -356,6 +353,9 @@ function ConnectionRow(props: {
             </DropdownMenuContent>
           </DropdownMenu>
         </CardStackEntryActions>
+        <Suspense fallback={null}>
+          <ConnectionDetails scopeId={props.scopeId} connection={connection} open={expanded} />
+        </Suspense>
       </CardStackEntry>
       <Dialog open={editingIdentity} onOpenChange={setEditingIdentity}>
         <DialogContent>
