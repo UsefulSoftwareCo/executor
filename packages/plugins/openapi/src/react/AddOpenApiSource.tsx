@@ -160,23 +160,61 @@ const resolvedOAuthScopes = (
 const splitOAuthScopes = (value: string | null): Set<string> =>
   new Set(value?.split(/\s+/).filter(Boolean) ?? []);
 
+const mergeOAuthScopes = (...values: readonly Iterable<string>[]): string[] => {
+  const merged = new Set<string>();
+  for (const scopes of values) {
+    for (const scope of scopes) {
+      if (scope.trim()) merged.add(scope);
+    }
+  }
+  return [...merged];
+};
+
+const missingOAuthScopes = (
+  connection: { readonly oauthScope: string | null },
+  requiredApiScopes: Iterable<string>,
+): readonly string[] => {
+  const granted = splitOAuthScopes(connection.oauthScope);
+  return [...requiredApiScopes].filter((scope) => !granted.has(scope));
+};
+
+const isGoogleOAuthScope = (scope: string): boolean =>
+  scope === "https://mail.google.com/" ||
+  scope.startsWith("https://www.googleapis.com/auth/") ||
+  scope.startsWith("https://www.google.com/m8/feeds/");
+
+const hasGoogleOAuthScope = (connection: { readonly oauthScope: string | null }): boolean =>
+  [...splitOAuthScopes(connection.oauthScope)].some(isGoogleOAuthScope);
+
+const isGoogleOAuthUrl = (url: string): boolean => {
+  if (!URL.canParse(url)) return false;
+  const host = new URL(url).hostname.toLowerCase();
+  return host === "accounts.google.com" || host === "oauth2.googleapis.com";
+};
+
+const isGoogleOAuthTarget = (preset: OAuth2Preset, baseUrl: string, specUrl: string): boolean => {
+  if (isGoogleDiscoveryUrl(specUrl)) return true;
+  if (Object.keys(preset.scopes).some(isGoogleOAuthScope)) return true;
+  if (isGoogleOAuthUrl(resolveOAuthUrl(preset.tokenUrl, baseUrl))) return true;
+  const authorizationUrl = Option.getOrElse(preset.authorizationUrl, () => "");
+  return authorizationUrl ? isGoogleOAuthUrl(resolveOAuthUrl(authorizationUrl, baseUrl)) : false;
+};
+
+const googleAuthorizationParams = (enabled: boolean): Record<string, string> | undefined =>
+  enabled
+    ? {
+        access_type: "offline",
+        include_granted_scopes: "true",
+      }
+    : undefined;
+
 type OAuthConnectionChoice = {
   readonly id: ConnectionId;
   readonly scopeId: ScopeId;
   readonly provider: string;
   readonly identityLabel: string | null;
   readonly oauthScope: string | null;
-};
-
-const hasRequiredApiScopes = (
-  connection: OAuthConnectionChoice,
-  requiredApiScopes: Iterable<string>,
-): boolean => {
-  const granted = splitOAuthScopes(connection.oauthScope);
-  for (const scope of requiredApiScopes) {
-    if (!granted.has(scope)) return false;
-  }
-  return true;
+  readonly missingApiScopes: readonly string[];
 };
 
 const specInputForAdd = (input: string) => {
@@ -329,6 +367,7 @@ function ExistingOAuthConnectionOption(props: {
   readonly connection: OAuthConnectionChoice;
   readonly selected: boolean;
   readonly onSelect: () => void;
+  readonly providerLabel: string;
 }) {
   const identityResult = useAtomValue(
     connectionIdentityAtom(props.connection.scopeId, props.connection.id),
@@ -340,6 +379,7 @@ function ExistingOAuthConnectionOption(props: {
   const label =
     identity?.email ?? identity?.name ?? props.connection.identityLabel ?? props.connection.id;
   const picture = identity?.picture;
+  const needsPermission = props.connection.missingApiScopes.length > 0;
   return (
     <Button
       type="button"
@@ -367,12 +407,14 @@ function ExistingOAuthConnectionOption(props: {
         <span className="min-w-0">
           <span className="block truncate text-[12px] text-foreground">{label}</span>
           <span className="block truncate text-[10px] text-muted-foreground">
-            {props.connection.identityLabel ?? "OAuth connection"}
+            {needsPermission
+              ? `Needs ${props.providerLabel} permission`
+              : (props.connection.identityLabel ?? "Already connected")}
           </span>
         </span>
       </span>
       <span className="shrink-0 text-[11px] font-medium text-foreground">
-        {props.selected ? "Selected" : "Use account"}
+        {props.selected ? "Selected" : needsPermission ? "Continue" : "Use account"}
       </span>
     </Button>
   );
@@ -649,6 +691,10 @@ export default function AddOpenApiSource(props: {
   const selectedOAuth2AvailableIdentityScopes = selectedOAuth2Preset
     ? identityScopesForPreset(selectedOAuth2Preset.identityScopes)
     : [];
+  const selectedOAuth2IsGoogle = selectedOAuth2Preset
+    ? isGoogleOAuthTarget(selectedOAuth2Preset, resolvedBaseUrl, specUrl)
+    : false;
+  const selectedOAuth2ProviderLabel = selectedOAuth2IsGoogle ? "Google" : "OAuth";
   const configuredOAuth2IdentityScopes =
     selectedOAuth2Preset && includeOAuth2IdentityScopes
       ? selectedOAuth2Preset.identityScopes
@@ -668,11 +714,20 @@ export default function AddOpenApiSource(props: {
     ) {
       return [];
     }
-    return connectionsResult.value.filter(
-      (connection) =>
-        connection.provider === "oauth2" && hasRequiredApiScopes(connection, oauth2SelectedScopes),
-    );
-  }, [connectionsResult, oauth2SelectedScopes, selectedOAuth2Preset]);
+    return connectionsResult.value
+      .flatMap((connection) => {
+        if (connection.provider !== "oauth2") return [];
+        const missingApiScopes = missingOAuthScopes(connection, oauth2SelectedScopes);
+        if (missingApiScopes.length === 0) {
+          return [{ ...connection, missingApiScopes }];
+        }
+        if (selectedOAuth2IsGoogle && hasGoogleOAuthScope(connection)) {
+          return [{ ...connection, missingApiScopes }];
+        }
+        return [];
+      })
+      .sort((a, b) => a.missingApiScopes.length - b.missingApiScopes.length);
+  }, [connectionsResult, oauth2SelectedScopes, selectedOAuth2IsGoogle, selectedOAuth2Preset]);
 
   const configuredOAuth2 =
     strategy.kind === "oauth2" && selectedOAuth2Preset
@@ -819,82 +874,92 @@ export default function AddOpenApiSource(props: {
     setOauth2AuthState(null);
   };
 
-  const handleConnectOAuth2 = useCallback(async () => {
-    if (!selectedOAuth2Preset || !oauth2ClientIdSecretId || !preview) return;
-    oauth.cancel();
-    setOauth2Error(null);
-    const displayName = identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
-
-    const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
-    const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
-    const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
-
-    if (selectedOAuth2Preset.flow === "clientCredentials") {
-      // RFC 6749 §4.4: no user-interactive consent step. The client_secret
-      // is mandatory; the backend exchanges tokens inline and returns a
-      // completed Connection we bind to the source's connection slot.
-      if (!oauth2ClientSecretSecretId) {
-        setOauth2Error("client_credentials requires a client secret");
-        return;
-      }
-      setStartingOAuth(true);
-      const connectionId = openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow);
-      const exit = await doStartOAuth({
-        params: { scopeId: oauthTokenTargetScope },
-        payload: {
-          endpoint: tokenUrl,
-          redirectUrl: tokenUrl,
-          connectionId,
-          tokenScope: oauthTokenTargetScope,
-          strategy: {
-            kind: "client-credentials",
-            tokenEndpoint: tokenUrl,
-            clientIdSecretId: oauth2ClientIdSecretId,
-            clientIdSecretScopeId: String(clientIdSecretScope),
-            clientSecretSecretId: oauth2ClientSecretSecretId,
-            clientSecretSecretScopeId: String(clientSecretSecretScope),
-            scopes: selectedOAuth2Scopes,
-          },
-          pluginId: "openapi",
-          identityLabel: `${displayName} OAuth`,
-        },
-      });
-      setStartingOAuth(false);
-      if (Exit.isFailure(exit)) {
-        setOauth2Error(errorMessageFromExit(exit, "Failed to start OAuth"));
-        return;
-      }
-      const response = exit.value;
-      if (!response.completedConnection) {
-        setOauth2Error("client_credentials flow did not mint a connection");
-        return;
-      }
-      setOauth2AuthState({
-        fingerprint: selectedOAuth2Fingerprint,
-        auth: { connectionId: response.completedConnection.connectionId },
-      });
+  const handleConnectOAuth2 = useCallback(
+    async (existingConnection?: OAuthConnectionChoice) => {
+      if (!selectedOAuth2Preset || !preview) return;
+      oauth.cancel();
       setOauth2Error(null);
-      return;
-    }
+      const displayName = identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
+      const tokenTargetScope = existingConnection?.scopeId ?? oauthTokenTargetScope;
+      const connectionId =
+        existingConnection?.id ??
+        openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow);
+      const scopesForAuthorization = existingConnection
+        ? mergeOAuthScopes(splitOAuthScopes(existingConnection.oauthScope), selectedOAuth2Scopes)
+        : selectedOAuth2Scopes;
+      const extraAuthorizationParams = googleAuthorizationParams(selectedOAuth2IsGoogle);
 
-    const authorizationUrl = resolveOAuthUrl(
-      Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
-      resolvedBaseUrl,
-    );
-    const issuerUrl = inferOAuthIssuerUrl(authorizationUrl);
+      const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
+      const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
+      const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
 
-    await oauth.openAuthorization({
-      tokenScope: oauthTokenTargetScope,
-      run: async () => {
+      if (selectedOAuth2Preset.flow === "clientCredentials") {
+        if (!oauth2ClientIdSecretId) return;
+        // RFC 6749 §4.4: no user-interactive consent step. The client_secret
+        // is mandatory; the backend exchanges tokens inline and returns a
+        // completed Connection we bind to the source's connection slot.
+        if (!oauth2ClientSecretSecretId) {
+          setOauth2Error("client_credentials requires a client secret");
+          return;
+        }
+        setStartingOAuth(true);
         const exit = await doStartOAuth({
-          params: { scopeId: oauthTokenTargetScope },
+          params: { scopeId: tokenTargetScope },
           payload: {
-            endpoint: authorizationUrl,
-            connectionId: openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow),
-            tokenScope: oauthTokenTargetScope,
-            redirectUrl: oauth2RedirectUrl,
+            endpoint: tokenUrl,
+            redirectUrl: tokenUrl,
+            connectionId,
+            tokenScope: tokenTargetScope,
             strategy: {
-              kind: "authorization-code",
+              kind: "client-credentials",
+              tokenEndpoint: tokenUrl,
+              clientIdSecretId: oauth2ClientIdSecretId,
+              clientIdSecretScopeId: String(clientIdSecretScope),
+              clientSecretSecretId: oauth2ClientSecretSecretId,
+              clientSecretSecretScopeId: String(clientSecretSecretScope),
+              scopes: scopesForAuthorization,
+            },
+            pluginId: "openapi",
+            identityLabel: `${displayName} OAuth`,
+          },
+        });
+        setStartingOAuth(false);
+        if (Exit.isFailure(exit)) {
+          setOauth2Error(errorMessageFromExit(exit, "Failed to start OAuth"));
+          return;
+        }
+        const response = exit.value;
+        if (!response.completedConnection) {
+          setOauth2Error("client_credentials flow did not mint a connection");
+          return;
+        }
+        setOAuthTokenTargetScope(tokenTargetScope);
+        setOauth2AuthState({
+          fingerprint: selectedOAuth2Fingerprint,
+          auth: { connectionId: response.completedConnection.connectionId },
+        });
+        setOauth2Error(null);
+        return;
+      }
+      if (!existingConnection && !oauth2ClientIdSecretId) return;
+
+      const authorizationUrl = resolveOAuthUrl(
+        Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
+        resolvedBaseUrl,
+      );
+      const issuerUrl = inferOAuthIssuerUrl(authorizationUrl);
+      const authorizationStrategy = existingConnection
+        ? {
+            kind: "authorization-code-existing-client" as const,
+            authorizationEndpoint: authorizationUrl,
+            tokenEndpoint: tokenUrl,
+            issuerUrl,
+            scopes: scopesForAuthorization,
+            extraAuthorizationParams,
+          }
+        : oauth2ClientIdSecretId
+          ? {
+              kind: "authorization-code" as const,
               authorizationEndpoint: authorizationUrl,
               tokenEndpoint: tokenUrl,
               issuerUrl,
@@ -904,56 +969,75 @@ export default function AddOpenApiSource(props: {
               clientSecretSecretScopeId: oauth2ClientSecretSecretId
                 ? String(clientSecretSecretScope)
                 : null,
-              scopes: selectedOAuth2Scopes,
+              scopes: scopesForAuthorization,
+              extraAuthorizationParams,
+            }
+          : null;
+      if (!authorizationStrategy) return;
+
+      await oauth.openAuthorization({
+        tokenScope: tokenTargetScope,
+        run: async () => {
+          const exit = await doStartOAuth({
+            params: { scopeId: tokenTargetScope },
+            payload: {
+              endpoint: authorizationUrl,
+              connectionId,
+              tokenScope: tokenTargetScope,
+              redirectUrl: oauth2RedirectUrl,
+              strategy: authorizationStrategy,
+              pluginId: "openapi",
+              identityLabel: existingConnection?.identityLabel ?? `${displayName} OAuth`,
             },
-            pluginId: "openapi",
-            identityLabel: `${displayName} OAuth`,
-          },
-        });
-        if (Exit.isFailure(exit)) {
-          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
-          throw new Error(errorMessageFromExit(exit, "Failed to start OAuth"));
-        }
-        const response = exit.value;
-        if (response.authorizationUrl === null) {
-          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
-          throw new Error("Unexpected response flow from server");
-        }
-        return {
-          sessionId: response.sessionId,
-          authorizationUrl: response.authorizationUrl,
-        };
-      },
-      onSuccess: (result) => {
-        setOauth2AuthState({
-          fingerprint: selectedOAuth2Fingerprint,
-          auth: { connectionId: result.connectionId },
-        });
-        setOauth2Error(null);
-      },
-      onError: (message) => {
-        setStartingOAuth(false);
-        setOauth2Error(message);
-      },
-    });
-  }, [
-    selectedOAuth2Preset,
-    oauth2ClientIdSecretId,
-    oauth2ClientSecretSecretId,
-    selectedOAuth2Scopes,
-    oauth2RedirectUrl,
-    resolvedBaseUrl,
-    preview,
-    doStartOAuth,
-    identity.name,
-    resolvedSourceId,
-    selectedOAuth2Fingerprint,
-    oauth,
-    oauthTokenTargetScope,
-    oauth2ClientIdScope,
-    oauth2ClientSecretScope,
-    sourceScope,
-  ]);
+          });
+          if (Exit.isFailure(exit)) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+            throw new Error(errorMessageFromExit(exit, "Failed to start OAuth"));
+          }
+          const response = exit.value;
+          if (response.authorizationUrl === null) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+            throw new Error("Unexpected response flow from server");
+          }
+          return {
+            sessionId: response.sessionId,
+            authorizationUrl: response.authorizationUrl,
+          };
+        },
+        onSuccess: (result) => {
+          setOAuthTokenTargetScope(tokenTargetScope);
+          setOauth2AuthState({
+            fingerprint: selectedOAuth2Fingerprint,
+            auth: { connectionId: result.connectionId },
+          });
+          setOauth2Error(null);
+        },
+        onError: (message) => {
+          setStartingOAuth(false);
+          setOauth2Error(message);
+        },
+      });
+    },
+    [
+      selectedOAuth2Preset,
+      oauth2ClientIdSecretId,
+      oauth2ClientSecretSecretId,
+      selectedOAuth2Scopes,
+      selectedOAuth2IsGoogle,
+      oauth2RedirectUrl,
+      resolvedBaseUrl,
+      preview,
+      doStartOAuth,
+      identity.name,
+      resolvedSourceId,
+      selectedOAuth2Fingerprint,
+      oauth,
+      oauthTokenTargetScope,
+      oauth2ClientIdScope,
+      oauth2ClientSecretScope,
+      sourceScope,
+    ],
+  );
 
   const handleCancelOAuth2 = useCallback(() => {
     oauth.cancel();
@@ -1565,7 +1649,11 @@ export default function AddOpenApiSource(props: {
                       <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
                         Cancel
                       </Button>
-                      <Button variant="secondary" size="sm" onClick={handleConnectOAuth2}>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleConnectOAuth2()}
+                      >
                         Retry
                       </Button>
                     </div>
@@ -1575,10 +1663,11 @@ export default function AddOpenApiSource(props: {
                         <div className="space-y-2">
                           <div className="space-y-0.5">
                             <FieldLabel className="text-[11px]">
-                              Reuse a signed-in account
+                              Use {selectedOAuth2ProviderLabel} account
                             </FieldLabel>
                             <div className="text-[10px] leading-tight text-muted-foreground">
-                              Skip OAuth and connect this source with an existing account.
+                              Continue with an account you already connected. If permissions are
+                              missing, only the missing access is requested.
                             </div>
                           </div>
                           <div className="space-y-1.5">
@@ -1587,7 +1676,12 @@ export default function AddOpenApiSource(props: {
                                 key={`${connection.scopeId}:${connection.id}`}
                                 connection={connection}
                                 selected={false}
-                                onSelect={() => handleReuseOAuthConnection(connection)}
+                                providerLabel={selectedOAuth2ProviderLabel}
+                                onSelect={() =>
+                                  connection.missingApiScopes.length > 0
+                                    ? void handleConnectOAuth2(connection)
+                                    : handleReuseOAuthConnection(connection)
+                                }
                               />
                             ))}
                           </div>
@@ -1607,7 +1701,7 @@ export default function AddOpenApiSource(props: {
                           </div>
                           <Button
                             variant="secondary"
-                            onClick={handleConnectOAuth2}
+                            onClick={() => void handleConnectOAuth2()}
                             disabled={!canConnectOAuth2}
                             className={
                               canConnectOAuth2

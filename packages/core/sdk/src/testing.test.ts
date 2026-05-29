@@ -80,6 +80,91 @@ layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
     }),
   );
 
+  it.effect("authorization-code OAuth can reuse an existing connection client", () =>
+    Effect.gen(function* () {
+      const workspace = yield* TestWorkspace.current<typeof plugins>();
+      const oauth = yield* OAuthTestServer;
+      const scope = workspace.scopes[0]!;
+
+      yield* workspace.executor.secrets.set(
+        SetSecretInput.make({
+          id: SecretId.make("oauth-client-id"),
+          scope: scope.id,
+          name: "OAuth Client ID",
+          value: "test-client",
+        }),
+      );
+      yield* workspace.executor.secrets.set(
+        SetSecretInput.make({
+          id: SecretId.make("oauth-client-secret"),
+          scope: scope.id,
+          name: "OAuth Client Secret",
+          value: "test-secret",
+        }),
+      );
+
+      const started = yield* workspace.executor.oauth.start({
+        endpoint: oauth.resourceUrl,
+        connectionId: "test-oauth-existing-client",
+        tokenScope: String(scope.id),
+        redirectUrl: "http://127.0.0.1/callback",
+        pluginId: "test",
+        identityLabel: "OAuth Test",
+        strategy: {
+          kind: "authorization-code",
+          authorizationEndpoint: oauth.authorizationEndpoint,
+          tokenEndpoint: oauth.tokenEndpoint,
+          clientIdSecretId: "oauth-client-id",
+          clientSecretSecretId: "oauth-client-secret",
+          scopes: ["gmail.read"],
+        },
+      });
+      const callback = yield* oauth.completeAuthorizationCodeFlow({
+        authorizationUrl: started.authorizationUrl ?? "",
+      });
+      yield* workspace.executor.oauth.complete({
+        state: callback.state,
+        code: callback.code,
+        tokenScope: String(scope.id),
+      });
+
+      const incremental = yield* workspace.executor.oauth.start({
+        endpoint: oauth.resourceUrl,
+        connectionId: "test-oauth-existing-client",
+        tokenScope: String(scope.id),
+        redirectUrl: "http://127.0.0.1/callback",
+        pluginId: "test",
+        identityLabel: "OAuth Test",
+        strategy: {
+          kind: "authorization-code-existing-client",
+          authorizationEndpoint: oauth.authorizationEndpoint,
+          tokenEndpoint: oauth.tokenEndpoint,
+          scopes: ["gmail.read", "calendar.read"],
+          extraAuthorizationParams: { include_granted_scopes: "true" },
+        },
+      });
+
+      const authorizationUrl = new URL(incremental.authorizationUrl ?? "");
+      expect(authorizationUrl.searchParams.get("client_id")).toBe("test-client");
+      expect(authorizationUrl.searchParams.get("scope")).toBe("gmail.read calendar.read");
+      expect(authorizationUrl.searchParams.get("include_granted_scopes")).toBe("true");
+
+      const incrementalCallback = yield* oauth.completeAuthorizationCodeFlow({
+        authorizationUrl: incremental.authorizationUrl ?? "",
+      });
+      const completed = yield* workspace.executor.oauth.complete({
+        state: incrementalCallback.state,
+        code: incrementalCallback.code,
+        tokenScope: String(scope.id),
+      });
+
+      expect(completed.connectionId).toBe("test-oauth-existing-client");
+      expect(completed.scope).toBe("gmail.read calendar.read");
+      const accessToken = yield* workspace.executor.connections.accessToken(completed.connectionId);
+      expect(yield* oauth.acceptsAccessToken(accessToken)).toBe(true);
+    }),
+  );
+
   it.effect("OAuthTestServer supports MCP-style dynamic client registration", () =>
     Effect.gen(function* () {
       const workspace = yield* TestWorkspace.current<typeof plugins>();

@@ -77,6 +77,21 @@ export const OAuthAuthorizationCodeStrategy = Schema.Struct({
 });
 export type OAuthAuthorizationCodeStrategy = typeof OAuthAuthorizationCodeStrategy.Type;
 
+/** Authorization-code flow that reuses the client credentials recorded on
+ *  an existing OAuth connection. Used for incremental authorization where
+ *  the user is granting more scopes to the same account/provider. */
+export const OAuthAuthorizationCodeExistingClientStrategy = Schema.Struct({
+  kind: Schema.Literal("authorization-code-existing-client"),
+  authorizationEndpoint: Schema.String,
+  tokenEndpoint: Schema.optional(Schema.String),
+  issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
+  scopes: Schema.Array(Schema.String),
+  scopeSeparator: Schema.optional(Schema.String),
+  extraAuthorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type OAuthAuthorizationCodeExistingClientStrategy =
+  typeof OAuthAuthorizationCodeExistingClientStrategy.Type;
+
 /** RFC 6749 §4.4 client credentials — no user redirect, no PKCE. Used
  *  for server-to-server integrations where the plugin has both
  *  `client_id` and `client_secret` and the server will mint tokens
@@ -100,6 +115,7 @@ export type OAuthClientCredentialsStrategy = typeof OAuthClientCredentialsStrate
 export const OAuthStrategy = Schema.Union([
   OAuthDynamicDcrStrategy,
   OAuthAuthorizationCodeStrategy,
+  OAuthAuthorizationCodeExistingClientStrategy,
   OAuthClientCredentialsStrategy,
 ]);
 export type OAuthStrategy = typeof OAuthStrategy.Type;

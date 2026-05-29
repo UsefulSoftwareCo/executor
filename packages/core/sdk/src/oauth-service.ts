@@ -61,6 +61,7 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   type OAuthAuthorizationCodeStrategy,
+  type OAuthAuthorizationCodeExistingClientStrategy,
   type OAuthClientCredentialsStrategy,
   type OAuthCompleteInput,
   type OAuthCompleteResult,
@@ -657,6 +658,42 @@ export const makeOAuth2Service = (
       };
     });
 
+  const startAuthorizationCodeWithExistingClient = (
+    input: OAuthStartInput,
+    strategy: OAuthAuthorizationCodeExistingClientStrategy,
+  ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
+    Effect.gen(function* () {
+      const existing = yield* connectionsGet(input.connectionId);
+      if (!existing || existing.scopeId !== input.tokenScope) {
+        return yield* new OAuthStartError({
+          message: "Existing OAuth connection was not found at the selected scope",
+        });
+      }
+      const state = existing.providerState
+        ? Option.getOrNull(decodeProviderStateOption(coerceJson(existing.providerState)))
+        : null;
+      if (!state || state.kind !== "authorization-code") {
+        return yield* new OAuthStartError({
+          message: "Existing OAuth connection cannot be reused for authorization-code sign-in",
+        });
+      }
+
+      return yield* startAuthorizationCode(input, {
+        kind: "authorization-code",
+        authorizationEndpoint: strategy.authorizationEndpoint,
+        tokenEndpoint: strategy.tokenEndpoint ?? state.tokenEndpoint,
+        issuerUrl: strategy.issuerUrl ?? state.issuerUrl,
+        clientIdSecretId: state.clientIdSecretId,
+        clientIdSecretScopeId: state.clientIdSecretScopeId,
+        clientSecretSecretId: state.clientSecretSecretId,
+        clientSecretSecretScopeId: state.clientSecretSecretScopeId,
+        scopes: [...strategy.scopes],
+        scopeSeparator: strategy.scopeSeparator ?? state.scopeSeparator,
+        extraAuthorizationParams: strategy.extraAuthorizationParams,
+        clientAuth: state.clientAuth,
+      });
+    });
+
   const startClientCredentials = (
     input: OAuthStartInput,
     strategy: OAuthClientCredentialsStrategy,
@@ -764,6 +801,9 @@ export const makeOAuth2Service = (
       Match.when({ kind: "dynamic-dcr" }, (strategy) => startDynamicDcr(input, strategy)),
       Match.when({ kind: "authorization-code" }, (strategy) =>
         startAuthorizationCode(input, strategy),
+      ),
+      Match.when({ kind: "authorization-code-existing-client" }, (strategy) =>
+        startAuthorizationCodeWithExistingClient(input, strategy),
       ),
       Match.when({ kind: "client-credentials" }, (strategy) =>
         startClientCredentials(input, strategy),
