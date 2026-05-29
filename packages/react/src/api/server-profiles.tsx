@@ -1,7 +1,6 @@
 import { Option, Schema } from "effect";
 import {
   normalizeExecutorServerConnection,
-  type ExecutorServerAuth,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
 } from "./server-connection";
@@ -46,9 +45,6 @@ const PersistedProfiles = Schema.Struct({
   profiles: Schema.Array(PersistedConnection),
 });
 
-type PersistedConnection = typeof PersistedConnection.Type;
-type PersistedProfiles = typeof PersistedProfiles.Type;
-
 const decodeProfilesJson = Schema.decodeUnknownOption(Schema.fromJsonString(PersistedProfiles));
 
 const EMPTY_PROFILES: ExecutorServerProfilesSnapshot = {
@@ -79,13 +75,15 @@ const normalizeConnectionOption = (
   return normalizeExecutorServerConnection(input);
 };
 
-const asConnectionInput = (connection: ExecutorServerConnection): PersistedConnection => ({
+const asConnectionInput = (
+  connection: ExecutorServerConnection,
+): ExecutorServerConnectionInput => ({
   kind: connection.kind,
   key: connection.key,
   origin: connection.origin,
   apiBaseUrl: connection.apiBaseUrl,
   displayName: connection.displayName,
-  ...(connection.auth ? { auth: connection.auth as ExecutorServerAuth } : {}),
+  ...(connection.auth ? { auth: connection.auth } : {}),
 });
 
 export const parseExecutorServerProfilesSnapshot = (
@@ -104,7 +102,7 @@ export const serializeExecutorServerProfilesSnapshot = (
   // and advanced remote endpoints do not force reauth on every reload. Desktop
   // stores this payload through its Electron store; web falls back to
   // localStorage for the same format.
-  const persisted: PersistedProfiles = {
+  const persisted = {
     version: 1,
     activeKey: snapshot.activeKey,
     profiles: snapshot.profiles.map(asConnectionInput),
