@@ -142,6 +142,7 @@ const AuthorizationCodeSessionPayload = Schema.Struct({
     Schema.withDecodingDefaultType(Effect.succeed(null)),
   ),
   scopes: Schema.Array(Schema.String),
+  storedScope: Schema.optional(Schema.String),
   scopeSeparator: Schema.optional(Schema.String),
   clientAuth: Schema.Literals(["body", "basic"]),
 });
@@ -588,6 +589,10 @@ export const makeOAuth2Service = (
   const startAuthorizationCode = (
     input: OAuthStartInput,
     strategy: OAuthAuthorizationCodeStrategy,
+    options?: {
+      readonly authorizationScopes?: readonly string[];
+      readonly storedScope?: string;
+    },
   ): Effect.Effect<OAuthStartResult, OAuthStartError | StorageFailure> =>
     Effect.gen(function* () {
       const clientIdRef = yield* secretsGetResolvedAtScope({
@@ -615,7 +620,7 @@ export const makeOAuth2Service = (
         authorizationUrl: strategy.authorizationEndpoint,
         clientId: clientIdRef.value,
         redirectUrl: input.redirectUrl,
-        scopes: strategy.scopes,
+        scopes: options?.authorizationScopes ?? strategy.scopes,
         state: sessionId,
         codeChallenge,
         scopeSeparator: strategy.scopeSeparator,
@@ -640,6 +645,7 @@ export const makeOAuth2Service = (
             }))?.scopeId ?? null)
           : null,
         scopes: [...strategy.scopes],
+        storedScope: options?.storedScope,
         scopeSeparator: strategy.scopeSeparator,
         clientAuth: strategy.clientAuth ?? "body",
       };
@@ -678,20 +684,31 @@ export const makeOAuth2Service = (
         });
       }
 
-      return yield* startAuthorizationCode(input, {
-        kind: "authorization-code",
-        authorizationEndpoint: strategy.authorizationEndpoint,
-        tokenEndpoint: strategy.tokenEndpoint ?? state.tokenEndpoint,
-        issuerUrl: strategy.issuerUrl ?? state.issuerUrl,
-        clientIdSecretId: state.clientIdSecretId,
-        clientIdSecretScopeId: state.clientIdSecretScopeId,
-        clientSecretSecretId: state.clientSecretSecretId,
-        clientSecretSecretScopeId: state.clientSecretSecretScopeId,
-        scopes: [...strategy.scopes],
-        scopeSeparator: strategy.scopeSeparator ?? state.scopeSeparator,
-        extraAuthorizationParams: strategy.extraAuthorizationParams,
-        clientAuth: state.clientAuth,
-      });
+      const scopeSeparator = strategy.scopeSeparator ?? state.scopeSeparator;
+
+      return yield* startAuthorizationCode(
+        input,
+        {
+          kind: "authorization-code",
+          authorizationEndpoint: strategy.authorizationEndpoint,
+          tokenEndpoint: strategy.tokenEndpoint ?? state.tokenEndpoint,
+          issuerUrl: strategy.issuerUrl ?? state.issuerUrl,
+          clientIdSecretId: state.clientIdSecretId,
+          clientIdSecretScopeId: state.clientIdSecretScopeId,
+          clientSecretSecretId: state.clientSecretSecretId,
+          clientSecretSecretScopeId: state.clientSecretSecretScopeId,
+          scopes: [...strategy.scopes],
+          scopeSeparator,
+          extraAuthorizationParams: strategy.extraAuthorizationParams,
+          clientAuth: state.clientAuth,
+        },
+        strategy.authorizationScopes
+          ? {
+              authorizationScopes: strategy.authorizationScopes,
+              storedScope: strategy.scopes.join(scopeSeparator ?? " "),
+            }
+          : undefined,
+      );
     });
 
   const startClientCredentials = (
@@ -915,6 +932,10 @@ export const makeOAuth2Service = (
         typeof exchangeResult.tokens.expires_in === "number"
           ? now() + exchangeResult.tokens.expires_in * 1000
           : null;
+      const effectiveOAuthScope =
+        payload.kind === "authorization-code" && payload.storedScope
+          ? payload.storedScope
+          : (exchangeResult.tokens.scope ?? null);
 
       const dynamicClientSecretSecretId = yield* (() => {
         if (payload.kind !== "dynamic-dcr") return Effect.succeed(null);
@@ -978,7 +999,7 @@ export const makeOAuth2Service = (
                   : "body",
               clientSecretSecretScopeId: dynamicClientSecretSecretId ? tokenScope : null,
               scopes: [...payload.scopes],
-              scope: exchangeResult.tokens.scope ?? null,
+              scope: effectiveOAuthScope,
               resource: payload.resource,
             }
           : {
@@ -992,7 +1013,7 @@ export const makeOAuth2Service = (
               clientAuth: payload.clientAuth,
               scopes: [...payload.scopes],
               scopeSeparator: payload.scopeSeparator,
-              scope: exchangeResult.tokens.scope ?? null,
+              scope: effectiveOAuthScope,
             };
 
       yield* deps
@@ -1017,7 +1038,7 @@ export const makeOAuth2Service = (
                 })
               : null,
             expiresAt: connectionExpiresAt,
-            oauthScope: exchangeResult.tokens.scope ?? null,
+            oauthScope: effectiveOAuthScope,
             providerState: encodeProviderStateSync(providerState) as Record<string, unknown>,
           }),
         )
@@ -1049,7 +1070,7 @@ export const makeOAuth2Service = (
       return {
         connectionId,
         expiresAt: connectionExpiresAt,
-        scope: exchangeResult.tokens.scope ?? null,
+        scope: effectiveOAuthScope,
       };
     });
 

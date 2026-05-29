@@ -885,8 +885,15 @@ export default function AddOpenApiSource(props: {
         existingConnection?.id ??
         openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow);
       const scopesForAuthorization = existingConnection
-        ? mergeOAuthScopes(splitOAuthScopes(existingConnection.oauthScope), selectedOAuth2Scopes)
+        ? mergeOAuthScopes(
+            splitOAuthScopes(existingConnection.oauthScope),
+            selectedOAuth2IsGoogle ? oauth2SelectedScopes : selectedOAuth2Scopes,
+          )
         : selectedOAuth2Scopes;
+      const incrementalAuthorizationScopes =
+        existingConnection && selectedOAuth2IsGoogle
+          ? [...existingConnection.missingApiScopes]
+          : undefined;
       const extraAuthorizationParams = googleAuthorizationParams(selectedOAuth2IsGoogle);
 
       const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
@@ -955,6 +962,9 @@ export default function AddOpenApiSource(props: {
             tokenEndpoint: tokenUrl,
             issuerUrl,
             scopes: scopesForAuthorization,
+            ...(incrementalAuthorizationScopes && incrementalAuthorizationScopes.length > 0
+              ? { authorizationScopes: incrementalAuthorizationScopes }
+              : {}),
             extraAuthorizationParams,
           }
         : oauth2ClientIdSecretId
@@ -1022,6 +1032,7 @@ export default function AddOpenApiSource(props: {
       selectedOAuth2Preset,
       oauth2ClientIdSecretId,
       oauth2ClientSecretSecretId,
+      oauth2SelectedScopes,
       selectedOAuth2Scopes,
       selectedOAuth2IsGoogle,
       oauth2RedirectUrl,

@@ -85,7 +85,13 @@ export const OAuthAuthorizationCodeExistingClientStrategy = Schema.Struct({
   authorizationEndpoint: Schema.String,
   tokenEndpoint: Schema.optional(Schema.String),
   issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Final scope set Executor should remember for this connection. */
   scopes: Schema.Array(Schema.String),
+  /** Optional smaller scope set to send to the authorization server. This is
+   *  for providers such as Google that support incremental authorization via
+   *  `include_granted_scopes=true`: request only newly-missing scopes, but
+   *  keep the connection's full granted-scope model for refresh/source reuse. */
+  authorizationScopes: Schema.optional(Schema.Array(Schema.String)),
   scopeSeparator: Schema.optional(Schema.String),
   extraAuthorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });

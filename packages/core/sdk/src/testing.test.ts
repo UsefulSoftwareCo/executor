@@ -140,13 +140,14 @@ layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
           authorizationEndpoint: oauth.authorizationEndpoint,
           tokenEndpoint: oauth.tokenEndpoint,
           scopes: ["gmail.read", "calendar.read"],
+          authorizationScopes: ["calendar.read"],
           extraAuthorizationParams: { include_granted_scopes: "true" },
         },
       });
 
       const authorizationUrl = new URL(incremental.authorizationUrl ?? "");
       expect(authorizationUrl.searchParams.get("client_id")).toBe("test-client");
-      expect(authorizationUrl.searchParams.get("scope")).toBe("gmail.read calendar.read");
+      expect(authorizationUrl.searchParams.get("scope")).toBe("calendar.read");
       expect(authorizationUrl.searchParams.get("include_granted_scopes")).toBe("true");
 
       const incrementalCallback = yield* oauth.completeAuthorizationCodeFlow({
