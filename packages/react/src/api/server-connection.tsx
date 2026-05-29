@@ -71,13 +71,14 @@ export const resolveBrowserExecutorServerConnection = (input: {
 };
 
 const resolveInitialExecutorServerConnection = (): ExecutorServerConnection => {
-  if (typeof window === "undefined") {
+  const browserWindow = globalThis.window;
+  if (!browserWindow) {
     return normalizeExecutorServerConnection();
   }
 
   return resolveBrowserExecutorServerConnection({
-    locationOrigin: window.location?.origin,
-    bridge: window.executor,
+    locationOrigin: browserWindow.location?.origin,
+    bridge: browserWindow.executor,
   });
 };
 
@@ -142,8 +143,8 @@ export function ExecutorServerConnectionProvider(
   }, [props.connection]);
 
   React.useEffect(() => {
-    if (props.connection || typeof window === "undefined") return;
-    const bridge = window.executor;
+    const bridge = globalThis.window?.executor;
+    if (props.connection || !bridge) return;
     if (typeof bridge?.getServerConnection !== "function") return;
 
     let cancelled = false;

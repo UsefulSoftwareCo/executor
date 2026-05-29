@@ -26,11 +26,11 @@ const SUPPORTED_AGENTS = [
 
 const isDev = import.meta.env.DEV;
 const devCliCwd = import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD as string | undefined;
+const currentLocation = globalThis.window?.location;
 const isLocal =
-  typeof window !== "undefined" &&
-  (window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1" ||
-    window.location.hostname.endsWith(".localhost"));
+  currentLocation?.hostname === "localhost" ||
+  currentLocation?.hostname === "127.0.0.1" ||
+  currentLocation?.hostname.endsWith(".localhost") === true;
 
 export const shellQuoteWord = (value: string): string => {
   if (/^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)) return value;
@@ -38,8 +38,7 @@ export const shellQuoteWord = (value: string): string => {
 };
 
 const hasDesktopConnectionBridge = (): boolean => {
-  if (typeof window === "undefined") return false;
-  const candidate = window.executor;
+  const candidate = globalThis.window?.executor;
   return typeof candidate?.getServerConnection === "function";
 };
 
