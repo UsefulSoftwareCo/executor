@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomSet } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { ChevronDownIcon } from "lucide-react";
 
 import {
   ConnectionId,
@@ -12,7 +14,12 @@ import {
   SecretId,
   SetSourceCredentialBindingInput,
 } from "@executor-js/sdk/shared";
-import { setSourceCredentialBinding, startOAuth } from "@executor-js/react/api/atoms";
+import {
+  connectionIdentityAtom,
+  connectionsAtom,
+  setSourceCredentialBinding,
+  startOAuth,
+} from "@executor-js/react/api/atoms";
 import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
 import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
 
@@ -65,6 +72,7 @@ import { RadioGroup, RadioGroupItem } from "@executor-js/react/components/radio-
 import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
 import { addOpenApiSpecOptimistic, previewOpenApiSpec } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
+import { openApiPresets } from "../sdk/presets";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
 import {
   headerBindingSlot,
@@ -131,6 +139,46 @@ export function inferOAuthIssuerUrl(authorizationUrl: string): string | null {
   }
 }
 
+const standardOidcIdentityScopes = ["openid", "email", "profile"] as const;
+
+const identityScopesForPreset = (
+  identityScopes: OAuth2Preset["identityScopes"],
+): readonly string[] => {
+  if (identityScopes === false) return [];
+  return identityScopes === "auto" ? standardOidcIdentityScopes : identityScopes;
+};
+
+const resolvedOAuthScopes = (
+  apiScopes: Iterable<string>,
+  identityScopes: OAuth2Preset["identityScopes"],
+): string[] => {
+  const merged = new Set(apiScopes);
+  for (const scope of identityScopesForPreset(identityScopes)) merged.add(scope);
+  return [...merged];
+};
+
+const splitOAuthScopes = (value: string | null): Set<string> =>
+  new Set(value?.split(/\s+/).filter(Boolean) ?? []);
+
+type OAuthConnectionChoice = {
+  readonly id: ConnectionId;
+  readonly scopeId: ScopeId;
+  readonly provider: string;
+  readonly identityLabel: string | null;
+  readonly oauthScope: string | null;
+};
+
+const hasRequiredApiScopes = (
+  connection: OAuthConnectionChoice,
+  requiredApiScopes: Iterable<string>,
+): boolean => {
+  const granted = splitOAuthScopes(connection.oauthScope);
+  for (const scope of requiredApiScopes) {
+    if (!granted.has(scope)) return false;
+  }
+  return true;
+};
+
 const specInputForAdd = (input: string) => {
   const value = input.trim();
   const parsed = Effect.runSyncExit(
@@ -153,6 +201,15 @@ const isGoogleDiscoveryUrl = (url: string): boolean => {
   const host = parsed.hostname.toLowerCase();
   if (!host.endsWith("googleapis.com")) return false;
   return parsed.pathname.includes("/discovery/") || parsed.pathname.includes("$discovery");
+};
+
+const normalizePresetUrl = (url: string): string => {
+  const trimmed = url.trim();
+  if (!URL.canParse(trimmed)) return trimmed.replace(/\/$/, "");
+  const parsed = new URL(trimmed);
+  parsed.hash = "";
+  parsed.searchParams.sort();
+  return parsed.toString().replace(/\/$/, "");
 };
 
 type StrategySelection =
@@ -214,6 +271,113 @@ function entriesFromSpecPreset(preset: HeaderPreset): HeaderState[] {
   });
 }
 
+function OAuthConnectedAccount(props: {
+  readonly scopeId: ScopeId;
+  readonly connectionId: string;
+  readonly fallbackLabel: string;
+  readonly sourceName: string;
+  readonly onSetSourceName: (name: string) => void;
+}) {
+  const identityResult = useAtomValue(
+    connectionIdentityAtom(props.scopeId, ConnectionId.make(props.connectionId)),
+  );
+  const identity =
+    AsyncResult.isSuccess(identityResult) && identityResult.value.status === "available"
+      ? identityResult.value
+      : null;
+  const label = identity?.email ?? identity?.name ?? props.fallbackLabel;
+  const sourceNameWithAccount = props.sourceName.includes(label)
+    ? props.sourceName
+    : `${props.sourceName} - ${label}`;
+  const accountIsInSourceName = props.sourceName === sourceNameWithAccount;
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          {identity?.picture ? (
+            <img
+              src={identity.picture}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="size-5 shrink-0 rounded-full"
+            />
+          ) : null}
+          <span className="min-w-0 truncate text-foreground">Connected as {label}</span>
+        </div>
+        {identity ? (
+          <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            Source name: {sourceNameWithAccount}
+          </div>
+        ) : null}
+      </div>
+      {identity ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-[11px]"
+          disabled={accountIsInSourceName}
+          onClick={() => props.onSetSourceName(sourceNameWithAccount)}
+        >
+          {accountIsInSourceName ? "Name includes account" : "Add account name to source name"}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function ExistingOAuthConnectionOption(props: {
+  readonly connection: OAuthConnectionChoice;
+  readonly selected: boolean;
+  readonly onSelect: () => void;
+}) {
+  const identityResult = useAtomValue(
+    connectionIdentityAtom(props.connection.scopeId, props.connection.id),
+  );
+  const identity =
+    AsyncResult.isSuccess(identityResult) && identityResult.value.status === "available"
+      ? identityResult.value
+      : null;
+  const label =
+    identity?.email ?? identity?.name ?? props.connection.identityLabel ?? props.connection.id;
+  const picture = identity?.picture;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={props.onSelect}
+      className={`h-auto w-full justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+        props.selected
+          ? "border-primary/40 bg-primary/10"
+          : "border-border/60 bg-background hover:border-border hover:bg-muted/30"
+      }`}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        {picture ? (
+          <img
+            src={picture}
+            alt=""
+            referrerPolicy="no-referrer"
+            className="size-5 shrink-0 rounded-full"
+          />
+        ) : (
+          <span className="grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[10px] text-muted-foreground">
+            {label.slice(0, 1).toUpperCase()}
+          </span>
+        )}
+        <span className="min-w-0">
+          <span className="block truncate text-[12px] text-foreground">{label}</span>
+          <span className="block truncate text-[10px] text-muted-foreground">
+            {props.connection.identityLabel ?? "OAuth connection"}
+          </span>
+        </span>
+      </span>
+      <span className="shrink-0 text-[11px] font-medium text-foreground">
+        {props.selected ? "Selected" : "Use account"}
+      </span>
+    </Button>
+  );
+}
+
 const secretStorageDescription = (label: string): string =>
   label === "Personal"
     ? "Only you can use this secret."
@@ -259,6 +423,8 @@ export default function AddOpenApiSource(props: {
   const [oauth2ClientIdScope, setOauth2ClientIdScope] = useState<ScopeId | null>(null);
   const [oauth2ClientSecretScope, setOauth2ClientSecretScope] = useState<ScopeId | null>(null);
   const [oauth2SelectedScopes, setOauth2SelectedScopes] = useState<Set<string>>(new Set());
+  const [includeOAuth2IdentityScopes, setIncludeOAuth2IdentityScopes] = useState(true);
+  const [oauth2ScopesOpen, setOauth2ScopesOpen] = useState(false);
   const [oauth2AuthState, setOauth2AuthState] = useState<{
     readonly fingerprint: string;
     readonly auth: { readonly connectionId: string };
@@ -318,6 +484,7 @@ export default function AddOpenApiSource(props: {
   const doSetBinding = useAtomSet(setSourceCredentialBinding, {
     mode: "promiseExit",
   });
+  const connectionsResult = useAtomValue(connectionsAtom(scopeId));
   const secretList = useSecretPickerSecrets();
   const oauth = useOAuthPopupFlow<OAuthCompletionPayload>({
     popupName: OPENAPI_OAUTH_POPUP_NAME,
@@ -355,6 +522,9 @@ export default function AddOpenApiSource(props: {
   const baseUrlOptions = Array.from(
     new Map(servers.flatMap(expandServerOptions).map((option) => [option.value, option])).values(),
   );
+  const previewPresetIcon =
+    openApiPresets.find((preset) => normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl))
+      ?.icon ?? null;
 
   const resolvedBaseUrl = baseUrl.trim();
   const sourceScope = ScopeId.make(scopeId);
@@ -460,11 +630,13 @@ export default function AddOpenApiSource(props: {
   const resolvedSourceId =
     slugifyNamespace(identity.namespace) ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
+  const resolvedDisplayName =
+    identity.name.trim() ||
+    (preview ? Option.getOrElse(preview.title, () => resolvedSourceId) : resolvedSourceId);
   const selectedOAuth2Preset: OAuth2Preset | null =
     strategy.kind === "oauth2" ? (oauth2Presets[strategy.presetIndex] ?? null) : null;
   const selectedOAuth2Fingerprint = selectedOAuth2Preset
     ? [
-        resolvedSourceId,
         resolvedBaseUrl,
         selectedOAuth2Preset.securitySchemeName,
         selectedOAuth2Preset.flow,
@@ -474,6 +646,33 @@ export default function AddOpenApiSource(props: {
     : "";
   const oauth2Auth =
     oauth2AuthState?.fingerprint === selectedOAuth2Fingerprint ? oauth2AuthState.auth : null;
+  const selectedOAuth2AvailableIdentityScopes = selectedOAuth2Preset
+    ? identityScopesForPreset(selectedOAuth2Preset.identityScopes)
+    : [];
+  const configuredOAuth2IdentityScopes =
+    selectedOAuth2Preset && includeOAuth2IdentityScopes
+      ? selectedOAuth2Preset.identityScopes
+      : false;
+  const selectedOAuth2Scopes = useMemo(
+    () =>
+      selectedOAuth2Preset
+        ? resolvedOAuthScopes(oauth2SelectedScopes, configuredOAuth2IdentityScopes)
+        : [...oauth2SelectedScopes],
+    [configuredOAuth2IdentityScopes, oauth2SelectedScopes, selectedOAuth2Preset],
+  );
+  const existingOAuthConnections = useMemo(() => {
+    if (
+      !selectedOAuth2Preset ||
+      selectedOAuth2Preset.flow !== "authorizationCode" ||
+      !AsyncResult.isSuccess(connectionsResult)
+    ) {
+      return [];
+    }
+    return connectionsResult.value.filter(
+      (connection) =>
+        connection.provider === "oauth2" && hasRequiredApiScopes(connection, oauth2SelectedScopes),
+    );
+  }, [connectionsResult, oauth2SelectedScopes, selectedOAuth2Preset]);
 
   const configuredOAuth2 =
     strategy.kind === "oauth2" && selectedOAuth2Preset
@@ -496,6 +695,7 @@ export default function AddOpenApiSource(props: {
           clientSecretSlot: oauth2ClientSecretSlot(selectedOAuth2Preset.securitySchemeName),
           connectionSlot: oauth2ConnectionSlot(selectedOAuth2Preset.securitySchemeName),
           scopes: [...oauth2SelectedScopes],
+          identityScopes: configuredOAuth2IdentityScopes,
         })
       : null;
   const hasHeaders = Object.keys(configuredHeaders).length > 0;
@@ -554,6 +754,7 @@ export default function AddOpenApiSource(props: {
       setStrategy({ kind: "oauth2", presetIndex: 0 });
       setCustomHeaders([]);
       setOauth2SelectedScopes(new Set(Object.keys(result.oauth2Presets[0].scopes)));
+      setIncludeOAuth2IdentityScopes(result.oauth2Presets[0].identityScopes !== false);
     } else {
       // No header presets — default to "custom" so the headers editor is
       // visible immediately. Specs with no `security` block (e.g. Microsoft
@@ -593,6 +794,7 @@ export default function AddOpenApiSource(props: {
         const preset = preview?.oauth2Presets[n.presetIndex];
         if (preset) {
           setOauth2SelectedScopes(new Set(Object.keys(preset.scopes)));
+          setIncludeOAuth2IdentityScopes(preset.identityScopes !== false);
         }
       }),
       Match.exhaustive,
@@ -651,7 +853,7 @@ export default function AddOpenApiSource(props: {
             clientIdSecretScopeId: String(clientIdSecretScope),
             clientSecretSecretId: oauth2ClientSecretSecretId,
             clientSecretSecretScopeId: String(clientSecretSecretScope),
-            scopes: [...oauth2SelectedScopes],
+            scopes: selectedOAuth2Scopes,
           },
           pluginId: "openapi",
           identityLabel: `${displayName} OAuth`,
@@ -702,7 +904,7 @@ export default function AddOpenApiSource(props: {
               clientSecretSecretScopeId: oauth2ClientSecretSecretId
                 ? String(clientSecretSecretScope)
                 : null,
-              scopes: [...oauth2SelectedScopes],
+              scopes: selectedOAuth2Scopes,
             },
             pluginId: "openapi",
             identityLabel: `${displayName} OAuth`,
@@ -738,7 +940,7 @@ export default function AddOpenApiSource(props: {
     selectedOAuth2Preset,
     oauth2ClientIdSecretId,
     oauth2ClientSecretSecretId,
-    oauth2SelectedScopes,
+    selectedOAuth2Scopes,
     oauth2RedirectUrl,
     resolvedBaseUrl,
     preview,
@@ -759,18 +961,29 @@ export default function AddOpenApiSource(props: {
     setOauth2Error(null);
   }, [oauth]);
 
+  const handleReuseOAuthConnection = useCallback(
+    (connection: OAuthConnectionChoice) => {
+      oauth.cancel();
+      setStartingOAuth(false);
+      setOAuthTokenTargetScope(connection.scopeId);
+      setOauth2AuthState({
+        fingerprint: selectedOAuth2Fingerprint,
+        auth: { connectionId: connection.id },
+      });
+      setOauth2Error(null);
+    },
+    [oauth, selectedOAuth2Fingerprint],
+  );
+
   const handleAdd = async () => {
     setAdding(true);
     setAddError(null);
     const namespace = resolvedSourceId;
-    const displayName =
-      identity.name.trim() ||
-      (preview ? Option.getOrElse(preview.title, () => namespace) : namespace);
     const exit = await doAdd({
       params: { scopeId },
       payload: {
         spec: specInputForAdd(specUrl),
-        name: displayName,
+        name: resolvedDisplayName,
         namespace,
         baseUrl: resolvedBaseUrl,
         ...(configuredSpecFetchCredentials
@@ -1021,6 +1234,7 @@ export default function AddOpenApiSource(props: {
             setOauth2AuthState(null);
             setOauth2Error(null);
           }}
+          faviconIcon={previewPresetIcon}
           faviconUrl={resolvedBaseUrl}
           baseUrlMissingMessage="A base URL is required to make requests."
         />
@@ -1157,15 +1371,22 @@ export default function AddOpenApiSource(props: {
                       <CopyButton value={oauth2RedirectUrl} />
                     </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <FieldLabel className="text-[11px]">Client ID secret</FieldLabel>
-                    <div className="grid gap-2 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
                       <div className="space-y-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <FieldLabel className="text-[11px]">Secret</FieldLabel>
-                          <HelpTooltip label="Client ID secret">
-                            Select or create the OAuth client ID secret.
-                          </HelpTooltip>
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <FieldLabel className="text-[11px]">Client ID</FieldLabel>
+                            <HelpTooltip label="Client ID secret">
+                              Select or create the OAuth client ID secret.
+                            </HelpTooltip>
+                          </div>
+                          <div
+                            aria-hidden
+                            className="invisible text-[10px] leading-tight text-muted-foreground"
+                          >
+                            Required OAuth client identifier.
+                          </div>
                         </div>
                         <CreatableSecretPicker
                           value={oauth2ClientIdSecretId}
@@ -1194,21 +1415,18 @@ export default function AddOpenApiSource(props: {
                         help="Choose where this OAuth client ID credential lives."
                       />
                     </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <FieldLabel className="text-[11px]">
-                      Client secret{" "}
-                      <span className="text-muted-foreground">
-                        · optional for public clients with PKCE
-                      </span>
-                    </FieldLabel>
-                    <div className="grid gap-2 md:grid-cols-2">
+                    <div className="space-y-2">
                       <div className="space-y-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <FieldLabel className="text-[11px]">Secret</FieldLabel>
-                          <HelpTooltip label="Client secret">
-                            Select or create the OAuth client secret.
-                          </HelpTooltip>
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <FieldLabel className="text-[11px]">Client Secret</FieldLabel>
+                            <HelpTooltip label="Client secret">
+                              Select or create the OAuth client secret.
+                            </HelpTooltip>
+                          </div>
+                          <div className="text-[10px] leading-tight text-muted-foreground">
+                            Optional for public clients with PKCE.
+                          </div>
                         </div>
                         <CreatableSecretPicker
                           value={oauth2ClientSecretSecretId}
@@ -1238,39 +1456,101 @@ export default function AddOpenApiSource(props: {
                       />
                     </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <FieldLabel className="text-[11px]">Scopes</FieldLabel>
-                    <div className="space-y-1 rounded-md border border-border/50 bg-background/50 p-2">
-                      {Object.keys(selectedOAuth2Preset.scopes).length === 0 ? (
-                        <div className="text-[11px] italic text-muted-foreground">
-                          No scopes declared by the spec.
-                        </div>
-                      ) : (
-                        Object.entries(selectedOAuth2Preset.scopes).map(([scope, description]) => (
-                          <Label key={scope} className="flex items-start gap-2 cursor-pointer py-1">
+                  <Collapsible
+                    open={oauth2ScopesOpen}
+                    onOpenChange={setOauth2ScopesOpen}
+                    className="space-y-1.5"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-full justify-between !px-0 text-[11px] hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="font-medium text-foreground">Scopes</span>
+                          <span className="text-muted-foreground">
+                            {selectedOAuth2Scopes.length} selected
+                          </span>
+                        </span>
+                        <span className="flex size-3 shrink-0 items-center justify-center">
+                          <ChevronDownIcon
+                            className={`size-3 text-muted-foreground transition-transform ${
+                              oauth2ScopesOpen ? "" : "-rotate-90"
+                            }`}
+                          />
+                        </span>
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="space-y-1 rounded-md border border-border/50 bg-background/50 p-2">
+                        {Object.keys(selectedOAuth2Preset.scopes).length === 0 ? (
+                          <div className="text-[11px] italic text-muted-foreground">
+                            No scopes declared by the spec.
+                          </div>
+                        ) : (
+                          Object.entries(selectedOAuth2Preset.scopes).map(
+                            ([scope, description]) => (
+                              <Label
+                                key={scope}
+                                className="flex items-start gap-2 cursor-pointer py-1"
+                              >
+                                <Checkbox
+                                  checked={oauth2SelectedScopes.has(scope)}
+                                  onCheckedChange={() => toggleOAuth2Scope(scope)}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-mono text-[11px] text-foreground">
+                                    {scope}
+                                  </div>
+                                  {description && (
+                                    <div className="text-[10px] text-muted-foreground">
+                                      {description}
+                                    </div>
+                                  )}
+                                </div>
+                              </Label>
+                            ),
+                          )
+                        )}
+                        {selectedOAuth2AvailableIdentityScopes.length > 0 && (
+                          <Label className="mt-2 flex cursor-pointer items-start gap-2 border-t border-border/50 pt-2">
                             <Checkbox
-                              checked={oauth2SelectedScopes.has(scope)}
-                              onCheckedChange={() => toggleOAuth2Scope(scope)}
+                              checked={includeOAuth2IdentityScopes}
+                              onCheckedChange={(checked) => {
+                                setIncludeOAuth2IdentityScopes(checked === true);
+                                setOauth2AuthState(null);
+                              }}
                             />
                             <div className="min-w-0 flex-1">
-                              <div className="font-mono text-[11px] text-foreground">{scope}</div>
-                              {description && (
-                                <div className="text-[10px] text-muted-foreground">
-                                  {description}
-                                </div>
-                              )}
+                              <div className="text-[11px] font-medium text-foreground">
+                                Account identity
+                              </div>
+                              <div className="font-mono text-[10px] text-muted-foreground">
+                                {selectedOAuth2AvailableIdentityScopes.join(" · ")}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground">
+                                Lets the connections page show the signed-in account.
+                              </div>
                             </div>
                           </Label>
-                        ))
-                      )}
-                    </div>
-                  </div>
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
 
                   {oauth2Auth ? (
-                    <div className="flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/5 px-3 py-2">
-                      <div className="text-[11px] text-green-700 dark:text-green-400">
-                        Connected · {oauth2SelectedScopes.size} scope
-                        {oauth2SelectedScopes.size === 1 ? "" : "s"} granted
+                    <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/50 px-3 py-2">
+                      <div className="min-w-0 text-[12px]">
+                        <OAuthConnectedAccount
+                          scopeId={oauthTokenTargetScope}
+                          connectionId={oauth2Auth.connectionId}
+                          fallbackLabel={`${selectedOAuth2Scopes.length} scope${
+                            selectedOAuth2Scopes.length === 1 ? "" : "s"
+                          } granted`}
+                          sourceName={resolvedDisplayName}
+                          onSetSourceName={identity.setName}
+                        />
                       </div>
                       <Button variant="ghost" size="sm" onClick={() => setOauth2AuthState(null)}>
                         Disconnect
@@ -1291,10 +1571,36 @@ export default function AddOpenApiSource(props: {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1.5">
+                      {existingOAuthConnections.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="space-y-0.5">
+                            <FieldLabel className="text-[11px]">
+                              Reuse a signed-in account
+                            </FieldLabel>
+                            <div className="text-[10px] leading-tight text-muted-foreground">
+                              Skip OAuth and connect this source with an existing account.
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            {existingOAuthConnections.map((connection) => (
+                              <ExistingOAuthConnectionOption
+                                key={`${connection.scopeId}:${connection.id}`}
+                                connection={connection}
+                                selected={false}
+                                onSelect={() => handleReuseOAuthConnection(connection)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <div className="grid gap-2 md:grid-cols-2">
                         <div className="space-y-1.5">
                           <div className="flex items-center gap-1.5">
-                            <FieldLabel className="text-[11px]">OAuth sign-in</FieldLabel>
+                            <FieldLabel className="text-[11px]">
+                              {existingOAuthConnections.length > 0
+                                ? "Sign in with another account"
+                                : "OAuth sign-in"}
+                            </FieldLabel>
                             <HelpTooltip label="OAuth sign-in">
                               Start the provider OAuth flow.
                             </HelpTooltip>

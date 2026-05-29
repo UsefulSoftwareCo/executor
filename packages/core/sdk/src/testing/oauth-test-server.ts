@@ -40,6 +40,7 @@ export interface OAuthTestServerRequest {
   readonly path: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
+  readonly query: Readonly<Record<string, string>>;
 }
 
 export interface OAuthTestServerOptions {
@@ -435,6 +436,7 @@ export const serveOAuthTestServer = (
             path: requestUrl.pathname,
             headers,
             body,
+            query: Object.fromEntries(requestUrl.searchParams.entries()),
           },
         ]);
 

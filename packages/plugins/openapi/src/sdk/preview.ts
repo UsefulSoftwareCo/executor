@@ -106,6 +106,12 @@ export const OAuth2Preset = Schema.Struct({
   refreshUrl: Schema.OptionFromOptional(Schema.String),
   /** Declared scopes for this flow: `{ scope: description }`. */
   scopes: Schema.Record(Schema.String, Schema.String),
+  /** Identity scopes to request alongside API scopes. `"auto"` discovers standard OIDC scopes. */
+  identityScopes: Schema.Union([
+    Schema.Literal("auto"),
+    Schema.Literal(false),
+    Schema.Array(Schema.String),
+  ]),
 });
 export type OAuth2Preset = typeof OAuth2Preset.Type;
 
@@ -328,6 +334,7 @@ const buildOAuth2Presets = (schemes: readonly SecurityScheme[]): OAuth2Preset[] 
           tokenUrl: flow.tokenUrl,
           refreshUrl: flow.refreshUrl,
           scopes: flow.scopes,
+          identityScopes: "auto",
         }),
       );
     }
@@ -343,6 +350,7 @@ const buildOAuth2Presets = (schemes: readonly SecurityScheme[]): OAuth2Preset[] 
           tokenUrl: flow.tokenUrl,
           refreshUrl: flow.refreshUrl,
           scopes: flow.scopes,
+          identityScopes: false,
         }),
       );
     }

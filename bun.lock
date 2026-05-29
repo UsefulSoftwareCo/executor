@@ -774,6 +774,7 @@
         "@executor-js/config": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
+        "lucide-react": "^1.7.0",
         "openapi-types": "^12.1.3",
         "yaml": "^2.7.1",
       },

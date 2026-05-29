@@ -303,6 +303,11 @@ const StaticPreviewOAuth2PresetSchema = Schema.Struct({
   tokenUrl: Schema.String,
   refreshUrl: Schema.NullOr(Schema.String),
   scopes: Schema.Record(Schema.String, Schema.String),
+  identityScopes: Schema.Union([
+    Schema.Literal("auto"),
+    Schema.Literal(false),
+    Schema.Array(Schema.String),
+  ]),
 });
 const StaticPreviewSpecOutputSchema = Schema.Struct({
   title: Schema.NullOr(Schema.String),
@@ -535,6 +540,7 @@ const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => (
     tokenUrl: preset.tokenUrl,
     refreshUrl: Option.getOrNull(preset.refreshUrl),
     scopes: preset.scopes,
+    identityScopes: preset.identityScopes,
   })),
 });
 

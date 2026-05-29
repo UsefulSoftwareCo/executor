@@ -46,6 +46,7 @@ const makeOauth2SourceConfig = (params: {
   readonly tokenUrl: string;
   readonly authorizationUrl: string | null;
   readonly scopes: readonly string[];
+  readonly identityScopes?: OAuth2SourceConfig["identityScopes"];
 }): OAuth2SourceConfig =>
   OAuth2SourceConfig.make({
     kind: "oauth2",
@@ -57,7 +58,19 @@ const makeOauth2SourceConfig = (params: {
     clientSecretSlot: "oauth2:oauth2:client-secret",
     connectionSlot: "oauth2:oauth2:connection",
     scopes: [...params.scopes],
+    ...(params.identityScopes !== undefined ? { identityScopes: params.identityScopes } : {}),
   });
+
+const resolvedOAuthScopes = (oauth2: OAuth2SourceConfig): string[] => {
+  const merged = new Set(oauth2.scopes);
+  if (oauth2.identityScopes === false) return [...merged];
+  const extras =
+    oauth2.identityScopes === undefined || oauth2.identityScopes === "auto"
+      ? ["openid", "email", "profile"]
+      : oauth2.identityScopes;
+  for (const scope of extras) merged.add(scope);
+  return [...merged];
+};
 
 // ---------------------------------------------------------------------------
 // Test API — a single endpoint that echoes the Authorization header so the
@@ -357,6 +370,87 @@ describe("OpenAPI multi-scope OAuth", () => {
       expect(aliceSecretIds).toContain("petstore_client_secret");
       expect(aliceSecretIds).not.toContain(`${aliceAuth.connectionId}.access_token`);
       expect(aliceSecretIds).not.toContain(`${aliceAuth.connectionId}.refresh_token`);
+    }),
+  );
+
+  it.effect("authorization-code OpenAPI sources request identity scopes by default", () =>
+    Effect.gen(function* () {
+      const secretStore = new Map<string, string>();
+      const key = (scope: string, id: string) => `${scope} ${id}`;
+      const memoryProvider: SecretProvider = {
+        key: "memory",
+        writable: true,
+        get: (id, scope) => Effect.sync(() => secretStore.get(key(scope, id)) ?? null),
+        set: (id, value, scope) =>
+          Effect.sync(() => {
+            secretStore.set(key(scope, id), value);
+          }),
+        delete: (id, scope) => Effect.sync(() => secretStore.delete(key(scope, id))),
+      };
+      const memorySecretsPlugin = definePlugin(() => ({
+        id: "memory-secrets" as const,
+        storage: () => ({}),
+        secretProviders: [memoryProvider],
+      }));
+      const userScope = Scope.make({
+        id: ScopeId.make("user-alice"),
+        name: "Alice",
+        createdAt: new Date(),
+      });
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
+          scopes: [userScope],
+        }),
+      );
+      yield* executor.secrets.set(
+        SetSecretInput.make({
+          id: SecretId.make("petstore_client_id"),
+          scope: userScope.id,
+          name: "Petstore Client ID",
+          value: "client-abc",
+        }),
+      );
+      yield* executor.secrets.set(
+        SetSecretInput.make({
+          id: SecretId.make("petstore_client_secret"),
+          scope: userScope.id,
+          name: "Petstore Client Secret",
+          value: "secret-xyz",
+        }),
+      );
+      const oauth = yield* serveOAuthTestServer({
+        defaultClientId: "client-abc",
+        defaultClientSecret: "secret-xyz",
+      });
+      const oauth2 = makeOauth2SourceConfig({
+        flow: "authorizationCode",
+        authorizationUrl: oauth.authorizationEndpoint,
+        tokenUrl: oauth.tokenEndpoint,
+        scopes: ["read"],
+      });
+
+      const start = yield* executor.oauth.start({
+        endpoint: oauth.authorizationEndpoint,
+        redirectUrl: "https://app.example.com/oauth/callback",
+        connectionId: "openapi-oauth2-user-petstore",
+        tokenScope: String(userScope.id),
+        pluginId: "openapi",
+        identityLabel: "Petstore OAuth",
+        strategy: {
+          kind: "authorization-code",
+          authorizationEndpoint: oauth.authorizationEndpoint,
+          tokenEndpoint: oauth.tokenEndpoint,
+          issuerUrl: oauth.issuerUrl,
+          clientIdSecretId: "petstore_client_id",
+          clientSecretSecretId: "petstore_client_secret",
+          scopes: resolvedOAuthScopes(oauth2),
+        },
+      });
+
+      expect(start.authorizationUrl).not.toBeNull();
+      const authorizationUrl = new URL(start.authorizationUrl ?? "");
+      expect(authorizationUrl.searchParams.get("scope")).toBe("read openid email profile");
     }),
   );
 

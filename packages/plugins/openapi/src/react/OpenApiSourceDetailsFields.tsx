@@ -27,6 +27,7 @@ export function OpenApiSourceDetailsFields(props: {
   readonly baseUrlOptions?: readonly FreeformComboboxOption[];
   readonly specUrl?: string;
   readonly onSpecUrlChange?: (value: string) => void;
+  readonly faviconIcon?: string | null;
   readonly faviconUrl?: string;
   readonly namespaceReadOnly?: boolean;
   readonly specUrlDisabled?: boolean;
@@ -40,7 +41,9 @@ export function OpenApiSourceDetailsFields(props: {
     <CardStack>
       <CardStackContent className="border-t-0">
         <CardStackEntry>
-          {props.faviconUrl && <SourceFavicon url={props.faviconUrl} size={16} />}
+          {(props.faviconIcon || props.faviconUrl) && (
+            <SourceFavicon icon={props.faviconIcon} url={props.faviconUrl} size={16} />
+          )}
           <CardStackEntryContent>
             <CardStackEntryTitle>{props.title}</CardStackEntryTitle>
             {props.description && (

@@ -46,6 +46,14 @@ export const OAuth2Flow = Schema.Literals(["authorizationCode", "clientCredentia
 export type OAuth2Flow = typeof OAuth2Flow.Type;
 export type OAuth2FlowType = OAuth2Flow;
 
+export const OAuth2IdentityScopes = Schema.Union([
+  Schema.Literal("auto"),
+  Schema.Literal(false),
+  Schema.Array(Schema.String),
+]);
+export type OAuth2IdentityScopes = typeof OAuth2IdentityScopes.Type;
+export type OAuth2IdentityScopesType = OAuth2IdentityScopes;
+
 export const OAuth2SourceConfig = Schema.Struct({
   kind: Schema.Literal("oauth2"),
   securitySchemeName: Schema.String,
@@ -60,6 +68,10 @@ export const OAuth2SourceConfig = Schema.Struct({
   clientSecretSlot: Schema.NullOr(Schema.String),
   connectionSlot: Schema.String,
   scopes: Schema.Array(Schema.String),
+  identityScopes: OAuth2IdentityScopes.pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed("auto" as const)),
+  ),
 }).annotate({ identifier: "OAuth2SourceConfig" });
 export type OAuth2SourceConfig = typeof OAuth2SourceConfig.Type;
 export type OAuth2SourceConfigType = OAuth2SourceConfig;

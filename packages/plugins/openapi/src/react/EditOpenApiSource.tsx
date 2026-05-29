@@ -73,6 +73,19 @@ import { OAuth2SourceConfig } from "../sdk/types";
 const ErrorMessage = Schema.Struct({ message: Schema.String });
 const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
 
+const standardOidcIdentityScopes = ["openid", "email", "profile"] as const;
+
+const resolvedOAuthScopes = (oauth2: OAuth2SourceConfig): string[] => {
+  const merged = new Set(oauth2.scopes);
+  if (oauth2.identityScopes === false) return [...merged];
+  const extras =
+    oauth2.identityScopes === undefined || oauth2.identityScopes === "auto"
+      ? standardOidcIdentityScopes
+      : oauth2.identityScopes;
+  for (const scope of extras) merged.add(scope);
+  return [...merged];
+};
+
 const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
   Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
     onNone: () => fallback,
@@ -422,6 +435,7 @@ export default function EditOpenApiSource(props: {
     };
     const displayName = source.name;
     const tokenUrl = resolveOAuthUrl(oauth2.tokenUrl, source.config.baseUrl ?? "");
+    const scopes = resolvedOAuthScopes(oauth2);
     if (oauth2.flow === "clientCredentials") {
       const startOAuthExit = await doStartOAuth({
         params: { scopeId: targetScope },
@@ -439,7 +453,7 @@ export default function EditOpenApiSource(props: {
             clientSecretSecretScopeId: clientSecretSecretScopeId
               ? String(clientSecretSecretScopeId)
               : null,
-            scopes: [...oauth2.scopes],
+            scopes,
           },
           pluginId: "openapi",
           identityLabel: `${displayName} OAuth`,
@@ -502,7 +516,7 @@ export default function EditOpenApiSource(props: {
           clientSecretSecretScopeId: clientSecretSecretScopeId
             ? String(clientSecretSecretScopeId)
             : null,
-          scopes: [...oauth2.scopes],
+          scopes,
         },
         pluginId: "openapi",
         identityLabel: `${displayName} OAuth`,
@@ -648,6 +662,7 @@ export default function EditOpenApiSource(props: {
                         clientSecretSlot: oauth2.clientSecretSlot,
                         connectionSlot: oauth2.connectionSlot,
                         scopes: [...oauth2.scopes],
+                        identityScopes: oauth2.identityScopes,
                       }),
                     },
                   },
