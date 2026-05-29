@@ -1,11 +1,10 @@
 import { homedir } from "node:os";
-import { FileSystem, Path } from "effect";
+import { FileSystem, Option, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 
 import {
   normalizeExecutorServerConnection,
-  type ExecutorServerAuth,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
 } from "@executor-js/sdk/shared";
@@ -43,69 +42,64 @@ const resolveDataDir = (path: Path.Path): string =>
 const serverConnectionStorePath = (path: Path.Path): string =>
   path.join(resolveDataDir(path), "server-connections.json");
 
-const decodeAuth = (value: unknown): ExecutorServerAuth | undefined => {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  if (record.kind === "basic" && typeof record.password === "string") {
-    return {
-      kind: "basic",
-      ...(typeof record.username === "string" ? { username: record.username } : {}),
-      password: record.password,
-    };
-  }
-  if (record.kind === "bearer" && typeof record.token === "string") {
-    return { kind: "bearer", token: record.token };
-  }
-  return undefined;
-};
+const PersistedAuth = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("basic"),
+    username: Schema.optional(Schema.String),
+    password: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("bearer"),
+    token: Schema.String,
+  }),
+]);
 
-const decodeConnection = (value: unknown): ExecutorServerConnection | null => {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  const kind =
-    record.kind === "http" || record.kind === "desktop-sidecar" ? record.kind : undefined;
-  const input: ExecutorServerConnectionInput = {
-    ...(kind ? { kind } : {}),
-    ...(typeof record.key === "string" ? { key: record.key } : {}),
-    ...(typeof record.origin === "string" ? { origin: record.origin } : {}),
-    ...(typeof record.apiBaseUrl === "string" ? { apiBaseUrl: record.apiBaseUrl } : {}),
-    ...(typeof record.displayName === "string" ? { displayName: record.displayName } : {}),
-    ...(record.auth ? { auth: decodeAuth(record.auth) } : {}),
-  };
+const PersistedConnection = Schema.Struct({
+  kind: Schema.optional(Schema.Literals(["http", "desktop-sidecar"])),
+  key: Schema.optional(Schema.String),
+  origin: Schema.optional(Schema.String),
+  apiBaseUrl: Schema.optional(Schema.String),
+  displayName: Schema.optional(Schema.String),
+  auth: Schema.optional(PersistedAuth),
+});
+
+const PersistedProfile = Schema.Struct({
+  name: Schema.String,
+  connection: PersistedConnection,
+});
+
+const PersistedStore = Schema.Struct({
+  version: Schema.Literal(1),
+  defaultProfile: Schema.optional(Schema.NullOr(Schema.String)),
+  profiles: Schema.Array(PersistedProfile),
+});
+
+const decodeStoreJson = Schema.decodeUnknownOption(Schema.fromJsonString(PersistedStore));
+
+const decodeConnection = (
+  input: ExecutorServerConnectionInput,
+): ExecutorServerConnection | null => {
   if (!input.origin && !input.apiBaseUrl) return null;
   return normalizeExecutorServerConnection(input);
 };
 
 export const parseCliServerConnectionStore = (raw: string): CliServerConnectionStore => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return emptyCliServerConnectionStore;
-  }
-
-  if (typeof parsed !== "object" || parsed === null) return emptyCliServerConnectionStore;
-  const record = parsed as Record<string, unknown>;
-  if (record.version !== 1 || !Array.isArray(record.profiles)) {
-    return emptyCliServerConnectionStore;
-  }
+  const decoded = decodeStoreJson(raw);
+  if (Option.isNone(decoded)) return emptyCliServerConnectionStore;
+  const record = decoded.value;
 
   const profiles = record.profiles.flatMap((value): readonly CliServerConnectionProfile[] => {
-    if (typeof value !== "object" || value === null) return [];
-    const profile = value as Record<string, unknown>;
-    if (typeof profile.name !== "string") return [];
-    const connection = decodeConnection(profile.connection);
+    const connection = decodeConnection(value.connection);
     if (!connection) return [];
     try {
-      return [{ name: validateCliServerConnectionProfileName(profile.name), connection }];
+      return [{ name: validateCliServerConnectionProfileName(value.name), connection }];
     } catch {
       return [];
     }
   });
 
   const defaultProfile =
-    typeof record.defaultProfile === "string" &&
-    profiles.some((profile) => profile.name === record.defaultProfile)
+    record.defaultProfile && profiles.some((profile) => profile.name === record.defaultProfile)
       ? record.defaultProfile
       : null;
 

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { FileSystem, Path } from "effect";
+import { FileSystem, Option, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 
@@ -71,21 +71,17 @@ export const removeLocalServerManifestIfOwnedBy = (input: {
     yield* fs.remove(manifestPath, { force: true });
   });
 
+const StartupLockPayload = Schema.Struct({
+  pid: Schema.Number,
+});
+
+const decodeStartupLockPayload = Schema.decodeUnknownOption(
+  Schema.fromJsonString(StartupLockPayload),
+);
+
 const parseLockPid = (raw: string): number | null => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof (parsed as Record<string, unknown>).pid !== "number"
-  ) {
-    return null;
-  }
-  return (parsed as { readonly pid: number }).pid;
+  const decoded = decodeStartupLockPayload(raw);
+  return Option.isSome(decoded) ? decoded.value.pid : null;
 };
 
 export const acquireLocalServerStartLock = (): Effect.Effect<
