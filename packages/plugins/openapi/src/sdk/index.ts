@@ -1,5 +1,6 @@
 export { parse, resolveSpecText, fetchSpecText } from "./parse";
 export {
+  convertGoogleDiscoveryBundleToOpenApi,
   convertGoogleDiscoveryToOpenApi,
   fetchGoogleDiscoveryDocument,
   isGoogleDiscoveryUrl,

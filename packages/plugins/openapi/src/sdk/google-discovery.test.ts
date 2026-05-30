@@ -2,7 +2,10 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
 import { buildToolTypeScriptPreview } from "@executor-js/sdk/core";
 
-import { convertGoogleDiscoveryToOpenApi } from "./google-discovery";
+import {
+  convertGoogleDiscoveryBundleToOpenApi,
+  convertGoogleDiscoveryToOpenApi,
+} from "./google-discovery";
 import { extract } from "./extract";
 import { parse } from "./parse";
 
@@ -18,11 +21,14 @@ const ConvertedOperation = Schema.Struct({
       schema: Schema.Unknown,
       style: Schema.optional(Schema.String),
       explode: Schema.optional(Schema.Boolean),
+      allowReserved: Schema.optional(Schema.Boolean),
     }),
   ),
+  servers: Schema.optional(Schema.Array(Schema.Struct({ url: Schema.String }))),
   security: Schema.optional(
     Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   ),
+  "x-executor-pathTemplate": Schema.optional(Schema.String),
   requestBody: Schema.optional(Schema.Unknown),
   responses: Schema.Unknown,
   "x-google-scopes": Schema.Array(Schema.String),
@@ -234,5 +240,203 @@ it.effect("converts Google Discovery documents into Executor-preserving OpenAPI 
       Message: "{ id?: string; labelIds?: string[]; }",
     });
     expect(result.oauth2?.identityScopes).toEqual(["openid", "email", "profile"]);
+  }),
+);
+
+it.effect("bundles Google Discovery documents into one Google OpenAPI source", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "gmail",
+            version: "v1",
+            title: "Gmail API",
+            rootUrl: "https://gmail.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  "https://www.googleapis.com/auth/gmail.metadata": {
+                    description: "Read metadata",
+                  },
+                },
+              },
+            },
+            resources: {
+              users: {
+                resources: {
+                  messages: {
+                    methods: {
+                      list: {
+                        id: "gmail.users.messages.list",
+                        httpMethod: "GET",
+                        path: "gmail/v1/users/{userId}/messages",
+                        response: { $ref: "Message" },
+                        scopes: ["https://www.googleapis.com/auth/gmail.metadata"],
+                        parameters: {
+                          userId: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {
+              Message: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                },
+              },
+            },
+          }),
+        },
+        {
+          discoveryUrl: "https://chat.googleapis.com/$discovery/rest?version=v1",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "chat",
+            version: "v1",
+            title: "Google Chat API",
+            rootUrl: "https://chat.googleapis.com/",
+            servicePath: "",
+            auth: {
+              oauth2: {
+                scopes: {
+                  "https://www.googleapis.com/auth/chat.spaces.readonly": {
+                    description: "Read spaces",
+                  },
+                },
+              },
+            },
+            resources: {
+              spaces: {
+                methods: {
+                  get: {
+                    id: "chat.spaces.get",
+                    httpMethod: "GET",
+                    path: "v1/{+name}",
+                    response: { $ref: "Space" },
+                    scopes: ["https://www.googleapis.com/auth/chat.spaces.readonly"],
+                    parameters: {
+                      name: {
+                        location: "path",
+                        required: true,
+                        type: "string",
+                      },
+                    },
+                  },
+                },
+                resources: {
+                  messages: {
+                    methods: {
+                      get: {
+                        id: "chat.spaces.messages.get",
+                        httpMethod: "GET",
+                        path: "v1/{+name}",
+                        response: { $ref: "Message" },
+                        scopes: ["https://www.googleapis.com/auth/chat.spaces.readonly"],
+                        parameters: {
+                          name: {
+                            location: "path",
+                            required: true,
+                            type: "string",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            schemas: {
+              Space: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                },
+              },
+              Message: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                },
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    expect(result.title).toBe("Google");
+    expect(result.baseUrl).toBe("https://www.googleapis.com/");
+    expect(result.discoveryUrls).toEqual([
+      "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+      "https://www.googleapis.com/discovery/v1/apis/chat/v1/rest",
+    ]);
+    expect(spec.servers).toEqual([{ url: "https://www.googleapis.com/" }]);
+    expect(spec.components.schemas).toHaveProperty("gmail_v1_Message");
+    expect(spec.components.schemas).toHaveProperty("chat_v1_Message");
+
+    const gmailList = spec.paths["/gmail/v1/users/{userId}/messages"]?.get;
+    expect(gmailList).toMatchObject({
+      operationId: "gmail.users.messages.list",
+      "x-executor-toolPath": "gmail.users.messages.list",
+      servers: [{ url: "https://gmail.googleapis.com/" }],
+    });
+    expect(gmailList?.responses).toMatchObject({
+      "200": {
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/gmail_v1_Message" },
+          },
+        },
+      },
+    });
+
+    const chatSpaceGet = spec.paths["/v1/{name}"]?.get;
+    const chatMessageGet = spec.paths["/chat.spaces.messages.get"]?.get;
+    expect(chatSpaceGet).toMatchObject({
+      operationId: "chat.spaces.get",
+      "x-executor-pathTemplate": "/v1/{+name}",
+      servers: [{ url: "https://chat.googleapis.com/" }],
+    });
+    expect(chatMessageGet).toMatchObject({
+      operationId: "chat.spaces.messages.get",
+      "x-executor-pathTemplate": "/v1/{+name}",
+      servers: [{ url: "https://chat.googleapis.com/" }],
+    });
+    expect(chatSpaceGet?.parameters).toContainEqual(
+      expect.objectContaining({
+        name: "name",
+        in: "path",
+        allowReserved: true,
+      }),
+    );
+
+    const parsed = yield* parse(result.specText);
+    const extracted = yield* extract(parsed);
+    const extractedGmail = extracted.operations.find(
+      (candidate) => candidate.operationId === "gmail.users.messages.list",
+    );
+    const extractedChatMessage = extracted.operations.find(
+      (candidate) => candidate.operationId === "chat.spaces.messages.get",
+    );
+    expect(extractedGmail?.baseUrl).toBe("https://gmail.googleapis.com/");
+    expect(extractedChatMessage?.pathTemplate).toBe("/v1/{+name}");
+    expect(extractedChatMessage?.baseUrl).toBe("https://chat.googleapis.com/");
+    expect(result.oauth2?.scopes).toEqual([
+      "https://www.googleapis.com/auth/gmail.metadata",
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+    ]);
   }),
 );

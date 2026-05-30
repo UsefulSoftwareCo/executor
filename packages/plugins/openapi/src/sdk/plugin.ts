@@ -34,8 +34,9 @@ import {
   OpenApiOAuthError,
   OpenApiParseError,
 } from "./errors";
-import { parse, resolveSpecText } from "./parse";
+import { parse, resolveSpecText, type SpecFetchCredentials } from "./parse";
 import {
+  convertGoogleDiscoveryBundleToOpenApi,
   convertGoogleDiscoveryToOpenApi,
   fetchGoogleDiscoveryDocument,
   isGoogleDiscoveryUrl,
@@ -332,6 +333,10 @@ const OpenApiSpecInputSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("blob"), value: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("googleDiscovery"), url: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("googleDiscoveryBundle"),
+    urls: Schema.Array(Schema.String),
+  }),
 ]);
 const OpenApiSecretShapeInputSchema = Schema.Struct({
   kind: Schema.Literal("secret"),
@@ -590,6 +595,7 @@ const normalizeOpenApiRefs = (node: unknown): unknown => {
 const toBinding = (def: ToolDefinition): OperationBinding =>
   OperationBinding.make({
     method: def.operation.method,
+    baseUrl: def.operation.baseUrl,
     pathTemplate: def.operation.pathTemplate,
     parameters: [...def.operation.parameters],
     requestBody: def.operation.requestBody,
@@ -959,6 +965,7 @@ const resolveEffectiveSourceConfig = (
       config: {
         ...base.config,
         sourceUrl: base.config.sourceUrl ?? fallback.config.sourceUrl,
+        googleDiscoveryUrls: base.config.googleDiscoveryUrls ?? fallback.config.googleDiscoveryUrls,
         baseUrl: fallback.config.baseUrl,
         namespace: base.config.namespace ?? fallback.config.namespace,
         headers: hasBaseHeaders ? base.config.headers : fallback.config.headers,
@@ -1157,6 +1164,21 @@ const resolveStoredSpecFetchCredentials = (
     ),
   );
 
+const fetchGoogleDiscoveryBundleConversion = (
+  urls: readonly string[],
+  credentials: SpecFetchCredentials | undefined,
+  httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
+) =>
+  Effect.forEach(
+    urls,
+    (url) =>
+      fetchGoogleDiscoveryDocument(url, credentials).pipe(
+        Effect.provide(httpClientLayer),
+        Effect.map((documentText) => ({ discoveryUrl: url, documentText })),
+      ),
+    { concurrency: 4 },
+  ).pipe(Effect.flatMap((documents) => convertGoogleDiscoveryBundleToOpenApi({ documents })));
+
 // ---------------------------------------------------------------------------
 // OAuth2 token exchange / refresh is owned by `ctx.oauth`, which registers
 // the canonical core `"oauth2"` ConnectionProvider. OpenAPI owns only the
@@ -1197,13 +1219,18 @@ const toOpenApiSourceConfig = (
 };
 
 const specInputToConfigString = (spec: OpenApiSpecInput): string =>
-  spec.kind === "url" || spec.kind === "googleDiscovery" ? spec.url : spec.value;
+  spec.kind === "url" || spec.kind === "googleDiscovery"
+    ? spec.url
+    : spec.kind === "googleDiscoveryBundle"
+      ? spec.urls.join("\n")
+      : spec.value;
 
 export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
   type RebuildInput = {
     readonly specText: string;
     readonly scope: string;
     readonly sourceUrl?: string;
+    readonly googleDiscoveryUrls?: readonly string[];
     readonly name: string;
     readonly baseUrl: string | undefined;
     readonly namespace: string;
@@ -1269,6 +1296,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
       const sourceConfig: SourceConfig = {
         spec: input.specText,
         sourceUrl: input.sourceUrl,
+        googleDiscoveryUrls: input.googleDiscoveryUrls,
         baseUrl,
         namespace: input.namespace,
         headers: canonicalHeaders.headers,
@@ -1303,7 +1331,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             // `canRefresh` reflects whether we still know the
             // origin URL — sources added from raw spec text have
             // nothing to re-fetch, so refresh stays disabled.
-            canRefresh: input.sourceUrl != null,
+            canRefresh: input.sourceUrl != null || input.googleDiscoveryUrls != null,
             canEdit: true,
             tools: definitions.map((def) => ({
               name: def.toolPath,
@@ -1341,25 +1369,38 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
       const effective = yield* resolveEffectiveSourceConfig(ctx, existing);
       const resolvedConfig = effective.config;
       const sourceUrl = resolvedConfig.sourceUrl;
-      if (!sourceUrl) return;
+      const googleDiscoveryUrls = resolvedConfig.googleDiscoveryUrls;
+      if (!sourceUrl && !googleDiscoveryUrls) return;
       const credentials = yield* resolveStoredSpecFetchCredentials(ctx, {
         sourceId: existing.namespace,
         sourceScope: effective.specFetchCredentialsSource.scope,
         credentials: resolvedConfig.specFetchCredentials,
       });
-      const specText = isGoogleDiscoveryUrl(sourceUrl)
-        ? yield* fetchGoogleDiscoveryDocument(sourceUrl, credentials).pipe(
-            Effect.provide(httpClientLayer),
-            Effect.flatMap((documentText) =>
-              convertGoogleDiscoveryToOpenApi({ discoveryUrl: sourceUrl, documentText }),
-            ),
-            Effect.map((conversion) => conversion.specText),
+      const conversion = googleDiscoveryUrls
+        ? yield* fetchGoogleDiscoveryBundleConversion(
+            googleDiscoveryUrls,
+            credentials,
+            httpClientLayer,
           )
-        : yield* resolveSpecText(sourceUrl, credentials).pipe(Effect.provide(httpClientLayer));
+        : undefined;
+      const specText = conversion
+        ? conversion.specText
+        : sourceUrl && isGoogleDiscoveryUrl(sourceUrl)
+          ? yield* fetchGoogleDiscoveryDocument(sourceUrl, credentials).pipe(
+              Effect.provide(httpClientLayer),
+              Effect.flatMap((documentText) =>
+                convertGoogleDiscoveryToOpenApi({ discoveryUrl: sourceUrl, documentText }),
+              ),
+              Effect.map((singleConversion) => singleConversion.specText),
+            )
+          : sourceUrl
+            ? yield* resolveSpecText(sourceUrl, credentials).pipe(Effect.provide(httpClientLayer))
+            : existing.config.spec;
       yield* rebuildSource(ctx, {
         specText,
         scope,
         sourceUrl,
+        googleDiscoveryUrls,
         name: existing.name,
         baseUrl: existing.config.baseUrl,
         namespace: existing.namespace,
@@ -1394,16 +1435,22 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                     }),
                   ),
                 )
-              : {
-                  specText:
-                    config.spec.kind === "url"
-                      ? yield* resolveSpecText(config.spec.url).pipe(
-                          Effect.provide(httpClientLayer),
-                        )
-                      : config.spec.value,
-                  baseUrl: config.baseUrl,
-                  oauth2: config.oauth2,
-                };
+              : config.spec.kind === "googleDiscoveryBundle"
+                ? yield* fetchGoogleDiscoveryBundleConversion(
+                    config.spec.urls,
+                    undefined,
+                    httpClientLayer,
+                  )
+                : {
+                    specText:
+                      config.spec.kind === "url"
+                        ? yield* resolveSpecText(config.spec.url).pipe(
+                            Effect.provide(httpClientLayer),
+                          )
+                        : config.spec.value,
+                    baseUrl: config.baseUrl,
+                    oauth2: config.oauth2,
+                  };
           return yield* rebuildSource(ctx, {
             specText: resolvedSpec.specText,
             scope: config.scope,
@@ -1411,6 +1458,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               config.spec.kind === "url" || config.spec.kind === "googleDiscovery"
                 ? config.spec.url
                 : undefined,
+            googleDiscoveryUrls:
+              config.spec.kind === "googleDiscoveryBundle" ? config.spec.urls : undefined,
             name: config.name,
             baseUrl: resolvedSpec.baseUrl || config.baseUrl,
             namespace: config.namespace,

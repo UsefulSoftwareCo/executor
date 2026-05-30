@@ -1,0 +1,82 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`classifies every Google service for bundle OAuth UX 1`] = `
+[
+  {
+    "id": "google-calendar",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-gmail",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-sheets",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-drive",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-docs",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-slides",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-forms",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-tasks",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-people",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-chat",
+    "oauthAudience": "workspace-admin",
+  },
+  {
+    "id": "google-keep",
+    "oauthAudience": "unsupported-user",
+  },
+  {
+    "id": "google-youtube-data",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-search-console",
+    "oauthAudience": "standard-user",
+  },
+  {
+    "id": "google-classroom",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-admin-directory",
+    "oauthAudience": "workspace-admin",
+  },
+  {
+    "id": "google-admin-reports",
+    "oauthAudience": "workspace-admin",
+  },
+  {
+    "id": "google-apps-script",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-bigquery",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-cloud-resource-manager",
+    "oauthAudience": "advanced-user",
+  },
+]
+`;

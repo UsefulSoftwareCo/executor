@@ -97,6 +97,7 @@ export const ExtractedOperation = Schema.Struct({
   operationId: OperationId,
   toolPath: Schema.OptionFromOptional(Schema.String),
   method: HttpMethod,
+  baseUrl: Schema.optional(Schema.String),
   pathTemplate: Schema.String,
   summary: Schema.OptionFromOptional(Schema.String),
   description: Schema.OptionFromOptional(Schema.String),
@@ -137,6 +138,7 @@ export type ExtractionResult = typeof ExtractionResult.Type;
 
 export const OperationBinding = Schema.Struct({
   method: HttpMethod,
+  baseUrl: Schema.optional(Schema.String),
   pathTemplate: Schema.String,
   parameters: Schema.Array(OperationParameter),
   requestBody: Schema.OptionFromOptional(OperationRequestBody),

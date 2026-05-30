@@ -95,3 +95,44 @@ it.effect("serializes form-exploded query arrays as repeated parameters", () =>
     }),
   ),
 );
+
+it.effect("uses operation base URL and preserves reserved path expansion when allowed", () =>
+  Effect.promise(() =>
+    withServer(async ({ baseUrl, requests }) => {
+      const operation = OperationBinding.make({
+        method: "get",
+        baseUrl,
+        pathTemplate: "/v1/{+name}",
+        requestBody: Option.none(),
+        parameters: [
+          OperationParameter.make({
+            name: "name",
+            location: "path",
+            required: true,
+            schema: Option.some({ type: "string" }),
+            style: Option.none(),
+            explode: Option.none(),
+            allowReserved: Option.some(true),
+            description: Option.none(),
+          }),
+        ],
+      });
+
+      await Effect.runPromise(
+        invokeWithLayer(
+          operation,
+          {
+            name: "spaces/AAA/messages/BBB",
+          },
+          "https://unused.example",
+          {},
+          {},
+          FetchHttpClient.layer,
+        ),
+      );
+
+      const url = new URL(requests[0]!, "http://executor.test");
+      expect(url.pathname).toBe("/v1/spaces/AAA/messages/BBB");
+    }),
+  ),
+);

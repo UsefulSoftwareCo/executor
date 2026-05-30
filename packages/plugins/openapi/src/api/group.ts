@@ -37,6 +37,10 @@ const OpenApiSpecInputPayload = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("blob"), value: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("googleDiscovery"), url: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("googleDiscoveryBundle"),
+    urls: Schema.Array(Schema.String),
+  }),
 ]);
 
 const PreviewSpecFetchCredentialsPayload = Schema.Struct({

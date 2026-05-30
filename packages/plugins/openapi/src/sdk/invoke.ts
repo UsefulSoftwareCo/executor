@@ -42,6 +42,20 @@ const readParamValue = (args: Record<string, unknown>, param: OperationParameter
 const primitiveToString = (value: unknown): string =>
   typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
 
+// RFC 3986 §2.2 reserved chars. `allowReserved: true` leaves these
+// unencoded; default OAS behavior encodes everything non-unreserved.
+const RESERVED_UNENCODED_RE = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=]/;
+
+const encodeReservedAware = (raw: string, allowReserved: boolean): string => {
+  if (!allowReserved) return encodeURIComponent(raw);
+  // Walk char-by-char so the reserved set passes through as-is.
+  let out = "";
+  for (const ch of raw) {
+    out += RESERVED_UNENCODED_RE.test(ch) ? ch : encodeURIComponent(ch);
+  }
+  return out;
+};
+
 const queryParamValues = (value: unknown, param: OperationParameter): string[] => {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) return [primitiveToString(value)];
@@ -78,7 +92,12 @@ const resolvePath = Effect.fn("OpenApi.resolvePath")(function* (
       }
       continue;
     }
-    resolved = resolved.replaceAll(`{${param.name}}`, encodeURIComponent(String(value)));
+    const encoded = encodeReservedAware(
+      String(value),
+      Option.getOrElse(param.allowReserved, () => false),
+    );
+    resolved = resolved.replaceAll(`{${param.name}}`, encoded);
+    resolved = resolved.replaceAll(`{+${param.name}}`, encoded);
   }
 
   const remaining = [...resolved.matchAll(/\{([^{}]+)\}/g)]
@@ -269,19 +288,9 @@ const resolveStyleExplode = (e: EncodingObject | undefined): StyleExplode => {
   };
 };
 
-// RFC 3986 §2.2 reserved chars. `allowReserved: true` leaves these
-// unencoded; default OAS behavior encodes everything non-unreserved.
-const RESERVED_UNENCODED_RE = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=]/;
-
 const encodeFormValue = (v: unknown, allowReserved: boolean): string => {
   const raw = typeof v === "object" && v !== null ? JSON.stringify(v) : String(v);
-  if (!allowReserved) return encodeURIComponent(raw);
-  // Walk char-by-char so the reserved set passes through as-is.
-  let out = "";
-  for (const ch of raw) {
-    out += RESERVED_UNENCODED_RE.test(ch) ? ch : encodeURIComponent(ch);
-  }
-  return out;
+  return encodeReservedAware(raw, allowReserved);
 };
 
 /**
@@ -643,12 +652,14 @@ export const invokeWithLayer = (
   sourceQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
 ) => {
-  const clientWithBaseUrl = baseUrl
+  const operationBaseUrl = operation.baseUrl;
+  const effectiveBaseUrl = operationBaseUrl ?? baseUrl;
+  const clientWithBaseUrl = effectiveBaseUrl
     ? Layer.effect(
         HttpClient.HttpClient,
         Effect.map(
           Effect.service(HttpClient.HttpClient),
-          HttpClient.mapRequest(HttpClientRequest.prependUrl(baseUrl)),
+          HttpClient.mapRequest(HttpClientRequest.prependUrl(effectiveBaseUrl)),
         ),
       ).pipe(Layer.provide(httpClientLayer))
     : httpClientLayer;
@@ -659,7 +670,7 @@ export const invokeWithLayer = (
       attributes: {
         "plugin.openapi.method": operation.method.toUpperCase(),
         "plugin.openapi.path_template": operation.pathTemplate,
-        "plugin.openapi.base_url": baseUrl,
+        "plugin.openapi.base_url": effectiveBaseUrl,
       },
     }),
   );

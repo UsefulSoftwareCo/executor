@@ -120,7 +120,9 @@ const testApiSourceConfig = (options: TestApiSourceOptions = {}) =>
 
 const testApiSpec = () => {
   const spec = testApiSourceConfig().spec;
-  return spec.kind === "blob" ? spec.value : spec.url;
+  if (spec.kind === "blob") return spec.value;
+  if (spec.kind === "googleDiscoveryBundle") return spec.urls[0] ?? "";
+  return spec.url;
 };
 
 // ---------------------------------------------------------------------------

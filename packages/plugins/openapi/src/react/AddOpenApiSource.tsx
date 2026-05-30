@@ -48,12 +48,7 @@ import {
   type HeaderState,
 } from "@executor-js/react/plugins/secret-header-auth";
 import { CredentialScopeDropdown } from "@executor-js/react/plugins/credential-target-scope";
-import {
-  normalizeNamespaceInput,
-  slugifyNamespace,
-  useSourceIdentity,
-  type SourceIdentity,
-} from "@executor-js/react/plugins/source-identity";
+import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
 import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import { Button } from "@executor-js/react/components/button";
 import { CopyButton } from "@executor-js/react/components/copy-button";
@@ -70,15 +65,20 @@ import {
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { HelpTooltip } from "@executor-js/react/components/help-tooltip";
+import { Info, InfoDescription, InfoTitle } from "@executor-js/react/components/info";
 import { Label } from "@executor-js/react/components/label";
 import { Textarea } from "@executor-js/react/components/textarea";
 import { Checkbox } from "@executor-js/react/components/checkbox";
 import { RadioGroup, RadioGroupItem } from "@executor-js/react/components/radio-group";
 import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@executor-js/react/components/tabs";
 import { addOpenApiSpecOptimistic, previewOpenApiSpec } from "./atoms";
 import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
-import { googleOpenApiPresets, openApiPresets } from "../sdk/presets";
+import {
+  googleOpenApiPresets,
+  googleStandardUserOAuthPresets,
+  openApiPresets,
+} from "../sdk/presets";
+import { GOOGLE_BUNDLE_PRESET_ID } from "../sdk/google-presets";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
 import {
   headerBindingSlot,
@@ -91,9 +91,19 @@ import {
 } from "../sdk/source-contracts";
 import { OAuth2SourceConfig, type ServerInfo } from "../sdk/types";
 import { expandServerUrlOptions } from "../sdk/openapi-utils";
+import {
+  compactGoogleOAuthScopes,
+  filterGoogleUserConsentOAuthScopes,
+} from "../sdk/google-oauth-scopes";
+import { googleOAuthConsentBatches } from "../sdk/google-oauth-batches";
 
 export const OPENAPI_OAUTH_POPUP_NAME = "openapi-oauth";
 export const OPENAPI_OAUTH_CALLBACK_PATH = "/api/oauth/callback";
+const GOOGLE_BUNDLE_BASE_URL = "https://www.googleapis.com/";
+const GOOGLE_ICON = "https://fonts.gstatic.com/s/i/productlogos/googleg/v6/192px.svg";
+const GOOGLE_BUNDLE_DEFAULT_PRESET = googleOpenApiPresets[0]!;
+const GOOGLE_STANDARD_SERVICE_IDS = googleStandardUserOAuthPresets.map((preset) => preset.id);
+const GOOGLE_BROAD_SELECTION_WARNING_THRESHOLD = 6;
 
 const ErrorMessage = Schema.Struct({ message: Schema.String });
 const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
@@ -103,6 +113,26 @@ const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: strin
     onNone: () => fallback,
     onSome: ({ message }) => message,
   });
+
+const googleOAuthErrorMessage =
+  "Google did not approve this permission request. Try selecting fewer services, or add sensitive services as separate Google sources.";
+
+const oauthErrorMessage = (
+  providerLabel: string,
+  message: string,
+  details?: string,
+): string => {
+  if (providerLabel !== "Google") return details ? `${message}: ${details}` : message;
+  const combined = `${message}\n${details ?? ""}`;
+  if (
+    /Authorization server returned error|Token exchange failed|invalid_grant|access_denied|Something went wrong|unknownerror/i.test(
+      combined,
+    )
+  ) {
+    return googleOAuthErrorMessage;
+  }
+  return details ? `${message}: ${details}` : message;
+};
 
 export const openApiOAuthConnectionId = (
   namespaceSlug: string,
@@ -176,11 +206,10 @@ const mergeOAuthScopes = (...values: readonly Iterable<string>[]): string[] => {
   return [...merged];
 };
 
-const missingOAuthScopes = (
-  connection: { readonly oauthScope: string | null },
+const missingOAuthScopesFromGranted = (
+  granted: ReadonlySet<string>,
   requiredApiScopes: Iterable<string>,
 ): readonly string[] => {
-  const granted = splitOAuthScopes(connection.oauthScope);
   return [...requiredApiScopes].filter((scope) => !granted.has(scope));
 };
 
@@ -213,46 +242,6 @@ const googleAuthorizationParams = (enabled: boolean): Record<string, string> | u
       }
     : undefined;
 
-const googleBroadScopeGroups: readonly {
-  readonly broad: string;
-  readonly prefixes: readonly string[];
-}[] = [
-  {
-    broad: "https://mail.google.com/",
-    prefixes: ["https://www.googleapis.com/auth/gmail."],
-  },
-  {
-    broad: "https://www.googleapis.com/auth/calendar",
-    prefixes: ["https://www.googleapis.com/auth/calendar."],
-  },
-  {
-    broad: "https://www.googleapis.com/auth/drive",
-    prefixes: ["https://www.googleapis.com/auth/drive."],
-  },
-];
-
-const compactGoogleOAuthScopes = (scopes: Iterable<string>): string[] => {
-  const ordered = mergeOAuthScopes(
-    [...scopes].map((scope) =>
-      scope === "https://www.googleapis.com/auth/userinfo.email"
-        ? "email"
-        : scope === "https://www.googleapis.com/auth/userinfo.profile"
-          ? "profile"
-          : scope,
-    ),
-  );
-  const present = new Set(ordered);
-  return ordered.filter(
-    (scope) =>
-      !googleBroadScopeGroups.some(
-        (group) =>
-          scope !== group.broad &&
-          present.has(group.broad) &&
-          group.prefixes.some((prefix) => scope.startsWith(prefix)),
-      ),
-  );
-};
-
 type OAuthConnectionChoice = {
   readonly id: ConnectionId;
   readonly scopeId: ScopeId;
@@ -274,15 +263,11 @@ type GoogleServicePreviewState =
 type GoogleServiceAddItem = {
   readonly preset: (typeof googleOpenApiPresets)[number];
   readonly preview: SpecPreview;
-  readonly baseUrl: string;
-  readonly isPrimary: boolean;
 };
 
-type GoogleServiceSettings = {
-  readonly name?: string;
-  readonly namespace?: string;
-  readonly baseUrl?: string;
-  readonly specUrl?: string;
+const scopesForGoogleServiceItem = (item: GoogleServiceAddItem): readonly string[] => {
+  const oauth2Preset = item.preview.oauth2Presets[0];
+  return filterGoogleUserConsentOAuthScopes(Object.keys(oauth2Preset?.scopes ?? {}));
 };
 
 const specInputForAdd = (input: string) => {
@@ -324,7 +309,7 @@ const googlePresetForSpec = (
 ): (typeof googleOpenApiPresets)[number] | null => {
   const normalizedSpecUrl = normalizePresetUrl(specUrl);
   const byUrl = googleOpenApiPresets.find(
-    (preset) => normalizePresetUrl(preset.url) === normalizedSpecUrl,
+    (preset) => preset.url && normalizePresetUrl(preset.url) === normalizedSpecUrl,
   );
   if (byUrl) return byUrl;
   const byId = presetId ? googleOpenApiPresets.find((preset) => preset.id === presetId) : undefined;
@@ -336,16 +321,6 @@ const firstBaseUrlForPreview = (preview: SpecPreview): string => {
   const firstServer = preview.servers[0];
   return firstServer ? (expandServerUrlOptions(firstServer)[0] ?? "") : "";
 };
-
-const defaultGoogleSourceName = (
-  preset: (typeof googleOpenApiPresets)[number],
-  preview: SpecPreview,
-): string => Option.getOrElse(preview.title, () => preset.name);
-
-const defaultGoogleSourceNamespace = (
-  preset: (typeof googleOpenApiPresets)[number],
-  preview: SpecPreview,
-): string => slugifyNamespace(defaultGoogleSourceName(preset, preview)) || preset.id;
 
 type StrategySelection =
   | { readonly kind: "none" }
@@ -561,16 +536,26 @@ export default function AddOpenApiSource(props: {
   initialNamespace?: string;
 }) {
   // Spec input
-  const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
+  const isGoogleBundlePreset = props.initialPreset === GOOGLE_BUNDLE_PRESET_ID;
+  const [specUrl, setSpecUrl] = useState(
+    props.initialUrl ?? (isGoogleBundlePreset ? (GOOGLE_BUNDLE_DEFAULT_PRESET.url ?? "") : ""),
+  );
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   // After analysis
   const [preview, setPreview] = useState<SpecPreview | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
+  const initialGooglePreset =
+    preview && isGoogleBundlePreset ? googlePresetForSpec(undefined, specUrl) : null;
+  const identityFallbackName = preview
+    ? isGoogleBundlePreset
+      ? "Google"
+      : Option.getOrElse(preview.title, () => "")
+    : "";
   const identity = useSourceIdentity({
-    fallbackName: preview ? Option.getOrElse(preview.title, () => "") : "",
-    fallbackNamespace: props.initialNamespace,
+    fallbackName: identityFallbackName,
+    fallbackNamespace: props.initialNamespace ?? (isGoogleBundlePreset ? "google" : undefined),
   });
 
   // Auth
@@ -594,9 +579,14 @@ export default function AddOpenApiSource(props: {
   const [oauth2ScopesOpen, setOauth2ScopesOpen] = useState(false);
   const [oauth2AuthState, setOauth2AuthState] = useState<{
     readonly fingerprint: string;
-    readonly auth: { readonly connectionId: string };
+    readonly auth: {
+      readonly connectionId: string;
+      readonly grantedScopes: readonly string[];
+      readonly scopeId: ScopeId;
+    };
   } | null>(null);
   const [startingOAuth, setStartingOAuth] = useState(false);
+  const [oauth2ProgressLabel, setOauth2ProgressLabel] = useState<string | null>(null);
   const [oauth2Error, setOauth2Error] = useState<string | null>(null);
   const [selectedGoogleServiceIds, setSelectedGoogleServiceIds] = useState<Set<string>>(
     () => new Set(),
@@ -604,10 +594,6 @@ export default function AddOpenApiSource(props: {
   const [googleServicePreviews, setGoogleServicePreviews] = useState<
     Record<string, GoogleServicePreviewState>
   >({});
-  const [googleServiceSettings, setGoogleServiceSettings] = useState<
-    Record<string, GoogleServiceSettings>
-  >({});
-  const [activeGoogleServiceId, setActiveGoogleServiceId] = useState<string | null>(null);
 
   // Submit
   const [adding, setAdding] = useState(false);
@@ -673,6 +659,7 @@ export default function AddOpenApiSource(props: {
   // Keep the latest handleAnalyze in a ref so the debounced effect doesn't
   // need it as a dependency (it closes over fresh state).
   const handleAnalyzeRef = useRef<() => void>(() => {});
+  const googleBundleSelectionSeeded = useRef(false);
 
   // Auto-analyze whenever the spec input changes, with a short debounce so
   // typing/pasting doesn't fire a request on every keystroke.
@@ -700,13 +687,30 @@ export default function AddOpenApiSource(props: {
     new Map(servers.flatMap(expandServerOptions).map((option) => [option.value, option])).values(),
   );
   const previewPresetIcon =
-    openApiPresets.find((preset) => normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl))
-      ?.icon ?? null;
-  const primaryGooglePreset = preview ? googlePresetForSpec(props.initialPreset, specUrl) : null;
-  const selectedGoogleServiceIdList = useMemo(
-    () => [...selectedGoogleServiceIds],
-    [selectedGoogleServiceIds],
+    openApiPresets.find(
+      (preset) => preset.url && normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl),
+    )?.icon ?? null;
+  const primaryGooglePreset = initialGooglePreset;
+  const selectedGoogleServiceIdList = useMemo(() => {
+    return [...selectedGoogleServiceIds];
+  }, [selectedGoogleServiceIds]);
+  const allStandardGoogleServicesSelected = GOOGLE_STANDARD_SERVICE_IDS.every((presetId) =>
+    selectedGoogleServiceIds.has(presetId),
   );
+  const selectedGoogleWorkspaceAdminServiceCount = selectedGoogleServiceIdList.filter((presetId) =>
+    googleOpenApiPresets.some(
+      (preset) => preset.id === presetId && preset.oauthAudience === "workspace-admin",
+    ),
+  ).length;
+  const selectedGoogleAdvancedServiceCount = selectedGoogleServiceIdList.filter((presetId) =>
+    googleOpenApiPresets.some(
+      (preset) => preset.id === presetId && preset.oauthAudience === "advanced-user",
+    ),
+  ).length;
+  const showGoogleSelectionWarning =
+    selectedGoogleServiceIdList.length >= GOOGLE_BROAD_SELECTION_WARNING_THRESHOLD ||
+    selectedGoogleWorkspaceAdminServiceCount > 0 ||
+    selectedGoogleAdvancedServiceCount > 0;
   const selectedGooglePresets = useMemo(
     () =>
       selectedGoogleServiceIdList.flatMap((presetId) => {
@@ -834,18 +838,35 @@ export default function AddOpenApiSource(props: {
         Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
       ].join("\n")
     : "";
-  const oauth2Auth =
+  const activeOAuth2AuthState =
     oauth2AuthState?.fingerprint === selectedOAuth2Fingerprint ? oauth2AuthState.auth : null;
   const selectedOAuth2AvailableIdentityScopes = selectedOAuth2Preset
     ? identityScopesForPreset(selectedOAuth2Preset.identityScopes)
     : [];
   const selectedOAuth2IsGoogle = selectedOAuth2Preset
-    ? isGoogleOAuthTarget(selectedOAuth2Preset, resolvedBaseUrl, specUrl)
+    ? isGoogleBundlePreset || isGoogleOAuthTarget(selectedOAuth2Preset, resolvedBaseUrl, specUrl)
     : false;
   const selectedOAuth2ProviderLabel = selectedOAuth2IsGoogle ? "Google" : "OAuth";
   const googleServicePickerEnabled = Boolean(
-    preview && primaryGooglePreset && selectedOAuth2IsGoogle,
+    preview && isGoogleBundlePreset && selectedOAuth2IsGoogle,
   );
+  useEffect(() => {
+    if (!selectedOAuth2IsGoogle) return;
+    if (!oauth2ClientIdSecretId) {
+      const clientIdSecret = secretList.find((secret) => secret.id === "google-client-id");
+      if (clientIdSecret) {
+        setOauth2ClientIdSecretId(clientIdSecret.id);
+        setOauth2ClientIdScope(ScopeId.make(clientIdSecret.scopeId));
+      }
+    }
+    if (!oauth2ClientSecretSecretId) {
+      const clientSecretSecret = secretList.find((secret) => secret.id === "google-client-secret");
+      if (clientSecretSecret) {
+        setOauth2ClientSecretSecretId(clientSecretSecret.id);
+        setOauth2ClientSecretScope(ScopeId.make(clientSecretSecret.scopeId));
+      }
+    }
+  }, [oauth2ClientIdSecretId, oauth2ClientSecretSecretId, secretList, selectedOAuth2IsGoogle]);
   const googleBatchAddItems = useMemo((): readonly GoogleServiceAddItem[] => {
     if (!preview || !primaryGooglePreset || !googleServicePickerEnabled) return [];
     const items: GoogleServiceAddItem[] = [];
@@ -856,8 +877,6 @@ export default function AddOpenApiSource(props: {
         items.push({
           preset,
           preview,
-          baseUrl: resolvedBaseUrl,
-          isPrimary: true,
         });
         continue;
       }
@@ -866,8 +885,6 @@ export default function AddOpenApiSource(props: {
         items.push({
           preset,
           preview: previewState.preview,
-          baseUrl: previewState.baseUrl,
-          isPrimary: false,
         });
       }
     }
@@ -877,7 +894,6 @@ export default function AddOpenApiSource(props: {
     googleServicePreviews,
     preview,
     primaryGooglePreset,
-    resolvedBaseUrl,
     selectedGoogleServiceIdList,
   ]);
   const googleBatchPendingCount = googleServicePickerEnabled
@@ -889,14 +905,27 @@ export default function AddOpenApiSource(props: {
         .find((state) => state?.status === "error")
     : undefined;
   const effectiveOAuth2SelectedApiScopes = useMemo(() => {
-    if (!googleServicePickerEnabled) return oauth2SelectedScopes;
+    if (!googleServicePickerEnabled) {
+      return new Set(
+        selectedOAuth2IsGoogle
+          ? filterGoogleUserConsentOAuthScopes(oauth2SelectedScopes)
+          : oauth2SelectedScopes,
+      );
+    }
     const scopes = new Set<string>();
     for (const item of googleBatchAddItems) {
       const preset = item.preview.oauth2Presets[0];
-      for (const scope of Object.keys(preset?.scopes ?? {})) scopes.add(scope);
+      for (const scope of filterGoogleUserConsentOAuthScopes(Object.keys(preset?.scopes ?? {}))) {
+        scopes.add(scope);
+      }
     }
-    return scopes.size > 0 ? scopes : oauth2SelectedScopes;
-  }, [googleBatchAddItems, googleServicePickerEnabled, oauth2SelectedScopes]);
+    return scopes;
+  }, [
+    googleBatchAddItems,
+    googleServicePickerEnabled,
+    oauth2SelectedScopes,
+    selectedOAuth2IsGoogle,
+  ]);
   const configuredOAuth2IdentityScopes =
     selectedOAuth2Preset && includeOAuth2IdentityScopes
       ? selectedOAuth2Preset.identityScopes
@@ -908,30 +937,58 @@ export default function AddOpenApiSource(props: {
         : [...effectiveOAuth2SelectedApiScopes],
     [configuredOAuth2IdentityScopes, effectiveOAuth2SelectedApiScopes, selectedOAuth2Preset],
   );
+  const oauth2Auth = useMemo(() => {
+    if (!activeOAuth2AuthState) return null;
+    const granted = new Set(activeOAuth2AuthState.grantedScopes);
+    return selectedOAuth2Scopes.every((scope) => granted.has(scope)) ? activeOAuth2AuthState : null;
+  }, [activeOAuth2AuthState, selectedOAuth2Scopes]);
+  const grantedScopesForConnection = useCallback(
+    (connection: {
+      readonly id: ConnectionId;
+      readonly oauthScope: string | null;
+    }): Set<string> => {
+      const granted = splitOAuthScopes(connection.oauthScope);
+      if (activeOAuth2AuthState?.connectionId === connection.id) {
+        for (const scope of activeOAuth2AuthState.grantedScopes) granted.add(scope);
+      }
+      return granted;
+    },
+    [activeOAuth2AuthState],
+  );
+  const googleConsentBatches = useMemo(
+    () =>
+      googleServicePickerEnabled
+        ? googleOAuthConsentBatches(
+            googleBatchAddItems.map((item) => ({
+              id: item.preset.id,
+              name: item.preset.name,
+              oauthAudience: item.preset.oauthAudience,
+              scopes: scopesForGoogleServiceItem(item),
+            })),
+          )
+        : [],
+    [googleBatchAddItems, googleServicePickerEnabled],
+  );
   useEffect(() => {
     if (!googleServicePickerEnabled || !primaryGooglePreset) {
+      googleBundleSelectionSeeded.current = false;
       setSelectedGoogleServiceIds((previous) =>
         previous.size === 0 ? previous : new Set<string>(),
       );
       setGoogleServicePreviews((previous) => (Object.keys(previous).length === 0 ? previous : {}));
-      setGoogleServiceSettings((previous) => (Object.keys(previous).length === 0 ? previous : {}));
-      setActiveGoogleServiceId(null);
       return;
     }
-    setSelectedGoogleServiceIds((previous) => {
-      if (previous.has(primaryGooglePreset.id)) return previous;
-      const next = new Set(previous);
-      next.add(primaryGooglePreset.id);
-      return next;
-    });
-  }, [googleServicePickerEnabled, primaryGooglePreset]);
-
-  useEffect(() => {
-    if (!googleServicePickerEnabled || !primaryGooglePreset) return;
-    setActiveGoogleServiceId((previous) =>
-      previous && selectedGoogleServiceIds.has(previous) ? previous : primaryGooglePreset.id,
+    setBaseUrl((previous) =>
+      previous === GOOGLE_BUNDLE_BASE_URL ? previous : GOOGLE_BUNDLE_BASE_URL,
     );
-  }, [googleServicePickerEnabled, primaryGooglePreset, selectedGoogleServiceIds]);
+    if (!googleBundleSelectionSeeded.current) {
+      googleBundleSelectionSeeded.current = true;
+      setSelectedGoogleServiceIds((previous) => {
+        if (previous.size > 0 || previous.has(primaryGooglePreset.id)) return previous;
+        return new Set([primaryGooglePreset.id]);
+      });
+    }
+  }, [googleServicePickerEnabled, primaryGooglePreset]);
 
   useEffect(() => {
     if (!googleServicePickerEnabled || !primaryGooglePreset) return;
@@ -948,6 +1005,7 @@ export default function AddOpenApiSource(props: {
       for (const presetId of missingPresetIds) {
         const preset = googleOpenApiPresets.find((candidate) => candidate.id === presetId);
         if (!preset) continue;
+        if (!preset.url) continue;
         const exit = await doPreview({
           params: { scopeId },
           payload: {
@@ -978,95 +1036,27 @@ export default function AddOpenApiSource(props: {
     selectedGoogleServiceIdList,
   ]);
 
-  const setGoogleServiceSetting = (presetId: string, patch: Partial<GoogleServiceSettings>) => {
-    setGoogleServiceSettings((previous) => ({
-      ...previous,
-      [presetId]: {
-        ...previous[presetId],
-        ...patch,
-      },
-    }));
-  };
-
-  const googleServicePreviewStateFor = (
-    preset: (typeof googleOpenApiPresets)[number],
-  ): GoogleServicePreviewState | null => {
-    if (preset.id === primaryGooglePreset?.id && preview) {
-      return {
-        status: "success",
-        preview,
-        baseUrl: resolvedBaseUrl,
-      };
-    }
-    return googleServicePreviews[preset.id] ?? null;
-  };
-
-  const googleServiceNameFor = (
-    preset: (typeof googleOpenApiPresets)[number],
-    servicePreview: SpecPreview,
-  ): string => {
-    const settings = googleServiceSettings[preset.id];
-    return settings?.name ?? defaultGoogleSourceName(preset, servicePreview);
-  };
-
-  const googleServiceNamespaceFor = (
-    preset: (typeof googleOpenApiPresets)[number],
-    servicePreview: SpecPreview,
-  ): string => {
-    const settings = googleServiceSettings[preset.id];
-    const name = googleServiceNameFor(preset, servicePreview);
-    return (
-      settings?.namespace ??
-      slugifyNamespace(name) ??
-      defaultGoogleSourceNamespace(preset, servicePreview)
-    );
-  };
-
-  const googleServiceBaseUrlFor = (
-    preset: (typeof googleOpenApiPresets)[number],
-    fallbackBaseUrl: string,
-  ): string => googleServiceSettings[preset.id]?.baseUrl ?? fallbackBaseUrl;
-
-  const googleServiceSpecUrlFor = (preset: (typeof googleOpenApiPresets)[number]): string =>
-    googleServiceSettings[preset.id]?.specUrl ?? preset.url;
-
-  const googleServiceIdentityFor = (
-    preset: (typeof googleOpenApiPresets)[number],
-    servicePreview: SpecPreview,
-  ): SourceIdentity => ({
-    name: googleServiceNameFor(preset, servicePreview),
-    namespace: googleServiceNamespaceFor(preset, servicePreview),
-    setName: (name) => setGoogleServiceSetting(preset.id, { name }),
-    setNamespace: (namespace) =>
-      setGoogleServiceSetting(preset.id, {
-        namespace: normalizeNamespaceInput(namespace),
-      }),
-    reset: () =>
-      setGoogleServiceSettings((previous) => {
-        const next = { ...previous };
-        delete next[preset.id];
-        return next;
-      }),
-  });
-
-  const googleServiceBaseUrlsReady =
-    !googleServicePickerEnabled ||
-    googleBatchAddItems.every(
-      (item) => googleServiceBaseUrlFor(item.preset, item.baseUrl).trim().length > 0,
-    );
+  const googleBundleOperationCount = googleBatchAddItems.reduce(
+    (count, item) => count + item.preview.operationCount,
+    0,
+  );
 
   const existingOAuthConnections = useMemo(() => {
     if (
       !selectedOAuth2Preset ||
       selectedOAuth2Preset.flow !== "authorizationCode" ||
-      !AsyncResult.isSuccess(connectionsResult)
+      !AsyncResult.isSuccess(connectionsResult) ||
+      (googleServicePickerEnabled && selectedGoogleServiceIdList.length === 0)
     ) {
       return [];
     }
     return connectionsResult.value
       .flatMap((connection) => {
         if (connection.provider !== "oauth2") return [];
-        const missingApiScopes = missingOAuthScopes(connection, effectiveOAuth2SelectedApiScopes);
+        const missingApiScopes = missingOAuthScopesFromGranted(
+          grantedScopesForConnection(connection),
+          effectiveOAuth2SelectedApiScopes,
+        );
         if (missingApiScopes.length === 0) {
           return [{ ...connection, missingApiScopes }];
         }
@@ -1079,15 +1069,19 @@ export default function AddOpenApiSource(props: {
   }, [
     connectionsResult,
     effectiveOAuth2SelectedApiScopes,
+    grantedScopesForConnection,
+    googleServicePickerEnabled,
     selectedOAuth2IsGoogle,
     selectedOAuth2Preset,
+    selectedGoogleServiceIdList.length,
   ]);
 
+  const effectiveResolvedBaseUrl = resolvedBaseUrl;
   const configuredOAuth2 =
     strategy.kind === "oauth2" && selectedOAuth2Preset
       ? oauth2ConfigForPreset({
           preset: selectedOAuth2Preset,
-          baseUrl: resolvedBaseUrl,
+          baseUrl: effectiveResolvedBaseUrl,
           scopes: effectiveOAuth2SelectedApiScopes,
           identityScopes: configuredOAuth2IdentityScopes,
         })
@@ -1096,9 +1090,11 @@ export default function AddOpenApiSource(props: {
   const oauth2Busy = startingOAuth || oauth.busy;
   const canConnectOAuth2 =
     Boolean(oauth2ClientIdSecretId) &&
-    resolvedBaseUrl.length > 0 &&
-    googleServiceBaseUrlsReady &&
-    (!googleServicePickerEnabled || (googleBatchPendingCount === 0 && !googleBatchError));
+    effectiveResolvedBaseUrl.length > 0 &&
+    (!googleServicePickerEnabled ||
+      (selectedGoogleServiceIdList.length > 0 &&
+        googleBatchPendingCount === 0 &&
+        !googleBatchError));
   const hasIncompleteHeaderCredentials =
     strategy.kind !== "none" &&
     strategy.kind !== "oauth2" &&
@@ -1119,9 +1115,11 @@ export default function AddOpenApiSource(props: {
 
   const canAdd =
     preview !== null &&
-    resolvedBaseUrl.length > 0 &&
-    googleServiceBaseUrlsReady &&
-    (!googleServicePickerEnabled || (googleBatchPendingCount === 0 && !googleBatchError));
+    effectiveResolvedBaseUrl.length > 0 &&
+    (!googleServicePickerEnabled ||
+      (selectedGoogleServiceIdList.length > 0 &&
+        googleBatchPendingCount === 0 &&
+        !googleBatchError));
 
   // ---- Handlers ----
 
@@ -1226,23 +1224,46 @@ export default function AddOpenApiSource(props: {
       if (!selectedOAuth2Preset || !preview) return;
       oauth.cancel();
       setOauth2Error(null);
+      setOauth2ProgressLabel(null);
       const displayName = identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
       const tokenTargetScope = existingConnection?.scopeId ?? oauthTokenTargetScope;
       const connectionId =
         existingConnection?.id ??
         openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow);
-      const scopesForAuthorization = existingConnection
-        ? mergeOAuthScopes(
-            splitOAuthScopes(existingConnection.oauthScope),
-            selectedOAuth2IsGoogle ? effectiveOAuth2SelectedApiScopes : selectedOAuth2Scopes,
-          )
-        : selectedOAuth2Scopes;
+      const existingGrantedScopes = existingConnection
+        ? grantedScopesForConnection(existingConnection)
+        : null;
+      const selectedGoogleConnectionScopes =
+        selectedOAuth2IsGoogle && googleServicePickerEnabled
+          ? resolvedOAuthScopes(
+              new Set(googleBatchAddItems.flatMap((item) => scopesForGoogleServiceItem(item))),
+              configuredOAuth2IdentityScopes,
+            )
+          : selectedOAuth2Scopes;
+      const scopesForConnection = existingConnection
+        ? mergeOAuthScopes(existingGrantedScopes ?? [], selectedGoogleConnectionScopes)
+        : selectedGoogleConnectionScopes;
+      const providerAuthorizationInput =
+        selectedOAuth2IsGoogle && googleServicePickerEnabled
+          ? [
+              ...googleConsentBatches.flatMap((batch) => batch.apiScopes),
+              ...identityScopesForPreset(configuredOAuth2IdentityScopes),
+            ]
+          : existingConnection && selectedOAuth2IsGoogle
+            ? resolvedOAuthScopes(
+                missingOAuthScopesFromGranted(
+                  existingGrantedScopes ?? new Set<string>(),
+                  effectiveOAuth2SelectedApiScopes,
+                ),
+                configuredOAuth2IdentityScopes,
+              )
+            : scopesForConnection;
       const scopesForProviderAuthorization = selectedOAuth2IsGoogle
-        ? compactGoogleOAuthScopes(scopesForAuthorization)
+        ? compactGoogleOAuthScopes(providerAuthorizationInput)
         : undefined;
       const extraAuthorizationParams = googleAuthorizationParams(selectedOAuth2IsGoogle);
 
-      const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
+      const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, effectiveResolvedBaseUrl);
       const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
       const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
 
@@ -1270,7 +1291,7 @@ export default function AddOpenApiSource(props: {
               clientIdSecretScopeId: String(clientIdSecretScope),
               clientSecretSecretId: oauth2ClientSecretSecretId,
               clientSecretSecretScopeId: String(clientSecretSecretScope),
-              scopes: scopesForAuthorization,
+              scopes: scopesForConnection,
             },
             pluginId: "openapi",
             identityLabel: `${displayName} OAuth`,
@@ -1289,7 +1310,11 @@ export default function AddOpenApiSource(props: {
         setOAuthTokenTargetScope(tokenTargetScope);
         setOauth2AuthState({
           fingerprint: selectedOAuth2Fingerprint,
-          auth: { connectionId: response.completedConnection.connectionId },
+          auth: {
+            connectionId: response.completedConnection.connectionId,
+            grantedScopes: scopesForConnection,
+            scopeId: tokenTargetScope,
+          },
         });
         setOauth2Error(null);
         return;
@@ -1298,16 +1323,181 @@ export default function AddOpenApiSource(props: {
 
       const authorizationUrl = resolveOAuthUrl(
         Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
-        resolvedBaseUrl,
+        effectiveResolvedBaseUrl,
       );
       const issuerUrl = inferOAuthIssuerUrl(authorizationUrl);
+
+      const startAuthorizationCodeFlow = async (input: {
+        readonly connectionId: string;
+        readonly scopesForConnection: readonly string[];
+        readonly authorizationScopes: readonly string[] | undefined;
+        readonly identityLabel: string;
+        readonly onSuccess: (result: OAuthCompletionPayload) => void | Promise<void>;
+      }) => {
+        const authorizationStrategy = existingConnection
+          ? {
+              kind: "authorization-code-existing-client" as const,
+              authorizationEndpoint: authorizationUrl,
+              tokenEndpoint: tokenUrl,
+              issuerUrl,
+              scopes: input.scopesForConnection,
+              ...(input.authorizationScopes && input.authorizationScopes.length > 0
+                ? { authorizationScopes: input.authorizationScopes }
+                : {}),
+              extraAuthorizationParams,
+            }
+          : oauth2ClientIdSecretId
+            ? {
+                kind: "authorization-code" as const,
+                authorizationEndpoint: authorizationUrl,
+                tokenEndpoint: tokenUrl,
+                issuerUrl,
+                clientIdSecretId: oauth2ClientIdSecretId,
+                clientIdSecretScopeId: String(clientIdSecretScope),
+                clientSecretSecretId: oauth2ClientSecretSecretId ?? null,
+                clientSecretSecretScopeId: oauth2ClientSecretSecretId
+                  ? String(clientSecretSecretScope)
+                  : null,
+                scopes: input.scopesForConnection,
+                ...(input.authorizationScopes && input.authorizationScopes.length > 0
+                  ? { authorizationScopes: input.authorizationScopes }
+                  : {}),
+                extraAuthorizationParams,
+              }
+            : null;
+        if (!authorizationStrategy) return;
+
+        await oauth.openAuthorization({
+          tokenScope: tokenTargetScope,
+          run: async () => {
+            const exit = await doStartOAuth({
+              params: { scopeId: tokenTargetScope },
+              payload: {
+                endpoint: authorizationUrl,
+                connectionId: input.connectionId,
+                tokenScope: tokenTargetScope,
+                redirectUrl: oauth2RedirectUrl,
+                strategy: authorizationStrategy,
+                pluginId: "openapi",
+                identityLabel: input.identityLabel,
+              },
+            });
+            if (Exit.isFailure(exit)) {
+              // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+              throw new Error(errorMessageFromExit(exit, "Failed to start OAuth"));
+            }
+            const response = exit.value;
+            if (response.authorizationUrl === null) {
+              // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+              throw new Error("Unexpected response flow from server");
+            }
+            return {
+              sessionId: response.sessionId,
+              authorizationUrl: response.authorizationUrl,
+            };
+          },
+          onSuccess: input.onSuccess,
+          onError: (message, details) => {
+            setStartingOAuth(false);
+            setOauth2ProgressLabel(null);
+            setOauth2Error(oauthErrorMessage(selectedOAuth2ProviderLabel, message, details));
+          },
+        });
+      };
+
+      if (selectedOAuth2IsGoogle && googleConsentBatches.length > 2) {
+        const currentStoredScopes = existingConnection
+          ? (existingGrantedScopes ?? splitOAuthScopes(existingConnection.oauthScope))
+          : activeOAuth2AuthState?.connectionId === connectionId
+            ? new Set(activeOAuth2AuthState.grantedScopes)
+            : new Set<string>();
+        const hasStoredConnection = Boolean(existingConnection) || currentStoredScopes.size > 0;
+        const identityScopes = identityScopesForPreset(configuredOAuth2IdentityScopes);
+        const missingBatches = googleConsentBatches
+          .map((batch) => {
+            const missingApiScopes = batch.apiScopes.filter(
+              (scope) => !currentStoredScopes.has(scope),
+            );
+            return { ...batch, apiScopes: missingApiScopes };
+          })
+          .filter((batch) => batch.apiScopes.length > 0);
+        if (missingBatches.length === 0 && existingConnection) {
+          setOAuthTokenTargetScope(existingConnection.scopeId);
+          setOauth2AuthState({
+            fingerprint: selectedOAuth2Fingerprint,
+            auth: {
+              connectionId: existingConnection.id,
+              grantedScopes: [...currentStoredScopes],
+              scopeId: existingConnection.scopeId,
+            },
+          });
+          setOauth2Error(null);
+          return;
+        }
+
+        const runBatch = async (
+          batchIndex: number,
+          accumulatedScopes: readonly string[],
+          currentConnectionId: string,
+        ): Promise<void> => {
+          const batch = missingBatches[batchIndex];
+          if (!batch) {
+            setOAuthTokenTargetScope(tokenTargetScope);
+            setOauth2AuthState({
+              fingerprint: selectedOAuth2Fingerprint,
+              auth: {
+                connectionId: currentConnectionId,
+                grantedScopes: accumulatedScopes,
+                scopeId: tokenTargetScope,
+              },
+            });
+            setOauth2ProgressLabel(null);
+            setOauth2Error(null);
+            return;
+          }
+
+          const batchAuthorizationScopes = compactGoogleOAuthScopes([
+            ...accumulatedScopes,
+            ...batch.apiScopes,
+            ...identityScopes,
+          ]);
+          const scopesForBatchConnection =
+            batchIndex === missingBatches.length - 1
+              ? scopesForConnection
+              : batchIndex === 0 && !hasStoredConnection
+                ? batchAuthorizationScopes
+                : mergeOAuthScopes(accumulatedScopes, batchAuthorizationScopes);
+          setOauth2ProgressLabel(
+            `Connect ${batch.label} (${batchIndex + 1} of ${missingBatches.length})`,
+          );
+
+          await startAuthorizationCodeFlow({
+            connectionId: currentConnectionId,
+            scopesForConnection: scopesForBatchConnection,
+            authorizationScopes: batchAuthorizationScopes,
+            identityLabel: existingConnection?.identityLabel ?? `${displayName} OAuth`,
+            onSuccess: (result) => {
+              const nextAccumulatedScopes = result.scope
+                ? mergeOAuthScopes(accumulatedScopes, splitOAuthScopes(result.scope))
+                : scopesForBatchConnection;
+              window.setTimeout(() => {
+                void runBatch(batchIndex + 1, nextAccumulatedScopes, result.connectionId);
+              }, 0);
+            },
+          });
+        };
+
+        await runBatch(0, [...currentStoredScopes], connectionId);
+        return;
+      }
+
       const authorizationStrategy = existingConnection
         ? {
             kind: "authorization-code-existing-client" as const,
             authorizationEndpoint: authorizationUrl,
             tokenEndpoint: tokenUrl,
             issuerUrl,
-            scopes: scopesForAuthorization,
+            scopes: scopesForConnection,
             ...(scopesForProviderAuthorization && scopesForProviderAuthorization.length > 0
               ? { authorizationScopes: scopesForProviderAuthorization }
               : {}),
@@ -1325,7 +1515,7 @@ export default function AddOpenApiSource(props: {
               clientSecretSecretScopeId: oauth2ClientSecretSecretId
                 ? String(clientSecretSecretScope)
                 : null,
-              scopes: scopesForAuthorization,
+              scopes: scopesForConnection,
               ...(scopesForProviderAuthorization && scopesForProviderAuthorization.length > 0
                 ? { authorizationScopes: scopesForProviderAuthorization }
                 : {}),
@@ -1367,13 +1557,21 @@ export default function AddOpenApiSource(props: {
           setOAuthTokenTargetScope(tokenTargetScope);
           setOauth2AuthState({
             fingerprint: selectedOAuth2Fingerprint,
-            auth: { connectionId: result.connectionId },
+            auth: {
+              connectionId: result.connectionId,
+              grantedScopes: result.scope
+                ? [...splitOAuthScopes(result.scope)]
+                : scopesForConnection,
+              scopeId: tokenTargetScope,
+            },
           });
+          setOauth2ProgressLabel(null);
           setOauth2Error(null);
         },
-        onError: (message) => {
+        onError: (message, details) => {
           setStartingOAuth(false);
-          setOauth2Error(message);
+          setOauth2ProgressLabel(null);
+          setOauth2Error(oauthErrorMessage(selectedOAuth2ProviderLabel, message, details));
         },
       });
     },
@@ -1385,7 +1583,8 @@ export default function AddOpenApiSource(props: {
       selectedOAuth2Scopes,
       selectedOAuth2IsGoogle,
       oauth2RedirectUrl,
-      resolvedBaseUrl,
+      effectiveResolvedBaseUrl,
+      googleConsentBatches,
       preview,
       doStartOAuth,
       identity.name,
@@ -1395,7 +1594,10 @@ export default function AddOpenApiSource(props: {
       oauthTokenTargetScope,
       oauth2ClientIdScope,
       oauth2ClientSecretScope,
+      activeOAuth2AuthState,
+      grantedScopesForConnection,
       sourceScope,
+      selectedOAuth2ProviderLabel,
     ],
   );
 
@@ -1412,7 +1614,11 @@ export default function AddOpenApiSource(props: {
       setOAuthTokenTargetScope(connection.scopeId);
       setOauth2AuthState({
         fingerprint: selectedOAuth2Fingerprint,
-        auth: { connectionId: connection.id },
+        auth: {
+          connectionId: connection.id,
+          grantedScopes: [...splitOAuthScopes(connection.oauthScope)],
+          scopeId: connection.scopeId,
+        },
       });
       setOauth2Error(null);
     },
@@ -1426,148 +1632,31 @@ export default function AddOpenApiSource(props: {
     const clientIdBindingScope = oauth2ClientIdScope ?? sourceScope;
     const clientSecretBindingScope = oauth2ClientSecretScope ?? sourceScope;
 
-    const bindOAuth2Credentials = async (
-      sourceId: string,
-      oauth2Config: OAuth2SourceConfig,
-    ): Promise<boolean> => {
-      if (oauth2ClientIdSecretId) {
-        const bindingExit = await doSetBinding({
-          params: { scopeId },
-          payload: SetSourceCredentialBindingInput.make({
-            source: { id: sourceId, scope: sourceScope },
-            scope: clientIdBindingScope,
-            slotKey: oauth2Config.clientIdSlot,
-            value: {
-              kind: "secret",
-              secretId: SecretId.make(oauth2ClientIdSecretId),
-              secretScopeId: clientIdBindingScope,
-            },
-          }),
-          reactivityKeys: bindingWriteKeys,
-        });
-        if (Exit.isFailure(bindingExit)) {
-          setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
-          setAdding(false);
-          return false;
-        }
-      }
-
-      if (oauth2Config.clientSecretSlot && oauth2ClientSecretSecretId) {
-        const bindingExit = await doSetBinding({
-          params: { scopeId },
-          payload: SetSourceCredentialBindingInput.make({
-            source: { id: sourceId, scope: sourceScope },
-            scope: clientSecretBindingScope,
-            slotKey: oauth2Config.clientSecretSlot,
-            value: {
-              kind: "secret",
-              secretId: SecretId.make(oauth2ClientSecretSecretId),
-              secretScopeId: clientSecretBindingScope,
-            },
-          }),
-          reactivityKeys: bindingWriteKeys,
-        });
-        if (Exit.isFailure(bindingExit)) {
-          setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
-          setAdding(false);
-          return false;
-        }
-      }
-
-      if (oauth2Auth) {
-        const bindingExit = await doSetBinding({
-          params: { scopeId },
-          payload: SetSourceCredentialBindingInput.make({
-            source: { id: sourceId, scope: sourceScope },
-            scope: oauthTokenBindingScope,
-            slotKey: oauth2Config.connectionSlot,
-            value: {
-              kind: "connection",
-              connectionId: ConnectionId.make(oauth2Auth.connectionId),
-            },
-          }),
-          reactivityKeys: bindingWriteKeys,
-        });
-        if (Exit.isFailure(bindingExit)) {
-          setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
-          setAdding(false);
-          return false;
-        }
-      }
-
-      return true;
-    };
-
-    if (googleServicePickerEnabled && googleBatchAddItems.length > 1) {
-      if (googleBatchPendingCount > 0 || googleBatchError) {
-        setAddError(
-          googleBatchError?.status === "error"
-            ? googleBatchError.message
-            : "Still loading selected Google services",
-        );
-        setAdding(false);
-        return;
-      }
-
-      for (const item of googleBatchAddItems) {
-        const itemBaseUrl = googleServiceBaseUrlFor(item.preset, item.baseUrl).trim();
-        if (!itemBaseUrl) {
-          setAddError(`Base URL is required for ${item.preset.name}`);
-          setAdding(false);
-          return;
-        }
-        const fallbackName = defaultGoogleSourceName(item.preset, item.preview);
-        const sourceName = item.isPrimary
-          ? resolvedDisplayName
-          : googleServiceNameFor(item.preset, item.preview).trim() || fallbackName;
-        const sourceNamespace = item.isPrimary
-          ? resolvedSourceId
-          : slugifyNamespace(googleServiceNamespaceFor(item.preset, item.preview)) ||
-            defaultGoogleSourceNamespace(item.preset, item.preview);
-        const oauth2Preset = item.preview.oauth2Presets[0];
-        const oauth2Config = oauth2Preset
-          ? oauth2ConfigForPreset({
-              preset: oauth2Preset,
-              baseUrl: itemBaseUrl,
-              scopes: Object.keys(oauth2Preset.scopes),
-              identityScopes: configuredOAuth2IdentityScopes,
-            })
-          : null;
-        const exit = await doAdd({
-          params: { scopeId },
-          payload: {
-            spec: item.isPrimary
-              ? specInputForAdd(specUrl)
-              : { kind: "googleDiscovery", url: googleServiceSpecUrlFor(item.preset) },
-            name: sourceName,
-            namespace: sourceNamespace,
-            baseUrl: itemBaseUrl,
-            ...(oauth2Config ? { oauth2: oauth2Config } : {}),
-          },
-          reactivityKeys: addSpecWriteKeys,
-        });
-        if (Exit.isFailure(exit)) {
-          setAddError(errorMessageFromExit(exit, `Failed to add ${item.preset.name}`));
-          setAdding(false);
-          return;
-        }
-        if (oauth2Config && !(await bindOAuth2Credentials(exit.value.namespace, oauth2Config))) {
-          return;
-        }
-      }
-
-      props.onComplete();
+    if (googleServicePickerEnabled && (googleBatchPendingCount > 0 || googleBatchError)) {
+      setAddError(
+        googleBatchError?.status === "error"
+          ? googleBatchError.message
+          : "Still loading selected Google services",
+      );
+      setAdding(false);
       return;
     }
 
     const namespace = resolvedSourceId;
+    const specForAdd =
+      googleServicePickerEnabled && selectedGooglePresets.length > 0
+        ? {
+            kind: "googleDiscoveryBundle" as const,
+            urls: selectedGooglePresets.flatMap((preset) => (preset.url ? [preset.url] : [])),
+          }
+        : specInputForAdd(specUrl);
     const exit = await doAdd({
       params: { scopeId },
       payload: {
-        spec: specInputForAdd(specUrl),
+        spec: specForAdd,
         name: resolvedDisplayName,
         namespace,
-        baseUrl: resolvedBaseUrl,
+        baseUrl: effectiveResolvedBaseUrl,
         ...(configuredSpecFetchCredentials
           ? { specFetchCredentials: configuredSpecFetchCredentials }
           : {}),
@@ -1721,6 +1810,19 @@ export default function AddOpenApiSource(props: {
     props.onComplete();
   };
 
+  const handleToggleAllGoogleServices = () => {
+    setSelectedGoogleServiceIds((previous) => {
+      const next = new Set(previous);
+      if (allStandardGoogleServicesSelected) {
+        for (const presetId of GOOGLE_STANDARD_SERVICE_IDS) next.delete(presetId);
+        return next;
+      }
+      for (const presetId of GOOGLE_STANDARD_SERVICE_IDS) next.add(presetId);
+      return next;
+    });
+    setOauth2AuthState(null);
+  };
+
   // ---- Render ----
 
   return (
@@ -1791,114 +1893,24 @@ export default function AddOpenApiSource(props: {
       {/* ── Source information card (shown after analysis) ── */}
       {preview ? (
         googleServicePickerEnabled && primaryGooglePreset ? (
-          <Tabs
-            value={activeGoogleServiceId ?? primaryGooglePreset.id}
-            onValueChange={setActiveGoogleServiceId}
-            className="gap-3"
-          >
-            <TabsList className="max-w-full justify-start overflow-x-auto">
-              {(selectedGooglePresets.length > 0
-                ? selectedGooglePresets
-                : [primaryGooglePreset]
-              ).map((preset) => (
-                <TabsTrigger key={preset.id} value={preset.id} className="shrink-0">
-                  {preset.icon ? (
-                    <img src={preset.icon} alt="" className="size-3.5 object-contain" />
-                  ) : null}
-                  <span>{preset.name.replace(/^Google /, "")}</span>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {(selectedGooglePresets.length > 0 ? selectedGooglePresets : [primaryGooglePreset]).map(
-              (preset) => {
-                const serviceState = googleServicePreviewStateFor(preset);
-                if (serviceState?.status !== "success") {
-                  return (
-                    <TabsContent key={preset.id} value={preset.id}>
-                      <CardStack>
-                        <CardStackContent className="border-t-0">
-                          <CardStackEntryField label={preset.name}>
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                              {serviceState?.status === "loading" ? (
-                                <>
-                                  <IOSSpinner className="size-3.5" />
-                                  Loading service details…
-                                </>
-                              ) : (
-                                (serviceState?.message ?? "Service details are unavailable.")
-                              )}
-                            </div>
-                          </CardStackEntryField>
-                        </CardStackContent>
-                      </CardStack>
-                    </TabsContent>
-                  );
-                }
-
-                const servicePreview = serviceState.preview;
-                const serviceBaseUrl = googleServiceBaseUrlFor(preset, serviceState.baseUrl);
-                const serviceBaseUrlOptions = Array.from(
-                  new Map(
-                    servicePreview.servers
-                      .flatMap(expandServerOptions)
-                      .map((option) => [option.value, option]),
-                  ).values(),
-                );
-                const serviceIdentity =
-                  preset.id === primaryGooglePreset.id
-                    ? identity
-                    : googleServiceIdentityFor(preset, servicePreview);
-                return (
-                  <TabsContent key={preset.id} value={preset.id}>
-                    <OpenApiSourceDetailsFields
-                      title={defaultGoogleSourceName(preset, servicePreview)}
-                      description={`${Option.getOrElse(servicePreview.version, () => "")}${
-                        Option.isSome(servicePreview.version) ? " · " : ""
-                      }${servicePreview.operationCount} operation${
-                        servicePreview.operationCount !== 1 ? "s" : ""
-                      }${
-                        servicePreview.tags.length > 0
-                          ? ` · ${servicePreview.tags.length} tag${
-                              servicePreview.tags.length !== 1 ? "s" : ""
-                            }`
-                          : ""
-                      }`}
-                      identity={serviceIdentity}
-                      baseUrl={serviceBaseUrl}
-                      onBaseUrlChange={(value) =>
-                        preset.id === primaryGooglePreset.id
-                          ? setBaseUrl(value)
-                          : setGoogleServiceSetting(preset.id, { baseUrl: value })
-                      }
-                      baseUrlOptions={serviceBaseUrlOptions}
-                      specUrl={
-                        preset.id === primaryGooglePreset.id
-                          ? specUrl
-                          : googleServiceSpecUrlFor(preset)
-                      }
-                      onSpecUrlChange={(value) => {
-                        if (preset.id !== primaryGooglePreset.id) {
-                          setGoogleServiceSetting(preset.id, { specUrl: value });
-                          return;
-                        }
-                        setSpecUrl(value);
-                        setPreview(null);
-                        setBaseUrl("");
-                        setCustomHeaders([]);
-                        setStrategy({ kind: "none" });
-                        setOauth2AuthState(null);
-                        setOauth2Error(null);
-                      }}
-                      faviconIcon={preset.icon}
-                      faviconUrl={serviceBaseUrl}
-                      specUrlDisabled={preset.id !== primaryGooglePreset.id}
-                      baseUrlMissingMessage="A base URL is required to make requests."
-                    />
-                  </TabsContent>
-                );
-              },
-            )}
-          </Tabs>
+          <OpenApiSourceDetailsFields
+            title="Google"
+            description={`${selectedGoogleServiceIdList.length} service${
+              selectedGoogleServiceIdList.length !== 1 ? "s" : ""
+            }${
+              googleBundleOperationCount > 0
+                ? ` · ${googleBundleOperationCount} operation${
+                    googleBundleOperationCount !== 1 ? "s" : ""
+                  }`
+                : ""
+            }`}
+            identity={identity}
+            baseUrl={effectiveResolvedBaseUrl}
+            onBaseUrlChange={setBaseUrl}
+            faviconIcon={GOOGLE_ICON}
+            faviconUrl={GOOGLE_BUNDLE_BASE_URL}
+            baseUrlMissingMessage="A base URL is required to make requests."
+          />
         ) : (
           <OpenApiSourceDetailsFields
             title={Option.getOrElse(preview.title, () => "API")}
@@ -1934,44 +1946,56 @@ export default function AddOpenApiSource(props: {
         <section className="space-y-2.5">
           <div className="flex items-center justify-between gap-3">
             <FieldLabel>Google services</FieldLabel>
-            <span className="text-[11px] text-muted-foreground">
-              {selectedGoogleServiceIds.size} selected
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                {selectedGoogleServiceIdList.length} selected
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={handleToggleAllGoogleServices}
+                className="-mr-2 h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                {allStandardGoogleServicesSelected ? "Clear all" : "Select all"}
+              </Button>
+            </div>
           </div>
           <div className="max-h-72 overflow-y-auto rounded-lg border border-border/60 bg-muted/10 p-2">
             <div className="grid gap-1.5 sm:grid-cols-2">
               {googleOpenApiPresets.map((preset) => {
-                const selected = selectedGoogleServiceIds.has(preset.id);
-                const locked = preset.id === primaryGooglePreset.id;
-                const previewState = locked
-                  ? ({ status: "success", preview: preview as SpecPreview } as const)
-                  : googleServicePreviews[preset.id];
+                const selected = selectedGoogleServiceIdList.includes(preset.id);
+                const userOAuthUnsupported = preset.oauthAudience === "unsupported-user";
+                const previewState =
+                  preset.id === primaryGooglePreset.id
+                    ? ({ status: "success", preview: preview as SpecPreview } as const)
+                    : googleServicePreviews[preset.id];
                 return (
                   <Label
                     key={preset.id}
-                    className={`flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-2 transition-colors ${
-                      selected
-                        ? "border-primary/35 bg-primary/[0.04]"
-                        : "border-border/50 bg-background/40 hover:bg-accent/40"
+                    className={`flex items-start gap-2 rounded-md border px-2.5 py-2 transition-colors ${
+                      userOAuthUnsupported
+                        ? "cursor-not-allowed border-border/30 bg-background/20 opacity-60"
+                        : selected
+                          ? "cursor-pointer border-primary/35 bg-primary/[0.04]"
+                          : "cursor-pointer border-border/50 bg-background/40 hover:bg-accent/40"
                     }`}
                   >
                     <Checkbox
                       checked={selected}
-                      disabled={locked}
+                      disabled={userOAuthUnsupported}
                       onCheckedChange={(checked) => {
-                        if (checked !== true && activeGoogleServiceId === preset.id) {
-                          setActiveGoogleServiceId(primaryGooglePreset.id);
-                        }
+                        if (userOAuthUnsupported) return;
                         setSelectedGoogleServiceIds((previous) => {
                           const next = new Set(previous);
                           if (checked === true) {
                             next.add(preset.id);
-                          } else if (!locked) {
+                          } else {
                             next.delete(preset.id);
                           }
                           return next;
                         });
-                        setOauth2AuthState(null);
+                        if (!googleServicePickerEnabled) setOauth2AuthState(null);
                       }}
                       className="mt-0.5"
                     />
@@ -1988,6 +2012,11 @@ export default function AddOpenApiSource(props: {
                         <span className="truncate text-[12px] font-medium text-foreground">
                           {preset.name}
                         </span>
+                        {userOAuthUnsupported ? (
+                          <span className="shrink-0 rounded-full border border-border/60 px-1.5 py-0.5 text-[9px] uppercase tracking-normal text-muted-foreground">
+                            Unavailable
+                          </span>
+                        ) : null}
                         {selected && previewState?.status === "loading" ? (
                           <IOSSpinner className="size-3 shrink-0" />
                         ) : null}
@@ -2009,6 +2038,16 @@ export default function AddOpenApiSource(props: {
             <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
               <p className="text-[11px] text-destructive">{googleBatchError.message}</p>
             </div>
+          ) : null}
+          {showGoogleSelectionWarning ? (
+            <Info variant="warning">
+              <InfoTitle>Google may reject broad permission requests</InfoTitle>
+              <InfoDescription>
+                Large Google selections and admin or developer APIs can ask for permission
+                combinations Google will not approve in one sign-in. If OAuth fails, select fewer
+                services or add sensitive services as separate Google sources.
+              </InfoDescription>
+            </Info>
           ) : null}
         </section>
       ) : null}
@@ -2264,7 +2303,9 @@ export default function AddOpenApiSource(props: {
                           <div className="space-y-2">
                             {googleBatchAddItems.map((item) => {
                               const oauth2Preset = item.preview.oauth2Presets[0];
-                              const scopes = Object.keys(oauth2Preset?.scopes ?? {});
+                              const rawScopes = Object.keys(oauth2Preset?.scopes ?? {});
+                              const scopes = filterGoogleUserConsentOAuthScopes(rawScopes);
+                              const unavailableScopeCount = rawScopes.length - scopes.length;
                               return (
                                 <div key={item.preset.id} className="space-y-1">
                                   <div className="text-[11px] font-medium text-foreground">
@@ -2272,7 +2313,7 @@ export default function AddOpenApiSource(props: {
                                   </div>
                                   {scopes.length === 0 ? (
                                     <div className="text-[10px] text-muted-foreground">
-                                      No scopes declared by this service.
+                                      No user OAuth scopes requested for this service.
                                     </div>
                                   ) : (
                                     <div className="flex flex-wrap gap-1.5">
@@ -2287,6 +2328,13 @@ export default function AddOpenApiSource(props: {
                                       ))}
                                     </div>
                                   )}
+                                  {unavailableScopeCount > 0 ? (
+                                    <div className="text-[10px] text-muted-foreground">
+                                      {unavailableScopeCount} scope
+                                      {unavailableScopeCount === 1 ? "" : "s"} unavailable for
+                                      Google user sign-in.
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -2358,8 +2406,8 @@ export default function AddOpenApiSource(props: {
                         <OAuthConnectedAccount
                           scopeId={oauthTokenTargetScope}
                           connectionId={oauth2Auth.connectionId}
-                          scopeSummary={`${selectedOAuth2Scopes.length} scope${
-                            selectedOAuth2Scopes.length === 1 ? "" : "s"
+                          scopeSummary={`${oauth2Auth.grantedScopes.length} scope${
+                            oauth2Auth.grantedScopes.length === 1 ? "" : "s"
                           } granted`}
                           sourceName={resolvedDisplayName}
                           onSetSourceName={identity.setName}
@@ -2373,7 +2421,9 @@ export default function AddOpenApiSource(props: {
                     <div className="flex items-center gap-2">
                       <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-background/50 px-3 py-2 text-[11px] text-muted-foreground">
                         <Spinner className="size-3.5" />
-                        Waiting for OAuth… complete the flow in the popup, or cancel to retry.
+                        {oauth2ProgressLabel
+                          ? `${oauth2ProgressLabel} in the browser.`
+                          : "Waiting for OAuth… complete the flow in the popup, or cancel to retry."}
                       </div>
                       <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
                         Cancel
@@ -2483,13 +2533,15 @@ export default function AddOpenApiSource(props: {
             {adding && <Spinner className="size-3.5" />}
             {adding
               ? "Adding…"
-              : googleServicePickerEnabled && googleBatchAddItems.length > 1
-                ? willAddWithoutInitialCredentials
-                  ? `Add ${googleBatchAddItems.length} sources without credentials`
-                  : `Add ${googleBatchAddItems.length} sources`
-                : willAddWithoutInitialCredentials
-                  ? "Add without credentials"
-                  : "Add source"}
+              : googleServicePickerEnabled && selectedGoogleServiceIdList.length === 0
+                ? "Select services"
+                : googleServicePickerEnabled
+                  ? willAddWithoutInitialCredentials
+                    ? "Add Google without credentials"
+                    : "Add Google"
+                  : willAddWithoutInitialCredentials
+                    ? "Add without credentials"
+                    : "Add source"}
           </Button>
         )}
       </FloatActions>

@@ -1,10 +1,10 @@
-import { googleOpenApiPresets } from "./google-presets";
+import { googleOpenApiBundlePreset, googleOpenApiPresets } from "./google-presets";
 
 export interface OpenApiPreset {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
-  readonly url: string;
+  readonly url?: string;
   readonly icon?: string;
   readonly featured?: boolean;
 }
@@ -140,9 +140,10 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
   },
 ];
 
-export { googleOpenApiPresets } from "./google-presets";
+export { googleOpenApiPresets, googleStandardUserOAuthPresets } from "./google-presets";
 
 export const openApiPresets: readonly OpenApiPreset[] = [
+  googleOpenApiBundlePreset,
   ...openApiOnlyPresets,
   ...googleOpenApiPresets,
 ];

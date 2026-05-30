@@ -6,6 +6,7 @@ import {
   declaredContents,
   DocResolver,
   preferredResponseContent,
+  resolveBaseUrl,
   type OperationObject,
   type ParameterObject,
   type PathItemObject,
@@ -227,16 +228,34 @@ const explicitToolPath = (operation: OperationObject): string | undefined => {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 };
 
+const explicitPathTemplate = (operation: OperationObject): string | undefined => {
+  const value = (operation as Record<string, unknown>)["x-executor-pathTemplate"];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+};
+
 // ---------------------------------------------------------------------------
 // Server extraction
 // ---------------------------------------------------------------------------
 
-const extractServers = (doc: ParsedDocument): ServerInfo[] =>
-  (doc.servers ?? []).flatMap((server) => {
-    if (!server.url) return [];
-    const vars = server.variables
+const extractServerList = (servers: unknown): ServerInfo[] =>
+  (Array.isArray(servers) ? servers : []).flatMap((server) => {
+    if (typeof server !== "object" || server === null) return [];
+    const raw = server as {
+      url?: unknown;
+      description?: unknown;
+      variables?: unknown;
+    };
+    if (typeof raw.url !== "string") return [];
+    const serverVariables =
+      typeof raw.variables === "object" && raw.variables !== null
+        ? (raw.variables as Record<
+            string,
+            { default?: unknown; enum?: unknown; description?: unknown }
+          >)
+        : undefined;
+    const vars = serverVariables
       ? Object.fromEntries(
-          Object.entries(server.variables).flatMap(([name, v]) => {
+          Object.entries(serverVariables).flatMap(([name, v]) => {
             if (v.default === undefined || v.default === null) return [];
             const enumValues = Array.isArray(v.enum)
               ? v.enum.filter((x): x is string => typeof x === "string")
@@ -248,7 +267,9 @@ const extractServers = (doc: ParsedDocument): ServerInfo[] =>
                   default: String(v.default),
                   enum:
                     enumValues && enumValues.length > 0 ? Option.some(enumValues) : Option.none(),
-                  description: Option.fromNullishOr(v.description),
+                  description: Option.fromNullishOr(
+                    typeof v.description === "string" ? v.description : undefined,
+                  ),
                 }),
               ],
             ];
@@ -257,12 +278,29 @@ const extractServers = (doc: ParsedDocument): ServerInfo[] =>
       : undefined;
     return [
       ServerInfo.make({
-        url: server.url,
-        description: Option.fromNullishOr(server.description),
+        url: raw.url,
+        description: Option.fromNullishOr(
+          typeof raw.description === "string" ? raw.description : undefined,
+        ),
         variables: vars && Object.keys(vars).length > 0 ? Option.some(vars) : Option.none(),
       }),
     ];
   });
+
+const extractServers = (doc: ParsedDocument): ServerInfo[] => extractServerList(doc.servers);
+
+const extractOperationBaseUrl = (
+  pathItem: PathItemObject,
+  operation: OperationObject,
+): string | undefined => {
+  const operationServers = extractServerList((operation as Record<string, unknown>).servers);
+  if (operationServers.length > 0) return resolveBaseUrl(operationServers);
+
+  const pathServers = extractServerList((pathItem as Record<string, unknown>).servers);
+  if (pathServers.length > 0) return resolveBaseUrl(pathServers);
+
+  return undefined;
+};
 
 // ---------------------------------------------------------------------------
 // Main extraction
@@ -294,13 +332,15 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
       const inputSchema = buildInputSchema(parameters, requestBody);
       const outputSchema = extractOutputSchema(operation, r);
       const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
+      const operationPathTemplate = explicitPathTemplate(operation) ?? pathTemplate;
 
       operations.push(
         ExtractedOperation.make({
           operationId: OperationId.make(deriveOperationId(method, pathTemplate, operation)),
           toolPath: Option.fromNullishOr(explicitToolPath(operation)),
           method,
-          pathTemplate,
+          baseUrl: extractOperationBaseUrl(pathItem, operation),
+          pathTemplate: operationPathTemplate,
           summary: Option.fromNullishOr(operation.summary),
           description: Option.fromNullishOr(operation.description),
           tags,

@@ -9,6 +9,7 @@ export const StoredSourceSchema = Schema.Struct({
   config: Schema.Struct({
     spec: Schema.optional(Schema.String),
     sourceUrl: Schema.optional(Schema.String),
+    googleDiscoveryUrls: Schema.optional(Schema.Array(Schema.String)),
     baseUrl: Schema.optional(Schema.String),
     namespace: Schema.optional(Schema.String),
     headers: Schema.optional(Schema.Record(Schema.String, ConfiguredHeaderValue)),
