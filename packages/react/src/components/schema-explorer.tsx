@@ -20,8 +20,8 @@ type JsonSchema = {
   const?: unknown;
   $ref?: string;
   $defs?: Record<string, JsonSchema>;
-  description?: unknown;
-  title?: unknown;
+  description?: SchemaText;
+  title?: SchemaText;
   default?: unknown;
   nullable?: boolean;
   format?: string;
@@ -38,9 +38,11 @@ export const safeSchemaValueLabel = (value: unknown): string => {
   }
 };
 
-const schemaText = (value: unknown): string | undefined => {
+type SchemaText = string | Option.Option<string>;
+
+const schemaText = (value: SchemaText | undefined): string | undefined => {
   if (typeof value === "string") return value;
-  if (Option.isOption(value) && Option.isSome(value) && typeof value.value === "string") {
+  if (Option.isOption(value) && Option.isSome(value)) {
     return value.value;
   }
   return undefined;
