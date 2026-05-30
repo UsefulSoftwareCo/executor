@@ -12,6 +12,7 @@ import {
   type PathItemObject,
   type RequestBodyObject,
   type ResponseObject,
+  type ServerObject,
 } from "./openapi-utils";
 import {
   EncodingObject,
@@ -237,22 +238,20 @@ const explicitPathTemplate = (operation: OperationObject): string | undefined =>
 // Server extraction
 // ---------------------------------------------------------------------------
 
-const extractServerList = (servers: unknown): ServerInfo[] =>
-  (Array.isArray(servers) ? servers : []).flatMap((server) => {
-    if (typeof server !== "object" || server === null) return [];
-    const raw = server as {
-      url?: unknown;
-      description?: unknown;
-      variables?: unknown;
-    };
-    if (typeof raw.url !== "string") return [];
+const extractServerList = (servers: readonly ServerObject[] | undefined): ServerInfo[] =>
+  (servers ?? []).flatMap((server) => {
+    if (!server.url) return [];
     const serverVariables =
-      typeof raw.variables === "object" && raw.variables !== null
-        ? (raw.variables as Record<
+      server.variables as
+        | Record<
             string,
-            { default?: unknown; enum?: unknown; description?: unknown }
-          >)
-        : undefined;
+            {
+              readonly default?: string;
+              readonly enum?: readonly string[];
+              readonly description?: string;
+            }
+          >
+        | undefined;
     const vars = serverVariables
       ? Object.fromEntries(
           Object.entries(serverVariables).flatMap(([name, v]) => {
@@ -267,9 +266,7 @@ const extractServerList = (servers: unknown): ServerInfo[] =>
                   default: String(v.default),
                   enum:
                     enumValues && enumValues.length > 0 ? Option.some(enumValues) : Option.none(),
-                  description: Option.fromNullishOr(
-                    typeof v.description === "string" ? v.description : undefined,
-                  ),
+                  description: Option.fromNullishOr(v.description),
                 }),
               ],
             ];
@@ -278,10 +275,8 @@ const extractServerList = (servers: unknown): ServerInfo[] =>
       : undefined;
     return [
       ServerInfo.make({
-        url: raw.url,
-        description: Option.fromNullishOr(
-          typeof raw.description === "string" ? raw.description : undefined,
-        ),
+        url: server.url,
+        description: Option.fromNullishOr(server.description),
         variables: vars && Object.keys(vars).length > 0 ? Option.some(vars) : Option.none(),
       }),
     ];
@@ -293,10 +288,10 @@ const extractOperationBaseUrl = (
   pathItem: PathItemObject,
   operation: OperationObject,
 ): string | undefined => {
-  const operationServers = extractServerList((operation as Record<string, unknown>).servers);
+  const operationServers = extractServerList(operation.servers);
   if (operationServers.length > 0) return resolveBaseUrl(operationServers);
 
-  const pathServers = extractServerList((pathItem as Record<string, unknown>).servers);
+  const pathServers = extractServerList(pathItem.servers);
   if (pathServers.length > 0) return resolveBaseUrl(pathServers);
 
   return undefined;

@@ -19,6 +19,7 @@ export type PathItemObject = OpenAPIV3.PathItemObject | OpenAPIV3_1.PathItemObje
 export type RequestBodyObject = OpenAPIV3.RequestBodyObject | OpenAPIV3_1.RequestBodyObject;
 export type ResponseObject = OpenAPIV3.ResponseObject | OpenAPIV3_1.ResponseObject;
 export type MediaTypeObject = OpenAPIV3.MediaTypeObject | OpenAPIV3_1.MediaTypeObject;
+export type ServerObject = OpenAPIV3.ServerObject | OpenAPIV3_1.ServerObject;
 
 // ---------------------------------------------------------------------------
 // DocResolver — wraps a parsed document for clean $ref resolution
