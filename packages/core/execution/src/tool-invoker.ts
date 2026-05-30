@@ -3,8 +3,8 @@ import * as Cause from "effect/Cause";
 import type {
   Executor,
   ToolId,
-  Tool,
-  ToolSchema,
+  ToolView,
+  ToolSchemaView,
   InvokeOptions,
   Source,
 } from "@executor-js/sdk/core";
@@ -297,7 +297,7 @@ const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedRes
   };
 };
 
-type SearchableTool = Pick<Tool, "id" | "sourceId" | "name" | "description">;
+type SearchableTool = Pick<ToolView, "id" | "sourceId" | "name" | "description">;
 
 type PreparedField = {
   readonly raw: string;
@@ -513,8 +513,8 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     ),
   );
   const ranked = all
-    .filter((tool: Tool) => matchesNamespace(tool, options?.namespace))
-    .map((tool: Tool) => scoreToolMatch(tool, query))
+    .filter((tool: ToolView) => matchesNamespace(tool, options?.namespace))
+    .map((tool: ToolView) => scoreToolMatch(tool, query))
     .filter(Predicate.isNotNull)
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
@@ -617,7 +617,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
 
   // Single tools.schema() call — it already fetches the tool row
   // internally. No need to also call tools.list() just for name/description.
-  const schema: ToolSchema | null = yield* executor.tools.schema(path);
+  const schema: ToolSchemaView | null = yield* executor.tools.schema(path);
 
   // tools.schema() returns null if the tool doesn't exist. Fall back to
   // a minimal stub so callers can still render something.

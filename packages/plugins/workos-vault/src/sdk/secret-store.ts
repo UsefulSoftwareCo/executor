@@ -5,6 +5,7 @@ import {
   type FumaRow,
   type FumaTables,
   nullableTextColumn,
+  parseUserOrgScopeId,
   scopedExecutorTable,
   StorageError,
   type SecretProvider,
@@ -159,12 +160,15 @@ const isKekNotReadyError = (error: WorkOSVaultClientError): boolean =>
 export type WorkOSVaultContextForScope = (scopeId: string) => Record<string, string>;
 
 export const defaultWorkOSVaultContextForScope: WorkOSVaultContextForScope = (scopeId) => {
-  const m = scopeId.match(/^user-org:([^:]+):([^:]+)$/);
+  // Parser is single-sourced in `@executor-js/sdk` alongside the producer
+  // (`userOrgScopeId` / `makeUserOrgScopeStack`), so the id shape the host apps
+  // emit and the shape we split here cannot drift.
+  const parsed = parseUserOrgScopeId(scopeId);
   const base: Record<string, string> = {
     app: "executor",
-    organization_id: m ? m[2]! : scopeId,
+    organization_id: parsed ? parsed.organizationId : scopeId,
   };
-  if (m) base.user_id = m[1]!;
+  if (parsed) base.user_id = parsed.userId;
   return base;
 };
 

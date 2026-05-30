@@ -98,6 +98,8 @@
     "bun-types": "^1.2.22",
     "drizzle-orm": "^0.45.0",
     "drizzle-kit": "^0.31.10",
+    "@libsql/client": "^0.17.3",
+    "@libsql/kysely-libsql": "^0.4.1",
     "@vitest/expect": "^4.1.5",
     "@vitest/mocker": "^4.1.5",
     "@vitest/pretty-format": "^4.1.5",

@@ -9,30 +9,37 @@
 // backup; most never will — the rows are stale tool catalogs they'd
 // re-fetch anyway.
 
-import { Database } from "bun:sqlite";
+import { type Client } from "@libsql/client";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+
+import { openLegacyLibsql, queryFirst, queryRows } from "./libsql";
 
 /**
  * Returns true when the DB at `dbPath` looks like it was written by a
  * pre-scope executor — has a `source` table but no `scope_id` column.
  * Fresh DBs (no `source` table yet) and current DBs both return false.
+ *
+ * Reads the legacy on-disk SQLite file through libSQL (same file format);
+ * readonly intent is enforced by issuing only SELECT/PRAGMA reads.
  */
-export const isPreScopeSchema = (dbPath: string): boolean => {
+export const isPreScopeSchema = async (dbPath: string): Promise<boolean> => {
   if (!fs.existsSync(dbPath)) return false;
-  const db = new Database(dbPath, { readonly: true });
+  const client = openLegacyLibsql(dbPath);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: local SQLite schema probe must close the DB handle
   try {
-    const tableExists = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='source'")
-      .get();
+    const tableExists = await queryFirst(
+      client,
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='source'",
+    );
     if (!tableExists) return false;
-    const columns = db.prepare("PRAGMA table_info('source')").all() as ReadonlyArray<{
-      readonly name: string;
-    }>;
+    const columns = await queryRows<{ readonly name: string }>(
+      client,
+      "PRAGMA table_info('source')",
+    );
     return !columns.some((c) => c.name === "scope_id");
   } finally {
-    db.close();
+    client.close();
   }
 };
 
@@ -41,8 +48,8 @@ export const isPreScopeSchema = (dbPath: string): boolean => {
  * `<path>.pre-scopes-<timestamp>`. Returns the backup path if anything
  * was moved, otherwise null.
  */
-export const moveAsidePreScopeDb = (dbPath: string): string | null => {
-  if (!isPreScopeSchema(dbPath)) return null;
+export const moveAsidePreScopeDb = async (dbPath: string): Promise<string | null> => {
+  if (!(await isPreScopeSchema(dbPath))) return null;
   // Timestamp alone is near-unique; the random suffix makes it actually
   // unique even if two moves ever land in the same millisecond.
   const suffix = `${Date.now()}-${randomBytes(4).toString("hex")}`;
@@ -71,20 +78,22 @@ export interface LegacySecret {
   readonly createdAt: number;
 }
 
-export const readLegacySecrets = (dbPath: string): readonly LegacySecret[] => {
+export const readLegacySecrets = async (dbPath: string): Promise<readonly LegacySecret[]> => {
   if (!fs.existsSync(dbPath)) return [];
-  const db = new Database(dbPath, { readonly: true });
+  const client = openLegacyLibsql(dbPath);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: local SQLite legacy-row read must close the DB handle
   try {
-    const tableExists = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='secret'")
-      .get();
+    const tableExists = await queryFirst(
+      client,
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='secret'",
+    );
     if (!tableExists) return [];
-    return db
-      .prepare("SELECT id, name, provider, created_at as createdAt FROM secret")
-      .all() as LegacySecret[];
+    return await queryRows<LegacySecret>(
+      client,
+      "SELECT id, name, provider, created_at as createdAt FROM secret",
+    );
   } finally {
-    db.close();
+    client.close();
   }
 };
 
@@ -93,16 +102,16 @@ export const readLegacySecrets = (dbPath: string): readonly LegacySecret[] => {
  * stamping the current scope id. Idempotent — uses INSERT OR IGNORE so
  * a row that the user already re-registered takes precedence.
  */
-export const importLegacySecrets = (
-  db: Database,
+export const importLegacySecrets = async (
+  client: Client,
   scopeId: string,
   secrets: readonly LegacySecret[],
-): void => {
+): Promise<void> => {
   if (secrets.length === 0) return;
-  const stmt = db.prepare(
-    "INSERT OR IGNORE INTO secret (scope_id, id, name, provider, created_at) VALUES (?, ?, ?, ?, ?)",
-  );
   for (const s of secrets) {
-    stmt.run(scopeId, s.id, s.name, s.provider, s.createdAt);
+    await client.execute({
+      sql: "INSERT OR IGNORE INTO secret (scope_id, id, name, provider, created_at) VALUES (?, ?, ?, ?, ?)",
+      args: [scopeId, s.id, s.name, s.provider, s.createdAt],
+    });
   }
 };

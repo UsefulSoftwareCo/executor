@@ -1,7 +1,7 @@
 import { Data, Effect, Layer } from "effect";
 import type { Organization, OrganizationMembership, OrganizationRole } from "@workos-inc/node";
 
-import { WorkOSAuth, type WorkOSCollectedList } from "./workos";
+import { WorkOSClient, type WorkOSCollectedList } from "./workos";
 
 export type WorkOSTestState = {
   readonly memberships: readonly OrganizationMembership[];
@@ -76,9 +76,9 @@ const collected = <A>(data: readonly A[]): WorkOSCollectedList<A> => ({
   },
 });
 
-const makeWorkOSTestService = (state: WorkOSTestState): WorkOSAuth["Service"] => {
+const makeWorkOSTestService = (state: WorkOSTestState): WorkOSClient["Service"] => {
   const nextOrgId = "org_created";
-  const service: Partial<WorkOSAuth["Service"]> = {
+  const service: Partial<WorkOSClient["Service"]> = {
     listUserMemberships: () => Effect.succeed(collected(state.memberships)),
     createOrganization: (name) =>
       Effect.sync(() => {
@@ -105,7 +105,7 @@ const makeWorkOSTestService = (state: WorkOSTestState): WorkOSAuth["Service"] =>
       }),
   };
 
-  return new Proxy(service as WorkOSAuth["Service"], {
+  return new Proxy(service as WorkOSClient["Service"], {
     get: (target, prop) => {
       if (prop in target) return target[prop as keyof typeof target];
       return () =>
@@ -119,4 +119,4 @@ const makeWorkOSTestService = (state: WorkOSTestState): WorkOSAuth["Service"] =>
 };
 
 export const WorkOSTestLayer = (state: WorkOSTestState) =>
-  Layer.succeed(WorkOSAuth)(makeWorkOSTestService(state));
+  Layer.succeed(WorkOSClient)(makeWorkOSTestService(state));

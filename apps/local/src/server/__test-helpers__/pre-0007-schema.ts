@@ -3,7 +3,7 @@
 // after 0006_neat_terror), then runs drizzle's migrator which executes
 // only `0007_normalize_plugin_secret_refs.sql` thanks to the stamp.
 
-import { Database } from "bun:sqlite";
+import { type LibsqlTestDb } from "./libsql-test-db";
 
 export const PRE_0007_SQL = `
   CREATE TABLE __drizzle_migrations (
@@ -131,8 +131,9 @@ export const PRE_0007_SQL = `
 // folderMillis (from the journal) is <= that timestamp.
 export const STAMP_BEFORE = 1777850000001;
 
-export const stampPriorMigrationsApplied = (db: Database) => {
-  db.prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)").run(
+export const stampPriorMigrationsApplied = async (db: LibsqlTestDb): Promise<void> => {
+  await db.run(
+    "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
     "pre-0007-marker",
     STAMP_BEFORE,
   );

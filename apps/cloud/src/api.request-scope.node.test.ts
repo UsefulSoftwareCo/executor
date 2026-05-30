@@ -25,8 +25,9 @@ import { describe, it, expect } from "@effect/vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 
+import { requestScopedMiddleware } from "@executor-js/api/server";
+
 import { RequestScopedServicesLive } from "./api/layers";
-import { requestScopedMiddleware } from "./api/request-scoped";
 import { makeApiLive } from "./api/router";
 
 class Counter extends Context.Service<Counter, { readonly id: number }>()("test/Counter") {}

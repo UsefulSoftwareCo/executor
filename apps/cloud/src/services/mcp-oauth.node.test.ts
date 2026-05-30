@@ -109,14 +109,14 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const oauth = yield* serveOAuthTestServer();
-          const orgId = `org_${crypto.randomUUID()}`;
+          const organizationId = `org_${crypto.randomUUID()}`;
           const userId = `user_${crypto.randomUUID()}`;
-          const userScope = ScopeId.make(testUserOrgScopeId(userId, orgId));
+          const userScope = ScopeId.make(testUserOrgScopeId(userId, organizationId));
           const namespace = `ns_${crypto.randomUUID().slice(0, 8)}`;
           const connectionId = `mcp-oauth2-${namespace}`;
           const redirectUrl = "http://test.local/api/mcp/oauth/callback";
 
-          const started = yield* asUser(userId, orgId, (client) =>
+          const started = yield* asUser(userId, organizationId, (client) =>
             client.oauth.start({
               params: { scopeId: userScope },
               payload: {
@@ -137,7 +137,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
           });
           expect(state).toBe(started.sessionId);
 
-          const completed = yield* asUser(userId, orgId, (client) =>
+          const completed = yield* asUser(userId, organizationId, (client) =>
             client.oauth.complete({
               params: { scopeId: userScope },
               payload: { state, code },
@@ -155,11 +155,11 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const oauth = yield* serveOAuthTestServer();
-          const orgId = `org_${crypto.randomUUID()}`;
+          const organizationId = `org_${crypto.randomUUID()}`;
           const userA = `user_${crypto.randomUUID()}`;
           const userB = `user_${crypto.randomUUID()}`;
-          const scopeA = ScopeId.make(testUserOrgScopeId(userA, orgId));
-          const scopeB = ScopeId.make(testUserOrgScopeId(userB, orgId));
+          const scopeA = ScopeId.make(testUserOrgScopeId(userA, organizationId));
+          const scopeB = ScopeId.make(testUserOrgScopeId(userB, organizationId));
           const namespace = `ns_${crypto.randomUUID().slice(0, 8)}`;
           const connectionId = `mcp-oauth2-${namespace}`;
           const endpoint = oauth.mcpResourceUrl;
@@ -168,7 +168,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
           const regsBefore = yield* countRequestsTo(oauth, "/register");
 
           // --- User A: full OAuth round-trip, fresh DCR. ---
-          const startedA = yield* asUser(userA, orgId, (client) =>
+          const startedA = yield* asUser(userA, organizationId, (client) =>
             client.oauth.start({
               params: { scopeId: scopeA },
               payload: {
@@ -184,7 +184,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
           const redirA = yield* oauth.completeAuthorizationCodeFlow({
             authorizationUrl: startedA.authorizationUrl!,
           });
-          const completedA = yield* asUser(userA, orgId, (client) =>
+          const completedA = yield* asUser(userA, organizationId, (client) =>
             client.oauth.complete({
               params: { scopeId: scopeA },
               payload: { state: redirA.state, code: redirA.code },
@@ -194,7 +194,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
           expect(yield* countRequestsTo(oauth, "/register")).toBe(regsBefore + 1);
 
           // --- User B: gets the same logical connection id in a different scope. ---
-          const startedB = yield* asUser(userB, orgId, (client) =>
+          const startedB = yield* asUser(userB, organizationId, (client) =>
             client.oauth.start({
               params: { scopeId: scopeB },
               payload: {
@@ -210,7 +210,7 @@ describe("mcp oauth end-to-end (node pool, real OAuth + MCP server)", () => {
           const redirB = yield* oauth.completeAuthorizationCodeFlow({
             authorizationUrl: startedB.authorizationUrl!,
           });
-          const completedB = yield* asUser(userB, orgId, (client) =>
+          const completedB = yield* asUser(userB, organizationId, (client) =>
             client.oauth.complete({
               params: { scopeId: scopeB },
               payload: { state: redirB.state, code: redirB.code },

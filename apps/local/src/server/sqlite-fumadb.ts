@@ -1,14 +1,17 @@
-import { Database } from "bun:sqlite";
-import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
-import { fumadb, type FumaDB } from "fumadb";
+import { type Client } from "@libsql/client";
+import { Layer } from "effect";
+import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
+import { type FumaDB } from "fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   createDrizzleRuntimeSchemaSqlFromTables,
-  drizzleAdapter,
 } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 
+import { createExecutorFumaDb, DbProvider, type ExecutorDbHandle } from "@executor-js/api/server";
 import type { FumaDb, FumaTables } from "@executor-js/sdk";
+
+import { openLocalLibsql } from "./libsql";
 
 type SqliteFumaSchema<TTables extends FumaTables> = ReturnType<
   typeof fumaSchema<string, TTables, RelationsMap<TTables>>
@@ -17,8 +20,8 @@ type SqliteFumaSchema<TTables extends FumaTables> = ReturnType<
 export interface SqliteFumaDb<TTables extends FumaTables = FumaTables> {
   readonly db: FumaDb<SqliteFumaSchema<TTables>>;
   readonly fuma: FumaDB<SqliteFumaSchema<TTables>[]>;
-  readonly drizzle: BunSQLiteDatabase<Record<string, unknown>>;
-  readonly sqlite: Database;
+  readonly drizzle: LibSQLDatabase<Record<string, unknown>>;
+  readonly client: Client;
   readonly close: () => Promise<void>;
 }
 
@@ -33,9 +36,10 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
   options: CreateSqliteFumaDbOptions<TTables>,
 ): Promise<SqliteFumaDb<TTables>> => {
   const version = options.version ?? "1.0.0";
-  const sqlite = new Database(options.path, { create: true });
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  sqlite.exec("PRAGMA journal_mode = WAL");
+  // libSQL opens a connection (not a shared in-process handle), so the
+  // foreign_keys + WAL PRAGMAs are applied on this connection inside
+  // openLocalLibsql.
+  const client = await openLocalLibsql(options.path);
 
   const schema = createDrizzleRuntimeSchemaFromTables({
     tables: options.tables,
@@ -43,7 +47,7 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
     version,
     provider: "sqlite",
   });
-  const drizzleDb = drizzle(sqlite, { schema });
+  const drizzleDb = drizzle({ client, schema });
 
   for (const statement of createDrizzleRuntimeSchemaSqlFromTables({
     tables: options.tables,
@@ -51,31 +55,35 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
     version,
     provider: "sqlite",
   })) {
-    sqlite.exec(statement);
+    await client.execute(statement);
   }
 
-  const latestSchema = fumaSchema({
-    version,
+  const { db, fuma } = createExecutorFumaDb(drizzleDb, {
     tables: options.tables,
-  });
-  const factory = fumadb({
     namespace: options.namespace,
-    schemas: [latestSchema],
+    version,
+    provider: "sqlite",
   });
-  const fuma = factory.client(
-    drizzleAdapter({
-      db: drizzleDb,
-      provider: "sqlite",
-    }),
-  );
 
   return {
-    db: fuma.orm(version),
+    db,
     fuma,
     drizzle: drizzleDb,
-    sqlite,
+    client,
     close: async () => {
-      sqlite.close();
+      client.close();
     },
   };
 };
+
+// Shared DbProvider seam (P2a). Local builds its libSQL handle once at boot
+// (driver-open + WAL PRAGMA + the SQL-loop schema bring-up above stay here) and
+// then re-exposes it under the shared `DbProvider` tag. The handle's lifecycle
+// is owned by the caller's acquireRelease, so this projection's `close` is a
+// no-op to avoid double-closing the connection.
+export const localDbProviderLayer = (handle: SqliteFumaDb): Layer.Layer<DbProvider> =>
+  Layer.succeed(DbProvider)({
+    db: handle.db,
+    fuma: handle.fuma,
+    close: async () => {},
+  } satisfies ExecutorDbHandle);

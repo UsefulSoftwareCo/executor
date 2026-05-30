@@ -6,14 +6,12 @@
 // child rows and shared credential bindings match the old data.
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Schema } from "effect";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
+import { LibsqlTestDb, openTestDb, runMigrations } from "./__test-helpers__/libsql-test-db";
 import { PRE_0007_SQL, stampPriorMigrationsApplied } from "./__test-helpers__/pre-0007-schema";
 
 const MIGRATIONS_FOLDER = join(import.meta.dirname, "../../drizzle");
@@ -47,7 +45,7 @@ const decodePluginStorageData = Schema.decodeUnknownSync(Schema.fromJsonString(S
 describe("0007_normalize_plugin_secret_refs (openapi)", () => {
   let dir: string;
   let dbPath: string;
-  let openDatabases: Set<Database>;
+  let openDatabases: Set<LibsqlTestDb>;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "openapi-mig-"));
@@ -63,28 +61,28 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const openDatabase = (...args: ConstructorParameters<typeof Database>) => {
-    const db = new Database(...args);
+  const openDatabase = (path: string) => {
+    const db = openTestDb(path);
     openDatabases.add(db);
     return db;
   };
 
-  const closeDatabase = (db: Database) => {
+  const closeDatabase = (db: LibsqlTestDb) => {
     db.close();
     openDatabases.delete(db);
   };
 
-  it("moves openapi_source_binding rows into shared credential_binding", () => {
+  it("moves openapi_source_binding rows into shared credential_binding", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     // Seed three bindings, one per kind.
-    const insert = db.prepare(
+    const insert = await db.prepare(
       "INSERT INTO openapi_source_binding (id, source_id, source_scope_id, target_scope_id, slot, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const now = Date.now();
-    insert.run(
+    await insert.run(
       "b1",
       "src",
       "default-scope",
@@ -94,7 +92,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       now,
       now,
     );
-    insert.run(
+    await insert.run(
       "b2",
       "src",
       "default-scope",
@@ -104,7 +102,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       now,
       now,
     );
-    insert.run(
+    await insert.run(
       "b3",
       "src",
       "default-scope",
@@ -118,20 +116,19 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     // Need the parent openapi_source row so the source_id FK ergonomics
     // are satisfied for any cascading delete logic, though the binding
     // table has no DB-level FK, code paths assume the parent exists.
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, invocation_config) VALUES (?, ?, ?, ?, ?)",
-    ).run("default-scope", "src", "Source", "{}", "{}");
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, invocation_config) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("default-scope", "src", "Source", "{}", "{}");
 
     closeDatabase(db);
 
-    const drizzleSqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(drizzleSqlite);
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
-    closeDatabase(drizzleSqlite);
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = openDatabase(dbPath, { readonly: true });
+    const after = openDatabase(dbPath);
     const rows = decodeBindingRows(
-      after
+      await after
         .prepare(
           "SELECT id, scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id, text_value FROM credential_binding ORDER BY id",
         )
@@ -175,7 +172,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       text_value: null,
     });
     const oldTableCount = decodeCountRow(
-      after
+      await after
         .prepare(
           "SELECT count(*) as n FROM sqlite_master WHERE type = 'table' AND name = 'openapi_source_binding'",
         )
@@ -184,10 +181,10 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     expect(oldTableCount.n).toBe(0);
   });
 
-  it("explodes query_params and specFetchCredentials json into child slot rows", () => {
+  it("explodes query_params and specFetchCredentials json into child slot rows", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     const queryParams = {
       api_key: { secretId: "qp-secret" },
@@ -202,29 +199,28 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       },
     };
 
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "src",
-      "Source",
-      "{}",
-      JSON.stringify(queryParams),
-      JSON.stringify(invocationConfig),
-    );
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "src",
+        "Source",
+        "{}",
+        JSON.stringify(queryParams),
+        JSON.stringify(invocationConfig),
+      );
 
     closeDatabase(db);
 
-    const drizzleSqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(drizzleSqlite);
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
-    closeDatabase(drizzleSqlite);
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = openDatabase(dbPath, { readonly: true });
+    const after = openDatabase(dbPath);
 
     const sourceData = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )
@@ -253,7 +249,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       slot: "spec_fetch_query_param:token",
     });
     const oldQueryParamTableCount = decodeCountRow(
-      after
+      await after
         .prepare(
           "SELECT count(*) as n FROM sqlite_master WHERE type = 'table' AND name = 'openapi_source_query_param'",
         )
@@ -262,7 +258,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     expect(oldQueryParamTableCount.n).toBe(0);
 
     const bindings = decodeBindingRows(
-      after
+      await after
         .prepare(
           "SELECT id, scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id, text_value FROM credential_binding WHERE source_id = ? ORDER BY slot_key",
         )
@@ -275,7 +271,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     ]);
 
     const oldSourceTableCount = decodeCountRow(
-      after
+      await after
         .prepare(
           "SELECT count(*) as n FROM sqlite_master WHERE type = 'table' AND name = 'openapi_source'",
         )
@@ -284,64 +280,62 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     expect(oldSourceTableCount.n).toBe(0);
   });
 
-  it("fails instead of silently collapsing colliding legacy query parameter slots", () => {
+  it("fails instead of silently collapsing colliding legacy query parameter slots", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "collision",
-      "Collision",
-      "{}",
-      JSON.stringify({
-        api_key: { secretId: "sec-underscore" },
-        "api-key": { secretId: "sec-dash" },
-      }),
-      "{}",
-    );
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "collision",
+        "Collision",
+        "{}",
+        JSON.stringify({
+          api_key: { secretId: "sec-underscore" },
+          "api-key": { secretId: "sec-dash" },
+        }),
+        "{}",
+      );
 
     closeDatabase(db);
 
-    const sqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(sqlite);
-    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
-    closeDatabase(sqlite);
+    await expect(runMigrations(dbPath, MIGRATIONS_FOLDER)).rejects.toThrow();
   });
 
-  it("fails on punctuation collisions that runtime canonicalization would collapse", () => {
+  it("fails on punctuation collisions that runtime canonicalization would collapse", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "punctuation-collision",
-      "Punctuation Collision",
-      "{}",
-      JSON.stringify({
-        "X@Token": { secretId: "sec-at" },
-        "X-Token": { secretId: "sec-dash" },
-      }),
-      "{}",
-    );
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, query_params, invocation_config) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "punctuation-collision",
+        "Punctuation Collision",
+        "{}",
+        JSON.stringify({
+          "X@Token": { secretId: "sec-at" },
+          "X-Token": { secretId: "sec-dash" },
+        }),
+        "{}",
+      );
 
     closeDatabase(db);
 
-    const sqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(sqlite);
-    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
-    closeDatabase(sqlite);
+    await expect(runMigrations(dbPath, MIGRATIONS_FOLDER)).rejects.toThrow();
   });
 
-  it("rewrites old OpenAPI header and OAuth JSON into slot config plus core bindings", () => {
+  it("rewrites old OpenAPI header and OAuth JSON into slot config plus core bindings", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     const headers = {
       Authorization: { secretId: "header-token", prefix: "Bearer " },
@@ -361,29 +355,28 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       scopes: ["read"],
     };
 
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, headers, oauth2, invocation_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "src",
-      "Source",
-      "{}",
-      JSON.stringify(headers),
-      JSON.stringify(oauth2),
-      JSON.stringify({}),
-    );
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, headers, oauth2, invocation_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "src",
+        "Source",
+        "{}",
+        JSON.stringify(headers),
+        JSON.stringify(oauth2),
+        JSON.stringify({}),
+      );
 
     closeDatabase(db);
 
-    const drizzleSqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(drizzleSqlite);
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
-    closeDatabase(drizzleSqlite);
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = openDatabase(dbPath, { readonly: true });
+    const after = openDatabase(dbPath);
     const source = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )
@@ -401,7 +394,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
       "X-Already": { kind: "binding", slot: "header:x-already" },
     });
     const oldHeaderTableCount = decodeCountRow(
-      after
+      await after
         .prepare(
           "SELECT count(*) as n FROM sqlite_master WHERE type = 'table' AND name = 'openapi_source_header'",
         )
@@ -421,7 +414,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     expect(migratedOAuth2).not.toHaveProperty("clientIdSecretId");
 
     const bindings = decodeBindingRows(
-      after
+      await after
         .prepare(
           "SELECT id, scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id, text_value FROM credential_binding WHERE source_id = ? ORDER BY slot_key",
         )
@@ -437,7 +430,7 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     ]);
 
     const oldSourceTableCount = decodeCountRow(
-      after
+      await after
         .prepare(
           "SELECT count(*) as n FROM sqlite_master WHERE type = 'table' AND name = 'openapi_source'",
         )
@@ -446,26 +439,25 @@ describe("0007_normalize_plugin_secret_refs (openapi)", () => {
     expect(oldSourceTableCount.n).toBe(0);
   });
 
-  it("survives empty / missing json on bindings and sources", () => {
+  it("survives empty / missing json on bindings and sources", async () => {
     const db = openDatabase(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     // Source with empty invocation_config and no query_params.
-    db.prepare(
-      "INSERT INTO openapi_source (scope_id, id, name, spec, invocation_config) VALUES (?, ?, ?, ?, ?)",
-    ).run("default-scope", "bare", "Bare", "{}", JSON.stringify({}));
+    await db
+      .prepare(
+        "INSERT INTO openapi_source (scope_id, id, name, spec, invocation_config) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("default-scope", "bare", "Bare", "{}", JSON.stringify({}));
 
     closeDatabase(db);
-    const drizzleSqlite = openDatabase(dbPath);
-    const drizzleDb = drizzle(drizzleSqlite);
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
-    closeDatabase(drizzleSqlite);
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = openDatabase(dbPath, { readonly: true });
+    const after = openDatabase(dbPath);
     const source = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )

@@ -22,11 +22,11 @@ import { Effect, Schema } from "effect";
 
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { collectTables } from "@executor-js/api/server";
 import {
   FormElicitation,
   Scope,
   ScopeId,
-  collectTables,
   createExecutor,
   definePlugin,
   type Executor,

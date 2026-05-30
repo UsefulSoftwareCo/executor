@@ -8,6 +8,7 @@
     "./api/*": "./src/api/*.tsx",
     "./plugins/*": "./src/plugins/*.tsx",
     "./pages/*": "./src/pages/*.tsx",
+    "./multiplayer/*": "./src/multiplayer/*.tsx",
     "./components/*": "./src/components/*.tsx",
     "./hooks/*": "./src/hooks/*.ts",
     "./lib/*": "./src/lib/*.ts",

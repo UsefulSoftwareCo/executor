@@ -41,7 +41,13 @@ export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-run
 export { ScopeId, ToolId, SecretId, PolicyId, ConnectionId, CredentialBindingId } from "./ids";
 
 // Scope
-export { Scope, defaultSourceInstallScopeId } from "./scope";
+export {
+  Scope,
+  defaultSourceInstallScopeId,
+  userOrgScopeId,
+  parseUserOrgScopeId,
+  makeUserOrgScopeStack,
+} from "./scope";
 
 // Errors (tagged)
 export {
@@ -66,12 +72,12 @@ export {
 
 // Public projections
 export {
-  ToolSchema,
+  ToolSchemaView,
   SourceDetectionResult,
   type RefreshSourceInput,
   type RemoveSourceInput,
   type Source,
-  type Tool,
+  type ToolView,
   type ToolListFilter,
 } from "./types";
 
@@ -105,14 +111,15 @@ export {
   type ToolAnnotations,
 } from "./core-schema";
 
-// Tool policies
+// Tool policies. `matchPattern`/`isValidPattern` are consumed by the React UI;
+// `effectivePolicyFromSorted` + `ToolPolicyActionSchema` are shared contracts.
+// `resolveToolPolicy`/`resolveEffectivePolicy`/`rowToToolPolicy` are off the
+// barrel: they are SDK-internal (used inside `createExecutor`), not a plugin or
+// consumer contract.
 export {
   matchPattern,
   isValidPattern,
-  resolveToolPolicy,
-  resolveEffectivePolicy,
   effectivePolicyFromSorted,
-  rowToToolPolicy,
   ToolPolicyActionSchema,
   type ToolPolicy,
   type CreateToolPolicyInput,
@@ -190,14 +197,10 @@ export {
   type ElicitationContext,
 } from "./elicitation";
 
-// Blob store
-export {
-  type BlobStore,
-  type PluginBlobStore,
-  pluginBlobStore,
-  makeFumaBlobStore,
-  makeInMemoryBlobStore,
-} from "./blob";
+// Blob store — the plugin-facing CONTRACT only. The concrete makers
+// (`makeFumaBlobStore`/`makeInMemoryBlobStore`) are SDK-internal: `createExecutor`
+// wires the blob store, plugins only ever receive a `PluginBlobStore`.
+export { type BlobStore, type PluginBlobStore, pluginBlobStore } from "./blob";
 
 // OAuth 2.1
 export {
@@ -226,35 +229,13 @@ export {
   OAuthClientCredentialsStrategy as OAuthClientCredentialsStrategySchema,
 } from "./oauth";
 
-export {
-  OAuth2Error,
-  OAUTH2_DEFAULT_TIMEOUT_MS,
-  OAUTH2_REFRESH_SKEW_MS,
-  assertSupportedOAuthEndpointUrl,
-  buildAuthorizationUrl,
-  createPkceCodeChallenge,
-  createPkceCodeVerifier,
-  exchangeAuthorizationCode,
-  exchangeClientCredentials,
-  isSupportedOAuthEndpointUrl,
-  refreshAccessToken,
-  shouldRefreshToken,
-  type OAuth2TokenResponse,
-  type BuildAuthorizationUrlInput,
-  type ClientAuthMethod,
-  type ExchangeAuthorizationCodeInput,
-  type ExchangeClientCredentialsInput,
-  type RefreshAccessTokenInput,
-} from "./oauth-helpers";
-
-export { makeOAuth2Service, type OAuthServiceDeps } from "./oauth-service";
-
-export {
-  HostedOutboundRequestBlocked,
-  makeHostedHttpClientLayer,
-  validateHostedOutboundUrl,
-  type HostedHttpClientOptions,
-} from "./hosted-http-client";
+// NOTE: the OAuth 2.1 implementation helpers (PKCE/exchange/refresh in
+// `./oauth-helpers`, `makeOAuth2Service` in `./oauth-service`, and the dynamic
+// discovery/registration in `./oauth-discovery`) are SDK-internal: they are
+// consumed only by `createExecutor`'s built-in OAuth flow, never by plugins.
+// The plugin-facing OAuth CONTRACTS (the schemas/types + `OAUTH2_PROVIDER_KEY`)
+// stay exported above. The hosted HTTP client builder is host-internal too and
+// reachable via `@executor-js/sdk/host-internal`.
 
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
@@ -269,26 +250,6 @@ export {
   type ExecutorServerConnectionInput,
   type ExecutorServerConnectionKind,
 } from "./server-connection";
-
-export {
-  OAuthDiscoveryError,
-  OAuthAuthorizationServerMetadataSchema,
-  OAuthClientInformationSchema,
-  OAuthProtectedResourceMetadataSchema,
-  beginDynamicAuthorization,
-  discoverAuthorizationServerMetadata,
-  discoverProtectedResourceMetadata,
-  registerDynamicClient,
-  type BeginDynamicAuthorizationInput,
-  type DiscoveryRequestOptions,
-  type DynamicAuthorizationState,
-  type DynamicAuthorizationStartResult,
-  type DynamicClientMetadata,
-  type OAuthAuthorizationServerMetadata,
-  type OAuthClientInformation,
-  type OAuthProtectedResourceMetadata,
-  type RegisterDynamicClientInput,
-} from "./oauth-discovery";
 
 export {
   OAUTH_POPUP_MESSAGE_TYPE,
@@ -331,6 +292,13 @@ export {
 } from "./plugin-storage";
 
 // Executor
+//
+// `collectTables` is host/tooling-only (cli schema cmd, kernel worker,
+// local/cloud DB bring-up). Its definition stays here because `createExecutor`
+// uses it; the host surface (`@executor-js/api/server`) re-exports it so hosts
+// import it alongside the other host-composition seams. The CLI + kernel
+// tooling, which only depend on `@executor-js/sdk` (not `@executor-js/api`),
+// keep importing it from here.
 export {
   type Executor,
   type ExecutorConfig,
@@ -343,11 +311,12 @@ export {
   collectTables,
 } from "./executor";
 
-// Built-in core-tools plugin (scopes.list, secrets.list, secrets.create
-// with URL elicitation). Auto-registered by createExecutor when
-// `coreTools` is set on the config; also exportable for callers who
-// want to register it manually.
-export { coreToolsPlugin, type CoreToolsPluginOptions } from "./core-tools";
+// NOTE: the host-composition seams (`DbProvider`/`dbProviderLayer`,
+// `makeScopedExecutor`/`HostConfig`/`PluginsProvider`, `createExecutorFumaDb`)
+// are NOT on this plugin-author barrel — they live in the host surface
+// (`@executor-js/api/server`). The pure FumaDB assembly stays in the SDK for the
+// sqlite test backend and is exposed to the host layer via
+// `@executor-js/sdk/host-internal`.
 
 // CLI / runtime config
 export {
@@ -356,26 +325,17 @@ export {
   type ExecutorPluginsFactory,
 } from "./config";
 
-// JSON schema $ref helpers (used by openapi for $defs handling)
-export { hoistDefinitions, collectRefs, reattachDefs, normalizeRefs } from "./schema-refs";
-
-// TypeScript preview generation from JSON schemas
-export {
-  schemaToTypeScriptPreview,
-  schemaToTypeScriptPreviewWithDefs,
-  buildToolTypeScriptPreview,
-  type TypeScriptRenderOptions,
-  type TypeScriptSchemaPreview,
-} from "./schema-types";
+// NOTE: the JSON-schema `$ref` helpers (`./schema-refs`) and the TypeScript
+// preview generators (`./schema-types`) are SDK-internal — `./schema-types`
+// consumes `./schema-refs`, and `buildToolTypeScriptPreview` is used only inside
+// `createExecutor`. No plugin imports them, so they are off the barrel.
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
-// The `Tool` value namespace exposes `Tool.ok` / `Tool.fail` constructors;
-// the `Tool` type alias from `./types` is a separate row projection.
-// TypeScript permits the two to share a name because one is purely a
-// value and the other purely a type.
+// Distinct from the `ToolView` row projection (`./types`) and the `tool()`
+// builder (`./plugin`): one word per concept, three names.
 export { ToolResult, isToolResult, type ToolError } from "./tool-result";
 export {
   authToolFailure,

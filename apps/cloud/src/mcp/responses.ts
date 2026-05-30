@@ -1,7 +1,6 @@
 import { HttpServerResponse } from "effect/unstable/http";
-import { Effect } from "effect";
 
-import type { McpJwtVerificationError } from "../mcp-auth";
+import { jsonRpcErrorBody } from "@executor-js/host-mcp";
 
 export const CORS_ALLOW_ORIGIN = { "access-control-allow-origin": "*" } as const;
 
@@ -13,7 +12,7 @@ type UnauthorizedAuth = {
 const quoteAuthParam = (value: string) =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 
-const bearerChallenge = (auth: UnauthorizedAuth, protectedResourceMetadataUrl: string) => {
+export const bearerChallenge = (auth: UnauthorizedAuth, protectedResourceMetadataUrl: string) => {
   const params =
     auth.reason === "missing_bearer"
       ? [`resource_metadata=${quoteAuthParam(protectedResourceMetadataUrl)}`]
@@ -28,20 +27,14 @@ const bearerChallenge = (auth: UnauthorizedAuth, protectedResourceMetadataUrl: s
   return `Bearer ${params.join(", ")}`;
 };
 
-export const jsonResponse = (body: unknown, status = 200) =>
-  HttpServerResponse.jsonUnsafe(body, { status, headers: CORS_ALLOW_ORIGIN });
-
-export const jsonRpcError = (status: number, code: number, message: string) =>
-  HttpServerResponse.jsonUnsafe(
-    { jsonrpc: "2.0", error: { code, message }, id: null },
-    { status, headers: CORS_ALLOW_ORIGIN },
-  );
-
+/**
+ * The cloud edge's JSON-RPC error `Response` (CORS-on — it crosses the browser
+ * boundary). Delegates to the canonical `jsonRpcErrorBody` renderer; the body
+ * is `{jsonrpc:"2.0",error:{code,message},id:null}` with `content-type` +
+ * `access-control-allow-origin: *`, byte-identical to the prior local copy.
+ */
 export const jsonRpcWebResponse = (status: number, code: number, message: string) =>
-  new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
-    status,
-    headers: { ...CORS_ALLOW_ORIGIN, "content-type": "application/json" },
-  });
+  jsonRpcErrorBody(status, code, message);
 
 export const unauthorized = (auth: UnauthorizedAuth, protectedResourceMetadataUrl: string) =>
   HttpServerResponse.jsonUnsafe(
@@ -54,13 +47,3 @@ export const unauthorized = (auth: UnauthorizedAuth, protectedResourceMetadataUr
       },
     },
   );
-
-export const authTemporarilyUnavailable = (error: McpJwtVerificationError) =>
-  Effect.gen(function* () {
-    yield* Effect.annotateCurrentSpan({
-      "mcp.auth.outcome": "system_error",
-      "mcp.auth.system_error.reason": error.reason,
-      "mcp.auth.system_error.message": String(error.cause).slice(0, 500),
-    });
-    return jsonRpcError(503, -32001, "Authentication temporarily unavailable - please retry");
-  });

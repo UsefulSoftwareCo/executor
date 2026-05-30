@@ -19,6 +19,7 @@
     ".": "./src/index.ts",
     "./core": "./src/index.ts",
     "./shared": "./src/shared.ts",
+    "./host-internal": "./src/host-internal.ts",
     "./http-source": "./src/http-source.ts",
     "./promise": "./src/promise.ts",
     "./client": "./src/client.ts",
@@ -43,6 +44,12 @@
         "import": {
           "types": "./dist/shared.d.ts",
           "default": "./dist/shared.js"
+        }
+      },
+      "./host-internal": {
+        "import": {
+          "types": "./dist/host-internal.d.ts",
+          "default": "./dist/host-internal.js"
         }
       },
       "./http-source": {
@@ -82,10 +89,9 @@
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
-    "@types/better-sqlite3": "^7.6.13",
+    "@libsql/client": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
-    "better-sqlite3": "^12.9.0",
     "drizzle-orm": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",

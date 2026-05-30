@@ -1,0 +1,10 @@
+**/node_modules
+.git
+.reference
+.turbo
+**/dist
+**/.executor*
+**/coverage
+**/.next
+**/*.log
+.claude

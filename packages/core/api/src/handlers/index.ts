@@ -26,6 +26,5 @@ export const CoreHandlers = Layer.mergeAll(
   ScopeHandlers,
   ExecutionsHandlers,
   OAuthHandlers,
-  OAuthHandlers,
   PoliciesHandlers,
 );

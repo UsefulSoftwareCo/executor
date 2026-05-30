@@ -20,6 +20,10 @@ declare global {
       DATABASE_URL?: string;
       EXECUTOR_DIRECT_DATABASE_URL?: string;
 
+      // SSRF / private-network egress guard. Unset in production -> the guard is
+      // ON; the test workers set "true" so fixtures can reach localhost.
+      ALLOW_LOCAL_NETWORK?: string;
+
       // Billing
       AUTUMN_SECRET_KEY?: string;
 

@@ -29,7 +29,12 @@ import {
 } from "effect/unstable/httpapi";
 
 import { addGroup, observabilityMiddleware } from "@executor-js/api";
-import { CoreHandlers, ExecutionEngineService, ExecutorService } from "@executor-js/api/server";
+import {
+  CoreHandlers,
+  ExecutionEngineService,
+  ExecutorService,
+  collectTables,
+} from "@executor-js/api/server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
 import { openApiPlugin } from "@executor-js/plugin-openapi";
@@ -40,7 +45,7 @@ import {
 } from "@executor-js/plugin-openapi/api";
 import { makeOpenApiHttpApiTestAddSpecPayload } from "@executor-js/plugin-openapi/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
-import { Scope, ScopeId, collectTables, createExecutor } from "@executor-js/sdk";
+import { Scope, ScopeId, createExecutor } from "@executor-js/sdk";
 
 import { ErrorCaptureLive } from "./observability";
 import { createSqliteFumaDb } from "./sqlite-fumadb";

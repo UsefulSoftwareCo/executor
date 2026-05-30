@@ -1,0 +1,58 @@
+{
+  "name": "@executor-js/host-selfhost",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./serve": "./src/serve.ts"
+  },
+  "scripts": {
+    "dev": "bunx --bun vite dev",
+    "build": "turbo run build --filter @executor-js/vite-plugin && vite build",
+    "start": "bun run src/serve.ts",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "^1.6.11",
+    "@effect/atom-react": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@executor-js/api": "workspace:*",
+    "@executor-js/app": "workspace:*",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/plugin-encrypted-secrets": "workspace:*",
+    "@executor-js/plugin-graphql": "workspace:*",
+    "@executor-js/plugin-mcp": "workspace:*",
+    "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/react": "workspace:*",
+    "@executor-js/runtime-quickjs": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@libsql/client": "catalog:",
+    "@libsql/kysely-libsql": "catalog:",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tanstack/react-router": "catalog:",
+    "better-auth": "^1.6.11",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
+    "fumadb": "workspace:*",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@executor-js/vite-plugin": "workspace:*",
+    "@tailwindcss/vite": "catalog:",
+    "@tanstack/router-plugin": "^1.167.12",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "bun-types": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

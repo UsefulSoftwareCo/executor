@@ -1,8 +1,8 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ApiKeyManagementError } from "./api-key-errors";
 import { UserStoreError, WorkOSError } from "./errors";
-import { NoOrganization, SessionAuth } from "./middleware";
+import { NoOrganization } from "@executor-js/api/server";
+import { SessionAuth } from "./middleware";
 
 const AuthUser = Schema.Struct({
   id: Schema.String,
@@ -78,35 +78,6 @@ const AcceptInvitationResponse = Schema.Struct({
   name: Schema.String,
 });
 
-const ApiKeySummary = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  obfuscatedValue: Schema.String,
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
-  lastUsedAt: Schema.NullOr(Schema.String),
-});
-
-const ApiKeysResponse = Schema.Struct({
-  apiKeys: Schema.Array(ApiKeySummary),
-});
-
-const CreateApiKeyBody = Schema.Struct({
-  name: Schema.String,
-});
-
-const CreatedApiKeyResponse = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  obfuscatedValue: Schema.String,
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
-  lastUsedAt: Schema.NullOr(Schema.String),
-  value: Schema.String,
-});
-
-const ApiKeyParams = { apiKeyId: Schema.String };
-
 const McpSessionExecutionParams = {
   mcpSessionId: Schema.String,
   executionId: Schema.String,
@@ -164,7 +135,6 @@ export const AUTH_PATHS = {
 } as const;
 
 const AuthErrors = [UserStoreError, WorkOSError] as const;
-const ApiKeyErrors = [ApiKeyManagementError, NoOrganization, UserStoreError, WorkOSError] as const;
 const McpApprovalErrors = [
   NoOrganization,
   McpExecutionNotFoundError,
@@ -220,25 +190,6 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
       payload: AcceptInvitationBody,
       success: AcceptInvitationResponse,
       error: AuthErrors,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.get("listApiKeys", "/auth/api-keys", {
-      success: ApiKeysResponse,
-      error: ApiKeyErrors,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("createApiKey", "/auth/api-keys", {
-      payload: CreateApiKeyBody,
-      success: CreatedApiKeyResponse,
-      error: ApiKeyErrors,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.delete("revokeApiKey", "/auth/api-keys/:apiKeyId", {
-      params: ApiKeyParams,
-      error: ApiKeyErrors,
     }),
   )
   .add(

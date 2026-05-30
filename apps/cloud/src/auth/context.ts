@@ -3,9 +3,6 @@ import { makeUserStore } from "../services/user-store";
 import { DbService } from "../services/db";
 import { UserStoreError, tryPromiseService, withServiceLogging } from "./errors";
 
-// AuthContext is defined in ./middleware.ts to keep middleware-related types together.
-export { AuthContext } from "./middleware";
-
 // ---------------------------------------------------------------------------
 // UserStoreService — wraps the Drizzle-backed user store with Effect
 // ---------------------------------------------------------------------------

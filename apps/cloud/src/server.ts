@@ -9,7 +9,7 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
-import { McpSessionDO as McpSessionDOBase } from "./mcp-session";
+import { McpSessionDO as McpSessionDOBase } from "./mcp/session-durable-object";
 import { flushTracerProvider, installTracerProvider } from "./services/telemetry";
 
 // ---------------------------------------------------------------------------

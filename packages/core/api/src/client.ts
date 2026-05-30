@@ -7,3 +7,11 @@ export { ExecutionsApi } from "./executions/api";
 export { ScopeApi } from "./scope/api";
 export { OAuthApi } from "./oauth/api";
 export { PoliciesApi } from "./policies/api";
+export {
+  AccountApi,
+  AccountHttpApi,
+  AccountError,
+  AccountForbidden,
+  AccountNoOrganization,
+  AccountUnauthorized,
+} from "./account/api";

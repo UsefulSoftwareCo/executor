@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { createExecutor, Scope, ScopeId } from "@executor-js/sdk";
-import type { ToolSchema } from "@executor-js/sdk/core";
+import type { ToolSchemaView } from "@executor-js/sdk/core";
 import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 import type { ParsedDocument } from "./parse";
@@ -75,7 +75,7 @@ const testScope = Scope.make({
   name: "Real spec baseline",
   createdAt: new Date(0),
 });
-const schemaCache = new Map<string, ToolSchema>();
+const schemaCache = new Map<string, ToolSchemaView>();
 
 const getRegisteredToolSchema = (namespace: string, specText: string, toolId: string) =>
   Effect.gen(function* () {
@@ -128,7 +128,7 @@ const extractionSummary = (result: ExtractionResult, selectedOperationIds: reado
   ),
 });
 
-const schemaPreviewSummary = (schema: ToolSchema) => {
+const schemaPreviewSummary = (schema: ToolSchemaView) => {
   const schemaDefinitions = schema.schemaDefinitions ?? {};
   const typeScriptDefinitions = schema.typeScriptDefinitions ?? {};
   return {

@@ -1,7 +1,7 @@
 import { Context, Data, Effect, Layer, ManagedRuntime, Schema } from "effect";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import { type Client } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -10,12 +10,12 @@ import { basename, dirname, join } from "node:path";
 import {
   Scope,
   ScopeId,
-  collectTables,
   createExecutor,
   type AnyPlugin,
   type Executor,
   type FumaTables,
 } from "@executor-js/sdk";
+import { collectTables } from "@executor-js/api/server";
 import { withQueryContext } from "fumadb/query";
 import { loadPluginsFromJsonc } from "@executor-js/config";
 
@@ -34,6 +34,7 @@ import {
   type LocalSqliteImportResult,
 } from "./sqlite-import";
 import { createSqliteFumaDb } from "./sqlite-fumadb";
+import { openLegacyLibsql, queryFirst, queryRows } from "./libsql";
 import { oneShotMigrateGoogleDiscoveryToOpenApi } from "./google-discovery-openapi-migration";
 
 interface ResolvedStorage {
@@ -182,29 +183,39 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
-const sqliteTableHasColumn = (db: Database, table: string, column: string): boolean =>
-  db
-    .query<{ name: string }, []>(`PRAGMA table_info('${table.replaceAll("'", "''")}')`)
-    .all()
-    .some((row) => row.name === column);
+const sqliteTableHasColumn = async (
+  client: Client,
+  table: string,
+  column: string,
+): Promise<boolean> => {
+  const rows = await queryRows<{ name: string }>(
+    client,
+    `PRAGMA table_info('${table.replaceAll("'", "''")}')`,
+  );
+  return rows.some((row) => row.name === column);
+};
 
-export const drizzleMigrationsTableExists = (sqlite: Database): boolean => {
-  const row = sqlite
-    .query<{ name: string }, [string]>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .get("__drizzle_migrations");
+export const drizzleMigrationsTableExists = async (client: Client): Promise<boolean> => {
+  const row = await queryFirst(
+    client,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ["__drizzle_migrations"],
+  );
 
   return row != null;
 };
 
-export const readAppliedDrizzleMigrationHashes = (sqlite: Database): ReadonlyArray<string> => {
-  if (!drizzleMigrationsTableExists(sqlite)) return [];
+export const readAppliedDrizzleMigrationHashes = async (
+  client: Client,
+): Promise<ReadonlyArray<string>> => {
+  if (!(await drizzleMigrationsTableExists(client))) return [];
 
-  return sqlite
-    .query<{ hash: string }, []>("SELECT hash FROM __drizzle_migrations ORDER BY id ASC")
-    .all()
-    .map((row) => row.hash);
+  return (
+    await queryRows<{ hash: string }>(
+      client,
+      "SELECT hash FROM __drizzle_migrations ORDER BY id ASC",
+    )
+  ).map((row) => row.hash);
 };
 
 const DrizzleJournal = Schema.Struct({
@@ -233,36 +244,36 @@ export const readBundledDrizzleMigrationHashes = (
     });
 };
 
-const hasBundledDrizzleMigrationPrefix = (input: {
-  readonly sqlite: Database;
+const hasBundledDrizzleMigrationPrefix = async (input: {
+  readonly client: Client;
   readonly migrationsFolder: string;
-}): boolean => {
-  if (!drizzleMigrationsTableExists(input.sqlite)) return true;
+}): Promise<boolean> => {
+  if (!(await drizzleMigrationsTableExists(input.client))) return true;
 
-  const applied = readAppliedDrizzleMigrationHashes(input.sqlite);
+  const applied = await readAppliedDrizzleMigrationHashes(input.client);
   const bundled = readBundledDrizzleMigrationHashes(input.migrationsFolder);
   return (
     applied.length <= bundled.length && applied.every((hash, index) => hash === bundled[index])
   );
 };
 
-const isFumaSqliteDatabase = (path: string): boolean => {
+const isFumaSqliteDatabase = async (path: string): Promise<boolean> => {
   if (!fs.existsSync(path)) return false;
 
-  let db: Database | null = null;
+  let client: Client | null = null;
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: native SQLite probe treats unreadable legacy files as non-FumaDB databases
   try {
-    db = new Database(path, { readonly: true });
-    const settings = db
-      .query<{ name: string }, [string]>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-      )
-      .get(`private_${localNamespace}_settings`);
-    return settings !== null || sqliteTableHasColumn(db, "source", "row_id");
+    client = openLegacyLibsql(path);
+    const settings = await queryFirst(
+      client,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [`private_${localNamespace}_settings`],
+    );
+    return settings != null || (await sqliteTableHasColumn(client, "source", "row_id"));
   } catch {
     return false;
   } finally {
-    db?.close();
+    client?.close();
   }
 };
 
@@ -293,24 +304,23 @@ const moveSqliteFileSetToBackup = (path: string): string => {
   return backupPath;
 };
 
-const checkpointSqliteForFileMove = (input: {
-  readonly sqlite: Database;
+const checkpointSqliteForFileMove = async (input: {
+  readonly client: Client;
   readonly path: string;
-}) => {
-  const checkpoint = input.sqlite
-    .query<{ busy: number; log: number; checkpointed: number }, []>(
-      "PRAGMA wal_checkpoint(TRUNCATE)",
-    )
-    .get();
+}): Promise<void> => {
+  const checkpoint = await queryFirst<{ busy: number; log: number; checkpointed: number }>(
+    input.client,
+    "PRAGMA wal_checkpoint(TRUNCATE)",
+  );
 
   if (checkpoint && checkpoint.busy !== 0) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: SQLite file replacement is synchronous; callers wrap this native failure into LocalExecutorCreateError
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: callers wrap this checkpoint-busy failure into LocalExecutorCreateError before a file move
     throw new LocalSqliteCheckpointError({ path: input.path, busy: checkpoint.busy });
   }
 
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: DELETE mode is best-effort after a successful checkpoint; an open read handle can reject the mode switch without making the file set unsafe to move
   try {
-    input.sqlite.exec("PRAGMA journal_mode = DELETE");
+    await input.client.execute("PRAGMA journal_mode = DELETE");
   } catch (cause) {
     console.warn(
       `[executor] Checkpointed SQLite WAL for ${input.path}, but could not switch journal mode to DELETE before import. Continuing with the checkpointed file set.`,
@@ -417,16 +427,19 @@ interface PreparedLegacySqlite {
   readonly preScopeBackup?: string;
 }
 
-const prepareLegacySqliteForFumaImport = (input: {
+const prepareLegacySqliteForFumaImport = async (input: {
   readonly storage: ResolvedStorage;
   readonly scopeId: string;
-}): PreparedLegacySqlite => {
-  if (!fs.existsSync(input.storage.sqlitePath) || isFumaSqliteDatabase(input.storage.sqlitePath)) {
+}): Promise<PreparedLegacySqlite> => {
+  if (
+    !fs.existsSync(input.storage.sqlitePath) ||
+    (await isFumaSqliteDatabase(input.storage.sqlitePath))
+  ) {
     return { legacySecrets: [] };
   }
 
-  const legacySecrets = readLegacySecrets(input.storage.sqlitePath);
-  const preScopeBackup = moveAsidePreScopeDb(input.storage.sqlitePath);
+  const legacySecrets = await readLegacySecrets(input.storage.sqlitePath);
+  const preScopeBackup = await moveAsidePreScopeDb(input.storage.sqlitePath);
   if (preScopeBackup) {
     console.warn(
       `[executor] Pre-scope database detected; moved to ${preScopeBackup}. ` +
@@ -438,15 +451,15 @@ const prepareLegacySqliteForFumaImport = (input: {
     return { legacySecrets, preScopeBackup };
   }
 
-  const sqlite = new Database(input.storage.sqlitePath);
+  const client = openLegacyLibsql(input.storage.sqlitePath);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: legacy migration preflight must close SQLite before the FumaDB import re-opens the file
   try {
-    if (hasBundledDrizzleMigrationPrefix({ sqlite, migrationsFolder: MIGRATIONS_FOLDER })) {
-      sqlite.exec("PRAGMA journal_mode = WAL");
-      migrate(drizzle(sqlite, { schema: legacyExecutorSchema }), {
+    if (await hasBundledDrizzleMigrationPrefix({ client, migrationsFolder: MIGRATIONS_FOLDER })) {
+      await client.execute("PRAGMA journal_mode = WAL");
+      await migrate(drizzle({ client, schema: legacyExecutorSchema }), {
         migrationsFolder: MIGRATIONS_FOLDER,
       });
-      importLegacySecrets(sqlite, input.scopeId, legacySecrets);
+      await importLegacySecrets(client, input.scopeId, legacySecrets);
     } else {
       console.warn(
         `[executor] Local SQLite migration history in ${input.storage.dataDir} ` +
@@ -454,10 +467,10 @@ const prepareLegacySqliteForFumaImport = (input: {
           `Skipping legacy Drizzle replay and importing the existing schema as-is.`,
       );
     }
-    checkpointSqliteForFileMove({ sqlite, path: input.storage.sqlitePath });
+    await checkpointSqliteForFileMove({ client, path: input.storage.sqlitePath });
     return { legacySecrets: [] };
   } finally {
-    sqlite.close();
+    client.close();
   }
 };
 
@@ -487,7 +500,7 @@ const importMissingMarkedTables = async (input: {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: late plugin-table imports must close the active SQLite handle on failure
   try {
     const pickedTables = pickFumaTables(input.tables, missingTableSet);
-    const legacyScopeIds = readLegacySqliteScopeIds({
+    const legacyScopeIds = await readLegacySqliteScopeIds({
       sqlitePath: input.marker.backupPath,
       tables: pickedTables,
       scopeId: input.scopeId,
@@ -500,7 +513,7 @@ const importMissingMarkedTables = async (input: {
       tables: pickedTables,
       scopeId: input.scopeId,
     });
-    checkpointSqliteForFileMove({ sqlite: target.sqlite, path: input.storage.sqlitePath });
+    await checkpointSqliteForFileMove({ client: target.client, path: input.storage.sqlitePath });
     await target.close();
     removeSqliteSidecars(input.storage.sqlitePath);
 
@@ -544,14 +557,14 @@ export const importLegacySqliteIfNeeded = async (options: {
   }
 
   if (!fs.existsSync(storage.importMarkerPath) && fs.existsSync(storage.sqlitePath)) {
-    if (isFumaSqliteDatabase(storage.sqlitePath)) {
+    if (await isFumaSqliteDatabase(storage.sqlitePath)) {
       writeSqliteImportMarker(storage.importMarkerPath, {
         importedRows: 0,
         importedTables: [],
         recovered: true,
       });
     } else {
-      const prepared = prepareLegacySqliteForFumaImport({ storage, scopeId });
+      const prepared = await prepareLegacySqliteForFumaImport({ storage, scopeId });
       if (prepared.preScopeBackup) {
         if (prepared.legacySecrets.length > 0) {
           const target = await createSqliteFumaDb({
@@ -564,7 +577,7 @@ export const importLegacySqliteIfNeeded = async (options: {
             await withQueryContext(target.db, {
               allowedScopeIds: new Set([scopeId]),
             }).createMany("secret", createLegacySecretRows(scopeId, prepared.legacySecrets));
-            checkpointSqliteForFileMove({ sqlite: target.sqlite, path: storage.sqlitePath });
+            await checkpointSqliteForFileMove({ client: target.client, path: storage.sqlitePath });
           } finally {
             await target.close();
             removeSqliteSidecars(storage.sqlitePath);
@@ -589,7 +602,7 @@ export const importLegacySqliteIfNeeded = async (options: {
     !fs.existsSync(storage.importMarkerPath) &&
     !fs.existsSync(storage.sqlitePath) &&
     fs.existsSync(targetPath) &&
-    isFumaSqliteDatabase(targetPath)
+    (await isFumaSqliteDatabase(targetPath))
   ) {
     moveSqliteFileSet(targetPath, storage.sqlitePath);
     writeSqliteImportMarker(storage.importMarkerPath, {
@@ -602,7 +615,7 @@ export const importLegacySqliteIfNeeded = async (options: {
   if (
     !fs.existsSync(storage.sqlitePath) ||
     fs.existsSync(storage.importMarkerPath) ||
-    isFumaSqliteDatabase(storage.sqlitePath)
+    (await isFumaSqliteDatabase(storage.sqlitePath))
   ) {
     return { imported: false, importedRows: 0, importedTables: [] };
   }
@@ -617,7 +630,7 @@ export const importLegacySqliteIfNeeded = async (options: {
 
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: local SQLite cutover must close and remove the temporary target database on import failure
   try {
-    const legacyScopeIds = readLegacySqliteScopeIds({
+    const legacyScopeIds = await readLegacySqliteScopeIds({
       sqlitePath: storage.sqlitePath,
       tables,
       scopeId,
@@ -630,7 +643,7 @@ export const importLegacySqliteIfNeeded = async (options: {
       tables,
       scopeId,
     });
-    checkpointSqliteForFileMove({ sqlite: target.sqlite, path: targetPath });
+    await checkpointSqliteForFileMove({ client: target.client, path: targetPath });
     await target.close();
     removeSqliteSidecars(targetPath);
 
@@ -689,7 +702,9 @@ const createLocalExecutorLayer = () => {
         (db) => Effect.promise(() => db.close()).pipe(Effect.ignore),
       );
 
-      const migratedGoogleDiscoverySources = oneShotMigrateGoogleDiscoveryToOpenApi(sqlite.sqlite);
+      const migratedGoogleDiscoverySources = yield* Effect.promise(() =>
+        oneShotMigrateGoogleDiscoveryToOpenApi(sqlite.client),
+      );
 
       if (importResult.imported) {
         console.warn(

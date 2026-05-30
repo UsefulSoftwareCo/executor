@@ -47,12 +47,13 @@ export interface RefreshSourceInput {
   readonly targetScope: string;
 }
 
-// `Tool` is the runtime view used across the SDK (with sourceId/pluginId/
-// annotations); `ToolSchema` below is the separate schema-side view that
-// `executor.tools.schema(toolId)` returns. It can include TypeScript previews.
-// These share a name root but are intentionally distinct shapes.
+// `ToolView` is the runtime row-projection view used across the SDK (with
+// sourceId/pluginId/annotations); `ToolSchemaView` below is the separate
+// schema-side view that `executor.tools.schema(toolId)` returns. It can include
+// TypeScript previews. These share a name root but are intentionally distinct
+// shapes — and neither is the `tool()` builder or `ToolResult`.
 // oxlint-disable-next-line executor/prefer-schema-inferred-types
-export interface Tool {
+export interface ToolView {
   readonly id: string;
   readonly sourceId: string;
   /** Which plugin owns this tool. Matches the owning source's `pluginId`. */
@@ -65,13 +66,13 @@ export interface Tool {
 }
 
 // ---------------------------------------------------------------------------
-// ToolSchema — the full schema-side view of a tool, returned by
+// ToolSchemaView — the full schema-side view of a tool, returned by
 // `executor.tools.schema(toolId)`. Includes JSON schema roots plus shared
 // definitions for schema exploration, and optionally TypeScript preview strings
 // rendered from them via `schemaToTypeScriptPreview`.
 // ---------------------------------------------------------------------------
 
-export const ToolSchema = Schema.Struct({
+export const ToolSchemaView = Schema.Struct({
   id: ToolId,
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
@@ -82,7 +83,7 @@ export const ToolSchema = Schema.Struct({
   outputTypeScript: Schema.optional(Schema.String),
   typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
-export type ToolSchema = typeof ToolSchema.Type;
+export type ToolSchemaView = typeof ToolSchemaView.Type;
 
 // ---------------------------------------------------------------------------
 // Source detection — optional capability on `PluginSpec.detect`. When a

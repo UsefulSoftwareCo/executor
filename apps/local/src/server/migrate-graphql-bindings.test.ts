@@ -4,14 +4,12 @@
 // assert the final slot model plus shared credential_binding rows.
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Database } from "bun:sqlite";
 import { Schema } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
+import { openTestDb, runMigrations } from "./__test-helpers__/libsql-test-db";
 import { PRE_0007_SQL, stampPriorMigrationsApplied } from "./__test-helpers__/pre-0007-schema";
 
 const MIGRATIONS_FOLDER = join(import.meta.dirname, "../../drizzle");
@@ -51,31 +49,32 @@ afterEach(() => {
 });
 
 describe("graphql credential migrations", () => {
-  it("moves auth json connection refs into a connection slot binding", () => {
+  it("moves auth json connection refs into a connection slot binding", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare(
-      "INSERT INTO graphql_source (scope_id, id, name, endpoint, auth) VALUES (?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "github",
-      "GitHub",
-      "https://api.github.com/graphql",
-      JSON.stringify({ kind: "oauth2", connectionId: "conn-1" }),
-    );
+    await db
+      .prepare(
+        "INSERT INTO graphql_source (scope_id, id, name, endpoint, auth) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "github",
+        "GitHub",
+        "https://api.github.com/graphql",
+        JSON.stringify({ kind: "oauth2", connectionId: "conn-1" }),
+      );
 
     db.close();
 
-    const drizzleDb = drizzle(new Database(dbPath));
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = new Database(dbPath, { readonly: true });
+    const after = openTestDb(dbPath);
     const source = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )
@@ -85,7 +84,7 @@ describe("graphql credential migrations", () => {
     expect(source.auth.kind).toBe("oauth2");
     expect(source.auth.connectionSlot).toBe("auth:oauth2:connection");
     const bindings = decodeBindingRows(
-      after
+      await after
         .prepare(
           "SELECT scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id FROM credential_binding WHERE plugin_id = ? ORDER BY slot_key",
         )
@@ -104,7 +103,9 @@ describe("graphql credential migrations", () => {
       },
     ]);
     // Old json column is gone.
-    const cols = decodeTableInfoRows(after.prepare("PRAGMA table_info('graphql_source')").all());
+    const cols = decodeTableInfoRows(
+      await after.prepare("PRAGMA table_info('graphql_source')").all(),
+    );
     expect(cols.some((c) => c.name === "auth")).toBe(false);
     expect(cols.some((c) => c.name === "headers")).toBe(false);
     expect(cols.some((c) => c.name === "query_params")).toBe(false);
@@ -112,11 +113,11 @@ describe("graphql credential migrations", () => {
     after.close();
   });
 
-  it("explodes header/query_param json into slots and credential bindings", () => {
+  it("explodes header/query_param json into slots and credential bindings", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     const headers = {
       // Literal text header.
@@ -130,27 +131,28 @@ describe("graphql credential migrations", () => {
       api_key: { secretId: "sec-key" },
     };
 
-    db.prepare(
-      "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers, query_params, auth) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "example",
-      "Example",
-      "https://example.com/graphql",
-      JSON.stringify(headers),
-      JSON.stringify(queryParams),
-      JSON.stringify({ kind: "none" }),
-    );
+    await db
+      .prepare(
+        "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers, query_params, auth) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "example",
+        "Example",
+        "https://example.com/graphql",
+        JSON.stringify(headers),
+        JSON.stringify(queryParams),
+        JSON.stringify({ kind: "none" }),
+      );
 
     db.close();
 
-    const drizzleDb = drizzle(new Database(dbPath));
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = new Database(dbPath, { readonly: true });
+    const after = openTestDb(dbPath);
     const source = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )
@@ -171,7 +173,7 @@ describe("graphql credential migrations", () => {
     });
 
     const bindings = decodeBindingRows(
-      after
+      await after
         .prepare(
           "SELECT scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, secret_id, connection_id FROM credential_binding WHERE plugin_id = ? ORDER BY slot_key",
         )
@@ -186,83 +188,77 @@ describe("graphql credential migrations", () => {
     after.close();
   });
 
-  it("fails instead of silently collapsing colliding legacy query parameter slots", () => {
+  it("fails instead of silently collapsing colliding legacy query parameter slots", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare(
-      "INSERT INTO graphql_source (scope_id, id, name, endpoint, query_params, auth) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "collision",
-      "Collision",
-      "https://example.com/graphql",
-      JSON.stringify({
-        api_key: { secretId: "sec-underscore" },
-        "api-key": { secretId: "sec-dash" },
-      }),
-      JSON.stringify({ kind: "none" }),
-    );
+    await db
+      .prepare(
+        "INSERT INTO graphql_source (scope_id, id, name, endpoint, query_params, auth) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "collision",
+        "Collision",
+        "https://example.com/graphql",
+        JSON.stringify({
+          api_key: { secretId: "sec-underscore" },
+          "api-key": { secretId: "sec-dash" },
+        }),
+        JSON.stringify({ kind: "none" }),
+      );
 
     db.close();
 
-    const sqlite = new Database(dbPath);
-    const drizzleDb = drizzle(sqlite);
-    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
-    sqlite.close();
+    await expect(runMigrations(dbPath, MIGRATIONS_FOLDER)).rejects.toThrow();
   });
 
-  it("fails instead of silently collapsing colliding legacy header slots", () => {
+  it("fails instead of silently collapsing colliding legacy header slots", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare(
-      "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers, auth) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
-      "default-scope",
-      "collision",
-      "Collision",
-      "https://example.com/graphql",
-      JSON.stringify({
-        x_token: { secretId: "sec-underscore" },
-        "x-token": { secretId: "sec-dash" },
-      }),
-      JSON.stringify({ kind: "none" }),
-    );
+    await db
+      .prepare(
+        "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers, auth) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        "default-scope",
+        "collision",
+        "Collision",
+        "https://example.com/graphql",
+        JSON.stringify({
+          x_token: { secretId: "sec-underscore" },
+          "x-token": { secretId: "sec-dash" },
+        }),
+        JSON.stringify({ kind: "none" }),
+      );
 
     db.close();
 
-    const sqlite = new Database(dbPath);
-    const drizzleDb = drizzle(sqlite);
-    expect(() => migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER })).toThrow();
-    sqlite.close();
+    await expect(runMigrations(dbPath, MIGRATIONS_FOLDER)).rejects.toThrow();
   });
 
-  it("handles graphql_source rows with null json (empty config)", () => {
+  it("handles graphql_source rows with null json (empty config)", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
-    db.prepare("INSERT INTO graphql_source (scope_id, id, name, endpoint) VALUES (?, ?, ?, ?)").run(
-      "default-scope",
-      "bare",
-      "Bare",
-      "https://bare.example/graphql",
-    );
+    await db
+      .prepare("INSERT INTO graphql_source (scope_id, id, name, endpoint) VALUES (?, ?, ?, ?)")
+      .run("default-scope", "bare", "Bare", "https://bare.example/graphql");
     db.close();
 
-    const drizzleDb = drizzle(new Database(dbPath));
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = new Database(dbPath, { readonly: true });
+    const after = openTestDb(dbPath);
     const source = decodePluginStorageData(
       decodePluginStorageRow(
-        after
+        await after
           .prepare(
             "SELECT data FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
           )
@@ -274,23 +270,23 @@ describe("graphql credential migrations", () => {
     after.close();
   });
 
-  it("does not collapse child rows whose source/name pairs share colon-concatenated ids", () => {
+  it("does not collapse child rows whose source/name pairs share colon-concatenated ids", async () => {
     const dbPath = join(dir, "test.sqlite");
-    const db = new Database(dbPath);
-    db.exec(PRE_0007_SQL);
-    stampPriorMigrationsApplied(db);
+    const db = openTestDb(dbPath);
+    await db.exec(PRE_0007_SQL);
+    await stampPriorMigrationsApplied(db);
 
     const insert = db.prepare(
       "INSERT INTO graphql_source (scope_id, id, name, endpoint, headers) VALUES (?, ?, ?, ?, ?)",
     );
-    insert.run(
+    await insert.run(
       "default-scope",
       "a:b",
       "First",
       "https://first.example/graphql",
       JSON.stringify({ c: "first" }),
     );
-    insert.run(
+    await insert.run(
       "default-scope",
       "a",
       "Second",
@@ -299,19 +295,22 @@ describe("graphql credential migrations", () => {
     );
     db.close();
 
-    const drizzleDb = drizzle(new Database(dbPath));
-    migrate(drizzleDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    await runMigrations(dbPath, MIGRATIONS_FOLDER);
 
-    const after = new Database(dbPath, { readonly: true });
-    const rows = after
-      .prepare(
-        "SELECT key, data FROM plugin_storage WHERE plugin_id = ? AND collection = ? ORDER BY key",
-      )
-      .all("graphql", "source")
-      .map((row) => {
-        const decoded = decodePluginStorageRow(row);
-        return { key: (row as { key: string }).key, data: decodePluginStorageData(decoded.data) };
-      }) as ReadonlyArray<{
+    const after = openTestDb(dbPath);
+    const rows = (
+      await after
+        .prepare(
+          "SELECT key, data FROM plugin_storage WHERE plugin_id = ? AND collection = ? ORDER BY key",
+        )
+        .all<{ key: string; data: string }>("graphql", "source")
+    ).map((row) => {
+      const decoded = decodePluginStorageRow(row);
+      return {
+        key: row.key,
+        data: decodePluginStorageData(decoded.data),
+      };
+    }) as ReadonlyArray<{
       readonly key: string;
       readonly data: { readonly headers: Record<string, unknown> };
     }>;

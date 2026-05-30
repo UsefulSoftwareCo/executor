@@ -101,6 +101,6 @@ const makeTelemetryLive = (): Layer.Layer<never> =>
     ),
   );
 
-export const TelemetryLive: Layer.Layer<never> = makeTelemetryLive();
+export const WorkerTelemetryLive: Layer.Layer<never> = makeTelemetryLive();
 
 export const DoTelemetryLive: Layer.Layer<never> = makeTelemetryLive();

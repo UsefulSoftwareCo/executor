@@ -3,7 +3,7 @@ import { Cause, Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { autumnHandler } from "autumn-js/backend";
 
-import { WorkOSAuth } from "../auth/workos";
+import { WorkOSClient } from "../auth/workos";
 import { HttpResponseError, isServerError, toErrorServerResponse } from "./error-response";
 
 const handler = Effect.gen(function* () {
@@ -18,7 +18,7 @@ const handler = Effect.gen(function* () {
       }),
   );
 
-  const workos = yield* WorkOSAuth;
+  const workos = yield* WorkOSClient;
   const session = yield* workos.authenticateRequest(webRequest);
 
   if (!session || !session.organizationId) {
@@ -58,7 +58,7 @@ const handler = Effect.gen(function* () {
       clientOptions: {
         secretKey: env.AUTUMN_SECRET_KEY ?? "",
       },
-      pathPrefix: "/autumn",
+      pathPrefix: "/api/autumn",
     }),
   );
 
@@ -81,4 +81,4 @@ const handler = Effect.gen(function* () {
   }),
 );
 
-export const AutumnRoutesLive = HttpRouter.add("*", "/autumn/*", handler);
+export const AutumnRoutesLive = HttpRouter.add("*", "/api/autumn/*", handler);

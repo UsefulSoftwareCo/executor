@@ -16,6 +16,7 @@ import {
 } from "effect/unstable/http";
 import { expect, layer } from "@effect/vitest";
 import { Cause, Effect, Layer, Schema } from "effect";
+import { RouterConfigLive } from "@executor-js/api/server";
 import { toErrorServerResponse } from "./api/error-response";
 
 const SourceResponse = Schema.Struct({ source: Schema.String });
@@ -115,8 +116,6 @@ const TestProtectedGate = HttpRouter.middleware()((httpEffect) =>
 // Wire test APIs as route layers + autumn route, mirroring prod's structure.
 // ---------------------------------------------------------------------------
 
-const RouterConfig = Layer.succeed(HttpRouter.RouterConfig)({ maxParamLength: 1000 });
-
 const OrgTestLive = HttpApiBuilder.layer(OrgTestApi).pipe(Layer.provide(OrgTestHandlers));
 const AuthTestLive = HttpApiBuilder.layer(AuthTestApi).pipe(Layer.provide(AuthHandlers));
 const ProtectedTestLive = HttpApiBuilder.layer(ProtectedTestApi).pipe(
@@ -145,7 +144,7 @@ const TestApiLive = Layer.mergeAll(
   TestDocsLive,
   ProtectedTestLive,
   AutumnTestRoutesLive,
-).pipe(Layer.provideMerge(RouterConfig), Layer.provideMerge(HttpServer.layerServices));
+).pipe(Layer.provideMerge(RouterConfigLive), Layer.provideMerge(HttpServer.layerServices));
 
 const requestHandler = HttpRouter.toWebHandler(TestApiLive, { disableLogger: true }).handler;
 

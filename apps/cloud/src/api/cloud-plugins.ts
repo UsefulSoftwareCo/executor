@@ -4,7 +4,7 @@
 // module-eval time without runtime credentials: the heavy per-request
 // dependencies (WorkOS Vault credentials, vault HTTP client) are only
 // consumed when the plugin's extension is actually constructed inside
-// `createScopedExecutor`. Both the API composition (`protected-layers.ts`)
+// `createScopedExecutor`. Both the API composition (`layers.ts`)
 // and the per-request middleware (`protected.ts` + the test harness)
 // derive their typed views — `composePluginApi(cloudPlugins)`,
 // `composePluginHandlerLayer(cloudPlugins)`,

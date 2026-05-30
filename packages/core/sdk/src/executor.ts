@@ -127,12 +127,12 @@ import type { Scope } from "./scope";
 import { RemoveSecretInput, SecretRef, SetSecretInput, type SecretProvider } from "./secrets";
 import { Usage } from "./usages";
 import {
-  ToolSchema,
+  ToolSchemaView,
   type RefreshSourceInput,
   type RemoveSourceInput,
   type Source,
   type SourceDetectionResult,
-  type Tool,
+  type ToolView,
   type ToolListFilter,
 } from "./types";
 import { buildToolTypeScriptPreview, type ToolTypeScriptPreview } from "./schema-types";
@@ -192,11 +192,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   readonly scopes: readonly Scope[];
 
   readonly tools: {
-    readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
+    readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly ToolView[], StorageFailure>;
     /** Fetch a tool's schema view: JSON schemas with `$defs`
      *  attached from the core `definition` table, plus TypeScript
      *  preview strings. Returns `null` for unknown tool ids. */
-    readonly schema: (toolId: string) => Effect.Effect<ToolSchema | null, StorageFailure>;
+    readonly schema: (toolId: string) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
     /** Every `$defs` entry across every source, grouped by source id.
      *  Used for bulk schema export and downstream TypeScript rendering. */
     readonly definitions: () => Effect.Effect<
@@ -308,7 +308,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly updateTokens: (
       input: UpdateConnectionTokensInput,
     ) => Effect.Effect<ConnectionRef, ConnectionNotFoundError | StorageFailure>;
-    readonly setIdentityLabel: (
+    readonly setConnectionLabel: (
       id: string,
       label: string | null,
     ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
@@ -543,7 +543,7 @@ const decodeJsonColumn = (value: unknown): unknown => {
 
 const decodeProviderState = Schema.decodeUnknownOption(ConnectionProviderState);
 
-const rowToTool = (row: ToolRow, annotations?: ToolAnnotations): Tool => ({
+const rowToTool = (row: ToolRow, annotations?: ToolAnnotations): ToolView => ({
   id: row.id,
   sourceId: row.source_id,
   pluginId: row.plugin_id,
@@ -558,7 +558,7 @@ const staticDeclToTool = (
   source: StaticSourceDecl,
   tool: StaticToolDecl,
   pluginId: string,
-): Tool => ({
+): ToolView => ({
   id: `${source.id}.${tool.name}`,
   sourceId: source.id,
   pluginId,
@@ -1039,7 +1039,7 @@ const writeDefinitions = (
 // so `tools.list({ query, sourceId })` matches across both.
 // ---------------------------------------------------------------------------
 
-const toolMatchesFilter = (tool: Tool, filter: ToolListFilter): boolean => {
+const toolMatchesFilter = (tool: ToolView, filter: ToolListFilter): boolean => {
   if (filter.sourceId && tool.sourceId !== filter.sourceId) return false;
   if (filter.query) {
     const q = filter.query.toLowerCase();
@@ -2025,7 +2025,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return yield* connectionsUpdateTokensForRow(input, row);
       });
 
-    const connectionsSetIdentityLabel = (
+    const connectionsSetConnectionLabel = (
       id: string,
       label: string | null,
     ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
@@ -3174,7 +3174,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.sync(() => Array.from(connectionProviders.keys()) as readonly string[]),
           create: (input) => connectionsCreate(input),
           updateTokens: (input) => connectionsUpdateTokens(input),
-          setIdentityLabel: (id, label) => connectionsSetIdentityLabel(id, label),
+          setConnectionLabel: (id, label) => connectionsSetConnectionLabel(id, label),
           accessToken: (id) => connectionsAccessToken(id),
           accessTokenAtScope: (id, scope) => connectionsAccessTokenAtScope(id, scope),
           remove: (input) => connectionsRemove(input),
@@ -3408,7 +3408,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 Effect.withSpan("executor.tools.list.annotations"),
               );
 
-        const out: Tool[] = [];
+        const out: ToolView[] = [];
         // Static tools — annotations from the declaration, not a resolver.
         for (const entry of staticTools.values()) {
           out.push(staticDeclToTool(entry.source, entry.tool, entry.pluginId));
@@ -3427,7 +3427,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         if (filter?.includeBlocked !== true) {
           const policies = yield* loadAllPolicies();
           if (policies.length > 0) {
-            const kept: Tool[] = [];
+            const kept: ToolView[] = [];
             for (const tool of filtered) {
               const match = resolveToolPolicy(tool.id, policies, scopeRank);
               if (match?.action === "block") {
@@ -3471,7 +3471,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return out;
       });
 
-    // Render the ToolSchema view for a tool. Raw JSON schema roots stay small,
+    // Render the ToolSchemaView view for a tool. Raw JSON schema roots stay small,
     // while source-level definitions are returned once for the UI schema
     // explorer and passed separately to the TypeScript preview compiler.
     const buildToolSchemaView = (opts: {
@@ -3513,7 +3513,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
 
-        return ToolSchema.make({
+        return ToolSchemaView.make({
           id: ToolId.make(opts.toolId),
           name: opts.name,
           description: opts.description,
@@ -4194,7 +4194,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         list: connectionsList,
         create: connectionsCreate,
         updateTokens: connectionsUpdateTokens,
-        setIdentityLabel: connectionsSetIdentityLabel,
+        setConnectionLabel: connectionsSetConnectionLabel,
         accessToken: connectionsAccessToken,
         accessTokenAtScope: connectionsAccessTokenAtScope,
         remove: connectionsRemove,

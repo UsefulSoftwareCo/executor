@@ -5,20 +5,15 @@
 
 import { Effect, Layer, Redacted } from "effect";
 
-import {
-  AuthContext,
-  NoOrganization,
-  OrgAuth,
-  SessionAuth,
-  SessionContext,
-  Unauthorized,
-} from "./middleware";
-import { WorkOSAuth } from "./workos";
+import { AuthContext, NoOrganization, Unauthorized } from "@executor-js/api/server";
+
+import { OrgAuth, SessionAuth, SessionContext, sessionFromSealed } from "./middleware";
+import { WorkOSClient } from "./workos";
 
 export const SessionAuthLive = Layer.effect(
   SessionAuth,
   Effect.gen(function* () {
-    const workos = yield* WorkOSAuth;
+    const workos = yield* WorkOSClient;
     return {
       cookie: (httpEffect, { credential }) =>
         Effect.gen(function* () {
@@ -30,16 +25,7 @@ export const SessionAuthLive = Layer.effect(
             return yield* Effect.fail(new Unauthorized());
           }
 
-          const session = {
-            accountId: result.userId,
-            email: result.email,
-            name: `${result.firstName ?? ""} ${result.lastName ?? ""}`.trim() || null,
-            avatarUrl: result.avatarUrl ?? null,
-            organizationId: result.organizationId ?? null,
-            sealedSession: result.refreshedSession ?? Redacted.value(credential),
-            refreshedSession: result.refreshedSession ?? null,
-          };
-
+          const session = sessionFromSealed(result, Redacted.value(credential));
           return yield* Effect.provideService(httpEffect, SessionContext, session);
         }),
     };
@@ -49,7 +35,7 @@ export const SessionAuthLive = Layer.effect(
 export const OrgAuthLive = Layer.effect(
   OrgAuth,
   Effect.gen(function* () {
-    const workos = yield* WorkOSAuth;
+    const workos = yield* WorkOSClient;
     return {
       cookie: (httpEffect, { credential }) =>
         Effect.gen(function* () {
@@ -65,12 +51,17 @@ export const OrgAuthLive = Layer.effect(
             return yield* Effect.fail(new NoOrganization());
           }
 
+          const session = sessionFromSealed(result, Redacted.value(credential));
           const auth = {
-            accountId: result.userId,
+            accountId: session.accountId,
             organizationId: result.organizationId,
-            email: result.email,
-            name: `${result.firstName ?? ""} ${result.lastName ?? ""}`.trim() || null,
-            avatarUrl: result.avatarUrl ?? null,
+            email: session.email,
+            name: session.name,
+            avatarUrl: session.avatarUrl,
+            // The unified `AuthContext` carries roles; cloud's WorkOS control
+            // plane does not resolve them here, so pass an empty list (no cloud
+            // handler reads roles today).
+            roles: [],
           };
 
           return yield* Effect.provideService(httpEffect, AuthContext, auth);

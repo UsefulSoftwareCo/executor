@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/promise.ts",
     core: "src/index.ts",
     shared: "src/shared.ts",
+    "host-internal": "src/host-internal.ts",
     "http-source": "src/http-source.ts",
     client: "src/client.ts",
     testing: "src/testing.ts",

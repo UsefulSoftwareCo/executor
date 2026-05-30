@@ -1,0 +1,32 @@
+// ---------------------------------------------------------------------------
+// OAuth metadata endpoints — returned as web `Response`s for the envelope's
+// discovery routes.
+// ---------------------------------------------------------------------------
+
+import { Effect } from "effect";
+
+import { AUTHKIT_DOMAIN, RESOURCE_URL } from "./auth";
+import { CORS_ALLOW_ORIGIN } from "./responses";
+
+const jsonWebResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...CORS_ALLOW_ORIGIN },
+  });
+
+export const protectedResourceMetadataResponse = (): Response =>
+  jsonWebResponse({
+    resource: RESOURCE_URL,
+    authorization_servers: [AUTHKIT_DOMAIN],
+    bearer_methods_supported: ["header"],
+    scopes_supported: [],
+  });
+
+export const authorizationServerMetadataResponse: Effect.Effect<Response> = Effect.tryPromise({
+  try: async () => {
+    const res = await fetch(`${AUTHKIT_DOMAIN}/.well-known/oauth-authorization-server`);
+    if (!res.ok) return jsonWebResponse({ error: "upstream_error" }, 502);
+    return jsonWebResponse(await res.json());
+  },
+  catch: () => undefined,
+}).pipe(Effect.catchCause(() => Effect.succeed(jsonWebResponse({ error: "upstream_error" }, 502))));

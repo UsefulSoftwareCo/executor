@@ -337,12 +337,12 @@ describe("sources api (HTTP)", () => {
               Effect.succeed(authorization === "Bearer github-token"),
           },
         });
-        const orgId = `org_${crypto.randomUUID()}`;
+        const organizationId = `org_${crypto.randomUUID()}`;
         const userId = `user_${crypto.randomUUID()}`;
-        const userScope = testUserOrgScopeId(userId, orgId);
+        const userScope = testUserOrgScopeId(userId, organizationId);
         const namespace = `github_graphql_${crypto.randomUUID().replace(/-/g, "_")}`;
 
-        yield* asUser(userId, orgId, (client) =>
+        yield* asUser(userId, organizationId, (client) =>
           client.secrets.set({
             params: { scopeId: ScopeId.make(userScope) },
             payload: {
@@ -353,9 +353,9 @@ describe("sources api (HTTP)", () => {
           }),
         );
 
-        const added = yield* asUser(userId, orgId, (client) =>
+        const added = yield* asUser(userId, organizationId, (client) =>
           client.graphql.addSource({
-            params: { scopeId: ScopeId.make(orgId) },
+            params: { scopeId: ScopeId.make(organizationId) },
             payload: {
               endpoint: server.endpoint,
               namespace,
@@ -548,16 +548,16 @@ describe("sources api (HTTP)", () => {
 
   it.effect("per-user source bindings isolate personal credentials over HTTP", () =>
     Effect.gen(function* () {
-      const orgId = `org_${crypto.randomUUID()}`;
+      const organizationId = `org_${crypto.randomUUID()}`;
       const aliceId = `user_${crypto.randomUUID().slice(0, 8)}`;
       const bobId = `user_${crypto.randomUUID().slice(0, 8)}`;
       const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
-      const aliceScope = testUserOrgScopeId(aliceId, orgId);
-      const bobScope = testUserOrgScopeId(bobId, orgId);
+      const aliceScope = testUserOrgScopeId(aliceId, organizationId);
+      const bobScope = testUserOrgScopeId(bobId, organizationId);
 
-      yield* asOrg(orgId, (client) =>
+      yield* asOrg(organizationId, (client) =>
         client.openapi.addSpec({
-          params: { scopeId: ScopeId.make(orgId) },
+          params: { scopeId: ScopeId.make(organizationId) },
           payload: {
             ...makeMinimalOpenApiSourcePayload(namespace),
             headers: {
@@ -570,7 +570,7 @@ describe("sources api (HTTP)", () => {
         }),
       );
 
-      yield* asUser(aliceId, orgId, (client) =>
+      yield* asUser(aliceId, organizationId, (client) =>
         Effect.gen(function* () {
           yield* client.secrets.set({
             params: { scopeId: ScopeId.make(aliceScope) },
@@ -584,7 +584,7 @@ describe("sources api (HTTP)", () => {
             params: { scopeId: ScopeId.make(aliceScope) },
             payload: {
               scope: ScopeId.make(aliceScope),
-              source: { id: namespace, scope: ScopeId.make(orgId) },
+              source: { id: namespace, scope: ScopeId.make(organizationId) },
               slotKey: "header:authorization",
               value: {
                 kind: "secret",
@@ -594,7 +594,7 @@ describe("sources api (HTTP)", () => {
           });
           expect(binding).toMatchObject({
             sourceId: namespace,
-            sourceScopeId: ScopeId.make(orgId),
+            sourceScopeId: ScopeId.make(organizationId),
             scopeId: ScopeId.make(aliceScope),
             slotKey: "header:authorization",
             value: {
@@ -607,7 +607,7 @@ describe("sources api (HTTP)", () => {
         }),
       );
 
-      yield* asUser(bobId, orgId, (client) =>
+      yield* asUser(bobId, organizationId, (client) =>
         Effect.gen(function* () {
           yield* client.secrets.set({
             params: { scopeId: ScopeId.make(bobScope) },
@@ -621,7 +621,7 @@ describe("sources api (HTTP)", () => {
             params: { scopeId: ScopeId.make(bobScope) },
             payload: {
               scope: ScopeId.make(bobScope),
-              source: { id: namespace, scope: ScopeId.make(orgId) },
+              source: { id: namespace, scope: ScopeId.make(organizationId) },
               slotKey: "header:authorization",
               value: {
                 kind: "secret",
@@ -632,12 +632,12 @@ describe("sources api (HTTP)", () => {
         }),
       );
 
-      const aliceBindings = yield* asUser(aliceId, orgId, (client) =>
+      const aliceBindings = yield* asUser(aliceId, organizationId, (client) =>
         client.sources.listBindings({
           params: {
             scopeId: ScopeId.make(aliceScope),
             sourceId: namespace,
-            sourceScopeId: ScopeId.make(orgId),
+            sourceScopeId: ScopeId.make(organizationId),
           },
         }),
       );
@@ -661,12 +661,12 @@ describe("sources api (HTTP)", () => {
         ),
       ).toBe(false);
 
-      const bobBindings = yield* asUser(bobId, orgId, (client) =>
+      const bobBindings = yield* asUser(bobId, organizationId, (client) =>
         client.sources.listBindings({
           params: {
             scopeId: ScopeId.make(bobScope),
             sourceId: namespace,
-            sourceScopeId: ScopeId.make(orgId),
+            sourceScopeId: ScopeId.make(organizationId),
           },
         }),
       );
@@ -690,24 +690,26 @@ describe("sources api (HTTP)", () => {
         ),
       ).toBe(false);
 
-      const sources = yield* asOrg(orgId, (client) =>
-        client.sources.list({ params: { scopeId: ScopeId.make(orgId) } }),
+      const sources = yield* asOrg(organizationId, (client) =>
+        client.sources.list({ params: { scopeId: ScopeId.make(organizationId) } }),
       );
-      expect(sources.find((source) => source.id === namespace)?.scopeId).toBe(ScopeId.make(orgId));
+      expect(sources.find((source) => source.id === namespace)?.scopeId).toBe(
+        ScopeId.make(organizationId),
+      );
     }),
   );
 
   it.effect("personal source override picker can see org-owned secrets over HTTP", () =>
     Effect.gen(function* () {
-      const orgId = `org_${crypto.randomUUID()}`;
+      const organizationId = `org_${crypto.randomUUID()}`;
       const aliceId = `user_${crypto.randomUUID().slice(0, 8)}`;
       const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
-      const aliceScope = testUserOrgScopeId(aliceId, orgId);
+      const aliceScope = testUserOrgScopeId(aliceId, organizationId);
 
-      yield* asOrg(orgId, (client) =>
+      yield* asOrg(organizationId, (client) =>
         Effect.gen(function* () {
           yield* client.openapi.addSpec({
-            params: { scopeId: ScopeId.make(orgId) },
+            params: { scopeId: ScopeId.make(organizationId) },
             payload: {
               ...makeMinimalOpenApiSourcePayload(namespace),
               headers: {
@@ -720,7 +722,7 @@ describe("sources api (HTTP)", () => {
           });
 
           yield* client.secrets.set({
-            params: { scopeId: ScopeId.make(orgId) },
+            params: { scopeId: ScopeId.make(organizationId) },
             payload: {
               id: SecretId.make("shared_pat"),
               name: "Shared PAT",
@@ -730,7 +732,7 @@ describe("sources api (HTTP)", () => {
         }),
       );
 
-      const secrets = yield* asUser(aliceId, orgId, (client) =>
+      const secrets = yield* asUser(aliceId, organizationId, (client) =>
         client.secrets.listAll({ params: { scopeId: ScopeId.make(aliceScope) } }),
       );
 
@@ -742,12 +744,12 @@ describe("sources api (HTTP)", () => {
       }));
 
       expect(pickerSecrets).toContainEqual(
-        expect.objectContaining({ id: "shared_pat", scopeId: orgId }),
+        expect.objectContaining({ id: "shared_pat", scopeId: organizationId }),
       );
       expect(
         secretsForCredentialTarget(pickerSecrets, ScopeId.make(aliceScope), [
           { id: ScopeId.make(aliceScope) },
-          { id: ScopeId.make(orgId) },
+          { id: ScopeId.make(organizationId) },
         ]).map((secret) => secret.id),
       ).toContain("shared_pat");
     }),

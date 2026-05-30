@@ -29,10 +29,15 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
 import { addGroup, observabilityMiddleware } from "@executor-js/api";
-import { CoreHandlers, ExecutionEngineService, ExecutorService } from "@executor-js/api/server";
+import {
+  CoreHandlers,
+  ExecutionEngineService,
+  ExecutorService,
+  collectTables,
+} from "@executor-js/api/server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
-import { Scope, ScopeId, collectTables, createExecutor } from "@executor-js/sdk";
+import { Scope, ScopeId, createExecutor } from "@executor-js/sdk";
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
 import { mcpPlugin } from "@executor-js/plugin-mcp";

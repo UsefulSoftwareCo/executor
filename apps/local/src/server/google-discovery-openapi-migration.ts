@@ -1,6 +1,8 @@
-import { Database } from "bun:sqlite";
+import { type Client, type InValue } from "@libsql/client";
 import { Option, Schema } from "effect";
 import { randomBytes } from "node:crypto";
+
+import { queryFirst, queryRows } from "./libsql";
 
 const UnknownRecord = Schema.Record(Schema.String, Schema.Unknown);
 
@@ -117,17 +119,22 @@ type OpenApiParameter = {
 
 const textDecoder = new TextDecoder();
 
+// libSQL returns BLOB columns as ArrayBuffer (legacy rows stored JSON as bytes),
+// TEXT columns as string. Normalize both to text before JSON-decoding.
 const decodeJsonColumnOption = <A>(
   decode: (value: unknown) => Option.Option<A>,
-  value: string | Uint8Array | null | undefined,
+  value: string | Uint8Array | ArrayBuffer | null | undefined,
 ): Option.Option<A> => {
   if (!value) return Option.none();
-  const text = typeof value === "string" ? value : textDecoder.decode(value);
+  const text =
+    typeof value === "string"
+      ? value
+      : textDecoder.decode(value instanceof ArrayBuffer ? new Uint8Array(value) : value);
   return decode(text);
 };
 
 const decodeJsonColumnOrUndefined = (
-  value: string | Uint8Array | null | undefined,
+  value: string | Uint8Array | ArrayBuffer | null | undefined,
 ): unknown | undefined => Option.getOrUndefined(decodeJsonColumnOption(decodeUnknownJson, value));
 
 const recordFromUnknown = (value: unknown): Record<string, unknown> =>
@@ -229,19 +236,24 @@ const openApiParameters = (
     ...(parameter.description ? { description: parameter.description } : {}),
   }));
 
-export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number => {
-  const table = sqlite
-    .query<{ name: string }, [string]>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .get("google_discovery_source");
+// One-shot startup migration over the LIVE libSQL handle (same file the app
+// runs on). Each source migrates inside its own write transaction so a failure
+// leaves that source atomic; reads and the BEGIN/COMMIT/ROLLBACK block move from
+// synchronous bun:sqlite to async `client.execute` / `client.transaction`.
+export const oneShotMigrateGoogleDiscoveryToOpenApi = async (client: Client): Promise<number> => {
+  const table = await queryFirst(
+    client,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ["google_discovery_source"],
+  );
   if (!table) return 0;
 
-  const sources = sqlite
-    .query<GoogleSourceRow, []>("SELECT * FROM google_discovery_source ORDER BY scope_id, id")
-    .all();
+  const sources = await queryRows<GoogleSourceRow>(
+    client,
+    "SELECT * FROM google_discovery_source ORDER BY scope_id, id",
+  );
   let migrated = 0;
-  const migrateSource = (source: GoogleSourceRow): boolean => {
+  const migrateSource = async (source: GoogleSourceRow): Promise<boolean> => {
     const config = readSourceConfig(source);
     if (!config) return false;
 
@@ -250,26 +262,27 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
     const version = nonEmptyStringOrUndefined(config.version) ?? "v1";
     const discoveryUrl = nonEmptyStringOrUndefined(config.discoveryUrl);
 
-    const bindings = sqlite
-      .query<GoogleBindingRow, [string, string]>(
-        "SELECT * FROM google_discovery_binding WHERE scope_id = ? AND source_id = ? ORDER BY id",
-      )
-      .all(source.scope_id, source.id);
+    const bindings = await queryRows<GoogleBindingRow>(
+      client,
+      "SELECT * FROM google_discovery_binding WHERE scope_id = ? AND source_id = ? ORDER BY id",
+      [source.scope_id, source.id],
+    );
     if (bindings.length === 0) return false;
 
     const toolRows = new Map(
-      sqlite
-        .query<ToolRow, [string, string]>(
+      (
+        await queryRows<ToolRow>(
+          client,
           "SELECT id, name, description, input_schema, output_schema FROM tool WHERE scope_id = ? AND source_id = ?",
+          [source.scope_id, source.id],
         )
-        .all(source.scope_id, source.id)
-        .map((row) => [row.id, row] as const),
+      ).map((row) => [row.id, row] as const),
     );
-    const definitions = sqlite
-      .query<DefinitionRow, [string, string]>(
-        "SELECT name, schema FROM definition WHERE scope_id = ? AND source_id = ? ORDER BY name",
-      )
-      .all(source.scope_id, source.id);
+    const definitions = await queryRows<DefinitionRow>(
+      client,
+      "SELECT name, schema FROM definition WHERE scope_id = ? AND source_id = ? ORDER BY name",
+      [source.scope_id, source.id],
+    );
 
     const paths: Record<string, Record<string, unknown>> = {};
     const operationRows: Array<{ readonly toolId: string; readonly binding: unknown }> = [];
@@ -410,16 +423,16 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
 
     const credentialBindings: MigratedCredentialBinding[] = [];
 
-    const headerRows = sqlite
-      .query<CredentialRow, [string, string]>(
-        "SELECT name, kind, text_value, secret_id, secret_prefix FROM google_discovery_source_credential_header WHERE scope_id = ? AND source_id = ?",
-      )
-      .all(source.scope_id, source.id);
-    const queryParamRows = sqlite
-      .query<CredentialRow, [string, string]>(
-        "SELECT name, kind, text_value, secret_id, secret_prefix FROM google_discovery_source_credential_query_param WHERE scope_id = ? AND source_id = ?",
-      )
-      .all(source.scope_id, source.id);
+    const headerRows = await queryRows<CredentialRow>(
+      client,
+      "SELECT name, kind, text_value, secret_id, secret_prefix FROM google_discovery_source_credential_header WHERE scope_id = ? AND source_id = ?",
+      [source.scope_id, source.id],
+    );
+    const queryParamRows = await queryRows<CredentialRow>(
+      client,
+      "SELECT name, kind, text_value, secret_id, secret_prefix FROM google_discovery_source_credential_query_param WHERE scope_id = ? AND source_id = ?",
+      [source.scope_id, source.id],
+    );
     const headers = googleCredentialMap(headerRows, openApiHeaderSlot, credentialBindings);
     const queryParams = googleCredentialMap(
       queryParamRows,
@@ -464,14 +477,14 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
       },
     };
 
-    sqlite.exec("BEGIN IMMEDIATE");
+    // Each source migrates atomically: a libSQL write transaction replaces the
+    // bun:sqlite BEGIN IMMEDIATE / COMMIT / ROLLBACK block.
+    const tx = await client.transaction("write");
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: one-shot startup migration should leave each source atomic on write failure
     try {
-      sqlite
-        .query(
-          "INSERT OR REPLACE INTO plugin_storage (plugin_id, collection, key, data, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
+      await tx.execute({
+        sql: "INSERT OR REPLACE INTO plugin_storage (plugin_id, collection, key, data, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        args: [
           "openapi",
           "source",
           source.id,
@@ -481,14 +494,13 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
           randomRowId(),
           openApiPluginStorageId("source", source.id),
           source.scope_id,
-        );
+        ] satisfies InValue[],
+      });
 
       for (const operation of operationRows) {
-        sqlite
-          .query(
-            "INSERT OR REPLACE INTO plugin_storage (plugin_id, collection, key, data, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          )
-          .run(
+        await tx.execute({
+          sql: "INSERT OR REPLACE INTO plugin_storage (plugin_id, collection, key, data, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          args: [
             "openapi",
             "operation",
             operation.toolId,
@@ -502,18 +514,17 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
             randomRowId(),
             openApiPluginStorageId("operation", operation.toolId),
             source.scope_id,
-          );
+          ] satisfies InValue[],
+        });
       }
 
       for (const binding of credentialBindings) {
         const secretId = binding.kind === "secret" ? binding.secretId : null;
         const secretScopeId = binding.kind === "secret" ? source.scope_id : null;
         const connectionId = binding.kind === "connection" ? binding.connectionId : null;
-        sqlite
-          .query(
-            "INSERT OR REPLACE INTO credential_binding (plugin_id, source_id, source_scope_id, slot_key, kind, text_value, secret_id, secret_scope_id, connection_id, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          )
-          .run(
+        await tx.execute({
+          sql: "INSERT OR REPLACE INTO credential_binding (plugin_id, source_id, source_scope_id, slot_key, kind, text_value, secret_id, secret_scope_id, connection_id, created_at, updated_at, row_id, id, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          args: [
             "openapi",
             source.id,
             source.scope_id,
@@ -528,40 +539,42 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
             randomRowId(),
             openApiCredentialBindingId(source.scope_id, source.id, binding.slot),
             source.scope_id,
-          );
+          ] satisfies InValue[],
+        });
       }
 
-      sqlite
-        .query(
-          "UPDATE source SET plugin_id = ?, kind = ?, url = ?, can_refresh = ?, can_edit = ?, updated_at = ? WHERE scope_id = ? AND id = ?",
-        )
-        .run("openapi", "openapi", baseUrl, 0, 1, now, source.scope_id, source.id);
-      sqlite
-        .query("UPDATE tool SET plugin_id = ?, updated_at = ? WHERE scope_id = ? AND source_id = ?")
-        .run("openapi", now, source.scope_id, source.id);
-      sqlite
-        .query("UPDATE definition SET plugin_id = ? WHERE scope_id = ? AND source_id = ?")
-        .run("openapi", source.scope_id, source.id);
-      sqlite
-        .query("DELETE FROM google_discovery_binding WHERE scope_id = ? AND source_id = ?")
-        .run(source.scope_id, source.id);
-      sqlite
-        .query(
-          "DELETE FROM google_discovery_source_credential_header WHERE scope_id = ? AND source_id = ?",
-        )
-        .run(source.scope_id, source.id);
-      sqlite
-        .query(
-          "DELETE FROM google_discovery_source_credential_query_param WHERE scope_id = ? AND source_id = ?",
-        )
-        .run(source.scope_id, source.id);
-      sqlite
-        .query("DELETE FROM google_discovery_source WHERE scope_id = ? AND id = ?")
-        .run(source.scope_id, source.id);
-      sqlite.exec("COMMIT");
+      await tx.execute({
+        sql: "UPDATE source SET plugin_id = ?, kind = ?, url = ?, can_refresh = ?, can_edit = ?, updated_at = ? WHERE scope_id = ? AND id = ?",
+        args: ["openapi", "openapi", baseUrl, 0, 1, now, source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "UPDATE tool SET plugin_id = ?, updated_at = ? WHERE scope_id = ? AND source_id = ?",
+        args: ["openapi", now, source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "UPDATE definition SET plugin_id = ? WHERE scope_id = ? AND source_id = ?",
+        args: ["openapi", source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "DELETE FROM google_discovery_binding WHERE scope_id = ? AND source_id = ?",
+        args: [source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "DELETE FROM google_discovery_source_credential_header WHERE scope_id = ? AND source_id = ?",
+        args: [source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "DELETE FROM google_discovery_source_credential_query_param WHERE scope_id = ? AND source_id = ?",
+        args: [source.scope_id, source.id],
+      });
+      await tx.execute({
+        sql: "DELETE FROM google_discovery_source WHERE scope_id = ? AND id = ?",
+        args: [source.scope_id, source.id],
+      });
+      await tx.commit();
     } catch (cause) {
-      sqlite.exec("ROLLBACK");
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: synchronous SQLite migration rolls back then preserves the original startup failure
+      await tx.rollback();
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the migration rolls back then preserves the original startup failure
       throw cause;
     }
 
@@ -569,13 +582,13 @@ export const oneShotMigrateGoogleDiscoveryToOpenApi = (sqlite: Database): number
   };
 
   for (const source of sources) {
-    if (migrateSource(source)) {
+    if (await migrateSource(source)) {
       migrated++;
     }
   }
 
   if (migrated > 0) {
-    sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    await client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
   }
   return migrated;
 };

@@ -3,7 +3,7 @@
 // zero-dependency module so node tests can pull it without dragging in the
 // worker entry, which imports `cloudflare:workers`.
 
-import type { VerifiedToken } from "./mcp-auth";
+import type { VerifiedToken } from "./mcp/jwt";
 
 export const TEST_BEARER_PREFIX = "test-accept::";
 export const NO_ORG_SENTINEL = "none";

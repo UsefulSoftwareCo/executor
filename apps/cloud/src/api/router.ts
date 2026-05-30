@@ -1,17 +1,20 @@
 import { Layer } from "effect";
+import { HttpRouter } from "effect/unstable/http";
+
+import { RouterConfigLive } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import { DbService } from "../services/db";
+import { makeAccountApiLive } from "../account/account-api";
 
 import { AutumnRoutesLive } from "./autumn";
 import { CloudDocsLive } from "./docs";
 import { ApiErrorLoggingLive } from "./error-logging";
 import {
   BootSharedServices,
+  OrgApiLive,
   RequestScopedServicesLive,
-  RouterConfig,
   makeNonProtectedApiLive,
-  makeOrgApiLive,
 } from "./layers";
 import { makeProtectedApiLive } from "./protected";
 
@@ -29,11 +32,14 @@ import { makeProtectedApiLive } from "./protected";
 export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) =>
   Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
-    makeOrgApiLive(requestScopedLive),
+    OrgApiLive,
+    makeAccountApiLive(requestScopedLive),
     CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),
     AutumnRoutesLive,
     ApiErrorLoggingLive,
-  ).pipe(Layer.provideMerge(RouterConfig), Layer.provideMerge(BootSharedServices));
+  ).pipe(Layer.provideMerge(RouterConfigLive), Layer.provideMerge(BootSharedServices));
 
 export const ApiLive = makeApiLive(RequestScopedServicesLive);
+
+export const handleApiRequest = HttpRouter.toWebHandler(ApiLive).handler;

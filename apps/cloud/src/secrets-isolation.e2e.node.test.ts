@@ -73,15 +73,15 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
 
   it.effect("users in same org cannot read each other's user-scoped secrets", () =>
     Effect.gen(function* () {
-      const orgId = nextOrgId();
+      const organizationId = nextOrgId();
       const aliceId = nextUserId();
       const bobId = nextUserId();
       const id = `sec_${uniq()}`;
 
       // Alice writes at her per-user scope — where OAuth tokens land.
-      yield* asUser(aliceId, orgId, (client) =>
+      yield* asUser(aliceId, organizationId, (client) =>
         client.secrets.set({
-          params: { scopeId: ScopeId.make(testUserOrgScopeId(aliceId, orgId)) },
+          params: { scopeId: ScopeId.make(testUserOrgScopeId(aliceId, organizationId)) },
           payload: {
             id: SecretId.make(id),
             name: "Alice's token",
@@ -92,17 +92,17 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
 
       // Bob is in the same org — his user-org scope differs. He should
       // not see the token in a list.
-      const bobList = yield* asUser(bobId, orgId, (client) =>
+      const bobList = yield* asUser(bobId, organizationId, (client) =>
         client.secrets.list({
-          params: { scopeId: ScopeId.make(testUserOrgScopeId(bobId, orgId)) },
+          params: { scopeId: ScopeId.make(testUserOrgScopeId(bobId, organizationId)) },
         }),
       );
       expect(bobList.map((s) => s.id)).not.toContain(id);
 
-      const bobStatus = yield* asUser(bobId, orgId, (client) =>
+      const bobStatus = yield* asUser(bobId, organizationId, (client) =>
         client.secrets.status({
           params: {
-            scopeId: ScopeId.make(testUserOrgScopeId(bobId, orgId)),
+            scopeId: ScopeId.make(testUserOrgScopeId(bobId, organizationId)),
             secretId: SecretId.make(id),
           },
         }),
@@ -110,10 +110,10 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
       expect(bobStatus.status).toBe("missing");
 
       // And Alice still sees her own token metadata.
-      const aliceStatus = yield* asUser(aliceId, orgId, (client) =>
+      const aliceStatus = yield* asUser(aliceId, organizationId, (client) =>
         client.secrets.status({
           params: {
-            scopeId: ScopeId.make(testUserOrgScopeId(aliceId, orgId)),
+            scopeId: ScopeId.make(testUserOrgScopeId(aliceId, organizationId)),
             secretId: SecretId.make(id),
           },
         }),
@@ -124,14 +124,14 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
 
   it.effect("org-scoped secrets are visible to every user in that org", () =>
     Effect.gen(function* () {
-      const orgId = nextOrgId();
+      const organizationId = nextOrgId();
       const adminId = nextUserId();
       const memberId = nextUserId();
       const id = `sec_${uniq()}`;
 
-      yield* asUser(adminId, orgId, (client) =>
+      yield* asUser(adminId, organizationId, (client) =>
         client.secrets.set({
-          params: { scopeId: ScopeId.make(orgId) },
+          params: { scopeId: ScopeId.make(organizationId) },
           payload: {
             id: SecretId.make(id),
             name: "Org API Key",
@@ -140,14 +140,14 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
         }),
       );
 
-      const adminStatus = yield* asUser(adminId, orgId, (client) =>
+      const adminStatus = yield* asUser(adminId, organizationId, (client) =>
         client.secrets.status({
-          params: { scopeId: ScopeId.make(orgId), secretId: SecretId.make(id) },
+          params: { scopeId: ScopeId.make(organizationId), secretId: SecretId.make(id) },
         }),
       );
-      const memberStatus = yield* asUser(memberId, orgId, (client) =>
+      const memberStatus = yield* asUser(memberId, organizationId, (client) =>
         client.secrets.status({
-          params: { scopeId: ScopeId.make(orgId), secretId: SecretId.make(id) },
+          params: { scopeId: ScopeId.make(organizationId), secretId: SecretId.make(id) },
         }),
       );
       expect(adminStatus.status).toBe("resolved");
@@ -209,11 +209,11 @@ describe("cloud secret isolation (HTTP, user-org scope stack)", () => {
 
   it.effect("secrets.set rejects a scope outside the executor's stack", () =>
     Effect.gen(function* () {
-      const orgId = nextOrgId();
+      const organizationId = nextOrgId();
       const userId = nextUserId();
       const foreignOrg = nextOrgId();
 
-      const result = yield* asUser(userId, orgId, (client) =>
+      const result = yield* asUser(userId, organizationId, (client) =>
         client.secrets
           .set({
             params: { scopeId: ScopeId.make(foreignOrg) },

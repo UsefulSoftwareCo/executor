@@ -14,7 +14,7 @@
 // Two auth seams are faked: `McpAuth.verifyBearer` and the live WorkOS
 // membership check. The real bearer impl calls WorkOS's JWKS endpoint,
 // which we can't reach from the test isolate.
-// Test bearer format is `test-accept::<accountId>::<orgId|none>`
+// Test bearer format is `test-accept::<accountId>::<organizationId|none>`
 // (see `makeTestBearer` in test-worker.ts).
 //
 // The node-pool test (`mcp-session.e2e.node.test.ts`) covers the DO's
@@ -165,7 +165,35 @@ describe("/mcp CORS preflight", () => {
     expect(allowedHeaders).toContain("mcp-session-id");
     expect(allowedHeaders).toContain("authorization");
     expect(allowedHeaders).toContain("content-type");
-    expect(response.headers.get("access-control-expose-headers")).toBe("mcp-session-id");
+    // Envelope canonical CORS superset: expose-headers now includes
+    // WWW-Authenticate alongside mcp-session-id.
+    const exposeHeaders = response.headers.get("access-control-expose-headers") ?? "";
+    expect(exposeHeaders).toContain("mcp-session-id");
+  });
+});
+
+describe("/mcp method handling", () => {
+  it("returns 405 JSON-RPC -32001 for a method the transport doesn't serve", async () => {
+    // PUT/PATCH are not GET/POST/DELETE/OPTIONS — the envelope rejects them
+    // BEFORE dispatch so no session engine spins up (the OLD mcpApp 405).
+    for (const method of ["PUT", "PATCH"] as const) {
+      const response = await SELF.fetch(MCP_URL, {
+        method,
+        headers: {
+          authorization: `Bearer ${makeTestBearer(nextAccountId(), nextOrgId())}`,
+          "content-type": CONTENT_TYPE_JSON,
+        },
+        body: JSON.stringify(TOOLS_LIST_REQUEST),
+      });
+      expect(response.status, `${method} should be 405`).toBe(405);
+      const body = (await response.json()) as {
+        jsonrpc: string;
+        error: { code: number; message: string };
+      };
+      expect(body.jsonrpc).toBe("2.0");
+      expect(body.error.code).toBe(-32001);
+      expect(body.error.message).toMatch(/method not allowed/i);
+    }
   });
 });
 
@@ -187,6 +215,25 @@ describe("/.well-known/oauth-protected-resource", () => {
       scopes_supported: [],
     });
   });
+
+  it("answers an OPTIONS CORS preflight on the discovery path with 204 + CORS", async () => {
+    // OLD mcpApp answered OPTIONS for ALL mcp paths (incl /.well-known/*) before
+    // the route switch; the envelope now registers an OPTIONS preflight per
+    // discovery path, not only /mcp.
+    const response = await SELF.fetch(OAUTH_RESOURCE_URL, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://claude.ai",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, DELETE, OPTIONS");
+    const allowedHeaders = response.headers.get("access-control-allow-headers") ?? "";
+    expect(allowedHeaders).toContain("authorization");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -204,7 +251,14 @@ describe("/mcp unauthorized", () => {
     expect(wwwAuth).toContain(
       "https://test-resource.example.com/.well-known/oauth-protected-resource/mcp",
     );
-    expect(await response.json()).toEqual({ error: "unauthorized" });
+    // Envelope canonicalizes the 401 body to a JSON-RPC error (the legacy
+    // `{ error: "unauthorized" }` body cannot be overridden through the shared
+    // envelope, which only lets the provider set the WWW-Authenticate challenge).
+    expect(await response.json()).toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32001, message: "Unauthorized" },
+      id: null,
+    });
   });
 });
 
@@ -300,12 +354,12 @@ describe("/mcp unknown session id", () => {
 
 describe("/mcp notification responses", () => {
   it("returns 202 with an empty body for notifications/initialized", async () => {
-    const orgId = nextOrgId();
+    const organizationId = nextOrgId();
     const accountId = nextAccountId();
-    await seedOrg(orgId);
+    await seedOrg(organizationId);
 
     const initializeResponse = await mcpPost({
-      bearer: makeTestBearer(accountId, orgId),
+      bearer: makeTestBearer(accountId, organizationId),
       body: INITIALIZE_REQUEST,
     });
     expect(initializeResponse.status).toBe(200);
@@ -313,7 +367,7 @@ describe("/mcp notification responses", () => {
     expect(sessionId).toBeTruthy();
 
     const notificationResponse = await mcpPost({
-      bearer: makeTestBearer(accountId, orgId),
+      bearer: makeTestBearer(accountId, organizationId),
       sessionId,
       body: INITIALIZED_NOTIFICATION,
     });
@@ -326,12 +380,12 @@ describe("/mcp notification responses", () => {
 
 describe("/mcp session restore", () => {
   it("restores an initialized SDK transport from durable storage", async () => {
-    const orgId = nextOrgId();
+    const organizationId = nextOrgId();
     const accountId = nextAccountId();
-    await seedOrg(orgId);
+    await seedOrg(organizationId);
 
     const initializeResponse = await mcpPost({
-      bearer: makeTestBearer(accountId, orgId),
+      bearer: makeTestBearer(accountId, organizationId),
       body: INITIALIZE_REQUEST,
     });
     expect(initializeResponse.status).toBe(200);
@@ -345,7 +399,7 @@ describe("/mcp session restore", () => {
     });
 
     const response = await mcpPost({
-      bearer: makeTestBearer(accountId, orgId),
+      bearer: makeTestBearer(accountId, organizationId),
       sessionId,
       body: TOOLS_LIST_REQUEST,
     });
@@ -359,10 +413,10 @@ describe("/mcp session restore", () => {
   }, 15_000);
 
   it("keeps JSON POST responses after a session is restored by a GET reconnect", async () => {
-    const orgId = nextOrgId();
+    const organizationId = nextOrgId();
     const accountId = nextAccountId();
-    const bearer = makeTestBearer(accountId, orgId);
-    await seedOrg(orgId);
+    const bearer = makeTestBearer(accountId, organizationId);
+    await seedOrg(organizationId);
 
     const initializeResponse = await mcpPost({
       bearer,
@@ -418,10 +472,10 @@ describe("/mcp session restore", () => {
   }, 15_000);
 
   it("restores an initialized session after the idle alarm suspends the runtime", async () => {
-    const orgId = nextOrgId();
+    const organizationId = nextOrgId();
     const accountId = nextAccountId();
-    const bearer = makeTestBearer(accountId, orgId);
-    await seedOrg(orgId);
+    const bearer = makeTestBearer(accountId, organizationId);
+    await seedOrg(organizationId);
 
     const initializeResponse = await mcpPost({
       bearer,
@@ -493,14 +547,14 @@ describe("/mcp session restore", () => {
   }, 15_000);
 
   it("clears an existing session when live org access is revoked", async () => {
-    const orgId = `revoked_${nextOrgId()}`;
+    const organizationId = `revoked_${nextOrgId()}`;
     const accountId = nextAccountId();
     const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
     const sessionId = stub.id.toString();
 
     await runInDurableObject(stub, async (_instance, state) => {
       await state.storage.put(SESSION_META_KEY, {
-        organizationId: orgId,
+        organizationId,
         organizationName: "Revoked Org",
         userId: accountId,
       });
@@ -509,7 +563,7 @@ describe("/mcp session restore", () => {
     });
 
     const revokedResponse = await mcpPost({
-      bearer: makeTestBearer(accountId, orgId),
+      bearer: makeTestBearer(accountId, organizationId),
       sessionId,
       body: TOOLS_LIST_REQUEST,
     });

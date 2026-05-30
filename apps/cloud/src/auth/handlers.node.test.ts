@@ -8,12 +8,12 @@ import { CloudAuthPublicApi } from "./api";
 import { CloudAuthPublicHandlers } from "./handlers";
 import { UserStoreService } from "./context";
 import { WorkOSError } from "./errors";
-import { WorkOSAuth } from "./workos";
+import { WorkOSClient } from "./workos";
 
 const TestAuthPublicApi = HttpApi.make("cloudWeb").add(CloudAuthPublicApi);
 type EffectSuccess<T> = T extends EffectType<infer A, infer _E, infer _R> ? A : never;
 type AuthenticateWithCodeResult = EffectSuccess<
-  ReturnType<WorkOSAuth["Service"]["authenticateWithCode"]>
+  ReturnType<WorkOSClient["Service"]["authenticateWithCode"]>
 >;
 const fakeUser: AuthenticateWithCodeResult["user"] = {
   object: "user",
@@ -35,10 +35,10 @@ class UnstubbedWorkOSMethod extends Data.TaggedError("UnstubbedWorkOSMethod")<{
   method: string;
 }> {}
 
-const makeAuthFetch = (workos: Partial<WorkOSAuth["Service"]>) => {
+const makeAuthFetch = (workos: Partial<WorkOSClient["Service"]>) => {
   const WorkOSTest = Layer.succeed(
-    WorkOSAuth,
-    new Proxy(workos as WorkOSAuth["Service"], {
+    WorkOSClient,
+    new Proxy(workos as WorkOSClient["Service"], {
       get: (target, prop) => {
         if (prop in target) return target[prop as keyof typeof target];
         return () =>
@@ -202,7 +202,7 @@ describe("Auth callback handlers", () => {
                 status: "pending",
               },
             ],
-          })) as unknown as WorkOSAuth["Service"]["listUserMemberships"],
+          })) as unknown as WorkOSClient["Service"]["listUserMemberships"],
         refreshSession: () =>
           Effect.sync(() => {
             refreshCalls++;
@@ -250,9 +250,9 @@ describe("Auth callback handlers", () => {
                 status: "active",
               },
             ],
-          })) as unknown as WorkOSAuth["Service"]["listUserMemberships"],
+          })) as unknown as WorkOSClient["Service"]["listUserMemberships"],
         refreshSession: (() =>
-          Effect.fail(new WorkOSError())) as WorkOSAuth["Service"]["refreshSession"],
+          Effect.fail(new WorkOSError())) as WorkOSClient["Service"]["refreshSession"],
       });
 
       const response = yield* Effect.promise(() =>

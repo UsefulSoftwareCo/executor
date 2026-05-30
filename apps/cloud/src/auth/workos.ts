@@ -106,7 +106,7 @@ export const collectRawWorkOSList = async (
   };
 };
 
-class WorkOSAuthConfigurationError extends Data.TaggedError("WorkOSAuthConfigurationError")<{
+class WorkOSConfigurationError extends Data.TaggedError("WorkOSConfigurationError")<{
   readonly message: string;
 }> {}
 
@@ -120,7 +120,7 @@ const make = Effect.gen(function* () {
   const cookiePassword = env.WORKOS_COOKIE_PASSWORD;
 
   if (!cookiePassword || cookiePassword.length < 32) {
-    return yield* new WorkOSAuthConfigurationError({
+    return yield* new WorkOSConfigurationError({
       message: INVALID_COOKIE_PASSWORD_MESSAGE,
     });
   }
@@ -403,13 +403,13 @@ const make = Effect.gen(function* () {
   };
 });
 
-export type WorkOSAuthService = Effect.Success<typeof make>;
+export type WorkOSClientService = Effect.Success<typeof make>;
 
-export class WorkOSAuth extends Context.Service<WorkOSAuth, WorkOSAuthService>()(
-  "@executor-js/cloud/WorkOSAuth",
+export class WorkOSClient extends Context.Service<WorkOSClient, WorkOSClientService>()(
+  "@executor-js/cloud/WorkOSClient",
 ) {
   static Default = Layer.effect(this)(make).pipe(
-    Layer.withSpan("WorkOSAuth", { attributes: { module: "WorkOSAuth" } }),
+    Layer.withSpan("WorkOSClient", { attributes: { module: "WorkOSClient" } }),
   );
 }
 

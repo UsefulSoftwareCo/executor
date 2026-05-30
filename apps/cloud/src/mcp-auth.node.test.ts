@@ -6,7 +6,7 @@ import {
   McpJwtVerificationError,
   verifyMcpAccessToken,
   verifyWorkOSMcpAccessToken,
-} from "./mcp-auth";
+} from "./mcp/jwt";
 
 const issuer = "https://test-authkit.example.com";
 const resource = "https://test-resource.example.com/mcp";

@@ -228,7 +228,7 @@ export interface PluginCtx<TStore = unknown> {
     readonly updateTokens: (
       input: UpdateConnectionTokensInput,
     ) => Effect.Effect<ConnectionRef, ConnectionNotFoundError | StorageFailure>;
-    readonly setIdentityLabel: (
+    readonly setConnectionLabel: (
       id: string,
       label: string | null,
     ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;

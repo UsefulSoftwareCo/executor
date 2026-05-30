@@ -86,14 +86,14 @@ describe("DbService", () => {
   it("supports nested scopes within a single outer scope (regression: /api/scope pattern)", async () => {
     // Mirrors api.ts: an outer scope resolves the org, then an inner scope
     // (the HttpApi request handler) re-acquires DbService and queries again.
-    const orgId = `org_${crypto.randomUUID()}`;
+    const organizationId = `org_${crypto.randomUUID()}`;
 
     const outer = Layer.provide(
       Layer.effectDiscard(
         Effect.gen(function* () {
           const { db } = yield* DbService;
           yield* Effect.promise(() =>
-            makeUserStore(db).upsertOrganization({ id: orgId, name: "Acme" }),
+            makeUserStore(db).upsertOrganization({ id: organizationId, name: "Acme" }),
           );
         }),
       ),
@@ -108,13 +108,13 @@ describe("DbService", () => {
         return yield* Effect.scoped(
           Effect.gen(function* () {
             const { db } = yield* DbService;
-            return yield* Effect.promise(() => makeUserStore(db).getOrganization(orgId));
+            return yield* Effect.promise(() => makeUserStore(db).getOrganization(organizationId));
           }).pipe(Effect.provide(DbService.Live)),
         ) as Effect.Effect<{ id: string; name: string } | null, never, never>;
       }) as Effect.Effect<{ id: string; name: string } | null, never, never>,
     );
 
-    expect(result?.id).toBe(orgId);
+    expect(result?.id).toBe(organizationId);
     expect(result?.name).toBe("Acme");
   }, 15_000);
 });

@@ -13,6 +13,7 @@
     "MCP_AUTHKIT_DOMAIN": "https://test-authkit.example.com",
     "MCP_RESOURCE_ORIGIN": "https://test-resource.example.com",
     "NODE_ENV": "test",
+    "ALLOW_LOCAL_NETWORK": "true",
   },
   "durable_objects": {
     "bindings": [{ "name": "MCP_SESSION", "class_name": "McpSessionDO" }],

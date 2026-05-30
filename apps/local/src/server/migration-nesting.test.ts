@@ -1,12 +1,12 @@
 // Lint: reject migration SQL that nests a single function call too deeply.
 //
-// bun:sqlite's lemon parser stack overflows at PREPARE time when an
-// expression nests too deep, and the limit is platform-dependent — the
-// macOS-built compiled CLI binary trips around ~40 levels while Linux can
-// go further. Our test matrix only runs on Linux today, so a regression
-// won't surface in CI; this lint catches the class of bug structurally
-// instead. Cap is 20 (well above any legitimate nested-function call we
-// have today, well below the macOS bun:sqlite parser limit).
+// SQLite's lemon parser stack overflows at PREPARE time when an expression
+// nests too deep, and the limit is platform/build-dependent (historically the
+// macOS-built compiled CLI tripped around ~40 levels). The runtime is now
+// libSQL, which uses the same SQLite parser, so the structural risk persists;
+// this lint catches the class of bug regardless of which build runs the
+// migration. Cap is 20 (well above any legitimate nested-function call we have
+// today, well below the SQLite parser limit).
 import { describe, expect, it } from "@effect/vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -97,8 +97,7 @@ describe("drizzle migration SQL structural lint", () => {
             };
       // The expectation is `summary.ok === true`. The full `summary` object is
       // matched (not just `.ok`) so the failure diff prints file/line/fn/depth
-      // — bun:sqlite's lemon parser stack overflows on the compiled macOS CLI
-      // binary around depth 40, and the project's test matrix is Linux-only,
+      // — SQLite's lemon parser stack overflows on deeply nested expressions,
       // so the diff is the breadcrumb that tells you which migration to
       // refactor (precompute into a temp table à la 0008's __slug_norm, or
       // split the expression into multiple shallow steps).

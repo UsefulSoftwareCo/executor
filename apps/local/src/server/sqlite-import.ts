@@ -1,10 +1,12 @@
-import { Database } from "bun:sqlite";
+import { type Client } from "@libsql/client";
 import { Data } from "effect";
 import { existsSync } from "node:fs";
 
 /* oxlint-disable executor/no-json-parse, executor/no-switch-statement, executor/no-try-catch-or-throw -- boundary: one-shot legacy SQLite importer normalizes unknown rows and wraps native sqlite failures */
 
 import { type AnyColumn, type AnyTable, type FumaTables } from "@executor-js/sdk";
+
+import { openLegacyLibsql, queryFirst, queryRows } from "./libsql";
 
 type SqliteRow = Record<string, unknown>;
 
@@ -37,32 +39,36 @@ export interface LocalSqliteImportResult {
 const quoteIdent = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const sqliteStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const tableExists = (sqlite: Database, tableName: string): boolean => {
-  const row = sqlite
-    .query<{ name: string }, [string]>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .get(tableName);
-  return row !== null;
+const tableExists = async (client: Client, tableName: string): Promise<boolean> => {
+  const row = await queryFirst(
+    client,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [tableName],
+  );
+  return row != null;
 };
 
-const sqliteColumnNames = (sqlite: Database, tableName: string): ReadonlySet<string> => {
-  const rows = sqlite
-    .query<{ name: string }, []>(`PRAGMA table_info(${sqliteStringLiteral(tableName)})`)
-    .all();
+const sqliteColumnNames = async (
+  client: Client,
+  tableName: string,
+): Promise<ReadonlySet<string>> => {
+  const rows = await queryRows<{ name: string }>(
+    client,
+    `PRAGMA table_info(${sqliteStringLiteral(tableName)})`,
+  );
   return new Set(rows.map((row) => row.name));
 };
 
-const readRows = (sqlite: Database, tableName: string): readonly SqliteRow[] =>
-  sqlite.query<SqliteRow, []>(`SELECT * FROM ${quoteIdent(tableName)}`).all();
+const readRows = async (client: Client, tableName: string): Promise<readonly SqliteRow[]> =>
+  queryRows<SqliteRow>(client, `SELECT * FROM ${quoteIdent(tableName)}`);
 
-const readScopeIds = (sqlite: Database, tableName: string): readonly string[] =>
-  sqlite
-    .query<{ scope_id: unknown }, []>(
+const readScopeIds = async (client: Client, tableName: string): Promise<readonly string[]> =>
+  (
+    await queryRows<{ scope_id: unknown }>(
+      client,
       `SELECT DISTINCT "scope_id" AS scope_id FROM ${quoteIdent(tableName)} WHERE "scope_id" IS NOT NULL`,
     )
-    .all()
-    .flatMap((row) => (typeof row.scope_id === "string" ? [row.scope_id] : []));
+  ).flatMap((row) => (typeof row.scope_id === "string" ? [row.scope_id] : []));
 
 const parseJson = (value: string): unknown => {
   try {
@@ -160,23 +166,23 @@ const toFumaRow = (input: {
   return out;
 };
 
-export const readLegacySqliteScopeIds = (options: {
+export const readLegacySqliteScopeIds = async (options: {
   readonly sqlitePath: string;
   readonly tables: FumaTables;
   readonly scopeId: string;
-}): ReadonlySet<string> => {
+}): Promise<ReadonlySet<string>> => {
   const scopeIds = new Set([options.scopeId]);
   if (!existsSync(options.sqlitePath)) return scopeIds;
 
-  let sqlite: Database | null = null;
+  let client: Client | null = null;
   try {
-    sqlite = new Database(options.sqlitePath, { readonly: true });
+    client = openLegacyLibsql(options.sqlitePath);
     for (const table of Object.values(options.tables)) {
       const tableName = table.names.sql;
-      if (!tableExists(sqlite, tableName)) continue;
-      const columns = sqliteColumnNames(sqlite, tableName);
+      if (!(await tableExists(client, tableName))) continue;
+      const columns = await sqliteColumnNames(client, tableName);
       if (!columns.has("scope_id")) continue;
-      for (const scopeId of readScopeIds(sqlite, tableName)) {
+      for (const scopeId of await readScopeIds(client, tableName)) {
         scopeIds.add(scopeId);
       }
     }
@@ -188,7 +194,7 @@ export const readLegacySqliteScopeIds = (options: {
       cause,
     });
   } finally {
-    sqlite?.close();
+    client?.close();
   }
 };
 
@@ -199,20 +205,21 @@ export const importSqliteDataToFuma = async (
     return { imported: false, importedRows: 0, importedTables: [] };
   }
 
-  let sqlite: Database | null = null;
+  let client: Client | null = null;
 
   try {
-    sqlite = new Database(options.sqlitePath, { readonly: true });
+    client = openLegacyLibsql(options.sqlitePath);
+    const reader = client;
     const importedTables: string[] = [];
     let importedRows = 0;
 
     await options.target.transaction(async (db) => {
       for (const [tableKey, table] of Object.entries(options.tables)) {
         const tableName = table.names.sql;
-        if (!tableExists(sqlite!, tableName)) continue;
+        if (!(await tableExists(reader, tableName))) continue;
 
-        const sqliteColumns = sqliteColumnNames(sqlite!, tableName);
-        const rows = readRows(sqlite!, tableName).map((row) =>
+        const sqliteColumns = await sqliteColumnNames(reader, tableName);
+        const rows = (await readRows(reader, tableName)).map((row) =>
           toFumaRow({
             tableKey,
             table,
@@ -229,8 +236,8 @@ export const importSqliteDataToFuma = async (
       }
     });
 
-    sqlite.close();
-    sqlite = null;
+    client.close();
+    client = null;
 
     return { imported: true, importedRows, importedTables };
   } catch (cause) {
@@ -240,6 +247,6 @@ export const importSqliteDataToFuma = async (
       cause,
     });
   } finally {
-    sqlite?.close();
+    client?.close();
   }
 };

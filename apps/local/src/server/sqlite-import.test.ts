@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Database } from "bun:sqlite";
+import { type Client } from "@libsql/client";
 import { Schema } from "effect";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { collectTables } from "@executor-js/api/server";
 import {
   boolColumn,
-  collectTables,
   dateColumn,
   definePlugin,
   jsonColumn,
@@ -18,13 +18,14 @@ import {
 } from "@executor-js/sdk";
 import { withQueryContext } from "fumadb/query";
 
+import { openTestClient, openTestDb } from "./__test-helpers__/libsql-test-db";
 import { importLegacySqliteIfNeeded, readBundledDrizzleMigrationHashes } from "./executor";
 import { importSqliteDataToFuma, readLegacySqliteScopeIds } from "./sqlite-import";
 import { createSqliteFumaDb, type SqliteFumaDb } from "./sqlite-fumadb";
 
 let workDir: string;
 let sqlite: SqliteFumaDb | null;
-let heldReader: Database | null;
+let heldReader: Client | null;
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "executor-sqlite-import-"));
@@ -38,9 +39,9 @@ afterEach(async () => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-const seedSqlite = (path: string) => {
-  const db = new Database(path);
-  db.exec(`
+const seedSqlite = async (path: string) => {
+  const db = openTestDb(path);
+  await db.exec(`
     CREATE TABLE source (
       id TEXT PRIMARY KEY NOT NULL,
       plugin_id TEXT NOT NULL,
@@ -60,57 +61,59 @@ const seedSqlite = (path: string) => {
       PRIMARY KEY (namespace, key)
     );
   `);
-  db.prepare(
-    `INSERT INTO source (
+  await db
+    .prepare(
+      `INSERT INTO source (
       id, plugin_id, kind, name, url, can_remove, can_refresh, can_edit, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "src_1",
-    "plugin",
-    "remote",
-    "Imported",
-    null,
-    1,
-    0,
-    1,
-    1_700_000_000_000,
-    1_700_000_001_000,
-  );
-  db.prepare("INSERT INTO blob (namespace, key, value) VALUES (?, ?, ?)").run(
-    "scope_a/plugin",
-    "spec",
-    "{}",
-  );
+    )
+    .run(
+      "src_1",
+      "plugin",
+      "remote",
+      "Imported",
+      null,
+      1,
+      0,
+      1,
+      1_700_000_000_000,
+      1_700_000_001_000,
+    );
+  await db
+    .prepare("INSERT INTO blob (namespace, key, value) VALUES (?, ?, ?)")
+    .run("scope_a/plugin", "spec", "{}");
   db.close();
 };
 
-const seedDrizzleMigrationHistory = (
-  db: Database,
+const seedDrizzleMigrationHistory = async (
+  db: ReturnType<typeof openTestDb>,
   hashes: ReadonlyArray<string> = readBundledDrizzleMigrationHashes(
     join(import.meta.dirname, "../../drizzle"),
   ),
 ) => {
-  db.exec(`
+  await db.exec(`
     CREATE TABLE "__drizzle_migrations" (
       id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
       hash text NOT NULL,
       created_at numeric
     );
   `);
-  const insert = db.prepare(`INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)`);
+  const insert = await db.prepare(
+    `INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)`,
+  );
   for (const hash of hashes) {
-    insert.run(hash, Date.now());
+    await insert.run(hash, Date.now());
   }
 };
 
-const seedMigratedSqlite = (
+const seedMigratedSqlite = async (
   path: string,
   options?: {
     readonly migrationHashes?: ReadonlyArray<string>;
   },
 ) => {
-  const db = new Database(path);
-  db.exec(`
+  const db = openTestDb(path);
+  await db.exec(`
     CREATE TABLE source (
       scope_id TEXT NOT NULL,
       id TEXT NOT NULL,
@@ -132,29 +135,29 @@ const seedMigratedSqlite = (
       PRIMARY KEY (namespace, key)
     );
   `);
-  seedDrizzleMigrationHistory(db, options?.migrationHashes);
-  db.prepare(
-    `INSERT INTO source (
+  await seedDrizzleMigrationHistory(db, options?.migrationHashes);
+  await db
+    .prepare(
+      `INSERT INTO source (
       scope_id, id, plugin_id, kind, name, url, can_remove, can_refresh, can_edit, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    "scope_a",
-    "src_1",
-    "plugin",
-    "remote",
-    "Imported",
-    null,
-    1,
-    0,
-    1,
-    1_700_000_000_000,
-    1_700_000_001_000,
-  );
-  db.prepare("INSERT INTO blob (namespace, key, value) VALUES (?, ?, ?)").run(
-    "scope_a/plugin",
-    "spec",
-    "{}",
-  );
+    )
+    .run(
+      "scope_a",
+      "src_1",
+      "plugin",
+      "remote",
+      "Imported",
+      null,
+      1,
+      0,
+      1,
+      1_700_000_000_000,
+      1_700_000_001_000,
+    );
+  await db
+    .prepare("INSERT INTO blob (namespace, key, value) VALUES (?, ?, ?)")
+    .run("scope_a/plugin", "spec", "{}");
   db.close();
 };
 
@@ -197,7 +200,7 @@ describe("importSqliteDataToFuma", () => {
   it("imports current SQLite rows into FumaDB SQLite without replacing source files", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedSqlite(sqlitePath);
+    await seedSqlite(sqlitePath);
 
     const tables = collectTables([]);
     sqlite = await createSqliteFumaDb({
@@ -238,8 +241,8 @@ describe("importSqliteDataToFuma", () => {
 
   it("imports every existing legacy scope from the global local database", async () => {
     const sqlitePath = join(workDir, "data.db");
-    const db = new Database(sqlitePath);
-    db.exec(`
+    const db = openTestDb(sqlitePath);
+    await db.exec(`
       CREATE TABLE source (
         scope_id TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -255,12 +258,12 @@ describe("importSqliteDataToFuma", () => {
         PRIMARY KEY (scope_id, id)
       );
     `);
-    const insert = db.prepare(
+    const insert = await db.prepare(
       `INSERT INTO source (
         scope_id, id, plugin_id, kind, name, url, can_remove, can_refresh, can_edit, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    insert.run(
+    await insert.run(
       "scope_a",
       "src_a",
       "plugin",
@@ -273,7 +276,7 @@ describe("importSqliteDataToFuma", () => {
       1_700_000_000_000,
       1_700_000_001_000,
     );
-    insert.run(
+    await insert.run(
       "scope_b",
       "src_b",
       "plugin",
@@ -289,7 +292,7 @@ describe("importSqliteDataToFuma", () => {
     db.close();
 
     const tables = collectTables([]);
-    const legacyScopeIds = readLegacySqliteScopeIds({
+    const legacyScopeIds = await readLegacySqliteScopeIds({
       sqlitePath,
       tables,
       scopeId: "scope_a",
@@ -324,8 +327,8 @@ describe("importSqliteDataToFuma", () => {
 
   it("normalizes plugin table values when importing legacy SQLite rows", async () => {
     const sqlitePath = join(workDir, "data.db");
-    const db = new Database(sqlitePath);
-    db.exec(`
+    const db = openTestDb(sqlitePath);
+    await db.exec(`
       CREATE TABLE legacy_shape (
         scope_id TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -337,19 +340,21 @@ describe("importSqliteDataToFuma", () => {
         PRIMARY KEY (scope_id, id)
       );
     `);
-    db.prepare(
-      `INSERT INTO legacy_shape (
+    await db
+      .prepare(
+        `INSERT INTO legacy_shape (
         scope_id, id, payload, enabled, retry_after_ms, discovered_at, note
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "scope_a",
-      "shape_1",
-      JSON.stringify({ auth: { type: "oauth2" }, paths: ["/v1/items"] }),
-      1,
-      "9007199254740993",
-      1_700_000_000_000,
-      null,
-    );
+      )
+      .run(
+        "scope_a",
+        "shape_1",
+        JSON.stringify({ auth: { type: "oauth2" }, paths: ["/v1/items"] }),
+        1,
+        "9007199254740993",
+        1_700_000_000_000,
+        null,
+      );
     db.close();
 
     const tables = collectTables([legacyShapePlugin]);
@@ -387,7 +392,7 @@ describe("importSqliteDataToFuma", () => {
   it("writes the import marker only after the replacement database is in place", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedMigratedSqlite(sqlitePath);
+    await seedMigratedSqlite(sqlitePath);
 
     const tables = collectTables([]);
     const result = await importLegacySqliteIfNeeded({
@@ -420,7 +425,7 @@ describe("importSqliteDataToFuma", () => {
   it("imports an existing legacy schema with divergent Drizzle migration history", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedMigratedSqlite(sqlitePath, {
+    await seedMigratedSqlite(sqlitePath, {
       migrationHashes: ["different-branch-migration", "newer-branch-migration"],
     });
 
@@ -455,15 +460,17 @@ describe("importSqliteDataToFuma", () => {
   it("imports a checkpointed legacy WAL database even when DELETE journal mode is busy", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedMigratedSqlite(sqlitePath);
+    await seedMigratedSqlite(sqlitePath);
 
-    const writer = new Database(sqlitePath);
-    writer.exec("PRAGMA journal_mode = WAL");
+    const writer = openTestClient(sqlitePath);
+    await writer.execute("PRAGMA journal_mode = WAL");
     writer.close();
 
-    heldReader = new Database(sqlitePath, { readonly: true });
-    heldReader.exec("BEGIN");
-    heldReader.query("SELECT * FROM source").all();
+    // Hold a concurrent read on a SEPARATE libSQL connection so the importer's
+    // WAL checkpoint must contend with an open reader (busy_timeout handling).
+    heldReader = openTestClient(sqlitePath);
+    await heldReader.execute("BEGIN");
+    await heldReader.execute("SELECT * FROM source");
 
     const tables = collectTables([]);
     const result = await importLegacySqliteIfNeeded({
@@ -495,10 +502,10 @@ describe("importSqliteDataToFuma", () => {
   it("imports newly-loaded plugin tables from the original backup after the first cutover", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedMigratedSqlite(sqlitePath);
+    await seedMigratedSqlite(sqlitePath);
 
-    const legacy = new Database(sqlitePath);
-    legacy.exec(`
+    const legacy = openTestDb(sqlitePath);
+    await legacy.exec(`
       CREATE TABLE late_item (
         scope_id TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -552,7 +559,7 @@ describe("importSqliteDataToFuma", () => {
   it("marks newly-loaded empty plugin tables so startup does not retry backup imports", async () => {
     const sqlitePath = join(workDir, "data.db");
     const markerPath = join(workDir, "fumadb-sqlite-imported");
-    seedMigratedSqlite(sqlitePath);
+    await seedMigratedSqlite(sqlitePath);
 
     const firstResult = await importLegacySqliteIfNeeded({
       storage: {

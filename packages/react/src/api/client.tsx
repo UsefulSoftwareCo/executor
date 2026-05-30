@@ -16,7 +16,7 @@ const isApiClientInfrastructureCause = (cause: Cause.Cause<unknown>): boolean =>
     onSome: (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
   });
 
-const reportApiClientInfrastructureCause = (cause: Cause.Cause<unknown>) =>
+export const reportApiClientInfrastructureCause = (cause: Cause.Cause<unknown>) =>
   Effect.sync(() => {
     if (!isApiClientInfrastructureCause(cause)) return;
     reportHandledFrontendError(cause, {

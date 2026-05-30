@@ -13,7 +13,6 @@
 // load — that was SIGSEGV-ing workerd during test instantiation.
 // ---------------------------------------------------------------------------
 
-import { HttpEffect } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
@@ -21,21 +20,21 @@ import postgres, { type Sql } from "postgres";
 import {
   McpAuth,
   McpAuthLive,
+  McpJwtVerificationError,
   McpOrganizationAuth,
   McpOrganizationAuthLive,
-  classifyMcpPath,
   mcpAuthorized,
-  mcpApp,
   mcpUnauthorized,
-} from "./mcp";
+} from "./mcp/auth";
+import { classifyMcpPath, makeMcpWebHandler } from "./mcp/mount";
+import { cloudMcpAuthProviderLayer } from "./mcp/auth-provider";
 import { ApiKeyService } from "./auth/api-keys";
-import { McpJwtVerificationError } from "./mcp-auth";
 import { organizations } from "./services/schema";
 import { parseTestBearer } from "./test-bearer";
 import { DoTelemetryLive } from "./services/telemetry";
 import { CoreSharedServices } from "./api/core-shared-services";
 
-export { McpSessionDO } from "./mcp-session";
+export { McpSessionDO } from "./mcp/session-durable-object";
 
 const TestMcpAuthLive = Layer.succeed(McpAuth)({
   verifyBearer: (request) =>
@@ -106,28 +105,24 @@ const handleSeedOrg = async (
   return new Response(null, { status: 204 });
 };
 
-// Provide a WebSdk-backed tracer on the worker side so the `mcp.request` span
-// gets reported to the OTLP receiver. This is the same Worker-safe telemetry
-// layer used in prod.
-const testMcpFetch = HttpEffect.toWebHandler(
-  mcpApp.pipe(
-    Effect.provide(Layer.mergeAll(TestMcpAuthLive, TestMcpOrganizationAuthLive, DoTelemetryLive)),
-  ),
-);
+// Build the same shared host-mcp envelope handler the prod worker uses, with
+// the test auth seams swapped in. A WebSdk-backed tracer (DoTelemetryLive) is
+// provided to the whole router so the `mcp.request` / `mcp.request.annotate`
+// spans get reported to the OTLP receiver.
+const testMcpFetch = makeMcpWebHandler({
+  authProvider: cloudMcpAuthProviderLayer,
+  seamsRequirements: Layer.mergeAll(TestMcpAuthLive, TestMcpOrganizationAuthLive),
+  runtime: DoTelemetryLive,
+});
 
-const realAuthMcpFetch = HttpEffect.toWebHandler(
-  mcpApp.pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        McpAuthLive.pipe(
-          Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices))),
-        ),
-        McpOrganizationAuthLive,
-        DoTelemetryLive,
-      ),
-    ),
+const realAuthMcpFetch = makeMcpWebHandler({
+  authProvider: cloudMcpAuthProviderLayer,
+  seamsRequirements: Layer.mergeAll(
+    McpAuthLive.pipe(Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices)))),
+    McpOrganizationAuthLive,
   ),
-);
+  runtime: DoTelemetryLive,
+});
 
 export default {
   async fetch(request: Request, envArg: Record<string, unknown>): Promise<Response> {

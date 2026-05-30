@@ -1,212 +1,123 @@
-// Production wiring for the protected API. Lives outside `protected-layers.ts`
-// because `makeExecutionStack` imports `cloudflare:workers`, which the test
-// harness can't load in the workerd test runtime.
+// Production wiring for the protected API: the per-request HttpRouter
+// middleware that resolves identity, builds the executor/engine, and provides
+// `AuthContext` + the execution-stack services to handlers.
 
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
 import {
-  ExecutionEngineService,
-  ExecutorService,
-  providePluginExtensions,
-  type PluginExtensionServices,
+  IdentityProvider,
+  makeExecutionStackMiddleware,
+  requestScopedMiddleware,
+  RouterConfigLive,
+  type IdentityFailure,
 } from "@executor-js/api/server";
 
 import { cloudPlugins, type CloudPlugins } from "./cloud-plugins";
-import { AuthContext } from "../auth/middleware";
 import { ApiKeyService } from "../auth/api-keys";
-import { authorizeOrganization } from "../auth/authorize-organization";
 import { UserStoreService } from "../auth/context";
-import { WorkOSAuth } from "../auth/workos";
+import { cloudIdentityFailureStrategy, workosIdentityLayer } from "../auth/workos-auth-provider";
 import { AutumnService } from "../services/autumn";
 import { DbService } from "../services/db";
-import { makeExecutionStack } from "../services/execution-stack";
-import { HttpResponseError } from "./error-response";
-import { RequestScopedServicesLive } from "./layers";
-import { ProtectedCloudApiLive, RouterConfig } from "./protected-layers";
-import { requestScopedMiddleware } from "./request-scoped";
+import { CoreSharedServices } from "./core-shared-services";
+import { CloudMeteredExecutionStackLayer } from "./execution-stack-metered";
+import { ProtectedCloudApiLive, RequestScopedServicesLive } from "./layers";
 
-// Pre-compute the per-plugin `Effect.provideService(extensionService,
-// executor[id])` chain. The plugin spec carries the Service tag so
-// this file doesn't import each plugin's `*/api` directly.
-const provideExecutorExtensions = providePluginExtensions(cloudPlugins);
-const BEARER_PREFIX = "Bearer ";
-
-export const resolveApiKeyIdentity = (request: Request) =>
-  Effect.gen(function* () {
-    const authHeader = request.headers.get("authorization");
-    if (!authHeader) return null;
-
-    if (!authHeader.startsWith(BEARER_PREFIX)) {
-      return yield* new HttpResponseError({
-        status: 401,
-        code: "invalid_authorization_header",
-        message: "Authorization header must use Bearer authentication",
-      });
-    }
-
-    const value = authHeader.slice(BEARER_PREFIX.length).trim();
-    if (!value) {
-      return yield* new HttpResponseError({
-        status: 401,
-        code: "invalid_api_key",
-        message: "Invalid API key",
-      });
-    }
-
-    const apiKeys = yield* ApiKeyService;
-    const principal = yield* apiKeys.validate(value).pipe(
-      Effect.catchTag("ApiKeyValidationError", () =>
-        Effect.fail(
-          new HttpResponseError({
-            status: 503,
-            code: "api_key_validation_unavailable",
-            message: "API key validation is temporarily unavailable",
-          }),
-        ),
-      ),
-    );
-
-    if (!principal) {
-      return yield* new HttpResponseError({
-        status: 401,
-        code: "invalid_api_key",
-        message: "Invalid API key",
-      });
-    }
-
-    const org = yield* authorizeOrganization(principal.accountId, principal.organizationId);
-    if (!org) {
-      return yield* new HttpResponseError({
-        status: 403,
-        code: "no_organization",
-        message: "No organization in API key",
-      });
-    }
-
-    return {
-      accountId: principal.accountId,
-      organizationId: org.id,
-      organizationName: org.name,
-      email: "",
-      name: null,
-      avatarUrl: null,
-    };
-  });
-
-export const resolveSessionIdentity = (request: Request) =>
-  Effect.gen(function* () {
-    const workos = yield* WorkOSAuth;
-    const session = yield* workos.authenticateRequest(request);
-    if (!session || !session.organizationId) {
-      return yield* new HttpResponseError({
-        status: 403,
-        code: "no_organization",
-        message: "No organization in session",
-      });
-    }
-    const org = yield* authorizeOrganization(session.userId, session.organizationId);
-    if (!org) {
-      return yield* new HttpResponseError({
-        status: 403,
-        code: "no_organization",
-        message: "No organization in session",
-      });
-    }
-    return {
-      accountId: session.userId,
-      organizationId: org.id,
-      organizationName: org.name,
-      email: session.email,
-      name: `${session.firstName ?? ""} ${session.lastName ?? ""}`.trim() || null,
-      avatarUrl: session.avatarUrl ?? null,
-    };
-  });
-
-export const resolveProtectedIdentity = (request: Request) =>
-  Effect.gen(function* () {
-    const apiKeyIdentity = yield* resolveApiKeyIdentity(request);
-    if (apiKeyIdentity) return apiKeyIdentity;
-    return yield* resolveSessionIdentity(request);
-  });
+// Re-exported for `protected-api-key-auth.node.test.ts`, which asserts the
+// per-path principal + error codes the folded resolver still produces.
+export {
+  resolveApiKeyPrincipal,
+  resolveSessionPrincipal,
+  resolveProtectedPrincipal,
+} from "../auth/workos-auth-provider";
 
 // One `HttpRouter` middleware that:
-//   1. authenticates the WorkOS sealed session,
-//   2. verifies live org membership (closes the JWT-cache gap — see
-//      `auth/authorize-organization.ts`),
-//   3. resolves the org name,
-//   4. builds the per-request executor + engine,
-//   5. provides `AuthContext` + the execution-stack services to the handler.
+//   1. resolves identity via the NEUTRAL `IdentityProvider` (api-key BEATS sealed
+//      session, decided INSIDE cloud's `workosIdentityLayer`), verifying live org
+//      membership,
+//   2. builds the per-request executor + engine,
+//   3. provides `AuthContext` + the execution-stack services to the handler.
 //
 // Replaces both the old outer `Effect.gen` in this file (which did its own
 // WorkOS lookup) and the per-route `OrgAuth` HttpApiMiddleware (which did
 // a second one).
 //
-// Errors are NOT caught here: failures propagate as typed errors and are
-// rendered to a JSON response by the framework's `Respondable` pipeline
-// (see `HttpResponseError` in `./error-response.ts`). Letting `unhandled`
-// pass through is what satisfies `HttpRouter.middleware`'s brand check
-// without any type casts.
+// The shared `makeExecutionStackMiddleware` (P5) owns the body; cloud injects:
+//   - the neutral `IdentityProvider`  -> the identity seam. Cloud's
+//                                     `workosIdentityLayer` provides this tag; it
+//                                     reads the per-request `UserStoreService`, so
+//                                     it is built PER REQUEST in the DB combine
+//                                     below (NOT captured at boot).
+//   - `cloudIdentityFailureStrategy` -> renders the shared identity errors as
+//                                     cloud's exact `{ error, code }` JSON at
+//                                     status 401/403/503 (byte-identical).
+//   - `cloudPlugins` + `CloudMeteredExecutionStackLayer` — the executor plane is
+//                                     the ONLY path that meters, so billing lives
+//                                     here (not in the neutral stack the DO shares).
 //
-// `DbService` and `UserStoreService` are pulled from per-request context
-// — `RequestScopedServicesMiddleware` (combined below) provides them
-// fresh per request so the postgres.js socket lives in the request
-// fiber's scope, not the worker's boot scope.
-const ExecutionStackMiddleware = HttpRouter.middleware<{
-  // The plugin extension Services this middleware satisfies are derived
-  // from `typeof cloudPlugins` — no per-plugin `*ExtensionService`
-  // imports at the host. Runtime binding mirrors the type:
-  // `providePluginExtensions(cloudPlugins)(executor)` below.
-  provides:
-    | AuthContext
-    | ExecutorService
-    | ExecutionEngineService
-    | PluginExtensionServices<CloudPlugins>;
-}>()(
-  Effect.gen(function* () {
-    const longLived = yield* Effect.context<WorkOSAuth | AutumnService | ApiKeyService>();
-    return (httpEffect) =>
-      Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const webRequest = yield* HttpServerRequest.toWeb(request);
-        const identity = yield* resolveProtectedIdentity(webRequest);
-        const auth = AuthContext.of({
-          accountId: identity.accountId,
-          organizationId: identity.organizationId,
-          email: identity.email,
-          name: identity.name,
-          avatarUrl: identity.avatarUrl,
-        });
-        const { executor, engine } = yield* makeExecutionStack(
-          auth.accountId,
-          identity.organizationId,
-          identity.organizationName,
-        );
-        return yield* httpEffect.pipe(
-          Effect.provideService(AuthContext, auth),
-          Effect.provideService(ExecutorService, executor),
-          Effect.provideService(ExecutionEngineService, engine),
-          provideExecutorExtensions(executor),
-        );
-      }).pipe(Effect.provideContext(longLived));
-  }),
-);
+// Only `AutumnService` is captured at boot; `IdentityProvider` + `DbService` +
+// `UserStoreService` stay residual and are supplied per request by the combined
+// `requestScopedMiddleware` (so the postgres.js socket — and the identity layer
+// that reads it — live in the request fiber's scope, satisfying Cloudflare
+// Workers' I/O isolation).
+const ExecutionStackMiddleware = makeExecutionStackMiddleware<
+  CloudPlugins,
+  IdentityFailure,
+  IdentityProvider,
+  AutumnService | DbService,
+  never,
+  // Capture only the boot-scoped `AutumnService`; `IdentityProvider` + `DbService`
+  // + `UserStoreService` stay residual and flow through the per-request DB combine.
+  AutumnService
+>({
+  plugins: cloudPlugins,
+  authenticate: (request) =>
+    IdentityProvider.asEffect().pipe(Effect.flatMap((provider) => provider.authenticate(request))),
+  strategy: cloudIdentityFailureStrategy,
+  stackLayer: CloudMeteredExecutionStackLayer,
+});
 
-// `rsLive` is the per-request DB layer. Combining it into the auth
-// middleware collapses `requires: DbService | UserStoreService` to
-// never (so `.layer` is a real Layer instead of the "Need to combine"
-// type-error sentinel) AND makes the postgres.js socket request-scoped:
-// the layer rebuilds per HTTP request, satisfying Cloudflare Workers'
-// I/O isolation. Exposed as a factory so tests can swap in a counting
-// fake — see `apps/cloud/src/api.request-scope.node.test.ts`.
+// `rsLive` is the per-request DB layer. `requestScopedLive` folds the neutral
+// `IdentityProvider` (cloud's `workosIdentityLayer`, which reads the per-request
+// `UserStoreService` from `rsLive` and the boot `WorkOSClient` / `ApiKeyService`
+// residually) ON TOP of it, so the identity layer is rebuilt per request in the
+// same request-fiber scope as the postgres.js socket it reads — satisfying
+// Cloudflare Workers' I/O isolation. Combining it into the auth middleware
+// collapses `requires: IdentityProvider | DbService | UserStoreService` to the
+// boot-only `WorkOSClient | ApiKeyService` (so `.layer` is a real Layer instead
+// of the "Need to combine" sentinel). Exposed as a factory so tests can swap in a
+// counting fake — see `apps/cloud/src/api.request-scope.node.test.ts`.
+//
+// `AutumnService` is provided HERE — the billing service is scoped to the
+// executor plane that meters, not to the neutral boot core. (`/autumn`, the
+// account seat-gate, and the createOrganization free-limit gate each provide it
+// where they run.)
 export const makeProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) => {
+  // The neutral `IdentityProvider`, built per request: it reads `UserStoreService`
+  // from `rsLive` and the WorkOS control plane (`WorkOSClient` + `ApiKeyService`,
+  // stateless config — no per-request I/O socket) for the org-resolution path.
+  // `orDie` because a WorkOS config error is unrecoverable.
+  const identityLive = workosIdentityLayer.pipe(
+    Layer.provide(rsLive),
+    Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices))),
+    Layer.provide(CoreSharedServices),
+    // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a boot-time WorkOS misconfiguration is unrecoverable
+    Layer.orDie,
+  );
+  // The per-request layer the combine rebuilds in the request fiber's scope: the
+  // postgres socket (`rsLive`) PLUS the identity layer that reads it. Combining it
+  // into the auth middleware collapses `requires: IdentityProvider | DbService |
+  // UserStoreService` to `never` (so `.layer` is a real Layer instead of the "Need
+  // to combine" sentinel) AND keeps the socket request-scoped. Exposed as a
+  // factory so tests can swap in a counting fake — see
+  // `apps/cloud/src/api.request-scope.node.test.ts`.
+  const requestScopedLive = rsLive.pipe(Layer.provideMerge(identityLive));
   const protectedMiddleware = ExecutionStackMiddleware.combine(
-    requestScopedMiddleware(rsLive),
+    requestScopedMiddleware(requestScopedLive),
   ).layer;
   return ProtectedCloudApiLive.pipe(
     Layer.provide(protectedMiddleware),
-    Layer.provideMerge(ApiKeyService.WorkOS),
-    Layer.provideMerge(RouterConfig),
+    Layer.provideMerge(AutumnService.Default),
+    Layer.provideMerge(RouterConfigLive),
   );
 };
 

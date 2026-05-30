@@ -12,6 +12,12 @@ export class WorkOSError extends Schema.TaggedErrorClass<WorkOSError>()(
   { httpApiStatus: 500 },
 ) {}
 
+export class ApiKeyManagementError extends Schema.TaggedErrorClass<ApiKeyManagementError>()(
+  "ApiKeyManagementError",
+  { cause: Schema.Unknown },
+  { httpApiStatus: 500 },
+) {}
+
 /**
  * Private wrapper used by service adapters that lift Promise APIs into
  * Effect. `withServiceLogging` immediately remaps these into a public-facing

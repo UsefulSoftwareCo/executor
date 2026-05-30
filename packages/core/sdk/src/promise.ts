@@ -24,12 +24,12 @@ export type {
   UpdateToolPolicyInput,
 } from "./policies";
 export {
-  ToolSchema,
+  ToolSchemaView,
   SourceDetectionResult,
   type RefreshSourceInput,
   type RemoveSourceInput,
   type Source,
-  type Tool,
+  type ToolView,
   type ToolListFilter,
 } from "./types";
 export type { ToolAnnotations } from "./core-schema";

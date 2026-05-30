@@ -1,15 +1,15 @@
-import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
+import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { fumadb, type FumaDB } from "fumadb";
+import { dirname, resolve } from "node:path";
+import { type FumaDB } from "fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   createDrizzleRuntimeSchemaSqlFromTables,
-  drizzleAdapter,
 } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
 
+import { createExecutorFumaDb } from "./executor-fuma-db";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 
 type SqliteTestFumaSchema<TTables extends FumaTables> = ReturnType<
@@ -19,8 +19,8 @@ type SqliteTestFumaSchema<TTables extends FumaTables> = ReturnType<
 export interface SqliteTestFumaDb<TTables extends FumaTables = FumaTables> {
   readonly db: FumaDb<SqliteTestFumaSchema<TTables>>;
   readonly fuma: FumaDB<SqliteTestFumaSchema<TTables>[]>;
-  readonly drizzle: BetterSQLite3Database<Record<string, unknown>>;
-  readonly sqlite: Database.Database;
+  readonly drizzle: LibSQLDatabase<Record<string, unknown>>;
+  readonly client: Client;
   readonly close: () => Promise<void>;
 }
 
@@ -39,8 +39,13 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
   if (options.path && options.path !== ":memory:") {
     mkdirSync(dirname(options.path), { recursive: true });
   }
-  const sqlite = new Database(options.path ?? ":memory:");
-  sqlite.pragma("foreign_keys = ON");
+  // libSQL `:memory:` is a single connection per client, matching the test's
+  // single-handle expectation. foreign_keys is per-connection (no shared
+  // handle to inherit it), so set it on this one.
+  const url =
+    !options.path || options.path === ":memory:" ? ":memory:" : `file:${resolve(options.path)}`;
+  const client = createClient({ url });
+  await client.execute("PRAGMA foreign_keys = ON");
 
   const schema = createDrizzleRuntimeSchemaFromTables({
     tables: options.tables,
@@ -48,7 +53,7 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
     version,
     provider: "sqlite",
   });
-  const drizzleDb = drizzle(sqlite, { schema });
+  const drizzleDb = drizzle({ client, schema });
 
   for (const statement of createDrizzleRuntimeSchemaSqlFromTables({
     tables: options.tables,
@@ -56,31 +61,23 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
     version,
     provider: "sqlite",
   })) {
-    sqlite.exec(statement);
+    await client.execute(statement);
   }
 
-  const latestSchema = fumaSchema({
-    version,
+  const { db, fuma } = createExecutorFumaDb(drizzleDb, {
     tables: options.tables,
-  });
-  const factory = fumadb({
     namespace,
-    schemas: [latestSchema],
+    version,
+    provider: "sqlite",
   });
-  const fuma = factory.client(
-    drizzleAdapter({
-      db: drizzleDb,
-      provider: "sqlite",
-    }),
-  );
 
   return {
-    db: fuma.orm(version),
+    db,
     fuma,
     drizzle: drizzleDb,
-    sqlite,
+    client,
     close: async () => {
-      sqlite.close();
+      client.close();
     },
   };
 };

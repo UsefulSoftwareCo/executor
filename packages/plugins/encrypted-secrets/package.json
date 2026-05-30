@@ -1,0 +1,26 @@
+{
+  "name": "@executor-js/plugin-encrypted-secrets",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "typecheck": "tsgo --noEmit",
+    "test": "bunx --bun vitest run",
+    "test:watch": "bunx --bun vitest"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "tsup": "catalog:",
+    "vitest": "catalog:"
+  }
+}

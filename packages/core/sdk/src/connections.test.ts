@@ -766,7 +766,7 @@ describe("connections", () => {
     }),
   );
 
-  it.effect("setIdentityLabel updates the label", () =>
+  it.effect("setConnectionLabel updates the label", () =>
     Effect.gen(function* () {
       const { provider } = makeConnectionProvider({ key: "spotify" });
       const executor = yield* createExecutor(
@@ -793,13 +793,13 @@ describe("connections", () => {
         }),
       );
 
-      yield* executor.connections.setIdentityLabel("conn-1", "alice@example");
+      yield* executor.connections.setConnectionLabel("conn-1", "alice@example");
       const got = yield* executor.connections.get("conn-1");
       expect(got?.identityLabel).toBe("alice@example");
     }),
   );
 
-  it.effect("setIdentityLabel fails with ConnectionNotFoundError for unknown id", () =>
+  it.effect("setConnectionLabel fails with ConnectionNotFoundError for unknown id", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({
@@ -808,7 +808,7 @@ describe("connections", () => {
       );
 
       const err = yield* executor.connections
-        .setIdentityLabel("does-not-exist", "x")
+        .setConnectionLabel("does-not-exist", "x")
         .pipe(Effect.flip);
       expect(Predicate.isTagged(err, "ConnectionNotFoundError")).toBe(true);
     }),

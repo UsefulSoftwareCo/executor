@@ -3,7 +3,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
-import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "@executor-js/host-mcp";
+import { jsonRpcErrorBody } from "@executor-js/host-mcp";
+import {
+  createExecutorMcpServer,
+  type ExecutorMcpServerConfig,
+} from "@executor-js/host-mcp/tool-server";
 import type { ResumeResponse } from "@executor-js/execution";
 
 import { startIntegrationsRefresh } from "./integrations";
@@ -18,11 +22,11 @@ export type McpRequestHandler = {
   readonly close: () => Promise<void>;
 };
 
+// Local serves these error bodies in-process; like the self-host store they are
+// INNER responses (no CORS) — byte-identical to the prior hand-rolled copy
+// (`content-type: application/json` only) via the canonical renderer.
 const jsonError = (status: number, code: number, message: string): Response =>
-  new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+  jsonRpcErrorBody(status, code, message, { cors: false });
 
 const formatBoundaryError = (error: unknown): unknown => {
   // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: MCP request handler catches unknown SDK/runtime failures for process logging

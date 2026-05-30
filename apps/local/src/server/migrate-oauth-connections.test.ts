@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Database } from "bun:sqlite";
+import { openTestDb, type LibsqlTestDb } from "./__test-helpers__/libsql-test-db";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +12,12 @@ const REPAIR_MIGRATION = join(
 );
 
 let workDir: string;
-let db: Database;
+let db: LibsqlTestDb;
 
-beforeEach(() => {
+beforeEach(async () => {
   workDir = mkdtempSync(join(tmpdir(), "executor-oauth-conn-mig-"));
-  db = new Database(join(workDir, "data.db"));
-  db.exec(`
+  db = openTestDb(join(workDir, "data.db"));
+  await db.exec(`
     CREATE TABLE \`connection\` (
       \`id\` text NOT NULL,
       \`scope_id\` text NOT NULL,
@@ -55,12 +55,12 @@ const oauthConnectionMigrationSql = () => {
 };
 
 describe("0008_scoped_credentials_cutover OAuth connection section", () => {
-  it("rewrites old OAuth provider keys and provider_state into the canonical oauth2 shape", () => {
+  it("rewrites old OAuth provider keys and provider_state into the canonical oauth2 shape", async () => {
     const now = Date.now();
-    const insert = db.prepare(
+    const insert = await db.prepare(
       "INSERT INTO `connection` (id, scope_id, provider, provider_state, scope, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
-    insert.run(
+    await insert.run(
       "openapi-conn",
       "scope-1",
       "openapi:oauth2",
@@ -74,7 +74,7 @@ describe("0008_scoped_credentials_cutover OAuth connection section", () => {
       "read",
       now,
     );
-    insert.run(
+    await insert.run(
       "mcp-conn",
       "scope-1",
       "mcp:oauth2",
@@ -89,7 +89,7 @@ describe("0008_scoped_credentials_cutover OAuth connection section", () => {
       null,
       now,
     );
-    insert.run(
+    await insert.run(
       "google-conn",
       "scope-1",
       "google-discovery:oauth2",
@@ -102,10 +102,10 @@ describe("0008_scoped_credentials_cutover OAuth connection section", () => {
       now,
     );
 
-    db.exec(oauthConnectionMigrationSql());
+    await db.exec(oauthConnectionMigrationSql());
 
     const rows = decodeConnectionRows(
-      db.prepare("SELECT provider, provider_state FROM `connection` ORDER BY id").all(),
+      await db.prepare("SELECT provider, provider_state FROM `connection` ORDER BY id").all(),
     );
     expect(rows.map((row) => row.provider)).toEqual(["oauth2", "oauth2", "oauth2"]);
     const [google, mcp, openapi] = rows.map((row) => decodeJsonRecord(row.provider_state));
@@ -132,9 +132,9 @@ describe("0008_scoped_credentials_cutover OAuth connection section", () => {
 });
 
 describe("0009_repair_openapi_oauth_cutover_residue", () => {
-  it("repairs already-canonical OpenAPI rows and restores user-scoped OAuth secret bindings", () => {
+  it("repairs already-canonical OpenAPI rows and restores user-scoped OAuth secret bindings", async () => {
     const now = Date.now();
-    db.exec(`
+    await db.exec(`
       CREATE TABLE \`openapi_source\` (
         \`id\` text NOT NULL,
         \`scope_id\` text NOT NULL,
@@ -158,7 +158,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       );
     `);
 
-    db.prepare("INSERT INTO `openapi_source` (id, scope_id, oauth2) VALUES (?, ?, ?)").run(
+    await db.prepare("INSERT INTO `openapi_source` (id, scope_id, oauth2) VALUES (?, ?, ?)").run(
       "example_api",
       "org-1",
       JSON.stringify({
@@ -170,10 +170,10 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       }),
     );
 
-    const insertConnection = db.prepare(
+    const insertConnection = await db.prepare(
       "INSERT INTO `connection` (id, scope_id, provider, provider_state, scope, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
-    insertConnection.run(
+    await insertConnection.run(
       "openapi-oauth2-app-example_api",
       "org-1",
       "oauth2",
@@ -186,7 +186,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       null,
       now,
     );
-    insertConnection.run(
+    await insertConnection.run(
       "openapi-oauth2-app-example_api",
       "user-org:user-jd:org-1",
       "openapi:oauth2",
@@ -200,10 +200,10 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       now,
     );
 
-    const insertBinding = db.prepare(
+    const insertBinding = await db.prepare(
       "INSERT INTO `credential_binding` (id, scope_id, plugin_id, source_id, source_scope_id, slot_key, kind, text_value, secret_id, connection_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
-    insertBinding.run(
+    await insertBinding.run(
       "org-client-id",
       "org-1",
       "openapi",
@@ -217,7 +217,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       now,
       now,
     );
-    insertBinding.run(
+    await insertBinding.run(
       "org-client-secret",
       "org-1",
       "openapi",
@@ -231,7 +231,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       now,
       now,
     );
-    insertBinding.run(
+    await insertBinding.run(
       "org-connection",
       "org-1",
       "openapi",
@@ -245,7 +245,7 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       now,
       now,
     );
-    insertBinding.run(
+    await insertBinding.run(
       "jd-connection",
       "user-org:user-jd:org-1",
       "openapi",
@@ -260,18 +260,26 @@ describe("0009_repair_openapi_oauth_cutover_residue", () => {
       now,
     );
 
-    db.exec(readFileSync(REPAIR_MIGRATION, "utf-8"));
+    await db.exec(readFileSync(REPAIR_MIGRATION, "utf-8"));
 
     const providers = decodeConnectionRows(
-      db.prepare("SELECT provider, provider_state FROM `connection` ORDER BY scope_id").all(),
+      await db.prepare("SELECT provider, provider_state FROM `connection` ORDER BY scope_id").all(),
     );
     expect(providers.map((row) => row.provider)).toEqual(["oauth2", "oauth2"]);
 
-    const bindings = db
-      .prepare(
-        "SELECT scope_id, slot_key, kind, secret_id, connection_id FROM `credential_binding` WHERE source_id = ? ORDER BY scope_id, slot_key",
-      )
-      .all("example_api");
+    const bindings = (
+      await db
+        .prepare(
+          "SELECT scope_id, slot_key, kind, secret_id, connection_id FROM `credential_binding` WHERE source_id = ? ORDER BY scope_id, slot_key",
+        )
+        .all("example_api")
+    ).map((row) => ({
+      scope_id: row.scope_id,
+      slot_key: row.slot_key,
+      kind: row.kind,
+      secret_id: row.secret_id,
+      connection_id: row.connection_id,
+    }));
     expect(bindings).toEqual([
       {
         scope_id: "org-1",

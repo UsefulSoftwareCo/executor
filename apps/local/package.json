@@ -39,6 +39,7 @@
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
+    "@libsql/client": "catalog:",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@tanstack/react-router": "catalog:",
     "drizzle-orm": "catalog:",

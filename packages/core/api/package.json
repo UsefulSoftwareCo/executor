@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "effect": "catalog:"
   },
