@@ -7,9 +7,10 @@ import {
 } from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import * as Effect from "effect/Effect";
 
 import { ExecutorApiClient } from "./client";
-import { ReactivityKey } from "./reactivity-keys";
+import { connectionWriteKeys, ReactivityKey } from "./reactivity-keys";
 
 // ---------------------------------------------------------------------------
 // Scope — fetched from the server
@@ -177,6 +178,12 @@ export const startOAuth = ExecutorApiClient.mutation("oauth", "start");
 export const completeOAuth = ExecutorApiClient.mutation("oauth", "complete");
 
 export const cancelOAuth = ExecutorApiClient.mutation("oauth", "cancel");
+
+export const oauthConnectionCompleted = ExecutorApiClient.runtime.fn<{
+  readonly tokenScope: string;
+}>()(() => Effect.void, {
+  reactivityKeys: connectionWriteKeys,
+});
 
 export const createPolicy = ExecutorApiClient.mutation("policies", "create");
 

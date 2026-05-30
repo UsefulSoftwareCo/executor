@@ -88,18 +88,23 @@ export function missingCredentialLabels(
   const oauth2 = source.config.oauth2;
   if (!oauth2) return missing;
 
-  if (!hasSecretBinding(bindings, oauth2.clientIdSlot, targetScope, ranks)) {
-    missing.push("Client ID");
-  }
+  const hasLiveConnection = hasConnectionBinding(
+    bindings,
+    oauth2.connectionSlot,
+    targetScope,
+    ranks,
+    liveConnectionIds,
+  );
+  if (!hasLiveConnection) {
+    if (!hasSecretBinding(bindings, oauth2.clientIdSlot, targetScope, ranks)) {
+      missing.push("Client ID");
+    }
 
-  const clientSecretSlot = effectiveClientSecretSlot(oauth2);
-  if (!hasSecretBinding(bindings, clientSecretSlot, targetScope, ranks)) {
-    missing.push("Client Secret");
-  }
+    const clientSecretSlot = effectiveClientSecretSlot(oauth2);
+    if (!hasSecretBinding(bindings, clientSecretSlot, targetScope, ranks)) {
+      missing.push("Client Secret");
+    }
 
-  if (
-    !hasConnectionBinding(bindings, oauth2.connectionSlot, targetScope, ranks, liveConnectionIds)
-  ) {
     missing.push(oauth2.flow === "clientCredentials" ? "OAuth client connection" : "OAuth sign-in");
   }
 

@@ -4,7 +4,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-import { cancelOAuth, startOAuth } from "../api/atoms";
+import { cancelOAuth, oauthConnectionCompleted, startOAuth } from "../api/atoms";
 import { messageFromExit, messageFromUnknown, useReportHandledError } from "../api/error-reporting";
 import {
   openOAuthPopup,
@@ -73,7 +73,7 @@ export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload
   readonly tokenScope: string;
   readonly run: () => Promise<OAuthAuthorizationStartResult>;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
-  readonly onError?: (error: string) => void;
+  readonly onError?: (error: string, details?: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
   readonly reportMetadata?: Record<string, string | number | boolean | null | undefined>;
 };
@@ -119,6 +119,7 @@ export function useOAuthPopupFlow<
   } = options;
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
   const doCancelOAuth = useAtomSet(cancelOAuth, { mode: "promiseExit" });
+  const doOAuthConnectionCompleted = useAtomSet(oauthConnectionCompleted, { mode: "promiseExit" });
   const reportHandledError = useReportHandledError();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -222,7 +223,22 @@ export function useOAuthPopupFlow<
         if (!result.ok) {
           setBusy(false);
           setError(result.error);
-          input.onError?.(result.error);
+          input.onError?.(result.error, result.errorDetails);
+          return;
+        }
+
+        const refreshExit = await doOAuthConnectionCompleted({ tokenScope: input.tokenScope });
+        if (Exit.isFailure(refreshExit)) {
+          const message = messageFromExit(refreshExit, "Failed to refresh connection");
+          reportHandledError(refreshExit.cause, {
+            surface: "oauth",
+            action: "refresh_connection",
+            message,
+            metadata: input.reportMetadata,
+          });
+          setBusy(false);
+          setError(message);
+          input.onError?.(message);
           return;
         }
 
@@ -292,6 +308,7 @@ export function useOAuthPopupFlow<
       cancel,
       cancelSession,
       detectPopupClosed,
+      doOAuthConnectionCompleted,
       noAuthorizationUrlMessage,
       popupBlockedMessage,
       popupClosedMessage,

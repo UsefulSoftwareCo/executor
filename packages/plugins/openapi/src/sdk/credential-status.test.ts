@@ -30,6 +30,18 @@ const source: SourceForCredentialStatus = {
   },
 };
 
+const authorizationCodeSource: SourceForCredentialStatus = {
+  config: {
+    oauth2: {
+      securitySchemeName: "oauth2",
+      flow: "authorizationCode",
+      clientIdSlot: "oauth2:oauth2:client-id",
+      clientSecretSlot: "oauth2:oauth2:client-secret",
+      connectionSlot: "oauth2:oauth2:connection",
+    },
+  },
+};
+
 const bindings = (
   scopeId: ScopeId,
   slots: readonly string[],
@@ -79,6 +91,28 @@ describe("OpenAPI credential status", () => {
         liveConnectionIds: [],
       }),
     ).toEqual(["OAuth client connection"]);
+  });
+
+  it("treats a live authorization-code connection as ready without source client credentials", () => {
+    expect(
+      missingCredentialLabels(
+        authorizationCodeSource,
+        bindings(userScope, ["oauth2:oauth2:connection"]),
+        userScope,
+        scopeRanks,
+        {
+          liveConnectionIds: [ConnectionId.make("user-connection")],
+        },
+      ),
+    ).toEqual([]);
+  });
+
+  it("requires client credentials before starting authorization-code OAuth when no connection is bound", () => {
+    expect(
+      missingCredentialLabels(authorizationCodeSource, [], userScope, scopeRanks, {
+        liveConnectionIds: [],
+      }),
+    ).toEqual(["Client ID", "Client Secret", "OAuth sign-in"]);
   });
 
   it("does not treat personal bindings as satisfying org-level credential status", () => {
