@@ -241,17 +241,16 @@ const explicitPathTemplate = (operation: OperationObject): string | undefined =>
 const extractServerList = (servers: readonly ServerObject[] | undefined): ServerInfo[] =>
   (servers ?? []).flatMap((server) => {
     if (!server.url) return [];
-    const serverVariables =
-      server.variables as
-        | Record<
-            string,
-            {
-              readonly default?: string;
-              readonly enum?: readonly string[];
-              readonly description?: string;
-            }
-          >
-        | undefined;
+    const serverVariables = server.variables as
+      | Record<
+          string,
+          {
+            readonly default?: string;
+            readonly enum?: readonly string[];
+            readonly description?: string;
+          }
+        >
+      | undefined;
     const vars = serverVariables
       ? Object.fromEntries(
           Object.entries(serverVariables).flatMap(([name, v]) => {

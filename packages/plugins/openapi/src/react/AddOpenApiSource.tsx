@@ -117,11 +117,7 @@ const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: strin
 const googleOAuthErrorMessage =
   "Google did not approve this permission request. Try selecting fewer services, or add sensitive services as separate Google sources.";
 
-const oauthErrorMessage = (
-  providerLabel: string,
-  message: string,
-  details?: string,
-): string => {
+const oauthErrorMessage = (providerLabel: string, message: string, details?: string): string => {
   if (providerLabel !== "Google") return details ? `${message}: ${details}` : message;
   const combined = `${message}\n${details ?? ""}`;
   if (
@@ -1584,7 +1580,10 @@ export default function AddOpenApiSource(props: {
       selectedOAuth2IsGoogle,
       oauth2RedirectUrl,
       effectiveResolvedBaseUrl,
+      configuredOAuth2IdentityScopes,
+      googleBatchAddItems,
       googleConsentBatches,
+      googleServicePickerEnabled,
       preview,
       doStartOAuth,
       identity.name,
