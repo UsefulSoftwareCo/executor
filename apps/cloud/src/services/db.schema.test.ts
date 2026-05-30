@@ -18,9 +18,36 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { Effect } from "effect";
 import postgres from "postgres";
 
+import { collectTables } from "@executor-js/sdk";
+
+import executorConfig from "../../executor.config";
 import * as cloudSchema from "./schema";
 import * as executorSchema from "./executor-schema";
 import { combinedSchema } from "./db";
+import { createDrizzleFumaDb } from "./fuma";
+
+interface GeneratedFumaTable {
+  readonly names: {
+    readonly drizzle: string;
+  };
+  readonly columns: Record<
+    string,
+    {
+      readonly ormName: string;
+      readonly names: {
+        readonly drizzle: string;
+      };
+    }
+  >;
+}
+
+const fumaDbInternals = (
+  value: unknown,
+): { internal: { tables: Record<string, GeneratedFumaTable> } } =>
+  value as { internal: { tables: Record<string, GeneratedFumaTable> } };
+
+const drizzleTableColumns = (value: unknown): Record<string, unknown> =>
+  value as Record<string, unknown>;
 
 describe("combinedSchema", () => {
   it("spreads every cloud + executor schema export", () => {
@@ -60,6 +87,40 @@ describe("combinedSchema", () => {
           for (const key of Object.keys(executorSchema)) {
             expect(fullSchema, `fullSchema missing "${key}"`).toHaveProperty(key);
           }
+        }),
+      ),
+    ),
+  );
+
+  it.effect("generated drizzle tables expose every executor Fuma column", () =>
+    Effect.acquireRelease(
+      Effect.sync(() => postgres("postgres://u:p@127.0.0.1:1/x", { max: 1 })),
+      (sql) => Effect.promise(() => sql.end({ timeout: 0 })),
+    ).pipe(
+      Effect.flatMap((sql) =>
+        Effect.sync(() => {
+          const db = drizzle(sql, { schema: combinedSchema });
+          const fuma = createDrizzleFumaDb({
+            db,
+            tables: collectTables(executorConfig.plugins({})),
+            namespace: "executor_cloud",
+            provider: "postgresql",
+          });
+          const schemaTables = drizzleTableColumns(combinedSchema);
+          const missingColumns: string[] = [];
+
+          for (const table of Object.values(fumaDbInternals(fuma.db).internal.tables)) {
+            const drizzleTable = drizzleTableColumns(schemaTables[table.names.drizzle]);
+            for (const column of Object.values(table.columns)) {
+              if (drizzleTable[column.names.drizzle] === undefined) {
+                missingColumns.push(
+                  `${table.names.drizzle}.${column.ormName} -> ${column.names.drizzle}`,
+                );
+              }
+            }
+          }
+
+          expect(missingColumns).toEqual([]);
         }),
       ),
     ),
