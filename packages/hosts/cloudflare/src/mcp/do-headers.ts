@@ -31,7 +31,7 @@ export type VerifiedTokenHeaders = {
 // context across with W3C headers: `traceparent` generated from the active
 // Effect span plus passthrough `tracestate` / `baggage` from the inbound
 // request.
-type IncomingPropagationHeaders = {
+export type IncomingPropagationHeaders = {
   readonly traceparent?: string;
   readonly tracestate?: string;
   readonly baggage?: string;
@@ -90,7 +90,7 @@ export const withMcpResponseHeaders = (response: Response): Response => {
   });
 };
 
-type McpElicitationMode = "browser" | "model" | "native";
+export type McpElicitationMode = "browser" | "model" | "native";
 
 const MCP_ELICITATION_MODES = new Set<McpElicitationMode>(["browser", "model", "native"]);
 
