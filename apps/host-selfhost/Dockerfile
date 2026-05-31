@@ -21,6 +21,13 @@ RUN bun install --frozen-lockfile
 # Builds @executor-js/vite-plugin (via turbo) then the self-host SPA into
 # apps/host-selfhost/dist.
 RUN cd apps/host-selfhost && bun run build
+# Reinstall PRODUCTION deps only, so the runtime image excludes the build/dev
+# toolchain pulled by the full workspace install — vite, turbo, wrangler →
+# miniflare → sharp/libvips (~800MB), astro, vitest, etc. The built SPA lives in
+# apps/host-selfhost/dist (outside node_modules), so it survives the reinstall.
+# --ignore-scripts: the root `prepare` hook runs a dev-only tool
+# (effect-language-service); runtime deps are prebuilt JS with no postinstall.
+RUN rm -rf node_modules && bun install --frozen-lockfile --production --ignore-scripts
 
 # ── Runtime stage: serve the built app under Bun ────────────────────────────
 FROM oven/bun:1 AS runtime

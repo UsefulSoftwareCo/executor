@@ -45,5 +45,15 @@ export const startServer = async (): Promise<void> => {
 };
 
 if (import.meta.main) {
-  await startServer();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: process entry point; turn a pre-runtime startup failure (config/DB open) into a diagnosable log + non-zero exit instead of an opaque unhandled rejection
+  try {
+    await startServer();
+  } catch (error) {
+    // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: format an arbitrary thrown startup error for the container log
+    console.error(
+      "[executor] failed to start:",
+      error instanceof Error ? (error.stack ?? error.message) : error,
+    );
+    process.exit(1);
+  }
 }
