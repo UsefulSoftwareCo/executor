@@ -56,6 +56,51 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(body.text).toBe("42");
   }, 60_000);
 
+  it("adds a LARGE OpenAPI source — exercises R2 offload (>800KB blob) + createMany batching (>100 tools)", async () => {
+    // Synthesize a spec big enough to (a) push the stored config blob past the
+    // ~800KB R2-offload threshold and (b) derive >100 tools (past D1's 100
+    // bound-param createMany limit) — the real-worker regression for two of the
+    // three D1 fixes.
+    const paths: Record<string, unknown> = {};
+    for (let i = 0; i < 250; i++) {
+      paths[`/op${i}`] = {
+        get: {
+          operationId: `op${i}`,
+          summary: `operation ${i}`,
+          description: "d".repeat(4000), // padding -> ~1MB total spec
+          responses: { "200": { description: "ok" } },
+        },
+      };
+    }
+    const largeSpec = JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "Large", version: "1.0.0" },
+      servers: [{ url: "https://example.com" }],
+      paths,
+    });
+    expect(largeSpec.length).toBeGreaterThan(900_000);
+
+    const add = await worker.fetch("/api/scopes/default/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: largeSpec },
+        name: "Large API",
+        baseUrl: "https://example.com",
+        namespace: "largeapi",
+      }),
+    });
+    expect(add.status).toBe(200);
+    const added = (await add.json()) as { toolCount: number };
+    expect(added.toolCount).toBe(250);
+
+    // Reads back through the R2 rehydration path (the >800KB blob lives in R2).
+    const got = await worker.fetch("/api/scopes/default/openapi/sources/largeapi");
+    expect(got.status).toBe(200);
+    const source = (await got.json()) as { namespace: string } | null;
+    expect(source?.namespace).toBe("largeapi");
+  }, 90_000);
+
   it("adds an OpenAPI source and reads it back (D1 write + read path)", async () => {
     const add = await worker.fetch("/api/scopes/default/openapi/specs", {
       method: "POST",
