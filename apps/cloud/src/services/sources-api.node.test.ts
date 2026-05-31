@@ -457,6 +457,54 @@ describe("sources api (HTTP)", () => {
     }),
   );
 
+  it.effect("generic source refresh updates MCP source tool rows", () =>
+    Effect.gen(function* () {
+      let toolName = "before_refresh";
+      const server = yield* serveMcpServer(() =>
+        makeGreetingMcpServer({
+          name: "cloud-refresh-mcp",
+          toolName,
+          text: "refresh-ok",
+        }),
+      );
+      const org = `org_${crypto.randomUUID()}`;
+      const namespace = `mcp_${crypto.randomUUID().replace(/-/g, "_")}`;
+      const scopeId = ScopeId.make(org);
+
+      const added = yield* asOrg(org, (client) =>
+        client.mcp.addSource({
+          params: { scopeId },
+          payload: {
+            transport: "remote",
+            name: "Cloud Refresh MCP",
+            endpoint: server.endpoint,
+            remoteTransport: "streamable-http",
+            namespace,
+          },
+        }),
+      );
+      expect(added).toEqual({ namespace, toolCount: 1 });
+
+      const beforeTools = yield* asOrg(org, (client) =>
+        client.sources.tools({ params: { scopeId, sourceId: namespace } }),
+      );
+      expect(beforeTools.map((tool) => tool.id)).toContain(`${namespace}.before_refresh`);
+      expect(beforeTools.map((tool) => tool.id)).not.toContain(`${namespace}.after_refresh`);
+
+      toolName = "after_refresh";
+      const refreshResult = yield* asOrg(org, (client) =>
+        client.sources.refresh({ params: { scopeId, sourceId: namespace } }),
+      );
+      expect(refreshResult.refreshed).toBe(true);
+
+      const afterTools = yield* asOrg(org, (client) =>
+        client.sources.tools({ params: { scopeId, sourceId: namespace } }),
+      );
+      expect(afterTools.map((tool) => tool.id)).not.toContain(`${namespace}.before_refresh`);
+      expect(afterTools.map((tool) => tool.id)).toContain(`${namespace}.after_refresh`);
+    }),
+  );
+
   it.effect("sources.remove deletes the source and it drops off sources.list", () =>
     Effect.gen(function* () {
       const org = `org_${crypto.randomUUID()}`;
