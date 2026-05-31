@@ -21,11 +21,15 @@ class McpInternalJsonRpcError extends Data.TaggedError("McpInternalJsonRpcError"
   readonly message: string;
 }> {}
 
+// The DO RPC stub structurally satisfies `McpSessionDOStub` (init/handleRequest/
+// clearSession), but `@cloudflare/workers-types` types it as a generic
+// `DurableObjectStub`. Narrow at this one boundary via an `unknown` hop — a
+// single cast, so no double-cast through the worker-types stub type.
+const toSessionStub = (stub: unknown): McpSessionDOStub => stub as McpSessionDOStub;
+
 export const cloudMcpSessionStoreLayer = makeDurableObjectMcpSessionStore({
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: the DO RPC stub structurally satisfies McpSessionDOStub
   getStub: (sessionId) =>
-    env.MCP_SESSION.get(env.MCP_SESSION.idFromString(sessionId)) as unknown as McpSessionDOStub,
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: the DO RPC stub structurally satisfies McpSessionDOStub
-  newStub: () => env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId()) as unknown as McpSessionDOStub,
+    toSessionStub(env.MCP_SESSION.get(env.MCP_SESSION.idFromString(sessionId))),
+  newStub: () => toSessionStub(env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId())),
   onInternalError: (message) => Sentry.captureException(new McpInternalJsonRpcError({ message })),
 });
