@@ -40,7 +40,7 @@ import { Context, Effect, Layer } from "effect";
 import type { AnyPlugin } from "@executor-js/sdk";
 
 import type { DbProvider } from "./executor-fuma-db";
-import type { HostConfig, PluginsProvider } from "./scoped-executor";
+import { RequestWebOrigin, type HostConfig, type PluginsProvider } from "./scoped-executor";
 import { ExecutionEngineService, ExecutorService } from "../services";
 import { providePluginExtensions, type PluginExtensionServices } from "../plugin-routes";
 import {
@@ -165,11 +165,18 @@ export const makeExecutionStackMiddleware = <
           // The strategy recovered the failure into a Response — return it.
           if (!isPrincipal(resolved)) return resolved;
           const auth = AuthContext.of(authContextFromPrincipal(resolved));
+          // The public origin the caller actually hit, so a host with no static
+          // web base URL (a Worker) derives one zero-config. An explicit
+          // `HostConfig.webBaseUrl` still wins; we deliberately read `request.url`
+          // (not a spoofable `X-Forwarded-Host`).
           const { executor, engine } = yield* makeExecutionStack<TPlugins>(
             resolved.accountId,
             resolved.organizationId,
             resolved.organizationName,
-          ).pipe(Effect.provide(options.stackLayer));
+          ).pipe(
+            Effect.provide(options.stackLayer),
+            Effect.provideService(RequestWebOrigin, { origin: new URL(webRequest.url).origin }),
+          );
           return yield* httpEffect.pipe(
             Effect.provideService(AuthContext, auth),
             Effect.provideService(ExecutorService, executor),

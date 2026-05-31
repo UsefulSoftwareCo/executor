@@ -56,6 +56,9 @@
     "ADMIN_EMAILS": "",
     "SELF_HOSTED_ORG_ID": "default",
     "SELF_HOSTED_ORG_NAME": "Default",
-    "VITE_PUBLIC_SITE_URL": "https://localhost",
+    // VITE_PUBLIC_SITE_URL is intentionally unset: with no static URL the worker
+    // derives the web base URL from each request's origin (RequestWebOrigin), so
+    // secret/OAuth handoff links match whatever host the user actually reached.
+    // Set it only to force a canonical URL (e.g. behind a proxy that rewrites Host).
   },
 }

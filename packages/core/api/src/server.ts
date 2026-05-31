@@ -53,8 +53,10 @@ export {
   makeScopedExecutor,
   HostConfig,
   PluginsProvider,
+  RequestWebOrigin,
   type HostConfigShape,
   type PluginsProviderShape,
+  type RequestWebOriginShape,
 } from "./server/scoped-executor";
 export { collectTables } from "@executor-js/sdk";
 export {

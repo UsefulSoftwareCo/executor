@@ -423,9 +423,14 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    *
    * Omit to skip registration (tests, MCP-only hosts that don't
    * surface a web UI, etc.).
+   *
+   * `webBaseUrl` is optional: a host that can't know its public URL at boot (a
+   * Worker has no static URL var) leaves it unset and derives it per request.
+   * The browser-handoff tools (`secrets.create`, OAuth callback) fail clearly if
+   * it is still absent when actually invoked.
    */
   readonly coreTools?: {
-    readonly webBaseUrl: string;
+    readonly webBaseUrl?: string;
   };
 }
 

@@ -17,6 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { TransportState } from "agents/mcp";
 
 import { jsonRpcErrorBody } from "@executor-js/host-mcp";
+import { RequestWebOrigin } from "@executor-js/api/server";
 import {
   formatPausedExecution,
   type ExecutionEngine,
@@ -136,6 +137,9 @@ export interface SessionMeta {
   readonly organizationName: string;
   readonly userId: string;
   readonly elicitationMode?: "browser" | "model" | "native";
+  /** Public origin captured at session create — used to derive the runtime's
+   *  web base URL when the host configures no static one. */
+  readonly webOrigin?: string;
 }
 
 /** What a host's `buildMcpServer` seam returns: the connected MCP server plus
@@ -319,7 +323,12 @@ export abstract class McpSessionDOBase<
       // The host builds its MCP server + engine (execution stack, DB layers,
       // elicitation policy); the base owns the worker transport so JSON-response
       // mode, the session-id generator, and storage stay identical everywhere.
-      const { mcpServer, engine } = yield* self.buildMcpServer(sessionMeta, options.dbHandle);
+      // The session's captured origin is provided here so the host's execution
+      // stack derives a web base URL zero-config (a no-op when it configures one).
+      const built = self.buildMcpServer(sessionMeta, options.dbHandle);
+      const { mcpServer, engine } = yield* sessionMeta.webOrigin
+        ? built.pipe(Effect.provideService(RequestWebOrigin, { origin: sessionMeta.webOrigin }))
+        : built;
       const transport = yield* makeMcpWorkerTransport({
         sessionIdGenerator: () => self.sessionId,
         storage: self.makeStorage(),
@@ -508,7 +517,13 @@ export abstract class McpSessionDOBase<
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
     const self = this;
     return Effect.gen(function* () {
-      const sessionMeta = yield* self.resolveSessionMeta(token);
+      const resolved = yield* self.resolveSessionMeta(token);
+      // Carry the create request's origin onto the persisted meta (the host's
+      // resolveSessionMeta is identity-only and doesn't see it), so a cold
+      // isolate rebuilds the runtime with the same web base URL.
+      const sessionMeta: SessionMeta = token.webOrigin
+        ? { ...resolved, webOrigin: token.webOrigin }
+        : resolved;
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
         Effect.withSpan("mcp.session.save_meta"),
       );

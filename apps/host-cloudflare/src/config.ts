@@ -56,7 +56,9 @@ export interface CloudflareConfig {
   readonly organizationName: string;
   readonly secretKey: string;
   readonly allowLocalNetwork: boolean;
-  readonly webBaseUrl: string;
+  /** Explicit web base URL (`VITE_PUBLIC_SITE_URL`). Unset on a Worker with no
+   *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
+  readonly webBaseUrl?: string;
   readonly enableDevAuth: boolean;
 }
 
@@ -84,7 +86,9 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
     organizationName: env.SELF_HOSTED_ORG_NAME ?? "Default",
     secretKey,
     allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
-    webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://localhost",
+    // No static URL on a Worker — leave unset when VITE_PUBLIC_SITE_URL is absent
+    // and let the request origin drive it (RequestWebOrigin). Explicit still wins.
+    webBaseUrl: env.VITE_PUBLIC_SITE_URL,
     enableDevAuth: env.ENABLE_DEV_AUTH === "true",
   };
 };

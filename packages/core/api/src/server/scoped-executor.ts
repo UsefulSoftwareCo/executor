@@ -26,7 +26,7 @@
 // stay in the SDK and are imported from there.
 // ---------------------------------------------------------------------------
 
-import { Context, Effect } from "effect";
+import { Context, Effect, Option } from "effect";
 
 import {
   createExecutor,
@@ -53,12 +53,34 @@ export interface HostConfigShape {
   /**
    * Base URL of the executor's web UI. Threaded into `coreTools.webBaseUrl` so
    * `secrets.create` can point the user at `${webBaseUrl}/secrets?...`.
+   *
+   * Optional: when a host can't know its public URL at boot (a Worker has no
+   * static URL var), leave it unset and `makeScopedExecutor` falls back to the
+   * current request's origin (`RequestWebOrigin`). An explicit value always wins.
    */
-  readonly webBaseUrl: string;
+  readonly webBaseUrl?: string;
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
   "@executor-js/sdk/HostConfig",
+) {}
+
+// ---------------------------------------------------------------------------
+// RequestWebOrigin seam — the public origin of the in-flight request
+// (`https://host[:port]`), used to derive `webBaseUrl` when no explicit one is
+// configured. Provided per request by the host's request pipeline (the shared
+// `makeExecutionStackMiddleware` for the HTTP API; the session DO for MCP).
+// Read OPTIONALLY via `Effect.serviceOption`, so it never enters
+// `makeScopedExecutor`'s `R` channel — non-request callers (CLI, tests) simply
+// fall through to the configured value.
+// ---------------------------------------------------------------------------
+
+export interface RequestWebOriginShape {
+  readonly origin: string;
+}
+
+export class RequestWebOrigin extends Context.Service<RequestWebOrigin, RequestWebOriginShape>()(
+  "@executor-js/api/RequestWebOrigin",
 ) {}
 
 // ---------------------------------------------------------------------------
@@ -108,6 +130,14 @@ export const makeScopedExecutor = <
     const { db } = yield* DbProvider;
     const { plugins: pluginsFactory } = yield* PluginsProvider;
     const config = yield* HostConfig;
+    // Explicit config wins; otherwise fall back to the request origin if a host
+    // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
+    // non-request callers — `coreTools.webBaseUrl` is optional and only the
+    // browser-handoff tools require it (they fail clearly if it's truly absent).
+    const requestOrigin = yield* Effect.serviceOption(RequestWebOrigin);
+    const webBaseUrl =
+      config.webBaseUrl ??
+      Option.match(requestOrigin, { onNone: () => undefined, onSome: (o) => o.origin });
 
     const plugins = pluginsFactory();
     const httpClientLayer = makeHostedHttpClientLayer({
@@ -125,7 +155,7 @@ export const makeScopedExecutor = <
       httpClientLayer,
       onElicitation: "accept-all",
       coreTools: {
-        webBaseUrl: config.webBaseUrl,
+        webBaseUrl,
       },
     });
     // The seam erases the plugin tuple type; the caller re-narrows via the

@@ -97,6 +97,10 @@ const createSession = (
           organizationId: token.organizationId,
           userId: token.accountId,
           elicitationMode: readElicitationMode(request),
+          // The public origin the client reached us at — lets the DO derive a web
+          // base URL with no static config (we read the real URL, not a spoofable
+          // forwarded host).
+          webOrigin: new URL(request.url).origin,
         },
         propagation,
       ),
