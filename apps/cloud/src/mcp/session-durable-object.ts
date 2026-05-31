@@ -32,10 +32,16 @@ import { UserStoreService } from "../auth/context";
 import { resolveOrganization } from "../auth/organization";
 import { DbService, combinedSchema, resolveConnectionString } from "../db/db";
 import { CloudExecutionStackLayer, makeExecutionStack } from "../engine/execution-stack";
-import { makeMcpWorkerTransport, type McpWorkerTransport } from "../mcp/worker-transport";
+import {
+  makeMcpWorkerTransport,
+  type McpWorkerTransport,
+} from "@executor-js/cloudflare/mcp/worker-transport";
 import { DoTelemetryLive } from "../observability/telemetry";
 import { captureCause } from "../observability";
-import { INTERNAL_ACCOUNT_ID_HEADER, INTERNAL_ORGANIZATION_ID_HEADER } from "./do-headers";
+import {
+  INTERNAL_ACCOUNT_ID_HEADER,
+  INTERNAL_ORGANIZATION_ID_HEADER,
+} from "@executor-js/cloudflare/mcp/do-headers";
 
 // ---------------------------------------------------------------------------
 // Types

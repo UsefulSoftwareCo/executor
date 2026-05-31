@@ -48,7 +48,7 @@ import {
   withPropagationHeaders,
   withVerifiedIdentityHeaders,
   type VerifiedTokenHeaders,
-} from "./do-headers";
+} from "@executor-js/cloudflare/mcp/do-headers";
 
 /**
  * Forward a request to an existing session DO. `peek` tees the body for

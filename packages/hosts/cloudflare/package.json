@@ -1,0 +1,48 @@
+{
+  "name": "@executor-js/cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./mcp/worker-transport": {
+      "types": "./src/mcp/worker-transport.ts",
+      "default": "./src/mcp/worker-transport.ts"
+    },
+    "./mcp/do-headers": {
+      "types": "./src/mcp/do-headers.ts",
+      "default": "./src/mcp/do-headers.ts"
+    },
+    "./mcp/response-peek": {
+      "types": "./src/mcp/response-peek.ts",
+      "default": "./src/mcp/response-peek.ts"
+    },
+    "./mcp/session-store": {
+      "types": "./src/mcp/session-store.ts",
+      "default": "./src/mcp/session-store.ts"
+    },
+    "./mcp/durable-object": {
+      "types": "./src/mcp/session-durable-object.ts",
+      "default": "./src/mcp/session-durable-object.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.10.0",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

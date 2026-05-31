@@ -59,6 +59,7 @@
         "@effect/atom-react": "catalog:",
         "@effect/opentelemetry": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/cloudflare": "workspace:*",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -570,6 +571,25 @@
       },
       "peerDependencies": {
         "vite": "catalog:",
+      },
+    },
+    "packages/hosts/cloudflare": {
+      "name": "@executor-js/cloudflare",
+      "version": "0.0.0",
+      "dependencies": {
+        "@executor-js/execution": "workspace:*",
+        "@executor-js/host-mcp": "workspace:*",
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "agents": "^0.10.0",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250620.0",
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "packages/hosts/mcp": {
@@ -1425,6 +1445,8 @@
     "@executor-js/cli": ["@executor-js/cli@workspace:packages/core/cli"],
 
     "@executor-js/cloud": ["@executor-js/cloud@workspace:apps/cloud"],
+
+    "@executor-js/cloudflare": ["@executor-js/cloudflare@workspace:packages/hosts/cloudflare"],
 
     "@executor-js/codemode-core": ["@executor-js/codemode-core@workspace:packages/kernel/core"],
 

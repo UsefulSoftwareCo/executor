@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { JsonRpcRequestIdQueue, PREVIOUS_REQUEST_TIMEOUT_MS } from "./worker-transport";
+import {
+  JsonRpcRequestIdQueue,
+  PREVIOUS_REQUEST_TIMEOUT_MS,
+} from "@executor-js/cloudflare/mcp/worker-transport";
 
 const jsonRpcRequest = (body: unknown): Request =>
   new Request("https://example.invalid/mcp", {
