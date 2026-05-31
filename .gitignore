@@ -45,7 +45,8 @@ personal-notes/
 *.har.executor
 executor.har
 .executor/
-apps/local/.executor-dev/
+# Per-app dev runtime dirs (local SQLite DB + generated dev secret.key) — never commit
+.executor-dev/
 
 # desktop app build artifacts
 apps/desktop/resources/
