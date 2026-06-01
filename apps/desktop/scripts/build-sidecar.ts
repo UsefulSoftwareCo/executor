@@ -23,7 +23,7 @@ const SIDECAR_ENTRY = resolve(ROOT, "src/sidecar/server.ts");
 const SIDECAR_OUT_DIR = resolve(ROOT, "resources/sidecar");
 const WEB_UI_OUT_DIR = resolve(ROOT, "resources/web-ui");
 const APPS_LOCAL_DIST = resolve(APPS_LOCAL, "dist");
-const EMBEDDED_MIGRATIONS_PATH = resolve(APPS_LOCAL, "src/server/embedded-migrations.gen.ts");
+const EMBEDDED_MIGRATIONS_PATH = resolve(APPS_LOCAL, "src/db/embedded-migrations.gen.ts");
 const EMBEDDED_MIGRATIONS_STUB = `const migrations: Record<string, string> | null = null;\n\nexport default migrations;\n`;
 
 /**

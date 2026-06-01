@@ -251,7 +251,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
   const meta = await readMetadata();
   const binaries: Record<string, string> = {};
   const embeddedWebUIPath = join(cliRoot, "src/embedded-web-ui.gen.ts");
-  const embeddedMigrationsPath = join(webRoot, "src/server/embedded-migrations.gen.ts");
+  const embeddedMigrationsPath = join(webRoot, "src/db/embedded-migrations.gen.ts");
 
   await rm(distDir, { recursive: true, force: true });
 

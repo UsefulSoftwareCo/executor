@@ -15,14 +15,24 @@ import { marketingMiddleware, posthogProxyMiddleware, sentryTunnelMiddleware } f
 // app-owned-vs-Start and forwards unmodified.
 // ---------------------------------------------------------------------------
 
-const app = cloudApiHandler();
+// Instantiate the unified app handler LAZILY, on the first server request that
+// needs it. This is load-bearing for the CLIENT bundle: TanStack Start bundles
+// `start.ts` into the browser build but strips `.server()` callback *bodies*, so
+// any symbol referenced only inside a server callback is tree-shaken out of the
+// client. A module-top-level `cloudApiHandler()` would instead survive that
+// stripping and drag `./app` → `observability/telemetry` → `cloudflare:workers`
+// (a workerd-only virtual module) into the browser build, breaking it. Keeping
+// the call inside the server callback mirrors how every other server concern
+// here stays server-only.
+let app: ReturnType<typeof cloudApiHandler> | undefined;
+const getApp = () => (app ??= cloudApiHandler());
 
 // app-owned = anything under `/api/*` (incl. the cloud extension routes) OR an
 // MCP/OAuth-discovery path (see `./app-paths`). The app handler serves these at
 // their real paths, so we forward the request UNMODIFIED — no path stripping.
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
-    if (isAppOwnedPath(pathname)) return app.handler(request);
+    if (isAppOwnedPath(pathname)) return getApp().handler(request);
     return next();
   },
 );
