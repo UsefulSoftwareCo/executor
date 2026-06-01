@@ -5,7 +5,7 @@
 
 import { Effect } from "effect";
 
-import { AUTHKIT_DOMAIN, RESOURCE_URL } from "./auth";
+import { AUTHKIT_DOMAIN, resourceUrlFor } from "./auth";
 import { CORS_ALLOW_ORIGIN } from "./responses";
 
 const jsonWebResponse = (body: unknown, status = 200): Response =>
@@ -14,9 +14,12 @@ const jsonWebResponse = (body: unknown, status = 200): Response =>
     headers: { "content-type": "application/json", ...CORS_ALLOW_ORIGIN },
   });
 
-export const protectedResourceMetadataResponse = (): Response =>
+// The `resource` reflects the URL-pinned org (`…/org_xxx/mcp`) when present, so a
+// client that discovered metadata via the org-scoped well-known doc gets back the
+// matching org-scoped resource id; the bare path yields the bare resource.
+export const protectedResourceMetadataResponse = (organizationId: string | null = null): Response =>
   jsonWebResponse({
-    resource: RESOURCE_URL,
+    resource: resourceUrlFor(organizationId),
     authorization_servers: [AUTHKIT_DOMAIN],
     bearer_methods_supported: ["header"],
     scopes_supported: [],

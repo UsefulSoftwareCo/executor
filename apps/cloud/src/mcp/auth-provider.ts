@@ -40,8 +40,9 @@ import { ApiKeyService } from "../auth/api-keys";
 import { CoreSharedServices } from "../api/core-shared-services";
 import {
   bearerChallengeFor,
+  mcpOrganizationFromRequest,
+  protectedResourceMetadataUrlFor,
   PROTECTED_RESOURCE_METADATA_PATH,
-  PROTECTED_RESOURCE_METADATA_URL,
   McpAuth,
   McpAuthLive,
   McpOrganizationAuth,
@@ -90,7 +91,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
     const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
       {
         path: PROTECTED_RESOURCE_METADATA_PATH,
-        handler: () => Effect.succeed(protectedResourceMetadataResponse()),
+        // The bare path is the only one mounted; `prepareMcpOrgScope` rewrites an
+        // org-scoped discovery doc onto it and pins the org in the header we read.
+        handler: (request) =>
+          Effect.succeed(protectedResourceMetadataResponse(mcpOrganizationFromRequest(request))),
       },
       {
         path: AUTHORIZATION_SERVER_METADATA_PATH,
@@ -98,7 +102,8 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
       },
     ];
 
-    const resourceMetadataUrl = (_request: Request): string => PROTECTED_RESOURCE_METADATA_URL;
+    const resourceMetadataUrl = (request: Request): string =>
+      protectedResourceMetadataUrlFor(mcpOrganizationFromRequest(request));
 
     /**
      * Resolve a verified bearer to a final AuthOutcome by running the live org
@@ -118,7 +123,11 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // not on the org outcome, to preserve that telemetry.
         const parseBody = request.method === "POST";
 
-        const organizationId = token.organizationId;
+        // URL is the source of truth for the active org when pinned (`/org_xxx/mcp`,
+        // carried in the header by `prepareMcpOrgScope`); the bare `/mcp` falls back
+        // to the token's `org_id`. Either way `orgAuth.authorize` re-checks live
+        // WorkOS membership below, so the URL is a selector, not a trust boundary.
+        const organizationId = mcpOrganizationFromRequest(request) ?? token.organizationId;
         if (!organizationId) {
           yield* annotateMcpRequest(request, { token, parseBody });
           return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
@@ -149,7 +158,7 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         return finishAuthorized(request, result.token);
       }
       return annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
-        Effect.as(unauthorized(bearerChallengeFor(result))),
+        Effect.as(unauthorized(bearerChallengeFor(result, mcpOrganizationFromRequest(request)))),
       );
     };
 

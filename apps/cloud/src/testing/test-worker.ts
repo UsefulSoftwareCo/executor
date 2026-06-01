@@ -26,7 +26,7 @@ import {
   mcpAuthorized,
   mcpUnauthorized,
 } from "../mcp/auth";
-import { classifyMcpPath, makeMcpWebHandler } from "../mcp/mount";
+import { classifyMcpPath, makeMcpWebHandler, prepareMcpOrgScope } from "../mcp/mount";
 import { cloudMcpAuthProviderLayer } from "../mcp/auth-provider";
 import { ApiKeyService } from "../auth/api-keys";
 import { organizations } from "../db/schema";
@@ -54,7 +54,10 @@ const TestMcpAuthLive = Layer.succeed(McpAuth)({
 });
 
 const TestMcpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
-  authorize: (_accountId, organizationId) => Effect.succeed(!organizationId.startsWith("revoked_")),
+  // Deny on any org id containing "revoked" (rather than a strict prefix) so a
+  // routable, prefix-valid org id like `org_revoked_…` still exercises the
+  // membership-denied path through the `/org_xxx/mcp` URL route.
+  authorize: (_accountId, organizationId) => Effect.succeed(!organizationId.includes("revoked")),
 });
 
 // ---------------------------------------------------------------------------
@@ -136,7 +139,7 @@ export default {
       return realAuthMcpFetch(new Request(mcpUrl, request));
     }
     if (classifyMcpPath(url.pathname) !== null) {
-      return testMcpFetch(request);
+      return testMcpFetch(prepareMcpOrgScope(request));
     }
     return new Response("not found", { status: 404 });
   },

@@ -15,8 +15,12 @@ import {
 } from "@executor-js/react/components/collapsible";
 import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
 
+import { useAuth } from "../auth";
+
 export const SetupMcpPage = () => {
   const navigate = useNavigate();
+  const auth = useAuth();
+  const organizationId = auth.status === "authenticated" ? (auth.organization?.id ?? null) : null;
   const [origin, setOrigin] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("model");
@@ -30,6 +34,7 @@ export const SetupMcpPage = () => {
         origin,
         desktop: null,
         elicitationMode,
+        organizationId,
       })
     : "";
   const command = origin
@@ -38,6 +43,7 @@ export const SetupMcpPage = () => {
         isDev: false,
         origin,
         elicitationMode,
+        organizationId,
       })
     : "";
 

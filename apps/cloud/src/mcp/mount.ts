@@ -29,30 +29,101 @@ import { Layer } from "effect";
 
 import { McpServingRoutes } from "@executor-js/host-mcp";
 
-import { McpAuth, McpOrganizationAuth, PROTECTED_RESOURCE_METADATA_PATH } from "./auth";
+import {
+  McpAuth,
+  McpOrganizationAuth,
+  MCP_ORGANIZATION_HEADER,
+  PROTECTED_RESOURCE_METADATA_PATH,
+} from "./auth";
 import { cloudMcpReporter } from "./reporter";
 import { cloudMcpSessionStoreLayer } from "./session-store";
 
 const MCP_PATH = "/mcp";
+const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 
-type McpRoute = "mcp" | "oauth-protected-resource" | "oauth-authorization-server" | null;
+type McpRouteKind = "mcp" | "oauth-protected-resource" | "oauth-authorization-server";
+
+type McpRoute = {
+  readonly kind: McpRouteKind;
+  /** Org id pinned in the URL (`/org_xxx/mcp`), or `null` for the bare path. */
+  readonly organizationId: string | null;
+} | null;
+
+// A path segment counts as an org selector only when it has the WorkOS org-id
+// shape (`org_…`), so an unrelated `/<seg>/mcp` still falls through to routing.
+const orgIdSegment = (segment: string | undefined): string | null =>
+  segment && segment.startsWith("org_") ? segment : null;
+
+// Matches a trailing MCP endpoint — `mcp` (bare) or `<org>/mcp`. Returns the org
+// id, `null` for the bare form, or `undefined` when the segments are neither.
+const matchMcpSuffix = (segments: readonly string[]): string | null | undefined => {
+  if (segments.length === 1 && segments[0] === "mcp") return null;
+  if (segments.length === 2 && segments[1] === "mcp") return orgIdSegment(segments[0]) ?? undefined;
+  return undefined;
+};
 
 /**
- * Returns the MCP route type for a pathname, or `null` if the path isn't owned
- * by the MCP handler.
+ * Returns the MCP route (kind + optional URL-pinned org) for a pathname, or
+ * `null` if the path isn't owned by the MCP handler.
  *
  * Exported so the test worker and start.ts's middleware share the exact same
  * "is this an MCP path?" predicate — under the envelope `HttpRouter.toWebHandler`
  * 404s unknown paths rather than returning `null`, so this gate decides whether
  * to even invoke the envelope handler (null -> fall through to Start routing).
- * The known-path set stays in sync with the envelope's mounted routes:
- * `/mcp` + the two provider-declared discovery paths.
+ * Recognizes the bare `/mcp` + the two discovery docs AND their org-scoped
+ * variants (`/org_xxx/mcp`, `/.well-known/oauth-protected-resource/org_xxx/mcp`);
+ * only `org_…`-shaped segments are claimed. `prepareMcpOrgScope` then rewrites an
+ * org-scoped path to the bare path the shared envelope actually routes.
  */
 export const classifyMcpPath = (pathname: string): McpRoute => {
-  if (pathname === MCP_PATH) return "mcp";
-  if (pathname === PROTECTED_RESOURCE_METADATA_PATH) return "oauth-protected-resource";
-  if (pathname === "/.well-known/oauth-authorization-server") return "oauth-authorization-server";
-  return null;
+  if (pathname === AUTHORIZATION_SERVER_METADATA_PATH) {
+    return { kind: "oauth-authorization-server", organizationId: null };
+  }
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+
+  // Protected-resource metadata: `${prefix}/mcp` or `${prefix}/<org>/mcp`. The
+  // org sits after the well-known prefix (RFC 9728), not at the path root.
+  const prmPrefix = "/.well-known/oauth-protected-resource";
+  if (pathname.startsWith(`${prmPrefix}/`)) {
+    const organizationId = matchMcpSuffix(segments.slice(2));
+    return organizationId === undefined
+      ? null
+      : { kind: "oauth-protected-resource", organizationId };
+  }
+
+  // MCP transport: `/mcp` or `/<org>/mcp`.
+  const organizationId = matchMcpSuffix(segments);
+  return organizationId === undefined ? null : { kind: "mcp", organizationId };
+};
+
+const bareMcpPath = (kind: McpRouteKind): string =>
+  kind === "mcp"
+    ? MCP_PATH
+    : kind === "oauth-protected-resource"
+      ? PROTECTED_RESOURCE_METADATA_PATH
+      : AUTHORIZATION_SERVER_METADATA_PATH;
+
+/**
+ * Normalize an org-scoped MCP request for the shared envelope, which routes ONLY
+ * the bare `/mcp` + bare discovery paths. Rewrites `/org_xxx/mcp` (and the
+ * org-scoped discovery doc) to its bare path and carries the URL-pinned org in
+ * the internal `MCP_ORGANIZATION_HEADER` the cloud provider reads. A bare path is
+ * left untouched, except any client-supplied org header is stripped — the org may
+ * come ONLY from the URL (membership is still re-checked per request, so this is
+ * a selector, not a trust boundary). Shared by start.ts (production) and the test
+ * worker so both classify + rewrite identically; a no-op for non-MCP paths.
+ */
+export const prepareMcpOrgScope = (request: Request): Request => {
+  const url = new URL(request.url);
+  const route = classifyMcpPath(url.pathname);
+  if (route === null) return request;
+  const bare = bareMcpPath(route.kind);
+  if (url.pathname === bare && !request.headers.has(MCP_ORGANIZATION_HEADER)) return request;
+  url.pathname = bare;
+  const rewritten = new Request(url, request);
+  if (route.organizationId) rewritten.headers.set(MCP_ORGANIZATION_HEADER, route.organizationId);
+  else rewritten.headers.delete(MCP_ORGANIZATION_HEADER);
+  return rewritten;
 };
 
 /**

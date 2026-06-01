@@ -51,6 +51,33 @@ export const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-re
 export const PROTECTED_RESOURCE_METADATA_URL = `${RESOURCE_ORIGIN}${PROTECTED_RESOURCE_METADATA_PATH}`;
 export const RESOURCE_URL = `${RESOURCE_ORIGIN}${MCP_PATH}`;
 
+// ---------------------------------------------------------------------------
+// Org-scoped MCP (the URL pins an org: `/org_xxx/mcp`)
+// ---------------------------------------------------------------------------
+//
+// An MCP client can pin a specific organization in the URL instead of relying on
+// the token's `org_id` claim. start.ts / the test worker rewrite `/org_xxx/mcp`
+// (and the org-scoped discovery doc) to the bare path the shared envelope routes
+// and stash the URL-pinned org in this INTERNAL header; the provider reads it
+// back. The org is re-checked against live WorkOS membership per request
+// (`McpOrganizationAuth.authorize`), so the header — like the URL it came from —
+// is a SELECTOR, not a trust boundary.
+export const MCP_ORGANIZATION_HEADER = "x-executor-mcp-organization";
+
+/** The URL-pinned org for an MCP request, or `null` for the bare `/mcp`. */
+export const mcpOrganizationFromRequest = (request: Request): string | null =>
+  request.headers.get(MCP_ORGANIZATION_HEADER);
+
+/** The MCP resource URL for an org (`…/org_xxx/mcp`), or the bare resource. */
+export const resourceUrlFor = (organizationId: string | null): string =>
+  organizationId ? `${RESOURCE_ORIGIN}/${organizationId}${MCP_PATH}` : RESOURCE_URL;
+
+/** The protected-resource-metadata URL for an org, or the bare one. */
+export const protectedResourceMetadataUrlFor = (organizationId: string | null): string =>
+  organizationId
+    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationId}/mcp`
+    : PROTECTED_RESOURCE_METADATA_URL;
+
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
 
 type McpAuthorizedResult = {
@@ -80,11 +107,18 @@ export const mcpUnauthorized = (
   description,
 });
 
-/** Reason-sensitive RFC 9728 challenge for an Unauthorized auth result. */
-export const bearerChallengeFor = (result: McpUnauthorizedResult): string =>
+/**
+ * Reason-sensitive RFC 9728 challenge for an Unauthorized auth result. The
+ * challenge points at the org-scoped resource metadata when the request pinned
+ * an org in the URL (`/org_xxx/mcp`), else the bare document.
+ */
+export const bearerChallengeFor = (
+  result: McpUnauthorizedResult,
+  organizationId: string | null = null,
+): string =>
   bearerChallenge(
     { reason: result.reason, description: result.description },
-    PROTECTED_RESOURCE_METADATA_URL,
+    protectedResourceMetadataUrlFor(organizationId),
   );
 
 // ---------------------------------------------------------------------------
