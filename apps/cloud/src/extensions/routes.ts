@@ -7,7 +7,8 @@
 //     switch-organization / invitations / MCP-approval) — `NonProtectedApi`.
 //   - the cloud-only WorkOS domain-verification routes — `OrgHttpApi`.
 //   - Swagger UI + the OpenAPI JSON for the full cloud spec.
-//   - the Autumn billing proxy (`/extensions/billing/route/*`) — billing-as-extension.
+//   - the Autumn billing proxy (`/api/billing/*`) — billing-as-extension (the
+//     `extensions.routes` SEAM, but served under `/api` like everything else).
 //   - the global request-failure logging middleware.
 //
 // They all serve UNDER the `/api` prefix (the same namespace the protected +
@@ -87,10 +88,10 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     Layer.provide(apiPrefixedRouter),
   );
 
-  // Swagger UI at /extensions/docs + the OpenAPI JSON at /api/openapi.json, over the
+  // Swagger UI at /api/docs + the OpenAPI JSON at /api/openapi.json, over the
   // `/api`-prefixed spec (so the served paths match).
   const DocsRoutes = Layer.mergeAll(
-    HttpApiSwagger.layer(CloudOpenApi, { path: "/extensions/docs" }),
+    HttpApiSwagger.layer(CloudOpenApi, { path: "/api/docs" }),
     HttpRouter.add("GET", "/api/openapi.json", Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
   );
 

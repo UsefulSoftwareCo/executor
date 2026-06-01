@@ -236,7 +236,7 @@ function AuthGate() {
   }
 
   return (
-    <AutumnProvider pathPrefix="/extensions/billing/route">
+    <AutumnProvider pathPrefix="/api/billing">
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
         <ExecutorProvider fallback={<ShellSkeleton />} onHandledError={captureFrontendError}>
           <ExecutorPluginsProvider plugins={clientPlugins}>

@@ -7,8 +7,8 @@
 // 404 / the SPA fallback. This is the integration complement to
 // `app-paths.test.ts` (which guards the `start.ts` dispatch decision): together
 // they cover both halves of the billing-404 class —
-//   - app-paths.test.ts: "does start.ts forward /extensions/* to the handler?"
-//   - this file:          "does the handler actually serve /extensions/* ?"
+//   - app-paths.test.ts: "does start.ts forward the /api surface to the handler?"
+//   - this file:          "does the handler actually serve billing + docs?"
 //
 // It catches a route being dropped from `makeCloudExtensionRoutes`, the Autumn
 // proxy / Swagger being unmounted, the `/api` prefix wiring regressing, etc.
@@ -31,7 +31,7 @@ const call = (method: string, path: string, init: RequestInit = {}) =>
 
 describe("cloud composed-handler reachability", () => {
   it("serves the Autumn billing proxy (401 JSON, NOT a 404 SPA fallback)", async () => {
-    const res = await call("POST", "/extensions/billing/route/customer", {
+    const res = await call("POST", "/api/billing/customer", {
       headers: { "content-type": "application/json" },
       body: "{}",
     });
@@ -42,8 +42,8 @@ describe("cloud composed-handler reachability", () => {
     expect(await res.json()).toEqual({ error: "Unauthorized", code: "unauthorized" });
   });
 
-  it("serves Swagger UI at /extensions/docs", async () => {
-    const res = await call("GET", "/extensions/docs");
+  it("serves Swagger UI at /api/docs", async () => {
+    const res = await call("GET", "/api/docs");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect((await res.text()).toLowerCase()).toContain("swagger");

@@ -13,11 +13,11 @@ const spec = OpenApi.fromApi(CloudOpenApi);
 
 export const CloudOpenApiJsonLive = HttpRouter.add(
   "GET",
-  "/openapi.json",
+  "/api/openapi.json",
   Effect.succeed(HttpServerResponse.jsonUnsafe(spec)),
 );
 
 export const CloudDocsLive = Layer.mergeAll(
-  HttpApiSwagger.layer(CloudOpenApi, { path: "/docs" }),
+  HttpApiSwagger.layer(CloudOpenApi, { path: "/api/docs" }),
   CloudOpenApiJsonLive,
 );

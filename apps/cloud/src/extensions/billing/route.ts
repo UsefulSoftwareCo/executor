@@ -58,7 +58,7 @@ const handler = Effect.gen(function* () {
       clientOptions: {
         secretKey: env.AUTUMN_SECRET_KEY ?? "",
       },
-      pathPrefix: "/extensions/billing/route",
+      pathPrefix: "/api/billing",
     }),
   );
 
@@ -81,4 +81,4 @@ const handler = Effect.gen(function* () {
   }),
 );
 
-export const AutumnRoutesLive = HttpRouter.add("*", "/extensions/billing/route/*", handler);
+export const AutumnRoutesLive = HttpRouter.add("*", "/api/billing/*", handler);

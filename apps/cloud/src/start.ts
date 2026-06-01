@@ -6,17 +6,18 @@ import { marketingMiddleware, posthogProxyMiddleware, sentryTunnelMiddleware } f
 
 // ---------------------------------------------------------------------------
 // The unified app web handler — `ExecutorApp.make`'s `toWebHandler` (app.ts).
-// It serves EVERY app-owned path in one Effect HTTP layer: the `/api`-prefixed
-// typed API (the protected plugin API + account + org), the cloud `/extensions/*`
-// routes (Swagger docs + the Autumn billing proxy), AND the `/mcp` serving
-// envelope + its `/.well-known/*` OAuth discovery docs — exactly like self-host's
-// single `toWebHandler`. start.ts no longer hand-routes those surfaces; it only
-// decides app-owned-vs-Start and forwards unmodified.
+// It serves EVERY app-owned path in one Effect HTTP layer: everything under
+// `/api/*` (the protected plugin API + account + org, plus the cloud
+// `extensions.routes` — Swagger at `/api/docs`, the Autumn billing proxy at
+// `/api/billing/*`), AND the `/mcp` serving envelope + its `/.well-known/*`
+// OAuth discovery docs — exactly like self-host's single `toWebHandler`.
+// start.ts no longer hand-routes those surfaces; it only decides
+// app-owned-vs-Start and forwards unmodified.
 // ---------------------------------------------------------------------------
 
 const app = cloudApiHandler();
 
-// app-owned = the `/api`-prefixed API, an `/extensions/*` route, OR an
+// app-owned = anything under `/api/*` (incl. the cloud extension routes) OR an
 // MCP/OAuth-discovery path (see `./app-paths`). The app handler serves these at
 // their real paths, so we forward the request UNMODIFIED — no path stripping.
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
