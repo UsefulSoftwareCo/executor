@@ -98,19 +98,26 @@ type McpPostInit = {
   readonly accept?: string;
 };
 
-const mcpPost = (init: McpPostInit): Promise<Response> => {
+const mcpPostTo = (url: string, init: McpPostInit): Promise<Response> => {
   const headers: Record<string, string> = {
     "content-type": CONTENT_TYPE_JSON,
     accept: init.accept ?? JSON_AND_SSE,
   };
   if (init.bearer) headers.authorization = `Bearer ${init.bearer}`;
   if (init.sessionId) headers["mcp-session-id"] = init.sessionId;
-  return SELF.fetch(MCP_URL, {
+  return SELF.fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(init.body),
   });
 };
+
+const mcpPost = (init: McpPostInit): Promise<Response> => mcpPostTo(MCP_URL, init);
+
+const orgScopedMcpUrl = (organizationId: string): string => `${BASE}/${organizationId}/mcp`;
+
+const orgScopedResourceUrl = (organizationId: string): string =>
+  `${BASE}/.well-known/oauth-protected-resource/${organizationId}/mcp`;
 
 const mcpGet = (init: { readonly bearer: string; readonly sessionId: string }): Promise<Response> =>
   SELF.fetch(MCP_URL, {
@@ -186,6 +193,72 @@ describe("/.well-known/oauth-protected-resource", () => {
       bearer_methods_supported: ["header"],
       scopes_supported: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Org-scoped routing: /<org_id>/mcp
+// ---------------------------------------------------------------------------
+//
+// The active org can be pinned in the URL instead of relying on the token's
+// `org_id`. Membership is still verified per-request, so the URL is a selector,
+// not a trust boundary. Only `org_…`-shaped segments are claimed; anything else
+// falls through to TanStack routing.
+// ---------------------------------------------------------------------------
+
+describe("/:orgId/mcp org-scoped routing", () => {
+  it("serves protected-resource metadata pointing at the org-scoped resource", async () => {
+    const orgId = nextOrgId();
+    const response = await SELF.fetch(orgScopedResourceUrl(orgId));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      resource: `${BASE}/${orgId}/mcp`,
+      authorization_servers: ["https://test-authkit.example.com"],
+      bearer_methods_supported: ["header"],
+      scopes_supported: [],
+    });
+  });
+
+  it("takes the active org from the URL even when the token carries no org", async () => {
+    const orgId = nextOrgId();
+    const accountId = nextAccountId();
+    await seedOrg(orgId);
+
+    // A no-org token is a 403 on bare /mcp (see "without org" below); here the
+    // URL supplies the org, so the session initializes.
+    const response = await mcpPostTo(orgScopedMcpUrl(orgId), {
+      bearer: makeTestBearer(accountId, null),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("mcp-session-id")).toBeTruthy();
+    await response.text();
+  }, 15_000);
+
+  it("rejects a URL org the user is not a member of before creating a session", async () => {
+    const organizationId = `org_revoked_${crypto.randomUUID().slice(0, 8)}`;
+    const response = await mcpPostTo(orgScopedMcpUrl(organizationId), {
+      bearer: makeTestBearer(nextAccountId(), null),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as {
+      jsonrpc: string;
+      error: { code: number; message: string };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toMatch(/No organization/i);
+  });
+
+  it("does not claim a non-org-shaped /<seg>/mcp path", async () => {
+    // `/settings/mcp` must fall through to TanStack rather than be swallowed by
+    // the MCP filter; the test worker surfaces that as its own 404.
+    const response = await mcpPostTo(`${BASE}/settings/mcp`, {
+      bearer: makeTestBearer(nextAccountId(), nextOrgId()),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(response.status).toBe(404);
   });
 });
 
@@ -321,7 +394,9 @@ describe("/mcp notification responses", () => {
     expect(notificationResponse.status).toBe(202);
     expect(notificationResponse.headers.get("content-type")).toBeNull();
     expect(await notificationResponse.text()).toBe("");
-  });
+    // 15s like the other session-spinning tests here — the default 5s is
+    // borderline for DO runtime cold-start under full-suite scheduler load.
+  }, 15_000);
 });
 
 describe("/mcp session restore", () => {

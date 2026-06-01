@@ -13,6 +13,7 @@ import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
+import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { Skeleton } from "@executor-js/react/components/skeleton";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
@@ -240,8 +241,10 @@ function AuthGate() {
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
         <ExecutorProvider fallback={<ShellSkeleton />} onHandledError={captureFrontendError}>
           <ExecutorPluginsProvider plugins={clientPlugins}>
-            <Shell />
-            <Toaster />
+            <OrganizationProvider organizationId={auth.organization.id}>
+              <Shell />
+              <Toaster />
+            </OrganizationProvider>
           </ExecutorPluginsProvider>
         </ExecutorProvider>
       </Sentry.ErrorBoundary>

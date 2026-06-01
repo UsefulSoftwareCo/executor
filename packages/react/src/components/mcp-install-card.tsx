@@ -10,6 +10,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsib
 import { NativeSelect, NativeSelectOption } from "./native-select";
 import { cn } from "../lib/utils";
 import { useScopeInfo } from "../api/scope-context";
+import { useOrganizationId } from "../api/organization-context";
 import {
   getExecutorServerAuthorizationHeader,
   useExecutorServerConnection,
@@ -47,12 +48,18 @@ export const buildMcpHttpEndpoint = (input: {
     readonly port: number;
   } | null;
   readonly elicitationMode?: McpElicitationMode;
+  // Cloud only: pins the URL to `/<org_id>/mcp`. Desktop/local pass nothing and
+  // get the bare `/mcp` path.
+  readonly organizationId?: string | null;
 }): string => {
+  // The desktop sidecar isn't org-scoped, so the org only applies to the
+  // origin/remote forms.
+  const mcpPath = input.organizationId && !input.desktop ? `/${input.organizationId}/mcp` : "/mcp";
   const endpoint = input.desktop
-    ? `http://127.0.0.1:${input.desktop.port}/mcp`
+    ? `http://127.0.0.1:${input.desktop.port}${mcpPath}`
     : input.origin
-      ? `${input.origin}/mcp`
-      : "<this-server>/mcp";
+      ? `${input.origin}${mcpPath}`
+      : `<this-server>${mcpPath}`;
   if (!input.elicitationMode || input.elicitationMode === "model") return endpoint;
 
   if (endpoint.startsWith("<")) return `${endpoint}?elicitation_mode=${input.elicitationMode}`;
@@ -83,12 +90,14 @@ export const buildMcpInstallCommand = (input: {
   readonly authorizationHeader?: string | null;
   readonly elicitationMode?: McpElicitationMode;
   readonly devCliCwd?: string;
+  readonly organizationId?: string | null;
 }): string => {
   if (input.mode === "http") {
     const endpoint = buildMcpHttpEndpoint({
       origin: input.origin,
       desktop: input.desktop ? { port: input.desktop.port } : null,
       elicitationMode: input.elicitationMode,
+      organizationId: input.organizationId,
     });
     const headerFlags: string[] = [];
     if (input.authorizationHeader) {
@@ -122,6 +131,7 @@ export function McpInstallCard(props: { className?: string }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
   const scopeInfo = useScopeInfo();
+  const organizationId = useOrganizationId();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
   // PATH, and the bundled sidecar is locked to the running app. Force the
@@ -140,6 +150,7 @@ export function McpInstallCard(props: { className?: string }) {
     authorizationHeader,
     elicitationMode,
     devCliCwd,
+    organizationId,
   });
 
   const subtitle =

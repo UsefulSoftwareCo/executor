@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createMiddleware, createStart } from "@tanstack/react-start";
 import { Effect } from "effect";
 import { handleApiRequest } from "./api";
-import { mcpFetch } from "./mcp";
+import { classifyMcpPath, mcpFetch } from "./mcp";
 import { handleSentryTunnelRequest } from "./sentry-tunnel";
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,10 @@ const parseCookie = (cookieHeader: string | null, name: string): string | null =
 
 const mcpRequestMiddleware = createMiddleware({ type: "request" }).server(
   async ({ pathname, request, next }) => {
-    if (pathname === "/mcp" || pathname.startsWith("/.well-known/")) {
+    // Single source of truth for MCP path ownership (incl. `/org_xxx/mcp` and
+    // the org-scoped `.well-known` resource metadata). `mcpFetch` re-checks and
+    // can still return null, in which case we fall through to TanStack routing.
+    if (classifyMcpPath(pathname) !== null) {
       const response = await mcpFetch(request);
       if (response) return response;
     }

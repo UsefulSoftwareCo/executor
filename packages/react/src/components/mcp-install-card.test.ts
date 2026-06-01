@@ -109,4 +109,54 @@ describe("MCP install command rendering", () => {
       }),
     ).toBe("npx add-mcp 'executor mcp --elicitation-mode browser' --name executor");
   });
+
+  it("pins the HTTP endpoint to the org id when one is supplied", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        organizationId: "org_123",
+      }),
+    ).toBe("https://executor.example/org_123/mcp");
+
+    expect(
+      buildMcpInstallCommand({
+        mode: "http",
+        isDev: false,
+        origin: "https://executor.example",
+        organizationId: "org_123",
+      }),
+    ).toBe("npx add-mcp https://executor.example/org_123/mcp --transport http --name executor");
+  });
+
+  it("keeps the bare /mcp path when no org id is supplied", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        organizationId: null,
+      }),
+    ).toBe("https://executor.example/mcp");
+  });
+
+  it("combines the org id with an explicit elicitation mode", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: "https://executor.example",
+        desktop: null,
+        organizationId: "org_123",
+        elicitationMode: "browser",
+      }),
+    ).toBe("https://executor.example/org_123/mcp?elicitation_mode=browser");
+  });
+
+  it("does not org-scope the desktop sidecar endpoint", () => {
+    expect(
+      buildMcpHttpEndpoint({
+        origin: null,
+        desktop: { port: 4788 },
+        organizationId: "org_123",
+      }),
+    ).toBe("http://127.0.0.1:4788/mcp");
+  });
 });

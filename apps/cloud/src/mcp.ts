@@ -76,6 +76,19 @@ const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/
 const PROTECTED_RESOURCE_METADATA_URL = `${RESOURCE_ORIGIN}${PROTECTED_RESOURCE_METADATA_PATH}`;
 const RESOURCE_URL = `${RESOURCE_ORIGIN}${MCP_PATH}`;
 
+// Org-scoped variants: `/org_xxx/mcp` lets a client pin a specific org without
+// relying on the token's `org_id` claim. The org is taken from the URL and
+// re-checked against live WorkOS membership per request, so the URL is a
+// selector, not a trust boundary. (When web routes move under `/:org`, this
+// becomes the handle form; for now we accept the raw WorkOS org id.)
+const resourceUrlFor = (organizationId: string | null): string =>
+  organizationId ? `${RESOURCE_ORIGIN}/${organizationId}${MCP_PATH}` : RESOURCE_URL;
+
+const protectedResourceMetadataUrlFor = (organizationId: string | null): string =>
+  organizationId
+    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationId}/mcp`
+    : PROTECTED_RESOURCE_METADATA_URL;
+
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
 
 type McpAuthorizedResult = {
@@ -458,14 +471,15 @@ const annotateMcpRequest = (
 // OAuth metadata endpoints
 // ---------------------------------------------------------------------------
 
-const protectedResourceMetadata = Effect.sync(() =>
-  jsonResponse({
-    resource: RESOURCE_URL,
-    authorization_servers: [AUTHKIT_DOMAIN],
-    bearer_methods_supported: ["header"],
-    scopes_supported: [],
-  }),
-);
+const protectedResourceMetadata = (organizationId: string | null) =>
+  Effect.sync(() =>
+    jsonResponse({
+      resource: resourceUrlFor(organizationId),
+      authorization_servers: [AUTHKIT_DOMAIN],
+      bearer_methods_supported: ["header"],
+      scopes_supported: [],
+    }),
+  );
 
 const authorizationServerMetadata = Effect.tryPromise({
   try: async () => {
@@ -522,10 +536,14 @@ const withPropagationHeaders = (
   return new Request(request, { headers });
 };
 
-const withVerifiedIdentityHeaders = (request: Request, token: VerifiedToken): Request => {
+const withVerifiedIdentityHeaders = (
+  request: Request,
+  accountId: string,
+  organizationId: string,
+): Request => {
   const headers = new Headers(request.headers);
-  headers.set(INTERNAL_ACCOUNT_ID_HEADER, token.accountId);
-  headers.set(INTERNAL_ORGANIZATION_ID_HEADER, token.organizationId ?? "");
+  headers.set(INTERNAL_ACCOUNT_ID_HEADER, accountId);
+  headers.set(INTERNAL_ORGANIZATION_ID_HEADER, organizationId);
   return new Request(request, { headers });
 };
 
@@ -569,13 +587,14 @@ const forwardToExistingSession = (
   sessionId: string,
   peek: boolean,
   token: VerifiedToken,
+  organizationId: string,
 ) =>
   Effect.gen(function* () {
     const ns = env.MCP_SESSION;
     const stub = ns.get(ns.idFromString(sessionId));
     const propagation = yield* currentPropagationHeaders(request);
     const propagated = withPropagationHeaders(
-      withVerifiedIdentityHeaders(request, token),
+      withVerifiedIdentityHeaders(request, token.accountId, organizationId),
       propagation,
     );
     const raw = yield* Effect.promise(
@@ -608,10 +627,10 @@ const clearExistingSession = (request: Request, sessionId: string) =>
 const authorizeMcpOrganization = (
   request: Request,
   token: VerifiedToken,
+  organizationId: string | null,
   sessionId: string | null,
 ) =>
   Effect.gen(function* () {
-    const organizationId = token.organizationId;
     if (!organizationId) {
       return jsonRpcError(403, -32001, "No organization in session — log in via the web app first");
     }
@@ -638,14 +657,14 @@ const authorizeMcpOrganization = (
     return jsonRpcError(403, -32001, "No organization in session — log in via the web app first");
   });
 
-const dispatchPost = (request: Request, token: VerifiedToken) =>
+const dispatchPost = (request: Request, token: VerifiedToken, organizationId: string | null) =>
   Effect.gen(function* () {
     const sessionId = request.headers.get("mcp-session-id");
-    const authError = yield* authorizeMcpOrganization(request, token, sessionId);
+    const authError = yield* authorizeMcpOrganization(request, token, organizationId, sessionId);
     if (authError) return authError;
-    const organizationId = token.organizationId!;
+    const orgId = organizationId!;
 
-    if (sessionId) return yield* forwardToExistingSession(request, sessionId, true, token);
+    if (sessionId) return yield* forwardToExistingSession(request, sessionId, true, token, orgId);
 
     const ns = env.MCP_SESSION;
     const stub = ns.get(ns.newUniqueId());
@@ -653,7 +672,7 @@ const dispatchPost = (request: Request, token: VerifiedToken) =>
     yield* Effect.promise(() =>
       stub.init(
         {
-          organizationId,
+          organizationId: orgId,
           userId: token.accountId,
           elicitationMode: readElicitationMode(request),
         },
@@ -665,7 +684,7 @@ const dispatchPost = (request: Request, token: VerifiedToken) =>
       }),
     );
     const propagated = withPropagationHeaders(
-      withVerifiedIdentityHeaders(request, token),
+      withVerifiedIdentityHeaders(request, token.accountId, orgId),
       propagation,
     );
     const raw = yield* Effect.promise(
@@ -682,24 +701,24 @@ const dispatchPost = (request: Request, token: VerifiedToken) =>
     return HttpServerResponse.raw(withMcpResponseHeaders(annotated));
   });
 
-const dispatchGet = (request: Request, token: VerifiedToken) => {
+const dispatchGet = (request: Request, token: VerifiedToken, organizationId: string | null) => {
   const sessionId = request.headers.get("mcp-session-id");
   if (!sessionId)
     return Effect.succeed(jsonRpcError(400, -32000, "mcp-session-id header required for SSE"));
   return Effect.gen(function* () {
-    const authError = yield* authorizeMcpOrganization(request, token, sessionId);
+    const authError = yield* authorizeMcpOrganization(request, token, organizationId, sessionId);
     if (authError) return authError;
-    return yield* forwardToExistingSession(request, sessionId, false, token);
+    return yield* forwardToExistingSession(request, sessionId, false, token, organizationId!);
   });
 };
 
-const dispatchDelete = (request: Request, token: VerifiedToken) => {
+const dispatchDelete = (request: Request, token: VerifiedToken, organizationId: string | null) => {
   const sessionId = request.headers.get("mcp-session-id");
   if (!sessionId) return Effect.succeed(HttpServerResponse.empty({ status: 204 }));
   return Effect.gen(function* () {
-    const authError = yield* authorizeMcpOrganization(request, token, sessionId);
+    const authError = yield* authorizeMcpOrganization(request, token, organizationId, sessionId);
     if (authError) return authError;
-    return yield* forwardToExistingSession(request, sessionId, true, token);
+    return yield* forwardToExistingSession(request, sessionId, true, token, organizationId!);
   });
 };
 
@@ -707,21 +726,57 @@ const dispatchDelete = (request: Request, token: VerifiedToken) => {
 // App
 // ---------------------------------------------------------------------------
 
-type McpRoute = "mcp" | "oauth-protected-resource" | "oauth-authorization-server" | null;
+type McpRouteKind = "mcp" | "oauth-protected-resource" | "oauth-authorization-server";
+
+type McpRoute = {
+  readonly kind: McpRouteKind;
+  /** Org id pinned in the URL (`/org_xxx/mcp`), or `null` for the bare path. */
+  readonly organizationId: string | null;
+} | null;
+
+const PRM_PREFIX = "/.well-known/oauth-protected-resource";
+
+// A path segment counts as an org selector only when it has the WorkOS org id
+// shape (`org_…`). This keeps the MCP fall-through filter from claiming an
+// unrelated `/<seg>/mcp` path instead of letting TanStack route it.
+const orgIdSegment = (segment: string | undefined): string | null =>
+  segment && segment.startsWith("org_") ? segment : null;
+
+// Matches a trailing MCP endpoint — `mcp` (bare) or `<org>/mcp`. Returns the org
+// id, `null` for the bare form, or `undefined` when the segments are neither.
+const matchMcpSuffix = (segments: readonly string[]): string | null | undefined => {
+  if (segments.length === 1 && segments[0] === "mcp") return null;
+  if (segments.length === 2 && segments[1] === "mcp") return orgIdSegment(segments[0]) ?? undefined;
+  return undefined;
+};
 
 /**
- * Returns the MCP route type for a pathname, or `null` if the path isn't owned
- * by the MCP handler.
+ * Returns the MCP route (kind + optional URL-pinned org) for a pathname, or
+ * `null` if the path isn't owned by the MCP handler.
  *
- * Exported so the test worker can share the exact same predicate the middleware
- * uses — we avoid duplicating the "is this an MCP path?" logic across entry
- * points.
+ * This is THE ownership predicate: `start.ts`'s request middleware uses it to
+ * decide whether to hand a request to `mcpFetch` (vs. fall through to TanStack
+ * Start), `mcpApp` uses it to dispatch, and the test worker reuses it too — so
+ * the set of MCP paths lives in exactly one place.
  */
 export const classifyMcpPath = (pathname: string): McpRoute => {
-  if (pathname === MCP_PATH) return "mcp";
-  if (pathname === PROTECTED_RESOURCE_METADATA_PATH) return "oauth-protected-resource";
-  if (pathname === "/.well-known/oauth-authorization-server") return "oauth-authorization-server";
-  return null;
+  if (pathname === "/.well-known/oauth-authorization-server") {
+    return { kind: "oauth-authorization-server", organizationId: null };
+  }
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+
+  // Protected-resource metadata: `${PRM_PREFIX}/mcp` or `${PRM_PREFIX}/<org>/mcp`.
+  // The org sits after the well-known prefix (RFC 9728), not at the path root.
+  if (pathname.startsWith(`${PRM_PREFIX}/`)) {
+    const organizationId = matchMcpSuffix(segments.slice(2));
+    return organizationId === undefined
+      ? null
+      : { kind: "oauth-protected-resource", organizationId };
+  }
+
+  // MCP transport: `/mcp` or `/<org>/mcp`.
+  const organizationId = matchMcpSuffix(segments);
+  return organizationId === undefined ? null : { kind: "mcp", organizationId };
 };
 
 /**
@@ -737,10 +792,13 @@ export const mcpApp: Effect.Effect<
   const httpRequest = yield* HttpServerRequest.HttpServerRequest;
   const request = httpRequest.source as Request;
   const route = classifyMcpPath(new URL(request.url).pathname);
+  const pathOrganizationId = route?.organizationId ?? null;
 
   if (request.method === "OPTIONS") return corsPreflight;
-  if (route === "oauth-protected-resource") return yield* protectedResourceMetadata;
-  if (route === "oauth-authorization-server") return yield* authorizationServerMetadata;
+  if (route?.kind === "oauth-protected-resource") {
+    return yield* protectedResourceMetadata(pathOrganizationId);
+  }
+  if (route?.kind === "oauth-authorization-server") return yield* authorizationServerMetadata;
 
   const auth = yield* McpAuth;
   const authResult = yield* auth.verifyBearer(request).pipe(Effect.result);
@@ -763,13 +821,17 @@ export const mcpApp: Effect.Effect<
   });
 
   if (isMcpUnauthorized(authValue)) {
-    return unauthorized(authValue, PROTECTED_RESOURCE_METADATA_URL);
+    return unauthorized(authValue, protectedResourceMetadataUrlFor(pathOrganizationId));
   }
   const token = authValue.token;
+  // URL is the source of truth for the active org when present (`/org_xxx/mcp`);
+  // the bare `/mcp` path falls back to the token's `org_id`. Either way the org
+  // is verified against live WorkOS membership in authorizeMcpOrganization.
+  const organizationId = pathOrganizationId ?? token.organizationId;
   const dispatchEffect = Match.value(request.method).pipe(
-    Match.when("POST", () => dispatchPost(request, token)),
-    Match.when("GET", () => dispatchGet(request, token)),
-    Match.when("DELETE", () => dispatchDelete(request, token)),
+    Match.when("POST", () => dispatchPost(request, token, organizationId)),
+    Match.when("GET", () => dispatchGet(request, token, organizationId)),
+    Match.when("DELETE", () => dispatchDelete(request, token, organizationId)),
     Match.option,
   );
   if (Option.isSome(dispatchEffect)) {
