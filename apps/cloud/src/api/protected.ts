@@ -18,7 +18,7 @@ import { UserStoreService } from "../auth/context";
 import { cloudIdentityFailureStrategy, workosIdentityLayer } from "../auth/workos-auth-provider";
 import { AutumnService } from "../extensions/billing/service";
 import { DbService } from "../db/db";
-import { CoreSharedServices } from "./core-shared-services";
+import { CoreSharedServices } from "../auth/workos";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { ProtectedCloudApiLive, RequestScopedServicesLive } from "./layers";
 

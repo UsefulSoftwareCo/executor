@@ -4,7 +4,7 @@ import { HttpServer } from "effect/unstable/http";
 import { DbProvider, ExecutorApp } from "@executor-js/api/server";
 
 import { cloudPlugins } from "./plugins";
-import { CoreSharedServices } from "./api/core-shared-services";
+import { CoreSharedServices } from "./auth/workos";
 import { makeCloudExtensionRoutes } from "./extensions/routes";
 import { RequestScopedServicesLive } from "./api/layers";
 import { CloudMeteringEngineDecorator } from "./engine/execution-stack-metered";

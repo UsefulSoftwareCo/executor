@@ -17,7 +17,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { BEARER_PREFIX } from "../auth/bearer";
 import { authorizeOrganization } from "../auth/organization";
 import { UserStoreService } from "../auth/context";
-import { CoreSharedServices } from "../api/core-shared-services";
+import { CoreSharedServices } from "../auth/workos";
 import { DbService } from "../db/db";
 import { bearerChallenge } from "./responses";
 import { McpJwtVerificationError, verifyWorkOSMcpAccessToken, type VerifiedToken } from "./jwt";

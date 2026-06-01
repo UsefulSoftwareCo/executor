@@ -8,7 +8,7 @@ import { AccountHandlers } from "@executor-js/api/server";
 
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
-import type { Session } from "../auth/middleware";
+import { noopCookieWriter, type Session } from "../auth/middleware";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
@@ -31,6 +31,7 @@ const authedSession: Session = {
   organizationId: "org_1",
   sealedSession: "sealed_session",
   refreshedSession: null,
+  cookies: noopCookieWriter,
 };
 
 const orgLessSession: Session = { ...authedSession, organizationId: null };

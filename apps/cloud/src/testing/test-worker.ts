@@ -32,7 +32,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { organizations } from "../db/schema";
 import { parseTestBearer } from "./test-bearer";
 import { DoTelemetryLive } from "../observability/telemetry";
-import { CoreSharedServices } from "../api/core-shared-services";
+import { CoreSharedServices } from "../auth/workos";
 
 export { McpSessionDO } from "../mcp/session-durable-object";
 

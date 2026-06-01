@@ -33,10 +33,13 @@ import {
 
 // The DO only needs the neutral boot-scoped service (WorkOSClient). It never
 // bills, so it does NOT depend on any billing service — `CloudExecutionStackLayer`
-// here is the no-op-decorator (Autumn-free) stack. Imported from the isolated
-// leaf (not `../api/layers`) so the DO bundle stays free of `auth/handlers.ts` →
-// `@tanstack/react-start/server`; see `../api/core-shared-services.ts`.
-import { CoreSharedServices } from "../api/core-shared-services";
+// here is the no-op-decorator (Autumn-free) stack. It imports the focused
+// `CoreSharedServices` root (beside `WorkOSClient`), NOT `../api/layers`, so the
+// DO bundle stays small and free of the whole HTTP API assembly. (This used to
+// require a dedicated `core-shared-services.ts` leaf to keep `auth/handlers.ts` →
+// `@tanstack/react-start` out of the DO bundle; that coupling is gone now that
+// `handlers.ts` queues cookies through `SessionAuthLive` instead.)
+import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
 import { resolveOrganization } from "../auth/organization";
 import {

@@ -1,7 +1,6 @@
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerResponse } from "effect/unstable/http";
 import { Duration, Effect, Predicate } from "effect";
-import { setCookie, deleteCookie } from "@tanstack/react-start/server";
 
 import {
   AUTH_PATHS,
@@ -252,10 +251,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           };
         }),
       )
-      .handleRaw("logout", () => {
-        deleteCookie("wos-session", { path: "/" });
-        return Effect.succeed(HttpServerResponse.redirect("/", { status: 302 }));
-      })
+      .handleRaw("logout", () =>
+        Effect.succeed(
+          deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+        ),
+      )
       .handle("organizations", () =>
         Effect.gen(function* () {
           const workos = yield* WorkOSClient;
@@ -288,7 +288,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             payload.organizationId,
           );
           if (refreshed) {
-            setCookie("wos-session", refreshed, COOKIE_OPTIONS);
+            session.cookies.set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
           }
         }),
       )
@@ -355,11 +355,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
                 verifiedOrgId: verified?.organizationId ?? null,
               },
             );
-            deleteCookie("wos-session", { path: "/" });
+            session.cookies.set("wos-session", "", DELETE_COOKIE_OPTIONS);
             return yield* new WorkOSError();
           }
 
-          setCookie("wos-session", refreshed, COOKIE_OPTIONS);
+          session.cookies.set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
           return { id: org.id, name: org.name };
         }),
       )
@@ -448,11 +448,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               refreshReturnedSession: refreshed != null,
               verifiedOrgId: verified?.organizationId ?? null,
             });
-            deleteCookie("wos-session", { path: "/" });
+            session.cookies.set("wos-session", "", DELETE_COOKIE_OPTIONS);
             return yield* new WorkOSError();
           }
 
-          setCookie("wos-session", refreshed, COOKIE_OPTIONS);
+          session.cookies.set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
           return { id: org.id, name: org.name };
         }),
       )

@@ -6,6 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import { Context } from "effect";
+import type { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiMiddleware, HttpApiSecurity } from "effect/unstable/httpapi";
 
 // The executor-API identity seam lives in `@executor-js/api/server`: the one
@@ -19,6 +20,29 @@ import { AuthContext, NoOrganization, Unauthorized } from "@executor-js/api/serv
 // Session — what every authenticated request gets
 // ---------------------------------------------------------------------------
 
+// Cookie-write options — exactly the options `HttpServerResponse.setCookieUnsafe`
+// accepts (derived so they can't drift; `import type` keeps this SPA-imported
+// module free of any server runtime). The auth handlers hand over the same
+// `RESPONSE_COOKIE_OPTIONS` / `DELETE_COOKIE_OPTIONS` constants the existing
+// `setResponseCookie` path uses, so the emitted `Set-Cookie` bytes are identical.
+export type SessionCookieOptions = NonNullable<
+  Parameters<typeof HttpServerResponse.setCookieUnsafe>[3]
+>;
+
+// A request-scoped cookie queue. Typed `.handle()` handlers (e.g. the WorkOS
+// session-refresh on `switchOrganization`/`createOrganization`) return DATA, not
+// an `HttpServerResponse`, so they can't attach a `Set-Cookie` directly. They
+// queue cookies here; `SessionAuthLive` drains the queue onto the outgoing
+// response. This replaces the old `@tanstack/react-start/server` `setCookie`
+// import — the one thing that pulled TanStack Start into the backend graph.
+export type SessionCookieWriter = {
+  /** Queue a `Set-Cookie` to apply to the response. */
+  readonly set: (name: string, value: string, options: SessionCookieOptions) => void;
+};
+
+/** No-op writer for `Session` producers that never re-set the cookie (the account API). */
+export const noopCookieWriter: SessionCookieWriter = { set: () => {} };
+
 export type Session = {
   readonly accountId: string;
   readonly email: string;
@@ -28,6 +52,8 @@ export type Session = {
   readonly organizationId: string | null;
   readonly sealedSession: string;
   readonly refreshedSession: string | null;
+  /** Queue cookie writes from a typed handler; applied to the response by `SessionAuthLive`. */
+  readonly cookies: SessionCookieWriter;
 };
 
 export class SessionContext extends Context.Service<SessionContext, Session>()(
@@ -64,6 +90,7 @@ export const sealedSessionDisplayName = (result: SealedSessionResult): string | 
 export const sessionFromSealed = (
   result: SealedSessionResult,
   sealedSessionFallback: string,
+  cookies: SessionCookieWriter = noopCookieWriter,
 ): Session => ({
   accountId: result.userId,
   email: result.email,
@@ -72,6 +99,7 @@ export const sessionFromSealed = (
   organizationId: result.organizationId ?? null,
   sealedSession: result.refreshedSession ?? sealedSessionFallback,
   refreshedSession: result.refreshedSession ?? null,
+  cookies,
 });
 
 // ---------------------------------------------------------------------------

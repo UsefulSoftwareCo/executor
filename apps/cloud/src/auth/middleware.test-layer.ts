@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 
-import { SessionAuth, SessionContext, type Session } from "./middleware";
+import { noopCookieWriter, SessionAuth, SessionContext, type Session } from "./middleware";
 
 export type SessionTestContext = Session;
 
@@ -14,6 +14,7 @@ export const makeSessionTestContext = (
   organizationId: "org_existing_1",
   sealedSession: "test_session",
   refreshedSession: null,
+  cookies: noopCookieWriter,
   ...overrides,
 });
 

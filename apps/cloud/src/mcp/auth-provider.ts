@@ -37,7 +37,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { ApiKeyService } from "../auth/api-keys";
-import { CoreSharedServices } from "../api/core-shared-services";
+import { CoreSharedServices } from "../auth/workos";
 import {
   bearerChallengeFor,
   mcpOrganizationFromRequest,

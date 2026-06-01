@@ -20,7 +20,7 @@ import { ErrorCaptureLive } from "../observability";
 import { AutumnService } from "../extensions/billing/service";
 
 import { cloudPlugins } from "../plugins";
-import { CoreSharedServices } from "./core-shared-services";
+import { CoreSharedServices } from "../auth/workos";
 
 const DbLive = DbService.Live;
 const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
