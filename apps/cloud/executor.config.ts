@@ -8,13 +8,16 @@ import { workosVaultPlugin, type WorkOSVaultClient } from "@executor-js/plugin-w
 // Single source of truth for the cloud app's plugin list.
 //
 // Consumed by:
-//   - FumaDB schema wiring (calls `plugins({})`)
 //   - the host runtime (calls `plugins({ workosCredentials })` per request)
+//   - the build/UI tooling (the vite plugin calls `plugins()` no-arg, reads
+//     `plugin.packageName` only)
 //   - the test harness (calls `plugins({ workosVaultClient })` per test)
+// (NOT by schema generation — the executor table set is fixed and
+// plugin-independent, see `collectTables()`.)
 //
 // `TDeps` is inferred directly from the factory parameter annotation —
 // no global `declare module "@executor-js/sdk"` augmentation. Each
-// caller (runtime / schema wiring / tests) passes whatever subset of the deps
+// caller (runtime / build tooling / tests) passes whatever subset of the deps
 // it has; all fields are optional so `plugins({})` keeps working.
 //
 // Cloud only ships plugins safe to run in a multi-tenant setting — no

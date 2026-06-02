@@ -108,7 +108,7 @@ const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildO
       : basePlugins;
     const fuma = createDrizzleFumaDb({
       db,
-      tables: collectTables(plugins),
+      tables: collectTables(),
       namespace: "executor_cloud",
       provider: "postgresql",
     });

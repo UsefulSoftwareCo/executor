@@ -3,11 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import { collectTables } from "@executor-js/sdk/core";
-import { getConfig } from "../utils/get-config.js";
+
+// The executor's table set is fixed and plugin-independent (`collectTables()`),
+// so schema generation needs no `executor.config.ts` — only the target ORM
+// namespace/adapter/provider. The same tables render per database via flags.
 
 type SchemaGenerateOptions = {
   readonly cwd: string;
-  readonly config?: string;
   readonly output?: string;
   readonly namespace: string;
   readonly adapter: string;
@@ -22,14 +24,6 @@ const schemaGenerateAction = async (opts: SchemaGenerateOptions) => {
     process.exit(1);
   }
 
-  const config = await getConfig({ cwd, configPath: opts.config });
-  if (!config) {
-    console.error(
-      "No configuration file found. Add an `executor.config.ts` file to " +
-        "your project or pass the path using the `--config` flag.",
-    );
-    process.exit(1);
-  }
   if (opts.adapter !== "drizzle") {
     console.error(`Unsupported schema adapter "${opts.adapter}". Supported adapters: drizzle.`);
     process.exit(1);
@@ -49,7 +43,7 @@ const schemaGenerateAction = async (opts: SchemaGenerateOptions) => {
 
   const schema = fumaSchema({
     version: opts.version,
-    tables: collectTables(config.plugins()),
+    tables: collectTables(),
   });
   const factory = fumadb({
     namespace: opts.namespace,
@@ -75,9 +69,8 @@ export const schema = new Command("schema")
   .description("Database schema utilities")
   .addCommand(
     new Command("generate")
-      .description("Generate an ORM schema file from the executor config")
+      .description("Generate the ORM schema file for the executor's fixed table set")
       .option("-c, --cwd <cwd>", "the working directory", process.cwd())
-      .option("--config <config>", "path to the executor config file")
       .option("--output <output>", "output file path for the generated schema")
       .option("--namespace <namespace>", "FumaDB namespace", "executor")
       .option("--adapter <adapter>", "FumaDB adapter", "drizzle")

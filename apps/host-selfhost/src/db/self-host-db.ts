@@ -19,7 +19,6 @@ import {
 } from "@executor-js/api/server";
 import type { FumaDb, FumaTables } from "@executor-js/sdk";
 
-import { selfHostPlugins } from "../plugins";
 import { SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
 
 // ---------------------------------------------------------------------------
@@ -153,7 +152,7 @@ export interface SelfHostDbLayerOptions {
  */
 export const createSelfHostDb = (options: SelfHostDbLayerOptions): Promise<SelfHostDbHandle> =>
   createSqliteExecutorDb({
-    tables: collectTables(selfHostPlugins),
+    tables: collectTables(),
     namespace: options.namespace ?? SELF_HOST_NAMESPACE,
     version: options.version ?? SELF_HOST_SCHEMA_VERSION,
     path: options.path,

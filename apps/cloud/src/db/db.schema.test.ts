@@ -20,7 +20,6 @@ import postgres from "postgres";
 
 import { collectTables } from "@executor-js/sdk";
 
-import executorConfig from "../../executor.config";
 import * as cloudSchema from "./schema";
 import * as executorSchema from "./executor-schema";
 import { combinedSchema } from "./db";
@@ -102,7 +101,7 @@ describe("combinedSchema", () => {
           const db = drizzle(sql, { schema: combinedSchema });
           const fuma = createDrizzleFumaDb({
             db,
-            tables: collectTables(executorConfig.plugins({})),
+            tables: collectTables(),
             namespace: "executor_cloud",
             provider: "postgresql",
           });

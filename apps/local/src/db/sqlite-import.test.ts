@@ -190,7 +190,7 @@ describe("importSqliteDataToFuma", () => {
     const markerPath = join(workDir, "fumadb-sqlite-imported");
     await seedSqlite(sqlitePath);
 
-    const tables = collectTables([]);
+    const tables = collectTables();
     sqlite = await createSqliteFumaDb({
       tables,
       namespace: "executor_local_test",
@@ -279,7 +279,7 @@ describe("importSqliteDataToFuma", () => {
     );
     db.close();
 
-    const tables = collectTables([]);
+    const tables = collectTables();
     const legacyScopeIds = await readLegacySqliteScopeIds({
       sqlitePath,
       tables,
@@ -346,7 +346,7 @@ describe("importSqliteDataToFuma", () => {
     db.close();
 
     const tables: FumaTables = {
-      ...collectTables([]),
+      ...collectTables(),
       ...legacyShapeSchema,
     };
     sqlite = await createSqliteFumaDb({
@@ -385,7 +385,7 @@ describe("importSqliteDataToFuma", () => {
     const markerPath = join(workDir, "fumadb-sqlite-imported");
     await seedMigratedSqlite(sqlitePath);
 
-    const tables = collectTables([]);
+    const tables = collectTables();
     const result = await importLegacySqliteIfNeeded({
       storage: {
         dataDir: workDir,
@@ -420,7 +420,7 @@ describe("importSqliteDataToFuma", () => {
       migrationHashes: ["different-branch-migration", "newer-branch-migration"],
     });
 
-    const tables = collectTables([]);
+    const tables = collectTables();
     const result = await importLegacySqliteIfNeeded({
       storage: {
         dataDir: workDir,
@@ -463,7 +463,7 @@ describe("importSqliteDataToFuma", () => {
     await heldReader.execute("BEGIN");
     await heldReader.execute("SELECT * FROM source");
 
-    const tables = collectTables([]);
+    const tables = collectTables();
     const result = await importLegacySqliteIfNeeded({
       storage: {
         dataDir: workDir,
@@ -509,7 +509,7 @@ describe("importSqliteDataToFuma", () => {
       .run("scope_a", "late_1", "from-backup");
     legacy.close();
 
-    const firstTables = collectTables([]);
+    const firstTables = collectTables();
     const firstResult = await importLegacySqliteIfNeeded({
       storage: {
         dataDir: workDir,
@@ -522,7 +522,7 @@ describe("importSqliteDataToFuma", () => {
     expect(firstResult.importedTables).not.toContain("late_item");
 
     const allTables: FumaTables = {
-      ...collectTables([]),
+      ...collectTables(),
       ...lateSchema,
     };
     const secondResult = await importLegacySqliteIfNeeded({
@@ -561,13 +561,13 @@ describe("importSqliteDataToFuma", () => {
         sqlitePath,
         importMarkerPath: markerPath,
       },
-      tables: collectTables([]),
+      tables: collectTables(),
       scopeId: "scope_a",
     });
     expect(firstResult.importedTables).not.toContain("late_item");
 
     const allTables: FumaTables = {
-      ...collectTables([]),
+      ...collectTables(),
       ...lateSchema,
     };
     const secondResult = await importLegacySqliteIfNeeded({

@@ -126,7 +126,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     }),
   ];
 
-  const tables = collectTables(options?.plugins ?? []);
+  const tables = collectTables();
   const testDb = makeLazyTestFumaDb({
     tables,
     backend: options?.backend ?? "sqlite",

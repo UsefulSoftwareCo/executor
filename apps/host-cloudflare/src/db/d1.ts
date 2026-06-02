@@ -14,13 +14,12 @@ import {
 } from "@executor-js/api/server";
 
 import { CLOUDFLARE_NAMESPACE, CLOUDFLARE_SCHEMA_VERSION } from "../config";
-import type { CloudflarePlugins } from "../plugins";
 
 // ---------------------------------------------------------------------------
 // D1 DbProvider handle — the CF-native swap for self-host's libSQL handle.
 //
 // D1 is SQLite, so this reuses the SAME shared FumaDB assembly self-host uses:
-// build the runtime schema from the plugins' tables, open drizzle over the D1
+// build the runtime schema from the fixed executor table set, open drizzle over the D1
 // binding (drizzle-orm/d1), run the idempotent `ensureDrizzleRuntimeSchemaFrom-
 // Tables` bring-up (generic CREATE TABLE IF NOT EXISTS over D1), and assemble
 // `createExecutorFumaDb`. No driver to open (the binding is the connection), no
@@ -30,10 +29,9 @@ import type { CloudflarePlugins } from "../plugins";
 export const createD1ExecutorDb = async (
   db: D1Database,
   blobs: R2Bucket | undefined,
-  plugins: CloudflarePlugins,
 ): Promise<ExecutorDbHandle> => {
   const options = {
-    tables: collectTables(plugins),
+    tables: collectTables(),
     namespace: CLOUDFLARE_NAMESPACE,
     version: CLOUDFLARE_SCHEMA_VERSION,
     provider: "sqlite" as const,

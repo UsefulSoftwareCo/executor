@@ -41,7 +41,7 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
 
   // Open + idempotently bring up the D1 schema once (the long-lived handle the
   // per-request scoped executor reads through the DbProvider seam).
-  const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS, plugins);
+  const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
   const identityLayer = cloudflareAccessIdentityLayer(config);
   // MCP runs through the `MCP_SESSION` Durable Object (cross-isolate sessions);
   // each session DO opens its own D1 handle, so it takes `env`, not `dbHandle`.

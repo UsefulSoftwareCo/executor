@@ -10,7 +10,6 @@ import {
 } from "@executor-js/cloudflare/mcp/durable-object";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
-import { makeCloudflarePlugins, type CloudflarePlugins } from "../plugins";
 import { createD1ExecutorDb } from "../db/d1";
 import { makeCloudflareExecutionStackLayer, makeExecutionStack } from "../execution";
 import { preloadQuickJs } from "../quickjs";
@@ -38,7 +37,6 @@ type CfSessionDbHandle = ExecutorDbHandle & { readonly end: () => Promise<void> 
 export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
   private readonly cfEnv: CloudflareEnv;
   private readonly cfConfig: CloudflareConfig;
-  private readonly cfPlugins: CloudflarePlugins;
 
   // `ctx`'s type is taken from the base constructor so it tracks whichever
   // `@cloudflare/workers-types` the shared package resolves (avoids a
@@ -47,11 +45,10 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
     super(ctx, env);
     this.cfEnv = env;
     this.cfConfig = loadConfig(env);
-    this.cfPlugins = makeCloudflarePlugins(this.cfConfig.secretKey);
   }
 
   protected override async openSessionDb(): Promise<CfSessionDbHandle> {
-    const handle = await createD1ExecutorDb(this.cfEnv.DB, this.cfEnv.BLOBS, this.cfPlugins);
+    const handle = await createD1ExecutorDb(this.cfEnv.DB, this.cfEnv.BLOBS);
     return { ...handle, end: () => handle.close() };
   }
 

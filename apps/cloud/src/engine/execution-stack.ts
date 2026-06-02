@@ -45,15 +45,14 @@ import {
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 
 import executorConfig from "../../executor.config";
-import { cloudPlugins } from "../plugins";
 import { DbService } from "../db/db";
 import { cloudDbProviderLayer } from "../db/fuma";
 
 export { makeExecutionStack } from "@executor-js/api/server";
 
-// The plugin table set is stable (derived from the static `cloudPlugins` tuple),
-// so the per-request DbProvider rebuilds the fuma client over the same schema.
-export const CloudDbProvider = cloudDbProviderLayer(collectTables(cloudPlugins));
+// The executor table set is fixed (plugin-independent), so the per-request
+// DbProvider rebuilds the fuma client over the same schema.
+export const CloudDbProvider = cloudDbProviderLayer(collectTables());
 
 // Fresh plugin instances per request, carrying the Worker env's WorkOS Vault
 // credentials. Matches the old `createScopedExecutor`'s `orgPlugins()`.

@@ -69,7 +69,7 @@ const createTestScopedExecutor = (
     const plugins = testPlugins;
     const fuma = createDrizzleFumaDb({
       db,
-      tables: collectTables(plugins),
+      tables: collectTables(),
       namespace: "executor_cloud",
       provider: "postgresql",
     });

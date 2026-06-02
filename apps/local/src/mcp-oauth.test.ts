@@ -74,7 +74,7 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
     fileSecretsPlugin({ directory: tmpDir }),
   ] as const;
   const sqlite = await createSqliteFumaDb({
-    tables: collectTables(plugins),
+    tables: collectTables(),
     namespace: "executor_local_test",
     path: join(tmpDir, "data.db"),
   });

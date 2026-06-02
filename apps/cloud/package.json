@@ -8,7 +8,7 @@
     "dev:proxy": "portless proxy start --multiplex --shared-port --port 5394 || (portless proxy stop -p 5394 && portless proxy start --multiplex --shared-port --port 5394)",
     "dev:db": "bun run scripts/dev-db.ts",
     "dev:vite": "EXECUTOR_DIRECT_DATABASE_URL=true CLOUDFLARE_INCLUDE_PROCESS_ENV=true op run --env-file=.env.op -- portless --name executor-cloud vite dev",
-    "db:schema": "node --import jiti/register ../../packages/core/cli/src/index.ts schema generate --config ./executor.config.ts --output ./src/db/executor-schema.ts --namespace executor_cloud --adapter drizzle --provider postgresql",
+    "db:schema": "node --import jiti/register ../../packages/core/cli/src/index.ts schema generate --output ./src/db/executor-schema.ts --namespace executor_cloud --adapter drizzle --provider postgresql",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
     "db:studio:prod": "op run --env-file=.env.production -- bun --bun ../../node_modules/.bun/node_modules/drizzle-kit/bin.cjs studio",

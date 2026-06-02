@@ -677,7 +677,7 @@ const createLocalExecutorLayer = () => {
     Effect.gen(function* () {
       const { cwd, plugins } = yield* loadLocalPlugins;
       const scopeId = makeScopeId(cwd);
-      const tables = collectTables(plugins);
+      const tables = collectTables();
 
       const importResult = yield* Effect.tryPromise({
         try: () =>

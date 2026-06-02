@@ -94,9 +94,9 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   readonly scopes?: readonly { readonly id?: string; readonly name?: string }[];
   readonly plugins?: TPlugins;
   /**
-   * FumaDB ORM handle, or a factory that receives the full Executor table
-   * map after plugins have been applied. Public consumers usually want the
-   * factory form so `collectTables(plugins)` stays inside `createExecutor`.
+   * FumaDB ORM handle, or a factory that receives the executor-owned table
+   * map. Public consumers usually want the factory form so `collectTables()`
+   * stays inside `createExecutor`.
    */
   readonly db?:
     | FumaDb
@@ -193,9 +193,7 @@ export const createExecutor = async <const TPlugins extends readonly AnyPlugin[]
 ): Promise<Executor<TPlugins>> => {
   const plugins = (config?.plugins ?? []) as TPlugins;
   const db =
-    typeof config.db === "function"
-      ? await config.db({ tables: collectTables(plugins) })
-      : config.db;
+    typeof config.db === "function" ? await config.db({ tables: collectTables() }) : config.db;
 
   const scopes =
     config.scopes && config.scopes.length > 0

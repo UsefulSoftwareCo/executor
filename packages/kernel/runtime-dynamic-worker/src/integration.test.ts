@@ -190,7 +190,7 @@ const buildSandboxBridge = (spec: string, namespace: string, baseUrl = "https://
         openApiPlugin({ httpClientLayer: recording.layer }),
         memorySecretsPlugin(),
       ] as const;
-      const tables = collectTables(plugins);
+      const tables = collectTables();
       const sql = postgres(DATABASE_URL, {
         max: 1,
         idle_timeout: 0,

@@ -447,10 +447,10 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
 // ---------------------------------------------------------------------------
 // collectTables — return the executor-owned Fuma table set. Plugins persist
 // through host-owned facades (`pluginStorage`, `blobs`) instead of contributing
-// table definitions.
+// table definitions, so the schema is fixed and plugin-independent.
 // ---------------------------------------------------------------------------
 
-export const collectTables = (_plugins: readonly AnyPlugin[]): FumaTables => {
+export const collectTables = (): FumaTables => {
   validateExecutorScopePolicyTables(coreSchema);
   return { ...coreSchema };
 };
@@ -494,7 +494,7 @@ const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
     schemas: [latestSchema],
   });
 
-  // oxlint-disable-next-line executor/no-double-cast -- boundary: dynamic plugin table map is known only after collectTables()
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: fumadb's generic ORM client type doesn't structurally match the FumaDb facade
   const db = factory.client(memoryAdapter()).orm(version) as unknown as FumaDb;
   return {
     db,
@@ -1360,7 +1360,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       : (userPlugins as readonly AnyPlugin[]);
 
     const tables = yield* Effect.try({
-      try: () => collectTables(plugins),
+      try: () => collectTables(),
       catch: (cause) => storageFailureFromUnknown("Failed to collect executor tables", cause),
     });
     const dbInput = yield* Effect.suspend(() => {

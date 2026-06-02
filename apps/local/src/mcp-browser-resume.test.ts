@@ -79,7 +79,7 @@ const approvalPlugin = definePlugin(() => ({
 const makeExecutor = async (tmpDir: string): Promise<Executor> => {
   const plugins = [approvalPlugin()] as const;
   const sqlite = await createSqliteFumaDb({
-    tables: collectTables(plugins),
+    tables: collectTables(),
     namespace: "executor_local_browser_resume_test",
     path: join(tmpDir, "data.db"),
   });

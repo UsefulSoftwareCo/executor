@@ -74,7 +74,7 @@ describe("executor FumaDB scope policy", () => {
         Effect.promise(() =>
           createSqliteTestFumaDb({
             tables: {
-              ...collectTables([]),
+              ...collectTables(),
               ...unscopedSchema,
             },
             namespace: "executor_unscoped_test",
@@ -102,7 +102,7 @@ describe("executor FumaDB scope policy", () => {
         Effect.promise(() =>
           createSqliteTestFumaDb({
             tables: {
-              ...collectTables([]),
+              ...collectTables(),
               ...incompletePolicySchema,
             },
             namespace: "executor_incomplete_policy_test",
