@@ -23,14 +23,14 @@ const ToolPolicyResponse = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
-const CreateToolPolicyPayload = Schema.Struct({
+export const CreateToolPolicyPayload = Schema.Struct({
   targetScope: ScopeId,
   pattern: Schema.String,
   action: ToolPolicyActionSchema,
   position: Schema.optional(Schema.String),
 });
 
-const UpdateToolPolicyPayload = Schema.Struct({
+export const UpdateToolPolicyPayload = Schema.Struct({
   targetScope: ScopeId,
   pattern: Schema.optional(Schema.String),
   action: Schema.optional(ToolPolicyActionSchema),

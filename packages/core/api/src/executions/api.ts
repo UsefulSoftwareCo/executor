@@ -7,7 +7,7 @@ import { InternalError } from "@executor-js/sdk/shared";
 // Schemas
 // ---------------------------------------------------------------------------
 
-const ExecuteRequest = Schema.Struct({
+export const ExecuteRequest = Schema.Struct({
   code: Schema.String,
 });
 
@@ -26,7 +26,7 @@ const PausedResult = Schema.Struct({
 
 const ExecuteResponse = Schema.Union([CompletedResult, PausedResult]);
 
-const ResumeRequest = Schema.Struct({
+export const ResumeRequest = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Unknown),
 });

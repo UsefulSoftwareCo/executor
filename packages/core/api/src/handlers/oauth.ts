@@ -20,8 +20,16 @@ import {
   type OAuthStrategy,
   type SecretBackedValue,
 } from "@executor-js/sdk";
+import { type ScopeId } from "@executor-js/sdk/shared";
 
 import { ExecutorApi } from "../api";
+import {
+  type CallbackUrlParams,
+  type CancelPayload,
+  type CompletePayload,
+  type ProbePayload,
+  type StartPayload,
+} from "../oauth/api";
 import { capture } from "../observability";
 import { ExecutorService } from "../services";
 
@@ -96,109 +104,133 @@ const requireMatchingTokenScope = (
 
 export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handlers) =>
   handlers
-    .handle("probe", ({ payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          const headers = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.headers,
-            (message) => new OAuthProbeError({ message }),
-          );
-          const queryParams = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.queryParams,
-            (message) => new OAuthProbeError({ message }),
-          );
-          return yield* executor.oauth.probe({
-            endpoint: payload.endpoint,
-            headers,
-            queryParams,
-          });
-        }),
-      ),
-    )
-    .handle("start", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          yield* requireMatchingTokenScope(path.scopeId, payload.tokenScope);
-          const executor = yield* ExecutorService;
-          const headers = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.headers,
-            (message) => new OAuthStartError({ message }),
-          );
-          const queryParams = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.queryParams,
-            (message) => new OAuthStartError({ message }),
-          );
-          return yield* executor.oauth.start({
-            endpoint: payload.endpoint,
-            headers,
-            queryParams,
-            redirectUrl: payload.redirectUrl,
-            connectionId: payload.connectionId,
-            tokenScope: payload.tokenScope,
-            strategy: payload.strategy as OAuthStrategy,
-            pluginId: payload.pluginId,
-            identityLabel: payload.identityLabel,
-          });
-        }),
-      ),
-    )
-    .handle("complete", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          return yield* executor.oauth.complete({
-            state: payload.state,
-            tokenScope: path.scopeId,
-            code: payload.code,
-            error: payload.error,
-          });
-        }),
-      ),
-    )
-    .handle("cancel", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          if (path.scopeId !== payload.tokenScope) {
-            return yield* new OAuthSessionNotFoundError({
-              sessionId: payload.sessionId,
+    .handle(
+      "probe",
+      Effect.fn("oauth.probe")(function* (ctx: { payload: typeof ProbePayload.Type }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            const headers = yield* resolveOAuthSecretBackedMap(
+              executor,
+              ctx.payload.headers,
+              (message) => new OAuthProbeError({ message }),
+            );
+            const queryParams = yield* resolveOAuthSecretBackedMap(
+              executor,
+              ctx.payload.queryParams,
+              (message) => new OAuthProbeError({ message }),
+            );
+            return yield* executor.oauth.probe({
+              endpoint: ctx.payload.endpoint,
+              headers,
+              queryParams,
             });
-          }
-          const executor = yield* ExecutorService;
-          yield* executor.oauth.cancel(payload.sessionId, payload.tokenScope);
-          return { cancelled: true };
-        }),
-      ),
+          }),
+        );
+      }),
     )
-    .handle("callback", ({ query: urlParams }) =>
-      // The callback always renders HTML, even on failure — the popup
-      // shows the error + messages it back to the opener.
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          const html = yield* runOAuthCallback({
-            complete: ({ state, code, error }) =>
-              executor.oauth
-                .complete({
-                  state,
-                  code: code ?? undefined,
-                  error: error ?? undefined,
-                })
-                .pipe(
-                  Effect.tapError((cause) =>
-                    Effect.logError("OAuth callback completion failed", cause),
+    .handle(
+      "start",
+      Effect.fn("oauth.start")(function* (ctx: {
+        params: { scopeId: typeof ScopeId.Type };
+        payload: typeof StartPayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            yield* requireMatchingTokenScope(ctx.params.scopeId, ctx.payload.tokenScope);
+            const executor = yield* ExecutorService;
+            const headers = yield* resolveOAuthSecretBackedMap(
+              executor,
+              ctx.payload.headers,
+              (message) => new OAuthStartError({ message }),
+            );
+            const queryParams = yield* resolveOAuthSecretBackedMap(
+              executor,
+              ctx.payload.queryParams,
+              (message) => new OAuthStartError({ message }),
+            );
+            return yield* executor.oauth.start({
+              endpoint: ctx.payload.endpoint,
+              headers,
+              queryParams,
+              redirectUrl: ctx.payload.redirectUrl,
+              connectionId: ctx.payload.connectionId,
+              tokenScope: ctx.payload.tokenScope,
+              strategy: ctx.payload.strategy as OAuthStrategy,
+              pluginId: ctx.payload.pluginId,
+              identityLabel: ctx.payload.identityLabel,
+            });
+          }),
+        );
+      }),
+    )
+    .handle(
+      "complete",
+      Effect.fn("oauth.complete")(function* (ctx: {
+        params: { scopeId: typeof ScopeId.Type };
+        payload: typeof CompletePayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            return yield* executor.oauth.complete({
+              state: ctx.payload.state,
+              tokenScope: ctx.params.scopeId,
+              code: ctx.payload.code,
+              error: ctx.payload.error,
+            });
+          }),
+        );
+      }),
+    )
+    .handle(
+      "cancel",
+      Effect.fn("oauth.cancel")(function* (ctx: {
+        params: { scopeId: typeof ScopeId.Type };
+        payload: typeof CancelPayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            if (ctx.params.scopeId !== ctx.payload.tokenScope) {
+              return yield* new OAuthSessionNotFoundError({
+                sessionId: ctx.payload.sessionId,
+              });
+            }
+            const executor = yield* ExecutorService;
+            yield* executor.oauth.cancel(ctx.payload.sessionId, ctx.payload.tokenScope);
+            return { cancelled: true };
+          }),
+        );
+      }),
+    )
+    .handle(
+      "callback",
+      Effect.fn("oauth.callback")(function* (ctx: { query: typeof CallbackUrlParams.Type }) {
+        // The callback always renders HTML, even on failure — the popup
+        // shows the error + messages it back to the opener.
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            const html = yield* runOAuthCallback({
+              complete: ({ state, code, error }) =>
+                executor.oauth
+                  .complete({
+                    state,
+                    code: code ?? undefined,
+                    error: error ?? undefined,
+                  })
+                  .pipe(
+                    Effect.tapError((cause) =>
+                      Effect.logError("OAuth callback completion failed", cause),
+                    ),
                   ),
-                ),
-            urlParams,
-            toErrorMessage: toPopupErrorMessage,
-            channelName: OAUTH_POPUP_CHANNEL,
-          });
-          return HttpServerResponse.html(html);
-        }),
-      ),
+              urlParams: ctx.query,
+              toErrorMessage: toPopupErrorMessage,
+              channelName: OAUTH_POPUP_CHANNEL,
+            });
+            return HttpServerResponse.html(html);
+          }),
+        );
+      }),
     ),
 );

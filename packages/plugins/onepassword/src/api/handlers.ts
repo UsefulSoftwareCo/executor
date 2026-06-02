@@ -1,8 +1,10 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Context, Effect } from "effect";
+import { type ScopeId } from "@executor-js/sdk/shared";
 
 import { addGroup, capture } from "@executor-js/api";
 import type { OnePasswordExtension } from "../sdk/plugin";
+import { type OnePasswordConfig } from "../sdk/types";
 import { OnePasswordGroup } from "./group";
 
 // ---------------------------------------------------------------------------
@@ -42,49 +44,71 @@ export const OnePasswordHandlers = HttpApiBuilder.group(
   "onepassword",
   (handlers) =>
     handlers
-      .handle("getConfig", () =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* OnePasswordExtensionService;
-            return yield* ext.getConfig();
-          }),
-        ),
+      .handle(
+        "getConfig",
+        Effect.fn("onepassword.getConfig")(function* () {
+          return yield* capture(
+            Effect.gen(function* () {
+              const ext = yield* OnePasswordExtensionService;
+              return yield* ext.getConfig();
+            }),
+          );
+        }),
       )
-      .handle("configure", ({ params: path, payload }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* OnePasswordExtensionService;
-            yield* ext.configure(payload, path.scopeId);
-          }),
-        ),
+      .handle(
+        "configure",
+        Effect.fn("onepassword.configure")(function* (ctx: {
+          params: { scopeId: typeof ScopeId.Type };
+          payload: typeof OnePasswordConfig.Type;
+        }) {
+          return yield* capture(
+            Effect.gen(function* () {
+              const ext = yield* OnePasswordExtensionService;
+              yield* ext.configure(ctx.payload, ctx.params.scopeId);
+            }),
+          );
+        }),
       )
-      .handle("removeConfig", ({ params: path }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* OnePasswordExtensionService;
-            yield* ext.removeConfig(path.scopeId);
-          }),
-        ),
+      .handle(
+        "removeConfig",
+        Effect.fn("onepassword.removeConfig")(function* (ctx: {
+          params: { scopeId: typeof ScopeId.Type };
+        }) {
+          return yield* capture(
+            Effect.gen(function* () {
+              const ext = yield* OnePasswordExtensionService;
+              yield* ext.removeConfig(ctx.params.scopeId);
+            }),
+          );
+        }),
       )
-      .handle("status", () =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* OnePasswordExtensionService;
-            return yield* ext.status();
-          }),
-        ),
+      .handle(
+        "status",
+        Effect.fn("onepassword.status")(function* () {
+          return yield* capture(
+            Effect.gen(function* () {
+              const ext = yield* OnePasswordExtensionService;
+              return yield* ext.status();
+            }),
+          );
+        }),
       )
-      .handle("listVaults", ({ query: urlParams }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* OnePasswordExtensionService;
-            const auth =
-              urlParams.authKind === "desktop-app"
-                ? { kind: "desktop-app" as const, accountName: urlParams.account }
-                : { kind: "service-account" as const, tokenSecretId: urlParams.account };
-            const vaults = yield* ext.listVaults(auth);
-            return { vaults: [...vaults] };
-          }),
-        ),
+      .handle(
+        "listVaults",
+        Effect.fn("onepassword.listVaults")(function* (ctx: {
+          query: { authKind: "desktop-app" | "service-account"; account: string };
+        }) {
+          return yield* capture(
+            Effect.gen(function* () {
+              const ext = yield* OnePasswordExtensionService;
+              const auth =
+                ctx.query.authKind === "desktop-app"
+                  ? { kind: "desktop-app" as const, accountName: ctx.query.account }
+                  : { kind: "service-account" as const, tokenSecretId: ctx.query.account };
+              const vaults = yield* ext.listVaults(auth);
+              return { vaults: [...vaults] };
+            }),
+          );
+        }),
       ),
 );

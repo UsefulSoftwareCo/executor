@@ -14,8 +14,9 @@ import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
 
 export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (handlers) =>
   handlers
-    .handle("health", () =>
-      Effect.gen(function* () {
+    .handle(
+      "health",
+      Effect.fn("system.health")(function* () {
         const { client } = yield* SelfHostDb;
         const status = yield* Effect.tryPromise({
           try: () => client.execute("SELECT 1"),
@@ -27,8 +28,9 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
         return { status };
       }),
     )
-    .handle("setupStatus", () =>
-      Effect.gen(function* () {
+    .handle(
+      "setupStatus",
+      Effect.fn("system.setupStatus")(function* () {
         const { auth, organizationId } = yield* BetterAuth;
         // Count via Better Auth's adapter (see countOrgMembers) so this read is
         // consistent with how memberships are written.

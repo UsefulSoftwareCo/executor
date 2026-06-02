@@ -35,7 +35,7 @@ const SecretStatusResponse = Schema.Struct({
   status: Schema.Literals(["resolved", "missing"]),
 });
 
-const SetSecretPayload = Schema.Struct({
+export const SetSecretPayload = Schema.Struct({
   id: SecretId,
   name: Schema.String,
   value: Schema.String,

@@ -64,7 +64,7 @@ const SpecFetchCredentialsPayload = Schema.Struct({
 // Payloads
 // ---------------------------------------------------------------------------
 
-const AddSpecPayload = Schema.Struct({
+export const AddSpecPayload = Schema.Struct({
   spec: OpenApiSpecInputPayload,
   specFetchCredentials: Schema.optional(SpecFetchCredentialsPayload),
   name: Schema.String,
@@ -75,7 +75,7 @@ const AddSpecPayload = Schema.Struct({
   oauth2: Schema.optional(OAuth2SourceConfig),
 });
 
-const PreviewSpecPayload = Schema.Struct({
+export const PreviewSpecPayload = Schema.Struct({
   spec: Schema.String,
   specFetchCredentials: Schema.optional(PreviewSpecFetchCredentialsPayload),
 });
@@ -101,7 +101,7 @@ const ConfigureCredentialPayload = Schema.Union([
 
 const ConfigureCredentialMapPayload = Schema.Record(Schema.String, ConfigureCredentialPayload);
 
-const ConfigurePayload = Schema.Struct({
+export const ConfigurePayload = Schema.Struct({
   source: Schema.Struct({
     id: Schema.String,
     scope: ScopeId,

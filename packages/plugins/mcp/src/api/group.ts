@@ -48,9 +48,9 @@ const AddStdioSourcePayload = Schema.Struct({
   namespace: Schema.optional(Schema.String),
 });
 
-const AddSourcePayload = Schema.Union([AddRemoteSourcePayload, AddStdioSourcePayload]);
+export const AddSourcePayload = Schema.Union([AddRemoteSourcePayload, AddStdioSourcePayload]);
 
-const ProbeEndpointPayload = Schema.Struct({
+export const ProbeEndpointPayload = Schema.Struct({
   endpoint: Schema.String,
   headers: Schema.optional(SecretBackedMap),
   queryParams: Schema.optional(SecretBackedMap),
@@ -66,7 +66,7 @@ const ProbeEndpointResponse = Schema.Struct({
   serverName: Schema.NullOr(Schema.String),
 });
 
-const NamespacePayload = Schema.Struct({
+export const NamespacePayload = Schema.Struct({
   namespace: Schema.String,
 });
 

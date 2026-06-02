@@ -41,7 +41,7 @@ const SourceParams = {
 // Payloads
 // ---------------------------------------------------------------------------
 
-const AddSourcePayload = Schema.Struct({
+export const AddSourcePayload = Schema.Struct({
   endpoint: Schema.String,
   name: Schema.String,
   introspectionJson: Schema.optional(Schema.String),

@@ -45,8 +45,9 @@ const assertDomainInSessionOrg = (domainId: string) =>
 
 export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
   handlers
-    .handle("listDomains", () =>
-      Effect.gen(function* () {
+    .handle(
+      "listDomains",
+      Effect.fn("org.listDomains")(function* () {
         const auth = yield* AuthContext;
         const workos = yield* WorkOSClient;
         const org = yield* workos.getOrganization(auth.organizationId);
@@ -70,8 +71,9 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
         return { domains };
       }),
     )
-    .handle("getDomainVerificationLink", () =>
-      Effect.gen(function* () {
+    .handle(
+      "getDomainVerificationLink",
+      Effect.fn("org.getDomainVerificationLink")(function* () {
         yield* requireAdmin;
         const auth = yield* AuthContext;
 
@@ -97,12 +99,13 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
         return { link };
       }),
     )
-    .handle("deleteDomain", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "deleteDomain",
+      Effect.fn("org.deleteDomain")(function* (ctx: { params: { domainId: string } }) {
         yield* requireAdmin;
-        yield* assertDomainInSessionOrg(params.domainId);
+        yield* assertDomainInSessionOrg(ctx.params.domainId);
         const workos = yield* WorkOSClient;
-        yield* workos.deleteOrganizationDomain(params.domainId);
+        yield* workos.deleteOrganizationDomain(ctx.params.domainId);
         return { success: true };
       }),
     ),

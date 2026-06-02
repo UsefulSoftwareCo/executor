@@ -4,7 +4,7 @@ import { Context, Effect } from "effect";
 import { addGroup, capture } from "@executor-js/api";
 import { ScopeId } from "@executor-js/sdk/core";
 import type { GraphqlPluginExtension } from "../sdk/plugin";
-import { GraphqlGroup } from "./group";
+import { type AddSourcePayload, GraphqlGroup } from "./group";
 
 // ---------------------------------------------------------------------------
 // Service tag
@@ -40,35 +40,46 @@ const ExecutorApiWithGraphql = addGroup(GraphqlGroup);
 
 export const GraphqlHandlers = HttpApiBuilder.group(ExecutorApiWithGraphql, "graphql", (handlers) =>
   handlers
-    .handle("addSource", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* GraphqlExtensionService;
-          const result = yield* ext.addSource({
-            endpoint: payload.endpoint,
-            scope: path.scopeId,
-            name: payload.name,
-            introspectionJson: payload.introspectionJson,
-            namespace: payload.namespace,
-            headers: payload.headers,
-            queryParams: payload.queryParams,
-            oauth2: payload.oauth2,
-            credentials: payload.credentials,
-          });
-          return {
-            toolCount: result.toolCount,
-            namespace: result.namespace,
-          };
-        }),
-      ),
+    .handle(
+      "addSource",
+      Effect.fn("graphql.addSource")(function* (ctx: {
+        params: { scopeId: typeof ScopeId.Type };
+        payload: typeof AddSourcePayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* GraphqlExtensionService;
+            const result = yield* ext.addSource({
+              endpoint: ctx.payload.endpoint,
+              scope: ctx.params.scopeId,
+              name: ctx.payload.name,
+              introspectionJson: ctx.payload.introspectionJson,
+              namespace: ctx.payload.namespace,
+              headers: ctx.payload.headers,
+              queryParams: ctx.payload.queryParams,
+              oauth2: ctx.payload.oauth2,
+              credentials: ctx.payload.credentials,
+            });
+            return {
+              toolCount: result.toolCount,
+              namespace: result.namespace,
+            };
+          }),
+        );
+      }),
     )
-    .handle("getSource", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* GraphqlExtensionService;
-          const source = yield* ext.getSource(path.namespace, path.scopeId);
-          return source ? { ...source, scope: ScopeId.make(source.scope) } : null;
-        }),
-      ),
+    .handle(
+      "getSource",
+      Effect.fn("graphql.getSource")(function* (ctx: {
+        params: { scopeId: typeof ScopeId.Type; namespace: string };
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* GraphqlExtensionService;
+            const source = yield* ext.getSource(ctx.params.namespace, ctx.params.scopeId);
+            return source ? { ...source, scope: ScopeId.make(source.scope) } : null;
+          }),
+        );
+      }),
     ),
 );

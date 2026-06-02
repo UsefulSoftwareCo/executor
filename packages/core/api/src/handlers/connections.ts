@@ -5,7 +5,10 @@ import { capture } from "@executor-js/api";
 import {
   RemoveConnectionInput,
   UpdateConnectionIdentityInput,
+  type ConnectionId,
+  type ConnectionIdentityOverride,
   type ConnectionRef,
+  type ScopeId,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
@@ -26,62 +29,84 @@ const refToResponse = (ref: ConnectionRef) => ({
 
 export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connections", (handlers) =>
   handlers
-    .handle("list", () =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          const refs = yield* executor.connections.list();
-          return refs.map(refToResponse);
-        }),
-      ),
+    .handle(
+      "list",
+      Effect.fn("connections.list")(function* () {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            const refs = yield* executor.connections.list();
+            return refs.map(refToResponse);
+          }),
+        );
+      }),
     )
-    .handle("remove", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          yield* executor.connections.remove(
-            RemoveConnectionInput.make({
-              id: path.connectionId,
-              targetScope: path.scopeId,
-            }),
-          );
-          return { removed: true };
-        }),
-      ),
+    .handle(
+      "remove",
+      Effect.fn("connections.remove")(function* (ctx: {
+        params: { scopeId: ScopeId; connectionId: ConnectionId };
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            yield* executor.connections.remove(
+              RemoveConnectionInput.make({
+                id: ctx.params.connectionId,
+                targetScope: ctx.params.scopeId,
+              }),
+            );
+            return { removed: true };
+          }),
+        );
+      }),
     )
-    .handle("usages", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          return yield* executor.connections.usages(path.connectionId);
-        }),
-      ),
+    .handle(
+      "usages",
+      Effect.fn("connections.usages")(function* (ctx: { params: { connectionId: ConnectionId } }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            return yield* executor.connections.usages(ctx.params.connectionId);
+          }),
+        );
+      }),
     )
-    .handle("identity", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          return yield* readConnectionIdentity({
-            executor,
-            scopeId: path.scopeId,
-            connectionId: path.connectionId,
-          });
-        }),
-      ),
+    .handle(
+      "identity",
+      Effect.fn("connections.identity")(function* (ctx: {
+        params: { scopeId: ScopeId; connectionId: ConnectionId };
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            return yield* readConnectionIdentity({
+              executor,
+              scopeId: ctx.params.scopeId,
+              connectionId: ctx.params.connectionId,
+            });
+          }),
+        );
+      }),
     )
-    .handle("updateIdentity", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const executor = yield* ExecutorService;
-          const ref = yield* executor.connections.setIdentityOverride(
-            UpdateConnectionIdentityInput.make({
-              id: path.connectionId,
-              targetScope: path.scopeId,
-              identityOverride: payload.identityOverride,
-            }),
-          );
-          return refToResponse(ref);
-        }),
-      ),
+    .handle(
+      "updateIdentity",
+      Effect.fn("connections.updateIdentity")(function* (ctx: {
+        params: { scopeId: ScopeId; connectionId: ConnectionId };
+        payload: { identityOverride: ConnectionIdentityOverride | null };
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const executor = yield* ExecutorService;
+            const ref = yield* executor.connections.setIdentityOverride(
+              UpdateConnectionIdentityInput.make({
+                id: ctx.params.connectionId,
+                targetScope: ctx.params.scopeId,
+                identityOverride: ctx.payload.identityOverride,
+              }),
+            );
+            return refToResponse(ref);
+          }),
+        );
+      }),
     ),
 );

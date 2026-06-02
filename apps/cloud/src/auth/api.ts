@@ -31,11 +31,11 @@ const AuthOrganizationsResponse = Schema.Struct({
   activeOrganizationId: Schema.NullOr(Schema.String),
 });
 
-const SwitchOrganizationBody = Schema.Struct({
+export const SwitchOrganizationBody = Schema.Struct({
   organizationId: Schema.String,
 });
 
-const CreateOrganizationBody = Schema.Struct({
+export const CreateOrganizationBody = Schema.Struct({
   name: Schema.String,
 });
 
@@ -69,7 +69,7 @@ const PendingInvitationsResponse = Schema.Struct({
   invitations: Schema.Array(PendingInvitation),
 });
 
-const AcceptInvitationBody = Schema.Struct({
+export const AcceptInvitationBody = Schema.Struct({
   invitationId: Schema.String,
 });
 
@@ -83,7 +83,7 @@ const McpSessionExecutionParams = {
   executionId: Schema.String,
 };
 
-const ResumeMcpExecutionBody = Schema.Struct({
+export const ResumeMcpExecutionBody = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Unknown),
 });

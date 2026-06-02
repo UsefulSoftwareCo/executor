@@ -7,6 +7,7 @@ import {
   AdminForbidden,
   AdminHttpApi,
   AdminUnauthorized,
+  type CreateInviteBody,
   type InviteCode as InviteCodeSchema,
 } from "./api";
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
@@ -62,8 +63,9 @@ const toWire = (row: InviteCodeRow): typeof InviteCodeSchema.Type => ({
 
 export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handlers) =>
   handlers
-    .handle("listInvites", () =>
-      Effect.gen(function* () {
+    .handle(
+      "listInvites",
+      Effect.fn("admin.listInvites")(function* () {
         yield* requireAdmin(yield* requestHeaders);
         const { client } = yield* SelfHostDb;
         const rows = yield* Effect.tryPromise({
@@ -73,19 +75,20 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
         return { invites: rows.map(toWire) };
       }),
     )
-    .handle("createInvite", ({ payload }) =>
-      Effect.gen(function* () {
+    .handle(
+      "createInvite",
+      Effect.fn("admin.createInvite")(function* (ctx: { payload: typeof CreateInviteBody.Type }) {
         const member = yield* requireAdmin(yield* requestHeaders);
         const { client } = yield* SelfHostDb;
-        const days = payload.expiresInDays ?? null;
+        const days = ctx.payload.expiresInDays ?? null;
         const expiresAt =
           days && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
         const row = yield* Effect.tryPromise({
           try: () =>
             createInviteCode(client, {
               createdBy: member.userId,
-              role: narrowRole(payload.role),
-              label: payload.label?.trim() ? payload.label.trim() : null,
+              role: narrowRole(ctx.payload.role),
+              label: ctx.payload.label?.trim() ? ctx.payload.label.trim() : null,
               expiresAt,
             }),
           catch: () => new AdminError({ message: "Failed to create invite" }),
@@ -93,12 +96,13 @@ export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handle
         return toWire(row);
       }),
     )
-    .handle("revokeInvite", ({ params }) =>
-      Effect.gen(function* () {
+    .handle(
+      "revokeInvite",
+      Effect.fn("admin.revokeInvite")(function* (ctx: { params: { inviteId: string } }) {
         yield* requireAdmin(yield* requestHeaders);
         const { client } = yield* SelfHostDb;
         yield* Effect.tryPromise({
-          try: () => revokeInviteCode(client, params.inviteId),
+          try: () => revokeInviteCode(client, ctx.params.inviteId),
           catch: () => new AdminError({ message: "Failed to revoke invite" }),
         });
         return { success: true };

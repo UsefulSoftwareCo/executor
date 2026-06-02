@@ -26,7 +26,7 @@ const ScopeParams = { scopeId: ScopeId };
 // Probe — decide between dynamic-DCR and paste-your-credentials flows
 // ---------------------------------------------------------------------------
 
-const ProbePayload = Schema.Struct({
+export const ProbePayload = Schema.Struct({
   endpoint: Schema.String,
   headers: Schema.optional(SecretBackedMap),
   queryParams: Schema.optional(SecretBackedMap),
@@ -48,7 +48,7 @@ const ProbeResponse = Schema.Struct({
 // Connection inline and returns it under `completedConnection`.
 // ---------------------------------------------------------------------------
 
-const StartPayload = Schema.Struct({
+export const StartPayload = Schema.Struct({
   /** Resource URL — used by probe/display, not by the start flow for
    *  static strategies. */
   endpoint: Schema.String,
@@ -85,7 +85,7 @@ const StartResponse = Schema.Struct({
 // Complete — exchange the code, mint the Connection, drop the session.
 // ---------------------------------------------------------------------------
 
-const CompletePayload = Schema.Struct({
+export const CompletePayload = Schema.Struct({
   state: Schema.String,
   code: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
@@ -101,7 +101,7 @@ const CompleteResponse = Schema.Struct({
 // Cancel — drop an in-flight session without exchanging.
 // ---------------------------------------------------------------------------
 
-const CancelPayload = Schema.Struct({
+export const CancelPayload = Schema.Struct({
   sessionId: Schema.String,
   /** Scope that owns the pending OAuth session. Must match start.tokenScope. */
   tokenScope: Schema.String,
@@ -117,7 +117,7 @@ const CancelResponse = Schema.Struct({
 // result back to the opener via `postMessage` / `BroadcastChannel`.
 // ---------------------------------------------------------------------------
 
-const CallbackUrlParams = Schema.Struct({
+export const CallbackUrlParams = Schema.Struct({
   state: Schema.String,
   code: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),

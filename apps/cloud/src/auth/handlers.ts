@@ -4,10 +4,14 @@ import { Duration, Effect, Predicate } from "effect";
 
 import {
   AUTH_PATHS,
+  type AcceptInvitationBody,
   CloudAuthApi,
   CloudAuthPublicApi,
+  type CreateOrganizationBody,
   McpExecutionNotFoundError,
   McpSessionForbiddenError,
+  type ResumeMcpExecutionBody,
+  type SwitchOrganizationBody,
 } from "./api";
 import { NoOrganization } from "@executor-js/api/server";
 import { SessionContext, SessionCookies } from "./middleware";
@@ -233,8 +237,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
   "cloudAuth",
   (handlers) =>
     handlers
-      .handle("me", () =>
-        Effect.gen(function* () {
+      .handle(
+        "me",
+        Effect.fn("cloudAuth.me")(function* () {
           const session = yield* SessionContext;
           const org = session.organizationId
             ? yield* authorizeOrganization(session.accountId, session.organizationId)
@@ -256,8 +261,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
         ),
       )
-      .handle("organizations", () =>
-        Effect.gen(function* () {
+      .handle(
+        "organizations",
+        Effect.fn("cloudAuth.organizations")(function* () {
           const workos = yield* WorkOSClient;
           const session = yield* SessionContext;
 
@@ -278,28 +284,34 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           };
         }),
       )
-      .handle("switchOrganization", ({ payload }) =>
-        Effect.gen(function* () {
+      .handle(
+        "switchOrganization",
+        Effect.fn("cloudAuth.switchOrganization")(function* (ctx: {
+          payload: typeof SwitchOrganizationBody.Type;
+        }) {
           const workos = yield* WorkOSClient;
           const session = yield* SessionContext;
 
           const refreshed = yield* workos.refreshSession(
             session.sealedSession,
-            payload.organizationId,
+            ctx.payload.organizationId,
           );
           if (refreshed) {
             (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
           }
         }),
       )
-      .handle("createOrganization", ({ payload }) =>
-        Effect.gen(function* () {
+      .handle(
+        "createOrganization",
+        Effect.fn("cloudAuth.createOrganization")(function* (ctx: {
+          payload: typeof CreateOrganizationBody.Type;
+        }) {
           const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const session = yield* SessionContext;
           const autumn = yield* AutumnService;
 
-          const name = payload.name.trim();
+          const name = ctx.payload.name.trim();
           const memberships = yield* workos.listUserMemberships(session.accountId);
           const activeMemberships = memberships.data.filter(
             (membership) => membership.status === "active",
@@ -363,8 +375,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           return { id: org.id, name: org.name };
         }),
       )
-      .handle("pendingInvitations", () =>
-        Effect.gen(function* () {
+      .handle(
+        "pendingInvitations",
+        Effect.fn("cloudAuth.pendingInvitations")(function* () {
           const workos = yield* WorkOSClient;
           const session = yield* SessionContext;
 
@@ -412,19 +425,22 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           };
         }),
       )
-      .handle("acceptInvitation", ({ payload }) =>
-        Effect.gen(function* () {
+      .handle(
+        "acceptInvitation",
+        Effect.fn("cloudAuth.acceptInvitation")(function* (ctx: {
+          payload: typeof AcceptInvitationBody.Type;
+        }) {
           const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const session = yield* SessionContext;
 
-          const invitation = yield* workos.acceptInvitation(payload.invitationId);
+          const invitation = yield* workos.acceptInvitation(ctx.payload.invitationId);
 
           // Defensive: invitations created without an org shouldn't reach
           // this UI, but the SDK type allows null so guard anyway.
           if (!invitation.organizationId) {
             yield* Effect.logWarning("acceptInvitation: invitation has no organizationId", {
-              invitationId: payload.invitationId,
+              invitationId: ctx.payload.invitationId,
             });
             return yield* new WorkOSError();
           }
@@ -456,20 +472,26 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           return { id: org.id, name: org.name };
         }),
       )
-      .handle("getMcpPaused", ({ params }) =>
-        Effect.gen(function* () {
+      .handle(
+        "getMcpPaused",
+        Effect.fn("cloudAuth.getMcpPaused")(function* (ctx: {
+          params: { mcpSessionId: string; executionId: string };
+        }) {
           const owner = yield* requireSessionOrganizationId;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const stub = yield* requireMcpSessionStub(
+            ctx.params.mcpSessionId,
+            ctx.params.executionId,
+          );
           const result = yield* Effect.promise(
             () =>
-              stub.getPausedExecutionForApproval(params.executionId, {
+              stub.getPausedExecutionForApproval(ctx.params.executionId, {
                 accountId: owner.accountId,
                 organizationId: owner.organizationId,
               }) as Promise<McpSessionApprovalResult>,
           );
 
           if (result.status !== "ok") {
-            return yield* failMcpApprovalResult(result, params);
+            return yield* failMcpApprovalResult(result, ctx.params);
           }
 
           return {
@@ -478,27 +500,34 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           };
         }),
       )
-      .handle("resumeMcpExecution", ({ params, payload }) =>
-        Effect.gen(function* () {
+      .handle(
+        "resumeMcpExecution",
+        Effect.fn("cloudAuth.resumeMcpExecution")(function* (ctx: {
+          params: { mcpSessionId: string; executionId: string };
+          payload: typeof ResumeMcpExecutionBody.Type;
+        }) {
           const owner = yield* requireSessionOrganizationId;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const stub = yield* requireMcpSessionStub(
+            ctx.params.mcpSessionId,
+            ctx.params.executionId,
+          );
           const result = yield* Effect.promise(
             () =>
               stub.resumeExecutionForApproval(
-                params.executionId,
+                ctx.params.executionId,
                 {
                   accountId: owner.accountId,
                   organizationId: owner.organizationId,
                 },
                 {
-                  action: payload.action,
-                  content: payload.content as Record<string, unknown> | undefined,
+                  action: ctx.payload.action,
+                  content: ctx.payload.content as Record<string, unknown> | undefined,
                 },
               ) as Promise<McpSessionResumeApprovalResult>,
           );
 
           if (result.status !== "ok") {
-            return yield* failMcpApprovalResult(result, params);
+            return yield* failMcpApprovalResult(result, ctx.params);
           }
 
           if (result.executionStatus === "paused") {

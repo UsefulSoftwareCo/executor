@@ -7,7 +7,12 @@ import type { OAuth2SourceConfigType } from "@executor-js/sdk/http-source";
 import type { McpPluginExtension, McpProbeEndpointInput, McpSourceConfig } from "../sdk/plugin";
 import type { McpConfiguredValueInput } from "../sdk/types";
 import { McpStoredSourceSchema } from "../sdk/stored-source";
-import { McpGroup } from "./group";
+import {
+  McpGroup,
+  type AddSourcePayload,
+  type NamespacePayload,
+  type ProbeEndpointPayload,
+} from "./group";
 
 // ---------------------------------------------------------------------------
 // Service tag — holds the raw extension shape the executor produces.
@@ -98,55 +103,86 @@ const toSourceConfig = (
 
 export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (handlers) =>
   handlers
-    .handle("probeEndpoint", ({ payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          return yield* ext.probeEndpoint(payload as McpProbeEndpointInput);
-        }),
-      ),
+    .handle(
+      "probeEndpoint",
+      Effect.fn("mcp.probeEndpoint")(function* (ctx: {
+        payload: typeof ProbeEndpointPayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* McpExtensionService;
+            return yield* ext.probeEndpoint(ctx.payload as McpProbeEndpointInput);
+          }),
+        );
+      }),
     )
-    .handle("addSource", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          return yield* ext.addSource(
-            toSourceConfig(payload as Parameters<typeof toSourceConfig>[0], path.scopeId),
-          );
-        }),
-      ),
+    .handle(
+      "addSource",
+      Effect.fn("mcp.addSource")(function* (ctx: {
+        params: { scopeId: ScopeId };
+        payload: typeof AddSourcePayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* McpExtensionService;
+            return yield* ext.addSource(
+              toSourceConfig(
+                ctx.payload as Parameters<typeof toSourceConfig>[0],
+                ctx.params.scopeId,
+              ),
+            );
+          }),
+        );
+      }),
     )
-    .handle("removeSource", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          yield* ext.removeSource(payload.namespace, path.scopeId);
-          return { removed: true };
-        }),
-      ),
+    .handle(
+      "removeSource",
+      Effect.fn("mcp.removeSource")(function* (ctx: {
+        params: { scopeId: ScopeId };
+        payload: typeof NamespacePayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* McpExtensionService;
+            yield* ext.removeSource(ctx.payload.namespace, ctx.params.scopeId);
+            return { removed: true };
+          }),
+        );
+      }),
     )
-    .handle("refreshSource", ({ params: path, payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          return yield* ext.refreshSource(payload.namespace, path.scopeId);
-        }),
-      ),
+    .handle(
+      "refreshSource",
+      Effect.fn("mcp.refreshSource")(function* (ctx: {
+        params: { scopeId: ScopeId };
+        payload: typeof NamespacePayload.Type;
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* McpExtensionService;
+            return yield* ext.refreshSource(ctx.payload.namespace, ctx.params.scopeId);
+          }),
+        );
+      }),
     )
-    .handle("getSource", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          const source = yield* ext.getSource(path.namespace, path.scopeId);
-          return source
-            ? McpStoredSourceSchema.make({
-                namespace: source.namespace,
-                scope: ScopeId.make(source.scope),
-                name: source.name,
-                config: source.config,
-              })
-            : null;
-        }),
-      ),
+    .handle(
+      "getSource",
+      Effect.fn("mcp.getSource")(function* (ctx: {
+        params: { scopeId: ScopeId; namespace: string };
+      }) {
+        return yield* capture(
+          Effect.gen(function* () {
+            const ext = yield* McpExtensionService;
+            const source = yield* ext.getSource(ctx.params.namespace, ctx.params.scopeId);
+            return source
+              ? McpStoredSourceSchema.make({
+                  namespace: source.namespace,
+                  scope: ScopeId.make(source.scope),
+                  name: source.name,
+                  config: source.config,
+                })
+              : null;
+          }),
+        );
+      }),
     ),
 );
