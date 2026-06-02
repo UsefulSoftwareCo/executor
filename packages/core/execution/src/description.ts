@@ -25,6 +25,24 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
     yield* Effect.annotateCurrentSpan({
       "executor.source_count": sources.length,
       "schema.kind": "execute",
+      // Source/connector inventory so a failing session build (which runs this
+      // during init) names *what* it was resolving: empty/OpenAPI-only scopes
+      // build cleanly, scopes with remote MCP connectors are the ones that fail.
+      "executor.source_ids": sources
+        .map((source) => source.id)
+        .slice(0, 50)
+        .join(","),
+      "executor.source_kinds": [...new Set(sources.map((source) => source.kind))].join(","),
+      "executor.source_plugin_ids": [...new Set(sources.map((source) => source.pluginId))].join(
+        ",",
+      ),
+      "executor.connection_count": sources.reduce(
+        (total, source) => total + source.connectionIds.length,
+        0,
+      ),
+      "executor.sources_with_connection": sources.filter(
+        (source) => source.connectionIds.length > 0,
+      ).length,
     });
 
     return description;

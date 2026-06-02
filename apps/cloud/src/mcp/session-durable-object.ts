@@ -194,39 +194,11 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         Effect.provide(CloudExecutionStackLayer),
         Effect.withSpan("McpSessionDO.makeExecutionStack"),
       );
-      // Tag the build span with this org's source/connector inventory. Empty
-      // and OpenAPI-only orgs build cleanly; orgs with remote MCP connectors
-      // (often with expired OAuth tokens) are the ones that crashed init — but
-      // Axiom couldn't tell those orgs apart without a DB cross-reference. With
-      // ids/kinds/plugin-ids/connection-counts on the span, the failing-vs-
-      // healthy split is a one-query lookup. `catchCause` keeps this purely
-      // diagnostic: a listing hiccup here must not change runtime behavior (the
-      // real `sources.list` inside `buildExecuteDescription` still surfaces it).
-      yield* executor.sources.list().pipe(
-        Effect.flatMap((sources) =>
-          Effect.annotateCurrentSpan({
-            "executor.source_count": sources.length,
-            "executor.source_ids": sources
-              .map((source) => source.id)
-              .slice(0, 50)
-              .join(","),
-            "executor.source_kinds": [...new Set(sources.map((source) => source.kind))].join(","),
-            "executor.source_plugin_ids": [
-              ...new Set(sources.map((source) => source.pluginId)),
-            ].join(","),
-            "executor.connection_count": sources.reduce(
-              (total, source) => total + source.connectionIds.length,
-              0,
-            ),
-            "executor.sources_with_connection": sources.filter(
-              (source) => source.connectionIds.length > 0,
-            ).length,
-          }),
-        ),
-        Effect.catchCause(() => Effect.void),
-      );
       // Build the description here so the postgres query it runs
       // (`executor.sources.list`) lands as a child of `McpSessionDO.createRuntime`.
+      // It also tags the span with this org's source/connector inventory (ids,
+      // kinds, plugin ids, connection counts) — see `buildExecuteDescription` —
+      // so a failing init names *what* it was resolving without re-listing.
       // host-mcp would otherwise call `Effect.runPromise(engine.getDescription)`
       // at its async MCP-SDK boundary and orphan the sub-span.
       const description = yield* buildExecuteDescription(executor);
