@@ -229,6 +229,7 @@
       "devDependencies": {
         "@effect/vitest": "catalog:",
         "@executor-js/vite-plugin": "workspace:*",
+        "@playwright/test": "^1.60.0",
         "@tailwindcss/vite": "catalog:",
         "@tanstack/router-plugin": "^1.167.12",
         "@types/node": "catalog:",
@@ -236,6 +237,7 @@
         "@types/react-dom": "catalog:",
         "@vitejs/plugin-react": "catalog:",
         "bun-types": "catalog:",
+        "playwright": "^1.60.0",
         "typescript": "catalog:",
         "vite": "catalog:",
         "vitest": "catalog:",

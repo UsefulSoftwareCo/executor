@@ -13,7 +13,10 @@
     "start": "bun run src/serve.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "bun run build && playwright test",
+    "test:e2e:watch": "bun run build && E2E_SLOWMO=400 playwright test --headed",
+    "test:e2e:ui": "bun run build && playwright test --ui"
   },
   "dependencies": {
     "@better-auth/api-key": "^1.6.11",
@@ -44,6 +47,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@executor-js/vite-plugin": "workspace:*",
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",
     "@types/node": "catalog:",
@@ -51,6 +55,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "bun-types": "catalog:",
+    "playwright": "^1.60.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

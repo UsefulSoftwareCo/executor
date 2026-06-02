@@ -70,7 +70,7 @@
     {
       // Playwright e2e specs drive a real browser: they stringify browser-side
       // errors and use console/promise APIs that the Effect-domain rules forbid.
-      "files": ["apps/cloud/e2e/**/*.{ts,tsx}"],
+      "files": ["apps/*/e2e/**/*.{ts,tsx}"],
       "rules": {
         "executor/no-promise-catch": "off",
         "executor/no-try-catch-or-throw": "off",
