@@ -1,4 +1,4 @@
-import { Data, Schema } from "effect";
+import { Schema } from "effect";
 
 import { ConnectionId, ToolId, SecretId } from "./ids";
 
@@ -14,11 +14,14 @@ export class ToolNotFoundError extends Schema.TaggedErrorClass<ToolNotFoundError
   },
 ) {}
 
-export class ToolInvocationError extends Data.TaggedError("ToolInvocationError")<{
-  readonly toolId: ToolId;
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+export class ToolInvocationError extends Schema.TaggedErrorClass<ToolInvocationError>()(
+  "ToolInvocationError",
+  {
+    toolId: ToolId,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
 
 /** Tool row exists in the DB but its owning plugin isn't loaded. Means
  *  the tool was registered by a plugin that's no longer present in the
