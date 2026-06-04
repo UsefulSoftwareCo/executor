@@ -1,0 +1,32 @@
+{
+  "name": "@executor-js/sdk-v2",
+  "version": "0.0.0",
+  "private": true,
+  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/sdk-v2",
+  "bugs": {
+    "url": "https://github.com/RhysSullivan/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "directory": "packages/sdk-v2"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./plugin": "./src/plugin.ts",
+    "./openapi": "./src/openapi/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:slow": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}
