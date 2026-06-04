@@ -5,43 +5,51 @@
 enabled — the self-hosted executor hub from
 `nice-chatbot/plans/EXECUTOR_SELFHOST_FINAL_PLAN.md`.
 
-This is a **Phase-0 work-in-progress**. It does not boot yet end-to-end; the
-storage foundation is migrated, the app/auth wiring is next.
+## Verification (current)
 
-## Done (Phase 0 foundation)
-
-- **`package.json`** — renamed to `@executor-js/host-nice`; libSQL deps swapped
-  for Postgres (`postgres`, `pg`, `kysely`).
-- **`src/config.ts`** — Postgres config (`POSTGRES_URL`/`DATABASE_URL` + a
-  dedicated `executor` schema), **multi-org** (no single-org pin),
-  optional **OIDC delegation** to nice-chatbot, shared `BETTER_AUTH_SECRET` +
-  cookie domain.
-- **`src/db/postgres-db.ts`** — the storage swap: postgres-js + fumadb
-  `provider: "postgresql"`, idempotent schema bring-up into the `executor`
-  schema. Same `DbProvider` tag/shape as host-selfhost's `SelfHostDb`, so the
-  rest of the app needs no changes beyond the import.
-- **`scripts/migrate-smoke.ts`** — verifies the real executor table set migrates
-  through the Postgres path and round-trips.
-
-## Pending (next, tracked in the plan's phases)
-
-- **Rewire `src/app.ts`** to use `createHostNiceDb` / `HostNiceDbProvider`
-  (currently still imports the copied libSQL `self-host-db.ts`).
-- **`src/auth/better-auth.ts`** — swap LibsqlDialect → Postgres (pg Pool with
-  `search_path=executor`); **remove the single-org `databaseHooks.session.create
-  .before` pin** (the exact multi-org un-pin); keep
-  `organization`+`admin`+`apiKey`+`bearer`+`mcp` plugins.
-- **`src/auth/seed.ts`** — make the org/admin seed optional (default-org +
-  bootstrap-admin only when configured) instead of mandatory single-org.
-- **SSO bridge** (`genericOAuth`/`sso`) so login delegates to nice-chatbot
-  (Phase 1).
-- Remove the now-unused libSQL `self-host-db.ts` copy once `app.ts` is rewired.
-
-## Verification
-
-- Local Postgres 16 + `scripts/migrate-smoke.ts` proves the fumadb Postgres
-  path (the plan's residual risk #2). Run:
+- ✅ **Typecheck clean** — `bun run typecheck` reports no errors in `host-nice`.
+- ✅ **Migration smoke test passes** against a live Postgres 16: the real
+  executor table set (blob, connection, credential_binding, definition,
+  oauth2_session, plugin_storage, secret, source, tool, tool_policy, settings)
+  is created in a dedicated `executor` schema and is idempotent on re-boot.
   ```bash
   POSTGRES_URL=postgres://postgres@127.0.0.1:5433/executor_test \
     bun run apps/host-nice/scripts/migrate-smoke.ts
   ```
+
+## Done (Phase 0 + multi-org auth seams)
+
+- **`package.json`** — `@executor-js/host-nice`; libSQL deps → Postgres
+  (`postgres`, `pg`). (No direct `kysely` — better-auth bundles its own; adding
+  it split `@better-auth/core` and broke plugin-tuple type inference.)
+- **`src/config.ts`** — Postgres (`POSTGRES_URL`/`DATABASE_URL` + `executor`
+  schema), **multi-org**, optional **OIDC delegation** to nice-chatbot, shared
+  `BETTER_AUTH_SECRET` + cookie domain.
+- **`src/db/postgres-db.ts`** — postgres-js + fumadb `provider: "postgresql"`,
+  idempotent schema bring-up into the `executor` schema. Same `DbProvider`
+  tag/shape as host-selfhost's `SelfHostDb`.
+- **`src/auth/better-auth.ts`** — Better Auth over a pg Pool pinned to the
+  `executor` schema; **multi-org** (no single-org session pin); plugins
+  `organization`+`admin`+`apiKey`+`bearer`+`mcp`+`genericOAuth` (SSO, inert
+  until OIDC env is set); optional bootstrap admin + default org via Better
+  Auth's own API (no libSQL-specific seed). `resolveActiveOrganizationId`
+  resolves a request's org from session → first membership → bootstrap default.
+- **`src/auth/identity.ts`**, **`src/mcp/auth.ts`**,
+  **`src/account/better-auth-account-provider.ts`** — multi-org: resolve the
+  active org per request instead of a single pinned org.
+- **`src/system/handlers.ts`** — health via postgres-js `sql`; setup-status =
+  "no users yet".
+- **`src/app.ts`** — wired to the Postgres handle; single-org invite-admin route
+  removed.
+- Deleted single-org libSQL machinery: `auth/seed.ts`, `auth/invites.ts`,
+  `db/self-host-db.ts`, `admin/`, `testing/`.
+
+## Pending (next phases — see the plan)
+
+- **Boot / e2e**: stand the Bun server up against Postgres and exercise sign-in,
+  org create, source add, per-org API key, and `/mcp` with a Bearer key.
+- **SSO bridge (Phase 1)**: nice-chatbot as OIDC provider; verify the
+  `genericOAuth` handshake + org/role claim mapping end-to-end.
+- **nice-chatbot integration**: `/executor` (subdomain) reverse proxy, org sync,
+  and registering the per-org MCP endpoint in `MCPClientsManager`.
+- Re-enable a multi-org test suite (the single-org tests were removed).

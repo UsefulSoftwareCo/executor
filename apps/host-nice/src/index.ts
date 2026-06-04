@@ -5,5 +5,5 @@ export {
   type SelfHostApiHandler,
   type MakeSelfHostAppOptions,
 } from "./app";
-export { loadConfig, type SelfHostConfig } from "./config";
+export { loadConfig, type HostNiceConfig } from "./config";
 export { BetterAuth, buildBetterAuth, betterAuthIdentityLayer } from "./auth";

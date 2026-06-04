@@ -2,7 +2,7 @@ import { Layer } from "effect";
 
 import { IdentityProvider } from "@executor-js/api/server";
 
-import type { SelfHostDbHandle } from "../db/self-host-db";
+import type { HostNiceDbHandle } from "../db/postgres-db";
 import { BetterAuth, buildBetterAuth, type BetterAuthHandle } from "./better-auth";
 import { betterAuthIdentityLayer } from "./identity";
 
@@ -33,9 +33,9 @@ export interface ResolvedAuthProviders {
 }
 
 export const resolveAuthProviders = async (
-  dbHandle: SelfHostDbHandle,
+  dbHandle: HostNiceDbHandle,
 ): Promise<ResolvedAuthProviders> => {
-  const betterAuth = await buildBetterAuth(dbHandle.url, dbHandle.client);
+  const betterAuth = await buildBetterAuth(dbHandle.url, dbHandle.schema);
   const betterAuthLayer = Layer.succeed(BetterAuth)(betterAuth);
   return {
     identityLayer: betterAuthIdentityLayer.pipe(Layer.provide(betterAuthLayer)),

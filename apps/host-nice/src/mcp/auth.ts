@@ -11,7 +11,7 @@ import {
   type Principal,
 } from "@executor-js/host-mcp";
 
-import { BetterAuth } from "../auth/better-auth";
+import { BetterAuth, resolveActiveOrganizationId } from "../auth/better-auth";
 
 // ---------------------------------------------------------------------------
 // Self-host McpAuthProvider adapter, backed by Better Auth's mcp() plugin.
@@ -80,7 +80,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
   Layer.effect(
     McpAuthProvider,
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName } = yield* BetterAuth;
+      const { auth, defaultOrganizationId } = yield* BetterAuth;
       const fallback = yield* IdentityProvider;
 
       const asMetadata = oAuthDiscoveryMetadata(auth);
@@ -115,10 +115,22 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         Effect.gen(function* () {
           const user = yield* Effect.promise(() => context.internalAdapter.findUserById(userId));
           if (!user) return null;
+          // Multi-org: OAuth/MCP tokens carry no active org, so resolve the
+          // user's org from their membership (first membership, else bootstrap
+          // default). No org → no principal (the caller renders Unauthorized).
+          const organizationId = yield* Effect.promise(() =>
+            resolveActiveOrganizationId(auth, user.id, null, defaultOrganizationId),
+          );
+          if (!organizationId) return null;
+          const org = yield* Effect.promise(() =>
+            context.adapter.findOne<{ name: string }>({
+              model: "organization",
+              where: [{ field: "id", value: organizationId }],
+            }),
+          );
+          const organizationName = org?.name ?? organizationId;
           return {
             accountId: user.id,
-            // Single-org self-host: OAuth tokens carry no active org, so pin to
-            // the seeded org (same default as the cookie/api-key path).
             organizationId,
             organizationName,
             email: user.email ?? "",

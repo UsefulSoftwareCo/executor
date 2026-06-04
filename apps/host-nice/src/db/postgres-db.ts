@@ -1,6 +1,11 @@
 import { type PgDatabase } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { type FumaDB } from "fumadb";
+// Mirrors apps/cloud's `DrizzleDb`: the fuma drizzle adapter accepts a loosely
+// typed PgDatabase; the precise postgres-js generics don't structurally match
+// `ExecutableDrizzleDb`.
+// oxlint-disable-next-line no-explicit-any
+type DrizzleFumaDb = PgDatabase<any, any, any>;
 import {
   createDrizzleRuntimeSchemaFromTables,
   ensureDrizzleRuntimeSchemaFromTables,
@@ -45,7 +50,7 @@ type HostNiceFumaSchema<TTables extends FumaTables> = ReturnType<
 export interface HostNiceDbHandle<TTables extends FumaTables = FumaTables> {
   readonly db: FumaDb<HostNiceFumaSchema<TTables>>;
   readonly fuma: FumaDB<HostNiceFumaSchema<TTables>[]>;
-  readonly drizzle: PgDatabase<never, Record<string, never>>;
+  readonly drizzle: DrizzleFumaDb;
   /** The postgres-js client for this handle (executor `search_path`). */
   readonly sql: Sql;
   /** Connection string Better Auth re-opens its own pg pool against. */
@@ -91,10 +96,9 @@ export const createPostgresExecutorDb = async <const TTables extends FumaTables>
     version,
     provider: "postgresql",
   });
-  const drizzleDb = drizzle(sql, { schema: runtimeSchema }) as PgDatabase<
-    never,
-    Record<string, never>
-  >;
+  // Natural postgres-js type (structurally an `ExecutableDrizzleDb`, like the
+  // libSQL path); only the exported handle field is widened to `DrizzleFumaDb`.
+  const drizzleDb = drizzle(sql, { schema: runtimeSchema });
 
   // Idempotent schema bring-up (the drizzle adapter has no versioned migrator).
   await ensureDrizzleRuntimeSchemaFromTables(drizzleDb, {
@@ -114,7 +118,7 @@ export const createPostgresExecutorDb = async <const TTables extends FumaTables>
   return {
     db,
     fuma,
-    drizzle: drizzleDb,
+    drizzle: drizzleDb as DrizzleFumaDb,
     sql,
     url: options.url,
     schema,

@@ -1,8 +1,18 @@
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import { IdentityProvider, NoOrganization, Unauthorized } from "@executor-js/api/server";
 
-import { BetterAuth } from "./better-auth";
+import { BetterAuth, resolveActiveOrganizationId, type Auth } from "./better-auth";
+
+/** Look up an organization's display name through Better Auth's adapter. */
+const lookupOrgName = async (auth: Auth, organizationId: string): Promise<string | null> => {
+  const { adapter } = await auth.$context;
+  const org = await adapter.findOne<{ name: string }>({
+    model: "organization",
+    where: [{ field: "id", value: organizationId }],
+  });
+  return org?.name ?? null;
+};
 
 // ---------------------------------------------------------------------------
 // The self-host identity seam — the production implementation of the shared
@@ -42,7 +52,7 @@ const bearerToken = (headers: Headers): string | undefined => {
 export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, BetterAuth> =
   Layer.effect(IdentityProvider)(
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName } = yield* BetterAuth;
+      const { auth, defaultOrganizationId } = yield* BetterAuth;
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
@@ -61,11 +71,22 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // No session resolved from any credential shape -> unauthenticated.
             // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
-            // Single-org instance: every authenticated user belongs to the one
-            // seeded org. Cookie/bearer-session logins are pinned to it by the
-            // session hook; API-key-minted sessions carry no active org, so we
-            // default to the seeded org rather than rejecting with NoOrganization.
-            const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
+            // Multi-org: resolve the caller's active org from the session's
+            // activeOrganizationId; fall back to their first membership, then to
+            // the optional bootstrap default org. A valid user with no org at all
+            // is a 403 (NoOrganization), not a 401.
+            const resolvedOrganizationId = yield* Effect.promise(() =>
+              resolveActiveOrganizationId(
+                auth,
+                resolved.user.id,
+                resolved.session.activeOrganizationId,
+                defaultOrganizationId,
+              ),
+            );
+            if (!resolvedOrganizationId) return yield* new NoOrganization();
+            const organizationName =
+              (yield* Effect.promise(() => lookupOrgName(auth, resolvedOrganizationId))) ??
+              resolvedOrganizationId;
             return {
               accountId: resolved.user.id,
               organizationId: resolvedOrganizationId,

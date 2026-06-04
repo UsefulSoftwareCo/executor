@@ -4,7 +4,7 @@ import { IdentityProvider } from "@executor-js/api/server";
 import type { McpAuthProvider, McpErrorReporter, McpSessionStore } from "@executor-js/host-mcp";
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
-import type { SelfHostDbHandle } from "../db/self-host-db";
+import type { HostNiceDbHandle } from "../db/postgres-db";
 import { selfHostMcpAuth } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
@@ -35,7 +35,7 @@ export {
 //                         the resolved identity seam.
 //   - McpSessionStore  -> `selfHostMcpSessions`: in-process Map. The store owns
 //                         dispatch (create + forward + ownership) and builds its
-//                         engine internally over the shared SelfHostDb.
+//                         engine internally over the shared HostNiceDb.
 //   - McpErrorReporter -> `selfHostMcpReporter`: route 500 defects through the
 //                         host's console capture.
 //
@@ -62,7 +62,7 @@ export interface SelfHostMcpSeams {
  * the app wires into shutdown.
  */
 export const makeSelfHostMcpSeams = (
-  dbHandle: SelfHostDbHandle,
+  dbHandle: HostNiceDbHandle,
   betterAuth: BetterAuthHandle,
 ): SelfHostMcpSeams => {
   const sessionStore = makeSelfHostMcpSessionStore(dbHandle);

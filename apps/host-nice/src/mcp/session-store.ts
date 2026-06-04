@@ -9,7 +9,7 @@ import {
 } from "@executor-js/host-mcp/in-memory-session-store";
 
 import { ErrorCaptureLive } from "../observability";
-import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
+import { HostNiceDb, type HostNiceDbHandle } from "../db/postgres-db";
 import { SelfHostExecutionStackLayer } from "../execution";
 
 // ---------------------------------------------------------------------------
@@ -18,17 +18,17 @@ import { SelfHostExecutionStackLayer } from "../execution";
 // ALL shared (`@executor-js/host-mcp/in-memory-session-store` + `makeMcpBuildServer`
 // / `makeConsoleMcpErrorReporter` in `@executor-js/api/server`). Self-host
 // supplies only its fully-provided execution-stack layer (QuickJS over the
-// long-lived `SelfHostDb`) and its `ErrorCapture`. The Cloudflare host wires the
+// long-lived `HostNiceDb`) and its `ErrorCapture`. The Cloudflare host wires the
 // identical seam with its own stack layer.
 // ---------------------------------------------------------------------------
 
 export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-store";
 
 /** Build the in-process session store (plus its `close()` hook) over the DB handle. */
-export const makeSelfHostMcpSessionStore = (db: SelfHostDbHandle): InMemoryMcpSessionStore =>
+export const makeSelfHostMcpSessionStore = (db: HostNiceDbHandle): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
-      SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
+      SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(HostNiceDb)(db))),
     ),
   );
 

@@ -11,7 +11,7 @@ import {
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 import executorConfig from "../executor.config";
-import { SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
+import { HostNiceDb, HostNiceDbProvider } from "./db/postgres-db";
 import { loadConfig } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ import { loadConfig } from "./config";
 // cloud: the QuickJS in-process code substrate (vs the Cloudflare dynamic
 // worker) and a NO-OP engine decorator (no usage metering).
 //
-//   - DbProvider          -> SelfHostDbProvider: projects the long-lived
+//   - DbProvider          -> HostNiceDbProvider: projects the long-lived
 //                            libSQL handle (built once at boot, see db/). The
 //                            shared factory reads `db` per request without
 //                            caching, so the long-lived lifetime is preserved.
@@ -59,22 +59,22 @@ export const SelfHostCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = L
 
 /**
  * The `makeScopedExecutor` seams (`DbProvider` + `PluginsProvider` +
- * `HostConfig`) over the long-lived `SelfHostDb`. Shared between the production
+ * `HostConfig`) over the long-lived `HostNiceDb`. Shared between the production
  * `SelfHostExecutionStackLayer` and the `makeScopedExecutor` test entrypoint.
  */
 export const SelfHostScopedExecutorSeams: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig,
   never,
-  SelfHostDb
-> = Layer.mergeAll(SelfHostDbProvider, SelfHostPluginsProvider, SelfHostHostConfig);
+  HostNiceDb
+> = Layer.mergeAll(HostNiceDbProvider, SelfHostPluginsProvider, SelfHostHostConfig);
 
 /**
  * The five execution-stack seams the shared `makeExecutionStack` reads from,
- * bundled into one Layer. Requires the long-lived `SelfHostDb` (provided once at
+ * bundled into one Layer. Requires the long-lived `HostNiceDb` (provided once at
  * boot); the per-request executor only varies the scope stack.
  */
 export const SelfHostExecutionStackLayer: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,
   never,
-  SelfHostDb
+  HostNiceDb
 > = Layer.mergeAll(SelfHostScopedExecutorSeams, SelfHostCodeExecutorProvider, EngineDecoratorNoop);

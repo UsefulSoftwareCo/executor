@@ -36,7 +36,6 @@
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
     "fumadb": "workspace:*",
-    "kysely": "^0.27.4",
     "pg": "^8.13.1",
     "postgres": "^3.4.5",
     "react": "catalog:",

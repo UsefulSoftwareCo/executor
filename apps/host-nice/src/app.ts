@@ -5,11 +5,10 @@ import { Layer } from "effect";
 import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
 
 import { resolveAuthProviders } from "./auth";
-import { makeSelfHostAdminApiLayer } from "./admin/handlers";
 import { makeSelfHostSystemApiLayer } from "./system/handlers";
 import { selfHostAccountMiddleware } from "./account";
-import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "./config";
-import { createSelfHostDb, SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
+import { loadConfig, HOST_NICE_NAMESPACE, HOST_NICE_SCHEMA_VERSION } from "./config";
+import { createHostNiceDb, HostNiceDb, HostNiceDbProvider } from "./db/postgres-db";
 import {
   SelfHostCodeExecutorProvider,
   SelfHostHostConfig,
@@ -40,18 +39,21 @@ import { ErrorCaptureLive } from "./observability";
 // ===========================================================================
 
 export interface MakeSelfHostAppOptions {
-  /** Override the SQLite path (tests point at a throwaway file). */
-  readonly dbPath?: string;
+  /** Override the Postgres URL (tests point at a throwaway database). */
+  readonly dbUrl?: string;
+  /** Override the Postgres schema (tests isolate per-run). */
+  readonly dbSchema?: string;
 }
 
 export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   const config = loadConfig();
 
-  // ---- eager async boot: the shared libSQL handle -----------------------
-  const dbHandle = await createSelfHostDb({
-    path: options.dbPath ?? config.dbPath,
-    namespace: SELF_HOST_NAMESPACE,
-    version: SELF_HOST_SCHEMA_VERSION,
+  // ---- eager async boot: the shared Postgres handle ---------------------
+  const dbHandle = await createHostNiceDb({
+    url: options.dbUrl ?? config.postgresUrl,
+    schema: options.dbSchema ?? config.dbSchema,
+    namespace: HOST_NICE_NAMESPACE,
+    version: HOST_NICE_SCHEMA_VERSION,
   });
 
   // ---- auth providers ---------------------------------------------------
@@ -67,7 +69,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     providers: {
       identity: identityLayer,
       account: selfHostAccountMiddleware(betterAuth),
-      db: SelfHostDbProvider,
+      db: HostNiceDbProvider,
       engine: { codeExecutor: SelfHostCodeExecutorProvider }, // decorator defaults to no-op (no metering)
       mcp: { auth: mcp.auth, sessions: mcp.sessions, reporter: mcp.reporter },
       plugins: { provider: SelfHostPluginsProvider, config: SelfHostHostConfig },
@@ -77,8 +79,6 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
       routes: [
         // Better Auth owns /api/auth/* — the full path reaches it unmodified.
         HttpRouter.add("*", "/api/auth/*", HttpEffect.fromWebHandler(authHandler)),
-        // App-local admin (invite-code) API, served under /api/admin/*.
-        makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
@@ -89,7 +89,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     // The boot-scoped context provideMerge'd under everything: the long-lived DB
     // handle (read by the DbProvider seam, Better Auth, and the MCP store) + the
     // resolved identity (captured once by the execution middleware + MCP auth).
-    boot: Layer.merge(Layer.succeed(SelfHostDb)(dbHandle), identityLayer),
+    boot: Layer.merge(Layer.succeed(HostNiceDb)(dbHandle), identityLayer),
   });
 
   return {

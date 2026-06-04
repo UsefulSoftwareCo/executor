@@ -37,7 +37,24 @@ const orgRole = (slug: string | undefined): "owner" | "admin" | "member" =>
 export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, BetterAuth> =
   Layer.effect(AccountProvider)(
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName } = yield* BetterAuth;
+      const { auth, defaultOrganizationId } = yield* BetterAuth;
+
+      // Multi-org: resolve a request's active org from its session (the org
+      // plugin sets `activeOrganizationId` on selection), falling back to the
+      // optional bootstrap default org.
+      const activeOrgId = (resolved: {
+        session: { activeOrganizationId?: string | null };
+      }): string | undefined => resolved.session.activeOrganizationId ?? defaultOrganizationId;
+
+      const orgName = (organizationId: string): Promise<string> =>
+        auth.$context.then(({ adapter }) =>
+          adapter
+            .findOne<{ name: string }>({
+              model: "organization",
+              where: [{ field: "id", value: organizationId }],
+            })
+            .then((org) => org?.name ?? organizationId),
+        );
 
       const getSession = (headers: AccountHeaders) =>
         Effect.tryPromise({
@@ -55,6 +72,10 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           Effect.gen(function* () {
             const resolved = yield* getSession(headers);
             if (!resolved) return yield* new AccountUnauthorized();
+            const organizationId = activeOrgId(resolved) ?? "";
+            const name = organizationId
+              ? yield* Effect.promise(() => orgName(organizationId))
+              : "";
             return {
               user: {
                 id: resolved.user.id,
@@ -63,8 +84,8 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
                 avatarUrl: resolved.user.image ?? null,
               },
               organization: {
-                id: resolved.session.activeOrganizationId ?? organizationId,
-                name: organizationName,
+                id: organizationId,
+                name,
               },
             };
           }),
@@ -168,12 +189,20 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ).pipe(Effect.as({ success: true })),
 
         updateOrgName: (headers, name) =>
-          call("Failed to update organization name", () =>
-            auth.api.updateOrganization({
-              body: { data: { name }, organizationId },
-              headers: toHeaders(headers),
-            }),
-          ).pipe(Effect.as({ name })),
+          Effect.gen(function* () {
+            const resolved = yield* getSession(headers);
+            if (!resolved) return yield* new AccountUnauthorized();
+            const organizationId = activeOrgId(resolved);
+            if (!organizationId)
+              return yield* new AccountError({ message: "No active organization" });
+            yield* call("Failed to update organization name", () =>
+              auth.api.updateOrganization({
+                body: { data: { name }, organizationId },
+                headers: toHeaders(headers),
+              }),
+            );
+            return { name };
+          }),
       });
     }),
   );

@@ -3,8 +3,8 @@ import { HttpRouter } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
 import { SystemError, SystemHttpApi } from "./api";
-import { BetterAuth, countOrgMembers, type BetterAuthHandle } from "../auth/better-auth";
-import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
+import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
+import { HostNiceDb, type HostNiceDbHandle } from "../db/postgres-db";
 
 // ---------------------------------------------------------------------------
 // Handlers for the public system API. Unauthenticated; every DB touch is an
@@ -16,9 +16,9 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
   handlers
     .handle("health", () =>
       Effect.gen(function* () {
-        const { client } = yield* SelfHostDb;
+        const { sql } = yield* HostNiceDb;
         const status = yield* Effect.tryPromise({
-          try: () => client.execute("SELECT 1"),
+          try: () => sql`select 1`,
           catch: () => new SystemError({ message: "database unreachable" }),
         }).pipe(
           Effect.as("ok"),
@@ -29,11 +29,13 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
     )
     .handle("setupStatus", () =>
       Effect.gen(function* () {
-        const { auth, organizationId } = yield* BetterAuth;
-        // Count via Better Auth's adapter (see countOrgMembers) so this read is
-        // consistent with how memberships are written.
+        const { auth } = yield* BetterAuth;
+        // Multi-org: a fresh instance with no users at all needs first-run setup
+        // (create the first admin). Once any user exists, setup is done; new
+        // orgs are created in-app via the organization plugin.
         const count = yield* Effect.tryPromise({
-          try: () => countOrgMembers(auth, organizationId),
+          try: () =>
+            auth.$context.then(({ adapter }) => adapter.count({ model: "user", where: [] })),
           catch: () => new SystemError({ message: "failed to read setup status" }),
         });
         return { needsSetup: count === 0 };
@@ -43,7 +45,7 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
 
 export interface SelfHostSystemApiDeps {
   readonly betterAuth: BetterAuthHandle;
-  readonly db: SelfHostDbHandle;
+  readonly db: HostNiceDbHandle;
   readonly mountPrefix: `/${string}`;
 }
 
@@ -60,7 +62,7 @@ export const makeSelfHostSystemApiLayer = ({
     Layer.provide(SystemHandlers),
     Layer.provide(prefixedRouter),
     HttpRouter.provideRequest(
-      Layer.mergeAll(Layer.succeed(BetterAuth)(betterAuth), Layer.succeed(SelfHostDb)(db)),
+      Layer.mergeAll(Layer.succeed(BetterAuth)(betterAuth), Layer.succeed(HostNiceDb)(db)),
     ),
   );
 };
