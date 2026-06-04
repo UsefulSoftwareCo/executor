@@ -16,6 +16,17 @@ enabled — the self-hosted executor hub from
   POSTGRES_URL=postgres://postgres@127.0.0.1:5433/executor_test \
     bun run apps/host-nice/scripts/migrate-smoke.ts
   ```
+- ✅ **Server boots end-to-end on Postgres** (`bun run src/serve.ts`):
+  - `GET /api/health` → `{"status":"ok"}` (postgres-js reachable)
+  - `GET /api/setup-status` → `{"needsSetup":true}` then `false` after the first
+    signup (multi-org first-run logic)
+  - `POST /api/auth/sign-up/email` → 200, user + session minted (Better Auth
+    write path on Postgres)
+  - Better Auth tables (organization, member, invitation, apikey, user, session,
+    account, oauthApplication/AccessToken/Consent — i.e. the org + apiKey + mcp
+    plugins) land in the **same `executor` schema** as executor's own source /
+    tool / tool_policy / connection / secret tables. Single database, isolated
+    schema, no collision with nice-chatbot's `public`.
 
 ## Done (Phase 0 + multi-org auth seams)
 
