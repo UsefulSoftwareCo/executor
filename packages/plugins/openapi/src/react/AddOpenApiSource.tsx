@@ -78,6 +78,10 @@ import {
   googleStandardUserOAuthPresets,
   openApiPresets,
 } from "../sdk/presets";
+import {
+  secretCredentialBindingsSubmitError,
+  type PendingSecretCredentialBinding,
+} from "../sdk/secret-binding-validation";
 import { GOOGLE_BUNDLE_PRESET_ID } from "../sdk/google-presets";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
 import {
@@ -719,17 +723,10 @@ export default function AddOpenApiSource(props: {
   const resolvedBaseUrl = baseUrl.trim();
   const sourceScope = ScopeId.make(scopeId);
 
-  type PendingSecretBinding = {
-    readonly slot: string;
-    readonly secretId: string;
-    readonly scope: ScopeId;
-    readonly secretScope: ScopeId;
-  };
-
   const configuredHeaders: Record<string, { kind: "secret"; prefix?: string }> = {};
-  const headerBindings: PendingSecretBinding[] = [];
+  const headerBindings: PendingSecretCredentialBinding[] = [];
   const configuredQueryParams: Record<string, string | { kind: "secret"; prefix?: string }> = {};
-  const queryParamBindings: PendingSecretBinding[] = [];
+  const queryParamBindings: PendingSecretCredentialBinding[] = [];
   for (const ch of customHeaders) {
     if (!ch.name.trim()) continue;
     const slot = headerBindingSlot(ch.name.trim());
@@ -768,7 +765,7 @@ export default function AddOpenApiSource(props: {
     string,
     string | { kind: "secret"; prefix?: string }
   > = {};
-  const specFetchBindings: PendingSecretBinding[] = [];
+  const specFetchBindings: PendingSecretCredentialBinding[] = [];
   for (const header of specFetchCredentials.headers) {
     const name = header.name.trim();
     if (!name || !header.secretId) continue;
@@ -1637,6 +1634,41 @@ export default function AddOpenApiSource(props: {
           ? googleBatchError.message
           : "Still loading selected Google services",
       );
+      setAdding(false);
+      return;
+    }
+
+    const pendingSecretBindings: PendingSecretCredentialBinding[] = [
+      ...headerBindings,
+      ...queryParamBindings,
+      ...specFetchBindings,
+      ...(configuredOAuth2 && oauth2ClientIdSecretId
+        ? [
+            {
+              slot: configuredOAuth2.clientIdSlot,
+              secretId: oauth2ClientIdSecretId,
+              scope: clientIdBindingScope,
+              secretScope: clientIdBindingScope,
+            },
+          ]
+        : []),
+      ...(configuredOAuth2?.clientSecretSlot && oauth2ClientSecretSecretId
+        ? [
+            {
+              slot: configuredOAuth2.clientSecretSlot,
+              secretId: oauth2ClientSecretSecretId,
+              scope: clientSecretBindingScope,
+              secretScope: clientSecretBindingScope,
+            },
+          ]
+        : []),
+    ];
+    const missingSecretMessage = secretCredentialBindingsSubmitError(
+      pendingSecretBindings,
+      secretList,
+    );
+    if (missingSecretMessage) {
+      setAddError(missingSecretMessage);
       setAdding(false);
       return;
     }
