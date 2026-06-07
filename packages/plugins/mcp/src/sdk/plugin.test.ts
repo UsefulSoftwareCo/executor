@@ -183,11 +183,11 @@ describe("mcpPlugin", () => {
     }),
   );
 
-  it.effect("tools list is empty until a connection is created", () =>
+  it.effect("connection tools list is empty until a connection is created", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const tools = yield* executor.tools.list();
-      expect(tools).toHaveLength(0);
+      expect(tools.filter((tool) => String(tool.address).startsWith("tools."))).toHaveLength(0);
     }),
   );
 

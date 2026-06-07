@@ -481,8 +481,10 @@ describe("OpenAPI Plugin", () => {
 
         expect(yield* executor.openapi.getIntegration("removable")).toBeNull();
         // The persisted per-connection tool catalog is now empty; static control
-        // tools are dispatched by `execute` and never appear in `tools.list()`.
-        const remaining = (yield* executor.tools.list()).map((t) => String(t.address));
+        // tools still appear in the merged tool list.
+        const remaining = (yield* executor.tools.list())
+          .map((t) => String(t.address))
+          .filter((address) => address.startsWith("tools.removable."));
         expect(remaining).toEqual([]);
       }),
     ),
