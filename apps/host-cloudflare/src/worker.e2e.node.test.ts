@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 // ---------------------------------------------------------------------------
 
 const dir = fileURLToPath(new URL(".", import.meta.url));
+const runId = randomUUID().slice(0, 8);
 
 // Inline spec (no network); registers one tool, exercising the D1 write path.
 const SPEC = JSON.stringify({
@@ -99,12 +101,13 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     });
     expect(largeSpec.length).toBeGreaterThan(900_000);
 
+    const slug = `largeapi-${runId}`;
     const add = await worker.fetch("/api/openapi/specs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         spec: { kind: "blob", value: largeSpec },
-        slug: "largeapi",
+        slug,
         description: "Large API",
         baseUrl: "https://example.com",
       }),
@@ -114,19 +117,20 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(added.toolCount).toBe(250);
 
     // Reads back through the R2 rehydration path (the >800KB blob lives in R2).
-    const got = await worker.fetch("/api/openapi/integrations/largeapi");
+    const got = await worker.fetch(`/api/openapi/integrations/${slug}`);
     expect(got.status).toBe(200);
     const integration = (await got.json()) as { slug: string } | null;
-    expect(integration?.slug).toBe("largeapi");
+    expect(integration?.slug).toBe(slug);
   }, 90_000);
 
   it("adds an OpenAPI source and reads it back (D1 write + read path)", async () => {
+    const slug = `testapi-${runId}`;
     const add = await worker.fetch("/api/openapi/specs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         spec: { kind: "blob", value: SPEC },
-        slug: "testapi",
+        slug,
         description: "Test API",
         baseUrl: "https://example.com",
       }),
@@ -135,10 +139,10 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     const added = (await add.json()) as { toolCount: number; slug: string };
     expect(added.toolCount).toBeGreaterThan(0);
 
-    const got = await worker.fetch("/api/openapi/integrations/testapi");
+    const got = await worker.fetch(`/api/openapi/integrations/${slug}`);
     expect(got.status).toBe(200);
     const integration = (await got.json()) as { slug: string } | null;
-    expect(integration?.slug).toBe("testapi");
+    expect(integration?.slug).toBe(slug);
   }, 60_000);
 
   it("gates the API when dev-auth is on but treats the request as the dev admin", async () => {
