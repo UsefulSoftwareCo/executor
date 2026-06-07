@@ -17,6 +17,11 @@ export interface DaemonSpawnSpec {
   readonly args: ReadonlyArray<string>;
 }
 
+export interface ExecutorServerReachabilityInput {
+  readonly baseUrl: string;
+  readonly authorization?: string;
+}
+
 type ProbeServer = ReturnType<typeof createServer> & {
   removeAllListeners: () => void;
   once: (event: "error" | "listening", listener: (...args: unknown[]) => void) => void;
@@ -59,6 +64,19 @@ export const isDevCliEntrypoint = (scriptPath: string | undefined): boolean => {
   if (scriptPath.startsWith(BUN_EMBEDDED_ENTRYPOINT_PREFIX)) return false;
   return scriptPath.endsWith(".ts") || scriptPath.endsWith(".js");
 };
+
+export const isExecutorServerReachable = (
+  input: ExecutorServerReachabilityInput,
+): Effect.Effect<boolean> =>
+  Effect.tryPromise(async () => {
+    const url = new URL("/api/integrations", input.baseUrl);
+    const response = await fetch(url, {
+      ...(input.authorization ? { headers: { authorization: input.authorization } } : {}),
+      signal: AbortSignal.timeout(2000),
+    });
+    await response.body?.cancel();
+    return response.ok;
+  }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 
 // ---------------------------------------------------------------------------
 // Process spec

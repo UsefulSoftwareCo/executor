@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
+import { Buffer } from "node:buffer";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,11 @@ afterEach(() => {
 const seedV1Db = async (
   dbPath: string,
   scopeId: string,
-  options: { readonly includeSecretBackedOauth?: boolean } = {},
+  options: {
+    readonly includeSecretBackedOauth?: boolean;
+    readonly jsonBlobs?: boolean;
+    readonly oauthConnectionProvider?: string;
+  } = {},
 ) => {
   const client = await openLocalLibsql(dbPath);
   await client.execute("PRAGMA foreign_keys = OFF");
@@ -150,6 +155,11 @@ const seedV1Db = async (
   `);
 
   const now = Date.now();
+  const json = (value: unknown): string | Buffer => {
+    const text = JSON.stringify(value);
+    return options.jsonBlobs ? Buffer.from(text) : text;
+  };
+
   await executeSql(
     client,
     "INSERT INTO source (id, scope_id, plugin_id, kind, name) VALUES (?, ?, ?, ?, ?)",
@@ -164,7 +174,7 @@ const seedV1Db = async (
       "openapi",
       "source",
       "stripe_api",
-      JSON.stringify({
+      json({
         config: {
           spec: "{}",
           headers: {
@@ -189,7 +199,7 @@ const seedV1Db = async (
       "onepassword",
       "settings",
       "config",
-      JSON.stringify({ vaultId: "vault-123" }),
+      json({ vaultId: "vault-123" }),
       now,
       now,
     ],
@@ -232,8 +242,8 @@ const seedV1Db = async (
       "openapi",
       "charges.create",
       "Create a charge",
-      JSON.stringify({ type: "object" }),
-      JSON.stringify({ type: "object" }),
+      json({ type: "object" }),
+      json({ type: "object" }),
       now,
       now,
     ],
@@ -247,7 +257,7 @@ const seedV1Db = async (
       "stripe_api",
       "openapi",
       "Charge",
-      JSON.stringify({ type: "object", properties: { id: { type: "string" } } }),
+      json({ type: "object", properties: { id: { type: "string" } } }),
       now,
     ],
   );
@@ -278,7 +288,7 @@ const seedV1Db = async (
         "openapi",
         "source",
         "dealcloud_api",
-        JSON.stringify({
+        json({
           config: {
             spec: "{}",
             oauth2: {
@@ -299,15 +309,17 @@ const seedV1Db = async (
       [
         "dealcloud-oauth",
         scopeId,
-        "file",
+        options.oauthConnectionProvider ?? "file",
         "DealCloud API",
         "dealcloud-access",
         null,
         null,
-        JSON.stringify({
+        json({
           kind: "client-credentials",
           clientIdSecretId: "dealcloud-client-id",
+          clientIdSecretScopeId: scopeId,
           clientSecretSecretId: "dealcloud-client-secret",
+          clientSecretSecretScopeId: scopeId,
           tokenEndpoint: "https://resolve.dealcloud.com/oauth/token",
           resource: "https://api.dealcloud.com",
           scopes: ["data"],
@@ -468,7 +480,11 @@ describe("local v1 -> v2 migration", () => {
     const dataDir = join(workDir, "data");
     const dbPath = join(dataDir, "data.db");
     mkdirSync(dataDir, { recursive: true });
-    await seedV1Db(dbPath, scopeId, { includeSecretBackedOauth: true });
+    await seedV1Db(dbPath, scopeId, {
+      includeSecretBackedOauth: true,
+      jsonBlobs: true,
+      oauthConnectionProvider: "oauth2",
+    });
 
     const authDir = join(process.env.XDG_DATA_HOME!, "executor");
     mkdirSync(authDir, { recursive: true });

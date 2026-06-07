@@ -62,6 +62,7 @@ import {
   buildDaemonSpawnSpec,
   chooseDaemonPort,
   canAutoStartLocalDaemonForHost,
+  isExecutorServerReachable,
   isDevCliEntrypoint,
   parseDaemonBaseUrl,
   spawnDetached,
@@ -157,51 +158,8 @@ const waitForShutdownSignal = () =>
 // Background server management
 // ---------------------------------------------------------------------------
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-interface DaemonScopeInfo {
-  readonly id: string;
-  readonly name: string;
-  readonly dir: string;
-}
-
-const readDaemonScopeInfo = (
-  baseUrl: string,
-  authorization?: string,
-): Effect.Effect<DaemonScopeInfo | null> =>
-  Effect.tryPromise(() =>
-    fetch(`${baseUrl}/api/scope`, {
-      ...(authorization ? { headers: { authorization } } : {}),
-      signal: AbortSignal.timeout(2000),
-    }),
-  ).pipe(
-    Effect.flatMap((res) => {
-      if (!res.ok) return Effect.succeed(null);
-      return Effect.tryPromise(() => res.json()).pipe(
-        Effect.map((payload) => {
-          if (!isRecord(payload)) return null;
-          if (
-            typeof payload.id === "string" &&
-            typeof payload.name === "string" &&
-            typeof payload.dir === "string"
-          ) {
-            return {
-              id: payload.id,
-              name: payload.name,
-              dir: payload.dir,
-            };
-          }
-          return null;
-        }),
-        Effect.catchCause(() => Effect.succeed(null)),
-      );
-    }),
-    Effect.catchCause(() => Effect.succeed(null)),
-  );
-
 const isServerReachable = (baseUrl: string, authorization?: string): Effect.Effect<boolean> =>
-  readDaemonScopeInfo(baseUrl, authorization).pipe(Effect.map((scopeInfo) => scopeInfo !== null));
+  isExecutorServerReachable({ baseUrl, authorization });
 
 const readActiveLocalServerManifest = (): Effect.Effect<
   ExecutorLocalServerManifest | null,
@@ -237,9 +195,6 @@ const normalizeDaemonScopeDir = (dir: string): string => {
   const resolved = resolve(dir);
   return existsSync(resolved) ? realpathSync.native(resolved) : resolved;
 };
-
-const currentDaemonScopeDir = (): string =>
-  normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR ?? process.cwd());
 
 const currentScopeDirForManifest = (): string | null =>
   process.env.EXECUTOR_SCOPE_DIR ? normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR) : null;
@@ -382,6 +337,7 @@ const resolveDaemonTarget = (baseUrl: string) =>
           hostname: pointer.hostname,
           port: pointer.port,
           scopeId,
+          fromPointer: true,
         };
       }
 
@@ -393,6 +349,7 @@ const resolveDaemonTarget = (baseUrl: string) =>
       hostname: host,
       port: parsed.port,
       scopeId,
+      fromPointer: false,
     };
   });
 
@@ -484,17 +441,22 @@ const ensureDaemon = (
 ): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
     const resolvedTarget = yield* resolveDaemonTarget(baseUrl);
-    const reachableScope = yield* readDaemonScopeInfo(resolvedTarget.baseUrl);
-    if (reachableScope && normalizeDaemonScopeDir(reachableScope.dir) === currentDaemonScopeDir()) {
+    if (resolvedTarget.fromPointer && (yield* isServerReachable(resolvedTarget.baseUrl))) {
       return resolvedTarget.baseUrl;
     }
 
     const active = yield* readActiveLocalServerManifest();
-    if (
-      active &&
-      normalizeExecutorServerConnection({ origin: active.connection.origin }).origin !==
-        normalizeExecutorServerConnection({ origin: resolvedTarget.baseUrl }).origin
-    ) {
+    const activeOrigin = active
+      ? normalizeExecutorServerConnection({ origin: active.connection.origin }).origin
+      : null;
+    const targetOrigin = normalizeExecutorServerConnection({
+      origin: resolvedTarget.baseUrl,
+    }).origin;
+    if (activeOrigin === targetOrigin) {
+      return resolvedTarget.baseUrl;
+    }
+
+    if (active && activeOrigin !== targetOrigin) {
       return yield* Effect.fail(
         new Error(
           [

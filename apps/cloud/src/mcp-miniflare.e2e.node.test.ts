@@ -759,7 +759,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
   );
 
   it.effect(
-    "round-trips approval elicitation for a POST openapi operation",
+    "round-trips approval elicitation for adding an OpenAPI integration",
     () =>
       Effect.gen(function* () {
         const { baseUrl, seedOrg } = yield* Worker;
@@ -780,17 +780,15 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
           return { action: "accept" as const, content: {} };
         });
 
-        // User code inside `execute` (1) registers the upstream as an OpenAPI
-        // source and (2) invokes its POST operation. `annotationsForOperation`
-        // marks the POST as `requiresApproval: true`, which fires
-        // `enforceApproval` in the executor; that goes through the MCP
-        // elicitation handler and lands on `client.setRequestHandler` above.
-        // Tool id is `<namespace>.<group>.<operation>` — Effect's
-        // `HttpApiGroup` name ("approve") becomes part of the sandbox path,
-        // so the invocation reads `tools.approveapi.approve.approveThing`.
+        // User code inside `execute` registers the upstream as an OpenAPI
+        // integration. The v2 static control tool is annotated
+        // `requiresApproval: true`, which fires `enforceApproval` in the
+        // executor; that goes through the MCP elicitation handler and lands on
+        // `client.setRequestHandler` above. Per-connection POST approval is
+        // covered in the plugin/SDK tests where the test memory provider exists.
         const code = [
-          `await tools.executor.openapi.addSource({ name: "Approve API", baseUrl: ${JSON.stringify(upstreamBaseUrl)}, spec: { kind: "blob", value: ${JSON.stringify(specJson)} }, namespace: "approveapi" });`,
-          `return await tools.approveapi.approve.approveThing({});`,
+          `await tools.executor.openapi.addSpec({ baseUrl: ${JSON.stringify(upstreamBaseUrl)}, spec: { kind: "blob", value: ${JSON.stringify(specJson)} }, slug: "approveapi" });`,
+          `return await tools.executor.coreTools.integrations.list();`,
         ].join("\n");
         const result = yield* Effect.promise(() =>
           client.callTool({ name: "execute", arguments: { code } }),
@@ -801,7 +799,7 @@ layer(TestEnv, { timeout: 60_000 })("cloud MCP over real HTTP (miniflare)", (it)
           ((result.content ?? []) as Array<{ type: string; text?: string }>).find(
             (c) => c.type === "text",
           )?.text ?? "";
-        expect(text).toContain("approved");
+        expect(text).toContain("approveapi");
 
         yield* Effect.promise(() => client.close());
       }),

@@ -70,6 +70,12 @@ class QueryValidationError extends Schema.TaggedErrorClass<QueryValidationError>
 const ItemsGroup = HttpApiGroup.make("items")
   .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }))
   .add(
+    HttpApiEndpoint.post("createItem", "/items", {
+      payload: Schema.Struct({ name: Schema.String }),
+      success: Item,
+    }),
+  )
+  .add(
     HttpApiEndpoint.get("getItem", "/items/:itemId", {
       params: Schema.Struct({ itemId: Schema.NumberFromString }),
       success: Item,
@@ -110,6 +116,9 @@ const ITEMS = [
 const ItemsGroupLive = HttpApiBuilder.group(TestApi, "items", (handlers) =>
   handlers
     .handle("listItems", () => Effect.succeed(ITEMS.map((item) => Item.make(item))))
+    .handle("createItem", (req) =>
+      Effect.succeed(Item.make({ id: ITEMS.length + 1, name: req.payload.name })),
+    )
     .handle("getItem", (req) =>
       Effect.succeed(
         Item.make(
@@ -310,6 +319,35 @@ describe("OpenAPI Plugin", () => {
         );
         expect(result.error).toBeNull();
         expect(result.data).toEqual(ITEMS);
+      }),
+    ),
+  );
+
+  it.effect("requires approval for POST operation annotations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
+        const calls = { count: 0 };
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            conn.address("items.createItem"),
+            { body: { name: "New item" } },
+            {
+              onElicitation: () =>
+                Effect.sync(() => {
+                  calls.count++;
+                  return { action: "accept" as const, content: {} };
+                }),
+            },
+          ),
+        );
+
+        expect(calls.count).toBe(1);
+        expect(result.error).toBeNull();
+        expect(result.data).toEqual({ id: 4, name: "New item" });
       }),
     ),
   );

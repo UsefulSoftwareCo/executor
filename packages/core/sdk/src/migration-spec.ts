@@ -837,7 +837,9 @@ export interface V1ProviderState {
   readonly kind?: string;
   readonly clientId?: string;
   readonly clientIdSecretId?: string;
+  readonly clientIdSecretScopeId?: string | null;
   readonly clientSecretSecretId?: string;
+  readonly clientSecretSecretScopeId?: string | null;
   readonly tokenEndpoint?: string;
   readonly authorizationServerUrl?: string;
   readonly issuerUrl?: string;
@@ -1079,48 +1081,68 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       boundConnections.add(`${conn.scopeId} ${conn.id}`);
       const ps = conn.providerState;
       const grant = migrateGrant((ps?.kind as V1ConnectionKind) ?? "authorization-code");
+      const oauthTargetProvider =
+        conn.provider === "oauth2" ? defaultWritableProvider : conn.provider;
       const itemIds: Record<string, string> = {};
       let refreshItemId: string | null = null;
       if (conn.accessTokenSecretId) {
         const itemId = migratedItemId(scopeId, conn.accessTokenSecretId);
+        const provider = providerForSecret(input.secrets, scopeId, conn.accessTokenSecretId);
         secretOps.push({
           itemId,
           role: "oauth-access",
           owner,
-          targetProvider: conn.provider,
-          fromSecret: { scopeId, secretId: conn.accessTokenSecretId, provider: conn.provider },
+          targetProvider: oauthTargetProvider,
+          fromSecret: { scopeId, secretId: conn.accessTokenSecretId, provider },
         });
         itemIds[PRIMARY_INPUT_VARIABLE] = itemId;
         consume(scopeId, conn.accessTokenSecretId);
       }
       if (conn.refreshTokenSecretId) {
         refreshItemId = migratedItemId(scopeId, conn.refreshTokenSecretId);
+        const provider = providerForSecret(input.secrets, scopeId, conn.refreshTokenSecretId);
         secretOps.push({
           itemId: refreshItemId,
           role: "oauth-refresh",
           owner,
-          targetProvider: conn.provider,
-          fromSecret: { scopeId, secretId: conn.refreshTokenSecretId, provider: conn.provider },
+          targetProvider: oauthTargetProvider,
+          fromSecret: { scopeId, secretId: conn.refreshTokenSecretId, provider },
         });
         consume(scopeId, conn.refreshTokenSecretId);
       }
       // OAuth client.
       let clientSecretItemId: string | null = null;
       if (ps?.clientSecretSecretId) {
-        clientSecretItemId = migratedItemId(scopeId, ps.clientSecretSecretId);
+        const clientSecretScopeId = ps.clientSecretSecretScopeId ?? scopeId;
+        clientSecretItemId = migratedItemId(clientSecretScopeId, ps.clientSecretSecretId);
+        const provider = providerForSecret(
+          input.secrets,
+          clientSecretScopeId,
+          ps.clientSecretSecretId,
+        );
         secretOps.push({
           itemId: clientSecretItemId,
           role: "client-secret",
           owner,
-          targetProvider: conn.provider,
-          fromSecret: { scopeId, secretId: ps.clientSecretSecretId, provider: conn.provider },
+          targetProvider: oauthTargetProvider,
+          fromSecret: { scopeId: clientSecretScopeId, secretId: ps.clientSecretSecretId, provider },
         });
-        consume(scopeId, ps.clientSecretSecretId);
+        consume(clientSecretScopeId, ps.clientSecretSecretId);
       }
-      const clientIdSecretRef = ps?.clientIdSecretId
-        ? { scopeId, secretId: ps.clientIdSecretId, provider: conn.provider }
-        : null;
-      if (clientIdSecretRef) consume(scopeId, clientIdSecretRef.secretId);
+      const clientIdSecretScopeId = ps?.clientIdSecretScopeId ?? scopeId;
+      const clientIdSecretRef =
+        ps?.clientIdSecretId != null
+          ? {
+              scopeId: clientIdSecretScopeId,
+              secretId: ps.clientIdSecretId,
+              provider: providerForSecret(
+                input.secrets,
+                clientIdSecretScopeId,
+                ps.clientIdSecretId,
+              ),
+            }
+          : null;
+      if (clientIdSecretRef) consume(clientIdSecretRef.scopeId, clientIdSecretRef.secretId);
       if (!ps?.clientId && !clientIdSecretRef) {
         warnings.push(
           `OAuth connection "${conn.id}" has no client id or client-id secret reference; migrated oauth_client will need repair.`,
@@ -1150,7 +1172,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         integration: sourceId,
         name: slugifyName(conn.identityLabel ?? "account"),
         template: slotTemplate(connBinding.slotKey),
-        provider: conn.provider,
+        provider: oauthTargetProvider,
         identityLabel: conn.identityLabel,
         grant,
         v1ExpiresAt: conn.expiresAt,

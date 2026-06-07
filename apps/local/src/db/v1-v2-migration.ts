@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { TextDecoder } from "node:util";
 
 import type { FumaTables } from "@executor-js/sdk";
 import {
@@ -121,7 +122,20 @@ const isLocalV1Database = async (client: Client): Promise<boolean> => {
   return !connectionColumns.has("tenant") || connectionColumns.has("scope_id");
 };
 
+const textDecoder = new TextDecoder();
+
+const decodeBytes = (value: ArrayBuffer | ArrayBufferView): string => {
+  const bytes =
+    value instanceof ArrayBuffer
+      ? new Uint8Array(value)
+      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return textDecoder.decode(bytes);
+};
+
 const parseJson = (value: unknown): unknown => {
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    return parseJson(decodeBytes(value));
+  }
   if (typeof value !== "string") return value;
   if (value.trim() === "") return null;
   return JSON.parse(value);
@@ -467,6 +481,9 @@ const jsonText = (value: unknown): string | null => {
 
 const requiredJsonText = (value: unknown): string => jsonText(value) ?? JSON.stringify({});
 
+const sqliteBigintText = (value: number | null): string | null =>
+  value == null ? null : String(Math.trunc(value));
+
 const legacyBlobNamespace = (
   namespace: string,
 ): { readonly scopeId: string; readonly pluginId: string } | null => {
@@ -561,7 +578,7 @@ const insertPlan = async (
           row.oauthClientSlug,
           row.oauthClientOwner,
           mapId(connection.refreshItemId, idOverrides),
-          row.expiresAt,
+          sqliteBigintText(row.expiresAt),
           row.oauthScope,
           null,
           now,
