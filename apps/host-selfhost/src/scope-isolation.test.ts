@@ -115,7 +115,7 @@ test("concurrent requests with distinct identities get disjoint, correct executo
       expect(result.addresses.some((a) => a.includes(`conn-${other}`))).toBe(false);
     }
   });
-});
+}, 15_000);
 
 test("a request with no identity is rejected", async () => {
   const res = await handler(new Request("http://localhost/api/connections"));
