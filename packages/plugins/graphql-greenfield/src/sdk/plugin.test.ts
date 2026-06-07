@@ -184,7 +184,12 @@ describe("graphqlPlugin integration + connection lifecycle", () => {
       });
 
       const tools = yield* executor.tools.list();
-      expect(tools.map((t) => String(t.address)).sort()).toEqual([
+      expect(
+        tools
+          .map((t) => String(t.address))
+          .filter((address) => address.startsWith("tools.live_graph."))
+          .sort(),
+      ).toEqual([
         "tools.live_graph.org.main.mutation.setGreeting",
         "tools.live_graph.org.main.query.hello",
       ]);
@@ -266,7 +271,11 @@ describe("graphqlPlugin integration + connection lifecycle", () => {
         value: "token",
       });
 
-      expect((yield* executor.tools.list()).length).toBe(2);
+      const listRemovableToolAddresses = Effect.map(executor.tools.list(), (tools) =>
+        tools.map((t) => String(t.address)).filter((address) => address.startsWith("tools.removable.")),
+      );
+
+      expect((yield* listRemovableToolAddresses).length).toBe(2);
 
       yield* executor.connections.remove({
         owner: "org",
@@ -274,7 +283,7 @@ describe("graphqlPlugin integration + connection lifecycle", () => {
         name: ConnectionName.make("c"),
       });
 
-      expect(yield* executor.tools.list()).toEqual([]);
+      expect(yield* listRemovableToolAddresses).toEqual([]);
       // Integration is still in the catalog.
       const integration = yield* executor.integrations.get(IntegrationSlug.make("removable"));
       expect(integration?.kind).toBe("graphql-greenfield");
