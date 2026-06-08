@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
+import { connectionIdentifier } from "@executor-js/sdk/shared";
 
 import { mintInviteCode } from "./testing/mint-invite";
 
@@ -18,6 +19,7 @@ const { handler, dispose } = await makeSelfHostApiHandler();
 afterAll(() => dispose());
 
 const BASE = "http://localhost:4788";
+const connectionName = (name: string): string => String(connectionIdentifier(name));
 
 const TINY_SPEC = JSON.stringify({
   openapi: "3.0.0",
@@ -166,14 +168,20 @@ test("multiple accounts share one org but isolate per-user connections", async (
 
   // Alice sees both her user connection and the org connection.
   const aliceConns = await connectionAddresses(alice);
-  expect(aliceConns.some((a) => a.includes("user") && a.includes("alice-private"))).toBe(true);
-  expect(aliceConns.some((a) => a.includes("org") && a.includes("team-shared"))).toBe(true);
+  expect(
+    aliceConns.some((a) => a.includes("user") && a.includes(connectionName("alice-private"))),
+  ).toBe(true);
+  expect(
+    aliceConns.some((a) => a.includes("org") && a.includes(connectionName("team-shared"))),
+  ).toBe(true);
 
   // Bob — a different user in the SAME org — sees the org connection but NOT
   // Alice's user-owned one.
   const bobConns = await connectionAddresses(bob);
-  expect(bobConns.some((a) => a.includes("org") && a.includes("team-shared"))).toBe(true);
-  expect(bobConns.some((a) => a.includes("alice-private"))).toBe(false);
+  expect(bobConns.some((a) => a.includes("org") && a.includes(connectionName("team-shared")))).toBe(
+    true,
+  );
+  expect(bobConns.some((a) => a.includes(connectionName("alice-private")))).toBe(false);
 });
 
 test("each account can execute code in its own scoped sandbox", async () => {

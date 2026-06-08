@@ -11,7 +11,12 @@ import { Effect, Result } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
-import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  connectionIdentifier,
+} from "@executor-js/sdk";
 import { makeOpenApiHttpApiTestAddSpecPayload } from "@executor-js/plugin-openapi/testing";
 
 import { asOrg } from "../testing/api-harness";
@@ -25,6 +30,8 @@ const PingApi = HttpApi.make("connectionsApiTest")
   .annotateMerge(OpenApi.annotations({ title: "Connections API Test", version: "1.0.0" }));
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const canonicalConnectionName = (name: ConnectionName): ConnectionName =>
+  connectionIdentifier(String(name));
 
 // Registers a minimal openapi integration so connections have something to bind
 // to, then returns its slug.
@@ -48,6 +55,7 @@ describe("connections api (HTTP)", () => {
       const org = `org_${crypto.randomUUID()}`;
       const integration = yield* registerIntegration(org);
       const name = ConnectionName.make(`conn_${crypto.randomUUID().slice(0, 8)}`);
+      const storedName = canonicalConnectionName(name);
 
       const secretValue = "sk-test-abc";
       const created = yield* asOrg(org, (client) =>
@@ -62,20 +70,20 @@ describe("connections api (HTTP)", () => {
           },
         }),
       );
-      expect(created.name).toBe(name);
+      expect(created.name).toBe(storedName);
       expect(created.owner).toBe("org");
       expect(JSON.stringify(created)).not.toContain(secretValue);
 
       const list = yield* asOrg(org, (client) =>
         client.connections.list({ query: { integration } }),
       );
-      expect(list.find((c) => c.name === name)?.identityLabel).toBe("My API Token");
+      expect(list.find((c) => c.name === storedName)?.identityLabel).toBe("My API Token");
       expect(JSON.stringify(list)).not.toContain(secretValue);
 
       const fetched = yield* asOrg(org, (client) =>
-        client.connections.get({ params: { owner: "org", integration, name } }),
+        client.connections.get({ params: { owner: "org", integration, name: storedName } }),
       );
-      expect(fetched.name).toBe(name);
+      expect(fetched.name).toBe(storedName);
       expect(fetched.integration).toBe(integration);
     }),
   );
@@ -100,6 +108,7 @@ describe("connections api (HTTP)", () => {
       const org = `org_${crypto.randomUUID()}`;
       const integration = yield* registerIntegration(org);
       const name = ConnectionName.make(`conn_${crypto.randomUUID().slice(0, 8)}`);
+      const storedName = canonicalConnectionName(name);
 
       yield* asOrg(org, (client) =>
         Effect.gen(function* () {
@@ -107,7 +116,7 @@ describe("connections api (HTTP)", () => {
             payload: { owner: "org", name, integration, template: TEMPLATE_API_KEY, value: "v" },
           });
           const removed = yield* client.connections.remove({
-            params: { owner: "org", integration, name },
+            params: { owner: "org", integration, name: storedName },
           });
           expect(removed.removed).toBe(true);
         }),
@@ -116,10 +125,12 @@ describe("connections api (HTTP)", () => {
       const list = yield* asOrg(org, (client) =>
         client.connections.list({ query: { integration } }),
       );
-      expect(list.map((c) => c.name)).not.toContain(name);
+      expect(list.map((c) => c.name)).not.toContain(storedName);
 
       const afterGet = yield* asOrg(org, (client) =>
-        client.connections.get({ params: { owner: "org", integration, name } }).pipe(Effect.result),
+        client.connections
+          .get({ params: { owner: "org", integration, name: storedName } })
+          .pipe(Effect.result),
       );
       expect(Result.isFailure(afterGet)).toBe(true);
     }),
@@ -145,6 +156,7 @@ describe("connections api (HTTP)", () => {
       const org = `org_${crypto.randomUUID()}`;
       const integration = yield* registerIntegration(org);
       const name = ConnectionName.make(`conn_${crypto.randomUUID().slice(0, 8)}`);
+      const storedName = canonicalConnectionName(name);
 
       const first = yield* asOrg(org, (client) =>
         Effect.gen(function* () {
@@ -161,7 +173,7 @@ describe("connections api (HTTP)", () => {
           return yield* client.connections.list({ query: { integration } });
         }),
       );
-      expect(first.find((c) => c.name === name)?.identityLabel).toBe("first");
+      expect(first.find((c) => c.name === storedName)?.identityLabel).toBe("first");
 
       const second = yield* asOrg(org, (client) =>
         Effect.gen(function* () {
@@ -178,7 +190,7 @@ describe("connections api (HTTP)", () => {
           return yield* client.connections.list({ query: { integration } });
         }),
       );
-      expect(second.find((c) => c.name === name)?.identityLabel).toBe("updated");
+      expect(second.find((c) => c.name === storedName)?.identityLabel).toBe("updated");
     }),
   );
 });

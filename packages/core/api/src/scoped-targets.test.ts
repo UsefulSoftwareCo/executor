@@ -211,7 +211,7 @@ describe("core API owner-scoped writes (v2)", () => {
       };
       expect(body).toMatchObject({
         owner: "user",
-        name: "api-key",
+        name: "apiKey",
         provider: "memory",
       });
     }),

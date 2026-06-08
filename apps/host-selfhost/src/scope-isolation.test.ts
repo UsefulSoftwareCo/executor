@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
+import { connectionIdentifier } from "@executor-js/sdk/shared";
 
 process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-iso-"));
 
@@ -39,6 +40,9 @@ const headersFor = (userId: string, organizationId: string): Record<string, stri
   "x-test-org": organizationId,
   "content-type": "application/json",
 });
+
+const connectionNameForUser = (userId: string): string =>
+  String(connectionIdentifier(`conn-${userId}`));
 
 // Seed, as the given identity, a tenant-scoped integration plus a user-owned
 // connection named after the subject. Tenant isolation means each identity's
@@ -109,10 +113,10 @@ test("concurrent requests with distinct identities get disjoint, correct executo
     // Each response reflects ONLY its own request's identity — no bleed. The
     // subject's own user connection is present, and no OTHER subject's is.
     expect(result.status).toBe(200);
-    expect(result.addresses.some((a) => a.includes(`conn-${userId}`))).toBe(true);
+    expect(result.addresses.some((a) => a.includes(connectionNameForUser(userId)))).toBe(true);
     const otherUsers = identities.map((id) => id.userId).filter((u) => u !== userId);
     for (const other of otherUsers) {
-      expect(result.addresses.some((a) => a.includes(`conn-${other}`))).toBe(false);
+      expect(result.addresses.some((a) => a.includes(connectionNameForUser(other)))).toBe(false);
     }
   });
 }, 15_000);

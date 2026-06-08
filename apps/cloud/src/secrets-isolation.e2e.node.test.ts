@@ -23,7 +23,12 @@ import { Effect } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
-import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  connectionIdentifier,
+} from "@executor-js/sdk";
 import { makeOpenApiHttpApiTestAddSpecPayload } from "@executor-js/plugin-openapi/testing";
 
 import { asUser } from "./testing/api-harness";
@@ -33,6 +38,8 @@ const nextOrgId = () => `org_iso_${uniq()}`;
 const nextUserId = () => `user_iso_${uniq()}`;
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const canonicalConnectionName = (name: ConnectionName): ConnectionName =>
+  connectionIdentifier(String(name));
 
 const PingApi = HttpApi.make("isolationApiTest")
   .add(
@@ -66,6 +73,7 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const alice = nextUserId();
       const charlie = nextUserId();
       const name = ConnectionName.make(`conn_${uniq()}`);
+      const storedName = canonicalConnectionName(name);
 
       const integrationA = yield* registerIntegration(alice, orgA);
       yield* asUser(alice, orgA, (client) =>
@@ -84,7 +92,7 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const charlieList = yield* asUser(charlie, orgB, (client) =>
         client.connections.list({ query: {} }),
       );
-      expect(charlieList.map((c) => c.name)).not.toContain(name);
+      expect(charlieList.map((c) => c.name)).not.toContain(storedName);
     }),
   );
 
@@ -94,6 +102,7 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const aliceId = nextUserId();
       const bobId = nextUserId();
       const name = ConnectionName.make(`conn_${uniq()}`);
+      const storedName = canonicalConnectionName(name);
 
       const integration = yield* registerIntegration(aliceId, organizationId);
 
@@ -115,13 +124,13 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const bobUserList = yield* asUser(bobId, organizationId, (client) =>
         client.connections.list({ query: { integration, owner: "user" } }),
       );
-      expect(bobUserList.map((c) => c.name)).not.toContain(name);
+      expect(bobUserList.map((c) => c.name)).not.toContain(storedName);
 
       // And Alice still sees her own connection.
       const aliceUserList = yield* asUser(aliceId, organizationId, (client) =>
         client.connections.list({ query: { integration, owner: "user" } }),
       );
-      expect(aliceUserList.map((c) => c.name)).toContain(name);
+      expect(aliceUserList.map((c) => c.name)).toContain(storedName);
     }),
   );
 
@@ -131,6 +140,7 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const adminId = nextUserId();
       const memberId = nextUserId();
       const name = ConnectionName.make(`conn_${uniq()}`);
+      const storedName = canonicalConnectionName(name);
 
       const integration = yield* registerIntegration(adminId, organizationId);
       yield* asUser(adminId, organizationId, (client) =>
@@ -151,8 +161,8 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const memberList = yield* asUser(memberId, organizationId, (client) =>
         client.connections.list({ query: { integration, owner: "org" } }),
       );
-      expect(adminList.map((c) => c.name)).toContain(name);
-      expect(memberList.map((c) => c.name)).toContain(name);
+      expect(adminList.map((c) => c.name)).toContain(storedName);
+      expect(memberList.map((c) => c.name)).toContain(storedName);
     }),
   );
 
@@ -162,6 +172,7 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const orgA = nextOrgId();
       const orgB = nextOrgId();
       const name = ConnectionName.make(`conn_${uniq()}`);
+      const storedName = canonicalConnectionName(name);
 
       const integrationA = yield* registerIntegration(userId, orgA);
       yield* asUser(userId, orgA, (client) =>
@@ -181,13 +192,13 @@ describe("cloud connection isolation (HTTP, owner model)", () => {
       const listInB = yield* asUser(userId, orgB, (client) =>
         client.connections.list({ query: {} }),
       );
-      expect(listInB.map((c) => c.name)).not.toContain(name);
+      expect(listInB.map((c) => c.name)).not.toContain(storedName);
 
       // Sanity: still visible under org A's user-owner list.
       const listInA = yield* asUser(userId, orgA, (client) =>
         client.connections.list({ query: { integration: integrationA, owner: "user" } }),
       );
-      expect(listInA.map((c) => c.name)).toContain(name);
+      expect(listInA.map((c) => c.name)).toContain(storedName);
     }),
   );
 });
