@@ -550,7 +550,6 @@ export default function AddOpenApiSource(props: {
       return;
     }
 
-    setAdding(false);
     props.onComplete(String(integration));
   };
 
@@ -703,7 +702,7 @@ export default function AddOpenApiSource(props: {
         </section>
       )}
 
-      {hasPreviewOrBundle && slugAlreadyExists && (
+      {hasPreviewOrBundle && slugAlreadyExists && !adding && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
           <p className="text-[12px] text-destructive">
             An integration named &quot;{resolvedSourceId}&quot; already exists. To add more

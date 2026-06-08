@@ -77,13 +77,20 @@ describe("authMethodsFromDescriptors", () => {
     ]);
   });
 
-  it("filters out `none` methods (open servers have no credential)", () => {
+  it("keeps `none` methods as no-input connection methods", () => {
     const methods = authMethodsFromDescriptors([
       { id: "none", label: "No auth", kind: "none", template: "none" },
       { id: "oauth2", label: "OAuth", kind: "oauth", template: "oauth2" },
     ]);
-    expect(methods).toHaveLength(1);
-    expect(methods[0]?.id).toBe("oauth2");
+    expect(methods).toHaveLength(2);
+    expect(methods[0]).toMatchObject({
+      id: "none",
+      label: "No auth",
+      kind: "none",
+      placements: [],
+    });
+    expect(String(methods[0]?.template)).toBe("none");
+    expect(methods[1]?.id).toBe("oauth2");
   });
 
   it("returns an empty array for no descriptors", () => {

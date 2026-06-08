@@ -131,7 +131,6 @@ export default function AddGraphqlSource(props: {
     }
     const registeredSlug = integrationExit.value.slug;
 
-    setAdding(false);
     props.onComplete(String(registeredSlug));
   };
 
@@ -150,7 +149,7 @@ export default function AddGraphqlSource(props: {
         />
       </section>
 
-      {slugAlreadyExists && (
+      {slugAlreadyExists && !adding && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
           <p className="text-[12px] text-destructive">
             An integration named &quot;{resolvedSlug}&quot; already exists. To add more

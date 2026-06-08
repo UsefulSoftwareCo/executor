@@ -97,7 +97,7 @@ export function createCredentialPayloadOrigin(args: {
   readonly onePasswordItemId: string;
   readonly singleInput: boolean;
 }): CredentialPayloadOrigin | null {
-  if (args.inputs.length === 0) return null;
+  if (args.inputs.length === 0) return { values: {} };
   if (args.origin === "onepassword") {
     const id = args.onePasswordItemId.trim();
     if (!args.singleInput || id.length === 0) return null;
@@ -591,12 +591,13 @@ export function AddAccountModal(props: {
     setDcrFailed(false);
   }, [initialState, allMethods, defaultOwner, scopeOptions]);
   const isOAuth = method?.kind === "oauth";
+  const isNoAuth = method?.kind === "none";
   // The distinct credential inputs the selected method needs — one per variable
   // across its placements. A single-input method yields one field (`token`); a
   // multi-input method (e.g. Datadog) yields one per key. Two placements sharing
   // a variable collapse to one input.
   const credentialInputs = useMemo<readonly CredentialInput[]>(() => {
-    if (!method || method.kind === "oauth") return [];
+    if (!method || method.kind === "oauth" || method.kind === "none") return [];
     const byVar = new Map<string, string[]>();
     for (const placement of method.placements) {
       const variable = placement.variable ?? "token";
@@ -747,10 +748,10 @@ export function AddAccountModal(props: {
     });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
-      toast.error(messageFromExit(exit, "Failed to add account"));
+      toast.error(messageFromExit(exit, "Failed to add connection"));
       return;
     }
-    toast.success("Account added");
+    toast.success("Connection added");
     close();
   };
 
@@ -788,14 +789,14 @@ export function AddAccountModal(props: {
         toast.error(messageFromExit(exit, "Failed to connect"));
         return;
       }
-      toast.success("Account added");
+      toast.success("Connection added");
       close();
       return;
     }
     void oauthPopup.start({
       payload,
       onSuccess: () => {
-        toast.success("Account added");
+        toast.success("Connection added");
         close();
       },
     });
@@ -853,7 +854,7 @@ export function AddAccountModal(props: {
               identityLabel,
             },
             onSuccess: () => {
-              toast.success("Account added");
+              toast.success("Connection added");
               close();
             },
           });
@@ -897,11 +898,11 @@ export function AddAccountModal(props: {
       >
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Add account · {integrationName}</DialogTitle>
+            <DialogTitle>Add connection · {integrationName}</DialogTitle>
             <DialogDescription>
               {ownerDisplay.showOwnerLabels
-                ? "A connection is one credential for this integration, owned by you or the workspace."
-                : "A connection is one credential for this integration."}
+                ? "A connection is a saved way to use this integration, owned by you or the workspace."
+                : "A connection is a saved way to use this integration."}
             </DialogDescription>
           </DialogHeader>
 
@@ -942,9 +943,11 @@ export function AddAccountModal(props: {
                       <span className="block text-xs text-muted-foreground">
                         {m.kind === "oauth"
                           ? "OAuth2 flow"
-                          : m.source === "custom"
-                            ? "Custom method on this integration"
-                            : "Declared by the integration"}
+                          : m.kind === "none"
+                            ? "No credential required"
+                            : m.source === "custom"
+                              ? "Custom method on this integration"
+                              : "Declared by the integration"}
                       </span>
                       {m.placements.length > 0 && (
                         <span className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1">
@@ -971,164 +974,166 @@ export function AddAccountModal(props: {
             </div>
 
             {/* 3. credential / OAuth app */}
-            <div className="space-y-2">
-              <StepHeader index={3} label={isOAuth ? "OAuth app" : "Credential"} />
+            {!isNoAuth && (
+              <div className="space-y-2">
+                <StepHeader index={3} label={isOAuth ? "OAuth app" : "Credential"} />
 
-              {isOAuth && method ? (
-                dcrActive ? (
-                  // Transparent DCR: no picker. We register an app for you and run
-                  // the OAuth flow with a single Connect click.
-                  <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
-                    <p className="text-sm font-medium">No app to choose</p>
-                    <p className="text-xs text-muted-foreground">
-                      {dcrConnecting
-                        ? `Connecting to ${integrationName}…`
-                        : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
-                    </p>
-                  </div>
-                ) : oauthLoading ? (
-                  <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
-                ) : (
-                  <div className="space-y-3">
-                    {/* No registered app matched the integration's endpoint:
+                {isOAuth && method ? (
+                  dcrActive ? (
+                    // Transparent DCR: no picker. We register an app for you and run
+                    // the OAuth flow with a single Connect click.
+                    <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
+                      <p className="text-sm font-medium">No app to choose</p>
+                      <p className="text-xs text-muted-foreground">
+                        {dcrConnecting
+                          ? `Connecting to ${integrationName}…`
+                          : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
+                      </p>
+                    </div>
+                  ) : oauthLoading ? (
+                    <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* No registered app matched the integration's endpoint:
                       empty state + a prominent register CTA, and an opt-in
                       collapsed "use a different registered app" escape hatch. */}
-                    {oauthDisplayRegisterCTA && selectedApp !== REGISTER_NEW && (
-                      <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
-                        <p className="text-sm font-medium">No app for {integrationName} yet</p>
-                        <p className="text-xs text-muted-foreground">
-                          None of your registered apps target this integration's OAuth endpoint.
-                          Register one to connect.
-                        </p>
-                        <Button type="button" onClick={() => setPickedApp(REGISTER_NEW)}>
-                          Register an app for {integrationName}
-                        </Button>
-                        {oauthOtherApps.length > 0 &&
-                          (showOtherApps ? (
-                            <RadioGroup
-                              value={selectedApp}
-                              onValueChange={setPickedApp}
-                              className="gap-2 pt-1"
-                            >
-                              {oauthOtherApps.map((app: OAuthClientOption) => (
-                                <Label
-                                  key={String(app.slug)}
-                                  htmlFor={`other-app-${app.slug}`}
-                                  className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                                >
-                                  <RadioGroupItem
-                                    id={`other-app-${app.slug}`}
-                                    value={String(app.slug)}
-                                  />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-sm font-medium">
-                                      {clientDisplayName(String(app.slug))}
+                      {oauthDisplayRegisterCTA && selectedApp !== REGISTER_NEW && (
+                        <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
+                          <p className="text-sm font-medium">No app for {integrationName} yet</p>
+                          <p className="text-xs text-muted-foreground">
+                            None of your registered apps target this integration's OAuth endpoint.
+                            Register one to connect.
+                          </p>
+                          <Button type="button" onClick={() => setPickedApp(REGISTER_NEW)}>
+                            Register an app for {integrationName}
+                          </Button>
+                          {oauthOtherApps.length > 0 &&
+                            (showOtherApps ? (
+                              <RadioGroup
+                                value={selectedApp}
+                                onValueChange={setPickedApp}
+                                className="gap-2 pt-1"
+                              >
+                                {oauthOtherApps.map((app: OAuthClientOption) => (
+                                  <Label
+                                    key={String(app.slug)}
+                                    htmlFor={`other-app-${app.slug}`}
+                                    className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+                                  >
+                                    <RadioGroupItem
+                                      id={`other-app-${app.slug}`}
+                                      value={String(app.slug)}
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block text-sm font-medium">
+                                        {clientDisplayName(String(app.slug))}
+                                      </span>
+                                      <span className="block truncate text-xs text-muted-foreground">
+                                        {clientHost(app.tokenUrl)} ·{" "}
+                                        {app.grant === "client_credentials"
+                                          ? "app-to-app"
+                                          : "you'll sign in"}
+                                      </span>
                                     </span>
-                                    <span className="block truncate text-xs text-muted-foreground">
-                                      {clientHost(app.tokenUrl)} ·{" "}
-                                      {app.grant === "client_credentials"
-                                        ? "app-to-app"
-                                        : "you'll sign in"}
-                                    </span>
-                                  </span>
-                                  {ownerDisplay.showOwnerLabels ? (
-                                    <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
-                                  ) : null}
-                                </Label>
-                              ))}
-                            </RadioGroup>
-                          ) : (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setShowOtherApps(true)}
-                              className="h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
-                            >
-                              Use a different registered app
-                            </Button>
-                          ))}
-                      </div>
-                    )}
+                                    {ownerDisplay.showOwnerLabels ? (
+                                      <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
+                                    ) : null}
+                                  </Label>
+                                ))}
+                              </RadioGroup>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setShowOtherApps(true)}
+                                className="h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
+                              >
+                                Use a different registered app
+                              </Button>
+                            ))}
+                        </div>
+                      )}
 
-                    {oauthApps.length > 0 && (
-                      <RadioGroup
-                        value={selectedApp}
-                        onValueChange={setPickedApp}
-                        className="gap-2"
-                      >
-                        {oauthApps.map((app: OAuthClientOption) => (
-                          <Label
-                            key={String(app.slug)}
-                            htmlFor={`app-${app.slug}`}
-                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                          >
-                            <RadioGroupItem id={`app-${app.slug}`} value={String(app.slug)} />
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-sm font-medium">
-                                {clientDisplayName(String(app.slug))}
-                              </span>
-                              <span className="block truncate text-xs text-muted-foreground">
-                                {clientHost(app.tokenUrl)} ·{" "}
-                                {app.grant === "client_credentials"
-                                  ? "app-to-app"
-                                  : "you'll sign in"}
-                              </span>
-                            </span>
-                            {ownerDisplay.showOwnerLabels ? (
-                              <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
-                            ) : null}
-                          </Label>
-                        ))}
-                        <Label
-                          htmlFor={`app-${REGISTER_NEW}`}
-                          className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground has-[:checked]:border-ring has-[:checked]:text-foreground"
+                      {oauthApps.length > 0 && (
+                        <RadioGroup
+                          value={selectedApp}
+                          onValueChange={setPickedApp}
+                          className="gap-2"
                         >
-                          <RadioGroupItem id={`app-${REGISTER_NEW}`} value={REGISTER_NEW} />
-                          Register a new app
-                        </Label>
-                      </RadioGroup>
-                    )}
+                          {oauthApps.map((app: OAuthClientOption) => (
+                            <Label
+                              key={String(app.slug)}
+                              htmlFor={`app-${app.slug}`}
+                              className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+                            >
+                              <RadioGroupItem id={`app-${app.slug}`} value={String(app.slug)} />
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm font-medium">
+                                  {clientDisplayName(String(app.slug))}
+                                </span>
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {clientHost(app.tokenUrl)} ·{" "}
+                                  {app.grant === "client_credentials"
+                                    ? "app-to-app"
+                                    : "you'll sign in"}
+                                </span>
+                              </span>
+                              {ownerDisplay.showOwnerLabels ? (
+                                <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
+                              ) : null}
+                            </Label>
+                          ))}
+                          <Label
+                            htmlFor={`app-${REGISTER_NEW}`}
+                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground has-[:checked]:border-ring has-[:checked]:text-foreground"
+                          >
+                            <RadioGroupItem id={`app-${REGISTER_NEW}`} value={REGISTER_NEW} />
+                            Register a new app
+                          </Label>
+                        </RadioGroup>
+                      )}
 
-                    {selectedApp === REGISTER_NEW && (
-                      <OAuthClientForm
-                        integrationName={integrationName}
-                        existingSlugs={[...oauthApps, ...oauthOtherApps].map(
-                          (app: OAuthClientOption) => String(app.slug),
-                        )}
-                        prefill={{
-                          authorizationUrl: method.oauth?.authorizationUrl,
-                          tokenUrl: method.oauth?.tokenUrl,
-                          scopes: method.oauth?.scopes,
-                          registrationEndpoint: method.oauth?.registrationEndpoint,
-                        }}
-                        onCreated={(result: {
-                          readonly owner: Owner;
-                          readonly slug: OAuthClientSlug;
-                        }) => setPickedApp(String(result.slug))}
-                      />
-                    )}
-                  </div>
-                )
-              ) : (
-                <CredentialValueFields
-                  inputs={credentialInputs}
-                  singleInput={singleInput}
-                  values={values}
-                  onValuesChange={setValues}
-                  origin={credentialOrigin}
-                  onOriginChange={(next) => {
-                    setCredentialOrigin(next);
-                    if (next === "paste") setOnePasswordItemId("");
-                  }}
-                  onePasswordItemId={onePasswordItemId}
-                  onOnePasswordItemIdChange={setOnePasswordItemId}
-                />
-              )}
-              {isOAuth && oauthPopup.error ? (
-                <p className="text-xs text-destructive">{oauthPopup.error}</p>
-              ) : null}
-            </div>
+                      {selectedApp === REGISTER_NEW && (
+                        <OAuthClientForm
+                          integrationName={integrationName}
+                          existingSlugs={[...oauthApps, ...oauthOtherApps].map(
+                            (app: OAuthClientOption) => String(app.slug),
+                          )}
+                          prefill={{
+                            authorizationUrl: method.oauth?.authorizationUrl,
+                            tokenUrl: method.oauth?.tokenUrl,
+                            scopes: method.oauth?.scopes,
+                            registrationEndpoint: method.oauth?.registrationEndpoint,
+                          }}
+                          onCreated={(result: {
+                            readonly owner: Owner;
+                            readonly slug: OAuthClientSlug;
+                          }) => setPickedApp(String(result.slug))}
+                        />
+                      )}
+                    </div>
+                  )
+                ) : (
+                  <CredentialValueFields
+                    inputs={credentialInputs}
+                    singleInput={singleInput}
+                    values={values}
+                    onValuesChange={setValues}
+                    origin={credentialOrigin}
+                    onOriginChange={(next) => {
+                      setCredentialOrigin(next);
+                      if (next === "paste") setOnePasswordItemId("");
+                    }}
+                    onePasswordItemId={onePasswordItemId}
+                    onOnePasswordItemIdChange={setOnePasswordItemId}
+                  />
+                )}
+                {isOAuth && oauthPopup.error ? (
+                  <p className="text-xs text-destructive">{oauthPopup.error}</p>
+                ) : null}
+              </div>
+            )}
 
             {/* 4. connection saved-to. Hidden while registering a new OAuth app
               (the connection, and where it's saved, only exists once you
@@ -1164,7 +1169,7 @@ export function AddAccountModal(props: {
                 probe → register → start;
               - registering a BYO app: the form owns its own submit, no footer;
               - picked BYO OAuth app: Connect with OAuth / Connect (client creds);
-              - credential method: Add account. */}
+              - credential/no-auth method: Add connection. */}
             {dcrActive ? (
               <Button
                 type="button"
@@ -1187,7 +1192,7 @@ export function AddAccountModal(props: {
               </Button>
             ) : (
               <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-                {submitting ? "Adding…" : "Add account"}
+                {submitting ? "Adding…" : "Add connection"}
               </Button>
             )}
           </DialogFooter>

@@ -120,6 +120,18 @@ describe("mergeCustomMethods (in-session custom method append)", () => {
 });
 
 describe("createCredentialPayloadOrigin", () => {
+  it("creates an empty values payload for no-auth connection methods", () => {
+    expect(
+      createCredentialPayloadOrigin({
+        origin: "paste",
+        inputs: [],
+        values: {},
+        onePasswordItemId: "",
+        singleInput: true,
+      }),
+    ).toEqual({ values: {} });
+  });
+
   it("keeps pasted credential values trimmed and keyed by input variable", () => {
     expect(
       createCredentialPayloadOrigin({

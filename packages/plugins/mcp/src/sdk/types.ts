@@ -93,8 +93,18 @@ const decodeIntegrationConfig = Schema.decodeUnknownOption(McpIntegrationConfig)
 
 /** Parse an opaque integration `config` blob into a typed MCP config, or null
  *  if it isn't this plugin's shape. */
-export const parseMcpIntegrationConfig = (config: unknown): McpIntegrationConfig | null =>
-  Option.getOrNull(decodeIntegrationConfig(config));
+export const parseMcpIntegrationConfig = (config: unknown): McpIntegrationConfig | null => {
+  if (
+    typeof config === "object" &&
+    config !== null &&
+    "transport" in config &&
+    config.transport === "remote" &&
+    !("auth" in config)
+  ) {
+    return Option.getOrNull(decodeIntegrationConfig({ ...config, auth: { kind: "none" } }));
+  }
+  return Option.getOrNull(decodeIntegrationConfig(config));
+};
 
 // ---------------------------------------------------------------------------
 // Tool annotations — upstream MCP ToolAnnotations we honour (destructiveHint

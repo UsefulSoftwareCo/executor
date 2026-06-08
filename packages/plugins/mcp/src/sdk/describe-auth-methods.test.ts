@@ -77,7 +77,7 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("returns [] for an open (none) remote server", () => {
+  it("projects an open (none) remote server to a no-auth method", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
         transport: "remote",
@@ -85,7 +85,31 @@ describe("describeMcpAuthMethods", () => {
         auth: { kind: "none" },
       }),
     );
-    expect(methods).toEqual([]);
+    expect(methods).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
+  });
+
+  it("treats legacy remote configs with no auth field as open/no-auth", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+      }),
+    );
+    expect(methods).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
   });
 
   it("returns [] for a stdio transport", () => {

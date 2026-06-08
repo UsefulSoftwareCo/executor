@@ -494,7 +494,7 @@ export default function AddMcpSource(props: {
             </div>
           )}
 
-          {remoteSlugExists && (
+          {remoteSlugExists && !isAdding && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
               <p className="text-[12px] text-destructive">
                 An integration named &quot;{remoteSlug}&quot; already exists. To add more
@@ -586,7 +586,7 @@ export default function AddMcpSource(props: {
             </div>
           )}
 
-          {stdioSlugExists && (
+          {stdioSlugExists && !stdioAdding && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
               <p className="text-[12px] text-destructive">
                 An integration named &quot;{stdioSlug}&quot; already exists. To add more

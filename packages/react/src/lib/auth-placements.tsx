@@ -37,11 +37,12 @@ export interface Placement {
 export const emptyPlacement = (): Placement => ({ carrier: "header", name: "", prefix: "" });
 
 /** What an auth method is, presentationally. `kind` drives the credential UI:
- *  `oauth` shows a Connect button; everything else fills one secret across all
- *  `placements`. `source` distinguishes integration-declared ("spec") methods
- *  from user-defined ("custom") ones. `template` is the auth-template slug the
+ *  `oauth` shows a Connect button, `none` creates a connection with no
+ *  credential inputs, and apikey/custom fill secrets across `placements`.
+ *  `source` distinguishes integration-declared ("spec") methods from
+ *  user-defined ("custom") ones. `template` is the auth-template slug the
  *  method applies a connection through. */
-export type AuthMethodKind = "oauth" | "apikey" | "custom";
+export type AuthMethodKind = "oauth" | "apikey" | "custom" | "none";
 
 /** Provider OAuth endpoints/scopes an `oauth` method declares, used to pre-fill
  *  the client-registration form so the user only pastes their client id/secret.
@@ -115,19 +116,27 @@ export function PlacementLine(props: { readonly placement: Placement; readonly m
 // the owning plugin's opaque config). This converts that wire shape into the
 // presentational `AuthMethod[]` the hub renders — the single, plugin-agnostic
 // home for the mapping so both the detail page and the add-account modal share
-// it. `none` methods (open servers) are filtered out: they carry no credential
-// and don't belong in the auth-method picker.
+// it. `none` methods are kept: they create a named connection without
+// credential inputs.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_PLACEMENTS: readonly Placement[] = [
   { carrier: "header", name: "Authorization", prefix: "" },
 ];
 
-/** Convert one catalog descriptor into a client `AuthMethod`, or `null` for
- *  `kind: "none"` (which is dropped — open servers have no credential method). */
-function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod | null {
-  if (descriptor.kind === "none") return null;
+/** Convert one catalog descriptor into a client `AuthMethod`. */
+function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod {
   const template = AuthTemplateSlug.make(descriptor.template);
+  if (descriptor.kind === "none") {
+    return {
+      id: descriptor.id,
+      label: descriptor.label,
+      kind: "none",
+      source: "spec",
+      template,
+      placements: [],
+    };
+  }
   if (descriptor.kind === "oauth") {
     const oauth = descriptor.oauth;
     return {
@@ -172,14 +181,9 @@ function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod 
 }
 
 /** Convert an integration's declared catalog descriptors into the client
- *  `AuthMethod[]` the hub renders. `none` methods are dropped. */
+ *  `AuthMethod[]` the hub renders. */
 export function authMethodsFromDescriptors(
   descriptors: readonly AuthMethodDescriptor[],
 ): readonly AuthMethod[] {
-  const methods: AuthMethod[] = [];
-  for (const descriptor of descriptors) {
-    const method = authMethodFromDescriptor(descriptor);
-    if (method !== null) methods.push(method);
-  }
-  return methods;
+  return descriptors.map(authMethodFromDescriptor);
 }

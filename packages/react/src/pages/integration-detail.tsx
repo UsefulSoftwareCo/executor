@@ -247,27 +247,15 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     return authMethodsFromDescriptors(integrationData.authMethods);
   }, [integrationData]);
 
-  // Connection-inference fallback — ONLY used when the plugin declares nothing.
-  // Keeps legacy apikey integrations working: infer one method per distinct
-  // `template` already in use by this integration's connections, defaulting to a
-  // single API-key method so adding an account works even with zero connections.
+  // Connection-inference fallback — only infer from real existing connections.
+  // Do not invent an API-key method from an empty catalog response: open/no-auth
+  // integrations intentionally have no credential method, and showing an API key
+  // there misrepresents the integration.
   const inferredFallbackMethods = useMemo<readonly AuthMethod[]>(() => {
     const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
     const templates = new Set<string>();
     for (const connection of connections as readonly Connection[]) {
       if (connection.integration === slug) templates.add(String(connection.template));
-    }
-    if (templates.size === 0) {
-      return [
-        {
-          id: "default",
-          label: "API key",
-          kind: "apikey",
-          source: "spec",
-          template: AuthTemplateSlug.make("default"),
-          placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
-        },
-      ];
     }
     return Array.from(templates).map((template: string): AuthMethod => {
       const isOAuth = template === "oauth2" || template === "oauth";

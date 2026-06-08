@@ -48,7 +48,7 @@ import {
 // Accounts section — the integration's connections, grouped by owner.
 //
 // Accounts are IMMUTABLE: the per-row menu is Reconnect + Remove only (no
-// rename, no method switch). "+ Add account" opens the create modal. When both
+// rename, no method switch). "+ Add connection" opens the create modal. When both
 // owners have zero accounts, the section collapses to a single empty CTA.
 // ---------------------------------------------------------------------------
 
@@ -243,7 +243,7 @@ export function AccountsSection(props: {
   readonly integrationName: string;
   readonly methods: readonly AuthMethod[];
   readonly accountHandoff?: IntegrationAccountHandoff | null;
-  /** When provided, Add-account shows a "+ Custom method" row. The plugin binds
+  /** When provided, Add connection shows a "+ Custom method" row. The plugin binds
    *  this to its own configure mutation. Omitted for plugins with fixed auth. */
   readonly createCustomMethod?: CreateCustomMethod;
 }) {
@@ -298,7 +298,7 @@ export function AccountsSection(props: {
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Accounts
+          Connections
         </h3>
         <Button
           type="button"
@@ -307,7 +307,7 @@ export function AccountsSection(props: {
           onClick={() => setAdding(true)}
           disabled={methods.length === 0}
         >
-          Add account
+          Add connection
         </Button>
       </div>
 
@@ -320,7 +320,7 @@ export function AccountsSection(props: {
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
           <p className="text-sm font-medium text-foreground">No connections yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            This integration is added but has no credentials — so it exposes no tools.
+            Add a connection to make this integration's tools available.
           </p>
           <Button
             type="button"

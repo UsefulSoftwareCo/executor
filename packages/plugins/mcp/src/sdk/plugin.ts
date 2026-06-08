@@ -397,7 +397,8 @@ const buildConnectorInput = (
 // plugin-agnostic `AuthMethodDescriptor[]`. Pure and tolerant of a malformed or
 // foreign config blob (returns `[]`). Exported for tests.
 //
-//   stdio / open (`none`) → []          (no auth method to pick)
+//   open (`none`)        → one none method carrying no credential inputs
+//   stdio                → []          (no remote connection to configure)
 //   header               → one apikey method carrying the header placement
 //   oauth2               → one oauth method carrying the MCP endpoint to probe
 //                          (`discoveryUrl`); endpoints are discovered live at
@@ -414,6 +415,16 @@ export const describeMcpAuthMethods = (
   if (!config || config.transport === "stdio") return [];
 
   const auth = config.auth;
+  if (auth.kind === "none") {
+    return [
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ];
+  }
   if (auth.kind === "header") {
     return [
       {
