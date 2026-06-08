@@ -25,6 +25,8 @@ export type McpRemoteSourcePreview = {
   readonly name: string;
   readonly serverName: string | null;
   readonly connected: boolean;
+  readonly requiresAuthentication: boolean;
+  readonly requiresOAuth: boolean;
   readonly toolCount: number | null;
 };
 
@@ -44,7 +46,11 @@ export function McpRemoteSourceFields(props: {
       ? props.preview.toolCount === null
         ? null
         : `${props.preview.toolCount} tool${props.preview.toolCount !== 1 ? "s" : ""} available`
-      : "OAuth required to discover tools"
+      : props.preview.requiresOAuth
+        ? "OAuth required to discover tools"
+        : props.preview.requiresAuthentication
+          ? "Authentication required to discover tools"
+          : "Ready to add"
     : null;
 
   if (props.preview) {
@@ -71,12 +77,19 @@ export function McpRemoteSourceFields(props: {
                 >
                   Connected
                 </Badge>
-              ) : (
+              ) : props.preview.requiresOAuth ? (
                 <Badge
                   variant="outline"
                   className="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-400"
                 >
                   OAuth required
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-400"
+                >
+                  Auth required
                 </Badge>
               )}
             </CardStackEntryActions>

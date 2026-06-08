@@ -83,6 +83,7 @@ function findPreset(id: string | undefined): McpPreset | undefined {
 
 type ProbeResult = {
   connected: boolean;
+  requiresAuthentication: boolean;
   requiresOAuth: boolean;
   supportsDynamicRegistration: boolean;
   name: string;
@@ -220,7 +221,9 @@ export default function AddMcpSource(props: {
   const allowedAuthKinds: readonly AuthTemplateEditorKind[] =
     probe?.requiresOAuth && probe.supportsDynamicRegistration
       ? ["oauth"]
-      : ["none", "apikey", "oauth"];
+      : probe?.requiresAuthentication
+        ? ["apikey", "oauth"]
+        : ["none", "apikey", "oauth"];
 
   const remoteIdentity = useIntegrationIdentity({
     fallbackName:
@@ -270,7 +273,12 @@ export default function AddMcpSource(props: {
     setAuthValue(
       exit.value.requiresOAuth
         ? { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] }
-        : { kind: "none" },
+        : exit.value.requiresAuthentication
+          ? {
+              kind: "apikey",
+              placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+            }
+          : { kind: "none" },
     );
     dispatch({ type: "probe-ok", probe: exit.value });
   }, [state.url, doProbe]);

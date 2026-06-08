@@ -123,6 +123,7 @@ const McpProbeEndpointInputSchema = Schema.Struct({
 
 const McpProbeEndpointOutputSchema = Schema.Struct({
   connected: Schema.Boolean,
+  requiresAuthentication: Schema.Boolean,
   requiresOAuth: Schema.Boolean,
   supportsDynamicRegistration: Schema.Boolean,
   name: Schema.String,
@@ -544,6 +545,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           if (result.ok && result.manifest) {
             return {
               connected: true,
+              requiresAuthentication: false,
               requiresOAuth: false,
               supportsDynamicRegistration: false,
               name: result.manifest.server?.name ?? name,
@@ -577,8 +579,22 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           if (probeResult.ok) {
             return {
               connected: false,
+              requiresAuthentication: true,
               requiresOAuth: true,
               supportsDynamicRegistration: probeResult.oauth.registrationEndpoint != null,
+              name,
+              slug,
+              toolCount: null,
+              serverName: null,
+            } satisfies McpProbeResult;
+          }
+
+          if (shape.requiresAuth) {
+            return {
+              connected: false,
+              requiresAuthentication: true,
+              requiresOAuth: false,
+              supportsDynamicRegistration: false,
               name,
               slug,
               toolCount: null,
@@ -589,7 +605,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           return yield* new McpConnectionError({
             transport: "remote",
             message:
-              "This server requires authentication, but OAuth metadata wasn't found. Add credentials (Authorization header, query parameter, or API key) below and retry.",
+              "This endpoint looks like MCP, but Executor couldn't discover tools from it. Check the URL and try again.",
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {

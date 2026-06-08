@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { HttpServerResponse } from "effect/unstable/http";
 
 import {
   AuthTemplateSlug,
@@ -8,7 +9,11 @@ import {
   ToolAddress,
   createExecutor,
 } from "@executor-js/sdk";
-import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import {
+  makeTestConfig,
+  memoryCredentialsPlugin,
+  serveTestHttpApp,
+} from "@executor-js/sdk/testing";
 
 import { mcpPlugin, userFacingProbeMessage } from "./plugin";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
@@ -244,6 +249,42 @@ describe("mcpPlugin", () => {
       yield* executor.close();
       yield* Effect.promise(() => config.testDb.close());
     }),
+  );
+
+  it.effect("probeEndpoint returns manual auth when MCP requires auth without OAuth metadata", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.succeed(
+            (request.url ?? "").includes("/.well-known/")
+              ? HttpServerResponse.text("missing", { status: 404 })
+              : HttpServerResponse.jsonUnsafe(
+                  {
+                    jsonrpc: "2.0",
+                    id: null,
+                    error: { code: -32000, message: "Unauthorized: Valid API key required." },
+                  },
+                  { status: 401, headers: { "www-authenticate": "Bearer" } },
+                ),
+          ),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+        expect(result).toMatchObject({
+          connected: false,
+          requiresAuthentication: true,
+          requiresOAuth: false,
+          supportsDynamicRegistration: false,
+          toolCount: null,
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
   );
 });
 
