@@ -851,6 +851,8 @@ describe("planMigration (the weave)", () => {
             clientSecretSecretId: "linear-client-secret",
             tokenEndpoint: "https://mcp.linear.app/token",
             authorizationServerUrl: "https://mcp.linear.app/authorize",
+            authorizationServerMetadataUrl:
+              "https://mcp.linear.app/.well-known/oauth-authorization-server",
             resource: "https://mcp.linear.app",
             scopes: ["read", "write"],
           },
@@ -949,6 +951,10 @@ describe("planMigration (the weave)", () => {
     // OAuth client: one, with its secret re-keyed.
     expect(plan.oauthClients).toHaveLength(1);
     expect(plan.oauthClients[0]?.clientId).toBe("cid-linear");
+    expect(plan.oauthClients[0]?.authorizationUrl).toBe("https://mcp.linear.app/authorize");
+    expect(plan.oauthClients[0]?.authorizationServerMetadataUrl).toBe(
+      "https://mcp.linear.app/.well-known/oauth-authorization-server",
+    );
     expect(plan.oauthClients[0]?.resource).toBe("https://mcp.linear.app");
     expect(plan.oauthClients[0]?.clientSecretItemId).toBe(
       migratedItemId("user-org:user_U:org_X", "linear-client-secret"),

@@ -11,6 +11,14 @@
 
 import { createHash } from "node:crypto";
 
+export {
+  migrationOAuthAuthorizationUrlFor,
+  migrationOAuthClientPlanKey,
+  resolveMigrationOAuthAuthorizationUrls,
+  type MigrationOAuthMetadataFetch,
+  type ResolveMigrationOAuthAuthorizationUrlsOptions,
+} from "./migration-oauth-metadata";
+
 export type MigrationOwner = "org" | "user";
 
 /** v2 owner partition for a migrated row. `subject` is "" (ORG_SUBJECT) for org. */
@@ -709,6 +717,7 @@ export interface PlannedOAuthClientInput {
   readonly clientIdSecretRef?: SecretReadRef | null;
   readonly tokenUrl: string;
   readonly authorizationUrl: string;
+  readonly authorizationServerMetadataUrl?: string | null;
   readonly grant: MigrationGrant;
   readonly resource: string | null;
   readonly clientSecretRef: string | null;
@@ -1025,7 +1034,12 @@ export interface V1ProviderState {
   readonly clientSecretSecretId?: string;
   readonly clientSecretSecretScopeId?: string | null;
   readonly tokenEndpoint?: string;
+  readonly authorizationEndpoint?: string;
   readonly authorizationServerUrl?: string;
+  readonly authorizationServerMetadataUrl?: string;
+  readonly authorizationServerMetadata?: {
+    readonly authorization_endpoint?: string;
+  } | null;
   readonly issuerUrl?: string;
   readonly resource?: string | null;
   readonly scopes?: readonly string[];
@@ -1196,6 +1210,18 @@ const scopesFromProviderState = (ps: V1ProviderState | null): readonly string[] 
   return [];
 };
 
+const nonEmptyString = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+};
+
+const authorizationUrlFromProviderState = (ps: V1ProviderState | null): string =>
+  nonEmptyString(ps?.authorizationEndpoint) ??
+  nonEmptyString(ps?.authorizationServerMetadata?.authorization_endpoint) ??
+  nonEmptyString(ps?.authorizationServerUrl) ??
+  nonEmptyString(ps?.issuerUrl) ??
+  "";
+
 export const planMigration = (input: MigrationInput): MigrationPlan => {
   const warnings: string[] = [];
   const secretOps: SecretOp[] = [];
@@ -1359,7 +1385,8 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         clientId: ps?.clientId ?? "",
         clientIdSecretRef,
         tokenUrl: ps?.tokenEndpoint ?? "",
-        authorizationUrl: ps?.authorizationServerUrl ?? ps?.issuerUrl ?? "",
+        authorizationUrl: authorizationUrlFromProviderState(ps),
+        authorizationServerMetadataUrl: nonEmptyString(ps?.authorizationServerMetadataUrl),
         grant,
         resource: ps?.resource ?? null,
         clientSecretRef: ps?.clientSecretSecretId ?? null,

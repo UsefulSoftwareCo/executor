@@ -17,11 +17,15 @@ import {
   migrateOpenApiSourceConfig,
   migrateV1PluginStorageRuntimeRow,
   migrateV1ToolAnnotations,
+  migrationOAuthAuthorizationUrlFor as authorizationUrlFor,
+  migrationOAuthClientPlanKey as oauthClientPlanKey,
   migrationSourceKey,
   parseScope,
   planMigration,
+  resolveMigrationOAuthAuthorizationUrls,
   type MigratedSourceConfig,
   type MigrationInput,
+  type MigrationOAuthMetadataFetch,
   type MigrationOwner,
   type MigrationPlan,
   type OwnerKeys,
@@ -92,6 +96,8 @@ export interface LocalV1V2MigrationOptions {
   readonly tables: FumaTables;
   readonly namespace: string;
   readonly tenantId: string;
+  readonly oauthMetadataFetch?: MigrationOAuthMetadataFetch;
+  readonly oauthMetadataTimeoutMs?: number;
 }
 
 const FILE_PROVIDER = "file";
@@ -469,9 +475,6 @@ const timestamp = (): number => Date.now();
 const ownerSubject = (owner: MigrationOwner, subject: string): string =>
   owner === "org" ? "" : subject;
 
-const oauthClientPlanKey = (client: MigrationPlan["oauthClients"][number]): string =>
-  `${client.ownerKeys.tenant}\0${client.ownerKeys.owner}\0${client.ownerKeys.subject}\0${client.slug}`;
-
 const clientIdFor = (
   client: MigrationPlan["oauthClients"][number],
   values: ReadonlyMap<string, string>,
@@ -507,6 +510,7 @@ const insertPlan = async (
   plan: MigrationPlan,
   idOverrides: ReadonlyMap<string, string>,
   oauthClientIdValues: ReadonlyMap<string, string>,
+  oauthAuthorizationUrls: ReadonlyMap<string, string>,
   tenantId: string,
 ): Promise<void> => {
   const now = timestamp();
@@ -552,7 +556,7 @@ const insertPlan = async (
         "INSERT INTO oauth_client (slug, authorization_url, token_url, grant, client_id, client_secret_item_id, resource, created_at, row_id, tenant, owner, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
           clientRow.slug,
-          clientRow.authorizationUrl,
+          authorizationUrlFor(clientRow, oauthAuthorizationUrls),
           clientRow.tokenUrl,
           clientRow.grant,
           clientIdFor(clientRow, oauthClientIdValues),
@@ -743,6 +747,10 @@ export const migrateLocalV1ToV2IfNeeded = async (
     const snapshot = await readV1Snapshot(reader, options.tenantId);
     const plan = planMigration(snapshot.input);
     const secretValues = await collectSecretValues(plan);
+    const oauthAuthorizationUrls = await resolveMigrationOAuthAuthorizationUrls(plan, {
+      fetch: options.oauthMetadataFetch ?? fetch,
+      timeoutMs: options.oauthMetadataTimeoutMs,
+    });
     const backupPath = backupPathFor(options.sqlitePath);
 
     reader.close();
@@ -761,6 +769,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
         plan,
         secretValues.idOverrides,
         secretValues.oauthClientIdValues,
+        oauthAuthorizationUrls,
         options.tenantId,
       );
       await target.close();
