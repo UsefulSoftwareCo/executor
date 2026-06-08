@@ -12,6 +12,14 @@
  *   op run --env-file=apps/cloud/.env.production -- \
  *     bun apps/cloud/scripts/migrate-v1-v2.ts --apply --confirm-v1-v2-cutover
  *
+ * Repair already-migrated OAuth authorization URLs from archived v1 metadata:
+ *
+ *   op run --env-file=apps/cloud/.env.production -- \
+ *     bun apps/cloud/scripts/migrate-v1-v2.ts --repair-oauth-authorization-urls
+ *
+ *   op run --env-file=apps/cloud/.env.production -- \
+ *     bun apps/cloud/scripts/migrate-v1-v2.ts --repair-oauth-authorization-urls --apply --confirm-oauth-authorization-url-repair
+ *
  * Apply copies WorkOS Vault values into deterministic v2 item ids first, then
  * runs the structural Postgres transaction: archive v1 executor tables as
  * `v1_*`, create the v2 executor tables, and upsert the planned v2 rows.
@@ -33,14 +41,18 @@ import {
   migrateOpenApiSourceConfig,
   migrateV1PluginStorageRuntimeRow,
   migrateV1ToolAnnotations,
+  migrationOAuthAuthorizationUrlFor as authorizationUrlFor,
+  migrationOAuthClientPlanKey as oauthClientPlanKey,
   migrationSourceKey,
   parseScope,
   planMigration,
+  resolveMigrationOAuthAuthorizationUrls,
   vaultV1LegacyObjectName,
   vaultV1ObjectName,
   vaultV2ObjectName,
   type MigratedSourceConfig,
   type MigrationInput,
+  type MigrationOAuthMetadataFetch,
   type MigrationOwner,
   type MigrationPlan,
   type OwnerKeys,
@@ -132,11 +144,29 @@ export interface CloudMigrationResult {
   };
 }
 
+export interface CloudOAuthAuthorizationUrlRepairRow {
+  readonly tenant: string;
+  readonly owner: MigrationOwner;
+  readonly subject: string;
+  readonly slug: string;
+  readonly currentAuthorizationUrl: string;
+  readonly repairedAuthorizationUrl: string;
+  readonly metadataUrl: string;
+}
+
+export interface CloudOAuthAuthorizationUrlRepairResult {
+  readonly applied: boolean;
+  readonly checked: number;
+  readonly changed: readonly CloudOAuthAuthorizationUrlRepairRow[];
+}
+
 export interface CloudMigrationOptions {
   readonly sql: Pg;
   readonly apply: boolean;
   readonly confirmApply?: boolean;
   readonly objectPrefix?: string;
+  readonly oauthMetadataFetch?: MigrationOAuthMetadataFetch;
+  readonly oauthMetadataTimeoutMs?: number;
   readonly workosCredentials?: {
     readonly apiKey: string;
     readonly clientId: string;
@@ -146,8 +176,22 @@ export interface CloudMigrationOptions {
   readonly now?: Date;
 }
 
+export interface CloudOAuthAuthorizationUrlRepairOptions {
+  readonly sql: Pg;
+  readonly apply: boolean;
+  readonly confirmApply?: boolean;
+  readonly oauthMetadataFetch?: MigrationOAuthMetadataFetch;
+  readonly oauthMetadataTimeoutMs?: number;
+  readonly log?: (message: string) => void;
+  readonly now?: Date;
+}
+
 const APPLY = process.argv.includes("--apply");
 const CONFIRM_APPLY = process.argv.includes("--confirm-v1-v2-cutover");
+const REPAIR_OAUTH_AUTHORIZATION_URLS = process.argv.includes("--repair-oauth-authorization-urls");
+const CONFIRM_REPAIR_OAUTH_AUTHORIZATION_URLS = process.argv.includes(
+  "--confirm-oauth-authorization-url-repair",
+);
 const WORKOS_VAULT_PROVIDER = "workos-vault";
 const WORKOS_VAULT_METADATA_PLUGIN_ID = "workos-vault";
 const WORKOS_VAULT_METADATA_COLLECTION = "metadata";
@@ -509,9 +553,6 @@ const readV1Snapshot = async (
 const ownerSubject = (owner: MigrationOwner, subject: string): string =>
   owner === "org" ? "" : subject;
 
-const oauthClientPlanKey = (client: MigrationPlan["oauthClients"][number]): string =>
-  `${client.ownerKeys.tenant}\0${client.ownerKeys.owner}\0${client.ownerKeys.subject}\0${client.slug}`;
-
 const secretRefKey = (scopeId: string, secretId: string): string => `${scopeId}\0${secretId}`;
 
 const secretNameByRef = (input: MigrationInput): ReadonlyMap<string, string> =>
@@ -680,6 +721,13 @@ const clientIdFor = (
   client: MigrationPlan["oauthClients"][number],
   values: ReadonlyMap<string, string>,
 ): string => client.clientId || values.get(oauthClientPlanKey(client)) || "";
+
+const oauthClientStorageKey = (input: {
+  readonly tenant: string;
+  readonly owner: string;
+  readonly subject: string;
+  readonly slug: string;
+}): string => `${input.tenant}\0${input.owner}\0${input.subject}\0${input.slug}`;
 
 const jsonValue = (sql: Pg, value: unknown): unknown => (value == null ? null : sql.json(value));
 
@@ -902,6 +950,7 @@ const insertPlan = async (
   snapshot: CloudV1Snapshot,
   plan: MigrationPlan,
   secretCopy: WorkosSecretCopyResult,
+  oauthAuthorizationUrls: ReadonlyMap<string, string>,
   now: Date,
 ): Promise<void> => {
   const connectionTargets = plan.connections.map((connection) => ({
@@ -933,7 +982,7 @@ const insertPlan = async (
   for (const clientRow of plan.oauthClients) {
     await sql`
       insert into oauth_client (slug, authorization_url, token_url, grant, client_id, client_secret_item_id, resource, created_at, row_id, tenant, owner, subject)
-      values (${clientRow.slug}, ${clientRow.authorizationUrl}, ${clientRow.tokenUrl}, ${clientRow.grant}, ${clientIdFor(clientRow, secretCopy.oauthClientIdValues)}, ${clientRow.clientSecretItemId}, ${clientRow.resource}, ${now}, ${createId()}, ${clientRow.ownerKeys.tenant}, ${clientRow.ownerKeys.owner}, ${ownerSubject(clientRow.ownerKeys.owner, clientRow.ownerKeys.subject)})
+      values (${clientRow.slug}, ${authorizationUrlFor(clientRow, oauthAuthorizationUrls)}, ${clientRow.tokenUrl}, ${clientRow.grant}, ${clientIdFor(clientRow, secretCopy.oauthClientIdValues)}, ${clientRow.clientSecretItemId}, ${clientRow.resource}, ${now}, ${createId()}, ${clientRow.ownerKeys.tenant}, ${clientRow.ownerKeys.owner}, ${ownerSubject(clientRow.ownerKeys.owner, clientRow.ownerKeys.subject)})
       on conflict (tenant, owner, subject, slug) do update set
         authorization_url = excluded.authorization_url,
         token_url = excluded.token_url,
@@ -1088,12 +1137,13 @@ const applyStructuralMigration = async (
   snapshot: CloudV1Snapshot,
   plan: MigrationPlan,
   secretCopy: WorkosSecretCopyResult,
+  oauthAuthorizationUrls: ReadonlyMap<string, string>,
   now: Date,
 ): Promise<void> => {
   await sql.begin(async (tx) => {
     await archiveV1Tables(tx as Pg);
     await createV2Schema(tx as Pg);
-    await insertPlan(tx as Pg, snapshot, plan, secretCopy, now);
+    await insertPlan(tx as Pg, snapshot, plan, secretCopy, oauthAuthorizationUrls, now);
   });
 };
 
@@ -1119,6 +1169,94 @@ const printReport = (
   );
   log(`warnings:          ${r.warnings.length}`);
   for (const warning of r.warnings) log(`  - ${warning}`);
+};
+
+const readCurrentOAuthAuthorizationUrls = async (sql: Pg): Promise<ReadonlyMap<string, string>> => {
+  const rows = await sql<
+    {
+      readonly tenant: string;
+      readonly owner: string;
+      readonly subject: string;
+      readonly slug: string;
+      readonly authorization_url: string;
+    }[]
+  >`
+    select tenant, owner, subject, slug, authorization_url
+    from oauth_client
+  `;
+  return new Map(rows.map((row) => [oauthClientStorageKey(row), row.authorization_url]));
+};
+
+export const repairCloudOAuthAuthorizationUrls = async (
+  options: CloudOAuthAuthorizationUrlRepairOptions,
+): Promise<CloudOAuthAuthorizationUrlRepairResult> => {
+  const log = options.log ?? console.log;
+  const now = options.now ?? new Date();
+  const snapshot = await readV1Snapshot(options.sql, now, false, log);
+  log("plan:             building OAuth authorization URL repair plan");
+  const plan = planMigration(snapshot.input);
+  const oauthAuthorizationUrls = await resolveMigrationOAuthAuthorizationUrls(plan, {
+    fetch: options.oauthMetadataFetch ?? fetch,
+    timeoutMs: options.oauthMetadataTimeoutMs,
+  });
+  const currentAuthorizationUrls = await readCurrentOAuthAuthorizationUrls(options.sql);
+
+  const changed: CloudOAuthAuthorizationUrlRepairRow[] = [];
+  let checked = 0;
+  for (const clientRow of plan.oauthClients) {
+    const metadataUrl = clientRow.authorizationServerMetadataUrl?.trim();
+    if (!metadataUrl) continue;
+    checked++;
+
+    const currentAuthorizationUrl = currentAuthorizationUrls.get(oauthClientPlanKey(clientRow));
+    if (currentAuthorizationUrl == null) {
+      log(
+        `  - missing current oauth_client row for ${clientRow.ownerKeys.tenant}/${clientRow.slug}`,
+      );
+      continue;
+    }
+
+    const repairedAuthorizationUrl = authorizationUrlFor(clientRow, oauthAuthorizationUrls);
+    if (currentAuthorizationUrl === repairedAuthorizationUrl) continue;
+    changed.push({
+      tenant: clientRow.ownerKeys.tenant,
+      owner: clientRow.ownerKeys.owner,
+      subject: ownerSubject(clientRow.ownerKeys.owner, clientRow.ownerKeys.subject),
+      slug: clientRow.slug,
+      currentAuthorizationUrl,
+      repairedAuthorizationUrl,
+      metadataUrl,
+    });
+  }
+
+  log(`oauth repair:      ${checked} metadata-backed client(s) checked`);
+  log(`oauth repair:      ${changed.length} client(s) need authorization_url update`);
+  for (const row of changed) {
+    log(
+      `  - ${row.tenant}/${row.owner}/${row.subject || "<org>"}/${row.slug}: ${row.currentAuthorizationUrl} -> ${row.repairedAuthorizationUrl}`,
+    );
+  }
+
+  if (!options.apply) return { applied: false, checked, changed };
+  if (!options.confirmApply) {
+    throw new Error("Refusing OAuth authorization URL repair without confirmation flag.");
+  }
+
+  await options.sql.begin(async (tx) => {
+    for (const row of changed) {
+      await (tx as Pg)`
+        update oauth_client
+        set authorization_url = ${row.repairedAuthorizationUrl}
+        where tenant = ${row.tenant}
+          and owner = ${row.owner}
+          and subject = ${row.subject}
+          and slug = ${row.slug}
+      `;
+    }
+  });
+  log("oauth repair:      complete");
+
+  return { applied: true, checked, changed };
 };
 
 export const runCloudV1V2Migration = async (
@@ -1164,7 +1302,22 @@ export const runCloudV1V2Migration = async (
     );
   }
 
-  await applyStructuralMigration(options.sql, snapshot, plan, secretCopy, now);
+  const oauthAuthorizationUrls = await resolveMigrationOAuthAuthorizationUrls(plan, {
+    fetch: options.oauthMetadataFetch ?? fetch,
+    timeoutMs: options.oauthMetadataTimeoutMs,
+  });
+  if (oauthAuthorizationUrls.size > 0) {
+    log(`oauth metadata:     resolved ${oauthAuthorizationUrls.size} authorization URL(s)`);
+  }
+
+  await applyStructuralMigration(
+    options.sql,
+    snapshot,
+    plan,
+    secretCopy,
+    oauthAuthorizationUrls,
+    now,
+  );
   log("apply:             complete");
   return {
     applied: true,
@@ -1189,15 +1342,23 @@ const main = async (): Promise<void> => {
     databaseSsl === "disable" || databaseSsl === "false" || databaseSsl === "0" ? false : "require";
   const sql = postgres(databaseUrl, { max: 1, prepare: false, ssl }) as Pg;
   try {
-    await runCloudV1V2Migration({
-      sql,
-      apply: APPLY,
-      confirmApply: CONFIRM_APPLY,
-      workosCredentials: {
-        apiKey: process.env.WORKOS_API_KEY ?? "",
-        clientId: process.env.WORKOS_CLIENT_ID ?? "",
-      },
-    });
+    if (REPAIR_OAUTH_AUTHORIZATION_URLS) {
+      await repairCloudOAuthAuthorizationUrls({
+        sql,
+        apply: APPLY,
+        confirmApply: CONFIRM_REPAIR_OAUTH_AUTHORIZATION_URLS,
+      });
+    } else {
+      await runCloudV1V2Migration({
+        sql,
+        apply: APPLY,
+        confirmApply: CONFIRM_APPLY,
+        workosCredentials: {
+          apiKey: process.env.WORKOS_API_KEY ?? "",
+          clientId: process.env.WORKOS_CLIENT_ID ?? "",
+        },
+      });
+    }
   } finally {
     await sql.end();
   }

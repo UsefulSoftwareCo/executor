@@ -39,6 +39,7 @@ const seedV1Db = async (
     readonly includeMcpToolBinding?: boolean;
     readonly jsonBlobs?: boolean;
     readonly oauthConnectionProvider?: string;
+    readonly oauthProviderStateOverrides?: Record<string, unknown>;
   } = {},
 ) => {
   const client = await openLocalLibsql(dbPath);
@@ -541,6 +542,7 @@ const seedV1Db = async (
           tokenEndpoint: "https://resolve.dealcloud.com/oauth/token",
           resource: "https://api.dealcloud.com",
           scopes: ["data"],
+          ...(options.oauthProviderStateOverrides ?? {}),
         }),
       ],
     );
@@ -885,5 +887,79 @@ describe("local v1 -> v2 migration", () => {
     expect(auth[accessItemId]).toBe("old-access-token");
     expect(auth[clientSecretItemId]).toBe("dealcloud-secret");
     expect(auth["dealcloud-client-id"]).toBeUndefined();
+  });
+
+  it("resolves v1 OAuth authorization-server metadata URLs before writing oauth_client rows", async () => {
+    const scopeId = "executor-workspace-abcd1234";
+    const tenantId = "executor-workspace-abcd1234";
+    const metadataUrl =
+      "https://mcp.pscale.dev/.well-known/oauth-authorization-server/mcp/planetscale";
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    mkdirSync(dataDir, { recursive: true });
+    await seedV1Db(dbPath, scopeId, {
+      includeSecretBackedOauth: true,
+      oauthConnectionProvider: "oauth2",
+      oauthProviderStateOverrides: {
+        kind: "dynamic-dcr",
+        authorizationServerUrl: "https://mcp.pscale.dev/mcp/planetscale",
+        authorizationServerMetadataUrl: metadataUrl,
+        resource: "https://mcp.pscale.dev/mcp/planetscale",
+      },
+    });
+
+    const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(
+      join(authDir, "auth.json"),
+      JSON.stringify({
+        [scopeId]: {
+          "dealcloud-access": "old-access-token",
+          "dealcloud-client-id": "dealcloud-client",
+          "dealcloud-client-secret": "dealcloud-secret",
+        },
+      }),
+    );
+
+    const seenMetadataUrls: string[] = [];
+    const oauthMetadataFetch: typeof globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        seenMetadataUrls.push(String(input));
+        return new Response(
+          JSON.stringify({
+            issuer: "https://api.planetscale.com",
+            authorization_endpoint: "https://app.planetscale.com/oauth/authorize",
+            token_endpoint: "https://auth.planetscale.com/oauth/token",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId,
+      oauthMetadataFetch,
+    });
+
+    expect(result.migrated).toBe(true);
+    expect(seenMetadataUrls).toEqual([metadataUrl]);
+
+    const client = await openLocalLibsql(dbPath);
+    const oauthClients = await client.execute(
+      "SELECT slug, grant, authorization_url, resource FROM oauth_client",
+    );
+    expect(oauthClients.rows).toEqual([
+      {
+        slug: "dealcloud",
+        grant: "authorization_code",
+        authorization_url: "https://app.planetscale.com/oauth/authorize",
+        resource: "https://mcp.pscale.dev/mcp/planetscale",
+      },
+    ]);
+    client.close();
   });
 });
