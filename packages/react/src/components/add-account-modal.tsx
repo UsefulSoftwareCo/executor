@@ -402,6 +402,7 @@ export const connectionNameFrom = (
 type DcrProbeResult = {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly scopesSupported?: readonly string[];
   readonly registrationEndpoint?: string | null;
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
@@ -413,6 +414,7 @@ type DcrRegisterArgs = {
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly scopes: readonly string[];
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   readonly clientName: string;
@@ -486,6 +488,7 @@ export async function runDcrConnect(
     registrationEndpoint,
     authorizationUrl: probe.authorizationUrl,
     tokenUrl: probe.tokenUrl,
+    resource: probe.resource ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
     clientName: input.integrationName,
@@ -830,6 +833,7 @@ export function AddAccountModal(props: {
               registrationEndpoint: args.registrationEndpoint,
               authorizationUrl: args.authorizationUrl,
               tokenUrl: args.tokenUrl,
+              resource: args.resource ?? null,
               scopes: args.scopes,
               tokenEndpointAuthMethodsSupported: args.tokenEndpointAuthMethodsSupported,
               clientName: args.clientName,

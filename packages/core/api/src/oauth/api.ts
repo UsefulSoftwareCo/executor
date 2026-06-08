@@ -64,6 +64,7 @@ const CreateClientPayload = Schema.Struct({
   grant: Schema.Literals(["authorization_code", "client_credentials"]),
   clientId: Schema.String,
   clientSecret: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const CreateClientResponse = Schema.Struct({
@@ -83,6 +84,7 @@ const RegisterDynamicPayload = Schema.Struct({
   registrationEndpoint: Schema.String,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientName: Schema.optional(Schema.String),
@@ -105,6 +107,7 @@ const OAuthClientSummaryResponse = Schema.Struct({
   grant: Schema.Literals(["authorization_code", "client_credentials"]),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
 });
 
@@ -191,6 +194,7 @@ const ProbePayload = Schema.Struct({
 const ProbeResponse = Schema.Struct({
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopesSupported: Schema.optional(Schema.Array(Schema.String)),
   registrationEndpoint: Schema.optional(Schema.NullOr(Schema.String)),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),

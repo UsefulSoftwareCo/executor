@@ -1,14 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 
-import {
-  AuthTemplateSlug,
-  IntegrationSlug,
-  OAuthClientSlug,
-  type Owner,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
 import { createConnection } from "@executor-js/react/api/atoms";
 import { connectionWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { connectionIdentifier } from "@executor-js/react/lib/connection-name";
@@ -17,8 +12,9 @@ import {
   CredentialUsageRow,
   useCredentialTargetScope,
 } from "@executor-js/react/plugins/credential-target-scope";
-import { OAuthSignInButton, useOAuthPopupFlow } from "@executor-js/react/plugins/oauth-sign-in";
+import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import { Button } from "@executor-js/react/components/button";
+import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
 import {
   CardStack,
   CardStackContent,
@@ -29,6 +25,7 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { Input } from "@executor-js/react/components/input";
 import { Badge } from "@executor-js/react/components/badge";
+import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
 
 import { mcpServerAtom } from "./atoms";
 import type { McpIntegrationConfig } from "../sdk/types";
@@ -60,18 +57,13 @@ function RemoteEdit(props: {
   const { credentialTargetOwner, setCredentialTargetOwner, credentialScopeOptions } =
     useCredentialTargetScope();
   const doCreate = useAtomSet(createConnection, { mode: "promiseExit" });
-  const oauth = useOAuthPopupFlow({
-    popupName: "mcp-oauth",
-    popupBlockedMessage: "OAuth popup was blocked",
-    detectPopupClosed: false,
-    startErrorMessage: "Failed to start OAuth",
-  });
 
   const [headerName] = useState(auth.kind === "header" ? auth.headerName : "Authorization");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [oauthModalOpen, setOauthModalOpen] = useState(false);
 
   const handleSaveKey = useCallback(async () => {
     if (apiKey.trim() === "") return;
@@ -100,22 +92,38 @@ function RemoteEdit(props: {
 
   const handleOAuth = useCallback(() => {
     setError(null);
-    const owner: Owner = credentialTargetOwner;
-    void oauth.start({
-      payload: {
-        client: OAuthClientSlug.make(String(server.slug)),
-        // MCP registers its client (DCR) under the connection owner.
-        clientOwner: owner,
-        owner,
-        name: connectionIdentifier(`${server.slug} oauth`),
-        integration: server.slug,
-        template: OAUTH_TEMPLATE,
-        identityLabel: `${server.description || String(server.slug)} OAuth`,
-      },
-      onSuccess: () => setConnected(true),
-      onError: (message: string) => setError(message),
-    });
-  }, [credentialTargetOwner, oauth, server]);
+    setOauthModalOpen(true);
+  }, []);
+
+  const oauthMethods = useMemo<readonly AuthMethod[]>(
+    () =>
+      auth.kind === "oauth2"
+        ? [
+            {
+              id: "oauth2",
+              label: "OAuth",
+              kind: "oauth",
+              source: "spec",
+              template: OAUTH_TEMPLATE,
+              placements: [],
+              oauth: { discoveryUrl: server.config.endpoint, supportsDynamicRegistration: true },
+            },
+          ]
+        : [],
+    [auth.kind, server.config.endpoint],
+  );
+  const oauthInitialState = useMemo(
+    () =>
+      oauthModalOpen && auth.kind === "oauth2"
+        ? {
+            key: `${String(server.slug)}:${credentialTargetOwner}:oauth`,
+            owner: credentialTargetOwner,
+            template: String(OAUTH_TEMPLATE),
+            label: `${server.description || String(server.slug)} OAuth`,
+          }
+        : null,
+    [auth.kind, credentialTargetOwner, oauthModalOpen, server],
+  );
 
   return (
     <div className="space-y-6">
@@ -184,12 +192,20 @@ function RemoteEdit(props: {
         >
           <CredentialControlField label="Connect via OAuth" help="Start the provider OAuth flow.">
             <OAuthSignInButton
-              busy={oauth.busy}
-              error={oauth.error}
+              busy={false}
+              error={error}
               isConnected={connected}
               onSignIn={handleOAuth}
               signingInLabel="Signing in…"
               reconnectingLabel="Reconnecting…"
+            />
+            <AddAccountModal
+              integration={server.slug}
+              integrationName={server.description || String(server.slug)}
+              methods={oauthMethods}
+              open={oauthModalOpen}
+              onOpenChange={setOauthModalOpen}
+              initialState={oauthInitialState}
             />
           </CredentialControlField>
         </CredentialUsageRow>

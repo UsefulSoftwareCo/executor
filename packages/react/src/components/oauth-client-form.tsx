@@ -36,6 +36,7 @@ import { RadioGroup, RadioGroupItem } from "./radio-group";
 export interface OAuthClientFormPrefill {
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
+  readonly resource?: string | null;
   readonly scopes?: readonly string[];
   readonly grant?: OAuthGrant;
   /** Client id to seed (e.g. when editing an existing app). NOT a secret — the
@@ -88,6 +89,7 @@ export function OAuthClientForm(props: {
   const [issuerUrl, setIssuerUrl] = useState("");
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
+  const [resource, setResource] = useState(prefill?.resource ?? null);
   const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // DCR (RFC 7591): the registration endpoint + advertised auth methods. Seeded
@@ -143,6 +145,7 @@ export function OAuthClientForm(props: {
     const result = exit.value;
     setAuthorizationUrl(result.authorizationUrl);
     setTokenUrl(result.tokenUrl);
+    setResource(result.resource ?? null);
     // Capture DCR availability so the "Register automatically" path shows for a
     // pasted MCP/issuer URL without any client id/secret.
     setRegistrationEndpoint(result.registrationEndpoint ?? "");
@@ -165,6 +168,7 @@ export function OAuthClientForm(props: {
         registrationEndpoint: registrationEndpoint.trim(),
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
+        resource,
         // DCR sends the integration's declared scopes to the AS at registration
         // (the app itself stores none).
         scopes: [...(prefill?.scopes ?? [])],
@@ -196,6 +200,7 @@ export function OAuthClientForm(props: {
         grant,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
+        resource,
       },
       reactivityKeys: oauthClientWriteKeys,
     });

@@ -73,6 +73,22 @@ describe("selectClientsForEndpoints", () => {
     ]);
   });
 
+  it("does not match by authorize root alone when the integration declares a token endpoint", () => {
+    const authorizeOnly = app("google-authorize", {
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://accounts.google.com/token",
+    });
+    const result = selectClientsForEndpoints([authorizeOnly], {
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+    });
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+    expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "google-authorize",
+    ]);
+  });
+
   it("treats every app as usable when no endpoint is declared", () => {
     const result = selectClientsForEndpoints([google, spotify], {});
     expect(result.endpointMatched).toBe(true);

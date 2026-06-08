@@ -88,9 +88,13 @@ export function groupClientsByOwner(
   });
 }
 
-/** Build a slug → connections map so each app can show what it backs. A
- *  connection maps to an app when its `oauthClient` equals the app slug; static
- *  connections (null `oauthClient`) are skipped. */
+/** Build an owner+slug → connections map so each app can show what it backs.
+ *  Connection rows can reference either a personal or workspace app with the
+ *  same slug, so owner is part of the key. Static connections (null
+ *  `oauthClient`) are skipped. */
+const oauthClientUsageKey = (owner: Owner | null | undefined, slug: OAuthClientSlug): string =>
+  `${owner ?? "org"}\0${String(slug)}`;
+
 export function buildUsageMap(
   connections: readonly Connection[],
 ): ReadonlyMap<string, readonly Connection[]> {
@@ -98,7 +102,7 @@ export function buildUsageMap(
   for (const connection of connections) {
     const slug = connection.oauthClient;
     if (slug == null) continue;
-    const key = String(slug);
+    const key = oauthClientUsageKey(connection.oauthClientOwner, slug);
     const existing = map.get(key);
     if (existing) existing.push(connection);
     else map.set(key, [connection]);
@@ -109,9 +113,9 @@ export function buildUsageMap(
 /** Connections backing one app, or an empty array. */
 export function connectionsUsingClient(
   usage: ReadonlyMap<string, readonly Connection[]>,
-  slug: OAuthClientSlug,
+  client: Pick<OAuthClientSummary, "owner" | "slug">,
 ): readonly Connection[] {
-  return usage.get(String(slug)) ?? [];
+  return usage.get(oauthClientUsageKey(client.owner, client.slug)) ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +201,7 @@ function OAuthAppCard(props: {
           <MetaField label="Authorization URL" value={client.authorizationUrl} copy />
         ) : null}
         <MetaField label="Token URL" value={client.tokenUrl} copy />
+        {client.resource ? <MetaField label="Resource" value={client.resource} copy /> : null}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -421,6 +426,7 @@ export function OAuthAppsPage() {
                     prefill={{
                       authorizationUrl: dialog.client.authorizationUrl,
                       tokenUrl: dialog.client.tokenUrl,
+                      resource: dialog.client.resource ?? null,
                       grant: dialog.client.grant,
                       clientId: dialog.client.clientId,
                     }}
@@ -431,7 +437,7 @@ export function OAuthAppsPage() {
                 {dialog.kind === "remove" ? (
                   <RemoveAppDialog
                     client={dialog.client}
-                    connections={connectionsUsingClient(usage, dialog.client.slug)}
+                    connections={connectionsUsingClient(usage, dialog.client)}
                     onConfirm={() => void handleRemove(dialog.client)}
                     onClose={() => setDialog({ kind: "none" })}
                   />
@@ -468,7 +474,7 @@ export function OAuthAppsPage() {
                         <OAuthAppCard
                           key={`${client.owner}.${String(client.slug)}`}
                           client={client}
-                          connections={connectionsUsingClient(usage, client.slug)}
+                          connections={connectionsUsingClient(usage, client)}
                           onEdit={() => setDialog({ kind: "edit", client })}
                           onRemove={() => setDialog({ kind: "remove", client })}
                         />

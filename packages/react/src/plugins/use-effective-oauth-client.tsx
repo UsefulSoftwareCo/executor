@@ -86,14 +86,12 @@ const sortUserFirst = (apps: readonly OAuthClientOption[]): readonly OAuthClient
  * Pure matcher (no React/atoms) — split owner-visible apps into the ones that
  * match the integration's declared OAuth endpoints and the ones that don't.
  *
- * Matching is by REGISTRABLE ROOT DOMAIN ("tld+1"), unioned across both the
- * integration's `authorizationUrl` and `tokenUrl`. An app matches if EITHER of
- * its own endpoint root domains is in that union. This deliberately matches at
- * the registrable-domain level (not full host, not full PSL gymnastics): a
- * provider commonly splits authorize/token across sibling hosts on one root
- * (e.g. `accounts.google.com` + `oauth2.googleapis.com` are DIFFERENT roots, so
- * a provider that declares both has both in its union, and an app declaring
- * either matches). Unrelated providers (different root) never match.
+ * Matching is by REGISTRABLE ROOT DOMAIN ("tld+1"). When the integration
+ * declares a token endpoint, an app must match by token endpoint root; the token
+ * endpoint is what the SDK will call during code exchange/refresh and avoids
+ * authorize-root coincidences. When only an authorization endpoint is declared,
+ * the authorize root is used as the fallback compatibility signal. Unrelated
+ * providers (different root) never match.
  *
  * When the integration declares no endpoints, every app is "matched" (no filter).
  */
@@ -105,23 +103,23 @@ export function selectClientsForEndpoints(
   readonly unmatched: readonly OAuthClientOption[];
   readonly endpointMatched: boolean;
 } {
-  const wanted = new Set<string>();
-  for (const url of [endpoints.authorizationUrl, endpoints.tokenUrl]) {
-    if (!url) continue;
-    const root = getRootDomain(url);
-    if (root) wanted.add(root);
-  }
+  const wantedTokenRoot = endpoints.tokenUrl ? getRootDomain(endpoints.tokenUrl) : undefined;
+  const wantedAuthorizationRoot = endpoints.authorizationUrl
+    ? getRootDomain(endpoints.authorizationUrl)
+    : undefined;
   // No declared endpoints → no filter; every app is usable.
-  if (wanted.size === 0) {
+  if (!wantedTokenRoot && !wantedAuthorizationRoot) {
     return { matched: sortUserFirst(all), unmatched: [], endpointMatched: true };
   }
   const matched: OAuthClientOption[] = [];
   const unmatched: OAuthClientOption[] = [];
   for (const app of all) {
-    const appRoots = [getRootDomain(app.authorizationUrl), getRootDomain(app.tokenUrl)];
-    const fits = appRoots.some(
-      (root: string | undefined) => root !== undefined && wanted.has(root),
-    );
+    const appTokenRoot = getRootDomain(app.tokenUrl);
+    const appAuthorizationRoot = getRootDomain(app.authorizationUrl);
+    const fits = wantedTokenRoot
+      ? appTokenRoot === wantedTokenRoot
+      : appAuthorizationRoot === wantedAuthorizationRoot ||
+        appTokenRoot === wantedAuthorizationRoot;
     if (fits) matched.push(app);
     else unmatched.push(app);
   }

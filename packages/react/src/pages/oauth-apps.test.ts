@@ -20,6 +20,7 @@ const app = (slug: string, opts?: { readonly owner?: Owner }): OAuthClientSummar
   grant: "authorization_code",
   authorizationUrl: "https://issuer.example.com/authorize",
   tokenUrl: "https://issuer.example.com/token",
+  resource: null,
   clientId: "client-id",
 });
 
@@ -27,7 +28,11 @@ const app = (slug: string, opts?: { readonly owner?: Owner }): OAuthClientSummar
 const connection = (
   integration: string,
   name: string,
-  opts?: { readonly owner?: Owner; readonly oauthClient?: string | null },
+  opts?: {
+    readonly owner?: Owner;
+    readonly oauthClient?: string | null;
+    readonly oauthClientOwner?: Owner | null;
+  },
 ): Connection => ({
   owner: opts?.owner ?? "user",
   name: ConnectionName.make(name),
@@ -43,6 +48,7 @@ const connection = (
       : opts.oauthClient === null
         ? null
         : OAuthClientSlug.make(opts.oauthClient),
+  oauthClientOwner: opts?.oauthClientOwner ?? null,
 });
 
 describe("groupClientsByOwner", () => {
@@ -78,40 +84,59 @@ describe("groupClientsByOwner", () => {
 describe("buildUsageMap / connectionsUsingClient", () => {
   it("maps connections to the app slug that minted them", () => {
     const usage = buildUsageMap([
-      connection("github", "personal", { oauthClient: "gh-app" }),
-      connection("github", "bot", { oauthClient: "gh-app" }),
-      connection("linear", "main", { oauthClient: "linear-app" }),
+      connection("github", "personal", { oauthClient: "gh-app", oauthClientOwner: "org" }),
+      connection("github", "bot", { oauthClient: "gh-app", oauthClientOwner: "org" }),
+      connection("linear", "main", { oauthClient: "linear-app", oauthClientOwner: "org" }),
     ]);
     expect(
-      connectionsUsingClient(usage, OAuthClientSlug.make("gh-app")).map((c: Connection) =>
+      connectionsUsingClient(usage, app("gh-app", { owner: "org" })).map((c: Connection) =>
         String(c.name),
       ),
     ).toEqual(["personal", "bot"]);
     expect(
-      connectionsUsingClient(usage, OAuthClientSlug.make("linear-app")).map((c: Connection) =>
+      connectionsUsingClient(usage, app("linear-app", { owner: "org" })).map((c: Connection) =>
         String(c.name),
       ),
     ).toEqual(["main"]);
   });
 
+  it("keys usage by app owner as well as slug", () => {
+    const usage = buildUsageMap([
+      connection("github", "workspace", { oauthClient: "github", oauthClientOwner: "org" }),
+      connection("github", "personal", { oauthClient: "github", oauthClientOwner: "user" }),
+    ]);
+    expect(
+      connectionsUsingClient(usage, app("github", { owner: "org" })).map((c: Connection) =>
+        String(c.name),
+      ),
+    ).toEqual(["workspace"]);
+    expect(
+      connectionsUsingClient(usage, app("github", { owner: "user" })).map((c: Connection) =>
+        String(c.name),
+      ),
+    ).toEqual(["personal"]);
+  });
+
   it("skips static connections with a null oauthClient", () => {
     const usage = buildUsageMap([
       connection("vercel", "static", { oauthClient: null }),
-      connection("github", "oauth", { oauthClient: "gh-app" }),
+      connection("github", "oauth", { oauthClient: "gh-app", oauthClientOwner: "org" }),
     ]);
-    expect(usage.has("gh-app")).toBe(true);
+    expect(usage.size).toBe(1);
     // Only the OAuth-minted connection is tracked; the static one is absent.
-    expect([...usage.keys()]).toEqual(["gh-app"]);
+    expect(connectionsUsingClient(usage, app("gh-app", { owner: "org" }))).toHaveLength(1);
   });
 
   it("returns an empty array for an app that backs no connections", () => {
-    const usage = buildUsageMap([connection("github", "oauth", { oauthClient: "gh-app" })]);
-    expect(connectionsUsingClient(usage, OAuthClientSlug.make("unused-app"))).toEqual([]);
+    const usage = buildUsageMap([
+      connection("github", "oauth", { oauthClient: "gh-app", oauthClientOwner: "org" }),
+    ]);
+    expect(connectionsUsingClient(usage, app("unused-app", { owner: "org" }))).toEqual([]);
   });
 
   it("returns an empty map when there are no connections", () => {
     const usage = buildUsageMap([]);
     expect(usage.size).toBe(0);
-    expect(connectionsUsingClient(usage, OAuthClientSlug.make("any"))).toEqual([]);
+    expect(connectionsUsingClient(usage, app("any", { owner: "org" }))).toEqual([]);
   });
 });

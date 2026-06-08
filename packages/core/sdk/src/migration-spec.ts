@@ -15,6 +15,8 @@ import { connectionIdentifier } from "./connection-name-identifier";
 
 export {
   migrationOAuthAuthorizationUrlFor,
+  migrationOAuthClientAuthorizationUrlResolutionSource,
+  migrationOAuthClientNeedsAuthorizationUrlResolution,
   migrationOAuthClientPlanKey,
   resolveMigrationOAuthAuthorizationUrls,
   type MigrationOAuthMetadataFetch,

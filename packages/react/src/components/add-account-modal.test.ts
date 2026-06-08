@@ -30,6 +30,7 @@ const apiKeyMethod = (id: string, source: "spec" | "custom"): AuthMethod => ({
 type ProbeResult = {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly scopesSupported?: readonly string[];
   readonly registrationEndpoint?: string | null;
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
@@ -41,6 +42,7 @@ type RegisterArgs = {
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly scopes: readonly string[];
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   readonly clientName: string;
@@ -188,6 +190,7 @@ describe("runDcrConnect", () => {
       return Promise.resolve({
         authorizationUrl: "https://auth.example.com/authorize",
         tokenUrl: "https://auth.example.com/token",
+        resource: "https://mcp.example.com/mcp",
         scopesSupported: ["mcp.read"],
         registrationEndpoint: "https://auth.example.com/register",
         tokenEndpointAuthMethodsSupported: ["none"],
@@ -223,6 +226,7 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.registrationEndpoint).toBe("https://auth.example.com/register");
     expect(registerArgs!.authorizationUrl).toBe("https://auth.example.com/authorize");
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
+    expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");

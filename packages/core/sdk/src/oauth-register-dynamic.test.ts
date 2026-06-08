@@ -57,6 +57,7 @@ describe("oauth.registerDynamicClient", () => {
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
         expect(probe.registrationEndpoint).toBe(server.registrationEndpoint);
         expect(probe.tokenEndpointAuthMethodsSupported).toContain("none");
+        expect(probe.resource).toBe(server.mcpResourceUrl);
 
         // Register dynamically — NO client id/secret pasted by the user.
         const slug = yield* executor.oauth.registerDynamicClient({
@@ -65,6 +66,7 @@ describe("oauth.registerDynamicClient", () => {
           registrationEndpoint: probe.registrationEndpoint!,
           authorizationUrl: probe.authorizationUrl,
           tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
           scopes: ["read"],
           tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
           clientName: "Acme DCR",
@@ -99,6 +101,9 @@ describe("oauth.registerDynamicClient", () => {
         });
         expect(started.status).toBe("redirect");
         if (started.status !== "redirect") return;
+        expect(new URL(started.authorizationUrl).searchParams.get("resource")).toBe(
+          server.mcpResourceUrl,
+        );
 
         const callback = yield* server.completeAuthorizationCodeFlow({
           authorizationUrl: started.authorizationUrl,
@@ -122,6 +127,7 @@ describe("oauth.registerDynamicClient", () => {
         );
         expect(tokenRequest).toBeDefined();
         expect(tokenRequest!.body).not.toContain("client_secret");
+        expect(new URLSearchParams(tokenRequest!.body).get("resource")).toBe(server.mcpResourceUrl);
       }),
     ),
   );

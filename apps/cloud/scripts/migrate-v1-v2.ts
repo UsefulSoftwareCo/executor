@@ -42,6 +42,8 @@ import {
   migrateV1PluginStorageRuntimeRow,
   migrateV1ToolAnnotations,
   migrationOAuthAuthorizationUrlFor as authorizationUrlFor,
+  migrationOAuthClientAuthorizationUrlResolutionSource as oauthAuthorizationResolutionSource,
+  migrationOAuthClientNeedsAuthorizationUrlResolution as needsOAuthAuthorizationResolution,
   migrationOAuthClientPlanKey as oauthClientPlanKey,
   migrationSourceKey,
   parseScope,
@@ -151,7 +153,7 @@ export interface CloudOAuthAuthorizationUrlRepairRow {
   readonly slug: string;
   readonly currentAuthorizationUrl: string;
   readonly repairedAuthorizationUrl: string;
-  readonly metadataUrl: string;
+  readonly resolutionSource: string;
 }
 
 export interface CloudOAuthAuthorizationUrlRepairResult {
@@ -1204,8 +1206,7 @@ export const repairCloudOAuthAuthorizationUrls = async (
   const changed: CloudOAuthAuthorizationUrlRepairRow[] = [];
   let checked = 0;
   for (const clientRow of plan.oauthClients) {
-    const metadataUrl = clientRow.authorizationServerMetadataUrl?.trim();
-    if (!metadataUrl) continue;
+    if (!needsOAuthAuthorizationResolution(clientRow)) continue;
     checked++;
 
     const currentAuthorizationUrl = currentAuthorizationUrls.get(oauthClientPlanKey(clientRow));
@@ -1225,15 +1226,15 @@ export const repairCloudOAuthAuthorizationUrls = async (
       slug: clientRow.slug,
       currentAuthorizationUrl,
       repairedAuthorizationUrl,
-      metadataUrl,
+      resolutionSource: oauthAuthorizationResolutionSource(clientRow),
     });
   }
 
-  log(`oauth repair:      ${checked} metadata-backed client(s) checked`);
+  log(`oauth repair:      ${checked} discoverable client(s) checked`);
   log(`oauth repair:      ${changed.length} client(s) need authorization_url update`);
   for (const row of changed) {
     log(
-      `  - ${row.tenant}/${row.owner}/${row.subject || "<org>"}/${row.slug}: ${row.currentAuthorizationUrl} -> ${row.repairedAuthorizationUrl}`,
+      `  - ${row.tenant}/${row.owner}/${row.subject || "<org>"}/${row.slug}: ${row.currentAuthorizationUrl} -> ${row.repairedAuthorizationUrl} (via ${row.resolutionSource})`,
     );
   }
 

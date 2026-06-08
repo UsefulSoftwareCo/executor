@@ -54,6 +54,7 @@ import {
   registerDynamicClient as registerDynamicClientDcr,
 } from "./oauth-discovery";
 import {
+  assertSupportedOAuthEndpointUrl,
   buildAuthorizationUrl,
   providerAuthorizeExtras,
   createOAuthState,
@@ -230,6 +231,66 @@ const REDIRECT_URI_REQUIRED_MESSAGE =
   "to the executor. Pass `redirectUri` to createExecutor (hosts derive it from " +
   "the web base URL / request origin as `${webBaseUrl}${mountPrefix}/oauth/callback`).";
 
+const canonicalUrlString = (value: string): string => {
+  const url = new URL(value.trim());
+  url.hash = "";
+  return url.toString();
+};
+
+const isWellKnownOAuthMetadataUrl = (value: string): boolean => {
+  const path = new URL(value.trim()).pathname.toLowerCase();
+  return (
+    path.includes("/.well-known/oauth-authorization-server") ||
+    path.includes("/.well-known/openid-configuration") ||
+    path.includes("/.well-known/oauth-protected-resource")
+  );
+};
+
+const validateSupportedEndpoint = (
+  value: string,
+  label: string,
+  endpointUrlPolicy: OAuthEndpointUrlPolicy | undefined,
+): Effect.Effect<void, StorageFailure> =>
+  Effect.try({
+    try: () => assertSupportedOAuthEndpointUrl(value, label, endpointUrlPolicy),
+    catch: (cause) =>
+      new StorageError({
+        message: `Invalid OAuth client endpoint configuration: ${label} must use https: or loopback http:.`,
+        cause,
+      }),
+  }).pipe(Effect.asVoid);
+
+const validateClientEndpoints = (
+  input: CreateOAuthClientInput,
+  endpointUrlPolicy: OAuthEndpointUrlPolicy | undefined,
+): Effect.Effect<void, StorageFailure> =>
+  Effect.gen(function* () {
+    yield* validateSupportedEndpoint(input.tokenUrl, "token_url", endpointUrlPolicy);
+    if (input.resource != null && input.resource.trim().length > 0) {
+      yield* validateSupportedEndpoint(input.resource, "resource", endpointUrlPolicy);
+    }
+    if (input.grant !== "authorization_code") return;
+    yield* validateSupportedEndpoint(
+      input.authorizationUrl,
+      "authorization_url",
+      endpointUrlPolicy,
+    );
+    if (isWellKnownOAuthMetadataUrl(input.authorizationUrl)) {
+      return yield* new StorageError({
+        message:
+          "Invalid OAuth client endpoint configuration: authorization_url must be the OAuth authorization endpoint, not a .well-known metadata URL.",
+        cause: undefined,
+      });
+    }
+    if (canonicalUrlString(input.authorizationUrl) === canonicalUrlString(input.tokenUrl)) {
+      return yield* new StorageError({
+        message:
+          "Invalid OAuth client endpoint configuration: authorization_url must not equal token_url.",
+        cause: undefined,
+      });
+    }
+  });
+
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const httpClientLayer = deps.httpClientLayer ?? FetchHttpClient.layer;
   // EXPLICIT — no localhost default. `null` means this executor has no OAuth
@@ -243,6 +304,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: CreateOAuthClientInput,
   ): Effect.Effect<OAuthClientSlug, StorageFailure> =>
     Effect.gen(function* () {
+      yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>
@@ -396,6 +458,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         slug: input.slug,
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
+        resource: input.resource ?? null,
         grant: "authorization_code",
         clientId: information.client_id,
         clientSecret: information.client_secret ?? "",
@@ -432,6 +495,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               grant,
               authorizationUrl: String(row.authorization_url),
               tokenUrl: String(row.token_url),
+              resource: row.resource == null ? null : String(row.resource),
               clientId: String(row.client_id),
             } satisfies OAuthClientSummary);
           }),
@@ -633,6 +697,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
             extraParams: providerAuthorizeExtras(client.authorizationUrl),
+            resource: client.resource ?? undefined,
             endpointUrlPolicy: deps.endpointUrlPolicy,
           }),
         catch: (cause) =>
@@ -714,6 +779,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         redirectUrl: session.redirectUrl,
         codeVerifier: session.pkceVerifier,
         code: input.code,
+        resource: client.resource ?? undefined,
         endpointUrlPolicy: deps.endpointUrlPolicy,
       }).pipe(
         Effect.mapError(
@@ -863,6 +929,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       return {
         authorizationUrl: as.metadata.authorization_endpoint,
         tokenUrl: as.metadata.token_endpoint,
+        resource: resource?.metadata.resource ?? null,
         scopesSupported: as.metadata.scopes_supported,
         registrationEndpoint: as.metadata.registration_endpoint ?? null,
         tokenEndpointAuthMethodsSupported: as.metadata.token_endpoint_auth_methods_supported,
