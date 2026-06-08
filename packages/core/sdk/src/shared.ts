@@ -34,6 +34,7 @@ export type {
   AuthPlacementDescriptor,
   Integration,
   IntegrationConfig,
+  IntegrationDisplayDescriptor,
 } from "./integration";
 export type {
   Connection,

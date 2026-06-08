@@ -67,6 +67,8 @@ const IntegrationResponse = Schema.Struct({
   /** Declared auth methods derived from the owning plugin's stored config.
    *  Always present (possibly empty) so the client never handles absence. */
   authMethods: Schema.Array(AuthMethodDescriptorSchema),
+  /** Non-secret URL derived from opaque integration config for favicons. */
+  displayUrl: Schema.optional(Schema.String),
 });
 
 const UpdateIntegrationPayload = Schema.Struct({

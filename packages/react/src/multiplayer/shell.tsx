@@ -139,10 +139,14 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
               >
                 <IntegrationFavicon
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind, name },
+                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
-                  url={integrationInferredUrl({ id: slug, name }) ?? undefined}
+                  url={
+                    integration.displayUrl ??
+                    integrationInferredUrl({ id: slug, name }) ??
+                    undefined
+                  }
                 />
                 <span className="flex-1 truncate">{name}</span>
               </Link>

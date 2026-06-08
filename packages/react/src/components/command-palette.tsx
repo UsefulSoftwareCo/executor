@@ -55,6 +55,7 @@ export function CommandPalette() {
             id: String(integration.slug),
             name: integration.description || String(integration.slug),
             kind: integration.kind,
+            url: integration.displayUrl,
           })),
       }),
     [integrationsResult],

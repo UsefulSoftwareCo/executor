@@ -407,11 +407,15 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
               <Link to="/integrations/$namespace" params={{ namespace: slug }}>
                 <IntegrationIconWithAccount
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind, name },
+                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
                   sourceId={slug}
-                  url={integrationInferredUrl({ id: slug, name }) ?? undefined}
+                  url={
+                    integration.displayUrl ??
+                    integrationInferredUrl({ id: slug, name }) ??
+                    undefined
+                  }
                 />
                 <CardStackEntryContent>
                   <CardStackEntryTitle>{name}</CardStackEntryTitle>

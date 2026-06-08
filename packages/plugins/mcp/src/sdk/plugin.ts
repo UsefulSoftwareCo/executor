@@ -439,6 +439,14 @@ export const describeMcpAuthMethods = (
   return [];
 };
 
+export const describeMcpIntegrationDisplay = (
+  record: IntegrationRecord,
+): { readonly url?: string } => {
+  const config = parseMcpIntegrationConfig(record.config);
+  if (!config || config.transport === "stdio") return {};
+  return { url: config.endpoint };
+};
+
 // ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
@@ -826,6 +834,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       }),
 
     describeAuthMethods: describeMcpAuthMethods,
+    describeIntegrationDisplay: describeMcpIntegrationDisplay,
 
     integrationConfigure: {
       type: "mcp",

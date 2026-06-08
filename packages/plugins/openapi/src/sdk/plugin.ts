@@ -648,6 +648,13 @@ export const describeOpenApiAuthMethods = (
   );
 };
 
+export const describeOpenApiIntegrationDisplay = (
+  record: IntegrationRecord,
+): { readonly url?: string } => {
+  const config = decodeOpenApiIntegrationConfig(record.config);
+  return { url: config?.baseUrl ?? config?.sourceUrl };
+};
+
 // ---------------------------------------------------------------------------
 // Spec → tool definitions (shared by addSpec, resolveTools, and detect)
 // ---------------------------------------------------------------------------
@@ -1018,6 +1025,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     ],
 
     describeAuthMethods: describeOpenApiAuthMethods,
+    describeIntegrationDisplay: describeOpenApiIntegrationDisplay,
 
     // Produce one tool per spec operation. Spec-derived, identical for every
     // connection on the integration — so `getValue` is never called here. The

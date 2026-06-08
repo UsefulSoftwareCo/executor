@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { IntegrationSlug, type IntegrationConfig, type IntegrationRecord } from "@executor-js/sdk";
 
-import { describeMcpAuthMethods } from "./plugin";
+import { describeMcpAuthMethods, describeMcpIntegrationDisplay } from "./plugin";
 
 // ---------------------------------------------------------------------------
 // `describeMcpAuthMethods` projects the stored MCP config into the catalog's
@@ -99,5 +99,24 @@ describe("describeMcpAuthMethods", () => {
     expect(describeMcpAuthMethods(recordWith({ not: "an mcp config" }))).toEqual([]);
     expect(describeMcpAuthMethods(recordWith(null))).toEqual([]);
     expect(describeMcpAuthMethods(recordWith("garbage"))).toEqual([]);
+  });
+
+  it("projects remote endpoint as display metadata", () => {
+    expect(
+      describeMcpIntegrationDisplay(
+        recordWith({
+          transport: "remote",
+          endpoint: "https://mcp.posthog.com/mcp",
+          auth: { kind: "none" },
+        }),
+      ),
+    ).toEqual({ url: "https://mcp.posthog.com/mcp" });
+  });
+
+  it("does not expose display metadata for stdio or malformed configs", () => {
+    expect(
+      describeMcpIntegrationDisplay(recordWith({ transport: "stdio", command: "run" })),
+    ).toEqual({});
+    expect(describeMcpIntegrationDisplay(recordWith({ not: "mcp" }))).toEqual({});
   });
 });

@@ -19,6 +19,11 @@ import type { IntegrationSlug } from "./ids";
 // connection-inference behavior (no regression).
 // ---------------------------------------------------------------------------
 
+export interface IntegrationDisplayDescriptor {
+  /** Non-secret URL suitable for display metadata such as favicons. */
+  readonly url?: string;
+}
+
 /** Where a credential value is carried on the outbound request. Mirrors the
  *  client's `Placement`. */
 export interface AuthPlacementDescriptor {
@@ -77,6 +82,9 @@ export interface Integration {
   /** Declared auth methods derived from the owning plugin's stored config (a
    *  derived projection, not a DB column). Always present, possibly empty. */
   readonly authMethods: readonly AuthMethodDescriptor[];
+  /** Non-secret display URL derived by the owning plugin from opaque config.
+   *  Used for catalog favicons; never includes credentials or plugin config. */
+  readonly displayUrl?: string;
 }
 
 /** Plugin-owned, opaque-to-core configuration stored on the integration row. The

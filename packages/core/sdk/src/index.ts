@@ -75,6 +75,7 @@ export type {
   AuthPlacementDescriptor,
   Integration,
   IntegrationConfig,
+  IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
 export type {

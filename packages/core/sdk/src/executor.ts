@@ -421,6 +421,7 @@ const decodeJsonColumn = (value: unknown): unknown => {
 const rowToIntegration = (
   row: IntegrationRow,
   authMethods: readonly AuthMethodDescriptor[] = [],
+  displayUrl?: string,
 ): Integration => ({
   slug: IntegrationSlug.make(row.slug),
   description: row.description,
@@ -428,6 +429,7 @@ const rowToIntegration = (
   canRemove: Boolean(row.can_remove),
   canRefresh: Boolean(row.can_refresh),
   authMethods,
+  ...(displayUrl ? { displayUrl } : {}),
 });
 
 const rowToIntegrationRecord = (
@@ -1479,13 +1481,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }
     };
 
+    const describeDisplayUrlForRow = (row: IntegrationRow): string | undefined => {
+      const runtime = runtimes.get(row.plugin_id);
+      const describe = runtime?.plugin.describeIntegrationDisplay;
+      if (!describe) return undefined;
+      const record = rowToIntegrationRecord(row);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
+      try {
+        const display = describe(record);
+        return display.url && display.url.length > 0 ? display.url : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
     const integrationsList = (): Effect.Effect<readonly Integration[], StorageFailure> =>
       core
         .findMany("integration", {})
         .pipe(
           Effect.map((rows) => [
             ...staticSources().map(staticSourceToIntegration),
-            ...rows.map((row) => rowToIntegration(row, describeAuthMethodsForRow(row))),
+            ...rows.map((row) =>
+              rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row)),
+            ),
           ]),
         );
 
@@ -1496,7 +1514,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const staticSource = staticSources().find((source) => source.id === String(slug));
         if (staticSource) return staticSourceToIntegration(staticSource);
         const row = yield* findIntegrationRow(slug);
-        return row ? rowToIntegration(row, describeAuthMethodsForRow(row)) : null;
+        return row
+          ? rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row))
+          : null;
       });
 
     const integrationsGetRecord = (

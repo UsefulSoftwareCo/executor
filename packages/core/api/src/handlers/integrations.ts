@@ -13,6 +13,7 @@ const toResponse = (i: Integration) => ({
   canRemove: i.canRemove,
   canRefresh: i.canRefresh,
   authMethods: i.authMethods,
+  ...(i.displayUrl ? { displayUrl: i.displayUrl } : {}),
 });
 
 export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrations", (handlers) =>

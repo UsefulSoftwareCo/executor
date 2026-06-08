@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { IntegrationSlug, type IntegrationConfig, type IntegrationRecord } from "@executor-js/sdk";
 
-import { describeGraphqlAuthMethods } from "./plugin";
+import { describeGraphqlAuthMethods, describeGraphqlIntegrationDisplay } from "./plugin";
 
 // ---------------------------------------------------------------------------
 // `describeGraphqlAuthMethods` projects the stored GraphQL config into the
@@ -130,5 +130,21 @@ describe("describeGraphqlAuthMethods", () => {
     expect(describeGraphqlAuthMethods(recordWith({ not: "a graphql config" }))).toEqual([]);
     expect(describeGraphqlAuthMethods(recordWith(null))).toEqual([]);
     expect(describeGraphqlAuthMethods(recordWith("garbage"))).toEqual([]);
+  });
+
+  it("projects endpoint as display metadata", () => {
+    expect(
+      describeGraphqlIntegrationDisplay(
+        recordWith({
+          endpoint: "https://api.github.com/graphql",
+          name: "GitHub",
+          authenticationTemplate: [],
+        }),
+      ),
+    ).toEqual({ url: "https://api.github.com/graphql" });
+  });
+
+  it("does not expose display metadata for malformed configs", () => {
+    expect(describeGraphqlIntegrationDisplay(recordWith({ not: "graphql" }))).toEqual({});
   });
 });

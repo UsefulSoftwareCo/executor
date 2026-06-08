@@ -6,7 +6,7 @@ import {
   type IntegrationRecord,
 } from "@executor-js/sdk/core";
 
-import { describeOpenApiAuthMethods } from "./plugin";
+import { describeOpenApiAuthMethods, describeOpenApiIntegrationDisplay } from "./plugin";
 import { variable, type Authentication } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -93,5 +93,30 @@ describe("describeOpenApiAuthMethods", () => {
         config: { not: "openapi" } as IntegrationConfig,
       }),
     ).toEqual([]);
+  });
+
+  it("projects baseUrl as display metadata", () => {
+    expect(
+      describeOpenApiIntegrationDisplay({
+        ...recordWith([]),
+        config: {
+          spec: "{}",
+          sourceUrl: "https://api.example.com/openapi.json",
+          baseUrl: "https://api.example.com",
+        } as IntegrationConfig,
+      }),
+    ).toEqual({ url: "https://api.example.com" });
+  });
+
+  it("falls back to sourceUrl for display metadata", () => {
+    expect(
+      describeOpenApiIntegrationDisplay({
+        ...recordWith([]),
+        config: {
+          spec: "{}",
+          sourceUrl: "https://api.example.com/openapi.json",
+        } as IntegrationConfig,
+      }),
+    ).toEqual({ url: "https://api.example.com/openapi.json" });
   });
 });

@@ -510,6 +510,13 @@ export const describeGraphqlAuthMethods = (
   });
 };
 
+export const describeGraphqlIntegrationDisplay = (
+  record: IntegrationRecord,
+): { readonly url?: string } => {
+  const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
+  return { url: config?.endpoint };
+};
+
 // ---------------------------------------------------------------------------
 // Auth-template merge — append the incoming custom methods onto the existing
 // `authenticationTemplate`, replacing entries whose slug matches and assigning a
@@ -789,6 +796,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
     },
 
     describeAuthMethods: describeGraphqlAuthMethods,
+    describeIntegrationDisplay: describeGraphqlIntegrationDisplay,
 
     staticSources: (self: GraphqlPluginExtension) => [
       {

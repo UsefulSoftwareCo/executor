@@ -52,15 +52,25 @@ const declaringPlugin = definePlugin(() => ({
   id: "declaring" as const,
   storage: () => ({}),
   describeAuthMethods: (record: IntegrationRecord): readonly AuthMethodDescriptor[] => {
-    const config = record.config as { readonly methods?: readonly AuthMethodDescriptor[] };
+    const config = record.config as {
+      readonly methods?: readonly AuthMethodDescriptor[];
+      readonly displayUrl?: string;
+    };
     return config?.methods ?? [];
   },
+  describeIntegrationDisplay: (record: IntegrationRecord) => {
+    const config = record.config as {
+      readonly methods?: readonly AuthMethodDescriptor[];
+      readonly displayUrl?: string;
+    };
+    return { url: config?.displayUrl };
+  },
   extension: (ctx) => ({
-    seed: (slug: IntegrationSlug, methods: readonly AuthMethodDescriptor[]) =>
+    seed: (slug: IntegrationSlug, methods: readonly AuthMethodDescriptor[], displayUrl?: string) =>
       ctx.core.integrations.register({
         slug,
         description: String(slug),
-        config: { methods },
+        config: { methods, displayUrl },
       }),
   }),
 }))();
@@ -93,6 +103,7 @@ const handlerContextFor = (executor: Executor) =>
 interface IntegrationResponseBody {
   readonly slug: string;
   readonly authMethods: readonly AuthMethodDescriptor[];
+  readonly displayUrl?: string;
 }
 
 describe("catalog surfaces declared auth methods", () => {
@@ -164,6 +175,29 @@ describe("catalog surfaces declared auth methods", () => {
       const bare = body.find((i) => i.slug === "bare-server");
       expect(oauth?.authMethods).toEqual([OAUTH_METHOD]);
       expect(bare?.authMethods).toEqual([]);
+    }),
+  );
+
+  it.effect("surfaces plugin-derived display URLs without exposing config", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [declaringPlugin] }));
+      const slug = IntegrationSlug.make("autumn");
+      yield* executor.declaring.seed(slug, [], "https://api.useautumn.com");
+
+      const web = yield* webHandlerFor(executor);
+      const context = handlerContextFor(executor);
+
+      const response = yield* Effect.promise(() =>
+        web.handler(
+          new Request(`http://localhost/integrations/${encodeURIComponent(String(slug))}`),
+          context,
+        ),
+      );
+      expect(response.status).toBe(200);
+      const body = (yield* Effect.promise(() => response.json())) as IntegrationResponseBody;
+
+      expect(body.displayUrl).toBe("https://api.useautumn.com");
+      expect("config" in body).toBe(false);
     }),
   );
 });

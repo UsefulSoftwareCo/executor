@@ -11,6 +11,7 @@ import type {
   AuthMethodDescriptor,
   Integration,
   IntegrationConfig,
+  IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
 import type { ToolRow } from "./core-schema";
@@ -460,6 +461,13 @@ export interface PluginSpec<
   readonly describeAuthMethods?: (
     integration: IntegrationRecord,
   ) => readonly AuthMethodDescriptor[];
+
+  /** Project this plugin's opaque integration config into safe catalog-visible
+   *  display metadata. This is intentionally narrow: the client needs a URL for
+   *  favicons without receiving the full plugin config. */
+  readonly describeIntegrationDisplay?: (
+    integration: IntegrationRecord,
+  ) => IntegrationDisplayDescriptor;
 
   /** URL autodetection hook for onboarding. */
   readonly detect?: (input: {
