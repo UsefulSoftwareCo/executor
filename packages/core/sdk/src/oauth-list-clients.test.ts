@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import { OAuthClientSlug } from "./ids";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
@@ -18,6 +18,35 @@ const ORG_CLIENT = OAuthClientSlug.make("acme-org");
 const USER_CLIENT = OAuthClientSlug.make("acme-user");
 
 describe("oauth.listClients", () => {
+  it.effect("rejects metadata URLs persisted as authorization URLs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+
+        const error = yield* Effect.flip(
+          executor.oauth.createClient({
+            owner: "org",
+            slug: ORG_CLIENT,
+            authorizationUrl: "https://mcp.example.com/.well-known/oauth-authorization-server",
+            tokenUrl: "https://mcp.example.com/token",
+            grant: "authorization_code",
+            clientId: "client-id",
+            clientSecret: "client-secret",
+          }),
+        );
+
+        expect(Predicate.isTagged("StorageError")(error)).toBe(true);
+        expect(error).toEqual(
+          expect.objectContaining({
+            _tag: "StorageError",
+            message: expect.stringContaining("authorization endpoint"),
+          }),
+        );
+        expect(yield* executor.oauth.listClients()).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect("returns owner-visible clients as summaries without the secret", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -60,6 +89,7 @@ describe("oauth.listClients", () => {
           grant: "authorization_code",
           authorizationUrl: "https://acme.test/authorize",
           tokenUrl: "https://acme.test/token",
+          resource: null,
           clientId: "org-client-id",
         });
         expect(user!.owner).toBe("user");

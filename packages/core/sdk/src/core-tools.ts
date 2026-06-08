@@ -183,6 +183,7 @@ const OAuthClientOutput = Schema.Struct({
   grant: OAuthGrantSchema,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
 });
 const OAuthClientsListOutput = Schema.Struct({
@@ -207,6 +208,7 @@ const OAuthRegisterDynamicInput = Schema.Struct({
   registrationEndpoint: Schema.String,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientName: Schema.optional(Schema.String),
@@ -222,6 +224,7 @@ const OAuthProbeInput = Schema.Struct({
 const OAuthProbeOutput = Schema.Struct({
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopesSupported: Schema.optional(Schema.Array(Schema.String)),
   registrationEndpoint: Schema.optional(Schema.NullOr(Schema.String)),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
@@ -526,6 +529,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 grant: client.grant,
                 authorizationUrl: client.authorizationUrl,
                 tokenUrl: client.tokenUrl,
+                resource: client.resource ?? null,
                 clientId: client.clientId,
               })),
             })),
@@ -565,6 +569,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 registrationEndpoint: input.registrationEndpoint,
                 authorizationUrl: input.authorizationUrl,
                 tokenUrl: input.tokenUrl,
+                resource: input.resource ?? null,
                 scopes: input.scopes,
                 tokenEndpointAuthMethodsSupported: input.tokenEndpointAuthMethodsSupported,
                 clientName: input.clientName,
@@ -595,6 +600,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
             Effect.map(ctx.oauth.probe({ url: input.url }), (result) => ({
               authorizationUrl: result.authorizationUrl,
               tokenUrl: result.tokenUrl,
+              resource: result.resource ?? null,
               scopesSupported: result.scopesSupported,
               registrationEndpoint: result.registrationEndpoint ?? null,
               tokenEndpointAuthMethodsSupported: result.tokenEndpointAuthMethodsSupported,

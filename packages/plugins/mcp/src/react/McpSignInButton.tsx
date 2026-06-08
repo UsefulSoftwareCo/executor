@@ -1,17 +1,17 @@
-import { useCallback, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import {
   AuthTemplateSlug,
   IntegrationSlug,
-  OAuthClientSlug,
   type Connection,
   type Owner,
 } from "@executor-js/sdk/shared";
 import { connectionsAllAtom } from "@executor-js/react/api/atoms";
-import { connectionIdentifier } from "@executor-js/react/lib/connection-name";
-import { OAuthSignInButton, useOAuthPopupFlow } from "@executor-js/react/plugins/oauth-sign-in";
+import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
+import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
+import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
 
 import { mcpServerAtom } from "./atoms";
 
@@ -34,12 +34,7 @@ export default function McpSignInButton(props: { sourceId: string; owner?: Owner
   const targetOwner: Owner = props.owner ?? "org";
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const connectionsResult = useAtomValue(connectionsAllAtom);
-  const oauth = useOAuthPopupFlow({
-    popupName: "mcp-oauth",
-    detectPopupClosed: false,
-    startErrorMessage: "Failed to start OAuth",
-  });
-  const [justConnected, setJustConnected] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
   const remote = server !== null && server.config.transport === "remote" ? server.config : null;
@@ -51,33 +46,58 @@ export default function McpSignInButton(props: { sourceId: string; owner?: Owner
     (connection: Connection) => connection.integration === slug,
   );
 
-  const handleSignIn = useCallback(() => {
-    if (server === null) return;
-    void oauth.start({
-      payload: {
-        client: OAuthClientSlug.make(String(slug)),
-        // MCP registers its client (DCR) under the connection owner.
-        clientOwner: targetOwner,
-        owner: targetOwner,
-        name: connectionIdentifier(`${slug} oauth`),
-        integration: slug,
-        template: OAUTH_TEMPLATE,
-        identityLabel: `${server.description || String(slug)} OAuth`,
-      },
-      onSuccess: () => setJustConnected(true),
-    });
-  }, [server, targetOwner, oauth, slug]);
+  const methods = useMemo<readonly AuthMethod[]>(
+    () =>
+      remote === null
+        ? []
+        : [
+            {
+              id: "oauth2",
+              label: "OAuth",
+              kind: "oauth",
+              source: "spec",
+              template: OAUTH_TEMPLATE,
+              placements: [],
+              oauth: { discoveryUrl: remote.endpoint, supportsDynamicRegistration: true },
+            },
+          ],
+    [remote],
+  );
+  const initialState = useMemo(
+    () =>
+      modalOpen && server
+        ? {
+            key: `${String(slug)}:${targetOwner}:oauth`,
+            owner: targetOwner,
+            template: String(OAUTH_TEMPLATE),
+            label: `${server.description || String(slug)} OAuth`,
+          }
+        : null,
+    [modalOpen, server, slug, targetOwner],
+  );
 
   if (!isOAuth) return null;
 
   return (
-    <OAuthSignInButton
-      busy={oauth.busy}
-      error={oauth.error}
-      isConnected={hasConnection || justConnected}
-      onSignIn={handleSignIn}
-      reconnectingLabel="Reconnecting…"
-      signingInLabel="Signing in…"
-    />
+    <>
+      <OAuthSignInButton
+        busy={false}
+        error={null}
+        isConnected={hasConnection}
+        onSignIn={() => setModalOpen(true)}
+        reconnectingLabel="Reconnecting…"
+        signingInLabel="Signing in…"
+      />
+      {server ? (
+        <AddAccountModal
+          integration={slug}
+          integrationName={server.description || String(slug)}
+          methods={methods}
+          open={modalOpen}
+          onOpenChange={setModalOpen}
+          initialState={initialState}
+        />
+      ) : null}
+    </>
   );
 }

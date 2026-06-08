@@ -66,6 +66,7 @@ export interface OAuthClientSummary {
   readonly grant: OAuthGrant;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly clientId: string;
 }
 
@@ -111,6 +112,10 @@ export interface OAuthProbeInput {
 export interface OAuthProbeResult {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  /** RFC 8707 resource indicator discovered from protected-resource metadata.
+   *  Persist this on DCR clients so authorize/token/refresh requests stay bound
+   *  to the protected resource. */
+  readonly resource?: string | null;
   readonly scopesSupported?: readonly string[];
   /** Whether the server advertises dynamic client registration (RFC 7591). */
   readonly registrationEndpoint?: string | null;
@@ -129,6 +134,7 @@ export interface RegisterDynamicClientInput {
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly resource?: string | null;
   readonly scopes: readonly string[];
   /** Auth methods the server advertises. When it allows `none` a public
    *  (PKCE-only, no secret) client is registered; otherwise `client_secret_post`. */
