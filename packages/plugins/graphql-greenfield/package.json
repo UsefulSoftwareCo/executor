@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-graphql-greenfield",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": true,
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/graphql-greenfield",
   "bugs": {
