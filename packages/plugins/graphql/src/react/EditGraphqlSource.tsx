@@ -20,9 +20,9 @@ import {
 import { connectionsAllAtom, createConnection } from "@executor-js/react/api/atoms";
 import { connectionWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  CredentialScopeDropdown,
-  useCredentialTargetScope,
-} from "@executor-js/react/plugins/credential-target-scope";
+  ConnectionOwnerDropdown,
+  useConnectionOwner,
+} from "@executor-js/react/plugins/connection-owner";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 import {
@@ -68,8 +68,7 @@ function ApiKeyConnectionForm(props: {
   readonly displayName: string;
   readonly existing: readonly Connection[];
 }) {
-  const { credentialTargetOwner, setCredentialTargetOwner, credentialScopeOptions } =
-    useCredentialTargetScope();
+  const { connectionOwner, setConnectionOwner, connectionOwnerOptions } = useConnectionOwner();
   const doCreate = useAtomSet(createConnection, { mode: "promiseExit" });
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -77,8 +76,7 @@ function ApiKeyConnectionForm(props: {
   const [saved, setSaved] = useState(false);
 
   const existingForOwner = props.existing.find(
-    (connection) =>
-      connection.owner === credentialTargetOwner && connection.template === props.template,
+    (connection) => connection.owner === connectionOwner && connection.template === props.template,
   );
 
   const handleSave = async (): Promise<void> => {
@@ -87,8 +85,8 @@ function ApiKeyConnectionForm(props: {
     setSaved(false);
     const exit = await doCreate({
       payload: {
-        owner: credentialTargetOwner,
-        name: graphqlConnectionName(String(props.slug), credentialTargetOwner),
+        owner: connectionOwner,
+        name: graphqlConnectionName(String(props.slug), connectionOwner),
         integration: props.slug,
         template: props.template,
         identityLabel: props.displayName,
@@ -124,11 +122,11 @@ function ApiKeyConnectionForm(props: {
           className="font-mono text-sm"
           data-ph-block
         />
-        <CredentialScopeDropdown
-          value={credentialTargetOwner}
-          options={credentialScopeOptions}
+        <ConnectionOwnerDropdown
+          value={connectionOwner}
+          options={connectionOwnerOptions}
           onChange={(owner: Owner) => {
-            setCredentialTargetOwner(owner);
+            setConnectionOwner(owner);
             setSaved(false);
           }}
           label="Saved to"

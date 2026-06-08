@@ -24,14 +24,15 @@ import {
 import { connectionWriteKeys, oauthClientWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
 import { useOrganizationId } from "../api/organization-context";
-import { ownerLabel, ownerLabelForHost, useOwnerDisplay } from "../api/scope-context";
+import { ownerLabel, ownerLabelForHost, useOwnerDisplay } from "../api/owner-display";
 import {
-  CredentialScopeDropdown,
-  credentialTargetScopeOptionsForHost,
-  defaultCredentialTargetOwnerForHost,
-  normalizeCredentialTargetScope,
-  type CredentialTargetScopeOption,
-} from "../plugins/credential-target-scope";
+  ConnectionOwnerDropdown,
+  connectionOwnerOptionsForHost,
+  defaultConnectionOwnerForHost,
+  normalizeConnectionOwner,
+  resolveOAuthConnectionOwnerForHost,
+  type ConnectionOwnerOption,
+} from "../plugins/connection-owner";
 import { oauthCallbackUrl, useOAuthPopupFlow } from "../plugins/oauth-sign-in";
 import {
   clientDisplayName,
@@ -523,11 +524,11 @@ export function AddAccountModal(props: {
   } = props;
   const organizationId = useOrganizationId();
   const ownerDisplay = useOwnerDisplay();
-  const scopeOptions = useMemo(
-    () => credentialTargetScopeOptionsForHost(organizationId),
+  const ownerOptions = useMemo(
+    () => connectionOwnerOptionsForHost(organizationId),
     [organizationId],
   );
-  const defaultOwner = defaultCredentialTargetOwnerForHost(organizationId);
+  const defaultOwner = defaultConnectionOwnerForHost(organizationId);
 
   // The selectable methods: the declared ones plus any custom method created in
   // this session (so a just-created method shows + can be selected before the
@@ -585,14 +586,14 @@ export function AddAccountModal(props: {
         )
       : undefined;
     if (initialMethod) setMethodId(initialMethod.id);
-    setOwner(normalizeCredentialTargetScope(initialState.owner ?? defaultOwner, scopeOptions));
+    setOwner(normalizeConnectionOwner(initialState.owner ?? defaultOwner, ownerOptions));
     if (initialState.label) setLabel(initialState.label);
     setValues({});
     setCredentialOrigin("paste");
     setOnePasswordItemId("");
     setPickedApp(null);
     setDcrFailed(false);
-  }, [initialState, allMethods, defaultOwner, scopeOptions]);
+  }, [initialState, allMethods, defaultOwner, ownerOptions]);
   const isOAuth = method?.kind === "oauth";
   const isNoAuth = method?.kind === "none";
   // The distinct credential inputs the selected method needs — one per variable
@@ -654,23 +655,23 @@ export function AddAccountModal(props: {
   const oauthBusy = ccBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
 
-  // "Connection saved to" for a PICKED BYO OAuth app. A Workspace (`org`) app is
-  // SHARED, so it can mint a Personal OR Workspace connection — the backend
-  // resolves the app own→shared. A Personal (`user`) app is private, so it only
-  // mints Personal connections. So: Personal is always offered; Workspace only
-  // when the chosen app is the shared org one. `oauthConnectionOwner` clamps the
-  // picked owner to Personal when the app can't be shared (e.g. owner was set to
-  // Workspace, then the app switched to a personal one).
+  // "Connection saved to" for a PICKED BYO OAuth app. Cloud: a Workspace (`org`)
+  // app can mint Personal or Workspace connections; a Personal (`user`) app can
+  // only mint Personal. Local/desktop: every path clamps back to Local (`org`).
   const oauthSharedApp = chosenClient?.owner === "org";
-  const oauthSavedToOptions = useMemo(
+  const oauthConnectionOptions = useMemo(
     () =>
       oauthSharedApp
-        ? scopeOptions
-        : scopeOptions.filter((o: CredentialTargetScopeOption) => o.owner === "user"),
-    [oauthSharedApp, scopeOptions],
+        ? ownerOptions
+        : ownerOptions.filter((o: ConnectionOwnerOption) => o.owner === "user"),
+    [oauthSharedApp, ownerOptions],
   );
-  const oauthConnectionOwner: Owner = oauthSharedApp ? owner : "user";
-  const savedToOptions = isOAuth && !dcrActive ? oauthSavedToOptions : scopeOptions;
+  const oauthConnectionOwner: Owner = resolveOAuthConnectionOwnerForHost({
+    organizationId,
+    requestedOwner: owner,
+    clientOwner: chosenClient?.owner ?? "user",
+  });
+  const savedToOptions = isOAuth && !dcrActive ? oauthConnectionOptions : ownerOptions;
   const savedToOwner = isOAuth && !dcrActive ? oauthConnectionOwner : owner;
   const showSavedToPicker = !oauthRegistering && savedToOptions.length > 1;
   const callableName = connectionNameFrom(label, savedToOwner, integrationName, organizationId);
@@ -763,8 +764,7 @@ export function AddAccountModal(props: {
     // The connection is minted under the user-picked "saved to" owner, NOT the
     // app's owner: a Workspace (shared) app can mint a Personal connection. The
     // backend resolves the app own→shared from the slug, so the payload carries
-    // only the connection owner. `oauthConnectionOwner` clamps to Personal when
-    // the app is private (can't be shared into a Workspace connection).
+    // only the host-resolved connection owner.
     const connectionOwner = oauthConnectionOwner;
     const payload = {
       client: chosenClient.slug,
@@ -1143,13 +1143,13 @@ export function AddAccountModal(props: {
               (the connection, and where it's saved, only exists once you
               connect). Pickable everywhere else: for a PICKED OAuth app a
               Workspace (shared) app can mint a Personal OR Workspace connection,
-              while a Personal app mints Personal only (`oauthSavedToOptions`);
+              while a Personal app mints Personal only in cloud;
               for transparent DCR the app + connection land under the chosen
               owner; for a credential method it's the plain owner choice. */}
             {showSavedToPicker && (
               <div className="space-y-2">
                 <StepHeader index={4} label="Connection saved to" />
-                <CredentialScopeDropdown
+                <ConnectionOwnerDropdown
                   value={savedToOwner}
                   options={savedToOptions}
                   onChange={(next: Owner) => setOwner(next)}

@@ -5,16 +5,16 @@ import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/s
 import { toast } from "sonner";
 
 import { createOAuthClient, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
-import { ownerLabelForHost } from "../api/scope-context";
+import { ownerLabelForHost } from "../api/owner-display";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
 import { uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
-  CredentialScopeDropdown,
-  credentialTargetScopeOptionsForHost,
-  normalizeCredentialTargetScope,
-} from "../plugins/credential-target-scope";
+  ConnectionOwnerDropdown,
+  connectionOwnerOptionsForHost,
+  normalizeConnectionOwner,
+} from "../plugins/connection-owner";
 import { Button } from "./button";
 import { Input } from "./input";
 import { Label } from "./label";
@@ -71,8 +71,8 @@ export function OAuthClientForm(props: {
   // Non-org hosts (local/desktop) have one local workspace. Offer only Local,
   // so the owner dropdown (which hides on a single option) disappears.
   const organizationId = useOrganizationId();
-  const scopeOptions = useMemo(
-    () => credentialTargetScopeOptionsForHost(organizationId),
+  const ownerOptions = useMemo(
+    () => connectionOwnerOptionsForHost(organizationId),
     [organizationId],
   );
 
@@ -80,7 +80,7 @@ export function OAuthClientForm(props: {
   // an org host, Local (`org`) on a non-org host, or the locked owner when
   // editing.
   const [owner, setOwner] = useState<Owner>(
-    fixedOwner ?? normalizeCredentialTargetScope("org", scopeOptions),
+    normalizeConnectionOwner(fixedOwner ?? "org", ownerOptions),
   );
   const [name, setName] = useState(integrationName);
   const [grant, setGrant] = useState<OAuthGrant>(prefill?.grant ?? "authorization_code");
@@ -430,9 +430,9 @@ export function OAuthClientForm(props: {
           </p>
         </div>
       ) : (
-        <CredentialScopeDropdown
+        <ConnectionOwnerDropdown
           value={owner}
-          options={scopeOptions}
+          options={ownerOptions}
           onChange={(next: Owner) => setOwner(next)}
           label="Register app for"
           help={`Personal apps are yours only; Workspace apps are shared with everyone (each ${ownerLabelForHost(

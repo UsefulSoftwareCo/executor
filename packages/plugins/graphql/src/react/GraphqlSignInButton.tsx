@@ -10,10 +10,10 @@ import {
 } from "@executor-js/sdk/shared";
 import { OAuthSignInButton, useOAuthPopupFlow } from "@executor-js/react/plugins/oauth-sign-in";
 import {
-  CredentialScopeDropdown,
-  useCredentialTargetScope,
-} from "@executor-js/react/plugins/credential-target-scope";
-import { useOwnerDisplay } from "@executor-js/react/api/scope-context";
+  ConnectionOwnerDropdown,
+  useConnectionOwner,
+} from "@executor-js/react/plugins/connection-owner";
+import { useOwnerDisplay } from "@executor-js/react/api/owner-display";
 
 import { graphqlConnectionName } from "./defaults";
 
@@ -30,8 +30,7 @@ export default function GraphqlSignInButton(props: {
   readonly displayName: string;
   readonly existing: readonly Connection[];
 }) {
-  const { credentialTargetOwner, setCredentialTargetOwner, credentialScopeOptions } =
-    useCredentialTargetScope();
+  const { connectionOwner, setConnectionOwner, connectionOwnerOptions } = useConnectionOwner();
   const oauth = useOAuthPopupFlow({
     popupName: "graphql-oauth",
     startErrorMessage: "Failed to start OAuth",
@@ -40,10 +39,9 @@ export default function GraphqlSignInButton(props: {
   const [connectedOwner, setConnectedOwner] = useState<string | null>(null);
 
   const existingForOwner = props.existing.find(
-    (connection) =>
-      connection.owner === credentialTargetOwner && connection.template === props.template,
+    (connection) => connection.owner === connectionOwner && connection.template === props.template,
   );
-  const isConnected = existingForOwner !== undefined || connectedOwner === credentialTargetOwner;
+  const isConnected = existingForOwner !== undefined || connectedOwner === connectionOwner;
 
   const handleSignIn = (): void => {
     setConnectedOwner(null);
@@ -52,9 +50,9 @@ export default function GraphqlSignInButton(props: {
         client: OAuthClientSlug.make(GRAPHQL_OAUTH_CLIENT),
         // GraphQL manages its own client per owner — the app and connection
         // share one owner.
-        clientOwner: credentialTargetOwner,
-        owner: credentialTargetOwner,
-        name: graphqlConnectionName(String(props.slug), credentialTargetOwner),
+        clientOwner: connectionOwner,
+        owner: connectionOwner,
+        name: graphqlConnectionName(String(props.slug), connectionOwner),
         integration: IntegrationSlug.make(String(props.slug)),
         template: AuthTemplateSlug.make(String(props.template)),
         identityLabel: `${props.displayName} OAuth`,
@@ -63,7 +61,7 @@ export default function GraphqlSignInButton(props: {
         // Touch the minted connection name to satisfy the success contract; the
         // connection list re-reads via reactivity keys after the flow completes.
         void payload.connection;
-        setConnectedOwner(credentialTargetOwner);
+        setConnectedOwner(connectionOwner);
       },
     });
   };
@@ -72,15 +70,15 @@ export default function GraphqlSignInButton(props: {
     <div className="space-y-2">
       {isConnected && (
         <p className="text-xs text-emerald-600 dark:text-emerald-400">
-          Connected in {ownerDisplay.label(credentialTargetOwner)}
+          Connected in {ownerDisplay.label(connectionOwner)}
           {existingForOwner?.identityLabel ? ` as ${existingForOwner.identityLabel}` : ""}.
         </p>
       )}
-      <CredentialScopeDropdown
-        value={credentialTargetOwner}
-        options={credentialScopeOptions}
+      <ConnectionOwnerDropdown
+        value={connectionOwner}
+        options={connectionOwnerOptions}
         onChange={(owner) => {
-          setCredentialTargetOwner(owner);
+          setConnectionOwner(owner);
           setConnectedOwner(null);
         }}
         label="Connection saved to"

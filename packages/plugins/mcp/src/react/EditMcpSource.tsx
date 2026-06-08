@@ -9,9 +9,9 @@ import { connectionWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { connectionIdentifier } from "@executor-js/react/lib/connection-name";
 import {
   CredentialControlField,
-  CredentialUsageRow,
-  useCredentialTargetScope,
-} from "@executor-js/react/plugins/credential-target-scope";
+  ConnectionOwnerUsageRow,
+  useConnectionOwner,
+} from "@executor-js/react/plugins/connection-owner";
 import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import { Button } from "@executor-js/react/components/button";
 import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
@@ -54,8 +54,7 @@ function RemoteEdit(props: {
 }) {
   const { server } = props;
   const auth = server.config.auth;
-  const { credentialTargetOwner, setCredentialTargetOwner, credentialScopeOptions } =
-    useCredentialTargetScope();
+  const { connectionOwner, setConnectionOwner, connectionOwnerOptions } = useConnectionOwner();
   const doCreate = useAtomSet(createConnection, { mode: "promiseExit" });
 
   const [headerName] = useState(auth.kind === "header" ? auth.headerName : "Authorization");
@@ -71,7 +70,7 @@ function RemoteEdit(props: {
     setError(null);
     const exit = await doCreate({
       payload: {
-        owner: credentialTargetOwner,
+        owner: connectionOwner,
         name: connectionIdentifier(`${server.slug} key`),
         integration: server.slug,
         template: HEADER_TEMPLATE,
@@ -88,7 +87,7 @@ function RemoteEdit(props: {
     setSaving(false);
     setConnected(true);
     props.onSave();
-  }, [apiKey, credentialTargetOwner, doCreate, server, props]);
+  }, [apiKey, connectionOwner, doCreate, server, props]);
 
   const handleOAuth = useCallback(() => {
     setError(null);
@@ -116,13 +115,13 @@ function RemoteEdit(props: {
     () =>
       oauthModalOpen && auth.kind === "oauth2"
         ? {
-            key: `${String(server.slug)}:${credentialTargetOwner}:oauth`,
-            owner: credentialTargetOwner,
+            key: `${String(server.slug)}:${connectionOwner}:oauth`,
+            owner: connectionOwner,
             template: String(OAUTH_TEMPLATE),
             label: `${server.description || String(server.slug)} OAuth`,
           }
         : null,
-    [auth.kind, credentialTargetOwner, oauthModalOpen, server],
+    [auth.kind, connectionOwner, oauthModalOpen, server],
   );
 
   return (
@@ -152,10 +151,10 @@ function RemoteEdit(props: {
       </CardStack>
 
       {auth.kind === "header" && (
-        <CredentialUsageRow
-          value={credentialTargetOwner}
-          options={credentialScopeOptions}
-          onChange={setCredentialTargetOwner}
+        <ConnectionOwnerUsageRow
+          value={connectionOwner}
+          options={connectionOwnerOptions}
+          onChange={setConnectionOwner}
           label="Connection saved to"
           help="Choose who can use this credential."
         >
@@ -179,14 +178,14 @@ function RemoteEdit(props: {
               </Button>
             </div>
           </CredentialControlField>
-        </CredentialUsageRow>
+        </ConnectionOwnerUsageRow>
       )}
 
       {auth.kind === "oauth2" && (
-        <CredentialUsageRow
-          value={credentialTargetOwner}
-          options={credentialScopeOptions}
-          onChange={setCredentialTargetOwner}
+        <ConnectionOwnerUsageRow
+          value={connectionOwner}
+          options={connectionOwnerOptions}
+          onChange={setConnectionOwner}
           label="Connection saved to"
           help="Choose who can use the OAuth connection."
         >
@@ -208,7 +207,7 @@ function RemoteEdit(props: {
               initialState={oauthInitialState}
             />
           </CredentialControlField>
-        </CredentialUsageRow>
+        </ConnectionOwnerUsageRow>
       )}
 
       {auth.kind === "none" && (

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, MoreHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
 import type { EffectivePolicy, Owner, ToolPolicyAction } from "@executor-js/sdk/shared";
-import { ownerLabel, useOwnerDisplay } from "../api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { toPolicyPattern } from "../lib/policy-pattern";
 import { Badge } from "./badge";
 import { Button } from "./button";
