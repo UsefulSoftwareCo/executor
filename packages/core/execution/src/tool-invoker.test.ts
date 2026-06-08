@@ -7,6 +7,7 @@ import {
   ElicitationResponse,
   FormElicitation,
   IntegrationSlug,
+  OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
   ToolName,
@@ -18,7 +19,12 @@ import {
   type Elicit,
   type ToolDef,
 } from "@executor-js/sdk";
-import { makeTestConfig, typeCheckOutputTypeScript } from "@executor-js/sdk/testing";
+import {
+  makeTestConfig,
+  memoryCredentialsPlugin,
+  serveOAuthTestServer,
+  typeCheckOutputTypeScript,
+} from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
 import {
@@ -77,6 +83,8 @@ const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accep
 
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const CONN = ConnectionName.make("main");
+const OAUTH_TEMPLATE = AuthTemplateSlug.make("oauth");
+const OAUTH_CLIENT = OAuthClientSlug.make("records-app");
 
 type DescribedToolContract = {
   readonly outputTypeScript: string;
@@ -257,6 +265,30 @@ const errorPlugin = makeTestPlugin({
     },
   ],
 });
+
+const oauthErrorPlugin = definePlugin(() => ({
+  id: "oauth-error-test" as const,
+  storage: () => ({}),
+  resolveTools: () =>
+    Effect.succeed({
+      tools: [
+        {
+          name: ToolName.make("queryRows"),
+          description: "Query rows",
+          inputSchema: EmptyInputJson,
+        },
+      ],
+    }),
+  invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make("oauth_records"),
+        description: "OAuth records",
+        config: {},
+      }),
+  }),
+}))();
 
 const validatedInputPlugin = makeTestPlugin({
   pluginId: "validated-input-test",
@@ -889,6 +921,80 @@ describe("tool discovery", () => {
         },
       });
     }),
+  );
+
+  it.effect("returns OAuth reauth failures as ToolResult.fail instead of throwing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const config = makeTestConfig({
+          plugins: [memoryCredentialsPlugin(), oauthErrorPlugin] as const,
+        });
+        const executor = yield* createExecutor(config);
+        yield* executor["oauth-error-test"].seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAUTH_CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAUTH_CLIENT,
+          clientOwner: "org",
+          name: CONN,
+          integration: IntegrationSlug.make("oauth_records"),
+          template: OAUTH_TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) =>
+              b.and(b("integration", "=", "oauth_records"), b("name", "=", String(CONN))),
+            set: {
+              expires_at: Date.now() - 60_000,
+              refresh_item_id: "missing-refresh-token",
+            },
+          }),
+        );
+
+        const invoker = makeExecutorToolInvoker(executor, {
+          invokeOptions: { onElicitation: acceptAll },
+        });
+        const result = yield* invoker.invoke({
+          path: "oauth_records.org.main.queryRows",
+          args: {},
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_reauth_required",
+            message:
+              'OAuth connection "oauth_records.org.main" requires reauthorization: Stored refresh token could not be resolved.',
+            details: {
+              category: "authentication",
+              credential: {
+                kind: "oauth",
+                label: "oauth_records.org.main",
+              },
+            },
+            retryable: false,
+          },
+        });
+      }),
+    ),
   );
 
   it.effect("returns missing tool dispatches as ToolResult.fail", () =>

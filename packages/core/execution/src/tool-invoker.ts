@@ -4,10 +4,17 @@ import type {
   Executor,
   InvokeOptions,
   Integration,
+  ToolError,
   Tool,
   ToolSchemaView,
 } from "@executor-js/sdk/core";
-import { isToolResult, ToolResult, ToolAddress, parseToolAddress } from "@executor-js/sdk/core";
+import {
+  authToolFailure,
+  isToolResult,
+  ToolResult,
+  ToolAddress,
+  parseToolAddress,
+} from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
 
@@ -125,9 +132,24 @@ const validationIssues = (value: unknown): readonly unknown[] | null => {
   return Array.isArray(issues) ? issues : null;
 };
 
-const expectedToolFailure = (
-  value: unknown,
-): { readonly code: string; readonly message: string; readonly details?: unknown } | null => {
+const credentialResolutionToolFailure = (input: {
+  readonly label: string;
+  readonly message: string;
+  readonly reauthRequired?: boolean;
+}) =>
+  authToolFailure({
+    code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_connection_failed",
+    message:
+      input.reauthRequired === true
+        ? `OAuth connection "${input.label}" requires reauthorization: ${input.message}`
+        : `OAuth connection "${input.label}" could not be resolved: ${input.message}`,
+    credential: {
+      kind: "oauth",
+      label: input.label,
+    },
+  });
+
+const expectedToolFailure = (value: unknown): ToolError | null => {
   if (Predicate.isTagged(value, "ToolNotFoundError") && "address" in value) {
     const suggestions =
       "suggestions" in value && Array.isArray(value.suggestions)
@@ -197,6 +219,15 @@ export const makeExecutorToolInvoker = (
 
     const address = pathToAddress(path);
     const result = yield* executor.execute(address, args, options.invokeOptions).pipe(
+      Effect.catchTag("CredentialResolutionError", (err) =>
+        Effect.succeed(
+          credentialResolutionToolFailure({
+            label: `${err.integration}.${err.owner}.${err.name}`,
+            message: err.message,
+            reauthRequired: err.reauthRequired,
+          }),
+        ),
+      ),
       Effect.catchCause((cause) => {
         const err = cause.reasons.find(Cause.isFailReason)?.error;
         const expected = expectedToolFailure(err);

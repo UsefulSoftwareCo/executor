@@ -140,6 +140,36 @@ describe("executor oxlint plugin", () => {
     expect(result.stderr).toBe("");
   });
 
+  it("allows typed error messages in Effect.catchTag handlers", async () => {
+    const result = await runOxlintOn(
+      "catch-tag-message.ts",
+      `
+        import { Effect } from "effect";
+
+        declare const program: Effect.Effect<string, { _tag: "DomainError"; message: string }>;
+
+        export const handled = program.pipe(
+          Effect.catchTag("DomainError", (err) => Effect.succeed(err.message)),
+        );
+      `,
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Found 0 warnings and 0 errors.");
+  });
+
+  it("rejects unknown error messages outside Effect.catchTag handlers", async () => {
+    const result = await runOxlintOn(
+      "unknown-message.ts",
+      `
+        export const format = (err: unknown) => String((err as { message: string }).message);
+      `,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("executor(no-unknown-error-message)");
+  });
+
   it("rejects hand-rolled null predicates in Effect files", async () => {
     const result = await runOxlintOn(
       "manual-null-predicate.ts",
