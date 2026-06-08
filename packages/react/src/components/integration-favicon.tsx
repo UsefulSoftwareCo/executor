@@ -71,6 +71,45 @@ const googleApiServiceFromUrl = (url: string | undefined): string | null => {
 const normalizeToken = (value: string | undefined): string =>
   value?.toLowerCase().replace(/[^a-z0-9]+/g, "") ?? "";
 
+const tokenVariants = (value: string | undefined): readonly string[] => {
+  const tokens = new Set<string>();
+  const normalized = normalizeToken(value);
+  if (normalized.length > 0) tokens.add(normalized);
+
+  const parts =
+    value
+      ?.toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .filter(Boolean) ?? [];
+  const noise = new Set(["api", "mcp", "openapi", "rest", "graphql", "com", "net", "org", "dev"]);
+  const cleaned = parts.filter((part) => !noise.has(part));
+  const cleanedToken = cleaned.join("");
+  if (cleanedToken.length > 0) tokens.add(cleanedToken);
+  const aliases: Record<string, string> = {
+    pscale: "planetscale",
+  };
+  for (const part of cleaned) {
+    tokens.add(part);
+    const alias = aliases[part];
+    if (alias) tokens.add(alias);
+  }
+
+  return [...tokens];
+};
+
+export function integrationInferredUrl(source: {
+  readonly id: string;
+  readonly name?: string;
+}): string | null {
+  const hostPattern = /^[a-z0-9][a-z0-9.-]*\.(?:app|co|com|dev|io|net|org)(?:\/.*)?$/i;
+  const hostLike = [source.name, source.id.replaceAll("_", ".")]
+    .filter((value): value is string => value != null && value.length > 0)
+    .find((value) => hostPattern.test(value.trim()));
+  if (hostLike) return `https://${hostLike.trim().replace(/^https?:\/\//i, "")}`;
+
+  return null;
+}
+
 const tokenMatches = (sourceValue: string, presetValue: string): boolean =>
   presetValue.length > 0 &&
   sourceValue.length > 0 &&
@@ -92,19 +131,18 @@ export function integrationPresetIconUrl(
   const presets = plugin?.presets ?? [];
   const sourceUrl = normalizeUrl(source.url);
   const sourceGoogleService = googleApiServiceFromUrl(source.url);
-  const sourceId = normalizeToken(source.id);
-  const sourceName = normalizeToken(source.name);
+  const sourceTokens = [...tokenVariants(source.id), ...tokenVariants(source.name)];
 
   const preset = presets.find((p) => {
     const presetUrl = normalizeUrl(p.url);
     const presetGoogleService = googleApiServiceFromUrl(p.url);
-    const presetId = normalizeToken(p.id);
-    const presetName = normalizeToken(p.name);
+    const presetTokens = [...tokenVariants(p.id), ...tokenVariants(p.name)];
     return (
       (sourceUrl !== null && presetUrl === sourceUrl) ||
       (sourceGoogleService !== null && presetGoogleService === sourceGoogleService) ||
-      tokenMatches(sourceId, presetId) ||
-      tokenMatches(sourceName, presetName)
+      sourceTokens.some((sourceToken) =>
+        presetTokens.some((presetToken) => tokenMatches(sourceToken, presetToken)),
+      )
     );
   });
 

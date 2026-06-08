@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   integrationFaviconUrl,
+  integrationInferredUrl,
   integrationLocalIconUrl,
   integrationPresetIconUrl,
 } from "./integration-favicon";
@@ -143,5 +144,86 @@ describe("IntegrationFavicon", () => {
         ],
       ),
     ).toBe("https://example.com/sentry.png");
+  });
+
+  it("matches migrated MCP slugs with host/suffix noise", () => {
+    const presets = [
+      {
+        key: "mcp",
+        label: "MCP",
+        add: () => null,
+        edit: () => null,
+        presets: [
+          {
+            id: "posthog",
+            name: "PostHog",
+            summary: "Analytics.",
+            icon: "https://example.com/posthog.png",
+          },
+          {
+            id: "linear",
+            name: "Linear",
+            summary: "Issues.",
+            icon: "https://example.com/linear.png",
+          },
+          {
+            id: "planetscale",
+            name: "PlanetScale",
+            summary: "Databases.",
+            icon: "https://example.com/pscale.png",
+          },
+        ],
+      },
+    ];
+
+    expect(
+      integrationPresetIconUrl(
+        { id: "mcp_posthog_com", kind: "mcp", name: "mcp.posthog.com" },
+        presets,
+      ),
+    ).toBe("https://example.com/posthog.png");
+    expect(
+      integrationPresetIconUrl(
+        { id: "mcp_linear_app", kind: "mcp", name: "mcp.linear.app" },
+        presets,
+      ),
+    ).toBe("https://example.com/linear.png");
+    expect(
+      integrationPresetIconUrl({ id: "pscale_mcp", kind: "mcp", name: "Pscale MCP" }, presets),
+    ).toBe("https://example.com/pscale.png");
+  });
+
+  it("matches migrated OpenAPI slugs with API/REST suffixes", () => {
+    expect(
+      integrationPresetIconUrl({ id: "stripe_api", kind: "openapi", name: "Stripe API" }, [
+        {
+          key: "openapi",
+          label: "OpenAPI",
+          add: () => null,
+          edit: () => null,
+          presets: [
+            {
+              id: "stripe",
+              name: "Stripe",
+              summary: "Payments.",
+              icon: "https://example.com/stripe.png",
+            },
+          ],
+        },
+      ]),
+    ).toBe("https://example.com/stripe.png");
+  });
+
+  it("infers favicon URLs from migrated host-shaped MCP names and slugs", () => {
+    expect(integrationInferredUrl({ id: "mcp_posthog_com", name: "mcp.posthog.com" })).toBe(
+      "https://mcp.posthog.com",
+    );
+    expect(integrationInferredUrl({ id: "ai_todoist_net", name: "ai.todoist.net" })).toBe(
+      "https://ai.todoist.net",
+    );
+    expect(integrationInferredUrl({ id: "mcp_pscale_dev", name: "mcp.pscale.dev" })).toBe(
+      "https://mcp.pscale.dev",
+    );
+    expect(integrationInferredUrl({ id: "stripe_api", name: "Stripe API" })).toBeNull();
   });
 });

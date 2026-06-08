@@ -32,7 +32,10 @@ import {
   CardStackEntryMedia,
   CardStackEntryTitle,
 } from "../components/card-stack";
-import { integrationPresetIconUrl } from "../components/integration-favicon";
+import {
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "../components/integration-favicon";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
 
@@ -404,10 +407,11 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
               <Link to="/integrations/$namespace" params={{ namespace: slug }}>
                 <IntegrationIconWithAccount
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind },
+                    { id: slug, kind: integration.kind, name },
                     integrationPlugins,
                   )}
                   sourceId={slug}
+                  url={integrationInferredUrl({ id: slug, name }) ?? undefined}
                 />
                 <CardStackEntryContent>
                   <CardStackEntryTitle>{name}</CardStackEntryTitle>

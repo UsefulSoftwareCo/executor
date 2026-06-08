@@ -14,7 +14,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu";
-import { IntegrationFavicon, integrationPresetIconUrl } from "../components/integration-favicon";
+import {
+  IntegrationFavicon,
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
@@ -135,9 +139,10 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
               >
                 <IntegrationFavicon
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind },
+                    { id: slug, kind: integration.kind, name },
                     integrationPlugins,
                   )}
+                  url={integrationInferredUrl({ id: slug, name }) ?? undefined}
                 />
                 <span className="flex-1 truncate">{name}</span>
               </Link>
