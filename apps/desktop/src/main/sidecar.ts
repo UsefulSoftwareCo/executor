@@ -238,6 +238,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   }
 
   let child: ChildProcess;
+  const webBaseUrl = `http://${hostname}:${settings.port}`;
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: spawn can throw synchronously and the local startup lock must be released
   try {
     child = spawn(command, args, {
@@ -247,6 +248,8 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         ...process.env,
         EXECUTOR_PORT: String(settings.port),
         EXECUTOR_HOST: hostname,
+        EXECUTOR_WEB_BASE_URL: webBaseUrl,
+        PORT: String(settings.port),
         // Only export the password env var when auth is enabled — the sidecar
         // treats an empty password as "no auth required". Matches the CLI's
         // `executor web` default.
