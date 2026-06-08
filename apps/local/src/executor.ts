@@ -181,11 +181,11 @@ const createLocalExecutorLayer = () => {
         plugins,
         onElicitation: "accept-all",
         oauthEndpointUrlPolicy: { allowHttp: true },
-        // EXPLICIT OAuth callback — the daemon serves the v2 `/oauth/callback`
+        // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
         // route on the same origin as the web UI. Derived from `webBaseUrl`
         // (loopback localhost is correct + intended for the local CLI, but it
         // is wired explicitly here rather than relying on a hidden default).
-        redirectUri: new URL("/oauth/callback", webBaseUrl).toString(),
+        redirectUri: new URL("/api/oauth/callback", webBaseUrl).toString(),
         // Built-in agent-facing tools (integrations / connections / policies).
         coreTools: {
           webBaseUrl,

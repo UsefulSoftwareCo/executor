@@ -96,8 +96,8 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       onElicitation: "accept-all",
       oauthEndpointUrlPolicy: { allowHttp: true },
       // EXPLICIT OAuth callback — required now that the localhost default is
-      // gone; the local daemon serves `/oauth/callback` on the web origin.
-      redirectUri: "http://localhost:4788/oauth/callback",
+      // gone; the local daemon serves `/api/oauth/callback` on the web origin.
+      redirectUri: "http://localhost:4788/api/oauth/callback",
     }),
   );
 
@@ -225,6 +225,9 @@ describe("local oauth (real OAuth discovery + stubbed start)", () => {
           expect(started.status).toBe("redirect");
           const redirect = started as Extract<typeof started, { status: "redirect" }>;
           expect(redirect.authorizationUrl).toContain(oauth.authorizationEndpoint);
+          expect(redirect.authorizationUrl).toContain(
+            encodeURIComponent("http://localhost:4788/api/oauth/callback"),
+          );
           expect(redirect.state).toBeTruthy();
         }),
       ),
