@@ -60,36 +60,6 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/sheets.svg");
   });
 
-  it("finds Google preset icons from generated API base URLs", () => {
-    expect(
-      integrationPresetIconUrl(
-        {
-          id: "calendar_api",
-          kind: "openapi",
-          name: "Calendar API",
-          url: "https://www.googleapis.com/calendar/v3/",
-        },
-        [
-          {
-            key: "openapi",
-            label: "OpenAPI",
-            add: () => null,
-            edit: () => null,
-            presets: [
-              {
-                id: "google-calendar",
-                name: "Google Calendar",
-                summary: "Calendars.",
-                url: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
-                icon: "https://example.com/calendar.svg",
-              },
-            ],
-          },
-        ],
-      ),
-    ).toBe("https://example.com/calendar.svg");
-  });
-
   it("finds preset icons from display names with suffixes", () => {
     expect(
       integrationPresetIconUrl(
@@ -146,7 +116,7 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/sentry.png");
   });
 
-  it("matches migrated MCP slugs with host/suffix noise", () => {
+  it("matches migrated MCP slugs with whole normalized ids", () => {
     const presets = [
       {
         key: "mcp",
@@ -166,12 +136,6 @@ describe("IntegrationFavicon", () => {
             summary: "Issues.",
             icon: "https://example.com/linear.png",
           },
-          {
-            id: "planetscale",
-            name: "PlanetScale",
-            summary: "Databases.",
-            icon: "https://example.com/pscale.png",
-          },
         ],
       },
     ];
@@ -188,9 +152,6 @@ describe("IntegrationFavicon", () => {
         presets,
       ),
     ).toBe("https://example.com/linear.png");
-    expect(
-      integrationPresetIconUrl({ id: "pscale_mcp", kind: "mcp", name: "Pscale MCP" }, presets),
-    ).toBe("https://example.com/pscale.png");
   });
 
   it("matches migrated OpenAPI slugs with API/REST suffixes", () => {
@@ -212,6 +173,41 @@ describe("IntegrationFavicon", () => {
         },
       ]),
     ).toBe("https://example.com/stripe.png");
+  });
+
+  it("does not split generic words into brand matches", () => {
+    expect(
+      integrationPresetIconUrl(
+        {
+          id: "spotify_web_api",
+          kind: "openapi",
+          name: "Spotify Web API",
+          url: "https://api.spotify.com/v1",
+        },
+        [
+          {
+            key: "openapi",
+            label: "OpenAPI",
+            add: () => null,
+            edit: () => null,
+            presets: [
+              {
+                id: "exa-websets",
+                name: "Exa Websets",
+                summary: "Web data.",
+                icon: "https://example.com/exa.png",
+              },
+              {
+                id: "spotify",
+                name: "Spotify",
+                summary: "Music.",
+                icon: "https://example.com/spotify.png",
+              },
+            ],
+          },
+        ],
+      ),
+    ).toBe("https://example.com/spotify.png");
   });
 
   it("infers favicon URLs from migrated host-shaped MCP names and slugs", () => {
