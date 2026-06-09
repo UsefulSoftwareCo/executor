@@ -4,7 +4,6 @@ import { graphqlPresets } from "../sdk/presets";
 
 const importAdd = () => import("./AddGraphqlSource");
 const importEdit = () => import("./EditGraphqlSource");
-const importSummary = () => import("./GraphqlSourceSummary");
 const importAccounts = () => import("./GraphqlAccountsPanel");
 
 export const graphqlIntegrationPlugin: IntegrationPlugin = {
@@ -12,13 +11,11 @@ export const graphqlIntegrationPlugin: IntegrationPlugin = {
   label: "GraphQL",
   add: lazy(importAdd),
   edit: lazy(importEdit),
-  summary: lazy(importSummary),
   accounts: lazy(importAccounts),
   presets: graphqlPresets,
   preload: () => {
     void importAdd();
     void importEdit();
-    void importSummary();
     void importAccounts();
   },
 };

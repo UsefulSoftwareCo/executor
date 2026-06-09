@@ -106,6 +106,7 @@ export type GraphqlConfigureInput = typeof GraphqlConfigureInputSchema.Type;
  *  `configure`. */
 const GraphqlConfigureAuthInputSchema = Schema.Struct({
   authenticationTemplate: Schema.Array(AuthTemplateSchema),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
 });
 export type GraphqlConfigureAuthInput = typeof GraphqlConfigureAuthInputSchema.Type;
 
@@ -233,12 +234,19 @@ const buildSelectionSet = (
   return subFields.length > 0 ? `{ ${subFields.join(" ")} }` : "";
 };
 
+// Name every generated operation: some servers reject anonymous operations, and
+// APM tooling keys traces off the operation name. Field names are already valid
+// GraphQL name tokens, so the upper-cased field name is a safe operation name.
+const operationNameForField = (fieldName: string): string =>
+  fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+
 const buildOperationStringForField = (
   kind: GraphqlOperationKind,
   field: IntrospectionField,
   types: ReadonlyMap<string, IntrospectionType>,
 ): string => {
   const opType = kind === "query" ? "query" : "mutation";
+  const opName = operationNameForField(field.name);
 
   const varDefs = field.args.map((arg) => {
     const typeName = formatTypeRef(arg.type);
@@ -251,7 +259,7 @@ const buildOperationStringForField = (
   const varDefsStr = varDefs.length > 0 ? `(${varDefs.join(", ")})` : "";
   const argPassStr = argPasses.length > 0 ? `(${argPasses.join(", ")})` : "";
 
-  return `${opType}${varDefsStr} { ${field.name}${argPassStr}${selectionSet ? ` ${selectionSet}` : ""} }`;
+  return `${opType} ${opName}${varDefsStr} { ${field.name}${argPassStr}${selectionSet ? ` ${selectionSet}` : ""} }`;
 };
 
 interface PreparedOperation {
@@ -299,7 +307,7 @@ const prepareOperations = (
     const entry = fieldMap.get(key);
     const operationString = entry
       ? buildOperationStringForField(entry.kind, entry.field, typeMap)
-      : `${extracted.kind} { ${extracted.fieldName} }`;
+      : `${extracted.kind} ${operationNameForField(extracted.fieldName)} { ${extracted.fieldName} }`;
 
     const binding = OperationBinding.make({
       kind: extracted.kind,
@@ -423,7 +431,10 @@ const materializeOperations = (
   ctx: PluginCtx<GraphqlStore>,
   integration: string,
   config: GraphqlIntegrationConfig,
-  credential: { readonly template: AuthTemplateSlug; readonly value: string | null },
+  credential: {
+    readonly template: AuthTemplateSlug;
+    readonly value: string | null;
+  },
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): Effect.Effect<readonly StoredOperation[], GraphqlIntrospectionError | StorageFailure> =>
   Effect.gen(function* () {
@@ -433,7 +444,9 @@ const materializeOperations = (
       (t: AuthTemplate) => t.slug === String(credential.template),
     );
     const headers: Record<string, string> = { ...(config.headers ?? {}) };
-    const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
+    const queryParams: Record<string, string> = {
+      ...(config.queryParams ?? {}),
+    };
     if (template && credential.value !== null) {
       const rendered = renderAuthTemplate(template, credential.value);
       Object.assign(headers, rendered.headers);
@@ -450,7 +463,9 @@ const materializeOperations = (
 
     const { result } = yield* extract(introspection).pipe(
       Effect.catch(() =>
-        Effect.succeed({ result: { fields: [] as readonly ExtractedField[] } } as {
+        Effect.succeed({
+          result: { fields: [] as readonly ExtractedField[] },
+        } as {
           readonly result: { readonly fields: readonly ExtractedField[] };
         }),
       ),
@@ -645,7 +660,11 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
           canRefresh: true,
         });
 
-        return { slug: String(slug), name: config.name, toolCount: prepared.length };
+        return {
+          slug: String(slug),
+          name: config.name,
+          toolCount: prepared.length,
+        };
       }),
     );
 
@@ -713,10 +732,13 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         const current = Option.getOrNull(decodeGraphqlIntegrationConfigOption(record.config));
         if (!current) return [] as readonly AuthTemplate[];
 
-        const merged = mergeGraphqlAuthTemplate(
-          current.authenticationTemplate,
-          input.authenticationTemplate,
-        );
+        const merged =
+          input.mode === "replace"
+            ? input.authenticationTemplate
+            : mergeGraphqlAuthTemplate(
+                current.authenticationTemplate,
+                input.authenticationTemplate,
+              );
 
         const next = GraphqlIntegrationConfig.make({
           ...current,
@@ -886,7 +908,10 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         const extracted = yield* extract(introspection.value).pipe(Effect.option);
         if (Option.isNone(extracted)) return { tools: [] };
         const prepared = prepareOperations(extracted.value.result.fields, introspection.value);
-        return { tools: buildToolDefs(prepared), definitions: extracted.value.definitions };
+        return {
+          tools: buildToolDefs(prepared),
+          definitions: extracted.value.definitions,
+        };
       }).pipe(Effect.catch(() => Effect.succeed({ tools: [] as readonly ToolDef[] }))),
 
     // -----------------------------------------------------------------------
@@ -933,7 +958,9 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         }
 
         const headers: Record<string, string> = { ...(config.headers ?? {}) };
-        const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
+        const queryParams: Record<string, string> = {
+          ...(config.queryParams ?? {}),
+        };
 
         const template = config.authenticationTemplate.find(
           (t: AuthTemplate) => t.slug === String(credential.template),

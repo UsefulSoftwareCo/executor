@@ -24,7 +24,9 @@ import type { AuthTemplate } from "./types";
 
 const makeExecutor = () =>
   createExecutor(
-    makeTestConfig({ plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const }),
+    makeTestConfig({
+      plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
+    }),
   );
 
 const customApiKey: AuthTemplate = {
@@ -108,7 +110,12 @@ describe("GraphQL Plugin — configureAuth (custom auth method)", () => {
       const merged = yield* executor.graphql.configureAuth("cfg_dedupe", {
         authenticationTemplate: [
           // Re-submit the same slug with a different placement → replace in place.
-          { kind: "apiKey", slug: "my_custom", in: "header", name: "X-Other" },
+          {
+            kind: "apiKey",
+            slug: "my_custom",
+            in: "header",
+            name: "X-Other",
+          },
           { kind: "apiKey", slug: "", in: "query", name: "api_key" },
           { kind: "apiKey", slug: "", in: "query", name: "token" },
         ],
@@ -128,6 +135,28 @@ describe("GraphQL Plugin — configureAuth (custom auth method)", () => {
         in: "header",
         name: "X-Other",
       });
+    }),
+  );
+
+  it.effect("replace mode overwrites the auth template array", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: "https://x.example/graphql",
+        slug: "cfg_replace",
+        authenticationTemplate: [
+          { kind: "apiKey", slug: "seed", in: "header", name: "X-Seed" },
+          customApiKey,
+        ],
+      });
+
+      const merged = yield* executor.graphql.configureAuth("cfg_replace", {
+        authenticationTemplate: [{ kind: "apiKey", slug: "seed", in: "header", name: "X-Seed" }],
+        mode: "replace",
+      });
+
+      expect(merged.map((m: AuthTemplate) => m.slug)).toEqual(["seed"]);
     }),
   );
 

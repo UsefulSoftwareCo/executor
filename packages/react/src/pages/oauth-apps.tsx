@@ -402,7 +402,10 @@ export function OAuthAppsPage() {
             </div>
           ),
           onSuccess: ({ value }) => {
-            const groups = groupClientsByOwner(value);
+            const visibleClients = value.filter(
+              (client: OAuthClientSummary) => client.origin.kind !== "dynamic_client_registration",
+            );
+            const groups = groupClientsByOwner(visibleClients);
             const existingSlugs = value.map((client: OAuthClientSummary) => String(client.slug));
             // Dialogs render regardless of how many apps exist — in particular
             // the "add" dialog must be reachable from the empty state so a fresh

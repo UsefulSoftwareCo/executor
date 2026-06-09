@@ -10,12 +10,15 @@ import {
   definePlugin,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
+  OAuthClientSlug,
   tool,
   ToolResult,
   type AuthMethodDescriptor,
   type Integration,
   type IntegrationConfig,
   type IntegrationRecord,
+  type OAuthClientSummary,
+  type Owner,
   type PluginCtx,
   type StaticToolSchema,
   type StorageFailure,
@@ -41,6 +44,40 @@ import {
 } from "./types";
 
 const MCP_PLUGIN_ID = "mcp" as const;
+
+const legacyOAuthClientSlugCandidate = (value: string): string | null => {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : null;
+};
+
+const legacyOAuthClientSlugCandidates = (
+  slug: string,
+  integration: (Integration & { readonly config: IntegrationConfig }) | null,
+): ReadonlySet<string> => {
+  const candidates = new Set<string>();
+  const fromSlug = legacyOAuthClientSlugCandidate(slug);
+  if (fromSlug) candidates.add(fromSlug);
+  const fromDescription =
+    integration == null ? null : legacyOAuthClientSlugCandidate(integration.description);
+  if (fromDescription) candidates.add(fromDescription);
+  return candidates;
+};
+
+const oauthClientKey = (owner: Owner, slug: OAuthClientSlug): string => `${owner}:${String(slug)}`;
+
+const legacyMcpClientMatches = (
+  client: OAuthClientSummary,
+  candidates: ReadonlySet<string>,
+  config: McpIntegrationConfigType | null,
+): boolean => {
+  if (!candidates.has(String(client.slug))) return false;
+  if (!config || config.transport !== "remote" || config.auth.kind !== "oauth2") return false;
+  return client.grant === "authorization_code" && (client.resource ?? null) === config.endpoint;
+};
 
 // ---------------------------------------------------------------------------
 // Tool annotations carry an `mcp` envelope alongside the executor's policy
@@ -652,8 +689,75 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         );
 
       const removeServer = (slug: string) =>
-        ctx.core.integrations.remove(slugFrom(slug)).pipe(
-          Effect.catchTag("IntegrationRemovalNotAllowedError", () => Effect.void),
+        Effect.gen(function* () {
+          const integration = slugFrom(slug);
+          const record = yield* ctx.core.integrations.get(integration);
+          const config = record ? parseMcpIntegrationConfig(record.config) : null;
+          const legacyCandidates = legacyOAuthClientSlugCandidates(slug, record);
+          const connections = yield* ctx.connections.list({ integration });
+          const allConnections = yield* ctx.connections.list();
+          const oauthClientSummaries = yield* ctx.oauth.listClients();
+          const usedElsewhere = new Set(
+            allConnections
+              .filter((connection) => String(connection.integration) !== String(integration))
+              .flatMap((connection) =>
+                connection.oauthClient == null
+                  ? []
+                  : [
+                      oauthClientKey(
+                        connection.oauthClientOwner ?? connection.owner,
+                        connection.oauthClient,
+                      ),
+                    ],
+              ),
+          );
+          const oauthClientsByKey = new Map(
+            oauthClientSummaries.map((client) => [
+              oauthClientKey(client.owner, client.slug),
+              client,
+            ]),
+          );
+          const clientsToRemove = new Map<
+            string,
+            { readonly owner: Owner; readonly slug: OAuthClientSlug }
+          >();
+
+          for (const connection of connections) {
+            if (connection.oauthClient == null) continue;
+            const owner = connection.oauthClientOwner ?? connection.owner;
+            const key = oauthClientKey(owner, connection.oauthClient);
+            const client = oauthClientsByKey.get(key);
+            if (client?.origin.kind !== "dynamic_client_registration") continue;
+            clientsToRemove.set(key, {
+              owner,
+              slug: connection.oauthClient,
+            });
+          }
+          for (const client of oauthClientSummaries) {
+            const key = oauthClientKey(client.owner, client.slug);
+            if (usedElsewhere.has(key)) continue;
+            if (
+              client.origin.kind === "dynamic_client_registration" &&
+              (client.origin.integration == null || String(client.origin.integration) === slug)
+            ) {
+              clientsToRemove.set(key, { owner: client.owner, slug: client.slug });
+              continue;
+            }
+            if (legacyMcpClientMatches(client, legacyCandidates, config)) {
+              clientsToRemove.set(key, { owner: client.owner, slug: client.slug });
+            }
+          }
+
+          yield* ctx.core.integrations
+            .remove(integration)
+            .pipe(Effect.catchTag("IntegrationRemovalNotAllowedError", () => Effect.void));
+
+          yield* Effect.forEach(
+            clientsToRemove.values(),
+            (client) => ctx.oauth.removeClient(client.owner, client.slug),
+            { discard: true },
+          );
+        }).pipe(
           Effect.withSpan("mcp.plugin.remove_server", {
             attributes: { "mcp.integration.slug": slug },
           }),
@@ -666,11 +770,19 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      const configureServer = (slug: string, config: McpIntegrationConfigType) =>
+        ctx.core.integrations.update(slugFrom(slug), { config }).pipe(
+          Effect.withSpan("mcp.plugin.configure_server", {
+            attributes: { "mcp.integration.slug": slug },
+          }),
+        );
+
       return {
         probeEndpoint,
         addServer,
         removeServer,
         getServer,
+        configureServer,
       };
     },
 
@@ -962,4 +1074,8 @@ export interface McpPluginExtension {
     (Integration & { readonly config: IntegrationConfig }) | null,
     McpExtensionFailure
   >;
+  readonly configureServer: (
+    slug: string,
+    config: McpIntegrationConfigType,
+  ) => Effect.Effect<void, McpExtensionFailure>;
 }

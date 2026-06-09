@@ -98,3 +98,20 @@ jobs:
       - name: Build Electron main/preload/renderer
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
+
+  selfhost-docker-smoke:
+    name: Self-host Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build self-host image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/host-selfhost/Dockerfile
+          push: false
+          tags: executor-selfhost:ci

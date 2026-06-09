@@ -37,7 +37,6 @@
   },
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
-    "effect": "catalog:",
     "jiti": "^2.6.1",
     "jsonc-parser": "^3.3.1"
   },
@@ -45,8 +44,12 @@
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

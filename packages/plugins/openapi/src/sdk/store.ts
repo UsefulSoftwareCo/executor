@@ -102,27 +102,24 @@ export const makeDefaultOpenapiStore = ({ pluginStorage }: StorageDeps): Openapi
   const removeOperations = (integration: string) =>
     Effect.gen(function* () {
       const rows = yield* listRows(integration);
-      for (const row of rows) {
-        yield* pluginStorage.remove({
-          owner: STORE_OWNER,
-          collection: OPERATION_COLLECTION,
-          key: row.key,
-        });
-      }
+      yield* pluginStorage.removeMany({
+        owner: STORE_OWNER,
+        entries: rows.map((row) => ({ collection: OPERATION_COLLECTION, key: row.key })),
+      });
     });
 
   return {
     putOperations: (integration, operations) =>
       Effect.gen(function* () {
         yield* removeOperations(integration);
-        for (const operation of operations) {
-          yield* pluginStorage.put({
-            owner: STORE_OWNER,
+        yield* pluginStorage.putMany({
+          owner: STORE_OWNER,
+          entries: operations.map((operation) => ({
             collection: OPERATION_COLLECTION,
             key: operationKey(integration, operation.toolName),
             data: operationData(operation),
-          });
-        }
+          })),
+        });
       }),
 
     getOperation: (integration, toolName) =>

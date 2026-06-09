@@ -7,6 +7,18 @@ external database, worker, or proxy.
 
 ## Run it
 
+Using the published image:
+
+```bash
+docker run -d \
+  --name executor-selfhost \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  ghcr.io/rhyssullivan/executor-selfhost:latest
+```
+
+Or build from a repository clone:
+
 ```bash
 # From this directory:
 docker compose up -d --build

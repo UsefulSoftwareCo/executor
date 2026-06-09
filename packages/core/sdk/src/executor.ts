@@ -136,6 +136,7 @@ import {
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
 
+const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
 
 // ---------------------------------------------------------------------------
@@ -860,6 +861,112 @@ const makePluginStorageFacade = (input: {
       });
     });
 
+  const keysByCollection = (
+    entries: readonly { readonly collection: string; readonly key: string }[],
+  ) => {
+    const grouped = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      const keys = grouped.get(entry.collection);
+      if (keys) {
+        keys.add(entry.key);
+      } else {
+        grouped.set(entry.collection, new Set([entry.key]));
+      }
+    }
+    return grouped;
+  };
+
+  const deleteManyImpl = (
+    owner: Owner,
+    subject: string,
+    entries: readonly { readonly collection: string; readonly key: string }[],
+  ) =>
+    Effect.gen(function* () {
+      for (const [collection, keys] of keysByCollection(entries)) {
+        const uniqueKeys = [...keys];
+        for (
+          let offset = 0;
+          offset < uniqueKeys.length;
+          offset += PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE
+        ) {
+          const batchKeys = uniqueKeys.slice(offset, offset + PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE);
+          yield* input.core.deleteMany("plugin_storage", {
+            where: (b) =>
+              b.and(
+                b("plugin_id", "=", input.pluginId),
+                b("collection", "=", collection),
+                b("key", "in", batchKeys),
+                b("owner", "=", owner),
+                b("subject", "=", subject),
+              ),
+          });
+        }
+      }
+    });
+
+  const putManyImpl = (
+    owner: Owner,
+    entries: readonly {
+      readonly collection: string;
+      readonly key: string;
+      readonly data: unknown;
+    }[],
+  ) =>
+    Effect.gen(function* () {
+      const os = ownerSubject(owner);
+      if (!os) {
+        return yield* new StorageError({
+          message: `Cannot write plugin storage for owner "user": executor has no subject.`,
+          cause: undefined,
+        });
+      }
+      const entriesById = new Map(
+        entries.map((entry) => [
+          pluginStorageId({
+            pluginId: input.pluginId,
+            collection: entry.collection,
+            key: entry.key,
+          }),
+          entry,
+        ]),
+      );
+      const uniqueEntries = [...entriesById.values()];
+      if (uniqueEntries.length === 0) return;
+
+      yield* deleteManyImpl(owner, os.subject, uniqueEntries);
+
+      const now = new Date();
+      yield* input.core.createMany(
+        "plugin_storage",
+        uniqueEntries.map((entry) => ({
+          tenant,
+          owner: os.owner,
+          subject: os.subject,
+          plugin_id: input.pluginId,
+          collection: entry.collection,
+          key: entry.key,
+          data: entry.data,
+          created_at: now,
+          updated_at: now,
+        })),
+      );
+    });
+
+  const removeManyImpl = (
+    owner: Owner,
+    entries: readonly { readonly collection: string; readonly key: string }[],
+  ) =>
+    Effect.gen(function* () {
+      const os = ownerSubject(owner);
+      if (!os) {
+        return yield* new StorageError({
+          message: `Cannot delete plugin storage for owner "user": executor has no subject.`,
+          cause: undefined,
+        });
+      }
+      yield* deleteManyImpl(owner, os.subject, entries);
+    });
+
   const queryCollection = <TDefinition extends PluginStorageCollectionDefinition>(
     definition: TDefinition,
     queryInput?: PluginStorageCollectionQueryInput<TDefinition>,
@@ -962,8 +1069,10 @@ const makePluginStorageFacade = (input: {
       }),
     put: (storageInput) =>
       putImpl(storageInput.owner, storageInput.collection, storageInput.key, storageInput.data),
+    putMany: (storageInput) => putManyImpl(storageInput.owner, storageInput.entries),
     remove: (storageInput) =>
       removeImpl(storageInput.owner, storageInput.collection, storageInput.key),
+    removeMany: (storageInput) => removeManyImpl(storageInput.owner, storageInput.entries),
   };
 };
 

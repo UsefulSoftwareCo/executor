@@ -71,6 +71,7 @@ describe("oauth.registerDynamicClient", () => {
           tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
           clientName: "Acme DCR",
           redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
         });
         expect(String(slug)).toBe(String(CLIENT));
 
@@ -83,6 +84,10 @@ describe("oauth.registerDynamicClient", () => {
         expect(minted!.grant).toBe("authorization_code");
         expect(minted!.clientId.length).toBeGreaterThan(0);
         expect(minted!.clientId.startsWith("client_")).toBe(true);
+        expect(minted!.origin).toEqual({
+          kind: "dynamic_client_registration",
+          integration: INTEG,
+        });
         for (const client of clients) {
           expect(Object.keys(client)).not.toContain("clientSecret");
           expect(JSON.stringify(client)).not.toContain("secret");

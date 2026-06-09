@@ -44,13 +44,16 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@executor-js/sdk": "workspace:*",
-    "effect": "catalog:"
+    "@executor-js/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

@@ -61,6 +61,23 @@ const executionHistoryPlugin = definePlugin(() => ({
   extension: (ctx) => ({
     record: (owner: Owner, key: string, data: ToolCall) =>
       ctx.storage.toolCalls.put({ owner, key, data }),
+    recordMany: (
+      owner: Owner,
+      rows: readonly { readonly key: string; readonly data: ToolCall }[],
+    ) =>
+      ctx.pluginStorage.putMany({
+        owner,
+        entries: rows.map((row) => ({
+          collection: toolCalls.name,
+          key: row.key,
+          data: row.data,
+        })),
+      }),
+    removeMany: (owner: Owner, keys: readonly string[]) =>
+      ctx.pluginStorage.removeMany({
+        owner,
+        entries: keys.map((key) => ({ collection: toolCalls.name, key })),
+      }),
     get: (key: string) => ctx.storage.toolCalls.get({ key }),
     getForOwner: (owner: Owner, key: string) => ctx.storage.toolCalls.getForOwner({ owner, key }),
     query: (input?: PluginStorageCollectionQueryInput<typeof toolCalls>) =>
@@ -156,6 +173,52 @@ describe("plugin storage collections", () => {
         where: { toolId: "shell" },
       });
       expect(shellCount).toBe(2);
+    }),
+  );
+
+  it.effect("bulk puts and removes plugin storage rows", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const rows = Array.from({ length: 95 }, (_, index) => ({
+        key: `call-${String(index).padStart(3, "0")}`,
+        data: call({
+          runId: "run-bulk",
+          toolId: index % 2 === 0 ? "browser" : "shell",
+          status: "ok",
+          startedAt: new Date(Date.UTC(2026, 4, 29, 12, index)).toISOString(),
+        }),
+      }));
+
+      yield* executor.executionHistory.recordMany("org", rows);
+      yield* executor.executionHistory.recordMany("org", [
+        {
+          key: "call-000",
+          data: call({
+            runId: "run-bulk",
+            toolId: "browser",
+            status: "failed",
+            startedAt: "2026-05-29T12:00:00.000Z",
+          }),
+        },
+      ]);
+
+      const stored = yield* executor.executionHistory.query({
+        where: { runId: "run-bulk" },
+        orderBy: [{ field: "startedAt" }],
+      });
+      expect(stored).toHaveLength(95);
+      expect(stored[0]?.key).toBe("call-000");
+      expect(stored[0]?.data.status).toBe("failed");
+
+      yield* executor.executionHistory.removeMany(
+        "org",
+        rows.map((row) => row.key),
+      );
+      const remaining = yield* executor.executionHistory.query({ where: { runId: "run-bulk" } });
+      expect(remaining).toEqual([]);
     }),
   );
 

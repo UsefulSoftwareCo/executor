@@ -121,6 +121,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
                 slug: AuthTemplateSlug.make(entry.slug),
               }),
             ),
+            mode: payload.mode ?? "merge",
           });
           return { authenticationTemplate: [...authenticationTemplate] };
         }),

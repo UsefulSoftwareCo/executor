@@ -1,8 +1,9 @@
 # Releasing
 
-This repo uses Changesets for version orchestration and two publish paths:
-the CLI (`executor` npm package plus its platform packages) and the
-`@executor-js/*` library packages (`core`, `sdk`, and the public plugins).
+This repo uses Changesets for version orchestration and three publish paths:
+the CLI (`executor` npm package plus its platform packages), the
+`@executor-js/*` library packages (`core`, `sdk`, and the public plugins), and
+the self-host Docker image.
 
 ## Normal release flow
 
@@ -21,6 +22,12 @@ the CLI (`executor` npm package plus its platform packages) and the
      - performs a full dry-run release build before publish
      - publishes the CLI npm package under the correct dist-tag
      - creates or updates the GitHub release with build artifacts
+     - dispatches `.github/workflows/publish-desktop.yml`
+     - dispatches `.github/workflows/publish-selfhost-docker.yml`
+6. The self-host Docker workflow publishes `ghcr.io/rhyssullivan/executor-selfhost`
+   for `linux/amd64` and `linux/arm64`:
+   - stable releases get `vX.Y.Z`, `X.Y.Z`, and `latest`
+   - prereleases get `vX.Y.Z-...`, `X.Y.Z-...`, and `beta`
 
 ## Beta releases
 
@@ -51,6 +58,10 @@ That produces:
 To pack the `@executor-js/*` library packages without publishing:
 
 - `bun run release:publish:packages:dry-run`
+
+To validate the self-host Dockerfile locally without publishing:
+
+- `docker build -f apps/host-selfhost/Dockerfile -t executor-selfhost:local .`
 
 ## Release notes
 

@@ -81,6 +81,7 @@ export const GraphqlHandlers = HttpApiBuilder.group(ExecutorApiWithGraphql, "gra
           const ext = yield* GraphqlExtensionService;
           const authenticationTemplate = yield* ext.configureAuth(path.slug, {
             authenticationTemplate: payload.authenticationTemplate,
+            mode: payload.mode ?? "merge",
           });
           return { authenticationTemplate: [...authenticationTemplate] };
         }),

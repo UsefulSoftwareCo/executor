@@ -75,6 +75,14 @@ const RemoveServerResponse = Schema.Struct({
   removed: Schema.Boolean,
 });
 
+const ConfigureServerPayload = Schema.Struct({
+  config: McpIntegrationConfig,
+});
+
+const ConfigureServerResponse = Schema.Struct({
+  config: McpIntegrationConfig,
+});
+
 const GetServerResponse = Schema.NullOr(
   Schema.Struct({
     slug: IntegrationSlug,
@@ -125,6 +133,14 @@ export const McpGroup = HttpApiGroup.make("mcp")
     HttpApiEndpoint.get("getServer", "/mcp/servers/:slug", {
       params: SlugParams,
       success: GetServerResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("configureServer", "/mcp/servers/:slug/config", {
+      params: SlugParams,
+      payload: ConfigureServerPayload,
+      success: ConfigureServerResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   );

@@ -6,12 +6,14 @@ import {
   AuthTemplateSlug,
   ConnectionName,
   IntegrationSlug,
+  OAuthClientSlug,
   ToolAddress,
   createExecutor,
 } from "@executor-js/sdk";
 import {
   makeTestConfig,
   memoryCredentialsPlugin,
+  serveOAuthTestServer,
   serveTestHttpApp,
 } from "@executor-js/sdk/testing";
 
@@ -194,6 +196,109 @@ describe("mcpPlugin", () => {
       const tools = yield* executor.tools.list();
       expect(tools.filter((tool) => String(tool.address).startsWith("tools."))).toHaveLength(0);
     }),
+  );
+
+  it.effect("removing an MCP server removes the OAuth client used by its connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: [] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+        const attachedClient = OAuthClientSlug.make("axiom-mcp");
+        const unrelatedClient = OAuthClientSlug.make("manual-app");
+
+        yield* executor.mcp.addServer({
+          name: "Axiom MCP",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: "axiom_mcp",
+          auth: { kind: "oauth2" },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: attachedClient,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+          origin: {
+            kind: "dynamic_client_registration",
+            integration: IntegrationSlug.make("axiom_mcp"),
+          },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: unrelatedClient,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const connected = yield* executor.oauth.start({
+          owner: "org",
+          client: attachedClient,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("axiom_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+        expect(connected.status).toBe("connected");
+
+        yield* executor.mcp.removeServer("axiom_mcp");
+
+        const clients = yield* executor.oauth.listClients();
+        expect(clients.map((client) => String(client.slug))).not.toContain("axiom-mcp");
+        expect(clients.map((client) => String(client.slug))).toContain("manual-app");
+      }),
+    ),
+  );
+
+  it.effect("removing an MCP server removes a legacy orphaned DCR-looking OAuth client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "Axiom MCP",
+          endpoint: "https://mcp.axiom.co/mcp",
+          slug: "axiom_mcp",
+          auth: { kind: "oauth2" },
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("axiom-mcp"),
+          authorizationUrl: "https://mcp.axiom.co/authorize",
+          tokenUrl: "https://mcp.axiom.co/token",
+          grant: "authorization_code",
+          clientId: "stale-dcr-client",
+          clientSecret: "",
+          resource: "https://mcp.axiom.co/mcp",
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("manual-app"),
+          authorizationUrl: "https://mcp.axiom.co/authorize",
+          tokenUrl: "https://mcp.axiom.co/token",
+          grant: "authorization_code",
+          clientId: "manual-client",
+          clientSecret: "",
+          resource: "https://mcp.axiom.co/mcp",
+        });
+
+        yield* executor.mcp.removeServer("axiom_mcp");
+
+        const clients = yield* executor.oauth.listClients();
+        expect(clients.map((client) => String(client.slug))).not.toContain("axiom-mcp");
+        expect(clients.map((client) => String(client.slug))).toContain("manual-app");
+      }),
+    ),
   );
 
   // When discovery fails (auth, network, etc.) the connection still lands with

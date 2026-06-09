@@ -4,7 +4,6 @@ import { openApiPresets } from "../sdk/presets";
 
 const importAdd = () => import("./AddOpenApiSource");
 const importEdit = () => import("./EditOpenApiSource");
-const importSummary = () => import("./OpenApiSourceSummary");
 const importAccounts = () => import("./OpenApiAccountsPanel");
 
 export const openApiIntegrationPlugin: IntegrationPlugin = {
@@ -12,13 +11,11 @@ export const openApiIntegrationPlugin: IntegrationPlugin = {
   label: "OpenAPI",
   add: lazy(importAdd),
   edit: lazy(importEdit),
-  summary: lazy(importSummary),
   accounts: lazy(importAccounts),
   presets: openApiPresets,
   preload: () => {
     void importAdd();
     void importEdit();
-    void importSummary();
     void importAccounts();
   },
 };

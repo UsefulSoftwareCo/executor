@@ -45,14 +45,17 @@
   },
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
-    "@napi-rs/keyring": "^1.2.0",
-    "effect": "catalog:"
+    "@napi-rs/keyring": "^1.2.0"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

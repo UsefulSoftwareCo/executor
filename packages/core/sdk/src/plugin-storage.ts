@@ -113,6 +113,20 @@ export interface PluginStoragePutInput extends PluginStorageScopedKeyInput {
   readonly data: unknown;
 }
 
+export interface PluginStoragePutManyEntry extends PluginStorageKeyInput {
+  readonly data: unknown;
+}
+
+export interface PluginStoragePutManyInput {
+  readonly owner: Owner;
+  readonly entries: readonly PluginStoragePutManyEntry[];
+}
+
+export interface PluginStorageRemoveManyInput {
+  readonly owner: Owner;
+  readonly entries: readonly PluginStorageKeyInput[];
+}
+
 export interface PluginStorageCollectionKeyInput {
   readonly key: string;
 }
@@ -204,7 +218,9 @@ export interface PluginStorageFacade {
   readonly put: <T = unknown>(
     input: PluginStoragePutInput,
   ) => Effect.Effect<PluginStorageEntry<T>, StorageFailure>;
+  readonly putMany: (input: PluginStoragePutManyInput) => Effect.Effect<void, StorageFailure>;
   readonly remove: (input: PluginStorageScopedKeyInput) => Effect.Effect<void, StorageFailure>;
+  readonly removeMany: (input: PluginStorageRemoveManyInput) => Effect.Effect<void, StorageFailure>;
 }
 
 export const pluginStorageId = (input: {
