@@ -65,9 +65,18 @@ export function OAuthClientForm(props: {
   /** Called with the registered client owner + slug after a successful create. */
   readonly onCreated: (result: { readonly owner: Owner; readonly slug: OAuthClientSlug }) => void;
   readonly onCancel?: () => void;
+  readonly surface?: "card" | "plain";
 }) {
-  const { integrationName, existingSlugs, prefill, fixedSlug, fixedOwner, onCreated, onCancel } =
-    props;
+  const {
+    integrationName,
+    existingSlugs,
+    prefill,
+    fixedSlug,
+    fixedOwner,
+    onCreated,
+    onCancel,
+    surface = "card",
+  } = props;
   // Non-org hosts (local/desktop) have one local workspace. Offer only Local,
   // so the owner dropdown (which hides on a single option) disappears.
   const organizationId = useOrganizationId();
@@ -109,7 +118,9 @@ export function OAuthClientForm(props: {
 
   const doCreate = useAtomSet(createOAuthClient, { mode: "promiseExit" });
   const doProbe = useAtomSet(probeOAuth, { mode: "promiseExit" });
-  const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, { mode: "promiseExit" });
+  const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, {
+    mode: "promiseExit",
+  });
 
   const canSubmit =
     !submitting &&
@@ -214,7 +225,13 @@ export function OAuthClientForm(props: {
   };
 
   return (
-    <div className="space-y-4 rounded-lg border border-border/60 bg-muted/20 p-4">
+    <div
+      className={
+        surface === "card"
+          ? "space-y-4 rounded-lg border border-border/60 bg-muted/20 p-4"
+          : "space-y-4"
+      }
+    >
       <div className="space-y-1">
         <p className="text-sm font-medium">Register an OAuth app</p>
         <p className="text-xs text-muted-foreground">
@@ -268,7 +285,11 @@ export function OAuthClientForm(props: {
         >
           {(
             [
-              { value: "authorization_code", label: "Authorization code", hint: "User signs in" },
+              {
+                value: "authorization_code",
+                label: "Authorization code",
+                hint: "User signs in",
+              },
               {
                 value: "client_credentials",
                 label: "Client credentials",

@@ -125,13 +125,17 @@ function OwnerAccounts(props: {
   readonly integration: IntegrationSlug;
   readonly owner: Owner;
   readonly showOwnerLabels: boolean;
+  readonly methods: readonly AuthMethod[];
+  readonly onDcrReconnect: (connection: Connection) => void;
   /** The integration's declared oauth scopes — compared against each connection's
    *  granted `oauthScope` to flag connections that must reconnect for new access. */
   readonly declaredScopes: readonly string[] | undefined;
 }) {
   const { integration, owner } = props;
   const connections = useAtomValue(connectionsForIntegrationAtom({ integration, owner }));
-  const doRemove = useAtomSet(removeConnectionOptimistic(owner), { mode: "promiseExit" });
+  const doRemove = useAtomSet(removeConnectionOptimistic(owner), {
+    mode: "promiseExit",
+  });
   const doRefresh = useAtomSet(refreshConnection, { mode: "promiseExit" });
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
   // OAuth connections re-CONSENT on Reconnect (a token refresh cannot widen
@@ -152,6 +156,17 @@ function OwnerAccounts(props: {
     // OAuth connection → re-run the OAuth flow (re-consent + widened scopes +
     // fresh refresh token); re-minting overwrites the existing connection.
     if (reconnectMode(connection) === "oauth") {
+      const method = props.methods.find(
+        (candidate: AuthMethod) =>
+          candidate.kind === "oauth" && String(candidate.template) === String(connection.template),
+      );
+      if (
+        method?.oauth?.supportsDynamicRegistration === true ||
+        method?.oauth?.discoveryUrl != null
+      ) {
+        props.onDcrReconnect(connection);
+        return;
+      }
       const payload = oauthReconnectPayload(connection);
       if (payload === null) return;
       // `oauth.start` discriminates the grant: client_credentials mints inline
@@ -161,7 +176,10 @@ function OwnerAccounts(props: {
       // start once here and branch — inline-connected is handled directly,
       // redirect hands the already-issued URL to the popup. Both re-mint the
       // SAME connection (owner/integration/name).
-      const startExit = await doStartOAuth({ payload, reactivityKeys: connectionWriteKeys });
+      const startExit = await doStartOAuth({
+        payload,
+        reactivityKeys: connectionWriteKeys,
+      });
       if (Exit.isFailure(startExit)) {
         toast.error(messageFromExit(startExit, "Failed to reconnect"));
         return;
@@ -242,10 +260,20 @@ export function AccountsSection(props: {
   /** When provided, Add connection shows a "+ Custom method" row. The plugin binds
    *  this to its own configure mutation. Omitted for plugins with fixed auth. */
   readonly createCustomMethod?: CreateCustomMethod;
+  readonly removeCustomMethod?: (method: AuthMethod) => Promise<boolean>;
 }) {
-  const { integration, integrationName, methods, accountHandoff, createCustomMethod } = props;
+  const {
+    integration,
+    integrationName,
+    methods,
+    accountHandoff,
+    createCustomMethod,
+    removeCustomMethod,
+  } = props;
   const [adding, setAdding] = useState(false);
+  const [reconnectHandoff, setReconnectHandoff] = useState<IntegrationAccountHandoff | null>(null);
   const ownerDisplay = useOwnerDisplay();
+  const canAddConnection = methods.length > 0 || createCustomMethod !== undefined;
 
   useEffect(() => {
     if (accountHandoff) {
@@ -278,15 +306,20 @@ export function AccountsSection(props: {
 
   const loading = !AsyncResult.isSuccess(orgConnections) && !AsyncResult.isSuccess(userConnections);
 
+  const modalState = reconnectHandoff ?? accountHandoff;
   const modal = (
     <AddAccountModal
       integration={integration}
       integrationName={integrationName}
       methods={methods}
-      open={adding}
-      onOpenChange={setAdding}
-      initialState={accountHandoff}
+      open={adding || reconnectHandoff !== null}
+      onOpenChange={(open: boolean) => {
+        setAdding(open);
+        if (!open) setReconnectHandoff(null);
+      }}
+      initialState={modalState}
       createCustomMethod={createCustomMethod}
+      removeCustomMethod={removeCustomMethod}
     />
   );
 
@@ -301,7 +334,7 @@ export function AccountsSection(props: {
           variant="outline"
           size="sm"
           onClick={() => setAdding(true)}
-          disabled={methods.length === 0}
+          disabled={!canAddConnection}
         >
           Add connection
         </Button>
@@ -323,7 +356,7 @@ export function AccountsSection(props: {
             className="mt-4"
             size="sm"
             onClick={() => setAdding(true)}
-            disabled={methods.length === 0}
+            disabled={!canAddConnection}
           >
             Add a connection
           </Button>
@@ -336,6 +369,17 @@ export function AccountsSection(props: {
               integration={integration}
               owner={owner}
               showOwnerLabels={ownerDisplay.showOwnerLabels}
+              methods={methods}
+              onDcrReconnect={(connection: Connection) => {
+                setReconnectHandoff({
+                  key: `reconnect:${connection.owner}:${String(connection.integration)}:${String(
+                    connection.name,
+                  )}:${Date.now()}`,
+                  owner: connection.owner,
+                  template: String(connection.template),
+                  label: String(connection.name),
+                });
+              }}
               declaredScopes={declaredScopes}
             />
           ))}

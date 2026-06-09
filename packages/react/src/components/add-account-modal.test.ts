@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   AuthTemplateSlug,
+  IntegrationSlug,
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
@@ -18,12 +19,12 @@ import {
   runDcrConnect,
 } from "./add-account-modal";
 
-const apiKeyMethod = (id: string, source: "spec" | "custom"): AuthMethod => ({
+const apiKeyMethod = (id: string, source: "spec" | "custom", template = id): AuthMethod => ({
   id,
   label: `API key (${id})`,
   kind: "apikey",
   source,
-  template: AuthTemplateSlug.make(id),
+  template: AuthTemplateSlug.make(template),
   placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
 });
 
@@ -47,9 +48,12 @@ type RegisterArgs = {
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   readonly clientName: string;
   readonly redirectUri?: string;
+  readonly originIntegration?: IntegrationSlug;
 };
 
 type StartArgs = { readonly client: OAuthClientSlug; readonly owner: Owner };
+
+const TEST_INTEGRATION = IntegrationSlug.make("linear_mcp");
 
 describe("connectionLabel (name placeholder derivation)", () => {
   // The name field is optional but prefilled-via-derivation. With an empty
@@ -108,11 +112,21 @@ describe("mergeCustomMethods (in-session custom method append)", () => {
     expect(merged.map((m: AuthMethod) => m.id)).toEqual(["spec-1", "custom_a"]);
   });
 
-  it("dedupes by id (a refreshed catalog method wins over its session copy)", () => {
+  it("dedupes by stable identity (a refreshed catalog method wins over its session copy)", () => {
     const declared = [apiKeyMethod("spec-1", "spec"), apiKeyMethod("custom_a", "custom")];
     const created = [apiKeyMethod("custom_a", "custom")];
     const merged = mergeCustomMethods(declared, created);
     expect(merged.map((m: AuthMethod) => m.id)).toEqual(["spec-1", "custom_a"]);
+  });
+
+  it("dedupes custom methods by template even when their rendered ids differ", () => {
+    const declared = [
+      apiKeyMethod("spec-1", "spec"),
+      apiKeyMethod("custom_a_refreshed", "custom", "custom_a"),
+    ];
+    const created = [apiKeyMethod("custom_a", "custom", "custom_a")];
+    const merged = mergeCustomMethods(declared, created);
+    expect(merged.map((m: AuthMethod) => m.id)).toEqual(["spec-1", "custom_a_refreshed"]);
   });
 
   it("returns the declared list unchanged when nothing was created", () => {
@@ -122,7 +136,7 @@ describe("mergeCustomMethods (in-session custom method append)", () => {
 });
 
 describe("createCredentialPayloadOrigin", () => {
-  it("creates an empty values payload for no-auth connection methods", () => {
+  it("creates an empty-string sentinel value for no-auth connection methods", () => {
     expect(
       createCredentialPayloadOrigin({
         origin: "paste",
@@ -131,7 +145,7 @@ describe("createCredentialPayloadOrigin", () => {
         onePasswordItemId: "",
         singleInput: true,
       }),
-    ).toEqual({ values: {} });
+    ).toEqual({ values: { token: "" } });
   });
 
   it("keeps pasted credential values trimmed and keyed by input variable", () => {
@@ -214,6 +228,7 @@ describe("runDcrConnect", () => {
         integrationName: "Linear MCP",
         existingSlugs: [],
         redirectUri: "https://localhost:5394/api/oauth/callback",
+        integration: TEST_INTEGRATION,
       },
     );
 
@@ -230,6 +245,7 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
+    expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);
     // Started with the minted client slug under the chosen owner.
     expect(startArgs).not.toBeNull();
     expect(String(startArgs!.client)).toBe("linear-mcp");
@@ -259,6 +275,7 @@ describe("runDcrConnect", () => {
         integrationName: "App",
         existingSlugs: [],
         declaredScopes: ["declared.scope"],
+        integration: TEST_INTEGRATION,
       },
     );
     expect(outcome.kind).toBe("started");
@@ -290,6 +307,7 @@ describe("runDcrConnect", () => {
         owner: "user",
         integrationName: "App",
         existingSlugs: [],
+        integration: TEST_INTEGRATION,
       },
     );
     expect(outcome).toEqual({
@@ -320,6 +338,7 @@ describe("runDcrConnect", () => {
         owner: "user",
         integrationName: "App",
         existingSlugs: [],
+        integration: TEST_INTEGRATION,
       },
     );
     expect(outcome).toEqual({ kind: "fallback", reason: "probe-failed" });
@@ -349,6 +368,7 @@ describe("runDcrConnect", () => {
         owner: "user",
         integrationName: "App",
         existingSlugs: [],
+        integration: TEST_INTEGRATION,
       },
     );
     expect(outcome.kind).toBe("fallback");

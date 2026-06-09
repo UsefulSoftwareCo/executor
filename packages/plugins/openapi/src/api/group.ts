@@ -36,7 +36,10 @@ const SlugParams = {
 const OpenApiSpecInputPayload = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("blob"), value: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("googleDiscovery"), url: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("googleDiscovery"),
+    url: Schema.String,
+  }),
   Schema.Struct({
     kind: Schema.Literal("googleDiscoveryBundle"),
     urls: Schema.Array(Schema.String),
@@ -86,6 +89,7 @@ const PreviewSpecPayload = Schema.Struct({
 // schema as `addSpec` so a custom apiKey method round-trips identically.
 const ConfigurePayload = Schema.Struct({
   authenticationTemplate: Schema.Array(AuthenticationPayload),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
 });
 
 // ---------------------------------------------------------------------------

@@ -41,13 +41,14 @@ import {
   useOAuthClientsForIntegration,
   type OAuthClientOption,
 } from "../plugins/use-effective-oauth-client";
+import { cn } from "../lib/utils";
 import { OAuthClientForm } from "./oauth-client-form";
-import { AddCustomMethodModal, type CreateCustomMethod } from "./add-custom-method-modal";
+import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
-import { PlusIcon } from "lucide-react";
+import { PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +61,7 @@ import { Input } from "./input";
 import { Label } from "./label";
 import { RadioGroup, RadioGroupItem } from "./radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 
 // ---------------------------------------------------------------------------
 // Add-account modal — the connection-create form.
@@ -76,7 +78,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 // (whose app) is distinct from the CONNECTION's saved-to owner.
 // ---------------------------------------------------------------------------
 
-const REGISTER_NEW = "__new__";
 const ONEPASSWORD_PROVIDER = ProviderKey.make("onepassword");
 
 type CredentialOrigin = "paste" | "onepassword";
@@ -98,7 +99,7 @@ export function createCredentialPayloadOrigin(args: {
   readonly onePasswordItemId: string;
   readonly singleInput: boolean;
 }): CredentialPayloadOrigin | null {
-  if (args.inputs.length === 0) return { values: {} };
+  if (args.inputs.length === 0) return { values: { token: "" } };
   if (args.origin === "onepassword") {
     const id = args.onePasswordItemId.trim();
     if (!args.singleInput || id.length === 0) return null;
@@ -365,15 +366,19 @@ export const connectionLabelForHost = (
  *  explicit choice. Personal: a connection is most often a personal credential. */
 export const DEFAULT_CONNECTION_OWNER: Owner = "user";
 
+const authMethodKey = (method: AuthMethod): string =>
+  method.source === "custom" ? `custom:${String(method.template)}` : `declared:${method.id}`;
+
 /** The selectable methods: the declared catalog methods plus any custom method
- *  created in this session, deduped by id (custom appended last). A just-created
- *  method shows + can be selected before the catalog refresh lands. */
+ *  created in this session, deduped by stable method identity (custom appended
+ *  last). A just-created method shows + can be selected before the catalog
+ *  refresh lands. */
 export const mergeCustomMethods = (
   declared: readonly AuthMethod[],
   created: readonly AuthMethod[],
 ): readonly AuthMethod[] => {
-  const ids = new Set(declared.map((m: AuthMethod) => m.id));
-  return [...declared, ...created.filter((m: AuthMethod) => !ids.has(m.id))];
+  const keys = new Set(declared.map(authMethodKey));
+  return [...declared, ...created.filter((method: AuthMethod) => !keys.has(authMethodKey(method)))];
 };
 
 /** Derive a stable JS-identifier-safe callable connection name from the label. */
@@ -420,6 +425,7 @@ type DcrRegisterArgs = {
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   readonly clientName: string;
   readonly redirectUri?: string;
+  readonly originIntegration?: IntegrationSlug;
 };
 
 type DcrStartArgs = {
@@ -458,6 +464,8 @@ type RunDcrConnectInput = {
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
   readonly redirectUri?: string;
+  /** Integration that requested this DCR client. */
+  readonly integration: IntegrationSlug;
 };
 
 /**
@@ -494,6 +502,7 @@ export async function runDcrConnect(
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
     clientName: input.integrationName,
     redirectUri: input.redirectUri,
+    originIntegration: input.integration,
   });
   if (minted === null) return { kind: "fallback", reason: "probe-failed" };
   deps.start({ client: minted, owner: input.owner });
@@ -512,6 +521,7 @@ export function AddAccountModal(props: {
    *  converter + configure mutation (react never imports a plugin package). A
    *  plugin whose auth is fixed (MCP) omits this, hiding the row. */
   readonly createCustomMethod?: CreateCustomMethod;
+  readonly removeCustomMethod?: (method: AuthMethod) => Promise<boolean>;
 }) {
   const {
     integration,
@@ -521,6 +531,7 @@ export function AddAccountModal(props: {
     onOpenChange,
     initialState,
     createCustomMethod,
+    removeCustomMethod,
   } = props;
   const organizationId = useOrganizationId();
   const ownerDisplay = useOwnerDisplay();
@@ -535,9 +546,14 @@ export function AddAccountModal(props: {
   // catalog refresh lands via `integrationWriteKeys`). Deduped by id, custom
   // last.
   const [createdMethods, setCreatedMethods] = useState<readonly AuthMethod[]>([]);
+  const [removedMethodIds, setRemovedMethodIds] = useState<ReadonlySet<string>>(() => new Set());
   const allMethods = useMemo<readonly AuthMethod[]>(
-    () => mergeCustomMethods(methods, createdMethods),
-    [methods, createdMethods],
+    () =>
+      mergeCustomMethods(
+        methods.filter((method: AuthMethod) => !removedMethodIds.has(authMethodKey(method))),
+        createdMethods.filter((method: AuthMethod) => !removedMethodIds.has(authMethodKey(method))),
+      ),
+    [methods, createdMethods, removedMethodIds],
   );
   const [addingMethod, setAddingMethod] = useState(false);
 
@@ -554,6 +570,7 @@ export function AddAccountModal(props: {
   const [owner, setOwner] = useState<Owner>(defaultOwner);
   const [submitting, setSubmitting] = useState(false);
   const [pickedApp, setPickedApp] = useState<string | null>(null);
+  const [registeringOAuthClient, setRegisteringOAuthClient] = useState(false);
   const [ccBusy, setCcBusy] = useState(false);
   // Transparent DCR: busy while probing/registering/starting; `dcrFailed` flips
   // the modal to the bring-your-own-app picker if auto setup is unavailable.
@@ -578,6 +595,15 @@ export function AddAccountModal(props: {
   );
 
   useEffect(() => {
+    if (allMethods.length === 0) {
+      if (methodId !== "") setMethodId("");
+      return;
+    }
+    if (allMethods.some((m: AuthMethod) => m.id === methodId)) return;
+    setMethodId(allMethods[0]!.id);
+  }, [allMethods, methodId]);
+
+  useEffect(() => {
     if (!initialState) return;
     const initialMethod = initialState.template
       ? allMethods.find(
@@ -594,6 +620,19 @@ export function AddAccountModal(props: {
     setPickedApp(null);
     setDcrFailed(false);
   }, [initialState, allMethods, defaultOwner, ownerOptions]);
+
+  useEffect(() => {
+    if (allMethods.length === 0) return;
+    if (allMethods.some((m: AuthMethod) => m.id === methodId)) return;
+    const initialMethod = initialState?.template
+      ? allMethods.find(
+          (m: AuthMethod) =>
+            m.id === initialState.template || String(m.template) === initialState.template,
+        )
+      : undefined;
+    setMethodId(initialMethod?.id ?? allMethods[0]!.id);
+  }, [allMethods, initialState?.template, methodId]);
+
   const isOAuth = method?.kind === "oauth";
   const isNoAuth = method?.kind === "none";
   // The distinct credential inputs the selected method needs — one per variable
@@ -643,13 +682,12 @@ export function AddAccountModal(props: {
   });
 
   // Default to the first app ONLY when the apps are endpoint-matched; when they
-  // are not (host filter matched nothing), default to "register new" so the user
-  // must explicitly pick a possibly-mismatched app rather than us silently
-  // pre-selecting one. No apps at all → "register new".
+  // are not (host filter matched nothing), leave the selection empty so the
+  // user must explicitly register or choose a possibly-mismatched app.
   const oauthDefaultApp =
-    oauthEndpointMatched && oauthApps.length > 0 ? String(oauthApps[0]?.slug) : REGISTER_NEW;
+    oauthEndpointMatched && oauthApps.length > 0 ? String(oauthApps[0]?.slug) : "";
   const selectedApp = pickedApp ?? oauthDefaultApp;
-  const oauthRegistering = isOAuth && selectedApp === REGISTER_NEW;
+  const oauthRegistering = isOAuth && registeringOAuthClient;
   const chosenClient: OAuthClientOption | null =
     oauthApps.find((c: OAuthClientOption) => String(c.slug) === selectedApp) ?? null;
   const oauthBusy = ccBusy || oauthPopup.busy;
@@ -685,11 +723,13 @@ export function AddAccountModal(props: {
     setOwner(defaultOwner);
     setSubmitting(false);
     setPickedApp(null);
+    setRegisteringOAuthClient(false);
     setCcBusy(false);
     setDcrBusy(false);
     setDcrFailed(false);
     setShowOtherApps(false);
     setCreatedMethods([]);
+    setRemovedMethodIds(new Set());
     setAddingMethod(false);
   };
 
@@ -708,7 +748,29 @@ export function AddAccountModal(props: {
       ...current.filter((m: AuthMethod) => m.id !== created.id),
       created,
     ]);
+    setRemovedMethodIds((current: ReadonlySet<string>) => {
+      const next = new Set(current);
+      next.delete(authMethodKey(created));
+      return next;
+    });
     selectMethod(created.id);
+    setAddingMethod(false);
+  };
+
+  const handleRemoveCustomMethod = async (methodToRemove: AuthMethod): Promise<void> => {
+    if (!removeCustomMethod) return;
+    const removed = await removeCustomMethod(methodToRemove);
+    if (!removed) return;
+    setCreatedMethods((current: readonly AuthMethod[]) =>
+      current.filter((m: AuthMethod) => authMethodKey(m) !== authMethodKey(methodToRemove)),
+    );
+    setRemovedMethodIds((current: ReadonlySet<string>) =>
+      new Set(current).add(authMethodKey(methodToRemove)),
+    );
+    if (methodId === methodToRemove.id) {
+      const next = allMethods.find((m: AuthMethod) => m.id !== methodToRemove.id);
+      selectMethod(next?.id ?? "");
+    }
   };
 
   const close = () => {
@@ -838,6 +900,7 @@ export function AddAccountModal(props: {
               tokenEndpointAuthMethodsSupported: args.tokenEndpointAuthMethodsSupported,
               clientName: args.clientName,
               redirectUri: args.redirectUri,
+              originIntegration: args.originIntegration,
             },
             reactivityKeys: oauthClientWriteKeys,
           });
@@ -873,6 +936,7 @@ export function AddAccountModal(props: {
         ),
         declaredScopes: method.oauth?.scopes,
         redirectUri: oauthCallbackUrl(),
+        integration,
       },
     );
     setDcrBusy(false);
@@ -883,325 +947,391 @@ export function AddAccountModal(props: {
   };
 
   return (
-    <>
-      {createCustomMethod && (
-        <AddCustomMethodModal
-          integrationName={integrationName}
-          open={addingMethod}
-          onOpenChange={setAddingMethod}
-          onCreate={createCustomMethod}
-          onCreated={handleCustomMethodCreated}
-        />
-      )}
-      <Dialog
-        open={open}
-        onOpenChange={(next: boolean) => {
-          if (!next) close();
-          else onOpenChange(true);
-        }}
+    <Dialog
+      open={open}
+      onOpenChange={(next: boolean) => {
+        if (!next) close();
+        else onOpenChange(true);
+      }}
+    >
+      <DialogContent
+        className={cn(
+          "max-h-[85vh] overflow-x-hidden overflow-y-auto",
+          (addingMethod && createCustomMethod) || oauthRegistering
+            ? "gap-0 p-0 sm:max-w-2xl"
+            : "sm:max-w-xl",
+        )}
       >
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Add connection · {integrationName}</DialogTitle>
-            <DialogDescription>
-              {ownerDisplay.showOwnerLabels
-                ? "A connection is a saved way to use this integration, owned by you or the workspace."
-                : "A connection is a saved way to use this integration."}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-5">
-            {/* 1. display name */}
-            <div className="space-y-2">
-              <StepHeader
-                index={1}
-                label="Display name"
-                hint="how you'll tell accounts apart"
-                htmlFor="connection-name"
+        {addingMethod && createCustomMethod ? (
+          <>
+            <DialogHeader className="border-b border-border/60 px-5 py-4">
+              <DialogTitle className="text-base">Add authentication method</DialogTitle>
+              <DialogDescription className="text-sm">
+                Define how {integrationName} receives an API key.
+              </DialogDescription>
+            </DialogHeader>
+            <AddCustomMethodForm
+              onCreate={createCustomMethod}
+              onCreated={handleCustomMethodCreated}
+              onCancel={() => setAddingMethod(false)}
+            />
+          </>
+        ) : oauthRegistering && method?.kind === "oauth" ? (
+          <>
+            <DialogHeader className="border-b border-border/60 px-5 py-4">
+              <DialogTitle className="text-base">Register OAuth app</DialogTitle>
+              <DialogDescription className="text-sm">
+                Add a client for {integrationName}, then select it for this connection.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="px-5 py-5">
+              <OAuthClientForm
+                integrationName={integrationName}
+                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
+                  String(app.slug),
+                )}
+                prefill={{
+                  authorizationUrl: method.oauth?.authorizationUrl,
+                  tokenUrl: method.oauth?.tokenUrl,
+                  scopes: method.oauth?.scopes,
+                  registrationEndpoint: method.oauth?.registrationEndpoint,
+                }}
+                onCreated={(result: { readonly owner: Owner; readonly slug: OAuthClientSlug }) => {
+                  setPickedApp(String(result.slug));
+                  setRegisteringOAuthClient(false);
+                }}
+                onCancel={() => setRegisteringOAuthClient(false)}
+                surface="plain"
               />
-              <Input
-                id="connection-name"
-                placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
-                value={label}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                This connection will be callable as{" "}
-                <span className="font-mono text-foreground">{String(callableName)}</span>.
-              </p>
             </div>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Add connection · {integrationName}</DialogTitle>
+              <DialogDescription>
+                {ownerDisplay.showOwnerLabels
+                  ? "A connection is a saved way to use this integration, owned by you or the workspace."
+                  : "A connection is a saved way to use this integration."}
+              </DialogDescription>
+            </DialogHeader>
 
-            {/* 2. method */}
-            <div className="space-y-2">
-              <StepHeader index={2} label="Authentication method" />
-              <RadioGroup value={methodId} onValueChange={selectMethod} className="gap-2">
-                {allMethods.map((m: AuthMethod) => (
-                  <Label
-                    key={m.id}
-                    htmlFor={`method-${m.id}`}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                  >
-                    <RadioGroupItem id={`method-${m.id}`} value={m.id} className="mt-0.5" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-medium">{m.label}</span>
-                      <span className="block text-xs text-muted-foreground">
-                        {m.kind === "oauth"
-                          ? "OAuth2 flow"
-                          : m.kind === "none"
-                            ? "No credential required"
-                            : m.source === "custom"
-                              ? "Custom method on this integration"
-                              : "Declared by the integration"}
-                      </span>
-                      {m.placements.length > 0 && (
-                        <span className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1">
-                          {m.placements.map((placement, i: number) => (
+            <div className="flex w-full min-w-0 flex-col gap-5">
+              <div className="space-y-2">
+                <StepHeader
+                  index={1}
+                  label="Display name"
+                  hint="how you'll tell accounts apart"
+                  htmlFor="connection-name"
+                />
+                <Input
+                  id="connection-name"
+                  placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
+                  value={label}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  This connection will be callable as{" "}
+                  <span className="font-mono text-foreground">{String(callableName)}</span>.
+                </p>
+              </div>
+
+              {(!dcrActive || createCustomMethod) && (
+                <Tabs
+                  value={methodId}
+                  onValueChange={selectMethod}
+                  className="w-full min-w-0 max-w-full gap-3"
+                >
+                  <TabsList className="flex h-10 w-fit min-w-0 max-w-full justify-start overflow-x-auto overflow-y-hidden p-1 [scrollbar-width:thin]">
+                    <div className="flex w-max shrink-0 items-stretch gap-1">
+                      {allMethods.map((m: AuthMethod) => (
+                        <div
+                          key={m.id}
+                          className="group/method-tab relative flex h-8 shrink-0 items-stretch"
+                        >
+                          <TabsTrigger
+                            value={m.id}
+                            className={cn(
+                              "h-full max-w-64 shrink-0 justify-start px-3 text-sm font-medium",
+                              m.source === "custom" && removeCustomMethod ? "pr-8" : null,
+                            )}
+                          >
+                            <span className="truncate">{m.label}</span>
+                          </TabsTrigger>
+                          {m.source === "custom" && removeCustomMethod ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`Remove ${m.label}`}
+                              tabIndex={methodId === m.id ? 0 : -1}
+                              className={cn(
+                                "absolute right-1 top-1/2 z-10 size-6 -translate-y-1/2 rounded-full text-muted-foreground transition-opacity hover:bg-transparent hover:text-destructive",
+                                methodId === m.id ? "opacity-100" : "pointer-events-none opacity-0",
+                              )}
+                              onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void handleRemoveCustomMethod(m);
+                              }}
+                            >
+                              <XIcon />
+                            </Button>
+                          ) : null}
+                        </div>
+                      ))}
+                      {createCustomMethod && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Add authentication method"
+                          className="h-8 shrink-0 rounded-md border border-transparent bg-transparent px-3 text-foreground/60 hover:bg-background/60 hover:text-foreground dark:hover:bg-input/30"
+                          onClick={() => setAddingMethod(true)}
+                        >
+                          <PlusIcon className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </TabsList>
+
+                  {dcrActive ? null : (
+                    <TabsContent
+                      value={methodId}
+                      className="mt-0 min-w-0 space-y-5 rounded-md border border-border/60 bg-muted/15 p-4"
+                    >
+                      {method?.placements && method.placements.length > 0 ? (
+                        <div className="flex flex-wrap gap-x-3.5 gap-y-1">
+                          {method.placements.map((placement, i: number) => (
                             <PlacementLine key={i} placement={placement} />
                           ))}
-                        </span>
-                      )}
-                    </span>
-                  </Label>
-                ))}
-                {createCustomMethod && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-auto justify-start gap-2 rounded-lg border-dashed border-border/60 bg-transparent px-3 py-2.5 text-sm font-normal text-muted-foreground hover:text-foreground"
-                    onClick={() => setAddingMethod(true)}
-                  >
-                    <PlusIcon className="size-4" />
-                    Custom method
-                  </Button>
-                )}
-              </RadioGroup>
-            </div>
+                        </div>
+                      ) : null}
 
-            {/* 3. credential / OAuth app */}
-            {!isNoAuth && (
-              <div className="space-y-2">
-                <StepHeader index={3} label={isOAuth ? "OAuth app" : "Credential"} />
+                      {!isNoAuth && (
+                        <div className="space-y-2">
+                          <StepHeader index={2} label={isOAuth ? "OAuth app" : "Credential"} />
 
-                {isOAuth && method ? (
-                  dcrActive ? (
-                    // Transparent DCR: no picker. We register an app for you and run
-                    // the OAuth flow with a single Connect click.
-                    <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
-                      <p className="text-sm font-medium">No app to choose</p>
-                      <p className="text-xs text-muted-foreground">
-                        {dcrConnecting
-                          ? `Connecting to ${integrationName}…`
-                          : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
-                      </p>
-                    </div>
-                  ) : oauthLoading ? (
-                    <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {/* No registered app matched the integration's endpoint:
-                      empty state + a prominent register CTA, and an opt-in
-                      collapsed "use a different registered app" escape hatch. */}
-                      {oauthDisplayRegisterCTA && selectedApp !== REGISTER_NEW && (
-                        <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
-                          <p className="text-sm font-medium">No app for {integrationName} yet</p>
-                          <p className="text-xs text-muted-foreground">
-                            None of your registered apps target this integration's OAuth endpoint.
-                            Register one to connect.
-                          </p>
-                          <Button type="button" onClick={() => setPickedApp(REGISTER_NEW)}>
-                            Register an app for {integrationName}
-                          </Button>
-                          {oauthOtherApps.length > 0 &&
-                            (showOtherApps ? (
-                              <RadioGroup
-                                value={selectedApp}
-                                onValueChange={setPickedApp}
-                                className="gap-2 pt-1"
-                              >
-                                {oauthOtherApps.map((app: OAuthClientOption) => (
-                                  <Label
-                                    key={String(app.slug)}
-                                    htmlFor={`other-app-${app.slug}`}
-                                    className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                                  >
-                                    <RadioGroupItem
-                                      id={`other-app-${app.slug}`}
-                                      value={String(app.slug)}
-                                    />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="block text-sm font-medium">
-                                        {clientDisplayName(String(app.slug))}
-                                      </span>
-                                      <span className="block truncate text-xs text-muted-foreground">
-                                        {clientHost(app.tokenUrl)} ·{" "}
-                                        {app.grant === "client_credentials"
-                                          ? "app-to-app"
-                                          : "you'll sign in"}
-                                      </span>
-                                    </span>
-                                    {ownerDisplay.showOwnerLabels ? (
-                                      <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
-                                    ) : null}
-                                  </Label>
-                                ))}
-                              </RadioGroup>
+                          {isOAuth && method ? (
+                            dcrActive ? (
+                              // Transparent DCR: no picker. We register an app for you and run
+                              // the OAuth flow with a single Connect click.
+                              <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
+                                <p className="text-sm font-medium">No app to choose</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {dcrConnecting
+                                    ? `Connecting to ${integrationName}…`
+                                    : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
+                                </p>
+                              </div>
+                            ) : oauthLoading ? (
+                              <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
                             ) : (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setShowOtherApps(true)}
-                                className="h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
-                              >
-                                Use a different registered app
-                              </Button>
-                            ))}
+                              <div className="space-y-3">
+                                {/* No registered app matched the integration's endpoint:
+                        empty state + a prominent register CTA, and an opt-in
+                        collapsed "use a different registered app" escape hatch. */}
+                                {oauthDisplayRegisterCTA && (
+                                  <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
+                                    <p className="text-sm font-medium">
+                                      No app for {integrationName} yet
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      None of your registered apps target this integration's OAuth
+                                      endpoint. Register one to connect.
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        onClick={() => setRegisteringOAuthClient(true)}
+                                      >
+                                        Register app
+                                      </Button>
+                                      {oauthOtherApps.length > 0 && !showOtherApps ? (
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => setShowOtherApps(true)}
+                                        >
+                                          Use another app
+                                        </Button>
+                                      ) : null}
+                                    </div>
+                                    {oauthOtherApps.length > 0 && showOtherApps ? (
+                                      <RadioGroup
+                                        value={selectedApp}
+                                        onValueChange={setPickedApp}
+                                        className="gap-2 pt-1"
+                                      >
+                                        {oauthOtherApps.map((app: OAuthClientOption) => (
+                                          <Label
+                                            key={String(app.slug)}
+                                            htmlFor={`other-app-${app.slug}`}
+                                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+                                          >
+                                            <RadioGroupItem
+                                              id={`other-app-${app.slug}`}
+                                              value={String(app.slug)}
+                                            />
+                                            <span className="min-w-0 flex-1">
+                                              <span className="block text-sm font-medium">
+                                                {clientDisplayName(String(app.slug))}
+                                              </span>
+                                              <span className="block truncate text-xs text-muted-foreground">
+                                                {clientHost(app.tokenUrl)} ·{" "}
+                                                {app.grant === "client_credentials"
+                                                  ? "app-to-app"
+                                                  : "you'll sign in"}
+                                              </span>
+                                            </span>
+                                            {ownerDisplay.showOwnerLabels ? (
+                                              <Badge variant="outline">
+                                                {ownerLabel(app.owner)}
+                                              </Badge>
+                                            ) : null}
+                                          </Label>
+                                        ))}
+                                      </RadioGroup>
+                                    ) : null}
+                                  </div>
+                                )}
+
+                                {oauthApps.length > 0 && (
+                                  <RadioGroup
+                                    value={selectedApp}
+                                    onValueChange={setPickedApp}
+                                    className="gap-2"
+                                  >
+                                    {oauthApps.map((app: OAuthClientOption) => (
+                                      <Label
+                                        key={String(app.slug)}
+                                        htmlFor={`app-${app.slug}`}
+                                        className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+                                      >
+                                        <RadioGroupItem
+                                          id={`app-${app.slug}`}
+                                          value={String(app.slug)}
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block text-sm font-medium">
+                                            {clientDisplayName(String(app.slug))}
+                                          </span>
+                                          <span className="block truncate text-xs text-muted-foreground">
+                                            {clientHost(app.tokenUrl)} ·{" "}
+                                            {app.grant === "client_credentials"
+                                              ? "app-to-app"
+                                              : "you'll sign in"}
+                                          </span>
+                                        </span>
+                                        {ownerDisplay.showOwnerLabels ? (
+                                          <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
+                                        ) : null}
+                                      </Label>
+                                    ))}
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      className="h-auto justify-start gap-3 rounded-lg border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground hover:text-foreground"
+                                      onClick={() => setRegisteringOAuthClient(true)}
+                                    >
+                                      <PlusIcon className="size-4" />
+                                      Register a new app
+                                    </Button>
+                                  </RadioGroup>
+                                )}
+                              </div>
+                            )
+                          ) : (
+                            <CredentialValueFields
+                              inputs={credentialInputs}
+                              singleInput={singleInput}
+                              values={values}
+                              onValuesChange={setValues}
+                              origin={credentialOrigin}
+                              onOriginChange={(next) => {
+                                setCredentialOrigin(next);
+                                if (next === "paste") setOnePasswordItemId("");
+                              }}
+                              onePasswordItemId={onePasswordItemId}
+                              onOnePasswordItemIdChange={setOnePasswordItemId}
+                            />
+                          )}
+                          {isOAuth && oauthPopup.error ? (
+                            <p className="text-xs text-destructive">{oauthPopup.error}</p>
+                          ) : null}
                         </div>
                       )}
+                    </TabsContent>
+                  )}
+                </Tabs>
+              )}
 
-                      {oauthApps.length > 0 && (
-                        <RadioGroup
-                          value={selectedApp}
-                          onValueChange={setPickedApp}
-                          className="gap-2"
-                        >
-                          {oauthApps.map((app: OAuthClientOption) => (
-                            <Label
-                              key={String(app.slug)}
-                              htmlFor={`app-${app.slug}`}
-                              className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                            >
-                              <RadioGroupItem id={`app-${app.slug}`} value={String(app.slug)} />
-                              <span className="min-w-0 flex-1">
-                                <span className="block text-sm font-medium">
-                                  {clientDisplayName(String(app.slug))}
-                                </span>
-                                <span className="block truncate text-xs text-muted-foreground">
-                                  {clientHost(app.tokenUrl)} ·{" "}
-                                  {app.grant === "client_credentials"
-                                    ? "app-to-app"
-                                    : "you'll sign in"}
-                                </span>
-                              </span>
-                              {ownerDisplay.showOwnerLabels ? (
-                                <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
-                              ) : null}
-                            </Label>
-                          ))}
-                          <Label
-                            htmlFor={`app-${REGISTER_NEW}`}
-                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground has-[:checked]:border-ring has-[:checked]:text-foreground"
-                          >
-                            <RadioGroupItem id={`app-${REGISTER_NEW}`} value={REGISTER_NEW} />
-                            Register a new app
-                          </Label>
-                        </RadioGroup>
-                      )}
-
-                      {selectedApp === REGISTER_NEW && (
-                        <OAuthClientForm
-                          integrationName={integrationName}
-                          existingSlugs={[...oauthApps, ...oauthOtherApps].map(
-                            (app: OAuthClientOption) => String(app.slug),
-                          )}
-                          prefill={{
-                            authorizationUrl: method.oauth?.authorizationUrl,
-                            tokenUrl: method.oauth?.tokenUrl,
-                            scopes: method.oauth?.scopes,
-                            registrationEndpoint: method.oauth?.registrationEndpoint,
-                          }}
-                          onCreated={(result: {
-                            readonly owner: Owner;
-                            readonly slug: OAuthClientSlug;
-                          }) => setPickedApp(String(result.slug))}
-                        />
-                      )}
-                    </div>
-                  )
-                ) : (
-                  <CredentialValueFields
-                    inputs={credentialInputs}
-                    singleInput={singleInput}
-                    values={values}
-                    onValuesChange={setValues}
-                    origin={credentialOrigin}
-                    onOriginChange={(next) => {
-                      setCredentialOrigin(next);
-                      if (next === "paste") setOnePasswordItemId("");
-                    }}
-                    onePasswordItemId={onePasswordItemId}
-                    onOnePasswordItemIdChange={setOnePasswordItemId}
-                  />
-                )}
-                {isOAuth && oauthPopup.error ? (
-                  <p className="text-xs text-destructive">{oauthPopup.error}</p>
-                ) : null}
-              </div>
-            )}
-
-            {/* 4. connection saved-to. Hidden while registering a new OAuth app
+              {/* Connection saved-to. Hidden while registering a new OAuth app
               (the connection, and where it's saved, only exists once you
               connect). Pickable everywhere else: for a PICKED OAuth app a
               Workspace (shared) app can mint a Personal OR Workspace connection,
               while a Personal app mints Personal only in cloud;
               for transparent DCR the app + connection land under the chosen
               owner; for a credential method it's the plain owner choice. */}
-            {showSavedToPicker && (
-              <div className="space-y-2">
-                <StepHeader index={4} label="Connection saved to" />
-                <ConnectionOwnerDropdown
-                  value={savedToOwner}
-                  options={savedToOptions}
-                  onChange={(next: Owner) => setOwner(next)}
-                  label="Saved to"
-                />
-              </div>
-            )}
-          </div>
+              {showSavedToPicker && (
+                <div className="space-y-2">
+                  <StepHeader index={3} label="Connection saved to" />
+                  <ConnectionOwnerDropdown
+                    value={savedToOwner}
+                    options={savedToOptions}
+                    onChange={(next: Owner) => setOwner(next)}
+                    label="Saved to"
+                  />
+                </div>
+              )}
+            </div>
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={close}
-              disabled={submitting || oauthBusy || dcrConnecting}
-            >
-              {isOAuth ? "Close" : "Cancel"}
-            </Button>
-            {/* Footer action, in precedence order:
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={close}
+                disabled={submitting || oauthBusy || dcrConnecting}
+              >
+                {isOAuth ? "Close" : "Cancel"}
+              </Button>
+              {/* Footer action, in precedence order:
               - transparent DCR (no picker): a single Connect that runs
                 probe → register → start;
               - registering a BYO app: the form owns its own submit, no footer;
               - picked BYO OAuth app: Connect with OAuth / Connect (client creds);
               - credential/no-auth method: Add connection. */}
-            {dcrActive ? (
-              <Button
-                type="button"
-                onClick={() => void handleDcrConnect()}
-                disabled={dcrConnecting}
-              >
-                {dcrConnecting ? "Connecting…" : "Connect"}
-              </Button>
-            ) : oauthRegistering ? null : isOAuth ? (
-              <Button
-                type="button"
-                onClick={() => void handleOAuthConnect()}
-                disabled={chosenClient === null || oauthBusy}
-              >
-                {oauthBusy
-                  ? "Connecting…"
-                  : chosenClient?.grant === "client_credentials"
-                    ? "Connect"
-                    : "Connect with OAuth"}
-              </Button>
-            ) : (
-              <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-                {submitting ? "Adding…" : "Add connection"}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+              {dcrActive ? (
+                <Button
+                  type="button"
+                  onClick={() => void handleDcrConnect()}
+                  disabled={dcrConnecting}
+                >
+                  {dcrConnecting ? "Connecting…" : "Connect"}
+                </Button>
+              ) : oauthRegistering ? null : isOAuth ? (
+                <Button
+                  type="button"
+                  onClick={() => void handleOAuthConnect()}
+                  disabled={chosenClient === null || oauthBusy}
+                >
+                  {oauthBusy
+                    ? "Connecting…"
+                    : chosenClient?.grant === "client_credentials"
+                      ? "Connect"
+                      : "Connect with OAuth"}
+                </Button>
+              ) : (
+                <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
+                  {submitting ? "Adding…" : "Add connection"}
+                </Button>
+              )}
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

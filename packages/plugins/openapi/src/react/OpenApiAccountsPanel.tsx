@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { IntegrationSlug } from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 
 import { TriangleAlert } from "lucide-react";
@@ -23,6 +23,15 @@ const GOOGLE_AUDIENCE_WARNING: Readonly<Record<string, string>> = {
     "This connection includes Google Workspace admin APIs (Chat, Admin Directory, Admin Reports). Connecting requires a Workspace admin account — personal Gmail accounts cannot grant these scopes.",
   "unsupported-user":
     "This connection includes APIs (e.g. Google Keep) that Google does not grant through standard user OAuth consent. Those tools may fail to authorize.",
+};
+
+const NO_AUTH_METHOD: AuthMethod = {
+  id: "none",
+  label: "No authentication",
+  kind: "none",
+  source: "spec",
+  template: AuthTemplateSlug.make("none"),
+  placements: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -56,10 +65,10 @@ export default function OpenApiAccountsPanel(props: {
     return (configResult.value.authenticationTemplate ?? []) as readonly Authentication[];
   }, [configResult]);
 
-  const methods = useMemo<readonly AuthMethod[]>(
-    () => authMethodsFromConfig(existingTemplate),
-    [existingTemplate],
-  );
+  const methods = useMemo<readonly AuthMethod[]>(() => {
+    const declared = authMethodsFromConfig(existingTemplate);
+    return declared.length > 0 ? declared : [NO_AUTH_METHOD];
+  }, [existingTemplate]);
 
   // Add a custom apiKey method: build an `APIKeyAuthentication` from the generic
   // placements (slug omitted → backend backfills `custom_<id>`), merge-append it
@@ -74,13 +83,29 @@ export default function OpenApiAccountsPanel(props: {
         reactivityKeys: integrationWriteKeys,
       });
       if (Exit.isFailure(exit)) return null;
-      // Reflect the persisted template back as a generic method. The backend
-      // assigns the `custom_<id>` slug; the optimistic id here is derived from
-      // the placements so the row renders + selects until the refresh lands.
-      const created = authMethodsFromConfig([method])[0];
+      const before = new Set(existingTemplate.map((template) => String(template.slug)));
+      const created = authMethodsFromConfig(
+        exit.value.authenticationTemplate as readonly Authentication[],
+      ).find((candidate: AuthMethod) => !before.has(String(candidate.template)));
       return created ?? null;
     },
     [doConfigure, slug, existingTemplate],
+  );
+
+  const removeCustomMethod = useCallback(
+    async (method: AuthMethod): Promise<boolean> => {
+      if (method.source !== "custom") return false;
+      const next = existingTemplate.filter(
+        (template: Authentication) => String(template.slug) !== String(method.template),
+      );
+      const exit = await doConfigure({
+        params: { slug },
+        payload: { authenticationTemplate: next, mode: "replace" },
+        reactivityKeys: integrationWriteKeys,
+      });
+      return Exit.isSuccess(exit);
+    },
+    [doConfigure, existingTemplate, slug],
   );
 
   // For a bundled `google` integration, surface a caution when any selected API
@@ -114,6 +139,7 @@ export default function OpenApiAccountsPanel(props: {
         methods={methods}
         accountHandoff={accountHandoff}
         createCustomMethod={createCustomMethod}
+        removeCustomMethod={removeCustomMethod}
       />
     </div>
   );

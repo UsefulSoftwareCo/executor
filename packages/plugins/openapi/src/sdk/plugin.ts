@@ -170,6 +170,7 @@ export interface OpenApiConfigureInput {
    *  custom apiKey method with no `slug` is assigned a generated `custom_<id>`
    *  slug that is collision-checked against the existing template. */
   readonly authenticationTemplate: readonly Authentication[];
+  readonly mode?: "merge" | "replace";
 }
 
 export interface OpenApiPluginExtension {
@@ -284,7 +285,10 @@ type StaticPreviewSpecOutput = typeof StaticPreviewSpecOutputSchema.Type;
 const OpenApiSpecInputSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("blob"), value: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("googleDiscovery"), url: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("googleDiscovery"),
+    url: Schema.String,
+  }),
   Schema.Struct({
     kind: Schema.Literal("googleDiscoveryBundle"),
     urls: Schema.Array(Schema.String),
@@ -758,7 +762,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         const conversion = yield* fetchGoogleDiscoveryDocument(spec.url).pipe(
           Effect.provide(httpClientLayer),
           Effect.flatMap((documentText) =>
-            convertGoogleDiscoveryToOpenApi({ discoveryUrl: spec.url, documentText }),
+            convertGoogleDiscoveryToOpenApi({
+              discoveryUrl: spec.url,
+              documentText,
+            }),
           ),
         );
         return {
@@ -931,10 +938,13 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               const current = decodeOpenApiIntegrationConfig(record.config);
               if (!current) return [] as readonly Authentication[];
 
-              const merged = mergeAuthenticationTemplate(
-                current.authenticationTemplate ?? [],
-                input.authenticationTemplate,
-              );
+              const merged =
+                input.mode === "replace"
+                  ? input.authenticationTemplate
+                  : mergeAuthenticationTemplate(
+                      current.authenticationTemplate ?? [],
+                      input.authenticationTemplate,
+                    );
 
               const next: OpenApiIntegrationConfig = {
                 ...current,
@@ -1001,7 +1011,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                 })
                 .pipe(
                   Effect.map((result) =>
-                    ToolResult.ok({ slug: String(result.slug), toolCount: result.toolCount }),
+                    ToolResult.ok({
+                      slug: String(result.slug),
+                      toolCount: result.toolCount,
+                    }),
                   ),
                   Effect.catchTags({
                     OpenApiParseError: ({ message }: OpenApiParseError) =>
@@ -1087,7 +1100,9 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         }
 
         const headers: Record<string, string> = { ...(config?.headers ?? {}) };
-        const queryParams: Record<string, string> = { ...(config?.queryParams ?? {}) };
+        const queryParams: Record<string, string> = {
+          ...(config?.queryParams ?? {}),
+        };
 
         // Apply the auth template (D11): render the connection's resolved inputs
         // into the matching template's header/query slots (apiKey) or as a bearer
@@ -1202,7 +1217,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           const conversion = yield* fetchGoogleDiscoveryDocument(trimmed).pipe(
             Effect.provide(httpClientLayer),
             Effect.flatMap((documentText) =>
-              convertGoogleDiscoveryToOpenApi({ discoveryUrl: trimmed, documentText }),
+              convertGoogleDiscoveryToOpenApi({
+                discoveryUrl: trimmed,
+                documentText,
+              }),
             ),
             Effect.catch(() => Effect.succeed(null)),
           );

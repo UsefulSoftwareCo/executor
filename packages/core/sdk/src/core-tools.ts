@@ -185,6 +185,13 @@ const OAuthClientOutput = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
+  origin: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("manual") }),
+    Schema.Struct({
+      kind: Schema.Literal("dynamic_client_registration"),
+      integration: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ]),
 });
 const OAuthClientsListOutput = Schema.Struct({
   clients: Schema.Array(OAuthClientOutput),
@@ -213,6 +220,7 @@ const OAuthRegisterDynamicInput = Schema.Struct({
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientName: Schema.optional(Schema.String),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  originIntegration: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const OAuthRemoveClientInput = Schema.Struct({
   owner: OwnerSchema,
@@ -574,6 +582,10 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 tokenEndpointAuthMethodsSupported: input.tokenEndpointAuthMethodsSupported,
                 clientName: input.clientName,
                 redirectUri: input.redirectUri,
+                originIntegration:
+                  input.originIntegration == null
+                    ? null
+                    : IntegrationSlug.make(input.originIntegration),
               }),
               (client) => ({ client: String(client) }),
             ),

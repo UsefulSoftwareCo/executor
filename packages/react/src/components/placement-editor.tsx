@@ -8,15 +8,32 @@ import {
 } from "../lib/auth-placements";
 import { Button } from "./button";
 import { Input } from "./input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select";
+import { Label } from "./label";
 
 // ---------------------------------------------------------------------------
-// Placement editor — vertical "where does the credential go" cards.
+// Placement editor — compact cards for where an API key is sent.
 //
-// Each card: [Header/Query select] [name] [✕] / Prefix [input] / live preview.
-// "+ another location" appends an empty header placement. Ported from the
-// approved prototype, rebuilt on the production design system.
+// Each card uses a segmented Header/Query choice, labeled name/prefix fields,
+// and an inline preview of the rendered credential placement.
 // ---------------------------------------------------------------------------
+
+const PLACEMENT_PRESETS: readonly {
+  readonly label: string;
+  readonly placements: readonly Placement[];
+}[] = [
+  {
+    label: "Bearer header",
+    placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+  },
+  {
+    label: "API key header",
+    placements: [{ carrier: "header", name: "X-API-Key", prefix: "" }],
+  },
+  {
+    label: "API key query",
+    placements: [{ carrier: "query", name: "api_key", prefix: "" }],
+  },
+];
 
 export function PlacementEditor(props: {
   readonly placements: readonly Placement[];
@@ -31,30 +48,31 @@ export function PlacementEditor(props: {
     onChange(placements.filter((_p: Placement, j: number) => j !== index));
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1.5">
+        {PLACEMENT_PRESETS.map((preset) => (
+          <Button
+            key={preset.label}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 rounded-full px-2.5 text-xs"
+            onClick={() => onChange(preset.placements.map((placement) => ({ ...placement })))}
+          >
+            {preset.label}
+          </Button>
+        ))}
+      </div>
+
       {placements.map((placement: Placement, index: number) => (
-        <div key={index} className="rounded-lg border border-border/60 bg-muted/30 p-3">
-          <div className="flex items-center gap-2">
-            <Select
-              value={placement.carrier}
-              onValueChange={(value: string) => set(index, { carrier: value as Carrier })}
-            >
-              <SelectTrigger size="sm" className="w-32 shrink-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="header">Header</SelectItem>
-                <SelectItem value="query">Query param</SelectItem>
-              </SelectContent>
-            </Select>
-            <Input
-              className="h-8 flex-1"
-              placeholder={placement.carrier === "header" ? "Authorization" : "api_key"}
-              value={placement.name}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                set(index, { name: e.target.value })
-              }
-            />
+        <div
+          key={index}
+          className="rounded-md border border-border/70 bg-background p-3.5 shadow-xs"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <p className="min-w-0 text-xs text-muted-foreground">
+              Send the value in a request header or query string.
+            </p>
             {placements.length > 1 && (
               <Button
                 type="button"
@@ -68,20 +86,62 @@ export function PlacementEditor(props: {
               </Button>
             )}
           </div>
-          <div className="mt-2.5 flex items-center gap-2">
-            <span className="w-32 shrink-0 pl-0.5 text-xs text-muted-foreground">Prefix</span>
-            <Input
-              className="h-8 flex-1"
-              placeholder="optional — e.g. Bearer "
-              value={placement.prefix}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                set(index, { prefix: e.target.value })
-              }
-            />
+
+          <div className="mt-3 grid grid-cols-2 gap-1 rounded-md border border-border/60 bg-muted/30 p-1">
+            {(["header", "query"] as const).map((carrier: Carrier) => (
+              <Button
+                key={carrier}
+                type="button"
+                variant={placement.carrier === carrier ? "secondary" : "ghost"}
+                size="sm"
+                className="h-8 rounded-sm text-xs"
+                onClick={() => set(index, { carrier })}
+              >
+                {carrier === "header" ? "Header" : "Query param"}
+              </Button>
+            ))}
           </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="space-y-1.5">
+              <Label
+                htmlFor={`placement-name-${index}`}
+                className="text-xs font-medium text-muted-foreground"
+              >
+                {placement.carrier === "header" ? "Header name" : "Query parameter"}
+              </Label>
+              <Input
+                id={`placement-name-${index}`}
+                className="h-9"
+                placeholder={placement.carrier === "header" ? "Authorization" : "api_key"}
+                value={placement.name}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  set(index, { name: e.target.value })
+                }
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label
+                htmlFor={`placement-prefix-${index}`}
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Prefix
+              </Label>
+              <Input
+                id={`placement-prefix-${index}`}
+                className="h-9"
+                placeholder="Bearer "
+                value={placement.prefix}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  set(index, { prefix: e.target.value })
+                }
+              />
+            </div>
+          </div>
+
           {placement.name ? (
-            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-dashed border-border/60 pt-2.5 text-xs text-muted-foreground">
-              <span>sends</span>
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              <span>Preview</span>
               <PlacementLine placement={placement} />
             </div>
           ) : null}
@@ -91,11 +151,11 @@ export function PlacementEditor(props: {
         type="button"
         variant="outline"
         size="sm"
-        className="w-fit"
+        className="w-fit border-dashed"
         onClick={() => onChange([...placements, emptyPlacement()])}
       >
         <PlusIcon />
-        another location
+        Add location
       </Button>
     </div>
   );

@@ -54,7 +54,16 @@ export interface OAuthClient {
   readonly resource?: string | null;
 }
 
-export type CreateOAuthClientInput = OAuthClient;
+export type OAuthClientOrigin =
+  | { readonly kind: "manual" }
+  | {
+      readonly kind: "dynamic_client_registration";
+      readonly integration?: IntegrationSlug | null;
+    };
+
+export type CreateOAuthClientInput = OAuthClient & {
+  readonly origin?: OAuthClientOrigin;
+};
 
 /** Metadata-only projection of a registered client for listing in the UI.
  *  Deliberately omits `clientSecret` — the secret is never returned over the
@@ -68,6 +77,7 @@ export interface OAuthClientSummary {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly clientId: string;
+  readonly origin: OAuthClientOrigin;
 }
 
 /** Flow-aware result of `oauth.start` — the status says what's next. */
@@ -144,6 +154,8 @@ export interface RegisterDynamicClientInput {
   readonly clientName?: string;
   /** Browser-facing callback URL to register. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
+  /** Integration that requested this dynamic client, when known. */
+  readonly originIntegration?: IntegrationSlug | null;
 }
 
 export class OAuthStartError extends Schema.TaggedErrorClass<OAuthStartError>()("OAuthStartError", {

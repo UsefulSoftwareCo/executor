@@ -37,6 +37,7 @@ import {
   OAuthStartError,
   type ConnectResult,
   type CreateOAuthClientInput,
+  type OAuthClientOrigin,
   type OAuthClientSummary,
   type OAuthCompleteInput,
   type OAuthGrant,
@@ -202,6 +203,35 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
 const parseGrant = (grant: unknown): OAuthGrant | null =>
   grant === "client_credentials" || grant === "authorization_code" ? grant : null;
 
+const parseOAuthClientOrigin = (row: {
+  readonly slug?: unknown;
+  readonly grant?: unknown;
+  readonly resource?: unknown;
+  readonly origin_kind?: unknown;
+  readonly origin_integration?: unknown;
+}): OAuthClientOrigin => {
+  if (row.origin_kind === "dynamic_client_registration") {
+    return {
+      kind: "dynamic_client_registration",
+      integration:
+        row.origin_integration == null
+          ? null
+          : IntegrationSlug.make(String(row.origin_integration)),
+    };
+  }
+  const slug = row.slug == null ? "" : String(row.slug);
+  const resource = row.resource == null ? "" : String(row.resource);
+  if (
+    row.origin_kind == null &&
+    row.grant === "authorization_code" &&
+    /(^|[-_])mcp($|[-_])/.test(slug) &&
+    /(^|\/)mcp($|[/?#])/.test(resource)
+  ) {
+    return { kind: "dynamic_client_registration", integration: null };
+  }
+  return { kind: "manual" };
+};
+
 interface LoadedOAuthClient {
   readonly slug: string;
   readonly authorizationUrl: string;
@@ -352,6 +382,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           client_id: input.clientId,
           client_secret_item_id: clientSecretItemIdValue,
           resource: input.resource ?? null,
+          origin_kind: input.origin?.kind ?? "manual",
+          origin_integration:
+            input.origin?.kind === "dynamic_client_registration"
+              ? input.origin.integration == null
+                ? null
+                : String(input.origin.integration)
+              : null,
           created_at: now,
         }),
       );
@@ -463,6 +500,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         grant: "authorization_code",
         clientId: information.client_id,
         clientSecret: information.client_secret ?? "",
+        origin: {
+          kind: "dynamic_client_registration",
+          integration: input.originIntegration ?? null,
+        },
       });
       return input.slug;
     });
@@ -498,6 +539,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               tokenUrl: String(row.token_url),
               resource: row.resource == null ? null : String(row.resource),
               clientId: String(row.client_id),
+              origin: parseOAuthClientOrigin(row),
             } satisfies OAuthClientSummary);
           }),
         ),

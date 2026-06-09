@@ -32,6 +32,7 @@ const AddIntegrationPayload = Schema.Struct({
 // as `addIntegration` so a custom apiKey method round-trips identically.
 const ConfigurePayload = Schema.Struct({
   authenticationTemplate: Schema.Array(AuthTemplate),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
 });
 
 // ---------------------------------------------------------------------------
@@ -64,7 +65,9 @@ const ConfigureResponse = Schema.Struct({
 // Errors with HTTP status
 // ---------------------------------------------------------------------------
 
-const IntrospectionError = GraphqlIntrospectionError.annotate({ httpApiStatus: 400 });
+const IntrospectionError = GraphqlIntrospectionError.annotate({
+  httpApiStatus: 400,
+});
 const ExtractionError = GraphqlExtractionError.annotate({ httpApiStatus: 400 });
 
 // ---------------------------------------------------------------------------

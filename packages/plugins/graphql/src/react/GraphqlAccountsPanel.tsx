@@ -61,10 +61,29 @@ export default function GraphqlAccountsPanel(props: {
         reactivityKeys: integrationWriteKeys,
       });
       if (Exit.isFailure(exit)) return null;
-      const created = authMethodsFromConfig(templates)[0];
+      const before = new Set(existingTemplate.map((template: AuthTemplate) => template.slug));
+      const created = authMethodsFromConfig(exit.value.authenticationTemplate).find(
+        (candidate: AuthMethod) => !before.has(String(candidate.template)),
+      );
       return created ?? null;
     },
-    [doConfigure, slug],
+    [doConfigure, existingTemplate, slug],
+  );
+
+  const removeCustomMethod = useCallback(
+    async (method: AuthMethod): Promise<boolean> => {
+      if (method.source !== "custom") return false;
+      const next = existingTemplate.filter(
+        (template: AuthTemplate) => template.slug !== String(method.template),
+      );
+      const exit = await doConfigure({
+        params: { slug: String(slug) },
+        payload: { authenticationTemplate: next, mode: "replace" },
+        reactivityKeys: integrationWriteKeys,
+      });
+      return Exit.isSuccess(exit);
+    },
+    [doConfigure, existingTemplate, slug],
   );
 
   return (
@@ -75,6 +94,7 @@ export default function GraphqlAccountsPanel(props: {
         methods={methods}
         accountHandoff={accountHandoff}
         createCustomMethod={createCustomMethod}
+        removeCustomMethod={removeCustomMethod}
       />
     </div>
   );

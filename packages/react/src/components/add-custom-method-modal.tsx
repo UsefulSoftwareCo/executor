@@ -2,14 +2,7 @@ import { useState } from "react";
 
 import { emptyPlacement, type AuthMethod, type Placement } from "../lib/auth-placements";
 import { Button } from "./button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./dialog";
+import { DialogFooter } from "./dialog";
 import { Input } from "./input";
 import { Label } from "./label";
 import { PlacementEditor } from "./placement-editor";
@@ -34,14 +27,12 @@ export type CreateCustomMethod = (input: {
   readonly placements: readonly Placement[];
 }) => Promise<AuthMethod | null>;
 
-export function AddCustomMethodModal(props: {
-  readonly integrationName: string;
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
+export function AddCustomMethodForm(props: {
   readonly onCreate: CreateCustomMethod;
   readonly onCreated: (method: AuthMethod) => void;
+  readonly onCancel: () => void;
 }) {
-  const { integrationName, open, onOpenChange, onCreate, onCreated } = props;
+  const { onCreate, onCreated, onCancel } = props;
 
   const [label, setLabel] = useState("");
   const [placements, setPlacements] = useState<Placement[]>([emptyPlacement()]);
@@ -51,78 +42,66 @@ export function AddCustomMethodModal(props: {
   const namedPlacements = placements.filter((p: Placement) => p.name.trim().length > 0);
   const canSubmit = !submitting && namedPlacements.length > 0;
 
-  const reset = () => {
-    setLabel("");
-    setPlacements([emptyPlacement()]);
-    setSubmitting(false);
-    setError(null);
-  };
-
-  const close = () => {
-    onOpenChange(false);
-    reset();
-  };
-
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
-    const created = await onCreate({ label: label.trim(), placements: namedPlacements });
+    const created = await onCreate({
+      label: label.trim(),
+      placements: namedPlacements,
+    });
     if (created === null) {
       setSubmitting(false);
       setError("Failed to add method. Please try again.");
       return;
     }
     onCreated(created);
-    close();
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next: boolean) => {
-        if (!next) close();
-        else onOpenChange(true);
-      }}
-    >
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Add auth method · {integrationName}</DialogTitle>
-          <DialogDescription>
-            A reusable method — any account on this integration can pick it.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-5">
-          <div className="space-y-2">
-            <Label htmlFor="custom-method-name" className="text-xs text-muted-foreground">
-              Method name
-            </Label>
+    <>
+      <div className="space-y-5 px-5 py-5">
+        <div className="rounded-md border border-border/70 bg-muted/20 p-3.5">
+          <div className="grid gap-3 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-center">
+            <div>
+              <Label htmlFor="custom-method-name" className="text-sm font-medium">
+                Method name
+              </Label>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Optional; shown in the connection picker.
+              </p>
+            </div>
             <Input
               id="custom-method-name"
-              placeholder="e.g. API key (X-Custom-Token)"
+              className="h-9"
+              placeholder="API key"
               value={label}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
             />
           </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Where does the credential go?</Label>
-            <PlacementEditor placements={placements} onChange={setPlacements} />
-          </div>
-
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
         </div>
 
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={close} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-            {submitting ? "Adding…" : "Add method"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="space-y-2">
+          <div>
+            <Label className="text-sm font-medium">Credential placement</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Bearer-token APIs usually use an Authorization header with a Bearer prefix.
+            </p>
+          </div>
+          <PlacementEditor placements={placements} onChange={setPlacements} />
+        </div>
+
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      </div>
+
+      <DialogFooter className="border-t border-border/60 bg-muted/20 px-5 py-4">
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
+          {submitting ? "Adding…" : "Add method"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }

@@ -91,6 +91,7 @@ describe("oauth.listClients", () => {
           tokenUrl: "https://acme.test/token",
           resource: null,
           clientId: "org-client-id",
+          origin: { kind: "manual" },
         });
         expect(user!.owner).toBe("user");
         expect(user!.grant).toBe("client_credentials");
@@ -150,6 +151,38 @@ describe("oauth.listClients", () => {
         const clientsB = yield* b.executor.oauth.listClients();
         const slugsB = clientsB.map((client) => String(client.slug)).sort();
         expect(slugsB).toEqual(["shared-org"]);
+      }),
+    ),
+  );
+
+  it.effect("classifies legacy MCP DCR-looking clients as dynamic registration", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("axiom-mcp"),
+          authorizationUrl: "https://mcp.axiom.co/authorize",
+          tokenUrl: "https://mcp.axiom.co/token",
+          grant: "authorization_code",
+          clientId: "old-dcr-client",
+          clientSecret: "",
+          resource: "https://mcp.axiom.co/mcp",
+          origin: { kind: "manual" },
+        });
+        yield* Effect.promise(() =>
+          config.db.updateMany("oauth_client", {
+            where: (b) => b("slug", "=", "axiom-mcp"),
+            set: { origin_kind: null, origin_integration: null },
+          }),
+        );
+
+        const clients = yield* executor.oauth.listClients();
+        expect(clients[0]?.origin).toEqual({
+          kind: "dynamic_client_registration",
+          integration: null,
+        });
       }),
     ),
   );

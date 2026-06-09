@@ -89,6 +89,7 @@ const RegisterDynamicPayload = Schema.Struct({
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientName: Schema.optional(Schema.String),
   redirectUri: Schema.optional(Schema.NullOr(Schema.String)),
+  originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
 });
 
 const RegisterDynamicResponse = Schema.Struct({
@@ -109,6 +110,13 @@ const OAuthClientSummaryResponse = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
+  origin: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("manual") }),
+    Schema.Struct({
+      kind: Schema.Literal("dynamic_client_registration"),
+      integration: Schema.optional(Schema.NullOr(IntegrationSlug)),
+    }),
+  ]),
 });
 
 const ListClientsResponse = Schema.Array(OAuthClientSummaryResponse);

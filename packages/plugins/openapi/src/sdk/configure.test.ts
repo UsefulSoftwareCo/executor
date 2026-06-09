@@ -151,7 +151,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
           slug: "cfg_genslug",
         });
 
-        const slugless = sluglessApiKey({ headers: { "x-api-key": [variable("token")] } });
+        const slugless = sluglessApiKey({
+          headers: { "x-api-key": [variable("token")] },
+        });
 
         const merged = yield* executor.openapi.configure("cfg_genslug", {
           authenticationTemplate: [slugless],
@@ -180,8 +182,12 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
           type: "apiKey",
           headers: { "x-other": [variable("token")] },
         };
-        const slugless = sluglessApiKey({ queryParams: { api_key: [variable("token")] } });
-        const slugless2 = sluglessApiKey({ queryParams: { token: [variable("token")] } });
+        const slugless = sluglessApiKey({
+          queryParams: { api_key: [variable("token")] },
+        });
+        const slugless2 = sluglessApiKey({
+          queryParams: { token: [variable("token")] },
+        });
 
         const merged = yield* executor.openapi.configure("cfg_dedupe", {
           authenticationTemplate: [replacement, slugless, slugless2],
@@ -200,6 +206,33 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
           (m: Authentication) => String(m.slug) === "my_custom",
         ) as APIKeyAuthentication;
         expect(replaced.headers).toEqual({ "x-other": [variable("token")] });
+      }),
+    ),
+  );
+
+  it.effect("replace mode overwrites the auth template array", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const seedTemplate: Authentication = {
+          slug: AuthTemplateSlug.make("seed"),
+          type: "apiKey",
+          headers: { authorization: ["Bearer ", variable("token")] },
+        };
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specText() },
+          slug: "cfg_replace",
+          authenticationTemplate: [seedTemplate, customApiKey],
+        });
+
+        const merged = yield* executor.openapi.configure("cfg_replace", {
+          authenticationTemplate: [seedTemplate],
+          mode: "replace",
+        });
+
+        expect(merged.map((m: Authentication) => String(m.slug))).toEqual(["seed"]);
       }),
     ),
   );
