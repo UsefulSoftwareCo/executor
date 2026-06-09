@@ -77,8 +77,13 @@
         "e2e/setup/**/*.{ts,tsx}",
         "e2e/targets/**/*.{ts,tsx}",
         "e2e/scripts/**/*.{ts,tsx}",
+        "e2e/viewer/**/*.{ts,tsx}",
       ],
       "rules": {
+        // The viewer is standalone tooling — it deliberately doesn't pull the
+        // product design system or Effect in.
+        "react/forbid-elements": "off",
+        "executor/no-switch-statement": "off",
         "executor/no-effect-escape-hatch": "off",
         "executor/no-error-constructor": "off",
         "executor/no-instanceof-error": "off",

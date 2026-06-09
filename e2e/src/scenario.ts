@@ -19,8 +19,7 @@ import { makeApiSurface, type ApiSurface } from "./surfaces/api";
 import { makeBrowserSurface, type BrowserSurface } from "./surfaces/browser";
 import { makeCliSurface, type CliSurface } from "./surfaces/cli";
 import { makeMcpSurface, type McpSurface } from "./surfaces/mcp";
-import { writePlayer } from "./viewer/render";
-import { buildIndex } from "./viewer/index-builder";
+import { buildManifest } from "./viewer/manifest";
 
 export const RUNS_DIR = fileURLToPath(new URL("../runs/", import.meta.url));
 
@@ -72,8 +71,7 @@ export const scenario = (
         const exit = yield* Effect.exit(body(ctx));
         rec.finish(exit._tag === "Failure" ? failureMessage(exit.cause) : undefined);
         rec.write();
-        writePlayer(rec.run, rec.dir);
-        buildIndex(RUNS_DIR);
+        buildManifest(RUNS_DIR);
         if (exit._tag === "Failure") {
           return yield* Effect.failCause(exit.cause);
         }

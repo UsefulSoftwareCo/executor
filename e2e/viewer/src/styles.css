@@ -1,0 +1,284 @@
+/* Dark GitHub-ish palette, carried over from the original player. */
+body {
+  font:
+    15px/1.55 ui-sans-serif,
+    system-ui;
+  margin: 0;
+  color: #d7dce5;
+  background: #0b0f17;
+}
+.page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px;
+}
+a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+h1 {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+.hint {
+  color: #6b7785;
+  font-size: 13px;
+  margin-top: 2px;
+}
+.small {
+  font-size: 12px;
+}
+.dim {
+  color: #3d4651;
+}
+.stamp {
+  color: #3d4651;
+  font-size: 12px;
+  margin-top: 1.2rem;
+}
+.ok-text {
+  color: #7ee787;
+}
+.error-text {
+  color: #ff7b72;
+}
+
+/* matrix */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 1rem;
+}
+th,
+td {
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid #161b22;
+  text-align: left;
+  font-size: 14px;
+}
+th {
+  color: #6b7785;
+  font-weight: 600;
+}
+a.scn {
+  color: #d7dce5;
+}
+a.scn:hover {
+  color: #58a6ff;
+}
+a.watch {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  background: #0f1620;
+  white-space: nowrap;
+  font-weight: 600;
+}
+a.watch:hover {
+  border-color: #388bfd;
+  background: #101a2a;
+}
+a.watch.ok {
+  color: #7ee787;
+}
+a.watch.no {
+  color: #ff7b72;
+}
+a.watch .play {
+  color: #58a6ff;
+  font-weight: 400;
+  font-size: 12px;
+}
+.d {
+  color: #6b7785;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+/* run view */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.replay-btn {
+  font: inherit;
+  font-size: 13px;
+  color: #58a6ff;
+  background: #0f1620;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  padding: 0.25rem 0.7rem;
+  cursor: pointer;
+}
+.replay-btn:hover {
+  border-color: #388bfd;
+}
+.hero video {
+  display: block;
+  width: 100%;
+  margin-top: 0.8rem;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  background: #010409;
+}
+.chat {
+  margin-top: 1rem;
+}
+.row {
+  margin: 7px 0;
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 0.25s,
+    transform 0.25s;
+}
+.row.hidden {
+  display: none;
+}
+.row.in {
+  animation: rise 0.25s ease-out;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.u {
+  background: #1f6feb;
+  color: #fff;
+  padding: 0.55rem 0.8rem;
+  border-radius: 12px;
+  font-weight: 600;
+}
+.a {
+  color: #8b98a9;
+  padding: 0.3rem 0.8rem;
+  border-left: 2px solid #30363d;
+}
+.au {
+  background: #1c1606;
+  border: 1px solid #5c4813;
+  color: #e3b341;
+  padding: 0.4rem 0.7rem;
+  border-radius: 10px;
+  font-size: 13.5px;
+}
+.t,
+.st {
+  background: #0f1620;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+}
+.t .g {
+  color: #6b7785;
+}
+.srf {
+  font-size: 11px;
+  color: #6b7785;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  margin-right: 0.35rem;
+  vertical-align: 1px;
+}
+.st .lbl {
+  font-weight: 600;
+}
+.st img,
+.e img {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
+pre {
+  background: #010409;
+  color: #c9d1d9;
+  padding: 0.5rem;
+  border-radius: 6px;
+  margin: 0.4rem 0 0;
+  font-size: 12.5px;
+  overflow: auto;
+  max-height: 280px;
+}
+.term {
+  font:
+    12.5px/1.4 ui-monospace,
+    Menlo,
+    monospace;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  margin-top: 0.5rem;
+  white-space: pre;
+  min-height: 8em;
+  max-height: 24em;
+}
+.clip {
+  font: inherit;
+  font-size: 12.5px;
+  color: #58a6ff;
+  background: #0f1620;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  margin: 0.45rem 0.3rem 0 0;
+  cursor: pointer;
+}
+.clip:hover {
+  border-color: #388bfd;
+}
+.x {
+  padding: 0.2rem 0.8rem;
+  font-size: 13.5px;
+}
+.x.ok {
+  color: #7ee787;
+}
+.x.no {
+  color: #ff7b72;
+  font-weight: 700;
+}
+.e {
+  color: #ff7b72;
+  font-weight: 700;
+  padding: 0.4rem 0.8rem;
+}
+.ledger {
+  margin-top: 0.5rem;
+  font-size: 12.5px;
+}
+.ledger .le {
+  padding: 0.15rem 0.3rem;
+  border-bottom: 1px solid #161b22;
+  color: #9aa7b6;
+}
+details {
+  margin-top: 0.35rem;
+}
+details summary {
+  cursor: pointer;
+  color: #6b7785;
+  font-size: 12.5px;
+}
+.cur {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: #8b98a9;
+  vertical-align: -2px;
+  animation: blink 0.8s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}

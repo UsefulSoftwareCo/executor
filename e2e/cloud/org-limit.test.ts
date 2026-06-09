@@ -36,6 +36,10 @@ scenario(
         await step("Continue into the app", async () => {
           await page.getByRole("button", { name: "Continue to app" }).click();
           await page.getByText("Integrations").first().waitFor();
+          // Let the router navigation fully settle (slow on a cold dev server)
+          // before opening menus — a late remount closes them mid-interaction.
+          await page.waitForURL(/\/$/, { timeout: 30_000 });
+          await page.waitForLoadState("networkidle");
         });
 
         const openCreateOrgModal = async (currentOrg: string) => {

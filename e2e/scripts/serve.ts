@@ -10,6 +10,10 @@ const PORT = Number(process.env.PORT ?? 8901);
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".map": "application/json",
+  ".svg": "image/svg+xml",
   ".json": "application/json",
   ".png": "image/png",
   ".webm": "video/webm",
