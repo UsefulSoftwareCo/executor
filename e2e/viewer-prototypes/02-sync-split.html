@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Viewer: Synced Split</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg-dark: #0b0f17;
+      --bg-panel: #151b27;
+      --bg-hover: #1d2436;
+      --bg-active: #2d3a4f;
+      --text-primary: #d7dce5;
+      --text-secondary: #8a95a6;
+      --text-tertiary: #5d6b7a;
+      --accent-pass: #10b981;
+      --accent-fail: #ef4444;
+      --accent-warning: #f59e0b;
+      --border-color: #2d3a4f;
+    }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 16px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .run-selector {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-selector label {
+      color: var(--text-secondary);
+    }
+
+    .run-selector select {
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .run-selector select:hover {
+      border-color: var(--text-tertiary);
+    }
+
+    .run-meta {
+      display: flex;
+      gap: 12px;
+      flex: 1;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .run-meta span {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .status-badge.pass {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-pass);
+    }
+
+    .status-badge.fail {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--accent-fail);
+    }
+
+    /* Main layout */
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      gap: 1px;
+      background: var(--border-color);
+    }
+
+    /* Left panel: video */
+    .panel-video {
+      flex: 0 0 50%;
+      background: var(--bg-dark);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--border-color);
+    }
+
+    .video-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .video-container video {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+    }
+
+    .video-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      color: var(--text-tertiary);
+      font-size: 14px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .video-controls {
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border-color);
+      padding: 8px 12px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .video-controls input[type="range"] {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--bg-dark);
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    .video-controls input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent-pass);
+      cursor: pointer;
+    }
+
+    .video-controls input[type="range"]::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent-pass);
+      cursor: pointer;
+      border: none;
+    }
+
+    .video-time {
+      min-width: 80px;
+      text-align: right;
+    }
+
+    /* Right panel: steps */
+    .panel-steps {
+      flex: 0 0 50%;
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-left: 1px solid var(--border-color);
+    }
+
+    .steps-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .steps-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .step-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: background 0.15s;
+      color: var(--text-primary);
+    }
+
+    .step-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .step-item.active {
+      background: var(--bg-active);
+      border-left: 3px solid var(--accent-pass);
+      padding-left: 13px;
+    }
+
+    .step-item.fail {
+      border-left: 3px solid var(--accent-fail);
+    }
+
+    .step-item.fail.active {
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .step-role {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      opacity: 0.7;
+    }
+
+    .step-role.user { color: #3b82f6; }
+    .step-role.assistant { color: #8b5cf6; }
+    .step-role.step { color: #10b981; }
+    .step-role.assert { color: #f59e0b; }
+    .step-role.error { color: var(--accent-fail); }
+    .step-role.tool { color: #06b6d4; }
+    .step-role.auth { color: #ec4899; }
+
+    .step-text {
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .step-evidence {
+      margin-top: 8px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .evidence-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 11px;
+      padding: 2px 6px;
+      background: var(--bg-dark);
+      border-radius: 3px;
+      color: var(--text-secondary);
+    }
+
+    .step-assertion {
+      margin-top: 8px;
+      font-size: 12px;
+      background: var(--bg-dark);
+      padding: 8px;
+      border-radius: 3px;
+      border-left: 2px solid var(--accent-warning);
+    }
+
+    .step-assertion.pass {
+      border-left-color: var(--accent-pass);
+    }
+
+    .step-assertion.fail {
+      border-left-color: var(--accent-fail);
+    }
+
+    .assertion-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .assertion-detail {
+      color: var(--text-tertiary);
+      font-family: "Monaco", "Courier New", monospace;
+      font-size: 11px;
+      line-height: 1.3;
+      margin: 2px 0;
+    }
+
+    .step-item.muted {
+      opacity: 0.5;
+      color: var(--text-secondary);
+    }
+
+    .step-item.muted .step-role {
+      opacity: 0.5;
+    }
+
+    .step-time {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 6px;
+    }
+
+    /* Scrollbar styling */
+    .steps-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .steps-list::-webkit-scrollbar-track {
+      background: var(--bg-panel);
+    }
+
+    .steps-list::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+
+    .steps-list::-webkit-scrollbar-thumb:hover {
+      background: var(--text-tertiary);
+    }
+
+    /* No video state */
+    .no-video-message {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      color: var(--text-tertiary);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="run-selector">
+        <label for="runSelect">Run:</label>
+        <select id="runSelect">
+          <!-- Populated by JS -->
+        </select>
+      </div>
+      <div class="run-meta">
+        <span id="runScenario"></span>
+        <span id="runStatus"></span>
+        <span id="runDuration"></span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel-video">
+        <div class="video-container">
+          <video id="sessionVideo" controls style="display: none;"></video>
+          <div id="videoPlaceholder" class="video-placeholder">
+            No video for this run
+          </div>
+        </div>
+        <div class="video-controls">
+          <span id="videoTime">00:00</span>
+          <input type="range" id="videoSeek" min="0" max="100" value="0">
+          <span class="video-time" id="videoDuration">00:00</span>
+        </div>
+      </div>
+
+      <div class="panel-steps">
+        <div class="steps-header">Turns & Evidence</div>
+        <div class="steps-list" id="stepsList">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./data.js"></script>
+  <script>
+    let currentRun = null;
+    let currentVideoStart = null;
+    let currentVideoEnd = null;
+    let isVideoSeeking = false;
+
+    // Format time mm:ss
+    function formatTime(ms) {
+      const seconds = Math.floor(ms / 1000);
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    // Initialize run selector
+    function initializeRunSelector() {
+      const select = document.getElementById('runSelect');
+      E2E_DATA.runs.forEach((run, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = `${run.scenario} (${run.target})`;
+        select.appendChild(option);
+      });
+      select.addEventListener('change', (e) => loadRun(parseInt(e.target.value)));
+      loadRun(0);
+    }
+
+    // Load and render a run
+    function loadRun(index) {
+      currentRun = E2E_DATA.runs[index];
+      currentVideoStart = null;
+      currentVideoEnd = null;
+
+      // Update header
+      document.getElementById('runScenario').textContent = currentRun.scenario;
+      const statusEl = document.getElementById('runStatus');
+      const statusBadge = document.createElement('span');
+      statusBadge.className = 'status-badge ' + (currentRun.ok ? 'pass' : 'fail');
+      statusBadge.textContent = currentRun.ok ? 'PASS' : 'FAIL';
+      statusEl.innerHTML = '';
+      statusEl.appendChild(statusBadge);
+      document.getElementById('runDuration').textContent = `${currentRun.durationMs}ms`;
+
+      // Find session video
+      const sessionVideoTurn = currentRun.turns.find(turn =>
+        turn.role === 'step' && turn.evidence?.some(ev => ev.kind === 'video' && !ev.startMs)
+      );
+
+      const video = document.getElementById('sessionVideo');
+      const placeholder = document.getElementById('videoPlaceholder');
+      const videoControls = document.querySelector('.video-controls');
+
+      if (sessionVideoTurn) {
+        const videoEv = sessionVideoTurn.evidence.find(ev => ev.kind === 'video' && !ev.startMs);
+        const videoPath = currentRun.assetBase + videoEv.path;
+        video.src = videoPath;
+        video.style.display = 'block';
+        placeholder.style.display = 'none';
+        videoControls.style.display = 'flex';
+
+        // Update duration when loaded
+        video.addEventListener('loadedmetadata', () => {
+          document.getElementById('videoDuration').textContent = formatTime(video.duration * 1000);
+          document.getElementById('videoSeek').max = video.duration;
+        }, { once: true });
+
+        // Sync video playback with step highlighting
+        video.addEventListener('play', () => {
+          updateStepHighlight();
+        });
+        video.addEventListener('timeupdate', updateStepHighlight);
+        video.addEventListener('pause', updateStepHighlight);
+
+        // Handle seek control
+        document.getElementById('videoSeek').addEventListener('mousedown', () => {
+          isVideoSeeking = true;
+        });
+        document.getElementById('videoSeek').addEventListener('mouseup', () => {
+          isVideoSeeking = false;
+        });
+        document.getElementById('videoSeek').addEventListener('input', (e) => {
+          video.currentTime = parseFloat(e.target.value);
+        });
+
+        // Update seek bar during playback
+        video.addEventListener('timeupdate', () => {
+          if (!isVideoSeeking) {
+            document.getElementById('videoSeek').value = video.currentTime;
+            document.getElementById('videoTime').textContent = formatTime(video.currentTime * 1000);
+          }
+        });
+      } else {
+        video.style.display = 'none';
+        placeholder.style.display = 'flex';
+        videoControls.style.display = 'none';
+      }
+
+      renderSteps();
+    }
+
+    // Update step highlight based on video time
+    function updateStepHighlight() {
+      const video = document.getElementById('sessionVideo');
+      if (!video || !currentRun || video.style.display === 'none') return;
+
+      const currentTimeMs = video.currentTime * 1000;
+      const stepItems = document.querySelectorAll('.step-item[data-start-ms]');
+
+      stepItems.forEach(item => {
+        const startMs = parseInt(item.getAttribute('data-start-ms'));
+        const endMs = parseInt(item.getAttribute('data-end-ms'));
+
+        if (currentTimeMs >= startMs && currentTimeMs <= endMs) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
+    }
+
+    // Render steps/turns on the right
+    function renderSteps() {
+      const stepsList = document.getElementById('stepsList');
+      stepsList.innerHTML = '';
+
+      currentRun.turns.forEach(turn => {
+        const item = document.createElement('div');
+        item.className = 'step-item';
+
+        // Color by role and error state
+        if (turn.role === 'error') {
+          item.classList.add('fail');
+        }
+        if (turn.role !== 'step' && turn.role !== 'assert' && turn.role !== 'tool' && turn.role !== 'auth') {
+          item.classList.add('muted');
+        }
+
+        // Role badge
+        const roleEl = document.createElement('div');
+        roleEl.className = `step-role ${turn.role}`;
+        roleEl.textContent = turn.role.toUpperCase();
+        item.appendChild(roleEl);
+
+        // Text content
+        const textEl = document.createElement('div');
+        textEl.className = 'step-text';
+        textEl.textContent = turn.text || '';
+        item.appendChild(textEl);
+
+        // Evidence badges
+        if (turn.evidence && turn.evidence.length > 0) {
+          const evidenceEl = document.createElement('div');
+          evidenceEl.className = 'step-evidence';
+          turn.evidence.forEach(ev => {
+            const badge = document.createElement('div');
+            badge.className = 'evidence-badge';
+            const icon = ev.kind === 'screenshot' ? '📸' : ev.kind === 'video' ? '🎬' : '📄';
+            badge.textContent = `${icon} ${ev.kind}`;
+            evidenceEl.appendChild(badge);
+          });
+          item.appendChild(evidenceEl);
+
+          // Video time markers
+          const videoEv = turn.evidence.find(ev => ev.kind === 'video');
+          if (videoEv && videoEv.startMs !== undefined && videoEv.startMs !== null) {
+            item.setAttribute('data-start-ms', videoEv.startMs);
+            item.setAttribute('data-end-ms', videoEv.endMs);
+
+            // Click to seek video
+            item.addEventListener('click', () => {
+              const video = document.getElementById('sessionVideo');
+              if (video && video.style.display !== 'none') {
+                video.currentTime = videoEv.startMs / 1000;
+                video.play();
+              }
+            });
+
+            const timeEl = document.createElement('div');
+            timeEl.className = 'step-time';
+            timeEl.textContent = `${formatTime(videoEv.startMs)} → ${formatTime(videoEv.endMs)}`;
+            item.appendChild(timeEl);
+          }
+        }
+
+        // Assertion details
+        if (turn.role === 'assert' && turn.assertion) {
+          const assertion = turn.assertion;
+          const assertEl = document.createElement('div');
+          assertEl.className = `step-assertion ${assertion.ok ? 'pass' : 'fail'}`;
+
+          const labelEl = document.createElement('div');
+          labelEl.className = 'assertion-label';
+          labelEl.textContent = assertion.label || assertion.kind;
+          assertEl.appendChild(labelEl);
+
+          const detailEl = document.createElement('div');
+          detailEl.className = 'assertion-detail';
+          detailEl.innerHTML = `
+            <div>Expected: <strong>${JSON.stringify(assertion.expected)}</strong></div>
+            <div>Actual: <strong>${JSON.stringify(assertion.actual)}</strong></div>
+          `;
+          assertEl.appendChild(detailEl);
+
+          item.appendChild(assertEl);
+        }
+
+        // Tool call details
+        if (turn.role === 'tool' && turn.call) {
+          const toolEl = document.createElement('div');
+          toolEl.className = 'step-assertion pass';
+
+          const labelEl = document.createElement('div');
+          labelEl.className = 'assertion-label';
+          labelEl.textContent = turn.call.name;
+          toolEl.appendChild(labelEl);
+
+          const detailEl = document.createElement('div');
+          detailEl.className = 'assertion-detail';
+          detailEl.innerHTML = `<div>${turn.text || ''}</div>`;
+          toolEl.appendChild(detailEl);
+
+          item.appendChild(toolEl);
+        }
+
+        stepsList.appendChild(item);
+      });
+    }
+
+    // Start
+    if (window.E2E_DATA) {
+      initializeRunSelector();
+    }
+  </script>
+</body>
+</html>

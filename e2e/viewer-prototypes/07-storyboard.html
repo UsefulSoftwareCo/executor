@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Run Storyboard Viewer</title>
+  <script src="./data.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0b0f17;
+      color: #d7dce5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      padding: 24px;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    /* Header with run switcher */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #1e2331;
+    }
+
+    .run-title {
+      flex: 1;
+    }
+
+    .run-title h1 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .run-meta {
+      font-size: 12px;
+      color: #8a92a6;
+      display: flex;
+      gap: 16px;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .status-badge.pass {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+      border: 1px solid #22c55e;
+    }
+
+    .status-badge.fail {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid #ef4444;
+    }
+
+    .run-selector {
+      display: flex;
+      gap: 8px;
+    }
+
+    .run-btn {
+      padding: 8px 16px;
+      border: 1px solid #2a3545;
+      background: transparent;
+      color: #d7dce5;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    .run-btn:hover {
+      border-color: #4a5568;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .run-btn.active {
+      background: #1e2331;
+      border-color: #4a92f0;
+      color: #4a92f0;
+    }
+
+    /* Storyboard grid */
+    .storyboard {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+
+    /* Panel (comic strip frame) */
+    .panel {
+      background: #141921;
+      border: 2px solid #1e2331;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.2s;
+      position: relative;
+    }
+
+    .panel:hover {
+      border-color: #2a3545;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .panel.failed {
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    /* Panel image area */
+    .panel-image {
+      position: relative;
+      background: #0b0f17;
+      overflow: hidden;
+      aspect-ratio: 16 / 12;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-image img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+    }
+
+    .panel-image.placeholder {
+      font-size: 12px;
+      color: #4a5568;
+      text-align: center;
+      padding: 20px;
+    }
+
+    /* Panel caption (step label) */
+    .panel-caption {
+      padding: 12px;
+      background: #0f1319;
+      border-top: 1px solid #1e2331;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.4;
+      color: #d7dce5;
+      flex: 1;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Panel footer with assertions/status */
+    .panel-footer {
+      padding: 8px 12px;
+      background: #141921;
+      border-top: 1px solid #1e2331;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    /* Assertion stamp */
+    .assertion-stamp {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+    }
+
+    .assertion-stamp.pass {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .assertion-stamp.fail {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+
+    .assertion-symbol {
+      font-size: 11px;
+      font-weight: bold;
+    }
+
+    /* Video slice indicator */
+    .video-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 4px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: rgba(74, 146, 240, 0.2);
+      color: #4a92f0;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    /* Tool call panel (for MCP runs) */
+    .panel-tool {
+      background: #141921;
+      border: 1px solid #2a3545;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .panel-tool-header {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #4a92f0;
+      margin-bottom: 6px;
+      letter-spacing: 0.4px;
+    }
+
+    .panel-tool-content {
+      font-size: 12px;
+      color: #d7dce5;
+      font-family: "Monaco", "Courier New", monospace;
+      overflow: auto;
+      max-height: 200px;
+    }
+
+    .panel-tool-content pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Error/failure display */
+    .failure-container {
+      background: rgba(239, 68, 68, 0.1);
+      border: 2px solid #ef4444;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+
+    .failure-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      font-weight: 600;
+      color: #ef4444;
+      font-size: 14px;
+    }
+
+    .failure-symbol {
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .failure-message {
+      font-size: 12px;
+      color: #d7dce5;
+      padding: 8px 0;
+      border-top: 1px solid rgba(239, 68, 68, 0.3);
+      border-bottom: 1px solid rgba(239, 68, 68, 0.3);
+      margin: 8px 0;
+      padding: 8px 0;
+    }
+
+    .failure-assertion {
+      font-size: 12px;
+      color: #d7dce5;
+      margin-top: 8px;
+      padding: 8px;
+      background: rgba(0, 0, 0, 0.3);
+      border-left: 2px solid #ef4444;
+      border-radius: 2px;
+    }
+
+    .failure-assertion-label {
+      font-weight: 600;
+      color: #ef4444;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .assertion-detail {
+      font-size: 11px;
+      color: #8a92a6;
+      margin-top: 4px;
+      font-family: "Monaco", "Courier New", monospace;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #4a5568;
+    }
+
+    .empty-state p {
+      font-size: 14px;
+    }
+
+    /* Auth flow panel */
+    .auth-panel {
+      background: #141921;
+      border: 1px solid #2a3545;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+
+    .auth-phase {
+      font-weight: 600;
+      color: #4a92f0;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      font-size: 10px;
+      margin-bottom: 4px;
+    }
+
+    .auth-text {
+      color: #d7dce5;
+    }
+
+    /* Print styles */
+    @media print {
+      body {
+        background: white;
+        color: black;
+      }
+
+      .header {
+        page-break-after: avoid;
+      }
+
+      .storyboard {
+        page-break-inside: avoid;
+      }
+
+      .panel {
+        page-break-inside: avoid;
+      }
+
+      .run-selector {
+        display: none;
+      }
+    }
+
+    /* Scrollable content for tool/auth results */
+    .scrollable {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .scrollable::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .scrollable::-webkit-scrollbar-track {
+      background: #0b0f17;
+      border-radius: 3px;
+    }
+
+    .scrollable::-webkit-scrollbar-thumb {
+      background: #2a3545;
+      border-radius: 3px;
+    }
+
+    .scrollable::-webkit-scrollbar-thumb:hover {
+      background: #3a4555;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header with run selector -->
+    <div class="header">
+      <div class="run-title">
+        <h1 id="runTitle">E2E Run</h1>
+        <div class="run-meta">
+          <span id="runScenario"></span>
+          <span id="runTarget"></span>
+          <span id="runDuration"></span>
+        </div>
+      </div>
+      <div class="run-selector" id="runSelector"></div>
+    </div>
+
+    <!-- Main content -->
+    <div id="runContent"></div>
+  </div>
+
+  <script>
+    const data = window.E2E_DATA;
+    let currentRunIndex = 0;
+
+    // Initialize run selector buttons
+    function initializeRunSelector() {
+      const selector = document.getElementById('runSelector');
+      selector.innerHTML = '';
+
+      data.runs.forEach((run, index) => {
+        const btn = document.createElement('button');
+        btn.className = 'run-btn' + (index === currentRunIndex ? ' active' : '');
+        btn.textContent = `Run ${index + 1}`;
+        btn.addEventListener('click', () => selectRun(index));
+        selector.appendChild(btn);
+      });
+    }
+
+    // Select a run and render it
+    function selectRun(index) {
+      currentRunIndex = index;
+      initializeRunSelector();
+      renderRun();
+    }
+
+    // Format time duration
+    function formatDuration(ms) {
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    // Get screenshot turns from run
+    function getScreenshotSteps(run) {
+      return run.turns.filter(t => t.role === 'step' && t.evidence);
+    }
+
+    // Find related assertion for a step
+    function getStepAssertion(run, stepIndex) {
+      // Look for assertion turn right after this step
+      const steps = getScreenshotSteps(run);
+      const step = steps[stepIndex];
+      if (!step) return null;
+
+      // Find assertion in the assertion list
+      const stepOrder = run.turns.indexOf(step);
+      for (let i = stepOrder + 1; i < run.turns.length; i++) {
+        const turn = run.turns[i];
+        if (turn.role === 'assert') {
+          return turn.assertion;
+        }
+        if (turn.role === 'step' || turn.role === 'tool' || turn.role === 'error') {
+          break; // Stop searching if we hit another turn type
+        }
+      }
+      return null;
+    }
+
+    // Render a single screenshot-based panel
+    function renderScreenshotPanel(run, step, stepIndex) {
+      const div = document.createElement('div');
+      div.className = 'panel';
+
+      const screenshot = step.evidence.find(e => e.kind === 'screenshot');
+      const video = step.evidence.find(e => e.kind === 'video');
+
+      // Image
+      const imageDiv = document.createElement('div');
+      imageDiv.className = 'panel-image';
+
+      if (screenshot) {
+        const img = document.createElement('img');
+        img.src = run.assetBase + screenshot.path;
+        img.alt = screenshot.label || step.text;
+        imageDiv.appendChild(img);
+      } else {
+        imageDiv.className += ' placeholder';
+        imageDiv.textContent = 'No screenshot';
+      }
+
+      div.appendChild(imageDiv);
+
+      // Caption
+      const captionDiv = document.createElement('div');
+      captionDiv.className = 'panel-caption';
+      captionDiv.textContent = step.text;
+      div.appendChild(captionDiv);
+
+      // Footer with evidence indicators and assertions
+      const footerDiv = document.createElement('div');
+      footerDiv.className = 'panel-footer';
+
+      // Video indicator
+      if (video) {
+        const videoInd = document.createElement('span');
+        videoInd.className = 'video-indicator';
+        if (video.startMs !== null && video.endMs !== null) {
+          videoInd.textContent = `▶ ${Math.round((video.endMs - video.startMs) / 1000)}s slice`;
+        } else {
+          videoInd.textContent = '▶ Full session';
+        }
+        footerDiv.appendChild(videoInd);
+      }
+
+      // Assertion stamp
+      const assertion = getStepAssertion(run, stepIndex);
+      if (assertion) {
+        const stamp = document.createElement('span');
+        stamp.className = 'assertion-stamp ' + (assertion.ok ? 'pass' : 'fail');
+        stamp.innerHTML = `<span class="assertion-symbol">${assertion.ok ? '✓' : '✕'}</span> ${assertion.label}`;
+        footerDiv.appendChild(stamp);
+      }
+
+      if (footerDiv.children.length > 0) {
+        div.appendChild(footerDiv);
+      }
+
+      return div;
+    }
+
+    // Render tool/auth turn as a simple panel
+    function renderToolPanel(turn) {
+      const div = document.createElement('div');
+      div.className = 'panel-tool';
+
+      const header = document.createElement('div');
+      header.className = 'panel-tool-header';
+      header.textContent = turn.surface ? turn.surface.toUpperCase() + ' Tool' : 'Tool Call';
+      div.appendChild(header);
+
+      const name = document.createElement('div');
+      name.style.fontSize = '12px';
+      name.style.marginBottom = '6px';
+      name.style.color = '#4a92f0';
+      name.textContent = turn.call.name;
+      div.appendChild(name);
+
+      const content = document.createElement('div');
+      content.className = 'panel-tool-content scrollable';
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(turn.result, null, 2);
+      content.appendChild(pre);
+      div.appendChild(content);
+
+      return div;
+    }
+
+    // Render auth turn
+    function renderAuthPanel(turn) {
+      const div = document.createElement('div');
+      div.className = 'auth-panel';
+
+      const phase = document.createElement('div');
+      phase.className = 'auth-phase';
+      phase.textContent = turn.phase || 'Auth';
+      div.appendChild(phase);
+
+      const text = document.createElement('div');
+      text.className = 'auth-text';
+      text.textContent = turn.text;
+      div.appendChild(text);
+
+      return div;
+    }
+
+    // Render the entire run
+    function renderRun() {
+      const run = data.runs[currentRunIndex];
+      const content = document.getElementById('runContent');
+      content.innerHTML = '';
+
+      // Update header
+      document.getElementById('runTitle').textContent = run.scenario;
+      document.getElementById('runScenario').textContent = `Scenario: ${run.scenario}`;
+      document.getElementById('runTarget').textContent = `Target: ${run.target}`;
+      document.getElementById('runDuration').textContent = `Duration: ${formatDuration(run.durationMs)}`;
+
+      // Add status badge to header
+      const header = document.querySelector('.header');
+      let badge = header.querySelector('.status-badge');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'status-badge';
+        header.appendChild(badge);
+      }
+      badge.className = 'status-badge ' + (run.ok ? 'pass' : 'fail');
+      badge.textContent = run.ok ? 'Pass' : 'Fail';
+
+      // Show failure banner if run failed
+      if (!run.ok) {
+        const failureDiv = document.createElement('div');
+        failureDiv.className = 'failure-container';
+
+        const header = document.createElement('div');
+        header.className = 'failure-header';
+        header.innerHTML = '<span class="failure-symbol">✕</span> Run Failed';
+        failureDiv.appendChild(header);
+
+        // Find the failed assertion
+        const failedAssertion = run.asserts.find(a => !a.ok);
+        if (failedAssertion) {
+          const assertDiv = document.createElement('div');
+          assertDiv.className = 'failure-assertion';
+          const label = document.createElement('div');
+          label.className = 'failure-assertion-label';
+          label.textContent = failedAssertion.label;
+          assertDiv.appendChild(label);
+
+          const detail = document.createElement('div');
+          detail.className = 'assertion-detail';
+          detail.innerHTML = `Expected: <strong>${escapeHtml(String(failedAssertion.expected))}</strong><br/>Got: <strong>${escapeHtml(String(failedAssertion.actual))}</strong>`;
+          assertDiv.appendChild(detail);
+
+          failureDiv.appendChild(assertDiv);
+        }
+
+        // Error message if present
+        if (run.error) {
+          const msg = document.createElement('div');
+          msg.className = 'failure-message';
+          msg.textContent = run.error;
+          failureDiv.appendChild(msg);
+        }
+
+        content.appendChild(failureDiv);
+      }
+
+      // Main storyboard section
+      const screenshotSteps = getScreenshotSteps(run);
+
+      if (screenshotSteps.length > 0) {
+        const storyboard = document.createElement('div');
+        storyboard.className = 'storyboard';
+
+        // Render screenshot panels
+        screenshotSteps.forEach((step, idx) => {
+          const panel = renderScreenshotPanel(run, step, idx);
+
+          // Mark failed panels
+          if (!run.ok) {
+            const failedAssertion = run.asserts.find(a => !a.ok);
+            const stepAssertion = getStepAssertion(run, idx);
+            if (failedAssertion && stepAssertion && stepAssertion.label === failedAssertion.label) {
+              panel.classList.add('failed');
+            }
+          }
+
+          storyboard.appendChild(panel);
+        });
+
+        content.appendChild(storyboard);
+      }
+
+      // Non-screenshot turns (auth, tool calls)
+      const otherTurns = run.turns.filter(t =>
+        (t.role === 'auth' || t.role === 'tool') &&
+        !(t.role === 'step' && t.evidence)
+      );
+
+      if (otherTurns.length > 0) {
+        const otherSection = document.createElement('div');
+        otherSection.style.marginTop = '24px';
+
+        const otherTitle = document.createElement('h2');
+        otherTitle.style.fontSize = '16px';
+        otherTitle.style.fontWeight = '600';
+        otherTitle.style.marginBottom = '16px';
+        otherTitle.style.color = '#d7dce5';
+        otherTitle.textContent = screenshotSteps.length === 0 ? 'Run Details' : 'Additional Events';
+        otherSection.appendChild(otherTitle);
+
+        otherTurns.forEach(turn => {
+          if (turn.role === 'auth') {
+            otherSection.appendChild(renderAuthPanel(turn));
+          } else if (turn.role === 'tool') {
+            otherSection.appendChild(renderToolPanel(turn));
+          }
+        });
+
+        content.appendChild(otherSection);
+      }
+
+      // Summary assertions (if no screenshot-based storyboard)
+      if (screenshotSteps.length === 0 && run.asserts && run.asserts.length > 0) {
+        const assertSection = document.createElement('div');
+        assertSection.style.marginTop = '24px';
+
+        const assertTitle = document.createElement('h2');
+        assertTitle.style.fontSize = '16px';
+        assertTitle.style.fontWeight = '600';
+        assertTitle.style.marginBottom = '16px';
+        assertTitle.style.color = '#d7dce5';
+        assertTitle.textContent = 'Assertions';
+        assertSection.appendChild(assertTitle);
+
+        run.asserts.forEach(assertion => {
+          const div = document.createElement('div');
+          div.style.padding = '12px';
+          div.style.marginBottom = '8px';
+          div.style.background = '#141921';
+          div.style.border = '1px solid ' + (assertion.ok ? '#22c55e' : '#ef4444');
+          div.style.borderRadius = '6px';
+
+          const status = document.createElement('div');
+          status.style.fontSize = '13px';
+          status.style.fontWeight = '600';
+          status.style.marginBottom = '6px';
+          status.style.color = assertion.ok ? '#22c55e' : '#ef4444';
+          status.innerHTML = (assertion.ok ? '✓' : '✕') + ' ' + assertion.label;
+          div.appendChild(status);
+
+          const detail = document.createElement('div');
+          detail.style.fontSize = '12px';
+          detail.style.color = '#8a92a6';
+          detail.innerHTML = `Expected: <strong>${escapeHtml(String(assertion.expected))}</strong> | Got: <strong>${escapeHtml(String(assertion.actual))}</strong>`;
+          div.appendChild(detail);
+
+          assertSection.appendChild(div);
+        });
+
+        content.appendChild(assertSection);
+      }
+    }
+
+    // Escape HTML for safe display
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // Initialize
+    initializeRunSelector();
+    renderRun();
+  </script>
+</body>
+</html>

@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Inspector</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #0b0f17;
+      color: #d7dce5;
+      font-size: 13px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    .header {
+      background: #151b27;
+      border-bottom: 1px solid #1a2332;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .run-switcher {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-switcher label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8892a3;
+      font-weight: 600;
+    }
+
+    .run-switcher select {
+      background: #1a2332;
+      color: #d7dce5;
+      border: 1px solid #2a3444;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .run-switcher select:hover {
+      border-color: #3a4454;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .status-badge.ok {
+      background: rgba(52, 168, 104, 0.15);
+      color: #34a868;
+    }
+
+    .status-badge.error {
+      background: rgba(229, 83, 75, 0.15);
+      color: #e5534b;
+    }
+
+    .run-info {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      margin-left: auto;
+      font-size: 12px;
+      color: #8892a3;
+    }
+
+    .run-info span {
+      display: flex;
+      gap: 6px;
+    }
+
+    .run-info strong {
+      color: #d7dce5;
+    }
+
+    .panes {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      gap: 1px;
+      background: #0b0f17;
+    }
+
+    .pane {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #0f1419;
+      border: 1px solid #1a2332;
+    }
+
+    .pane-left {
+      width: 280px;
+      flex-shrink: 0;
+    }
+
+    .pane-center {
+      flex: 1;
+    }
+
+    .pane-right {
+      width: 320px;
+      flex-shrink: 0;
+    }
+
+    .pane-header {
+      background: #151b27;
+      border-bottom: 1px solid #1a2332;
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8892a3;
+    }
+
+    .pane-body {
+      flex: 1;
+      overflow: auto;
+      padding: 8px 0;
+    }
+
+    .tree {
+      width: 100%;
+    }
+
+    .tree-item {
+      padding: 6px 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #8892a3;
+      user-select: none;
+    }
+
+    .tree-item:hover {
+      background: #1a2332;
+      color: #d7dce5;
+    }
+
+    .tree-item.selected {
+      background: #1e3a4c;
+      color: #6da4c9;
+      border-left: 3px solid #6da4c9;
+      padding-left: 9px;
+    }
+
+    .tree-item.error {
+      color: #e5534b;
+    }
+
+    .tree-item.error.selected {
+      background: #3a2426;
+      border-left-color: #e5534b;
+    }
+
+    .tree-icon {
+      display: inline-block;
+      width: 16px;
+      text-align: center;
+      flex-shrink: 0;
+      font-size: 11px;
+    }
+
+    .tree-label {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .evidence-viewer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 32px;
+      text-align: center;
+      height: 100%;
+    }
+
+    .evidence-viewer.has-content {
+      align-items: stretch;
+      justify-content: flex-start;
+      padding: 0;
+    }
+
+    .evidence-content {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+    }
+
+    .screenshot-viewer {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: #0b0f17;
+      overflow: auto;
+    }
+
+    .screenshot-viewer img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border: 1px solid #1a2332;
+      border-radius: 4px;
+    }
+
+    .video-viewer {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      background: #0b0f17;
+      overflow: auto;
+    }
+
+    .video-viewer video {
+      max-width: 100%;
+      max-height: 100%;
+      border: 1px solid #1a2332;
+      border-radius: 4px;
+    }
+
+    .evidence-header {
+      background: #151b27;
+      border-bottom: 1px solid #1a2332;
+      padding: 10px 12px;
+      font-size: 11px;
+      color: #8892a3;
+      flex-shrink: 0;
+    }
+
+    .evidence-label {
+      color: #d7dce5;
+      font-weight: 500;
+    }
+
+    .json-viewer {
+      font-family: "Monaco", "Menlo", "Consolas", "Courier New", monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 12px;
+      overflow: auto;
+      height: 100%;
+      color: #8f96a6;
+    }
+
+    .json-key {
+      color: #6da4c9;
+    }
+
+    .json-value {
+      color: #34a868;
+    }
+
+    .json-string {
+      color: #daa759;
+    }
+
+    .json-boolean {
+      color: #d19a94;
+    }
+
+    .json-null {
+      color: #8892a3;
+    }
+
+    .keyboard-hint {
+      position: fixed;
+      bottom: 12px;
+      right: 12px;
+      background: #151b27;
+      border: 1px solid #1a2332;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #8892a3;
+      z-index: 100;
+    }
+
+    .empty-state {
+      color: #4a5568;
+      font-size: 13px;
+    }
+
+    .turn-timestamp {
+      font-size: 11px;
+      color: #4a5568;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    .assertion-pass {
+      color: #34a868;
+    }
+
+    .assertion-fail {
+      color: #e5534b;
+    }
+
+    .surface-tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 2px;
+      background: rgba(109, 164, 201, 0.15);
+      color: #6da4c9;
+      margin-left: 6px;
+      flex-shrink: 0;
+    }
+
+    .surface-tag.mcp {
+      background: rgba(218, 167, 89, 0.15);
+      color: #daa759;
+    }
+
+    .surface-tag.api {
+      background: rgba(52, 168, 104, 0.15);
+      color: #34a868;
+    }
+
+    .role-icon {
+      font-size: 10px;
+    }
+
+    /* Scrollbar styling */
+    .pane-body::-webkit-scrollbar,
+    .json-viewer::-webkit-scrollbar,
+    .screenshot-viewer::-webkit-scrollbar,
+    .video-viewer::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .pane-body::-webkit-scrollbar-track,
+    .json-viewer::-webkit-scrollbar-track,
+    .screenshot-viewer::-webkit-scrollbar-track,
+    .video-viewer::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .pane-body::-webkit-scrollbar-thumb,
+    .json-viewer::-webkit-scrollbar-thumb,
+    .screenshot-viewer::-webkit-scrollbar-thumb,
+    .video-viewer::-webkit-scrollbar-thumb {
+      background: #2a3444;
+      border-radius: 4px;
+    }
+
+    .pane-body::-webkit-scrollbar-thumb:hover,
+    .json-viewer::-webkit-scrollbar-thumb:hover,
+    .screenshot-viewer::-webkit-scrollbar-thumb:hover,
+    .video-viewer::-webkit-scrollbar-thumb:hover {
+      background: #3a4454;
+    }
+  </style>
+</head>
+<body>
+  <script src="./data.js"></script>
+  <div id="app">
+    <div class="header">
+      <div class="run-switcher">
+        <label for="run-select">Run</label>
+        <select id="run-select"></select>
+      </div>
+      <div class="status-badge" id="status-badge"></div>
+      <div class="run-info">
+        <span><strong>Scenario:</strong> <span id="scenario"></span></span>
+        <span><strong>Target:</strong> <span id="target"></span></span>
+        <span><strong>Duration:</strong> <span id="duration"></span>ms</span>
+      </div>
+    </div>
+
+    <div class="panes">
+      <!-- LEFT PANE: Turn tree -->
+      <div class="pane pane-left">
+        <div class="pane-header">Turns</div>
+        <div class="pane-body">
+          <div class="tree" id="turn-tree"></div>
+        </div>
+      </div>
+
+      <!-- CENTER PANE: Evidence viewer -->
+      <div class="pane pane-center">
+        <div id="evidence-header" class="pane-header">
+          <span id="evidence-title">Select a turn to view evidence</span>
+        </div>
+        <div class="pane-body">
+          <div id="evidence-viewer" class="evidence-viewer">
+            <div class="empty-state">No evidence selected</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT PANE: JSON view -->
+      <div class="pane pane-right">
+        <div class="pane-header">Data</div>
+        <div class="pane-body">
+          <div id="json-viewer" class="json-viewer">
+            <div class="empty-state">Select a turn to view its data</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="keyboard-hint">j/k to navigate • Enter to select</div>
+
+  <script>
+    const data = window.E2E_DATA;
+    let currentRunIdx = 0;
+    let currentTurnIdx = -1;
+
+    const runSelect = document.getElementById('run-select');
+    const scenarioEl = document.getElementById('scenario');
+    const targetEl = document.getElementById('target');
+    const durationEl = document.getElementById('duration');
+    const statusBadgeEl = document.getElementById('status-badge');
+    const turnTreeEl = document.getElementById('turn-tree');
+    const evidenceViewerEl = document.getElementById('evidence-viewer');
+    const evidenceHeaderEl = document.getElementById('evidence-header');
+    const evidenceTitleEl = document.getElementById('evidence-title');
+    const jsonViewerEl = document.getElementById('json-viewer');
+
+    function formatTimestamp(ms) {
+      const date = new Date(ms);
+      return date.toLocaleTimeString();
+    }
+
+    function formatDuration(ms) {
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    function syntaxHighlightJson(json) {
+      json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
+        let cls = 'json-number';
+        if (/^"/.test(match)) {
+          if (/:$/.test(match)) {
+            cls = 'json-key';
+          } else {
+            cls = 'json-string';
+          }
+        } else if (/true|false/.test(match)) {
+          cls = 'json-boolean';
+        } else if (/null/.test(match)) {
+          cls = 'json-null';
+        }
+        return `<span class="${cls}">${match}</span>`;
+      });
+    }
+
+    function getTurnIcon(turn) {
+      switch (turn.role) {
+        case 'user': return '👤';
+        case 'assistant': return '🤖';
+        case 'step': return '→';
+        case 'assert': return '✓';
+        case 'error': return '✕';
+        case 'tool': return '🔧';
+        case 'auth': return '🔐';
+        default: return '•';
+      }
+    }
+
+    function getTurnLabel(turn) {
+      if (turn.role === 'user') {
+        return turn.text.substring(0, 60);
+      } else if (turn.role === 'assistant') {
+        return turn.text.substring(0, 60);
+      } else if (turn.role === 'step') {
+        return turn.text.substring(0, 60);
+      } else if (turn.role === 'assert') {
+        const assertion = turn.assertion;
+        return `${assertion.kind}: ${assertion.label}`.substring(0, 60);
+      } else if (turn.role === 'error') {
+        return turn.text.substring(0, 60);
+      } else if (turn.role === 'tool') {
+        return `${turn.call.name}`.substring(0, 60);
+      } else if (turn.role === 'auth') {
+        return `Auth: ${turn.phase} - ${turn.text}`.substring(0, 60);
+      }
+      return turn.text?.substring(0, 60) || 'Turn';
+    }
+
+    function getSurfaceTag(turn) {
+      if (turn.surface) {
+        return turn.surface;
+      }
+      if (turn.role === 'tool') {
+        return turn.surface || 'api';
+      }
+      return null;
+    }
+
+    function loadRun(idx) {
+      currentRunIdx = idx;
+      currentTurnIdx = -1;
+
+      const run = data.runs[idx];
+      scenarioEl.textContent = run.scenario;
+      targetEl.textContent = run.target;
+      durationEl.textContent = run.durationMs;
+
+      const statusBadge = statusBadgeEl;
+      statusBadge.className = `status-badge ${run.ok ? 'ok' : 'error'}`;
+      statusBadge.textContent = run.ok ? '✓ PASS' : '✕ FAIL';
+
+      buildTurnTree(run);
+      clearEvidence();
+      clearJson();
+    }
+
+    function buildTurnTree(run) {
+      turnTreeEl.innerHTML = '';
+      run.turns.forEach((turn, idx) => {
+        const item = document.createElement('div');
+        item.className = 'tree-item';
+        if (turn.role === 'error' || (turn.role === 'assert' && !turn.assertion.ok)) {
+          item.classList.add('error');
+        }
+
+        const icon = document.createElement('span');
+        icon.className = 'tree-icon role-icon';
+        icon.textContent = getTurnIcon(turn);
+
+        const label = document.createElement('span');
+        label.className = 'tree-label';
+        label.textContent = getTurnLabel(turn);
+
+        const surface = getSurfaceTag(turn);
+        if (surface) {
+          const tag = document.createElement('span');
+          tag.className = `surface-tag ${surface}`;
+          tag.textContent = surface;
+          item.appendChild(icon);
+          item.appendChild(label);
+          item.appendChild(tag);
+        } else {
+          item.appendChild(icon);
+          item.appendChild(label);
+        }
+
+        item.addEventListener('click', () => selectTurn(idx));
+        turnTreeEl.appendChild(item);
+      });
+    }
+
+    function selectTurn(idx) {
+      currentTurnIdx = idx;
+      const items = turnTreeEl.querySelectorAll('.tree-item');
+      items.forEach((item, i) => {
+        if (i === idx) {
+          item.classList.add('selected');
+        } else {
+          item.classList.remove('selected');
+        }
+      });
+
+      const run = data.runs[currentRunIdx];
+      const turn = run.turns[idx];
+      displayEvidence(turn, run);
+      displayJson(turn, run);
+    }
+
+    function clearEvidence() {
+      evidenceViewerEl.className = 'evidence-viewer';
+      evidenceViewerEl.innerHTML = '<div class="empty-state">No evidence selected</div>';
+      evidenceTitleEl.textContent = 'Select a turn to view evidence';
+    }
+
+    function clearJson() {
+      jsonViewerEl.innerHTML = '<div class="empty-state">Select a turn to view its data</div>';
+    }
+
+    function displayEvidence(turn, run) {
+      const hasEvidence = turn.evidence && turn.evidence.length > 0;
+      const hasAssertion = turn.role === 'assert' || turn.role === 'error';
+
+      evidenceTitleEl.textContent = getTurnLabel(turn);
+
+      if (!hasEvidence && !hasAssertion) {
+        clearEvidence();
+        return;
+      }
+
+      evidenceViewerEl.className = 'evidence-viewer has-content';
+      evidenceViewerEl.innerHTML = '';
+
+      if (hasAssertion && turn.role === 'assert' && !turn.assertion.ok) {
+        const header = document.createElement('div');
+        header.className = 'evidence-header';
+        header.innerHTML = `<span class="assertion-fail">✕ Failed Assertion</span>: <span class="evidence-label">${escapeHtml(turn.assertion.label)}</span><br/>Expected: <strong>${escapeHtml(String(turn.assertion.expected))}</strong> | Actual: <strong>${escapeHtml(String(turn.assertion.actual))}</strong>`;
+        evidenceViewerEl.appendChild(header);
+      }
+
+      if (turn.role === 'error') {
+        const header = document.createElement('div');
+        header.className = 'evidence-header';
+        header.style.color = '#e5534b';
+        header.innerHTML = `<span style="color: #e5534b; font-weight: 600;">✕ ERROR</span>: <span class="evidence-label">${escapeHtml(turn.text)}</span>`;
+        evidenceViewerEl.appendChild(header);
+      }
+
+      if (hasEvidence) {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'evidence-content';
+
+        turn.evidence.forEach((ev, evIdx) => {
+          const evidencePath = run.assetBase + ev.path;
+
+          if (ev.kind === 'screenshot') {
+            const header = document.createElement('div');
+            header.className = 'evidence-header';
+            if (ev.label) {
+              header.textContent = `Screenshot: ${ev.label}`;
+            } else {
+              header.textContent = 'Screenshot';
+            }
+            contentDiv.appendChild(header);
+
+            const viewer = document.createElement('div');
+            viewer.className = 'screenshot-viewer';
+            const img = document.createElement('img');
+            img.src = evidencePath;
+            img.alt = ev.label || 'Screenshot';
+            img.onerror = () => {
+              img.parentElement.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(ev.path)}</div>`;
+            };
+            viewer.appendChild(img);
+            contentDiv.appendChild(viewer);
+          } else if (ev.kind === 'video') {
+            const header = document.createElement('div');
+            header.className = 'evidence-header';
+            let label = 'Video';
+            if (ev.startMs !== undefined && ev.endMs !== undefined) {
+              label = `Video slice [${formatDuration(ev.startMs)}...${formatDuration(ev.endMs)}]`;
+            } else {
+              label = 'Full Session Recording';
+            }
+            header.textContent = label;
+            contentDiv.appendChild(header);
+
+            const viewer = document.createElement('div');
+            viewer.className = 'video-viewer';
+            const video = document.createElement('video');
+            video.controls = true;
+            video.src = evidencePath;
+            if (ev.startMs !== null && ev.startMs !== undefined) {
+              video.currentTime = ev.startMs / 1000;
+            }
+            video.onerror = () => {
+              video.parentElement.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(ev.path)}</div>`;
+            };
+            viewer.appendChild(video);
+            contentDiv.appendChild(viewer);
+          }
+        });
+
+        evidenceViewerEl.appendChild(contentDiv);
+      }
+    }
+
+    function displayJson(turn, run) {
+      const obj = {
+        ...turn,
+        _runMeta: {
+          scenario: run.scenario,
+          target: run.target,
+          ok: run.ok,
+          assetBase: run.assetBase
+        }
+      };
+
+      const json = JSON.stringify(obj, null, 2);
+      const highlighted = syntaxHighlightJson(json);
+      jsonViewerEl.innerHTML = highlighted;
+    }
+
+    function initRunSelect() {
+      runSelect.innerHTML = '';
+      data.runs.forEach((run, idx) => {
+        const option = document.createElement('option');
+        option.value = idx;
+        option.textContent = `Run ${idx + 1}: ${run.scenario} (${run.ok ? '✓' : '✕'})`;
+        runSelect.appendChild(option);
+      });
+
+      runSelect.addEventListener('change', (e) => {
+        loadRun(parseInt(e.target.value));
+      });
+    }
+
+    function handleKeyboard(e) {
+      const run = data.runs[currentRunIdx];
+
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (currentTurnIdx < run.turns.length - 1) {
+          selectTurn(currentTurnIdx + 1);
+          const items = turnTreeEl.querySelectorAll('.tree-item');
+          items[currentTurnIdx].scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (currentTurnIdx > 0) {
+          selectTurn(currentTurnIdx - 1);
+          const items = turnTreeEl.querySelectorAll('.tree-item');
+          items[currentTurnIdx].scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (currentTurnIdx >= 0) {
+          const items = turnTreeEl.querySelectorAll('.tree-item');
+          items[currentTurnIdx].click();
+        }
+      }
+    }
+
+    // Initialize
+    initRunSelect();
+    loadRun(0);
+    document.addEventListener('keydown', handleKeyboard);
+  </script>
+</body>
+</html>

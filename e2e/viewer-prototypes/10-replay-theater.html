@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Focused Replay Theater</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #0b0f17;
+      --bg-secondary: #151b27;
+      --text-primary: #d7dce5;
+      --text-secondary: #a9b1ba;
+      --border-color: #2a2f3a;
+      --pass: #10b981;
+      --fail: #ef4444;
+      --accent: #3b82f6;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .theater-container {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* Header: run info + switcher */
+    .header {
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .run-info {
+      flex: 1;
+    }
+
+    .run-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .run-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background-color: var(--bg-primary);
+      font-weight: 500;
+    }
+
+    .run-status.pass {
+      color: var(--pass);
+      border: 1px solid var(--pass);
+    }
+
+    .run-status.fail {
+      color: var(--fail);
+      border: 1px solid var(--fail);
+    }
+
+    .run-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .run-switcher {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-switcher-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-right: 4px;
+    }
+
+    .run-switcher-buttons {
+      display: flex;
+      gap: 4px;
+    }
+
+    .run-btn {
+      padding: 6px 12px;
+      border: 1px solid var(--border-color);
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    .run-btn:hover {
+      background-color: var(--bg-secondary);
+      border-color: var(--accent);
+    }
+
+    .run-btn.active {
+      background-color: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    /* Main replay area */
+    .replay-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .evidence-viewport {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: var(--bg-primary);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .evidence-container {
+      position: relative;
+      max-width: 90vw;
+      max-height: 90vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .evidence-item {
+      max-width: 100%;
+      max-height: 100%;
+      display: none;
+    }
+
+    .evidence-item.active {
+      display: block;
+    }
+
+    .evidence-item img,
+    .evidence-item video {
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 8px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .evidence-item video {
+      width: auto;
+      height: auto;
+    }
+
+    /* Overlay on evidence: step info + assertions */
+    .evidence-overlay {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(
+        to bottom,
+        rgba(11, 15, 23, 0),
+        rgba(11, 15, 23, 0.95)
+      );
+      padding: 24px;
+      border-top: 1px solid var(--border-color);
+      max-height: 35%;
+      overflow-y: auto;
+      z-index: 10;
+    }
+
+    .step-label {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .step-number {
+      font-size: 14px;
+      color: var(--text-secondary);
+      min-width: 40px;
+    }
+
+    .assertions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .assertion {
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border-left: 3px solid;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .assertion.pass {
+      background-color: rgba(16, 185, 129, 0.1);
+      border-left-color: var(--pass);
+      color: var(--pass);
+    }
+
+    .assertion.fail {
+      background-color: rgba(239, 68, 68, 0.1);
+      border-left-color: var(--fail);
+      color: var(--fail);
+    }
+
+    .assertion-icon {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+      font-weight: bold;
+    }
+
+    .assertion-content {
+      flex: 1;
+    }
+
+    .assertion-label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .assertion-detail {
+      font-size: 11px;
+      opacity: 0.85;
+      color: var(--text-secondary);
+    }
+
+    /* Beat count + no evidence fallback */
+    .beat-count {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background-color: rgba(11, 15, 23, 0.8);
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      z-index: 5;
+    }
+
+    .no-evidence {
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* Progress rail at bottom */
+    .progress-rail {
+      background-color: var(--bg-secondary);
+      border-top: 1px solid var(--border-color);
+      padding: 8px 12px;
+      flex-shrink: 0;
+      height: 64px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .progress-beat {
+      flex-shrink: 0;
+      width: 40px;
+      height: 40px;
+      border-radius: 4px;
+      border: 2px solid var(--border-color);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 600;
+      transition: all 0.2s;
+      position: relative;
+    }
+
+    .progress-beat.pass {
+      background-color: rgba(16, 185, 129, 0.2);
+      color: var(--pass);
+      border-color: var(--pass);
+    }
+
+    .progress-beat.fail {
+      background-color: rgba(239, 68, 68, 0.2);
+      color: var(--fail);
+      border-color: var(--fail);
+    }
+
+    .progress-beat.other {
+      background-color: rgba(59, 130, 246, 0.2);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .progress-beat.active {
+      transform: scale(1.15);
+      box-shadow: 0 0 12px currentColor;
+    }
+
+    .progress-beat:hover {
+      border-color: var(--text-primary);
+    }
+
+    /* Keyboard help */
+    .keyboard-help {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      background-color: rgba(11, 15, 23, 0.8);
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      z-index: 5;
+      max-width: 200px;
+    }
+
+    .keyboard-help-item {
+      display: flex;
+      gap: 6px;
+      line-height: 1.4;
+    }
+
+    .keyboard-key {
+      background-color: var(--border-color);
+      padding: 2px 6px;
+      border-radius: 2px;
+      font-family: monospace;
+      flex-shrink: 0;
+    }
+
+    /* Loading state */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      font-size: 16px;
+      color: var(--text-secondary);
+    }
+
+    /* Responsive */
+    @media (max-width: 800px) {
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .run-switcher {
+        align-self: flex-end;
+      }
+
+      .evidence-overlay {
+        max-height: 45%;
+        padding: 16px;
+        font-size: 14px;
+      }
+
+      .step-label {
+        font-size: 16px;
+      }
+
+      .progress-beat {
+        width: 32px;
+        height: 32px;
+        font-size: 9px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <script src="./data.js"></script>
+
+  <div class="theater-container">
+    <div class="header">
+      <div class="run-info">
+        <div class="run-title">
+          <span id="runTitle">Loading...</span>
+          <span class="run-status" id="runStatus">
+            <span id="runStatusIcon">●</span>
+            <span id="runStatusText">Loading</span>
+          </span>
+        </div>
+        <div class="run-meta">
+          <span id="runTarget">—</span> · <span id="runScenario">—</span>
+        </div>
+      </div>
+
+      <div class="run-switcher">
+        <span class="run-switcher-label">Run:</span>
+        <div class="run-switcher-buttons" id="runSwitcher"></div>
+      </div>
+    </div>
+
+    <div class="replay-area">
+      <div class="evidence-viewport">
+        <div class="beat-count" id="beatCount">—</div>
+        <div class="evidence-container" id="evidenceContainer">
+          <div class="loading">Loading evidence...</div>
+        </div>
+        <div class="keyboard-help">
+          <div class="keyboard-help-item">
+            <span class="keyboard-key">←→</span>
+            <span>Navigate</span>
+          </div>
+          <div class="keyboard-help-item">
+            <span class="keyboard-key">Space</span>
+            <span>Next</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="progress-rail" id="progressRail"></div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let currentRunIndex = 0;
+    let currentBeatIndex = 0;
+    let runs = [];
+    let currentRun = null;
+    let beats = [];
+
+    // Load and initialize
+    function init() {
+      if (!window.E2E_DATA || !window.E2E_DATA.runs) {
+        console.error('E2E_DATA not found');
+        return;
+      }
+
+      runs = window.E2E_DATA.runs;
+      buildRunSwitcher();
+      loadRun(0);
+    }
+
+    function buildRunSwitcher() {
+      const container = document.getElementById('runSwitcher');
+      container.innerHTML = '';
+
+      runs.forEach((run, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'run-btn';
+        if (idx === currentRunIndex) btn.classList.add('active');
+
+        const statusIcon = run.ok ? '●' : '●';
+        const statusColor = run.ok ? 'pass' : 'fail';
+        btn.textContent = `${idx + 1}`;
+        btn.title = `${run.scenario}`;
+
+        btn.addEventListener('click', () => loadRun(idx));
+        container.appendChild(btn);
+      });
+    }
+
+    function loadRun(idx) {
+      currentRunIndex = idx;
+      currentRun = runs[idx];
+      currentBeatIndex = 0;
+
+      // Update header
+      document.getElementById('runTitle').textContent = `Run ${idx + 1}`;
+      const runStatus = document.getElementById('runStatus');
+      runStatus.className = 'run-status ' + (currentRun.ok ? 'pass' : 'fail');
+      document.getElementById('runStatusIcon').textContent = currentRun.ok ? '✓' : '✗';
+      document.getElementById('runStatusText').textContent = currentRun.ok ? 'PASS' : 'FAIL';
+
+      document.getElementById('runTarget').textContent = currentRun.target || 'unknown';
+      document.getElementById('runScenario').textContent = currentRun.scenario || '';
+
+      // Update switcher
+      document.querySelectorAll('.run-btn').forEach((btn, i) => {
+        btn.classList.toggle('active', i === idx);
+      });
+
+      // Extract beats (any turn with evidence or assertions or errors)
+      extractBeats();
+
+      // Build progress rail
+      buildProgressRail();
+
+      // Show first beat
+      showBeat(0);
+    }
+
+    function extractBeats() {
+      beats = [];
+
+      currentRun.turns.forEach((turn, turnIdx) => {
+        // Skip purely narrative turns
+        if (turn.role === 'user' || turn.role === 'assistant') return;
+
+        let beat = {
+          turnIdx,
+          turn,
+          role: turn.role,
+          text: turn.text,
+          evidence: turn.evidence || [],
+          assertions: [],
+          ok: null
+        };
+
+        // Gather assertions from this turn + any immediately following assert turns
+        if (turn.role === 'assert') {
+          beat.assertions.push(turn.assertion);
+          beat.ok = turn.assertion?.ok ?? null;
+        } else if (turn.role === 'error') {
+          beat.ok = false;
+        } else if (turn.role === 'step' || turn.role === 'tool' || turn.role === 'auth') {
+          beat.ok = true; // default to pass unless proven otherwise
+        }
+
+        // Infer ok from assertions attached to the turn
+        if (beat.assertions.length > 0) {
+          beat.ok = beat.assertions.every(a => a.ok);
+        }
+
+        beats.push(beat);
+      });
+    }
+
+    function buildProgressRail() {
+      const rail = document.getElementById('progressRail');
+      rail.innerHTML = '';
+
+      beats.forEach((beat, idx) => {
+        const dot = document.createElement('div');
+        dot.className = 'progress-beat';
+
+        if (beat.role === 'assert') {
+          dot.classList.add(beat.assertions[0]?.ok ? 'pass' : 'fail');
+        } else if (beat.role === 'error') {
+          dot.classList.add('fail');
+        } else if (beat.ok === false) {
+          dot.classList.add('fail');
+        } else if (beat.ok === true) {
+          dot.classList.add('pass');
+        } else {
+          dot.classList.add('other');
+        }
+
+        dot.textContent = idx + 1;
+        dot.addEventListener('click', () => showBeat(idx));
+        rail.appendChild(dot);
+      });
+    }
+
+    function showBeat(idx) {
+      if (idx < 0 || idx >= beats.length) return;
+
+      currentBeatIndex = idx;
+      const beat = beats[idx];
+
+      // Update progress rail
+      document.querySelectorAll('.progress-beat').forEach((dot, i) => {
+        dot.classList.toggle('active', i === idx);
+      });
+
+      // Update beat count
+      document.getElementById('beatCount').textContent = `${idx + 1} / ${beats.length}`;
+
+      // Render evidence
+      renderEvidence(beat);
+    }
+
+    function renderEvidence(beat) {
+      const container = document.getElementById('evidenceContainer');
+      container.innerHTML = '';
+
+      // Build step info + assertions overlay
+      const overlay = document.createElement('div');
+      overlay.className = 'evidence-overlay';
+
+      const stepLabel = document.createElement('div');
+      stepLabel.className = 'step-label';
+      stepLabel.innerHTML = `
+        <span class="step-number">#${currentBeatIndex + 1}</span>
+        <span>${escapeHtml(beat.text)}</span>
+      `;
+      overlay.appendChild(stepLabel);
+
+      if (beat.assertions.length > 0) {
+        const assertionsDiv = document.createElement('div');
+        assertionsDiv.className = 'assertions';
+
+        beat.assertions.forEach(assertion => {
+          const assertEl = document.createElement('div');
+          assertEl.className = 'assertion ' + (assertion.ok ? 'pass' : 'fail');
+
+          const icon = document.createElement('div');
+          icon.className = 'assertion-icon';
+          icon.textContent = assertion.ok ? '✓' : '✗';
+
+          const content = document.createElement('div');
+          content.className = 'assertion-content';
+
+          const label = document.createElement('span');
+          label.className = 'assertion-label';
+          label.textContent = assertion.label || 'Assertion';
+          content.appendChild(label);
+
+          if (!assertion.ok) {
+            const detail = document.createElement('div');
+            detail.className = 'assertion-detail';
+            detail.innerHTML = `Expected: ${escapeHtml(String(assertion.expected))} · Got: ${escapeHtml(String(assertion.actual))}`;
+            content.appendChild(detail);
+          }
+
+          assertEl.appendChild(icon);
+          assertEl.appendChild(content);
+          assertionsDiv.appendChild(assertEl);
+        });
+
+        overlay.appendChild(assertionsDiv);
+      }
+
+      // Render evidence items
+      if (beat.evidence.length > 0) {
+        let evidenceHTML = '';
+
+        beat.evidence.forEach((ev, idx) => {
+          const assetPath = currentRun.assetBase
+            ? currentRun.assetBase + ev.path
+            : ev.path;
+
+          if (ev.kind === 'screenshot') {
+            evidenceHTML += `<div class="evidence-item ${idx === 0 ? 'active' : ''}">
+              <img src="${assetPath}" alt="${escapeHtml(ev.label || '')}" />
+            </div>`;
+          } else if (ev.kind === 'video') {
+            const videoAttrs = ev.startMs != null
+              ? `controls style="object-fit: contain;"`
+              : `controls autoplay style="object-fit: contain;"`;
+            evidenceHTML += `<div class="evidence-item ${idx === 0 ? 'active' : ''}">
+              <video ${videoAttrs}>
+                <source src="${assetPath}" type="video/mp4" />
+                Your browser does not support HTML5 video.
+              </video>
+            </div>`;
+          }
+        });
+
+        const evidenceWrapper = document.createElement('div');
+        evidenceWrapper.innerHTML = evidenceHTML;
+        container.appendChild(evidenceWrapper);
+        container.appendChild(overlay);
+      } else {
+        // No evidence, just show the label + assertions
+        const noEvidence = document.createElement('div');
+        noEvidence.className = 'no-evidence';
+        noEvidence.innerHTML = `<p>${escapeHtml(beat.text)}</p><p style="margin-top: 8px; font-size: 12px; color: var(--text-secondary);">(no screenshot/video)</p>`;
+        container.appendChild(noEvidence);
+        container.appendChild(overlay);
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Keyboard navigation
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        e.preventDefault();
+        showBeat(currentBeatIndex + 1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        showBeat(currentBeatIndex - 1);
+      }
+    });
+
+    // Init on load
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>

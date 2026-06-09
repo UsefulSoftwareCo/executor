@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Dense Log Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      background: #0b0f17;
+      color: #d7dce5;
+      line-height: 1.5;
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e2432;
+      background: #0f1319;
+      flex-shrink: 0;
+    }
+
+    .run-selector {
+      display: flex;
+      gap: 8px;
+    }
+
+    .run-btn {
+      padding: 6px 12px;
+      background: #1a2235;
+      border: 1px solid #2a3547;
+      color: #d7dce5;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: all 0.15s ease;
+    }
+
+    .run-btn:hover {
+      background: #232f48;
+      border-color: #3a4557;
+    }
+
+    .run-btn.active {
+      background: #4a90e2;
+      border-color: #5a9fef;
+    }
+
+    .run-btn.failed {
+      background: #d64545;
+      border-color: #e85555;
+    }
+
+    .run-btn.failed.active {
+      background: #e85555;
+    }
+
+    .run-info {
+      font-size: 12px;
+      color: #8a92a2;
+    }
+
+    .container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .run-section {
+      display: none;
+    }
+
+    .run-section.active {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .run-meta {
+      display: grid;
+      grid-template-columns: auto 1fr auto 1fr;
+      gap: 16px;
+      padding: 8px 12px;
+      background: #0f1319;
+      border: 1px solid #1e2432;
+      font-size: 11px;
+      border-radius: 2px;
+    }
+
+    .run-meta-item {
+      display: flex;
+      gap: 6px;
+    }
+
+    .run-meta-label {
+      color: #8a92a2;
+      min-width: 60px;
+    }
+
+    .run-meta-value {
+      color: #d7dce5;
+      word-break: break-all;
+    }
+
+    .event-row {
+      display: grid;
+      grid-template-columns: 80px 80px 1fr 80px;
+      gap: 12px;
+      padding: 6px 8px;
+      background: #0f1319;
+      border-left: 2px solid #1e2432;
+      border-radius: 2px;
+      font-size: 12px;
+      align-items: start;
+      transition: all 0.15s ease;
+    }
+
+    .event-row:hover {
+      background: #16192b;
+      border-left-color: #2a3547;
+    }
+
+    .event-row.error {
+      border-left-color: #d64545;
+      background: #1a1015;
+    }
+
+    .event-row.error:hover {
+      background: #221318;
+    }
+
+    .event-row.failed-assert {
+      border-left-color: #ff9500;
+      background: #18140a;
+    }
+
+    .event-row.failed-assert:hover {
+      background: #1f1810;
+    }
+
+    .event-row.expandable {
+      cursor: pointer;
+    }
+
+    .event-row.expanded {
+      grid-column: 1 / -1;
+      grid-template-columns: 1fr;
+    }
+
+    .event-time {
+      color: #8a92a2;
+      text-align: right;
+      white-space: nowrap;
+      font-size: 11px;
+    }
+
+    .event-role {
+      color: #4a90e2;
+      font-weight: 500;
+      text-align: left;
+      white-space: nowrap;
+      min-width: 50px;
+    }
+
+    .event-role.assistant { color: #7c5cff; }
+    .event-role.step { color: #52d273; }
+    .event-role.tool { color: #ffb627; }
+    .event-role.assert { color: #2ea9e0; }
+    .event-role.auth { color: #9d4edd; }
+    .event-role.error { color: #d64545; }
+    .event-role.user { color: #8a92a2; }
+
+    .event-summary {
+      color: #d7dce5;
+      word-break: break-word;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-status {
+      text-align: right;
+      white-space: nowrap;
+      font-size: 11px;
+    }
+
+    .event-status.ok { color: #52d273; }
+    .event-status.fail { color: #d64545; }
+    .event-status.pending { color: #8a92a2; }
+
+    .event-expanded-content {
+      grid-column: 1 / -1;
+      padding-top: 8px;
+      border-top: 1px solid #1e2432;
+    }
+
+    .event-text {
+      color: #d7dce5;
+      margin-bottom: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .evidence-container {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .evidence-item {
+      background: #0b0f17;
+      border: 1px solid #1e2432;
+      padding: 6px;
+      border-radius: 2px;
+    }
+
+    .evidence-label {
+      font-size: 10px;
+      color: #8a92a2;
+      margin-bottom: 4px;
+      display: block;
+    }
+
+    .screenshot-thumb {
+      max-width: 100px;
+      max-height: 60px;
+      cursor: pointer;
+      border: 1px solid #2a3547;
+      border-radius: 2px;
+      transition: all 0.15s ease;
+    }
+
+    .screenshot-thumb:hover {
+      border-color: #4a90e2;
+      box-shadow: 0 0 8px rgba(74, 144, 226, 0.3);
+    }
+
+    .video-indicator {
+      display: inline-block;
+      padding: 2px 6px;
+      background: #ffb627;
+      color: #0b0f17;
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-right: 4px;
+    }
+
+    .video-indicator:hover {
+      background: #ffc54d;
+    }
+
+    .tool-call {
+      background: #0b0f17;
+      border: 1px solid #1e2432;
+      padding: 6px;
+      border-radius: 2px;
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .tool-name {
+      color: #ffb627;
+      font-weight: 500;
+    }
+
+    .tool-args, .tool-result {
+      margin-top: 4px;
+      padding-left: 12px;
+      color: #a9b1bf;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .assertion {
+      background: #0b0f17;
+      border-left: 2px solid #2ea9e0;
+      padding: 6px 8px;
+      border-radius: 2px;
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .assertion.failed {
+      border-left-color: #d64545;
+      background: #1a1015;
+    }
+
+    .assertion-label {
+      color: #d7dce5;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .assertion-values {
+      color: #a9b1bf;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 4px;
+      font-size: 10px;
+    }
+
+    .assertion-value {
+      padding: 4px 6px;
+      background: rgba(74, 144, 226, 0.1);
+    }
+
+    .assertion.failed .assertion-value {
+      background: rgba(214, 69, 69, 0.1);
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(11, 15, 23, 0.95);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .modal.active {
+      display: flex;
+    }
+
+    .modal-content {
+      position: relative;
+      max-width: 90vw;
+      max-height: 90vh;
+      background: #0f1319;
+      border: 1px solid #2a3547;
+      border-radius: 4px;
+      overflow: auto;
+    }
+
+    .modal-image {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+    }
+
+    .modal-video {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: #1a2235;
+      border: 1px solid #2a3547;
+      color: #d7dce5;
+      width: 32px;
+      height: 32px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-close:hover {
+      background: #232f48;
+    }
+
+    .error-box {
+      background: #1a1015;
+      border: 1px solid #d64545;
+      padding: 8px;
+      border-radius: 2px;
+      color: #ff9090;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 8px;
+    }
+
+    .expand-icon {
+      display: inline-block;
+      margin-right: 4px;
+      width: 12px;
+      text-align: center;
+      color: #8a92a2;
+    }
+
+    .event-row.expanded .expand-icon::before {
+      content: '▼';
+    }
+
+    .event-row:not(.expanded) .expand-icon::before {
+      content: '▶';
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="run-selector" id="runSelector"></div>
+    <div class="run-info" id="runInfo"></div>
+  </div>
+
+  <div class="container" id="container"></div>
+  <div class="modal" id="modal">
+    <div class="modal-content" id="modalContent"></div>
+  </div>
+
+  <script src="./data.js"></script>
+  <script>
+    const modal = document.getElementById('modal');
+    const modalContent = document.getElementById('modalContent');
+    const container = document.getElementById('container');
+    const runSelector = document.getElementById('runSelector');
+    const runInfo = document.getElementById('runInfo');
+
+    let currentRunIndex = 0;
+
+    function closeModal() {
+      modal.classList.remove('active');
+      modalContent.innerHTML = '';
+    }
+
+    function openImage(src) {
+      const img = document.createElement('img');
+      img.src = src;
+      img.className = 'modal-image';
+      const closeBtn = document.createElement('div');
+      closeBtn.className = 'modal-close';
+      closeBtn.innerHTML = '✕';
+      closeBtn.onclick = closeModal;
+      modalContent.innerHTML = '';
+      modalContent.appendChild(img);
+      modalContent.appendChild(closeBtn);
+      modal.classList.add('active');
+    }
+
+    function openVideo(src, startMs, endMs) {
+      const video = document.createElement('video');
+      video.src = src;
+      video.className = 'modal-video';
+      video.controls = true;
+      video.autoplay = true;
+      if (startMs != null) {
+        video.currentTime = (startMs || 0) / 1000;
+      }
+      const closeBtn = document.createElement('div');
+      closeBtn.className = 'modal-close';
+      closeBtn.innerHTML = '✕';
+      closeBtn.onclick = closeModal;
+      modalContent.innerHTML = '';
+      modalContent.appendChild(video);
+      modalContent.appendChild(closeBtn);
+      modal.classList.add('active');
+    }
+
+    function formatTime(ms) {
+      const seconds = Math.floor((ms % 60000) / 1000);
+      const minutes = Math.floor((ms % 3600000) / 60000);
+      const hours = Math.floor(ms / 3600000);
+      if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      }
+      return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function createEventRow(turn, run) {
+      const row = document.createElement('div');
+      row.className = 'event-row';
+
+      const startTime = run.startedAt;
+      const relativeMs = turn.t - startTime;
+      const timeStr = formatTime(relativeMs);
+
+      let roleStr = turn.role;
+      let summaryStr = turn.text || '';
+      let statusStr = '';
+      let hasEvidence = false;
+      let isError = false;
+      let isFail = false;
+
+      // Determine status and styling
+      if (turn.role === 'assert') {
+        if (!turn.assertion.ok) {
+          isFail = true;
+          statusStr = '✕ FAIL';
+        } else {
+          statusStr = '✓ PASS';
+        }
+      } else if (turn.role === 'error') {
+        isError = true;
+        statusStr = '✕ ERROR';
+      }
+
+      if (turn.evidence && turn.evidence.length > 0) {
+        hasEvidence = true;
+      }
+
+      if (turn.role === 'tool') {
+        if (turn.ok) {
+          statusStr = '✓ OK';
+        } else {
+          statusStr = '✗ FAIL';
+          isFail = true;
+        }
+      }
+
+      row.innerHTML = `
+        <div class="event-time">${timeStr}</div>
+        <div class="event-role ${turn.role}">${turn.role}</div>
+        <div class="event-summary">${hasEvidence ? '<span class="expand-icon"></span>' : ''}${escapeHtml(summaryStr)}</div>
+        <div class="event-status ${isFail ? 'fail' : (statusStr === '✓ PASS' || statusStr === '✓ OK' ? 'ok' : 'pending')}">${statusStr}</div>
+      `;
+
+      row.classList.add('event-role');
+      if (isError) {
+        row.classList.add('error');
+      } else if (isFail && turn.role === 'assert') {
+        row.classList.add('failed-assert');
+      }
+
+      if (hasEvidence) {
+        row.classList.add('expandable');
+        let isExpanded = false;
+
+        row.onclick = (e) => {
+          e.stopPropagation();
+          isExpanded = !isExpanded;
+
+          const existing = row.querySelector('.event-expanded-content');
+          if (existing) {
+            existing.remove();
+            row.classList.remove('expanded');
+            isExpanded = false;
+          } else {
+            row.classList.add('expanded');
+            const content = createExpandedContent(turn, run);
+            row.appendChild(content);
+          }
+        };
+      }
+
+      return row;
+    }
+
+    function createExpandedContent(turn, run) {
+      const div = document.createElement('div');
+      div.className = 'event-expanded-content';
+
+      let html = '';
+
+      if (turn.text && turn.role !== 'user' && turn.role !== 'assistant') {
+        html += `<div class="event-text">${escapeHtml(turn.text)}</div>`;
+      }
+
+      if (turn.kind === 'reasoning') {
+        html += `<div class="event-text">${escapeHtml(turn.text)}</div>`;
+      }
+
+      if (turn.assertion) {
+        const failed = !turn.assertion.ok;
+        html += `<div class="assertion ${failed ? 'failed' : ''}">
+          <div class="assertion-label">${escapeHtml(turn.assertion.label)}</div>
+          <div class="assertion-values">
+            <div class="assertion-value"><strong>actual:</strong> ${escapeHtml(String(turn.assertion.actual))}</div>
+            <div class="assertion-value"><strong>expected:</strong> ${escapeHtml(String(turn.assertion.expected))}</div>
+          </div>
+        </div>`;
+      }
+
+      if (turn.call) {
+        html += `<div class="tool-call">
+          <div class="tool-name">${escapeHtml(turn.call.name)}</div>
+          <div class="tool-args"><strong>args:</strong> ${escapeHtml(JSON.stringify(turn.call.args, null, 2))}</div>
+        </div>`;
+      }
+
+      if (turn.result) {
+        html += `<div class="tool-call">
+          <div class="tool-name">result</div>
+          <div class="tool-result">${escapeHtml(JSON.stringify(turn.result, null, 2))}</div>
+        </div>`;
+      }
+
+      if (turn.evidence && turn.evidence.length > 0) {
+        html += '<div class="evidence-container">';
+        turn.evidence.forEach((ev) => {
+          const fullPath = run.assetBase + ev.path;
+          if (ev.kind === 'screenshot') {
+            html += `
+              <div class="evidence-item">
+                <span class="evidence-label">${escapeHtml(ev.label || 'screenshot')}</span>
+                <img src="${escapeHtml(fullPath)}" class="screenshot-thumb" onclick="openImage('${escapeHtml(fullPath)}')">
+              </div>
+            `;
+          } else if (ev.kind === 'video') {
+            const sliceInfo = ev.startMs != null ? ` (${ev.startMs}ms–${ev.endMs}ms)` : ' (full session)';
+            html += `
+              <div class="evidence-item">
+                <span class="evidence-label">video${sliceInfo}</span>
+                <span class="video-indicator" onclick="openVideo('${escapeHtml(fullPath)}', ${ev.startMs}, ${ev.endMs})">▶ play</span>
+              </div>
+            `;
+          } else if (ev.kind === 'json') {
+            html += `
+              <div class="evidence-item">
+                <span class="evidence-label">json</span>
+                <pre>${escapeHtml(JSON.stringify(ev.data, null, 2))}</pre>
+              </div>
+            `;
+          }
+        });
+        html += '</div>';
+      }
+
+      div.innerHTML = html;
+      return div;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function renderRun(run) {
+      container.innerHTML = '';
+
+      // Run metadata
+      const meta = document.createElement('div');
+      meta.className = 'run-meta';
+      const durationS = ((run.endedAt - run.startedAt) / 1000).toFixed(1);
+      meta.innerHTML = `
+        <div class="run-meta-item">
+          <span class="run-meta-label">scenario:</span>
+          <span class="run-meta-value">${escapeHtml(run.scenario)}</span>
+        </div>
+        <div class="run-meta-item">
+          <span class="run-meta-label">target:</span>
+          <span class="run-meta-value">${escapeHtml(run.target)}</span>
+        </div>
+        <div class="run-meta-item">
+          <span class="run-meta-label">duration:</span>
+          <span class="run-meta-value">${durationS}s</span>
+        </div>
+        <div class="run-meta-item">
+          <span class="run-meta-label">turns:</span>
+          <span class="run-meta-value">${run.turns.length}</span>
+        </div>
+      `;
+      container.appendChild(meta);
+
+      // Error box if run failed
+      if (!run.ok && run.error) {
+        const errorBox = document.createElement('div');
+        errorBox.className = 'error-box';
+        errorBox.textContent = run.error;
+        container.appendChild(errorBox);
+      }
+
+      // Events
+      run.turns.forEach((turn) => {
+        const row = createEventRow(turn, run);
+        container.appendChild(row);
+      });
+    }
+
+    function initRunSelector() {
+      runSelector.innerHTML = '';
+      window.E2E_DATA.runs.forEach((run, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'run-btn';
+        if (!run.ok) {
+          btn.classList.add('failed');
+        }
+        if (idx === currentRunIndex) {
+          btn.classList.add('active');
+        }
+        btn.textContent = `${idx + 1}. ${run.target}`;
+        btn.onclick = () => {
+          currentRunIndex = idx;
+          initRunSelector();
+          updateRunInfo();
+          renderRun(run);
+        };
+        runSelector.appendChild(btn);
+      });
+    }
+
+    function updateRunInfo() {
+      const run = window.E2E_DATA.runs[currentRunIndex];
+      runInfo.textContent = `${run.ok ? '✓ PASS' : '✗ FAIL'} • ${run.scenario}`;
+    }
+
+    // Initialize
+    initRunSelector();
+    updateRunInfo();
+    renderRun(window.E2E_DATA.runs[0]);
+
+    // Close modal on outside click
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeModal();
+      }
+    });
+  </script>
+</body>
+</html>
