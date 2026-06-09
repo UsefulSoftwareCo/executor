@@ -89,6 +89,47 @@ test("sign-up issues a bearer token and resolves to a per-user org-pinned identi
   expect(body.organization!.id).toBeTruthy();
 });
 
+test("self-host API keys are not capped by Better Auth's default request limit", async () => {
+  const inviteCode = await mintInviteCode(handler);
+  const signUp = await handler(
+    new Request(`${BASE}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "key-user@test.local",
+        password: "member-password-123",
+        name: "Key User",
+        inviteCode,
+      }),
+    }),
+  );
+  expect(signUp.status).toBe(200);
+  const token = signUp.headers.get("set-auth-token");
+  expect(token).toBeTruthy();
+
+  const createKey = await handler(
+    new Request(`${BASE}/api/account/api-keys`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "MCP bootstrap" }),
+    }),
+  );
+  expect(createKey.status).toBe(200);
+  const keyBody = (await createKey.json()) as { value: string };
+
+  for (let i = 0; i < 12; i++) {
+    const me = await handler(
+      new Request(`${BASE}/api/account/me`, {
+        headers: { "x-api-key": keyBody.value },
+      }),
+    );
+    expect(me.status).toBe(200);
+  }
+});
+
 test("an unauthenticated request is rejected with 401", async () => {
   const res = await handler(new Request("http://localhost/api/account/me"));
   expect(res.status).toBe(401);

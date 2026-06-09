@@ -18,8 +18,10 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SourcesNamespaceRouteImport } from './routes/sources.$namespace'
 import { Route as ResumeExecutionIdRouteImport } from './routes/resume.$executionId'
 import { Route as JoinCodeRouteImport } from './routes/join.$code'
+import { Route as IntegrationsNamespaceRouteImport } from './routes/integrations.$namespace'
 import { Route as SourcesAddPluginKeyRouteImport } from './routes/sources.add.$pluginKey'
 import { Route as PluginsPluginIdSplatRouteImport } from './routes/plugins.$pluginId.$'
+import { Route as IntegrationsAddPluginKeyRouteImport } from './routes/integrations.add.$pluginKey'
 
 const ToolsRoute = ToolsRouteImport.update({
   id: '/tools',
@@ -66,6 +68,11 @@ const JoinCodeRoute = JoinCodeRouteImport.update({
   path: '/join/$code',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IntegrationsNamespaceRoute = IntegrationsNamespaceRouteImport.update({
+  id: '/integrations/$namespace',
+  path: '/integrations/$namespace',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SourcesAddPluginKeyRoute = SourcesAddPluginKeyRouteImport.update({
   id: '/sources/add/$pluginKey',
   path: '/sources/add/$pluginKey',
@@ -76,6 +83,12 @@ const PluginsPluginIdSplatRoute = PluginsPluginIdSplatRouteImport.update({
   path: '/plugins/$pluginId/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IntegrationsAddPluginKeyRoute =
+  IntegrationsAddPluginKeyRouteImport.update({
+    id: '/integrations/add/$pluginKey',
+    path: '/integrations/add/$pluginKey',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -84,9 +97,11 @@ export interface FileRoutesByFullPath {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
   '/join/$code': typeof JoinCodeRoute
   '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
+  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -97,9 +112,11 @@ export interface FileRoutesByTo {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
   '/join/$code': typeof JoinCodeRoute
   '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
+  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -111,9 +128,11 @@ export interface FileRoutesById {
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
+  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
   '/join/$code': typeof JoinCodeRoute
   '/resume/$executionId': typeof ResumeExecutionIdRoute
   '/sources/$namespace': typeof SourcesNamespaceRoute
+  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
   '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
   '/sources/add/$pluginKey': typeof SourcesAddPluginKeyRoute
 }
@@ -126,9 +145,11 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/integrations/$namespace'
     | '/join/$code'
     | '/resume/$executionId'
     | '/sources/$namespace'
+    | '/integrations/add/$pluginKey'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
   fileRoutesByTo: FileRoutesByTo
@@ -139,9 +160,11 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/integrations/$namespace'
     | '/join/$code'
     | '/resume/$executionId'
     | '/sources/$namespace'
+    | '/integrations/add/$pluginKey'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
   id:
@@ -152,9 +175,11 @@ export interface FileRouteTypes {
     | '/policies'
     | '/secrets'
     | '/tools'
+    | '/integrations/$namespace'
     | '/join/$code'
     | '/resume/$executionId'
     | '/sources/$namespace'
+    | '/integrations/add/$pluginKey'
     | '/plugins/$pluginId/$'
     | '/sources/add/$pluginKey'
   fileRoutesById: FileRoutesById
@@ -166,9 +191,11 @@ export interface RootRouteChildren {
   PoliciesRoute: typeof PoliciesRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
+  IntegrationsNamespaceRoute: typeof IntegrationsNamespaceRoute
   JoinCodeRoute: typeof JoinCodeRoute
   ResumeExecutionIdRoute: typeof ResumeExecutionIdRoute
   SourcesNamespaceRoute: typeof SourcesNamespaceRoute
+  IntegrationsAddPluginKeyRoute: typeof IntegrationsAddPluginKeyRoute
   PluginsPluginIdSplatRoute: typeof PluginsPluginIdSplatRoute
   SourcesAddPluginKeyRoute: typeof SourcesAddPluginKeyRoute
 }
@@ -238,6 +265,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof JoinCodeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/integrations/$namespace': {
+      id: '/integrations/$namespace'
+      path: '/integrations/$namespace'
+      fullPath: '/integrations/$namespace'
+      preLoaderRoute: typeof IntegrationsNamespaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sources/add/$pluginKey': {
       id: '/sources/add/$pluginKey'
       path: '/sources/add/$pluginKey'
@@ -252,6 +286,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PluginsPluginIdSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/integrations/add/$pluginKey': {
+      id: '/integrations/add/$pluginKey'
+      path: '/integrations/add/$pluginKey'
+      fullPath: '/integrations/add/$pluginKey'
+      preLoaderRoute: typeof IntegrationsAddPluginKeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -262,9 +303,11 @@ const rootRouteChildren: RootRouteChildren = {
   PoliciesRoute: PoliciesRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,
+  IntegrationsNamespaceRoute: IntegrationsNamespaceRoute,
   JoinCodeRoute: JoinCodeRoute,
   ResumeExecutionIdRoute: ResumeExecutionIdRoute,
   SourcesNamespaceRoute: SourcesNamespaceRoute,
+  IntegrationsAddPluginKeyRoute: IntegrationsAddPluginKeyRoute,
   PluginsPluginIdSplatRoute: PluginsPluginIdSplatRoute,
   SourcesAddPluginKeyRoute: SourcesAddPluginKeyRoute,
 }

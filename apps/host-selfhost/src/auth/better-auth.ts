@@ -83,7 +83,7 @@ const makeAuthOptions = (url: string, organizationId: string, gate?: SignupGate)
     plugins: [
       organization(),
       admin(),
-      apiKey({ enableSessionForAPIKeys: true }),
+      apiKey({ enableSessionForAPIKeys: true, rateLimit: { enabled: false } }),
       bearer(),
       mcp({ loginPage: "/login" }),
     ],

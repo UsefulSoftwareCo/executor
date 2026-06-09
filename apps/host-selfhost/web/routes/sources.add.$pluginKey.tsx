@@ -1,6 +1,5 @@
 import { Schema } from "effect";
-import { createFileRoute } from "@tanstack/react-router";
-import { AddIntegrationPage } from "@executor-js/react/pages/integration-add";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 const SearchParams = Schema.toStandardSchemaV1(
   Schema.Struct({
@@ -12,11 +11,9 @@ const SearchParams = Schema.toStandardSchemaV1(
 
 export const Route = createFileRoute("/sources/add/$pluginKey")({
   validateSearch: SearchParams,
-  component: () => {
-    const { pluginKey } = Route.useParams();
-    const { url, preset, namespace } = Route.useSearch();
-    return (
-      <AddIntegrationPage pluginKey={pluginKey} url={url} preset={preset} namespace={namespace} />
-    );
+  beforeLoad: ({ params, search }) => {
+    const { pluginKey } = params;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: TanStack Router redirects are modeled as thrown values
+    throw redirect({ to: "/integrations/add/$pluginKey", params: { pluginKey }, search });
   },
 });
