@@ -1,4 +1,5 @@
 ---
+"@executor-js/desktop": minor
 "executor": minor
 ---
 
