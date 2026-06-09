@@ -1,11 +1,13 @@
 /* oxlint-disable executor/no-json-parse, executor/no-raw-fetch, executor/no-try-catch-or-throw -- boundary: one-shot local SQLite/auth-file migration normalizes legacy on-disk state */
 
 import type { Client } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import { Effect } from "effect";
 import { createId } from "fumadb/cuid";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -34,6 +36,7 @@ import {
 import { makeKeychainProvider } from "@executor-js/plugin-keychain";
 
 import { createSqliteFumaDb } from "./sqlite-fumadb";
+import embeddedLegacyMigrations from "./embedded-migrations.gen";
 import { executeSql, openLocalLibsql, queryFirst, queryRows } from "./libsql";
 
 type Row = Record<string, unknown>;
@@ -129,6 +132,79 @@ const isLocalV1Database = async (client: Client): Promise<boolean> => {
   if (!(await tableExists(client, "integration"))) return true;
   const connectionColumns = await columnNames(client, "connection");
   return !connectionColumns.has("tenant") || connectionColumns.has("scope_id");
+};
+
+// ---------------------------------------------------------------------------
+// Legacy v1 schema replay.
+//
+// The v1→v2 data migration below reads the v1-FINAL schema (it queries
+// `plugin_storage`, which only exists after v1 migration 0011). A database
+// last touched by an older release is still mid-chain, so replay the bundled
+// legacy drizzle migrations (`apps/local/drizzle-legacy-v1`, embedded into
+// the binary by apps/cli/src/build.ts) to bring it to v1-final first — the
+// same step every pre-v1.5 release performed at startup.
+// ---------------------------------------------------------------------------
+
+const resolveLegacyMigrationsFolder = (): string => {
+  if (!embeddedLegacyMigrations) {
+    return join(import.meta.dirname, "../../drizzle-legacy-v1");
+  }
+  // drizzle's migrate() reads a folder from disk; materialize the embedded
+  // contents into a tmpdir.
+  const dir = fs.mkdtempSync(join(tmpdir(), "executor-legacy-migrations-"));
+  for (const [rel, content] of Object.entries(embeddedLegacyMigrations)) {
+    const target = join(dir, rel);
+    fs.mkdirSync(dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
+  return dir;
+};
+
+const readBundledLegacyMigrationHashes = (migrationsFolder: string): readonly string[] => {
+  const journal = JSON.parse(
+    fs.readFileSync(join(migrationsFolder, "meta", "_journal.json")).toString(),
+  ) as { entries: ReadonlyArray<{ idx: number; tag: string }> };
+  return [...journal.entries]
+    .sort((left, right) => left.idx - right.idx)
+    .map((entry) =>
+      createHash("sha256")
+        .update(fs.readFileSync(join(migrationsFolder, `${entry.tag}.sql`)).toString())
+        .digest("hex"),
+    );
+};
+
+const readAppliedLegacyMigrationHashes = async (client: Client): Promise<readonly string[]> =>
+  (
+    await queryRows<{ hash: string }>(
+      client,
+      "SELECT hash FROM __drizzle_migrations ORDER BY id ASC",
+    )
+  ).map((row) => row.hash);
+
+/** Bring a v1 database that predates v1-final up to the last v1 schema. Only
+ *  replays when the database's drizzle history is a strict prefix of the
+ *  bundled legacy chain — anything else is left as-is with a warning (the
+ *  data migration may still succeed if the schema is close enough). */
+const replayLegacyV1Migrations = async (client: Client, warnings: string[]): Promise<void> => {
+  if (!(await tableExists(client, "__drizzle_migrations"))) {
+    warnings.push(
+      "v1 database has no drizzle migration history; skipping the legacy schema replay.",
+    );
+    return;
+  }
+  const migrationsFolder = resolveLegacyMigrationsFolder();
+  const bundled = readBundledLegacyMigrationHashes(migrationsFolder);
+  const applied = await readAppliedLegacyMigrationHashes(client);
+  const isPrefix =
+    applied.length <= bundled.length && applied.every((hash, index) => hash === bundled[index]);
+  if (!isPrefix) {
+    warnings.push(
+      "v1 database migration history does not match this build's bundled legacy migrations; reading the schema as-is.",
+    );
+    return;
+  }
+  if (applied.length === bundled.length) return; // already v1-final
+  await migrate(drizzle({ client }), { migrationsFolder });
 };
 
 const textDecoder = new TextDecoder();
@@ -837,6 +913,8 @@ export const migrateLocalV1ToV2IfNeeded = async (
   const reader = await openLocalLibsql(options.sqlitePath);
   try {
     if (!(await isLocalV1Database(reader))) return { migrated: false, warnings: [] };
+    const replayWarnings: string[] = [];
+    await replayLegacyV1Migrations(reader, replayWarnings);
     const snapshot = await readV1Snapshot(reader, options.tenantId);
     const plan = planMigration(snapshot.input);
     const secretValues = await collectSecretValues(plan);
@@ -872,7 +950,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
         migrated: true,
         backupPath,
         report: plan.report,
-        warnings: [...plan.report.warnings, ...secretValues.warnings],
+        warnings: [...replayWarnings, ...plan.report.warnings, ...secretValues.warnings],
       };
     } catch (cause) {
       if (target) await target.close();
