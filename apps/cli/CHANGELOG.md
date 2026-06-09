@@ -1,5 +1,17 @@
 # executor
 
+## 1.5.1
+
+### Patch Changes
+
+- [#927](https://github.com/RhysSullivan/executor/pull/927) [`df40cd3`](https://github.com/RhysSullivan/executor/commit/df40cd3716254daff0343ace7c2de7d46756d0f5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix `executor web` crashing with `no such table: plugin_storage` when upgrading from an older v1 release. The v1 → v2 data migration now replays the bundled legacy schema migrations first, so databases last touched by any pre-1.5 version are brought up to the final v1 schema before their data is migrated.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.1
+  - @executor-js/runtime-quickjs@1.5.1
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.23
+
 ## 1.5.0
 
 ### Minor Changes
