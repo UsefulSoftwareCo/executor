@@ -80,7 +80,6 @@
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
-    "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "fumadb": "workspace:*",
     "oauth4webapi": "^3.8.5"
@@ -93,6 +92,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "drizzle-orm": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
@@ -101,6 +101,7 @@
   "peerDependencies": {
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:"
   },
   "peerDependenciesMeta": {
