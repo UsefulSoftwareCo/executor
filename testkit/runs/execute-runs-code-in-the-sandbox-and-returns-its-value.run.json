@@ -1,0 +1,106 @@
+{
+  "task": "execute runs code in the sandbox and returns its value",
+  "brain": "scripted",
+  "meta": {
+    "server": "http://localhost:5173/mcp",
+    "brain": "scripted"
+  },
+  "startedAt": 1780990788931,
+  "turns": [
+    {
+      "t": 1780990788931,
+      "role": "user",
+      "text": "execute runs code in the sandbox and returns its value"
+    },
+    {
+      "t": 1780990788931,
+      "role": "assistant",
+      "kind": "reasoning",
+      "text": "Confirm the sandbox evaluates a program and returns the value."
+    },
+    {
+      "t": 1780990788931,
+      "role": "auth",
+      "phase": "connect",
+      "text": "Connecting to http://localhost:5173/mcp"
+    },
+    {
+      "t": 1780990788978,
+      "role": "auth",
+      "phase": "connected",
+      "text": "Connected — access token acquired & cached for reuse",
+      "ok": true
+    },
+    {
+      "t": 1780990788978,
+      "role": "tool",
+      "call": {
+        "name": "tools/list",
+        "args": {}
+      },
+      "result": [
+        "execute",
+        "resume"
+      ],
+      "ok": true,
+      "text": "execute, resume"
+    },
+    {
+      "t": 1780990788978,
+      "role": "assert",
+      "kind": "toContain",
+      "actual": [
+        "execute",
+        "resume"
+      ],
+      "expected": "execute",
+      "ok": true
+    },
+    {
+      "t": 1780990788981,
+      "role": "tool",
+      "call": {
+        "name": "execute",
+        "args": {
+          "code": "return 6 * 7;"
+        }
+      },
+      "result": [
+        {
+          "type": "text",
+          "text": "42"
+        }
+      ],
+      "ok": true,
+      "text": "42"
+    },
+    {
+      "t": 1780990788981,
+      "role": "assert",
+      "kind": "toBe",
+      "actual": "42",
+      "expected": "42",
+      "ok": true
+    }
+  ],
+  "asserts": [
+    {
+      "kind": "toContain",
+      "actual": [
+        "execute",
+        "resume"
+      ],
+      "expected": "execute",
+      "ok": true
+    },
+    {
+      "kind": "toBe",
+      "actual": "42",
+      "expected": "42",
+      "ok": true
+    }
+  ],
+  "ok": true,
+  "endedAt": 1780990788981,
+  "durationMs": 50
+}

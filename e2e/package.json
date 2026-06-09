@@ -1,0 +1,18 @@
+{
+  "name": "@executor-js/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run", "test:watch": "vitest" },
+  "dependencies": {
+    "@executor-js/api": "workspace:*",
+    "@executor-js/host-selfhost": "workspace:*",
+    "effect": "catalog:",
+    "playwright": "^1.60.0",
+    "@kitlangton/terminal-control": "^0.3.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "vitest": "catalog:"
+  }
+}

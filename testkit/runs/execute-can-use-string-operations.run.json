@@ -1,0 +1,66 @@
+{
+  "task": "execute can use string operations",
+  "brain": "scripted",
+  "meta": {
+    "server": "http://localhost:5173/mcp",
+    "brain": "scripted"
+  },
+  "startedAt": 1780990788982,
+  "turns": [
+    {
+      "t": 1780990788982,
+      "role": "user",
+      "text": "execute can use string operations"
+    },
+    {
+      "t": 1780990788982,
+      "role": "auth",
+      "phase": "connect",
+      "text": "Connecting to http://localhost:5173/mcp"
+    },
+    {
+      "t": 1780990789007,
+      "role": "auth",
+      "phase": "connected",
+      "text": "Connected — access token acquired & cached for reuse",
+      "ok": true
+    },
+    {
+      "t": 1780990789009,
+      "role": "tool",
+      "call": {
+        "name": "execute",
+        "args": {
+          "code": "return 'mcp'.toUpperCase();"
+        }
+      },
+      "result": [
+        {
+          "type": "text",
+          "text": "MCP"
+        }
+      ],
+      "ok": true,
+      "text": "MCP"
+    },
+    {
+      "t": 1780990789009,
+      "role": "assert",
+      "kind": "toBe",
+      "actual": "MCP",
+      "expected": "MCP",
+      "ok": true
+    }
+  ],
+  "asserts": [
+    {
+      "kind": "toBe",
+      "actual": "MCP",
+      "expected": "MCP",
+      "ok": true
+    }
+  ],
+  "ok": true,
+  "endedAt": 1780990789009,
+  "durationMs": 27
+}
