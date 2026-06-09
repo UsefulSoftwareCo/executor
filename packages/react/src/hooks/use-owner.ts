@@ -1,1 +1,1 @@
-export { ownerLabel } from "../api/scope-context";
+export { ownerLabel } from "../api/owner-display";

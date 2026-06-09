@@ -15,7 +15,7 @@ import {
 } from "../api/atoms";
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
-import { ownerLabel, useOwnerDisplay } from "../api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import type { AuthMethod } from "../lib/auth-placements";
 import {
   connectionNeedsReconsent,

@@ -88,10 +88,20 @@ export interface AuthTemplateEditorProps {
   /** Spec-detected presets (OpenAPI) → editable-default pills on the apiKey/OAuth
    *  tabs. Clicking a pill applies its value as an editable default. */
   readonly presets?: readonly AuthTemplateEditorPreset[];
+  /** Some integrations, notably MCP, discover OAuth metadata from the server at
+   *  connection time. In that case the add form should declare OAuth but not
+   *  expose editable provider URLs/scopes that are not persisted. */
+  readonly oauthMetadata?: "editable" | "discovered";
 }
 
 export function AuthTemplateEditor(props: AuthTemplateEditorProps) {
-  const { value, onChange, allowedKinds = DEFAULT_ALLOWED, presets } = props;
+  const {
+    value,
+    onChange,
+    allowedKinds = DEFAULT_ALLOWED,
+    presets,
+    oauthMetadata = "editable",
+  } = props;
 
   const tabs = allowedKinds.map((kind: AuthTemplateEditorKind) => ({
     value: kind,
@@ -166,49 +176,57 @@ export function AuthTemplateEditor(props: AuthTemplateEditorProps) {
               ))}
             </div>
           )}
-          <div className="space-y-2">
-            <Label htmlFor="auth-authorization-url" className="text-xs text-muted-foreground">
-              Authorization URL
-            </Label>
-            <Input
-              id="auth-authorization-url"
-              placeholder="https://provider.example.com/oauth/authorize"
-              value={value.authorizationUrl}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                onChange({ ...value, authorizationUrl: e.target.value })
-              }
-              className="font-mono text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="auth-token-url" className="text-xs text-muted-foreground">
-              Token URL
-            </Label>
-            <Input
-              id="auth-token-url"
-              placeholder="https://provider.example.com/oauth/token"
-              value={value.tokenUrl}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                onChange({ ...value, tokenUrl: e.target.value })
-              }
-              className="font-mono text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="auth-scopes" className="text-xs text-muted-foreground">
-              Scopes
-              <span className="font-normal text-muted-foreground/70">comma-separated</span>
-            </Label>
-            <Input
-              id="auth-scopes"
-              placeholder="read, write"
-              value={value.scopes.join(", ")}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                onChange({ ...value, scopes: parseScopes(e.target.value) })
-              }
-              className="font-mono text-sm"
-            />
-          </div>
+          {oauthMetadata === "discovered" ? (
+            <p className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              OAuth metadata is discovered from this server when you connect an account.
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="auth-authorization-url" className="text-xs text-muted-foreground">
+                  Authorization URL
+                </Label>
+                <Input
+                  id="auth-authorization-url"
+                  placeholder="https://provider.example.com/oauth/authorize"
+                  value={value.authorizationUrl}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    onChange({ ...value, authorizationUrl: e.target.value })
+                  }
+                  className="font-mono text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="auth-token-url" className="text-xs text-muted-foreground">
+                  Token URL
+                </Label>
+                <Input
+                  id="auth-token-url"
+                  placeholder="https://provider.example.com/oauth/token"
+                  value={value.tokenUrl}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    onChange({ ...value, tokenUrl: e.target.value })
+                  }
+                  className="font-mono text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="auth-scopes" className="text-xs text-muted-foreground">
+                  Scopes
+                  <span className="font-normal text-muted-foreground/70">comma-separated</span>
+                </Label>
+                <Input
+                  id="auth-scopes"
+                  placeholder="read, write"
+                  value={value.scopes.join(", ")}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    onChange({ ...value, scopes: parseScopes(e.target.value) })
+                  }
+                  className="font-mono text-sm"
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

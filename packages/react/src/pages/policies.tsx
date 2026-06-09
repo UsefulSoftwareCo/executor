@@ -19,7 +19,7 @@ import {
   updatePolicyOptimistic,
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
-import { ownerLabel, useOwnerDisplay } from "../api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { badgeVariants } from "../components/badge";
 import { cn } from "../lib/utils";
 import {

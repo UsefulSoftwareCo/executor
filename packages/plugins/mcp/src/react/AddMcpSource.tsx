@@ -480,6 +480,7 @@ export default function AddMcpSource(props: {
                 value={authValue}
                 onChange={setAuthValue}
                 allowedKinds={allowedAuthKinds}
+                oauthMetadata="discovered"
               />
             </section>
           )}

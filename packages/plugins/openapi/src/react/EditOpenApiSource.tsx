@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAllAtom } from "@executor-js/react/api/atoms";
-import { ownerLabel, useOwnerDisplay } from "@executor-js/react/api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "@executor-js/react/api/owner-display";
 import { IntegrationSlug, type Connection } from "@executor-js/sdk/shared";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";

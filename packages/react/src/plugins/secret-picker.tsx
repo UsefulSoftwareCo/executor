@@ -14,7 +14,7 @@ import {
   CommandSeparator,
 } from "../components/command";
 import { Popover, PopoverAnchor, PopoverContent } from "../components/popover";
-import { ownerLabel, useOwnerDisplay } from "../api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 
 // ---------------------------------------------------------------------------
 // Connection / provider-item picker (v2) — successor to v1's secret picker.

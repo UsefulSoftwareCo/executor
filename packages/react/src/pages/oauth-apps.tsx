@@ -17,7 +17,7 @@ import {
   removeOAuthClientOptimistic,
 } from "../api/atoms";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
-import { ownerLabel } from "../api/scope-context";
+import { ownerLabel } from "../api/owner-display";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
