@@ -1,0 +1,25 @@
+<!doctype html><meta charset=utf8><title>execute can use string operations</title><style>
+  body{font:14px/1.5 ui-sans-serif,system-ui;max-width:760px;margin:2rem auto;color:#111;background:#fafafa}
+  h1{font-size:16px}.hdr{color:#15803d;font-weight:700;margin-bottom:1rem}
+  .u{background:#111;color:#fff;padding:.5rem .75rem;border-radius:10px;margin:.5rem 0}
+  .a{color:#555;padding:.25rem .75rem;margin:.25rem 0;border-left:2px solid #ddd}
+  .t{background:#fff;border:1px solid #e5e5e5;border-radius:8px;padding:.4rem .6rem;margin:.4rem 0}
+  .t.no{border-color:#fca5a5}.t summary{cursor:pointer}.t .g{color:#888;font-weight:400}
+  .t pre{background:#f5f5f5;padding:.5rem;border-radius:6px;overflow:auto;font-size:12px}
+  .x{padding:.2rem .75rem;font-size:13px}.x.ok{color:#15803d}.x.no{color:#b91c1c;font-weight:700}
+  .e{color:#b91c1c;font-weight:700;padding:.5rem .75rem}</style>
+  <h1>MCP run · <span class=hdr>PASSED</span></h1>
+  <div class="u"><b>execute can use string operations</b></div>
+<details class="t ok"><summary>🔧 <b>execute</b> ✓ <span class="g">→ MCP</span></summary><pre>{
+  "args": {
+    "code": "return 'mcp'.toUpperCase();"
+  },
+  "result": [
+    {
+      "type": "text",
+      "text": "MCP"
+    }
+  ]
+}</pre></details>
+<div class="x ok">✅ expect("MCP").toBe("MCP")</div>
+  <p style="color:#999;font-size:12px">brain=scripted · 33ms · http://localhost:5173/mcp</p>

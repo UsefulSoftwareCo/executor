@@ -25,7 +25,8 @@
     "packages/react",
     "packages/app",
     "apps/*",
-    "examples/*"
+    "examples/*",
+    "e2e"
   ],
   "type": "module",
   "scripts": {

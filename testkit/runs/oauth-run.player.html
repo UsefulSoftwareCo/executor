@@ -1,0 +1,47 @@
+<!doctype html><meta charset=utf8><title>MCP run</title><style>
+  body{font:15px/1.55 ui-sans-serif,system-ui;max-width:720px;margin:0 auto;padding:24px;color:#111;background:#fafafa}
+  #banner{font-weight:700;font-size:15px;margin-bottom:14px;color:#666}
+  #banner.ok{color:#15803d}#banner.no{color:#b91c1c}
+  .row{opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s;margin:6px 0}
+  .row.in{opacity:1;transform:none}
+  .u{background:#111;color:#fff;padding:.55rem .8rem;border-radius:12px;font-weight:600}
+  .a{color:#555;padding:.3rem .8rem;border-left:2px solid #ddd}
+  .au{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:.4rem .7rem;border-radius:10px;font-size:13.5px}
+  .t{background:#fff;border:1px solid #e5e5e5;border-radius:10px;padding:.5rem .75rem}
+  .t.run{border-color:#93c5fd}.t .g{color:#888}.t .sp{color:#2563eb;font-style:italic}
+  .t pre{background:#f5f5f5;padding:.5rem;border-radius:6px;margin:.4rem 0 0;font-size:12.5px;overflow:auto}
+  .x{padding:.2rem .8rem;font-size:13.5px}.x.ok{color:#15803d}.x.no{color:#b91c1c;font-weight:700}
+  .e{color:#b91c1c;font-weight:700;padding:.4rem .8rem}
+  .cur{display:inline-block;width:7px;height:15px;background:#888;vertical-align:-2px;animation:b .8s steps(1) infinite}
+  @keyframes b{50%{opacity:0}}
+</style>
+<div id="banner">● recording</div><div id="chat"></div>
+<script>
+const RUN = {"task":"execute runs code in the sandbox and returns its value","brain":"scripted","meta":{"server":"http://localhost:5173/mcp","brain":"scripted"},"startedAt":1780987044698,"turns":[{"t":1780987044698,"role":"user","text":"execute runs code in the sandbox and returns its value"},{"t":1780987044698,"role":"assistant","kind":"reasoning","text":"Confirm the sandbox evaluates a program and returns the value."},{"t":1780987044698,"role":"auth","phase":"connect","text":"Connecting to http://localhost:5173/mcp"},{"t":1780987044738,"role":"auth","phase":"authorize","text":"OAuth required → client registered (DCR), authorizing","detail":{"authorizationUrl":"http://localhost:5173/api/auth/mcp/authorize?response_type=code&client_id=LhUYJfOAYINxPZMfWchyfPBqdLPqMFyd&code_challenge=i3VMbZqA-8ZYHclH7v8RlpVlbNOoFXEoevsh52B9t6c&code_challenge_method=S256&redirect_uri=http%3A%2F%2F127.0.0.1%3A50922%2Fcallback&state=6076e201-38a1-4d0a-9b76-84b5f7239aab&scope=openid+profile+email+offline_access&prompt=consent&resource=http%3A%2F%2Flocalhost%3A5173%2F"}},{"t":1780987044776,"role":"auth","phase":"code","text":"Signed in & consented → authorization code received","ok":true},{"t":1780987044806,"role":"auth","phase":"connected","text":"Connected — access token acquired & cached for reuse","ok":true},{"t":1780987044806,"role":"tool","call":{"name":"tools/list","args":{}},"result":["execute","resume"],"ok":true,"text":"execute, resume"},{"t":1780987044806,"role":"assert","kind":"toContain","actual":["execute","resume"],"expected":"execute","ok":true},{"t":1780987044810,"role":"tool","call":{"name":"execute","args":{"code":"return 6 * 7;"}},"result":[{"type":"text","text":"42"}],"ok":true,"text":"42"},{"t":1780987044810,"role":"assert","kind":"toBe","actual":"42","expected":"42","ok":true}],"asserts":[{"kind":"toContain","actual":["execute","resume"],"expected":"execute","ok":true},{"kind":"toBe","actual":"42","expected":"42","ok":true}],"ok":true,"endedAt":1780987044810,"durationMs":112};
+const SPEED = 1;
+const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const chat = document.getElementById('chat');
+const add = html => { const d=document.createElement('div'); d.innerHTML=html.trim(); const el=d.firstElementChild; el.classList.add('row'); chat.appendChild(el); requestAnimationFrame(()=>el.classList.add('in')); el.scrollIntoView({behavior:'smooth',block:'end'}); return el; };
+const sleep = ms => new Promise(r=>setTimeout(r, ms/SPEED));
+async function type(el, text){ for(let i=0;i<=text.length;i++){ el.innerHTML=esc(text.slice(0,i))+'<span class=cur></span>'; await sleep(16); } el.innerHTML=esc(text); }
+(async () => {
+  await sleep(300);
+  for (const t of RUN.turns){
+    if (t.role==='user'){ add('<div class="u">'+esc(t.text)+'</div>'); await sleep(700); }
+    else if (t.role==='assistant'){ const el=add('<div class="a"></div>'); await type(el, t.text); await sleep(250); }
+    else if (t.role==='auth'){ add('<div class="au">'+(t.phase==='connected'?'🔓':'🔐')+' '+esc(t.text)+'</div>'); await sleep(800); }
+    else if (t.role==='tool'){
+      const el=add('<div class="t run">🔧 <b>'+esc(t.call.name)+'</b> <span class="sp">running…</span></div>');
+      await sleep(750);
+      el.classList.remove('run');
+      el.innerHTML='🔧 <b>'+esc(t.call.name)+'</b> '+(t.ok?'✓':'✗')+' <span class="g">→ '+esc(String(t.text).slice(0,90))+'</span><pre>'+esc(JSON.stringify({args:t.call.args,result:t.result},null,2))+'</pre>';
+      el.scrollIntoView({behavior:'smooth',block:'end'}); await sleep(550);
+    }
+    else if (t.role==='assert'){ add('<div class="x '+(t.ok?'ok':'no')+'">'+(t.ok?'✅':'❌')+' expect('+esc(JSON.stringify(t.actual))+').'+t.kind+'('+esc(JSON.stringify(t.expected))+')</div>'); await sleep(450); }
+    else if (t.role==='error'){ add('<div class="e">💥 '+esc(t.text)+'</div>'); await sleep(500); }
+  }
+  await sleep(400);
+  const b=document.getElementById('banner'); b.textContent=(RUN.ok?'✓ PASSED':'✗ FAILED')+'  ·  '+RUN.meta.server; b.className=RUN.ok?'ok':'no';
+  window.__done=true;
+})();
+</script>

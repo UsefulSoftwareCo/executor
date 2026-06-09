@@ -317,6 +317,21 @@
         "wrangler": "^4.0.0",
       },
     },
+    "e2e": {
+      "name": "@executor-js/e2e",
+      "version": "0.0.0",
+      "dependencies": {
+        "@executor-js/api": "workspace:*",
+        "@executor-js/host-selfhost": "workspace:*",
+        "@kitlangton/terminal-control": "^0.3.0",
+        "effect": "catalog:",
+        "playwright": "^1.60.0",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "examples/all-plugins": {
       "name": "@executor-js/example-all-plugins",
       "version": "0.0.19",
@@ -1512,6 +1527,8 @@
 
     "@executor-js/desktop": ["@executor-js/desktop@workspace:apps/desktop"],
 
+    "@executor-js/e2e": ["@executor-js/e2e@workspace:e2e"],
+
     "@executor-js/example-all-plugins": ["@executor-js/example-all-plugins@workspace:examples/all-plugins"],
 
     "@executor-js/example-docs-sdk-quickstart": ["@executor-js/example-docs-sdk-quickstart@workspace:examples/docs-sdk-quickstart"],
@@ -1719,6 +1736,16 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@jsdevtools/ono": ["@jsdevtools/ono@7.1.3", "", {}, "sha512-4JQNk+3mVzK3xh2rqd6RB4J46qUR19azEHBneZyTZM+c456qOrbbM/5xcR8huNCCcbVt7+UmizG6GuUvPvKUYg=="],
+
+    "@kitlangton/terminal-control": ["@kitlangton/terminal-control@0.3.0", "", { "optionalDependencies": { "@kitlangton/terminal-control-darwin-arm64": "0.3.0", "@kitlangton/terminal-control-darwin-x64": "0.3.0", "@kitlangton/terminal-control-linux-arm64-gnu": "0.3.0", "@kitlangton/terminal-control-linux-x64-gnu": "0.3.0" }, "peerDependencies": { "vitest": ">=3.0.0" }, "optionalPeers": ["vitest"] }, "sha512-YlOx9ztDInHBETgxWNRd6nq/YzpMlw1YEJ1OIrhdeWTqrQdJHIYThWGiWda9GxmQAThWNULkKR17as+QDgyKdQ=="],
+
+    "@kitlangton/terminal-control-darwin-arm64": ["@kitlangton/terminal-control-darwin-arm64@0.3.0", "", { "os": "darwin", "cpu": "arm64", "bin": { "termctrl": "bin/termctrl" } }, "sha512-HydPv5if5pAjwHNbA7TnZAJYKfq9AiZITaJuFyF1HsUMedzin3qzv9WRVBqIiGsQ/FiR1i1kaGhyLzaVpZR35w=="],
+
+    "@kitlangton/terminal-control-darwin-x64": ["@kitlangton/terminal-control-darwin-x64@0.3.0", "", { "os": "darwin", "cpu": "x64", "bin": { "termctrl": "bin/termctrl" } }, "sha512-jrCSlJybh9NkpAXKdvP6p4HpMDQLtUki94V6dzKMoRh/PSTufgPQ66g8HphwjxUoiB8aTPcXgN2iBfPxOFpvqA=="],
+
+    "@kitlangton/terminal-control-linux-arm64-gnu": ["@kitlangton/terminal-control-linux-arm64-gnu@0.3.0", "", { "os": "linux", "cpu": "arm64", "bin": { "termctrl": "bin/termctrl" } }, "sha512-hwtLlpeRCBESveYl0Z8w6TphgAU7AQH9FSKCpwYKDL/n/hECW5kQ3zEuy7uULnPmtk7vwVlBXRTJKP553OUCXg=="],
+
+    "@kitlangton/terminal-control-linux-x64-gnu": ["@kitlangton/terminal-control-linux-x64-gnu@0.3.0", "", { "os": "linux", "cpu": "x64", "bin": { "termctrl": "bin/termctrl" } }, "sha512-ge62a1I67X+aKX9VcMcEY92JHMQ3oxWS3ot3z85sKYEb3kse7q/hEtpgBYldYCBLxvu57U/Fa8sC6C3l5+xA5w=="],
 
     "@libsql/client": ["@libsql/client@0.17.3", "", { "dependencies": { "@libsql/core": "^0.17.3", "@libsql/hrana-client": "^0.10.0", "js-base64": "^3.7.5", "libsql": "^0.5.28", "promise-limit": "^2.7.0" } }, "sha512-HXk9wiAoJbKFbyBH4O+aEhN6ir5ERXuXvwE5OD2eR4/5RUa3Pw/8L9zrnVdU+iNJitRvisPWaIwmhkO3bH7giA=="],
 

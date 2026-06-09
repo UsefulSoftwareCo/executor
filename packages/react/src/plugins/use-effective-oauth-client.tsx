@@ -1,8 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { OAuthClientSlug, type Owner } from "@executor-js/sdk/shared";
-import { getDomain } from "tldts";
-
 import { oauthClientsAtom } from "../api/atoms";
 
 // ---------------------------------------------------------------------------
@@ -35,14 +33,21 @@ const hostOf = (url: string): string | undefined => {
   }
 };
 
-/** The registrable ("tld+1") root domain of a URL, e.g.
- *  `accounts.google.com` → `google.com`. Falls back to the full host for
- *  localhost / IP literals (where `tldts.getDomain` returns null) so local-dev
- *  MCP servers still match by exact host. Returns undefined for unparseable URLs. */
-const getRootDomain = (url: string): string | undefined => {
-  const root = getDomain(url);
-  if (root) return root.toLowerCase();
-  return hostOf(url);
+const normalizedEndpointUrl = (url: string | undefined): string | undefined => {
+  const trimmed = url?.trim();
+  if (!trimmed) return undefined;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input; fall back to trimmed string
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hash = "";
+    parsed.searchParams.sort();
+    parsed.protocol = parsed.protocol.toLowerCase();
+    parsed.hostname = parsed.hostname.toLowerCase();
+    const normalized = parsed.toString();
+    return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
+  } catch {
+    return trimmed.replace(/\/$/, "");
+  }
 };
 
 export interface UseOAuthClientsResult {
@@ -86,12 +91,11 @@ const sortUserFirst = (apps: readonly OAuthClientOption[]): readonly OAuthClient
  * Pure matcher (no React/atoms) — split owner-visible apps into the ones that
  * match the integration's declared OAuth endpoints and the ones that don't.
  *
- * Matching is by REGISTRABLE ROOT DOMAIN ("tld+1"). When the integration
- * declares a token endpoint, an app must match by token endpoint root; the token
- * endpoint is what the SDK will call during code exchange/refresh and avoids
- * authorize-root coincidences. When only an authorization endpoint is declared,
- * the authorize root is used as the fallback compatibility signal. Unrelated
- * providers (different root) never match.
+ * Matching is by normalized endpoint URL. For authorization-code clients,
+ * matching a token URL alone is not enough: the popup opens the authorization
+ * URL, so a bare provider host such as `https://login.microsoftonline.com`
+ * must not be treated as the Microsoft Graph authorize endpoint under
+ * `/common/oauth2/v2.0/authorize`.
  *
  * When the integration declares no endpoints, every app is "matched" (no filter).
  */
@@ -103,23 +107,24 @@ export function selectClientsForEndpoints(
   readonly unmatched: readonly OAuthClientOption[];
   readonly endpointMatched: boolean;
 } {
-  const wantedTokenRoot = endpoints.tokenUrl ? getRootDomain(endpoints.tokenUrl) : undefined;
-  const wantedAuthorizationRoot = endpoints.authorizationUrl
-    ? getRootDomain(endpoints.authorizationUrl)
-    : undefined;
+  const wantedTokenUrl = normalizedEndpointUrl(endpoints.tokenUrl);
+  const wantedAuthorizationUrl = normalizedEndpointUrl(endpoints.authorizationUrl);
   // No declared endpoints → no filter; every app is usable.
-  if (!wantedTokenRoot && !wantedAuthorizationRoot) {
+  if (!wantedTokenUrl && !wantedAuthorizationUrl) {
     return { matched: sortUserFirst(all), unmatched: [], endpointMatched: true };
   }
   const matched: OAuthClientOption[] = [];
   const unmatched: OAuthClientOption[] = [];
   for (const app of all) {
-    const appTokenRoot = getRootDomain(app.tokenUrl);
-    const appAuthorizationRoot = getRootDomain(app.authorizationUrl);
-    const fits = wantedTokenRoot
-      ? appTokenRoot === wantedTokenRoot
-      : appAuthorizationRoot === wantedAuthorizationRoot ||
-        appTokenRoot === wantedAuthorizationRoot;
+    const appTokenUrl = normalizedEndpointUrl(app.tokenUrl);
+    const appAuthorizationUrl = normalizedEndpointUrl(app.authorizationUrl);
+    const tokenMatches = !wantedTokenUrl || appTokenUrl === wantedTokenUrl;
+    const authorizationMatches =
+      !wantedAuthorizationUrl || appAuthorizationUrl === wantedAuthorizationUrl;
+    const fits =
+      app.grant === "client_credentials"
+        ? tokenMatches
+        : tokenMatches && authorizationMatches;
     if (fits) matched.push(app);
     else unmatched.push(app);
   }

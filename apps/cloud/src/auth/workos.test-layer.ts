@@ -5,6 +5,15 @@ import { WorkOSClient, type WorkOSCollectedList } from "./workos";
 
 export type WorkOSTestState = {
   readonly memberships: readonly OrganizationMembership[];
+  // When set, a successful create adds a unique org id + an active membership,
+  // so a running server's free-org limit trips live across requests. Off by
+  // default — existing tests keep the fixed `org_created` id and static list.
+  readonly growMembershipsOnCreate?: boolean;
+  // When set, the user is resolved from the `wos-session` cookie value and
+  // memberships are keyed per user — so each test/browser picks its own user id
+  // and is isolated on a shared instance (no reset needed), matching the
+  // in-process per-org harness. Implies grow-on-create.
+  readonly multiUser?: boolean;
   readonly createdOrganizations: Array<{ readonly id: string; readonly name: string }>;
   readonly createdMemberships: Array<{
     readonly organizationId: string;
@@ -78,30 +87,74 @@ const collected = <A>(data: readonly A[]): WorkOSCollectedList<A> => ({
 
 const makeWorkOSTestService = (state: WorkOSTestState): WorkOSClient["Service"] => {
   const nextOrgId = "org_created";
+  let orgCounter = 0;
+  // Per-user membership buckets (multi-user mode). Closure-scoped, so they live
+  // for the layer's lifetime (= the running server) and isolate users from each
+  // other without a reset.
+  const byUser = new Map<string, OrganizationMembership[]>();
+  const memsFor = (userId: string) => {
+    let m = byUser.get(userId);
+    if (!m) byUser.set(userId, (m = []));
+    return m;
+  };
+  const grows = state.multiUser || state.growMembershipsOnCreate;
   const service: Partial<WorkOSClient["Service"]> = {
-    listUserMemberships: () => Effect.succeed(collected(state.memberships)),
+    listUserMemberships: (userId: string) =>
+      Effect.succeed(collected(state.multiUser ? memsFor(userId) : state.memberships)),
     createOrganization: (name) =>
       Effect.sync(() => {
-        const org = makeWorkOSTestOrganization(nextOrgId, name);
+        const id = grows ? `${nextOrgId}_${++orgCounter}` : nextOrgId;
+        const org = makeWorkOSTestOrganization(id, name);
         state.createdOrganizations.push({ id: org.id, name: org.name });
         return org;
       }),
     createMembership: (organizationId, userId, roleSlug) =>
       Effect.sync(() => {
         state.createdMemberships.push({ organizationId, userId, roleSlug });
-        return makeWorkOSTestMembership(organizationId, "active");
+        const membership = makeWorkOSTestMembership(organizationId, "active");
+        if (state.multiUser) memsFor(userId).push(membership);
+        else if (state.growMembershipsOnCreate) {
+          (state.memberships as OrganizationMembership[]).push(membership);
+        }
+        return membership;
       }),
-    refreshSession: (_sealedSession, organizationId) => Effect.succeed(`session_${organizationId}`),
+    getOrganization: (organizationId: string) =>
+      Effect.succeed(makeWorkOSTestOrganization(organizationId)),
+    getUserOrgMembership: (organizationId: string, _userId: string) =>
+      Effect.succeed(makeWorkOSTestMembership(organizationId, "active")),
+    // Multi-user refresh carries the user id forward + the switched-to org, so the
+    // create-org handler's `verified.organizationId === org.id` check passes and
+    // the user stays consistent across the refresh.
+    refreshSession: (sealedSession, organizationId) =>
+      Effect.succeed(
+        state.multiUser ? `${sealedSession}|org:${organizationId}` : `session_${organizationId}`,
+      ),
     authenticateSealedSession: (sealedSession) =>
-      Effect.succeed({
-        userId: "user_1",
-        email: "test@example.com",
-        firstName: "Test",
-        lastName: "User",
-        avatarUrl: null,
-        organizationId: sealedSession.replace("session_", ""),
-        sessionId: "session_id",
-        refreshedSession: undefined,
+      Effect.sync(() => {
+        if (state.multiUser) {
+          // Cookie is `<userId>` (initial) or `<userId>|org:<orgId>` (after refresh).
+          const [userPart, orgPart] = sealedSession.split("|org:");
+          return {
+            userId: userPart || "user_1",
+            email: "test@example.com",
+            firstName: "Test",
+            lastName: "User",
+            avatarUrl: null,
+            organizationId: orgPart ?? "",
+            sessionId: "session_id",
+            refreshedSession: undefined,
+          };
+        }
+        return {
+          userId: "user_1",
+          email: "test@example.com",
+          firstName: "Test",
+          lastName: "User",
+          avatarUrl: null,
+          organizationId: sealedSession.replace("session_", ""),
+          sessionId: "session_id",
+          refreshedSession: undefined,
+        };
       }),
   };
 

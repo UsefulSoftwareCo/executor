@@ -56,7 +56,11 @@ function executorApiPlugin(): Plugin {
           rawUrl === "/api" ||
           rawUrl.startsWith("/api/") ||
           rawUrl.startsWith("/mcp") ||
-          rawUrl.startsWith("/docs");
+          rawUrl.startsWith("/docs") ||
+          // RFC 9728 / RFC 8414 OAuth discovery the MCP client fetches before
+          // auth. Served by the Effect router in prod; without this the SPA
+          // index.html fallback answers 200-with-HTML and breaks discovery.
+          rawUrl.startsWith("/.well-known/");
         if (!handled) return next();
 
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Vite dev middleware must convert handler failures into HTTP 500 responses

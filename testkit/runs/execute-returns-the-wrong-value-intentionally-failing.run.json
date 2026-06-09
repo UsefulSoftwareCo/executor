@@ -1,0 +1,59 @@
+{
+  "task": "execute returns the WRONG value (intentionally failing)",
+  "brain": "scripted",
+  "meta": {
+    "server": "http://localhost:5173/mcp",
+    "brain": "scripted"
+  },
+  "startedAt": 1780986696481,
+  "turns": [
+    {
+      "t": 1780986696481,
+      "role": "user",
+      "text": "execute returns the WRONG value (intentionally failing)"
+    },
+    {
+      "t": 1780986696511,
+      "role": "tool",
+      "call": {
+        "name": "execute",
+        "args": {
+          "code": "return 1 + 1;"
+        }
+      },
+      "result": [
+        {
+          "type": "text",
+          "text": "2"
+        }
+      ],
+      "ok": true,
+      "text": "2"
+    },
+    {
+      "t": 1780986696511,
+      "role": "assert",
+      "kind": "toBe",
+      "actual": "2",
+      "expected": "3",
+      "ok": false
+    },
+    {
+      "t": 1780986696511,
+      "role": "error",
+      "text": "expect(\"2\").toBe(\"3\")"
+    }
+  ],
+  "asserts": [
+    {
+      "kind": "toBe",
+      "actual": "2",
+      "expected": "3",
+      "ok": false
+    }
+  ],
+  "ok": false,
+  "endedAt": 1780986696511,
+  "durationMs": 30,
+  "error": "expect(\"2\").toBe(\"3\")"
+}

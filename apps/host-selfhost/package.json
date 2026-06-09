@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./serve": "./src/serve.ts"
+    "./serve": "./src/serve.ts",
+    "./plugins": "./src/plugins.ts"
   },
   "scripts": {
     "dev": "bunx --bun vite dev",
