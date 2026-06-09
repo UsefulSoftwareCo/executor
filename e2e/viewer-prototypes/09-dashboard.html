@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #0b0f17;
+      color: #d7dce5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    a {
+      color: #6366f1;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header */
+    .header {
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .header-left h1 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .header-meta {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .header-stats {
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .stat-badge {
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-weight: 600;
+    }
+
+    .stat-badge.pass {
+      background: #10b98150;
+      color: #86efac;
+    }
+
+    .stat-badge.fail {
+      background: #dc262650;
+      color: #fca5a5;
+    }
+
+    /* Main content */
+    .content {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+    }
+
+    /* Matrix table */
+    .matrix-wrapper {
+      overflow: auto;
+      height: 100%;
+    }
+
+    table {
+      border-collapse: collapse;
+      min-width: 100%;
+      background: #0f1419;
+    }
+
+    th, td {
+      padding: 8px 12px;
+      text-align: left;
+      border: 1px solid #1f2937;
+      font-size: 12px;
+    }
+
+    th {
+      background: #111827;
+      font-weight: 600;
+      color: #9ca3af;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    th:first-child {
+      position: sticky;
+      left: 0;
+      background: #111827;
+      z-index: 11;
+      max-width: 280px;
+      min-width: 280px;
+    }
+
+    td:first-child {
+      position: sticky;
+      left: 0;
+      background: #0f1419;
+      z-index: 9;
+      max-width: 280px;
+      min-width: 280px;
+    }
+
+    /* Scenario name column */
+    .scenario-name {
+      color: #d7dce5;
+      word-break: break-word;
+      font-size: 12px;
+    }
+
+    .scenario-category {
+      color: #9ca3af;
+      font-size: 11px;
+      margin-bottom: 2px;
+    }
+
+    /* Cell styling */
+    .cell {
+      cursor: pointer;
+      transition: all 0.15s ease;
+      padding: 0;
+      min-width: 100px;
+      text-align: center;
+    }
+
+    .cell:hover {
+      background: #1f2937;
+    }
+
+    .cell-content {
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .cell-status {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 11px;
+    }
+
+    .cell-status.pass {
+      background: #10b981;
+      color: #fff;
+    }
+
+    .cell-status.fail {
+      background: #dc2626;
+      color: #fff;
+    }
+
+    .cell-status.skip {
+      background: #6b7280;
+      color: #fff;
+    }
+
+    .cell-duration {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+
+    /* Modal overlay */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 100;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .modal {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      max-width: 900px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px rgba(0, 0, 0, 0.5);
+      animation: slideUp 0.2s ease;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .modal-header {
+      background: #0f1419;
+      border-bottom: 1px solid #1f2937;
+      padding: 16px;
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .modal-title {
+      flex: 1;
+    }
+
+    .modal-title h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .modal-title .target {
+      font-size: 12px;
+      color: #9ca3af;
+      display: inline-block;
+      background: #1f2937;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-left: 8px;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: 20px;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .modal-close:hover {
+      color: #d7dce5;
+    }
+
+    .modal-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .modal-status-badge {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .modal-status-badge.ok {
+      background: #10b98150;
+      color: #86efac;
+    }
+
+    .modal-status-badge.fail {
+      background: #dc262650;
+      color: #fca5a5;
+    }
+
+    .modal-duration {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .modal-body {
+      padding: 16px;
+    }
+
+    .placeholder-content {
+      padding: 24px;
+      text-align: center;
+      color: #6b7280;
+    }
+
+    .run-not-found {
+      padding: 24px;
+      background: #1f2937;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .run-not-found p {
+      color: #9ca3af;
+      margin-bottom: 8px;
+    }
+
+    /* Evidence sections */
+    .evidence-section {
+      margin-bottom: 20px;
+    }
+
+    .evidence-section h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #d7dce5;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #1f2937;
+    }
+
+    .screenshot-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .screenshot-item {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .screenshot-item:hover {
+      border-color: #6366f1;
+      box-shadow: 0 0 8px rgba(99, 102, 241, 0.2);
+    }
+
+    .screenshot-thumb {
+      width: 100%;
+      height: 120px;
+      background: #111827;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .screenshot-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .screenshot-label {
+      padding: 8px;
+      font-size: 11px;
+      color: #9ca3af;
+      text-align: center;
+      word-break: break-word;
+      line-height: 1.3;
+    }
+
+    .assertion-block {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+
+    .assertion-block.failed {
+      background: #7f1d1d;
+      border-color: #dc2626;
+    }
+
+    .assertion-text {
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 11px;
+      color: #d7dce5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 8px;
+    }
+
+    .assertion-block.failed .assertion-text {
+      color: #fca5a5;
+    }
+
+    .assertion-values {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      font-size: 11px;
+    }
+
+    .assertion-value {
+      background: #111827;
+      padding: 8px;
+      border-radius: 4px;
+      border-left: 2px solid #6b7280;
+    }
+
+    .assertion-label {
+      color: #9ca3af;
+      margin-bottom: 4px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .assertion-val {
+      font-family: 'Monaco', 'Courier New', monospace;
+      color: #d7dce5;
+      word-break: break-all;
+    }
+
+    .assertion-block.failed .assertion-value {
+      border-left-color: #dc2626;
+    }
+
+    .turn-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .turn-item {
+      background: #1f2937;
+      border-left: 3px solid #6b7280;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .turn-item.step {
+      border-left-color: #0ea5e9;
+    }
+
+    .turn-item.assert {
+      border-left-color: #06b6d4;
+    }
+
+    .turn-item.error {
+      border-left-color: #dc2626;
+    }
+
+    .turn-role {
+      color: #9ca3af;
+      font-size: 11px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .turn-text {
+      color: #d7dce5;
+      line-height: 1.4;
+    }
+
+    .turn-time {
+      font-size: 10px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    /* Video player stub */
+    .video-placeholder {
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+      color: #9ca3af;
+      font-size: 12px;
+    }
+
+    .video-placeholder strong {
+      color: #d7dce5;
+    }
+
+    /* Empty state */
+    .empty-state {
+      padding: 40px;
+      text-align: center;
+      color: #6b7280;
+    }
+
+    .empty-state svg {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-left">
+        <h1>E2E Test Dashboard</h1>
+        <div class="header-meta" id="generatedAt"></div>
+      </div>
+      <div class="header-stats">
+        <div class="stat">
+          <span>Total:</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="stat">
+          <span>Status:</span>
+          <div class="stat-badge pass" id="passCount">Pass: 0</div>
+          <div class="stat-badge fail" id="failCount">Fail: 0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="matrix-wrapper">
+        <table id="matrixTable">
+          <thead>
+            <tr id="headerRow">
+              <th>Scenario</th>
+            </tr>
+          </thead>
+          <tbody id="matrixBody">
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail modal -->
+  <div class="modal-overlay" id="detailModal">
+    <div class="modal" id="modalContent">
+      <div class="modal-header">
+        <div class="modal-title">
+          <h2 id="modalScenario"></h2>
+          <span class="target" id="modalTarget"></span>
+          <div class="modal-status">
+            <span class="modal-status-badge" id="modalStatus"></span>
+            <span class="modal-duration" id="modalDuration"></span>
+          </div>
+        </div>
+        <button class="modal-close" id="closeModal">×</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+      </div>
+    </div>
+  </div>
+
+  <script src="./data.js"></script>
+  <script>
+    // Data loading
+    const data = window.E2E_DATA;
+    const manifest = data.manifest;
+    const runs = data.runs;
+
+    // Build index of runs by slug
+    const runsBySlug = {};
+    runs.forEach((run, idx) => {
+      const slug = `${run.scenario.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${run.target}`;
+      runsBySlug[slug] = { run, idx };
+    });
+
+    // Build manifest matrix
+    const scenarioMap = new Map(); // scenario -> [targets]
+    manifest.runs.forEach(entry => {
+      if (!scenarioMap.has(entry.scenario)) {
+        scenarioMap.set(entry.scenario, []);
+      }
+      scenarioMap.get(entry.scenario).push({
+        target: entry.target,
+        slug: entry.slug,
+        ok: entry.ok,
+        durationMs: entry.durationMs,
+        missing: false
+      });
+    });
+
+    // Collect all unique targets
+    const targetSet = new Set();
+    manifest.runs.forEach(entry => {
+      targetSet.add(entry.target);
+    });
+    const targets = Array.from(targetSet).sort();
+
+    // Handle skips
+    manifest.skips?.forEach(skip => {
+      if (!scenarioMap.has(skip.scenario)) {
+        scenarioMap.set(skip.scenario, []);
+      }
+      const targets_in_skip = skip.missing || [];
+      targets_in_skip.forEach(target => {
+        const existing = scenarioMap.get(skip.scenario).find(t => t.target === target);
+        if (!existing) {
+          scenarioMap.get(skip.scenario).push({
+            target: target,
+            ok: null,
+            durationMs: 0,
+            missing: true
+          });
+        }
+      });
+    });
+
+    // Calculate stats
+    let passCount = 0, failCount = 0, totalCount = 0;
+    manifest.runs.forEach(entry => {
+      totalCount++;
+      if (entry.ok) passCount++;
+      else failCount++;
+    });
+
+    // Render header
+    const headerRow = document.getElementById('headerRow');
+    targets.forEach(target => {
+      const th = document.createElement('th');
+      th.textContent = target;
+      headerRow.appendChild(th);
+    });
+
+    // Render matrix body
+    const matrixBody = document.getElementById('matrixBody');
+    const scenarios = Array.from(scenarioMap.keys()).sort();
+
+    scenarios.forEach(scenario => {
+      const row = document.createElement('tr');
+
+      // Scenario name cell
+      const nameCell = document.createElement('td');
+      nameCell.className = 'scenario-name';
+      const [category, ...rest] = scenario.split(' · ');
+      const desc = rest.join(' · ');
+      nameCell.innerHTML = `<div class="scenario-category">${category}</div><div>${desc}</div>`;
+      row.appendChild(nameCell);
+
+      // Target cells
+      const scenarioData = scenarioMap.get(scenario);
+      targets.forEach(target => {
+        const cell = document.createElement('td');
+        cell.className = 'cell';
+
+        const entry = scenarioData.find(e => e.target === target);
+        if (!entry) {
+          cell.innerHTML = '';
+        } else if (entry.missing) {
+          const content = document.createElement('div');
+          content.className = 'cell-content';
+          const status = document.createElement('div');
+          status.className = 'cell-status skip';
+          status.textContent = '—';
+          content.appendChild(status);
+          cell.appendChild(content);
+        } else {
+          const content = document.createElement('div');
+          content.className = 'cell-content';
+
+          const status = document.createElement('div');
+          status.className = `cell-status ${entry.ok ? 'pass' : 'fail'}`;
+          status.textContent = entry.ok ? '✓' : '✕';
+          content.appendChild(status);
+
+          const duration = document.createElement('div');
+          duration.className = 'cell-duration';
+          duration.textContent = formatDuration(entry.durationMs);
+          content.appendChild(duration);
+
+          cell.appendChild(content);
+
+          // Click handler
+          cell.addEventListener('click', () => {
+            showDetail(scenario, target, entry.slug);
+          });
+        }
+
+        row.appendChild(cell);
+      });
+
+      matrixBody.appendChild(row);
+    });
+
+    // Update header stats
+    document.getElementById('generatedAt').textContent = `Generated ${formatDate(manifest.generatedAt)}`;
+    document.getElementById('totalCount').textContent = totalCount;
+    document.getElementById('passCount').textContent = `Pass: ${passCount}`;
+    document.getElementById('failCount').textContent = `Fail: ${failCount}`;
+
+    // Detail modal
+    const modal = document.getElementById('detailModal');
+    const closeBtn = document.getElementById('closeModal');
+    const modalBody = document.getElementById('modalBody');
+
+    closeBtn.addEventListener('click', () => {
+      modal.classList.remove('active');
+    });
+
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.classList.remove('active');
+      }
+    });
+
+    function showDetail(scenario, target, slug) {
+      // Find the actual run
+      const match = runsBySlug[slug] || findRunByScenarioAndTarget(scenario, target);
+
+      if (!match) {
+        showPlaceholder(scenario, target);
+        return;
+      }
+
+      const run = match.run;
+      document.getElementById('modalScenario').textContent = scenario;
+      document.getElementById('modalTarget').textContent = `${target}`;
+      document.getElementById('modalDuration').textContent = `${formatDuration(run.durationMs)}`;
+
+      const statusBadge = document.getElementById('modalStatus');
+      statusBadge.className = `modal-status-badge ${run.ok ? 'ok' : 'fail'}`;
+      statusBadge.textContent = run.ok ? 'PASS' : 'FAIL';
+
+      let html = '';
+
+      // Error/failure evidence first (if any)
+      const errorTurn = run.turns?.find(t => t.role === 'error');
+      const failedAssert = run.turns?.find(t => t.role === 'assert' && t.assertion && !t.assertion.ok);
+
+      if (!run.ok && (errorTurn || failedAssert)) {
+        html += '<div class="evidence-section">';
+        html += '<h3>Failure</h3>';
+
+        if (failedAssert) {
+          html += buildAssertionHTML(failedAssert, true);
+        }
+
+        if (errorTurn) {
+          html += `<div class="assertion-block failed">`;
+          html += `<div class="assertion-text">${escapeHtml(errorTurn.text || errorTurn.error || 'Unknown error')}</div>`;
+          if (errorTurn.evidence) {
+            const failScreenshot = errorTurn.evidence.find(e => e.kind === 'screenshot');
+            if (failScreenshot) {
+              html += `<div style="margin-top: 8px;"><strong>Failure screenshot:</strong></div>`;
+              html += `<img src="${run.assetBase}${failScreenshot.path}" style="width: 100%; max-height: 300px; border-radius: 4px; margin-top: 8px;">`;
+            }
+          }
+          html += `</div>`;
+        }
+
+        html += '</div>';
+      }
+
+      // Screenshot evidence
+      const screenshots = [];
+      run.turns?.forEach(turn => {
+        if (turn.evidence) {
+          turn.evidence.forEach(ev => {
+            if (ev.kind === 'screenshot') {
+              screenshots.push({
+                path: ev.path,
+                label: ev.label || turn.text
+              });
+            }
+          });
+        }
+      });
+
+      if (screenshots.length > 0) {
+        html += '<div class="evidence-section">';
+        html += '<h3>Screenshots</h3>';
+        html += '<div class="screenshot-grid">';
+        screenshots.forEach(ss => {
+          html += `
+            <div class="screenshot-item">
+              <div class="screenshot-thumb">
+                <img src="${run.assetBase}${ss.path}" alt="${escapeHtml(ss.label)}" onerror="this.style.display='none'">
+              </div>
+              <div class="screenshot-label">${escapeHtml(ss.label.substring(0, 50))}</div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        html += '</div>';
+      }
+
+      // Video evidence
+      const videos = [];
+      run.turns?.forEach(turn => {
+        if (turn.evidence) {
+          turn.evidence.forEach(ev => {
+            if (ev.kind === 'video') {
+              videos.push({
+                path: ev.path,
+                startMs: ev.startMs,
+                endMs: ev.endMs,
+                label: turn.text
+              });
+            }
+          });
+        }
+      });
+
+      if (videos.length > 0) {
+        html += '<div class="evidence-section">';
+        html += '<h3>Video Evidence</h3>';
+        videos.forEach(v => {
+          if (v.startMs === null || v.startMs === undefined) {
+            html += `<div class="video-placeholder"><strong>Full session:</strong> ${escapeHtml(v.label)}</div>`;
+          } else {
+            html += `<div class="video-placeholder"><strong>Slice (${v.startMs}ms - ${v.endMs}ms):</strong> ${escapeHtml(v.label)}</div>`;
+          }
+        });
+        html += '</div>';
+      }
+
+      // Assertions
+      const assertions = run.turns?.filter(t => t.role === 'assert') || [];
+      if (assertions.length > 0) {
+        html += '<div class="evidence-section">';
+        html += '<h3>Assertions</h3>';
+        assertions.forEach(a => {
+          html += buildAssertionHTML(a, false);
+        });
+        html += '</div>';
+      }
+
+      // Step summary
+      const steps = run.turns?.filter(t => t.role === 'step') || [];
+      if (steps.length > 0) {
+        html += '<div class="evidence-section">';
+        html += '<h3>Journey Steps</h3>';
+        html += '<div class="turn-list">';
+        steps.forEach(step => {
+          const timestamp = new Date(step.t).toLocaleTimeString();
+          html += `
+            <div class="turn-item step">
+              <div class="turn-role">Step</div>
+              <div class="turn-text">${escapeHtml(step.text)}</div>
+              <div class="turn-time">${timestamp}</div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        html += '</div>';
+      }
+
+      modalBody.innerHTML = html || '<div class="empty-state">No detailed evidence available for this run.</div>';
+      modal.classList.add('active');
+    }
+
+    function buildAssertionHTML(assertTurn, isFailed) {
+      let html = `<div class="assertion-block ${isFailed ? 'failed' : ''}">`;
+
+      // Handle nested assertion structure
+      const assertion = assertTurn.assertion || assertTurn;
+
+      if (assertTurn.text) {
+        html += `<div class="assertion-text">${escapeHtml(assertTurn.text)}</div>`;
+      } else if (assertion.label) {
+        html += `<div class="assertion-text">${escapeHtml(assertion.label)}</div>`;
+      }
+
+      if (assertion.actual !== undefined || assertion.expected !== undefined) {
+        html += '<div class="assertion-values">';
+        if (assertion.expected !== undefined) {
+          html += `
+            <div class="assertion-value">
+              <div class="assertion-label">Expected</div>
+              <div class="assertion-val">${escapeHtml(String(assertion.expected))}</div>
+            </div>
+          `;
+        }
+        if (assertion.actual !== undefined) {
+          html += `
+            <div class="assertion-value">
+              <div class="assertion-label">Actual</div>
+              <div class="assertion-val">${escapeHtml(String(assertion.actual))}</div>
+            </div>
+          `;
+        }
+        html += '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function showPlaceholder(scenario, target) {
+      document.getElementById('modalScenario').textContent = scenario;
+      document.getElementById('modalTarget').textContent = target;
+      document.getElementById('modalStatus').textContent = '—';
+      document.getElementById('modalStatus').className = 'modal-status-badge';
+      document.getElementById('modalDuration').textContent = '';
+
+      modalBody.innerHTML = `
+        <div class="run-not-found">
+          <p>No detailed run data available for this scenario/target combination.</p>
+          <p style="font-size: 11px; color: #6b7280;">The mock data includes only 3 complete runs. In production, click here to navigate to the full run details.</p>
+        </div>
+      `;
+
+      modal.classList.add('active');
+    }
+
+    function findRunByScenarioAndTarget(scenario, target) {
+      const run = runs.find(r => r.scenario === scenario && r.target === target);
+      if (run) {
+        return { run, idx: runs.indexOf(run) };
+      }
+      return null;
+    }
+
+    // Utilities
+    function formatDuration(ms) {
+      if (ms < 1000) return ms + 'ms';
+      return (ms / 1000).toFixed(1) + 's';
+    }
+
+    function formatDate(timestamp) {
+      return new Date(timestamp).toLocaleString();
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+  </script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 // test: refresh runs/manifest.json + vite-build the SPA into runs/.
 // Usage: bun e2e/scripts/rebuild-viewer.ts
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { cpSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,4 +17,9 @@ execFileSync("bunx", ["vite", "build", "--config", "viewer/vite.config.ts"], {
   cwd: e2eDir,
   stdio: "inherit",
 });
+// The viewer-design prototypes (bakeoff) ride along at /_proto while they exist.
+const prototypes = join(e2eDir, "viewer-prototypes");
+if (existsSync(prototypes)) {
+  cpSync(prototypes, join(runsDir, "_proto"), { recursive: true });
+}
 console.log(`viewer rebuilt at ${runsDir}`);

@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Filmstrip Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #0b0f17;
+      color: #d7dce5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    a {
+      color: #6366f1;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header: Run selector + metadata */
+    .header {
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .run-selector {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-selector label {
+      font-weight: 500;
+      color: #9ca3af;
+    }
+
+    .run-selector select {
+      padding: 6px 12px;
+      background: #1f2937;
+      color: #d7dce5;
+      border: 1px solid #374151;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .run-selector select:hover {
+      background: #2d3748;
+    }
+    .run-selector select:focus {
+      outline: none;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+    }
+
+    .run-metadata {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: #9ca3af;
+      margin-left: auto;
+    }
+
+    .run-status {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .run-status.ok {
+      background: #10b98150;
+      color: #86efac;
+    }
+    .run-status.fail {
+      background: #dc262650;
+      color: #fca5a5;
+    }
+
+    /* Filmstrip section */
+    .filmstrip-section {
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+      padding: 12px 16px;
+      flex-shrink: 0;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+
+    .filmstrip-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #6b7280;
+      margin-bottom: 8px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .filmstrip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .filmstrip-frame {
+      flex-shrink: 0;
+      width: 80px;
+      height: 80px;
+      border: 2px solid #374151;
+      border-radius: 4px;
+      background: #0b0f17;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.15s ease;
+    }
+
+    .filmstrip-frame:hover {
+      border-color: #6366f1;
+      transform: scale(1.05);
+    }
+
+    .filmstrip-frame.active {
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+    }
+
+    .filmstrip-frame img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .filmstrip-frame.no-image {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      color: #6b7280;
+      text-align: center;
+      padding: 4px;
+    }
+
+    /* Main content area */
+    .content {
+      flex: 1;
+      display: flex;
+      gap: 16px;
+      overflow: hidden;
+      padding: 16px;
+    }
+
+    /* Left column: Large screenshot */
+    .screenshot-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .screenshot-container {
+      flex: 1;
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      overflow: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+    }
+
+    .screenshot-container img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      padding: 8px;
+    }
+
+    .screenshot-container.no-image {
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    /* Right column: Details panel */
+    .details-pane {
+      width: 380px;
+      display: flex;
+      flex-direction: column;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .details-header {
+      padding: 12px 12px;
+      border-bottom: 1px solid #1f2937;
+      flex-shrink: 0;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+
+    .step-text {
+      font-weight: 500;
+      color: #d7dce5;
+      word-break: break-word;
+      font-size: 13px;
+    }
+
+    .step-time {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .details-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 12px;
+    }
+
+    .detail-section {
+      margin-bottom: 16px;
+    }
+
+    .detail-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .detail-section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #6b7280;
+      margin-bottom: 6px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .assertion {
+      background: #1f2937;
+      border-left: 3px solid #6366f1;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .assertion.ok {
+      border-left-color: #10b981;
+    }
+
+    .assertion.fail {
+      border-left-color: #dc2626;
+      background: #1f1f2350;
+    }
+
+    .assertion-label {
+      color: #9ca3af;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .assertion-detail {
+      color: #d7dce5;
+      font-family: "Monaco", "Courier New", monospace;
+      font-size: 11px;
+      word-break: break-all;
+    }
+
+    .tool-call {
+      background: #1f2937;
+      border-left: 3px solid #8b5cf6;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .tool-name {
+      color: #c084fc;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .tool-result {
+      color: #d7dce5;
+      font-family: "Monaco", "Courier New", monospace;
+      font-size: 11px;
+      word-break: break-all;
+    }
+
+    .tool-duration {
+      color: #6b7280;
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    .error-box {
+      background: #dc262650;
+      border: 1px solid #dc2626;
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 8px;
+    }
+
+    .error-text {
+      color: #fca5a5;
+      font-size: 12px;
+      font-family: "Monaco", "Courier New", monospace;
+      word-break: break-word;
+    }
+
+    .auth-info {
+      background: #1f2937;
+      border-left: 3px solid #f59e0b;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .auth-phase {
+      color: #fbbf24;
+      font-weight: 500;
+    }
+
+    .auth-text {
+      color: #d7dce5;
+      margin-top: 4px;
+    }
+
+    .video-info {
+      background: #1f2937;
+      border-left: 3px solid #3b82f6;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #93c5fd;
+    }
+
+    /* Error state styling for failing run */
+    .run-failed .details-pane {
+      border-color: #dc2626;
+    }
+
+    .run-failed .screenshot-container {
+      border-color: #dc2626;
+    }
+
+    .run-failed .filmstrip-frame.active {
+      border-color: #dc2626;
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.2);
+    }
+
+    /* Keyboard hint */
+    .keyboard-hint {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      font-size: 11px;
+      color: #6b7280;
+      background: #1f2937;
+      border: 1px solid #374151;
+      padding: 6px 10px;
+      border-radius: 4px;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0b0f17;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #374151;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #4b5563;
+    }
+
+    /* No run selected state */
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #6b7280;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <script src="./data.js"></script>
+
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="run-selector">
+        <label for="run-select">Run:</label>
+        <select id="run-select">
+          <option value="">Select a run...</option>
+        </select>
+      </div>
+      <div class="run-metadata">
+        <span id="run-scenario"></span>
+        <span id="run-target"></span>
+        <span id="run-duration"></span>
+        <span id="run-status" class="run-status"></span>
+      </div>
+    </div>
+
+    <!-- Filmstrip -->
+    <div class="filmstrip-section">
+      <div class="filmstrip-label">Steps</div>
+      <div class="filmstrip" id="filmstrip"></div>
+    </div>
+
+    <!-- Main content -->
+    <div class="content" id="content">
+      <div class="empty-state">Select a run to begin</div>
+    </div>
+  </div>
+
+  <div class="keyboard-hint">← → to navigate • ↑ ↓ to scroll details</div>
+
+  <script>
+    const E2E_DATA = window.E2E_DATA;
+    let currentRunIndex = -1;
+    let currentStepIndex = 0;
+
+    // Populate run selector
+    function initRunSelector() {
+      const select = document.getElementById('run-select');
+      E2E_DATA.runs.forEach((run, idx) => {
+        const option = document.createElement('option');
+        option.value = idx;
+        option.textContent = run.scenario;
+        select.appendChild(option);
+      });
+      select.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.value);
+        if (idx >= 0) {
+          loadRun(idx);
+        } else {
+          currentRunIndex = -1;
+          renderEmpty();
+        }
+      });
+    }
+
+    function loadRun(idx) {
+      currentRunIndex = idx;
+      currentStepIndex = 0;
+      renderRunMetadata();
+      renderFilmstrip();
+      renderDetailView();
+    }
+
+    function renderEmpty() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="empty-state">Select a run to begin</div>';
+      document.getElementById('filmstrip').innerHTML = '';
+    }
+
+    function renderRunMetadata() {
+      const run = E2E_DATA.runs[currentRunIndex];
+      document.getElementById('run-scenario').textContent = run.scenario;
+      document.getElementById('run-target').textContent = `Target: ${run.target}`;
+      document.getElementById('run-duration').textContent = `${run.durationMs}ms`;
+
+      const statusEl = document.getElementById('run-status');
+      statusEl.textContent = run.ok ? '✓ PASS' : '✗ FAIL';
+      statusEl.className = `run-status ${run.ok ? 'ok' : 'fail'}`;
+
+      if (!run.ok) {
+        document.querySelector('.container').classList.add('run-failed');
+      } else {
+        document.querySelector('.container').classList.remove('run-failed');
+      }
+    }
+
+    function getStepTurns(run) {
+      return run.turns.filter(t => t.role === 'step');
+    }
+
+    function renderFilmstrip() {
+      const run = E2E_DATA.runs[currentRunIndex];
+      const steps = getStepTurns(run);
+      const filmstrip = document.getElementById('filmstrip');
+      filmstrip.innerHTML = '';
+
+      steps.forEach((step, idx) => {
+        const frame = document.createElement('div');
+        frame.className = 'filmstrip-frame';
+        if (idx === currentStepIndex) frame.classList.add('active');
+
+        if (step.evidence && step.evidence.length > 0) {
+          const screenshot = step.evidence.find(e => e.kind === 'screenshot');
+          if (screenshot) {
+            const img = document.createElement('img');
+            img.src = run.assetBase + screenshot.path;
+            img.onerror = () => {
+              frame.classList.add('no-image');
+              frame.innerHTML = '<span>Image not found</span>';
+            };
+            frame.appendChild(img);
+          } else {
+            frame.classList.add('no-image');
+            frame.innerHTML = '<span>No screenshot</span>';
+          }
+        } else {
+          frame.classList.add('no-image');
+          frame.innerHTML = '<span>No evidence</span>';
+        }
+
+        frame.addEventListener('click', () => {
+          currentStepIndex = idx;
+          renderFilmstrip();
+          renderDetailView();
+        });
+        filmstrip.appendChild(frame);
+      });
+    }
+
+    function renderDetailView() {
+      const run = E2E_DATA.runs[currentRunIndex];
+      const steps = getStepTurns(run);
+      const step = steps[currentStepIndex];
+
+      // If there are no steps (e.g., MCP-only run), show empty state
+      if (!step) {
+        const content = document.getElementById('content');
+        content.innerHTML = '<div class="empty-state">This run has no browser steps to display. Check the test log for details.</div>';
+        return;
+      }
+
+      let html = `
+        <div class="screenshot-pane">
+          <div class="screenshot-container">
+      `;
+
+      // Screenshot
+      if (step.evidence && step.evidence.length > 0) {
+        const screenshot = step.evidence.find(e => e.kind === 'screenshot');
+        if (screenshot) {
+          html += `<img src="${run.assetBase}${screenshot.path}" alt="Step screenshot">`;
+        } else {
+          html += '<div class="no-image">No screenshot available</div>';
+        }
+      } else {
+        html += '<div class="no-image">No evidence available</div>';
+      }
+
+      html += `
+          </div>
+        </div>
+
+        <div class="details-pane">
+          <div class="details-header">
+            <div class="step-text">${escapeHtml(step.text)}</div>
+            <div class="step-time">Step ${currentStepIndex + 1} of ${getStepTurns(run).length}</div>
+          </div>
+          <div class="details-body">
+      `;
+
+      // Video evidence
+      const videos = step.evidence ? step.evidence.filter(e => e.kind === 'video') : [];
+      if (videos.length > 0) {
+        html += '<div class="detail-section">';
+        html += '<div class="detail-section-title">Video</div>';
+        videos.forEach(v => {
+          if (v.startMs !== null && v.endMs !== null) {
+            html += `<div class="video-info">Slice ${v.startMs}–${v.endMs}ms of ${v.path}</div>`;
+          } else {
+            html += `<div class="video-info">Full session: ${v.path}</div>`;
+          }
+        });
+        html += '</div>';
+      }
+
+      // Collect all related turns (asserts, tools, auth, errors)
+      const stepTime = step.t;
+      const relatedTurns = run.turns.filter(t => {
+        // Include turns that happen at the same time or immediately after, until we hit the next step
+        return t.t >= stepTime && t.t < (steps[currentStepIndex + 1]?.t || Infinity) && t !== step;
+      });
+
+      // Group by role type
+      const assertions = relatedTurns.filter(t => t.role === 'assert');
+      const tools = relatedTurns.filter(t => t.role === 'tool');
+      const authTurns = relatedTurns.filter(t => t.role === 'auth');
+      const errors = relatedTurns.filter(t => t.role === 'error');
+
+      // Auth
+      if (authTurns.length > 0) {
+        html += '<div class="detail-section">';
+        html += '<div class="detail-section-title">Auth</div>';
+        authTurns.forEach(auth => {
+          html += `
+            <div class="auth-info">
+              <div class="auth-phase">${escapeHtml(auth.phase || 'unknown')}</div>
+              <div class="auth-text">${escapeHtml(auth.text)}</div>
+            </div>
+          `;
+        });
+        html += '</div>';
+      }
+
+      // Tool calls
+      if (tools.length > 0) {
+        html += '<div class="detail-section">';
+        html += '<div class="detail-section-title">Tool Calls</div>';
+        tools.forEach(tool => {
+          html += '<div class="tool-call">';
+          html += `<div class="tool-name">${escapeHtml(tool.call.name)} (${escapeHtml(tool.surface || 'unknown')})</div>`;
+
+          if (tool.result) {
+            const resultStr = typeof tool.result === 'string'
+              ? tool.result
+              : JSON.stringify(tool.result, null, 1).substring(0, 200);
+            html += `<div class="tool-result">${escapeHtml(resultStr)}</div>`;
+          }
+
+          if (tool.durationMs) {
+            html += `<div class="tool-duration">${tool.durationMs}ms</div>`;
+          }
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+
+      // Assertions
+      if (assertions.length > 0) {
+        html += '<div class="detail-section">';
+        html += '<div class="detail-section-title">Assertions</div>';
+        assertions.forEach(assert => {
+          const a = assert.assertion;
+          const isOk = a.ok;
+          html += `<div class="assertion ${isOk ? 'ok' : 'fail'}">`;
+          html += `<div class="assertion-label">${escapeHtml(a.label || a.kind)}</div>`;
+          html += `<div class="assertion-detail">`;
+          html += `<strong>Expected:</strong> ${escapeHtml(String(a.expected))}<br>`;
+          html += `<strong>Actual:</strong> ${escapeHtml(String(a.actual))}`;
+          html += `</div>`;
+          html += `</div>`;
+        });
+        html += '</div>';
+      }
+
+      // Errors
+      if (errors.length > 0) {
+        html += '<div class="detail-section">';
+        html += '<div class="detail-section-title">Error</div>';
+        errors.forEach(err => {
+          html += '<div class="error-box">';
+          html += `<div class="error-text">${escapeHtml(err.text)}</div>`;
+          if (err.evidence && err.evidence.length > 0) {
+            const errScreenshot = err.evidence.find(e => e.kind === 'screenshot');
+            if (errScreenshot) {
+              html += `<div style="margin-top: 8px; font-size: 11px; color: #9ca3af;">Screenshot: ${escapeHtml(errScreenshot.label)}</div>`;
+            }
+          }
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+
+      html += `
+          </div>
+        </div>
+      `;
+
+      const content = document.getElementById('content');
+      content.innerHTML = html;
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // Keyboard navigation
+    document.addEventListener('keydown', (e) => {
+      if (currentRunIndex < 0) return;
+
+      const steps = getStepTurns(E2E_DATA.runs[currentRunIndex]);
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (currentStepIndex > 0) {
+          currentStepIndex--;
+          renderFilmstrip();
+          renderDetailView();
+          document.querySelector('.filmstrip-frame.active').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (currentStepIndex < steps.length - 1) {
+          currentStepIndex++;
+          renderFilmstrip();
+          renderDetailView();
+          document.querySelector('.filmstrip-frame.active').scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        }
+      }
+    });
+
+    // Initialize
+    initRunSelector();
+  </script>
+</body>
+</html>

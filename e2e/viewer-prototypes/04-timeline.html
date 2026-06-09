@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Run Timeline Viewer</title>
+  <script src="./data.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      background: #0b0f17;
+      color: #d7dce5;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    .header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #1a1f2e;
+      flex-shrink: 0;
+    }
+
+    .header-content {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .header-title {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .run-switcher {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-button {
+      padding: 8px 12px;
+      background: #1a1f2e;
+      border: 1px solid #2a3142;
+      border-radius: 4px;
+      color: #d7dce5;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    .run-button:hover {
+      background: #252d3e;
+      border-color: #3a4558;
+    }
+
+    .run-button.active {
+      background: #4a7c59;
+      border-color: #5a9c6f;
+    }
+
+    .run-button.failed {
+      background: #7c3a3a;
+      border-color: #9c5a5a;
+    }
+
+    .run-button.failed.active {
+      background: #a85555;
+      border-color: #c87575;
+    }
+
+    .main-container {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      gap: 16px;
+      padding: 16px 24px;
+    }
+
+    .timeline-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: #13171f;
+      border-radius: 8px;
+      padding: 16px;
+      border: 1px solid #1a1f2e;
+    }
+
+    .timeline-header {
+      margin-bottom: 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #a0aab8;
+    }
+
+    .timeline-container {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+    }
+
+    .timeline-content {
+      position: relative;
+      padding-bottom: 8px;
+    }
+
+    .timeline-track {
+      position: relative;
+      height: 100%;
+      min-height: 400px;
+    }
+
+    .timeline-axis {
+      position: relative;
+      height: 40px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid #2a3142;
+      padding-bottom: 8px;
+    }
+
+    .timeline-axis-label {
+      position: absolute;
+      font-size: 11px;
+      color: #6a7280;
+      text-anchor: middle;
+      top: 8px;
+    }
+
+    .timeline-axis-tick {
+      position: absolute;
+      height: 6px;
+      width: 1px;
+      background: #2a3142;
+      top: 0;
+    }
+
+    .turn-row {
+      position: relative;
+      height: 32px;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+    }
+
+    .turn-label {
+      position: absolute;
+      left: -180px;
+      width: 168px;
+      font-size: 12px;
+      color: #a0aab8;
+      padding-right: 8px;
+      text-align: right;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 5;
+    }
+
+    .turn-bar {
+      position: absolute;
+      height: 24px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 500;
+      color: #fff;
+      border: 1px solid;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 0 4px;
+    }
+
+    .turn-bar:hover {
+      filter: brightness(1.15);
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+    }
+
+    /* Role-based colors */
+    .turn-bar.role-user {
+      background: #2a5a4a;
+      border-color: #3a7a6a;
+    }
+
+    .turn-bar.role-assistant {
+      background: #2a4a6a;
+      border-color: #3a6a8a;
+    }
+
+    .turn-bar.role-step {
+      background: #5a5a2a;
+      border-color: #7a7a4a;
+    }
+
+    .turn-bar.role-tool {
+      background: #6a4a2a;
+      border-color: #8a6a4a;
+    }
+
+    .turn-bar.role-assert {
+      background: #4a5a3a;
+      border-color: #6a7a5a;
+    }
+
+    .turn-bar.role-assert.failed {
+      background: #7a3a3a;
+      border-color: #9a5a5a;
+    }
+
+    .turn-bar.role-assert.ok {
+      background: #3a6a4a;
+      border-color: #5a8a6a;
+    }
+
+    .turn-bar.role-error {
+      background: #8a2a2a;
+      border-color: #c a5a5a;
+    }
+
+    .turn-bar.role-auth {
+      background: #5a3a6a;
+      border-color: #7a5a8a;
+    }
+
+    .detail-panel {
+      width: 420px;
+      background: #13171f;
+      border-radius: 8px;
+      border: 1px solid #1a1f2e;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .detail-empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6a7280;
+      font-size: 13px;
+    }
+
+    .detail-content {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .detail-header {
+      padding: 16px;
+      border-bottom: 1px solid #1a1f2e;
+      flex-shrink: 0;
+    }
+
+    .detail-role-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #2a3142;
+      margin-bottom: 8px;
+    }
+
+    .detail-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .detail-timestamp {
+      font-size: 11px;
+      color: #6a7280;
+    }
+
+    .detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .detail-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .detail-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #a0aab8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .detail-text {
+      font-size: 12px;
+      line-height: 1.5;
+      color: #d7dce5;
+      word-break: break-word;
+    }
+
+    .evidence-gallery {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .evidence-item {
+      background: #0b0f17;
+      border: 1px solid #1a1f2e;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .evidence-screenshot {
+      width: 100%;
+      max-height: 200px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .evidence-video {
+      width: 100%;
+      max-height: 200px;
+      display: block;
+    }
+
+    .evidence-label {
+      padding: 8px;
+      font-size: 11px;
+      color: #a0aab8;
+      border-top: 1px solid #1a1f2e;
+      background: #0b0f17;
+    }
+
+    .assertion-result {
+      padding: 12px;
+      background: #0b0f17;
+      border: 1px solid #1a1f2e;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+
+    .assertion-result.ok {
+      border-color: #3a6a4a;
+      background: #0f1a14;
+    }
+
+    .assertion-result.failed {
+      border-color: #7a3a3a;
+      background: #1a0f0f;
+    }
+
+    .assertion-label {
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .assertion-status {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .assertion-status.ok {
+      background: #5a9c6f;
+    }
+
+    .assertion-status.failed {
+      background: #c a5a5a;
+    }
+
+    .assertion-values {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 10px;
+      color: #6a7280;
+    }
+
+    .assertion-value {
+      padding: 4px;
+      background: #13171f;
+      border-radius: 2px;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tool-call {
+      padding: 12px;
+      background: #0b0f17;
+      border: 1px solid #1a1f2e;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: 'Courier New', monospace;
+      color: #a0aab8;
+    }
+
+    .tool-duration {
+      margin-top: 6px;
+      font-size: 10px;
+      color: #6a7280;
+    }
+
+    .run-stats {
+      padding: 12px;
+      background: #0b0f17;
+      border: 1px solid #1a1f2e;
+      border-radius: 4px;
+      font-size: 11px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .stat-label {
+      color: #6a7280;
+    }
+
+    .stat-value {
+      font-weight: 600;
+      color: #d7dce5;
+      font-size: 13px;
+    }
+
+    .error-banner {
+      background: #4a1a1a;
+      border: 1px solid #7a3a3a;
+      border-radius: 4px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+
+    .error-banner-title {
+      color: #ff8a7a;
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .error-banner-text {
+      color: #d7a0a0;
+      font-size: 11px;
+      word-break: break-word;
+    }
+
+    .run-failure-indicator {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: #7a3a3a;
+      color: #ff8a7a;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #9a5a5a;
+    }
+
+    .no-video-notice {
+      padding: 8px;
+      background: #1a2a2a;
+      color: #6a7280;
+      font-size: 11px;
+      border-radius: 3px;
+      border-left: 2px solid #2a4a4a;
+    }
+
+    /* Scrollbar styling */
+    .timeline-container::-webkit-scrollbar,
+    .detail-body::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .timeline-container::-webkit-scrollbar-track,
+    .detail-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .timeline-container::-webkit-scrollbar-thumb,
+    .detail-body::-webkit-scrollbar-thumb {
+      background: #2a3142;
+      border-radius: 4px;
+    }
+
+    .timeline-container::-webkit-scrollbar-thumb:hover,
+    .detail-body::-webkit-scrollbar-thumb:hover {
+      background: #3a4558;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-content">
+      <div class="header-title">E2E Run Timeline</div>
+      <div class="run-switcher" id="runSwitcher"></div>
+    </div>
+  </div>
+
+  <div class="main-container">
+    <div class="timeline-panel">
+      <div class="timeline-header" id="runMetaHeader"></div>
+      <div class="timeline-container">
+        <div class="timeline-content" id="timelineContent"></div>
+      </div>
+    </div>
+
+    <div class="detail-panel">
+      <div id="detailPanel">
+        <div class="detail-empty">Click a turn for details</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { runs, manifest } = window.E2E_DATA;
+    let currentRunIndex = 0;
+
+    function formatDuration(ms) {
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    function formatTimestamp(ms) {
+      const date = new Date(ms);
+      return date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3
+      });
+    }
+
+    function getTurnRole(turn) {
+      return turn.role || 'unknown';
+    }
+
+    function initializeRunSwitcher() {
+      const switcher = document.getElementById('runSwitcher');
+      runs.forEach((run, idx) => {
+        const btn = document.createElement('button');
+        btn.className = `run-button ${run.ok ? '' : 'failed'} ${idx === 0 ? 'active' : ''}`;
+        btn.textContent = `Run ${idx + 1}${!run.ok ? ' (FAILED)' : ''}`;
+        btn.onclick = () => switchRun(idx);
+        switcher.appendChild(btn);
+      });
+    }
+
+    function switchRun(idx) {
+      currentRunIndex = idx;
+
+      // Update button states
+      document.querySelectorAll('.run-button').forEach((btn, i) => {
+        btn.classList.toggle('active', i === idx);
+      });
+
+      renderTimeline();
+      clearDetail();
+    }
+
+    function getRunTimelineScale() {
+      const run = runs[currentRunIndex];
+      const startTime = run.startedAt;
+      const endTime = run.endedAt;
+      const duration = endTime - startTime;
+      return { startTime, endTime, duration };
+    }
+
+    function renderTimeline() {
+      const run = runs[currentRunIndex];
+      const { startTime, endTime, duration } = getRunTimelineScale();
+
+      const headerEl = document.getElementById('runMetaHeader');
+      headerEl.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
+          <div>
+            <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px;">${run.scenario}</div>
+            <div style="font-size: 11px; color: #6a7280;">${run.target} · ${run.brain}</div>
+          </div>
+          <div style="text-align: right; font-size: 12px; color: #a0aab8;">
+            Total: ${formatDuration(duration)}<br/>
+            ${run.ok ? '✓ Passed' : '✗ Failed'}
+          </div>
+        </div>
+      `;
+
+      if (!run.ok) {
+        const failIndicator = document.createElement('div');
+        failIndicator.className = 'run-failure-indicator';
+        failIndicator.textContent = '✗ FAILED';
+        headerEl.appendChild(failIndicator);
+      }
+
+      const content = document.getElementById('timelineContent');
+      content.innerHTML = '';
+
+      // Timeline axis
+      const axisDiv = document.createElement('div');
+      axisDiv.className = 'timeline-axis';
+
+      const tickCount = 5;
+      for (let i = 0; i <= tickCount; i++) {
+        const ratio = i / tickCount;
+        const timestamp = startTime + (duration * ratio);
+        const offset = ratio * 100;
+
+        const tick = document.createElement('div');
+        tick.className = 'timeline-axis-tick';
+        tick.style.left = offset + '%';
+        axisDiv.appendChild(tick);
+
+        const label = document.createElement('div');
+        label.className = 'timeline-axis-label';
+        label.style.left = offset + '%';
+        label.textContent = `+${formatDuration(duration * ratio)}`;
+        axisDiv.appendChild(label);
+      }
+
+      content.appendChild(axisDiv);
+
+      // Render turns
+      const track = document.createElement('div');
+      track.className = 'timeline-track';
+
+      run.turns.forEach((turn, idx) => {
+        const row = document.createElement('div');
+        row.className = 'turn-row';
+
+        // Role label
+        const label = document.createElement('div');
+        label.className = 'turn-label';
+        const roleText = getTurnRole(turn);
+        label.textContent = roleText;
+        row.appendChild(label);
+
+        // Calculate bar position and width
+        const elapsed = turn.t - startTime;
+        const barDurationMs = turn.durationMs || 0;
+        const barDuration = Math.max(barDurationMs, 50); // Minimum width
+
+        const positionPercent = (elapsed / duration) * 100;
+        const widthPercent = (barDuration / duration) * 100;
+
+        // Bar
+        const bar = document.createElement('div');
+        bar.className = `turn-bar role-${roleText}`;
+
+        // Add status classes for assert/error
+        if (turn.role === 'assert') {
+          bar.classList.add(turn.assertion.ok ? 'ok' : 'failed');
+        }
+        if (turn.role === 'error') {
+          bar.classList.add('failed');
+        }
+
+        bar.style.left = positionPercent + '%';
+        bar.style.width = Math.max(widthPercent, 2) + '%';
+        bar.style.minWidth = '20px';
+
+        // Bar label - show brief content
+        let barLabel = roleText;
+        if (turn.text && turn.text.length > 0) {
+          barLabel = turn.text.substring(0, 20);
+        } else if (turn.role === 'tool' && turn.call) {
+          barLabel = turn.call.name.split('/').pop();
+        }
+        bar.textContent = barLabel;
+
+        bar.title = `${roleText} · ${formatDuration(barDuration)}`;
+        bar.onclick = (e) => {
+          e.stopPropagation();
+          showDetail(turn, idx);
+        };
+
+        row.appendChild(bar);
+        track.appendChild(row);
+      });
+
+      content.appendChild(track);
+    }
+
+    function showDetail(turn, turnIndex) {
+      const run = runs[currentRunIndex];
+      const panel = document.getElementById('detailPanel');
+
+      let html = `<div class="detail-content">`;
+      html += `<div class="detail-header">`;
+      html += `<div class="detail-role-badge">${getTurnRole(turn)}</div>`;
+
+      if (turn.text) {
+        html += `<div class="detail-title">${escapeHtml(turn.text)}</div>`;
+      }
+
+      html += `<div class="detail-timestamp">${formatTimestamp(turn.t)}</div>`;
+      html += `</div>`;
+
+      html += `<div class="detail-body">`;
+
+      // Assertions
+      if (turn.role === 'assert' && turn.assertion) {
+        const assertion = turn.assertion;
+        html += `<div class="detail-section">`;
+        html += `<div class="detail-section-title">Assertion</div>`;
+        html += `<div class="assertion-result ${assertion.ok ? 'ok' : 'failed'}">`;
+        html += `<div class="assertion-label">`;
+        html += `<span class="assertion-status ${assertion.ok ? 'ok' : 'failed'}"></span>`;
+        html += escapeHtml(assertion.label || assertion.kind);
+        html += `</div>`;
+        html += `<div class="assertion-values">`;
+        html += `<div class="assertion-value"><strong>Actual:</strong> ${JSON.stringify(assertion.actual).substring(0, 50)}</div>`;
+        html += `<div class="assertion-value"><strong>Expected:</strong> ${JSON.stringify(assertion.expected).substring(0, 50)}</div>`;
+        html += `</div>`;
+        html += `</div>`;
+        html += `</div>`;
+      }
+
+      // Tool calls
+      if (turn.role === 'tool' && turn.call) {
+        html += `<div class="detail-section">`;
+        html += `<div class="detail-section-title">Tool Call</div>`;
+        html += `<div class="tool-call">`;
+        html += `<strong>${escapeHtml(turn.call.name)}</strong>`;
+        if (Object.keys(turn.call.args || {}).length > 0) {
+          html += `<br/>${escapeHtml(JSON.stringify(turn.call.args, null, 2).substring(0, 200))}`;
+        }
+        html += `</div>`;
+        if (turn.durationMs) {
+          html += `<div class="tool-duration">Duration: ${formatDuration(turn.durationMs)}</div>`;
+        }
+        html += `</div>`;
+      }
+
+      // Auth phase
+      if (turn.role === 'auth') {
+        html += `<div class="detail-section">`;
+        html += `<div class="detail-section-title">Auth Phase</div>`;
+        html += `<div class="detail-text">${escapeHtml(turn.phase)}</div>`;
+        html += `</div>`;
+      }
+
+      // Error details
+      if (turn.role === 'error') {
+        html += `<div class="error-banner">`;
+        html += `<div class="error-banner-title">Test Failed</div>`;
+        html += `<div class="error-banner-text">${escapeHtml(turn.text || 'Unknown error')}</div>`;
+        html += `</div>`;
+      }
+
+      // Evidence
+      if (turn.evidence && turn.evidence.length > 0) {
+        html += `<div class="detail-section">`;
+        html += `<div class="detail-section-title">Evidence</div>`;
+        html += `<div class="evidence-gallery">`;
+        turn.evidence.forEach(ev => {
+          const assetPath = run.assetBase + ev.path;
+          if (ev.kind === 'screenshot') {
+            html += `<div class="evidence-item">`;
+            html += `<img src="${escapeHtml(assetPath)}" alt="${escapeHtml(ev.label || 'Screenshot')}" class="evidence-screenshot" onerror="this.style.display='none'">`;
+            if (ev.label) {
+              html += `<div class="evidence-label">${escapeHtml(ev.label)}</div>`;
+            }
+            html += `</div>`;
+          } else if (ev.kind === 'video') {
+            html += `<div class="evidence-item">`;
+            const videoStart = ev.startMs !== null && ev.startMs !== undefined ? `#t=${Math.floor(ev.startMs / 1000)}.0` : '';
+            html += `<video controls class="evidence-video" onerror="this.style.display='none'">`;
+            html += `<source src="${escapeHtml(assetPath + videoStart)}" type="video/mp4">`;
+            html += `</video>`;
+            if (ev.label) {
+              html += `<div class="evidence-label">${escapeHtml(ev.label)}</div>`;
+            } else if (ev.startMs !== null && ev.startMs !== undefined) {
+              html += `<div class="evidence-label">${formatDuration(ev.endMs - ev.startMs)} slice</div>`;
+            } else {
+              html += `<div class="evidence-label">Full session recording</div>`;
+            }
+            html += `</div>`;
+          }
+        });
+        html += `</div>`;
+        html += `</div>`;
+      }
+
+      // Run completion stats (only at the end)
+      if (turnIndex === run.turns.length - 1) {
+        html += `<div class="detail-section">`;
+        html += `<div class="detail-section-title">Run Summary</div>`;
+        html += `<div class="run-stats">`;
+        html += `<div class="stat-item"><div class="stat-label">Total Duration</div><div class="stat-value">${formatDuration(run.durationMs)}</div></div>`;
+        html += `<div class="stat-item"><div class="stat-label">Total Turns</div><div class="stat-value">${run.turns.length}</div></div>`;
+        html += `<div class="stat-item"><div class="stat-label">Assertions</div><div class="stat-value">${run.asserts ? run.asserts.length : 0}</div></div>`;
+        html += `<div class="stat-item"><div class="stat-label">Status</div><div class="stat-value">${run.ok ? '✓ Passed' : '✗ Failed'}</div></div>`;
+        html += `</div>`;
+        html += `</div>`;
+      }
+
+      html += `</div>`;
+      html += `</div>`;
+
+      panel.innerHTML = html;
+    }
+
+    function clearDetail() {
+      const panel = document.getElementById('detailPanel');
+      panel.innerHTML = '<div class="detail-empty">Click a turn for details</div>';
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
+    // Initialize
+    initializeRunSwitcher();
+    renderTimeline();
+  </script>
+</body>
+</html>

@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>e2e Assertion Viewer — Contract First</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      background: #0b0f17;
+      color: #d7dce5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    body {
+      padding: 0;
+      min-height: 100vh;
+    }
+
+    .header {
+      background: #111820;
+      border-bottom: 1px solid #1e2431;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .header-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8b95ab;
+    }
+
+    .run-switcher {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .run-switcher label {
+      font-size: 12px;
+      color: #8b95ab;
+      font-weight: 500;
+    }
+
+    .run-switcher select {
+      padding: 6px 12px;
+      background: #1a1f2a;
+      border: 1px solid #2a3544;
+      color: #d7dce5;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .run-switcher select:hover {
+      border-color: #3a4554;
+    }
+
+    .run-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .run-status.pass {
+      background: #0d3d22;
+      color: #4ade80;
+    }
+
+    .run-status.fail {
+      background: #3d0d0d;
+      color: #ff6b6b;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .header-info {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: #8b95ab;
+    }
+
+    .info-item {
+      display: flex;
+      gap: 4px;
+    }
+
+    .info-label {
+      color: #5f6b7d;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .assertions-panel {
+      background: #111820;
+      border: 1px solid #1e2431;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 32px;
+    }
+
+    .assertions-header {
+      background: #0b0f17;
+      padding: 16px 20px;
+      border-bottom: 1px solid #1e2431;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .assertions-header h2 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #d7dce5;
+    }
+
+    .assertion-stats {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .stat-pass {
+      color: #4ade80;
+    }
+
+    .stat-fail {
+      color: #ff6b6b;
+    }
+
+    .stat-neutral {
+      color: #8b95ab;
+    }
+
+    .assertions-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .assertion-row {
+      border-bottom: 1px solid #1e2431;
+      transition: background 0.15s;
+    }
+
+    .assertion-row:last-child {
+      border-bottom: none;
+    }
+
+    .assertion-row.fail {
+      background: #1a1420;
+    }
+
+    .assertion-row.fail:hover {
+      background: #22182d;
+    }
+
+    .assertion-row.pass:hover {
+      background: #161c25;
+    }
+
+    .assertion-summary {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .assertion-icon {
+      flex-shrink: 0;
+      font-size: 12px;
+      color: #5f6b7d;
+      transition: transform 0.2s;
+      width: 16px;
+      text-align: center;
+    }
+
+    .assertion-row.expanded .assertion-icon {
+      transform: rotate(90deg);
+    }
+
+    .assertion-status {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .assertion-status.pass {
+      background: #0d3d22;
+      color: #4ade80;
+    }
+
+    .assertion-status.fail {
+      background: #5d0d0d;
+      color: #ff6b6b;
+    }
+
+    .assertion-label {
+      flex: 1;
+      font-weight: 500;
+      color: #d7dce5;
+    }
+
+    .assertion-kind {
+      font-size: 11px;
+      color: #5f6b7d;
+      background: #0b0f17;
+      padding: 3px 6px;
+      border-radius: 2px;
+      font-family: "Monaco", "Courier New", monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .assertion-detail {
+      display: none;
+      background: #0b0f17;
+      border-top: 1px solid #1e2431;
+      padding: 16px;
+    }
+
+    .assertion-row.expanded .assertion-detail {
+      display: block;
+    }
+
+    .detail-values {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .value-block {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .value-label {
+      font-size: 11px;
+      color: #5f6b7d;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      font-weight: 600;
+    }
+
+    .value-content {
+      background: #111820;
+      padding: 10px 12px;
+      border-radius: 3px;
+      border-left: 2px solid #2a3544;
+      font-family: "Monaco", "Courier New", monospace;
+      font-size: 12px;
+      word-break: break-word;
+      color: #a8afc0;
+    }
+
+    .value-content.fail {
+      border-left-color: #663333;
+    }
+
+    .value-content.pass {
+      border-left-color: #1a5d2a;
+    }
+
+    .evidence-trail {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #1e2431;
+    }
+
+    .evidence-title {
+      font-size: 11px;
+      color: #5f6b7d;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .evidence-items {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .evidence-item {
+      background: #111820;
+      border: 1px solid #1e2431;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .evidence-item-header {
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #0b0f17;
+      border-bottom: 1px solid #1e2431;
+      font-size: 12px;
+      color: #8b95ab;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .evidence-item-header:hover {
+      background: #161c25;
+    }
+
+    .evidence-kind {
+      font-size: 10px;
+      color: #5f6b7d;
+      background: #111820;
+      padding: 2px 6px;
+      border-radius: 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.2px;
+      font-weight: 600;
+    }
+
+    .evidence-item-content {
+      display: none;
+      padding: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .evidence-item.expanded .evidence-item-content {
+      display: block;
+    }
+
+    .screenshot {
+      width: 100%;
+      border-radius: 3px;
+      display: block;
+      max-width: 100%;
+      background: #0b0f17;
+    }
+
+    .video-container {
+      position: relative;
+      width: 100%;
+      background: #0b0f17;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .video-container video {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #0b0f17;
+    }
+
+    .journey-section {
+      margin-top: 40px;
+      padding-top: 24px;
+      border-top: 2px solid #1e2431;
+    }
+
+    .journey-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #8b95ab;
+      margin-bottom: 16px;
+    }
+
+    .turns-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .turn {
+      background: #111820;
+      border: 1px solid #1e2431;
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 12px;
+    }
+
+    .turn.step {
+      border-left: 3px solid #2a6fa8;
+    }
+
+    .turn.assert {
+      border-left: 3px solid #3d8922;
+    }
+
+    .turn.error {
+      border-left: 3px solid #8b2d2d;
+      background: #1a1420;
+    }
+
+    .turn.tool {
+      border-left: 3px solid #7d4a8a;
+    }
+
+    .turn.auth {
+      border-left: 3px solid #8b7d2a;
+    }
+
+    .turn.user, .turn.assistant {
+      border-left: 3px solid #4a4a5e;
+    }
+
+    .turn-role {
+      font-size: 10px;
+      color: #5f6b7d;
+      text-transform: uppercase;
+      letter-spacing: 0.2px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .turn-text {
+      color: #d7dce5;
+      word-break: break-word;
+    }
+
+    .turn-meta {
+      font-size: 11px;
+      color: #5f6b7d;
+      margin-top: 6px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #5f6b7d;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="header-title">e2e Assertion Viewer</div>
+      <div class="run-switcher">
+        <label for="run-select">Run:</label>
+        <select id="run-select">
+          <option value="0">Loading...</option>
+        </select>
+      </div>
+    </div>
+    <div id="header-info" class="header-info"></div>
+  </div>
+
+  <div class="container">
+    <div class="assertions-panel">
+      <div class="assertions-header">
+        <h2>Assertions</h2>
+        <div class="assertion-stats">
+          <div class="stat">
+            <span class="stat-pass">✓</span>
+            <span>Passed: <span id="stat-pass">0</span></span>
+          </div>
+          <div class="stat">
+            <span class="stat-fail">✕</span>
+            <span>Failed: <span id="stat-fail">0</span></span>
+          </div>
+          <div class="stat">
+            <span class="stat-neutral">•</span>
+            <span>Total: <span id="stat-total">0</span></span>
+          </div>
+        </div>
+      </div>
+      <table class="assertions-table" id="assertions-table">
+      </table>
+    </div>
+
+    <div class="journey-section">
+      <div class="journey-title">Execution Journey</div>
+      <div class="turns-list" id="turns-list"></div>
+    </div>
+  </div>
+
+  <script src="./data.js"></script>
+  <script>
+    let currentRunIndex = 0;
+    let currentRun = null;
+
+    function loadRun(index) {
+      currentRunIndex = index;
+      currentRun = window.E2E_DATA.runs[index];
+      renderAssertions();
+      renderHeader();
+      renderTurns();
+    }
+
+    function renderHeader() {
+      const header = document.getElementById('header-info');
+      const status = currentRun.ok ? 'pass' : 'fail';
+      const statusText = currentRun.ok ? 'PASS' : 'FAIL';
+
+      header.innerHTML = `
+        <div class="info-item">
+          <span class="info-label">Scenario:</span>
+          <span>${escapeHtml(currentRun.scenario)}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Target:</span>
+          <span>${escapeHtml(currentRun.target)}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Duration:</span>
+          <span>${currentRun.durationMs}ms</span>
+        </div>
+        <div class="run-status ${status}">
+          <span class="status-dot"></span>
+          ${statusText}
+        </div>
+      `;
+    }
+
+    function renderAssertions() {
+      const table = document.getElementById('assertions-table');
+      const asserts = currentRun.asserts || [];
+
+      // Sort: failures first, then passes
+      const sorted = [...asserts].sort((a, b) => {
+        if (a.ok !== b.ok) return a.ok ? 1 : -1;
+        return 0;
+      });
+
+      if (sorted.length === 0) {
+        table.innerHTML = '<tr><td style="padding: 40px; text-align: center; color: #5f6b7d;">No assertions in this run</td></tr>';
+        document.getElementById('stat-pass').textContent = '0';
+        document.getElementById('stat-fail').textContent = '0';
+        document.getElementById('stat-total').textContent = '0';
+        return;
+      }
+
+      const passed = asserts.filter(a => a.ok).length;
+      const failed = asserts.filter(a => !a.ok).length;
+
+      document.getElementById('stat-pass').textContent = passed;
+      document.getElementById('stat-fail').textContent = failed;
+      document.getElementById('stat-total').textContent = asserts.length;
+
+      table.innerHTML = sorted.map((assertion, idx) => {
+        const status = assertion.ok ? 'pass' : 'fail';
+        const statusSymbol = assertion.ok ? '✓' : '✕';
+        const evidenceItems = findEvidenceForAssertion(assertion);
+
+        return `
+          <tr class="assertion-row ${status}" data-assertion-idx="${idx}">
+            <td style="width: 100%; padding: 0;">
+              <div class="assertion-summary" onclick="toggleAssertion(this.closest('tr'))">
+                <div class="assertion-icon">▶</div>
+                <div class="assertion-status ${status}">${statusSymbol}</div>
+                <div class="assertion-label">${escapeHtml(assertion.label)}</div>
+                <div class="assertion-kind">${escapeHtml(assertion.kind)}</div>
+              </div>
+              <div class="assertion-detail">
+                <div class="detail-values">
+                  <div class="value-block">
+                    <div class="value-label">Expected</div>
+                    <div class="value-content ${status}">${formatValue(assertion.expected)}</div>
+                  </div>
+                  <div class="value-block">
+                    <div class="value-label">Actual</div>
+                    <div class="value-content ${status}">${formatValue(assertion.actual)}</div>
+                  </div>
+                </div>
+                ${evidenceItems.length > 0 ? `
+                  <div class="evidence-trail">
+                    <div class="evidence-title">Evidence Trail</div>
+                    <div class="evidence-items">
+                      ${evidenceItems.map((ev, evIdx) => renderEvidenceItem(ev, evIdx)).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      document.querySelectorAll('.assertion-row').forEach(row => {
+        row.addEventListener('click', function(e) {
+          if (e.target.closest('.evidence-item-header')) return;
+          toggleAssertion(this);
+        });
+      });
+
+      document.querySelectorAll('.evidence-item-header').forEach(header => {
+        header.addEventListener('click', function(e) {
+          e.stopPropagation();
+          toggleEvidence(this.closest('.evidence-item'));
+        });
+      });
+    }
+
+    function findEvidenceForAssertion(assertion) {
+      // Find the turn with this assertion and grab nearby step evidence
+      const turn = currentRun.turns.find(t => t.assertion === assertion ||
+        (t.role === 'assert' && t.assertion &&
+         t.assertion.label === assertion.label &&
+         t.assertion.ok === assertion.ok));
+
+      if (!turn) return [];
+
+      const turnIdx = currentRun.turns.indexOf(turn);
+      const evidence = [];
+
+      // Look backward for the most recent step with evidence
+      for (let i = turnIdx - 1; i >= 0; i--) {
+        const t = currentRun.turns[i];
+        if (t.role === 'step' && t.evidence) {
+          evidence.push(...t.evidence);
+          break;
+        }
+      }
+
+      // Also check error turns for failure evidence
+      for (let i = turnIdx; i < currentRun.turns.length; i++) {
+        const t = currentRun.turns[i];
+        if (t.role === 'error' && t.evidence) {
+          evidence.push(...t.evidence);
+        }
+        if (t.role === 'error') break;
+      }
+
+      return evidence;
+    }
+
+    function renderEvidenceItem(evidence, idx) {
+      const path = currentRun.assetBase + evidence.path;
+      const typeLabel = evidence.kind === 'screenshot' ? 'Screenshot' :
+                        evidence.kind === 'video' ? 'Video' :
+                        evidence.kind === 'termFrames' ? 'Terminal' :
+                        evidence.kind === 'json' ? 'JSON' :
+                        evidence.kind === 'ledger' ? 'Ledger' :
+                        evidence.kind;
+
+      let content = '';
+      if (evidence.kind === 'screenshot') {
+        content = `<img class="screenshot" src="${escapeAttr(path)}" alt="${escapeAttr(evidence.label || 'Screenshot')}" onerror="this.style.display='none';">`;
+      } else if (evidence.kind === 'video') {
+        const slice = evidence.startMs !== null && evidence.startMs !== undefined ? ` (${formatMs(evidence.startMs)}–${formatMs(evidence.endMs)})` : '';
+        content = `
+          <div class="video-container">
+            <video controls>
+              ${evidence.startMs !== null && evidence.startMs !== undefined ? `<source src="${escapeAttr(path)}#t=${evidence.startMs / 1000}" type="video/mp4">` : `<source src="${escapeAttr(path)}" type="video/mp4">`}
+              Your browser does not support the video tag.
+            </video>
+            <div style="font-size: 11px; color: #5f6b7d; padding: 8px 0; text-align: center;">${slice}</div>
+          </div>
+        `;
+      } else if (evidence.kind === 'json') {
+        content = `<pre style="background: #0b0f17; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">${escapeHtml(JSON.stringify(evidence.data, null, 2))}</pre>`;
+      } else {
+        content = `<div style="color: #8b95ab; font-size: 12px;">Unsupported evidence type: ${escapeHtml(evidence.kind)}</div>`;
+      }
+
+      return `
+        <div class="evidence-item">
+          <div class="evidence-item-header">
+            <span class="evidence-kind">${typeLabel}</span>
+            <span style="flex: 1; margin-left: 6px; color: #8b95ab;">${escapeHtml(evidence.label || evidence.path.split('/').pop() || '(unnamed)')}</span>
+            <span style="color: #5f6b7d; font-size: 10px;">▼</span>
+          </div>
+          <div class="evidence-item-content">
+            ${content}
+          </div>
+        </div>
+      `;
+    }
+
+    function toggleAssertion(row) {
+      row.classList.toggle('expanded');
+    }
+
+    function toggleEvidence(item) {
+      item.classList.toggle('expanded');
+    }
+
+    function renderTurns() {
+      const container = document.getElementById('turns-list');
+      const turns = currentRun.turns || [];
+
+      if (turns.length === 0) {
+        container.innerHTML = '<div class="empty-state">No turns recorded</div>';
+        return;
+      }
+
+      container.innerHTML = turns.map(turn => {
+        const roleClass = turn.role;
+        let text = turn.text || '';
+        let meta = '';
+
+        if (turn.role === 'step') {
+          meta = `${turn.surface || 'unknown'}`;
+        } else if (turn.role === 'tool') {
+          const toolName = turn.call ? turn.call.name : 'unknown';
+          meta = `${turn.surface || 'api'} → ${toolName}`;
+        } else if (turn.role === 'assert') {
+          meta = `${turn.assertion.kind}: ${turn.assertion.label}`;
+          text = '';
+        } else if (turn.role === 'error') {
+          meta = 'Error';
+        } else if (turn.role === 'auth') {
+          meta = `Auth: ${turn.phase}`;
+        }
+
+        return `
+          <div class="turn ${roleClass}">
+            <div class="turn-role">${escapeHtml(turn.role)}</div>
+            ${text ? `<div class="turn-text">${escapeHtml(text)}</div>` : ''}
+            ${meta ? `<div class="turn-meta">${escapeHtml(meta)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function formatValue(val) {
+      if (typeof val === 'string') {
+        return val.length > 60 ? val.substring(0, 60) + '…' : val;
+      }
+      if (typeof val === 'object') {
+        return JSON.stringify(val).substring(0, 100);
+      }
+      return String(val);
+    }
+
+    function formatMs(ms) {
+      if (!ms) return '0s';
+      const secs = Math.floor(ms / 1000);
+      const mins = Math.floor(secs / 60);
+      if (mins > 0) return `${mins}m${secs % 60}s`;
+      return `${secs}s`;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(text) {
+      return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Initialize
+    function init() {
+      const runs = window.E2E_DATA.runs;
+      const select = document.getElementById('run-select');
+
+      select.innerHTML = runs.map((run, idx) => `
+        <option value="${idx}">${escapeHtml(run.scenario)}</option>
+      `).join('');
+
+      select.addEventListener('change', (e) => {
+        loadRun(parseInt(e.target.value));
+      });
+
+      loadRun(0);
+    }
+
+    init();
+  </script>
+</body>
+</html>

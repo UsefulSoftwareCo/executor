@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Viewer bakeoff — 10 angles</title>
+<style>
+  body { font: 15px/1.55 ui-sans-serif, system-ui; margin: 0; color: #d7dce5; background: #0b0f17; }
+  .page { max-width: 980px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .hint { color: #6b7785; font-size: 13px; margin-bottom: 18px; }
+  a { color: #58a6ff; text-decoration: none; }
+  .card { display: block; border: 1px solid #21262d; background: #0f1620; border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+  .card:hover { border-color: #388bfd; background: #101a2a; }
+  .card b { color: #d7dce5; font-size: 15px; }
+  .card .n { color: #6b7785; font-family: ui-monospace, Menlo, monospace; font-size: 12px; margin-right: 8px; }
+  .card p { color: #8b98a9; font-size: 13.5px; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Verification-viewer bakeoff — 10 prototypes, same data</h1>
+  <p class="hint">Every prototype renders the same three runs (a passing browser journey, a passing MCP run, a synthetic failure) from shared mock data. Pick what reads best.</p>
+  <a class="card" href="01-filmstrip.html"><span class="n">01</span><b>Filmstrip</b><p>Horizontal strip of step screenshots as the primary navigation, like a video-editor timeline; click a frame for full detail.</p></a>
+  <a class="card" href="02-sync-split.html"><span class="n">02</span><b>Synced split</b><p>Video pinned left, steps right; playback highlights the current step, clicking a step seeks the video.</p></a>
+  <a class="card" href="03-dense-log.html"><span class="n">03</span><b>Dense log</b><p>Monospace one-line-per-event with aligned columns, expandable in place. CI-output energy, maximum scannability.</p></a>
+  <a class="card" href="04-timeline.html"><span class="n">04</span><b>Timeline</b><p>Horizontal time axis; every turn is a positioned bar showing when and how long. Slowness and gaps become visible.</p></a>
+  <a class="card" href="05-evidence-grid.html"><span class="n">05</span><b>Evidence grid</b><p>Big card grid of screenshots/video stamped with the assertions they support; transcript tucked behind a toggle.</p></a>
+  <a class="card" href="06-assertion-table.html"><span class="n">06</span><b>Assertion table</b><p>The run as a contract: every assertion in a table (expected/actual/status), failures float up, rows expand to their evidence trail.</p></a>
+  <a class="card" href="07-storyboard.html"><span class="n">07</span><b>Storyboard</b><p>Comic-strip panels: screenshot + caption + assertion stamps. The whole run on one screen.</p></a>
+  <a class="card" href="08-inspector.html"><span class="n">08</span><b>Inspector</b><p>Three-pane IDE layout: turn tree, selected detail, raw JSON. j/k navigation. For debugging, not showcasing.</p></a>
+  <a class="card" href="09-dashboard.html"><span class="n">09</span><b>Dashboard-first</b><p>The matrix as a health board; cells expand inline to a compact run summary without navigating away.</p></a>
+  <a class="card" href="10-replay-theater.html"><span class="n">10</span><b>Focused replay</b><p>One beat at a time, full screen, arrow keys to advance, pass/fail progress rail. For demoing a run to someone else.</p></a>
+</div>
+</body>
+</html>

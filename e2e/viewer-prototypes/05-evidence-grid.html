@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Evidence Grid Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0b0f17;
+      color: #d7dce5;
+    }
+
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: #0b0f17;
+      border-bottom: 1px solid #1e2738;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .run-selector {
+      background: #141824;
+      border: 1px solid #2a3447;
+      color: #d7dce5;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      min-width: 300px;
+    }
+
+    .run-selector:hover {
+      border-color: #3a4558;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-badge.pass {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
+
+    .status-badge.fail {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+    }
+
+    .status-badge::before {
+      content: '●';
+      font-size: 10px;
+    }
+
+    .scenario-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #d7dce5;
+      flex: 1;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .toggle-btn {
+      background: #141824;
+      border: 1px solid #2a3447;
+      color: #d7dce5;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .toggle-btn:hover {
+      border-color: #3a4558;
+      background: #1a2130;
+    }
+
+    .toggle-btn.active {
+      background: #2a3447;
+      border-color: #3a4558;
+    }
+
+    .main {
+      display: flex;
+      height: calc(100vh - 60px);
+    }
+
+    .grid-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 16px;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .evidence-card {
+      background: #141824;
+      border: 1px solid #2a3447;
+      border-radius: 8px;
+      overflow: hidden;
+      transition: all 0.2s;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .evidence-card:hover {
+      border-color: #3a4558;
+      background: #1a2130;
+    }
+
+    .evidence-card.has-failure {
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .evidence-card.has-failure:hover {
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .evidence-media {
+      width: 100%;
+      background: #0b0f17;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 200px;
+      max-height: 300px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .evidence-media img,
+    .evidence-media video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .evidence-media.no-media {
+      background: linear-gradient(135deg, #1a2130 0%, #141824 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6b7280;
+      font-size: 12px;
+      min-height: 150px;
+    }
+
+    .video-badge {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .video-badge.slice {
+      color: #fbbf24;
+    }
+
+    .evidence-content {
+      padding: 12px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .evidence-label {
+      font-size: 13px;
+      line-height: 1.4;
+      color: #d7dce5;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+
+    .evidence-assertions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: auto;
+    }
+
+    .assertion-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .assertion-badge.pass {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    .assertion-badge.fail {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+
+    .assertion-badge::before {
+      content: '✓';
+      font-size: 10px;
+      font-weight: bold;
+    }
+
+    .assertion-badge.fail::before {
+      content: '✗';
+    }
+
+    .sidebar {
+      width: 400px;
+      background: #141824;
+      border-left: 1px solid #2a3447;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.3s ease-out;
+      position: relative;
+      z-index: 50;
+    }
+
+    .sidebar.open {
+      transform: translateX(0);
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid #2a3447;
+      font-weight: 600;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #d7dce5;
+    }
+
+    .sidebar-close {
+      background: none;
+      border: none;
+      color: #8b949e;
+      cursor: pointer;
+      font-size: 20px;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .sidebar-close:hover {
+      color: #d7dce5;
+    }
+
+    .sidebar-content {
+      overflow-y: auto;
+      flex: 1;
+      padding: 12px;
+    }
+
+    .turn {
+      margin-bottom: 12px;
+      padding: 10px;
+      background: #0b0f17;
+      border-radius: 6px;
+      border-left: 3px solid transparent;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .turn.step {
+      border-left-color: #3b82f6;
+    }
+
+    .turn.assert {
+      border-left-color: #22c55e;
+    }
+
+    .turn.assert.fail {
+      border-left-color: #ef4444;
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .turn.tool {
+      border-left-color: #8b5cf6;
+    }
+
+    .turn.auth {
+      border-left-color: #ec4899;
+    }
+
+    .turn.error {
+      border-left-color: #ef4444;
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .turn-role {
+      font-weight: 600;
+      color: #8b949e;
+      font-size: 11px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .turn-text {
+      color: #d7dce5;
+      word-break: break-word;
+    }
+
+    .assertion-detail {
+      background: #141824;
+      padding: 6px;
+      border-radius: 4px;
+      margin-top: 6px;
+      font-family: 'Monaco', monospace;
+      font-size: 11px;
+      color: #8b949e;
+      overflow-x: auto;
+    }
+
+    .no-evidence {
+      padding: 40px 20px;
+      text-align: center;
+      color: #6b7280;
+    }
+
+    .no-evidence-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+      opacity: 0.5;
+    }
+
+    .no-evidence-text {
+      font-size: 14px;
+    }
+
+    @media (max-width: 1400px) {
+      .evidence-grid {
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      }
+    }
+
+    @media (max-width: 768px) {
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .header-left {
+        width: 100%;
+      }
+
+      .run-selector {
+        width: 100%;
+      }
+
+      .sidebar {
+        width: 100%;
+      }
+
+      .evidence-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <script src="./data.js"></script>
+
+  <div class="header">
+    <div class="header-left">
+      <select class="run-selector" id="runSelector">
+        <option value="">Select a test run...</option>
+      </select>
+      <span class="scenario-title" id="scenarioTitle"></span>
+      <span class="status-badge" id="statusBadge"></span>
+    </div>
+    <div class="header-right">
+      <button class="toggle-btn" id="toggleTranscript">View Transcript</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="grid-container" id="gridContainer"></div>
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span>Full Transcript</span>
+        <button class="sidebar-close" id="sidebarClose">✕</button>
+      </div>
+      <div class="sidebar-content" id="transcriptContent"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentRun = null;
+    const transcriptBtn = document.getElementById('toggleTranscript');
+    const sidebar = document.getElementById('sidebar');
+    const sidebarClose = document.getElementById('sidebarClose');
+    const runSelector = document.getElementById('runSelector');
+
+    // Initialize run selector
+    if (window.E2E_DATA && window.E2E_DATA.runs) {
+      window.E2E_DATA.runs.forEach((run, idx) => {
+        const option = document.createElement('option');
+        option.value = idx;
+        option.textContent = `${run.target.toUpperCase()} · ${run.scenario}`;
+        runSelector.appendChild(option);
+      });
+    }
+
+    runSelector.addEventListener('change', (e) => {
+      if (e.target.value !== '') {
+        loadRun(parseInt(e.target.value));
+      }
+    });
+
+    // Auto-load the first run so the page never opens empty.
+    if (window.E2E_DATA && window.E2E_DATA.runs?.length) {
+      runSelector.value = '0';
+      loadRun(0);
+    }
+
+    transcriptBtn.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+      transcriptBtn.classList.toggle('active');
+    });
+
+    sidebarClose.addEventListener('click', () => {
+      sidebar.classList.remove('open');
+      transcriptBtn.classList.remove('active');
+    });
+
+    function loadRun(runIndex) {
+      currentRun = window.E2E_DATA.runs[runIndex];
+      renderHeader();
+      renderEvidenceGrid();
+      renderTranscript();
+      sidebar.classList.remove('open');
+      transcriptBtn.classList.remove('active');
+    }
+
+    function renderHeader() {
+      document.getElementById('scenarioTitle').textContent = currentRun.scenario;
+      const badge = document.getElementById('statusBadge');
+      badge.className = `status-badge ${currentRun.ok ? 'pass' : 'fail'}`;
+      badge.textContent = currentRun.ok ? 'PASS' : 'FAIL';
+    }
+
+    function renderEvidenceGrid() {
+      const container = document.getElementById('gridContainer');
+      container.innerHTML = '';
+
+      // Group evidence by step and collect related assertions
+      const evidenceItems = [];
+      const assertionsByStep = {};
+      let failureEvidence = null;
+
+      currentRun.turns.forEach((turn, idx) => {
+        if (turn.role === 'step' && turn.evidence) {
+          const stepLabel = turn.text;
+          assertionsByStep[idx] = [];
+          turn.evidence.forEach(ev => {
+            evidenceItems.push({
+              evidence: ev,
+              label: ev.label || stepLabel,
+              stepIndex: idx,
+              stepText: stepLabel,
+              assertions: []
+            });
+          });
+        }
+        if (turn.role === 'assert') {
+          const lastStepIdx = [...currentRun.turns.slice(0, idx)].reverse().findIndex(t => t.role === 'step');
+          if (lastStepIdx >= 0) {
+            const actualStepIdx = idx - lastStepIdx - 1;
+            if (assertionsByStep[actualStepIdx]) {
+              assertionsByStep[actualStepIdx].push(turn.assertion);
+            }
+          }
+        }
+        if (turn.role === 'error' && turn.evidence) {
+          failureEvidence = turn.evidence[0];
+        }
+      });
+
+      // Attach assertions to evidence items
+      evidenceItems.forEach(item => {
+        item.assertions = assertionsByStep[item.stepIndex] || [];
+      });
+
+      if (evidenceItems.length === 0) {
+        container.innerHTML = '<div class="no-evidence"><div class="no-evidence-icon">📭</div><div class="no-evidence-text">No visual evidence in this run</div></div>';
+        return;
+      }
+
+      evidenceItems.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'evidence-card';
+
+        // Mark card if it has a failed assertion
+        const hasFailed = item.assertions.some(a => !a.ok);
+        if (hasFailed) {
+          card.classList.add('has-failure');
+        }
+
+        let mediaHtml = '';
+        const ev = item.evidence;
+        const assetPath = currentRun.assetBase + ev.path;
+
+        if (ev.kind === 'screenshot') {
+          mediaHtml = `<img src="${assetPath}" alt="${item.label}" loading="lazy">`;
+        } else if (ev.kind === 'video') {
+          const isSlice = ev.startMs !== null && ev.startMs !== undefined;
+          mediaHtml = `
+            <video controls preload="metadata">
+              <source src="${assetPath}${isSlice ? `#t=${ev.startMs/1000},${ev.endMs/1000}` : ''}" type="video/mp4">
+            </video>
+            ${isSlice ? '<span class="video-badge slice">Slice</span>' : '<span class="video-badge">Full</span>'}
+          `;
+        }
+
+        const assertionsHtml = item.assertions.length > 0
+          ? item.assertions.map(a => `
+              <span class="assertion-badge ${a.ok ? 'pass' : 'fail'}" title="${a.label}">
+                ${a.label}
+              </span>
+            `).join('')
+          : '';
+
+        card.innerHTML = `
+          <div class="evidence-media">
+            ${mediaHtml || '<div class="no-media">No media</div>'}
+          </div>
+          <div class="evidence-content">
+            <div class="evidence-label">${item.label}</div>
+            ${assertionsHtml ? `<div class="evidence-assertions">${assertionsHtml}</div>` : ''}
+          </div>
+        `;
+
+        container.appendChild(card);
+      });
+    }
+
+    function renderTranscript() {
+      const content = document.getElementById('transcriptContent');
+      content.innerHTML = '';
+
+      currentRun.turns.forEach(turn => {
+        const turnEl = document.createElement('div');
+        turnEl.className = `turn ${turn.role}`;
+
+        if (turn.role === 'assert' && !turn.assertion.ok) {
+          turnEl.classList.add('fail');
+        }
+
+        let turnHtml = `<div class="turn-role">${turn.role}</div>`;
+
+        if (turn.role === 'user' || turn.role === 'assistant') {
+          turnHtml += `<div class="turn-text">${escapeHtml(turn.text)}</div>`;
+        } else if (turn.role === 'step') {
+          turnHtml += `<div class="turn-text">${escapeHtml(turn.text)}</div>`;
+        } else if (turn.role === 'assert') {
+          const a = turn.assertion;
+          turnHtml += `
+            <div class="turn-text">${escapeHtml(a.label)}</div>
+            <div class="assertion-detail">
+              <strong>${a.kind}</strong><br>
+              actual: ${JSON.stringify(a.actual)}<br>
+              expected: ${JSON.stringify(a.expected)}<br>
+              result: <strong style="color: ${a.ok ? '#22c55e' : '#ef4444'}">${a.ok ? 'PASS' : 'FAIL'}</strong>
+            </div>
+          `;
+        } else if (turn.role === 'tool') {
+          turnHtml += `
+            <div class="turn-text"><strong>${turn.call.name}</strong></div>
+            <div class="assertion-detail">
+              args: ${JSON.stringify(turn.call.args, null, 2)}<br>
+              <br>
+              result: ${JSON.stringify(turn.result, null, 2)}
+            </div>
+          `;
+        } else if (turn.role === 'auth') {
+          turnHtml += `<div class="turn-text">${escapeHtml(turn.text || `Auth ${turn.phase}`)}</div>`;
+        } else if (turn.role === 'error') {
+          turnHtml += `<div class="turn-text">${escapeHtml(turn.text)}</div>`;
+        }
+
+        turnEl.innerHTML = turnHtml;
+        content.appendChild(turnEl);
+      });
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
