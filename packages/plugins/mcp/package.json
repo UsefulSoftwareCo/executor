@@ -66,7 +66,6 @@
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "effect": "catalog:",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -77,6 +76,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
@@ -86,6 +86,7 @@
     "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@tanstack/react-router": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:"
   },
   "peerDependenciesMeta": {

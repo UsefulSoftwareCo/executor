@@ -54,19 +54,20 @@
   },
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
-    "@workos-inc/node": "^8.11.1",
-    "effect": "catalog:"
+    "@workos-inc/node": "^8.11.1"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
     "@executor-js/react": "workspace:*",
+    "effect": "catalog:",
     "react": ">=18"
   },
   "peerDependenciesMeta": {

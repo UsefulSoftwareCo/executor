@@ -41,15 +41,18 @@
     "@standard-schema/spec": "^1.0.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
-    "effect": "catalog:",
     "sucrase": "^3.35.1"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

@@ -38,15 +38,18 @@
   },
   "dependencies": {
     "@executor-js/codemode-core": "workspace:*",
-    "effect": "catalog:",
     "quickjs-emscripten": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

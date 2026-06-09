@@ -17,7 +17,10 @@
 - Retrying OAuth sign-in no longer starts an avoidable second Dynamic Client Registration request.
 - Reconnecting an OAuth source keeps the previously registered DCR scope list intact.
 - MCP sources now describe output types as Executor's full successful `CallToolResult` data shape instead of only the upstream `structuredContent` schema.
+- Published `@executor-js/*` libraries now use the consumer's `effect` dependency instead of installing their own copy, avoiding duplicated Effect service identity. Thanks @aryasaatvik (#876)
 
 ## Breaking changes
 
-None.
+### Published package consumers
+
+Published `@executor-js/*` libraries now declare `effect` as a peer dependency. If you install these libraries directly, make sure your app has `effect` installed as a direct dependency.
