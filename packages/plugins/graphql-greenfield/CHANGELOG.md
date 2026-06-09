@@ -1,5 +1,13 @@
 # @executor-js/plugin-graphql-greenfield
 
+## 0.0.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.1
+  - @executor-js/api@1.4.23
+
 ## 0.0.1
 
 ### Patch Changes
