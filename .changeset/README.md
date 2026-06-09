@@ -6,7 +6,14 @@ This repo uses Changesets to drive releases for the published `executor` CLI.
 
 Only `executor` is managed directly by Changesets.
 
-Release PRs should only version the published CLI package instead of the rest of the workspace.
+Release PRs should only mention the published CLI package directly. Changesets
+will still version the fixed release group and dependent public packages as
+needed, and will update each affected package's `CHANGELOG.md`.
+
+Write the changeset body as the package changelog entry you want to appear in
+the Version Packages PR and in the affected package changelogs. Keep broader
+user-facing launch notes in `apps/cli/release-notes/next.md`; those are used for
+the GitHub Release body.
 
 ## Beta releases
 
