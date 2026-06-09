@@ -82,3 +82,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run publish-desktop.yml -f tag="$RELEASE_TAG"
+
+      - name: Trigger self-host Docker publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-selfhost-docker.yml -f tag="$RELEASE_TAG"

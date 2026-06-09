@@ -5,11 +5,31 @@ description: Run Executor on your own infrastructure in a single container.
 
 Executor self-hosts as **one container** — the database (SQLite/libSQL), the
 QuickJS code sandbox, and the MCP server all run in-process. There is no separate
-database, worker, or proxy to operate, and no required configuration: a bare
-`docker compose up` boots a working instance and walks you through creating the
-admin account in the browser.
+database, worker, or proxy to operate, and no required configuration: a published
+image or a bare `docker compose up` boots a working instance and walks you
+through creating the admin account in the browser.
 
 ## Quick start
+
+Using the published GHCR image:
+
+```bash
+docker run -d \
+  --name executor-selfhost \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  ghcr.io/rhyssullivan/executor-selfhost:latest
+```
+
+Then open [http://localhost:4788](http://localhost:4788). On a fresh instance
+you'll see a **setup screen** — create the first admin account, and you're in.
+
+Published images are tagged as:
+
+- `ghcr.io/rhyssullivan/executor-selfhost:latest` for the latest stable release
+- `ghcr.io/rhyssullivan/executor-selfhost:beta` for the latest prerelease
+- `ghcr.io/rhyssullivan/executor-selfhost:vX.Y.Z` for a pinned release tag
+- `ghcr.io/rhyssullivan/executor-selfhost:X.Y.Z` for the same pinned version without `v`
 
 From a clone of the repository:
 
@@ -17,9 +37,6 @@ From a clone of the repository:
 cd apps/host-selfhost
 docker compose up -d --build
 ```
-
-Then open [http://localhost:4788](http://localhost:4788). On a fresh instance
-you'll see a **setup screen** — create the first admin account, and you're in.
 
 That's the whole install. The container persists its data (database and
 generated keys) in the `executor-data` volume, so it survives restarts and
@@ -106,6 +123,20 @@ before starting the container. Keep the backup safe: it contains your secret
 keys as well as your data.
 
 ## Upgrading
+
+If you use the published image:
+
+```bash
+docker pull ghcr.io/rhyssullivan/executor-selfhost:latest
+docker rm -f executor-selfhost
+docker run -d \
+  --name executor-selfhost \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  ghcr.io/rhyssullivan/executor-selfhost:latest
+```
+
+If you build from source:
 
 ```bash
 cd apps/host-selfhost
