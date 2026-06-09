@@ -32,6 +32,9 @@ RUN rm -rf node_modules && bun install --frozen-lockfile --production --ignore-s
 # ── Runtime stage: serve the built app under Bun ────────────────────────────
 FROM oven/bun:1 AS runtime
 WORKDIR /app
+LABEL org.opencontainers.image.source="https://github.com/RhysSullivan/executor" \
+      org.opencontainers.image.description="Single-container self-hosted Executor" \
+      org.opencontainers.image.licenses="MIT"
 ENV NODE_ENV=production \
     EXECUTOR_HOST=0.0.0.0 \
     PORT=4788 \

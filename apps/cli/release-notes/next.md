@@ -7,6 +7,10 @@
 - OAuth Dynamic Client Registration data is reused across retries and reconnects, including scopes, so providers are not asked to register duplicate clients.
 - MCP tool output schemas now match the actual invocation result envelope, including `content`, `structuredContent`, `_meta`, and `isError`.
 
+### Self-hosted Docker image
+
+- Self-hosted Executor now publishes a multi-architecture GHCR image at `ghcr.io/rhyssullivan/executor-selfhost`, with stable releases tagged as `latest` and prereleases tagged as `beta`.
+
 ## UI
 
 - No UI-only changes in this patch.

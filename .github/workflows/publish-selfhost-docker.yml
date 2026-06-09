@@ -1,0 +1,107 @@
+name: Publish Self-host Docker Image
+run-name: "${{ format('publish self-host docker {0}', inputs.tag) }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to publish (e.g. v1.5.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-selfhost-docker-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Validate release tag
+        env:
+          RAW_RELEASE_TAG: ${{ inputs.tag }}
+        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG
+
+      - name: Checkout release tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+        run: |
+          auth_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --force --tags "$auth_remote" "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "$RELEASE_TAG"
+
+      - name: Resolve image metadata
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${RELEASE_TAG#v}"
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/executor-selfhost"
+          revision="$(git rev-parse HEAD)"
+
+          if [[ "$version" == *-* ]]; then
+            channel="beta"
+          else
+            channel="latest"
+          fi
+
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "tags<<TAGS"
+            echo "${image}:${RELEASE_TAG}"
+            echo "${image}:${version}"
+            echo "${image}:${channel}"
+            echo "TAGS"
+            echo "labels<<LABELS"
+            echo "org.opencontainers.image.title=Executor self-host"
+            echo "org.opencontainers.image.description=Single-container self-hosted Executor"
+            echo "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"
+            echo "org.opencontainers.image.revision=${revision}"
+            echo "org.opencontainers.image.version=${version}"
+            echo "LABELS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push self-host image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/host-selfhost/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
+          labels: ${{ steps.image.outputs.labels }}
