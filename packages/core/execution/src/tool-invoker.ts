@@ -138,7 +138,7 @@ const credentialResolutionToolFailure = (input: {
   readonly reauthRequired?: boolean;
 }) =>
   authToolFailure({
-    code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_connection_failed",
+    code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
     message:
       input.reauthRequired === true
         ? `OAuth connection "${input.label}" requires reauthorization: ${input.message}`

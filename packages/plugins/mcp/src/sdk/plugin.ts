@@ -761,7 +761,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         Effect.catchTag("McpConnectionError", ({ message }) =>
           Effect.succeed(
             authToolFailure({
-              code: "credential_rejected",
+              code: "connection_rejected",
               message,
               source: { id: String(credential.integration) },
               credential: { kind: "upstream", label: String(credential.connection) },

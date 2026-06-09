@@ -161,6 +161,65 @@ describe("connections.create", () => {
       expect(Predicate.isTagged("IntegrationNotFoundError")(result.failure)).toBe(true);
     }),
   );
+
+  // A connection is "born wired": for a non-OAuth template it must reference at
+  // least one non-empty credential input. An empty binding produces a
+  // credential with no credential — it persists, produces a full tool catalog,
+  // and then fails every invocation with `connection_value_missing`. These
+  // cases must be rejected at create. (An external `from` that resolves to null
+  // is a DIFFERENT, supported case — covered above — and is not rejected here.)
+  it.effect("rejects an empty `values` map and persists nothing", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("empty"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: {},
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      // No connection row and — critically — no tools were produced.
+      expect(yield* executor.connections.list()).toEqual([]);
+      expect(yield* executor.tools.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects an empty `inputs` map", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("empty2"),
+          integration: INTEG,
+          template: TEMPLATE,
+          inputs: {},
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects a blank pasted value", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("blank"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "   ",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
 });
 
 describe("connections.list / get", () => {

@@ -467,7 +467,7 @@ describe("graphqlPlugin invocation", () => {
       expect(result).toMatchObject({
         ok: false,
         error: {
-          code: "credential_rejected",
+          code: "connection_rejected",
           status: 401,
           details: { category: "authentication" },
         },

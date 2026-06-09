@@ -1106,9 +1106,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           if (missing.length > 0) {
             return openApiAuthToolFailure({
               code:
-                template.type === "oauth"
-                  ? "oauth_connection_missing"
-                  : "credential_secret_missing",
+                template.type === "oauth" ? "oauth_connection_missing" : "connection_value_missing",
               message: `Connection "${credential.connection}" for "${integration}" has no resolvable credential value. Re-authenticate or update the connection.`,
               owner: credential.owner,
               integration,
@@ -1134,7 +1132,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         if (!ok) {
           if (result.status === 401 || result.status === 403) {
             return openApiAuthToolFailure({
-              code: "credential_rejected",
+              code: "connection_rejected",
               status: result.status,
               message: `Upstream rejected credentials for "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection "${credential.connection}" before retrying this tool.`,
               owner: credential.owner,

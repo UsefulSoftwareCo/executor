@@ -58,7 +58,8 @@ export interface HostConfigShape {
   readonly allowLocalNetwork: boolean;
   /**
    * Base URL of the executor's web UI. Threaded into `coreTools.webBaseUrl` so
-   * `secrets.create` can point the user at `${webBaseUrl}/secrets?...`.
+   * `connections.createHandoff` can point the user at
+   * `${webBaseUrl}/integrations/{slug}?addAccount=1`.
    *
    * Optional: when a host can't know its public URL at boot (a Worker has no
    * static URL var), leave it unset and `makeScopedExecutor` falls back to the

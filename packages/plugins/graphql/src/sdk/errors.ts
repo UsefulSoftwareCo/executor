@@ -31,7 +31,7 @@ export class GraphqlAuthRequiredError extends Data.TaggedError("GraphqlAuthRequi
   readonly owner: string;
   readonly integration: string;
   readonly connection: string;
-  readonly credentialKind: "secret" | "connection" | "oauth" | "upstream";
+  readonly credentialKind: "secret" | "oauth" | "upstream";
   readonly credentialLabel?: string;
   readonly template?: string;
   readonly status?: number;

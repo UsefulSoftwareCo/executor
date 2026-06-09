@@ -763,7 +763,7 @@ describe("graphqlPlugin", () => {
       expect(result).toMatchObject({
         ok: false,
         error: {
-          code: "credential_secret_missing",
+          code: "connection_value_missing",
           details: { category: "authentication" },
         },
       });

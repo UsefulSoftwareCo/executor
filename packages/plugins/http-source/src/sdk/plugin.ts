@@ -323,7 +323,7 @@ export const httpSourcePlugin = definePlugin(() => ({
         });
         if (missing.length > 0) {
           return authToolFailure({
-            code: "credential_secret_missing",
+            code: "connection_value_missing",
             message: `No credential value resolved for connection "${input.credential.connection}" on integration "${input.credential.integration}".`,
             credential: {
               kind: "secret",

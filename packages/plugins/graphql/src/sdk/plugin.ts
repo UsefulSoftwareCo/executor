@@ -944,7 +944,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
               code:
                 template.kind === "oauth2"
                   ? "oauth_connection_missing"
-                  : "credential_secret_missing",
+                  : "connection_value_missing",
               message:
                 template.kind === "oauth2"
                   ? `Missing OAuth connection value for GraphQL integration "${integration}" (connection "${credential.connection}")`
@@ -983,7 +983,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         if (result.status < 200 || result.status >= 300) {
           if (result.status === 401 || result.status === 403) {
             return authToolFailure({
-              code: "credential_rejected",
+              code: "connection_rejected",
               status: result.status,
               message: `Upstream rejected credentials for GraphQL integration "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection before retrying this tool.`,
               source: { id: integration, scope: credential.owner },

@@ -191,7 +191,7 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
-  it.effect("upstream 401 is classified as credential_rejected", () =>
+  it.effect("upstream 401 is classified as connection_rejected", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
         status: 401,
@@ -205,7 +205,7 @@ describe("OpenAPI upstream failure modes", () => {
       expect(result).toMatchObject({
         ok: false,
         error: {
-          code: "credential_rejected",
+          code: "connection_rejected",
           status: 401,
           message: expect.stringContaining("Upstream rejected credentials"),
           details: {

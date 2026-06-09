@@ -618,7 +618,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
             owner: credential.owner,
             integration: String(credential.integration),
             connection: String(credential.connection),
-            credentialKind: "connection",
+            credentialKind: "oauth",
             credentialLabel: "GraphQL credential",
             message:
               `Missing credential value for GraphQL connection ` +
@@ -651,7 +651,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         if (result.status < 200 || result.status >= 300) {
           if (result.status === 401 || result.status === 403) {
             return authToolFailure({
-              code: "credential_rejected",
+              code: "connection_rejected",
               status: result.status,
               message:
                 `Upstream rejected credentials for GraphQL integration ` +

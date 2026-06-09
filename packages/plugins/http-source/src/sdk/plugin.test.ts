@@ -159,7 +159,7 @@ describe("httpSourcePlugin.invokeTool", () => {
       };
 
       const out = yield* plugin.invokeTool!(input);
-      expect(failureCode(out)).toBe("credential_secret_missing");
+      expect(failureCode(out)).toBe("connection_value_missing");
       // No request should have been issued.
       expect(capture.request).toBeUndefined();
     }),

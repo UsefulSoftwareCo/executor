@@ -10,7 +10,7 @@
 // v2: a connection IS the credential. `addSpec` registers the integration with
 // an apiKey auth template; a connection is then created whose value cannot
 // resolve (a `from` reference to a WorkOS Vault item that was never stored).
-// Invoking one of that connection's tools surfaces `credential_secret_missing`
+// Invoking one of that connection's tools surfaces `connection_value_missing`
 // to the model instead of an opaque internal tool error.
 // ---------------------------------------------------------------------------
 
@@ -55,7 +55,7 @@ const expectModelVisibleAuthFailure = (execution: ExecuteResult) => {
     result: {
       ok: false,
       error: {
-        code: "credential_secret_missing",
+        code: "connection_value_missing",
         details: {
           category: "authentication",
         },
