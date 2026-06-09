@@ -3,13 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "test": "vitest run", "test:watch": "vitest" },
+  "scripts": {
+    "test": "vitest run",
+    "test:cloud": "vitest run --project cloud",
+    "test:selfhost": "vitest run --project selfhost",
+    "test:watch": "vitest",
+    "serve": "bun scripts/serve.ts"
+  },
   "dependencies": {
     "@executor-js/api": "workspace:*",
-    "@executor-js/host-selfhost": "workspace:*",
+    "@kitlangton/terminal-control": "^0.3.0",
     "effect": "catalog:",
-    "playwright": "^1.60.0",
-    "@kitlangton/terminal-control": "^0.3.0"
+    "playwright": "^1.60.0"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -105,7 +105,6 @@
         "@electric-sql/pglite": "^0.4.4",
         "@electric-sql/pglite-socket": "^0.1.4",
         "@executor-js/cli": "workspace:*",
-        "@playwright/test": "^1.60.0",
         "@rhyssul/portless": "^0.13.0",
         "@tailwindcss/vite": "catalog:",
         "@types/react": "catalog:",
@@ -114,7 +113,6 @@
         "concurrently": "^9.2.1",
         "drizzle-kit": "catalog:",
         "jiti": "^2.6.1",
-        "playwright": "^1.60.0",
         "typescript": "catalog:",
         "vite": "catalog:",
         "vitest": "^4.1.5",
@@ -322,7 +320,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@executor-js/api": "workspace:*",
-        "@executor-js/host-selfhost": "workspace:*",
         "@kitlangton/terminal-control": "^0.3.0",
         "effect": "catalog:",
         "playwright": "^1.60.0",
@@ -2092,8 +2089,6 @@
     "@pierre/theme": ["@pierre/theme@0.0.28", "", {}, "sha512-1j/H/fECBuc9dEvntdWI+l435HZapw+RCJTlqCA6BboQ5TjlnE005j/ROWutXIs8aq5OAc82JI2Kwk4A1WWBgw=="],
 
     "@pkgjs/parseargs": ["@pkgjs/parseargs@0.11.0", "", {}, "sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg=="],
-
-    "@playwright/test": ["@playwright/test@1.60.0", "", { "dependencies": { "playwright": "1.60.0" }, "bin": { "playwright": "cli.js" } }, "sha512-O71yZIbAh/PxDMNGns37GHBIfrVkEVyn+AXyIa5dOTfb4/xNvRWV+Vv/NMbNCtODB/pO7vLlF2OTmMVLhmr7Ag=="],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 

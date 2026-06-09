@@ -22,7 +22,6 @@
     "test": "node ../../node_modules/vitest/vitest.mjs run && node ../../node_modules/vitest/vitest.mjs run --config vitest.node.config.ts",
     "test:watch": "node ../../node_modules/vitest/vitest.mjs",
     "test:node": "node ../../node_modules/vitest/vitest.mjs run --config vitest.node.config.ts",
-    "test:e2e": "playwright test",
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
@@ -76,7 +75,6 @@
     "@electric-sql/pglite": "^0.4.4",
     "@electric-sql/pglite-socket": "^0.1.4",
     "@executor-js/cli": "workspace:*",
-    "@playwright/test": "^1.60.0",
     "@rhyssul/portless": "^0.13.0",
     "@tailwindcss/vite": "catalog:",
     "@types/react": "catalog:",
@@ -85,7 +83,6 @@
     "concurrently": "^9.2.1",
     "drizzle-kit": "catalog:",
     "jiti": "^2.6.1",
-    "playwright": "^1.60.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "^4.1.5",

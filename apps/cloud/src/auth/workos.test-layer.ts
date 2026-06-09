@@ -76,6 +76,15 @@ export const makeWorkOSTestMembership = (
     customAttributes: {},
   }) satisfies OrganizationMembership;
 
+const decode = (value: string): string => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: tolerate non-URL-encoded cookie values from direct API callers
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
 const collected = <A>(data: readonly A[]): WorkOSCollectedList<A> => ({
   object: "list",
   data: [...data],
@@ -120,43 +129,65 @@ const makeWorkOSTestService = (state: WorkOSTestState): WorkOSClient["Service"] 
       }),
     getOrganization: (organizationId: string) =>
       Effect.succeed(makeWorkOSTestOrganization(organizationId)),
+    // The create-org page polls pending invitations; no invitation flows in
+    // the stub world, so the list is always empty.
+    listInvitationsByEmail: (_email: string) => Effect.succeed(collected([])),
     getUserOrgMembership: (organizationId: string, _userId: string) =>
       Effect.succeed(makeWorkOSTestMembership(organizationId, "active")),
     // Multi-user refresh carries the user id forward + the switched-to org, so the
     // create-org handler's `verified.organizationId === org.id` check passes and
-    // the user stays consistent across the refresh.
+    // the user stays consistent across the refresh. The incoming sealed session
+    // may be URL-encoded (set-cookie round-trip through a real browser) and may
+    // already carry an `|org:` suffix from a previous switch — normalize both.
     refreshSession: (sealedSession, organizationId) =>
       Effect.succeed(
-        state.multiUser ? `${sealedSession}|org:${organizationId}` : `session_${organizationId}`,
+        state.multiUser
+          ? `${userOf(sealedSession)}|org:${organizationId}`
+          : `session_${organizationId}`,
       ),
-    authenticateSealedSession: (sealedSession) =>
+    authenticateSealedSession: (sealedSession) => Effect.sync(() => sessionOf(sealedSession)),
+    // The protected-API identity path (`resolveSessionPrincipal`) authenticates
+    // from the Request; mirror the real client's cookie-parse + delegate.
+    authenticateRequest: (request: Request) =>
       Effect.sync(() => {
-        if (state.multiUser) {
-          // Cookie is `<userId>` (initial) or `<userId>|org:<orgId>` (after refresh).
-          const [userPart, orgPart] = sealedSession.split("|org:");
-          return {
-            userId: userPart || "user_1",
-            email: "test@example.com",
-            firstName: "Test",
-            lastName: "User",
-            avatarUrl: null,
-            organizationId: orgPart ?? "",
-            sessionId: "session_id",
-            refreshedSession: undefined,
-          };
-        }
-        return {
-          userId: "user_1",
-          email: "test@example.com",
-          firstName: "Test",
-          lastName: "User",
-          avatarUrl: null,
-          organizationId: sealedSession.replace("session_", ""),
-          sessionId: "session_id",
-          refreshedSession: undefined,
-        };
+        const match = /(?:^|;\s*)wos-session=([^;]+)/.exec(request.headers.get("cookie") ?? "");
+        return match ? sessionOf(decodeURIComponent(match[1]!)) : null;
       }),
   };
+
+  function userOf(sealedSession: string): string {
+    return decode(sealedSession).split("|org:")[0] || "user_1";
+  }
+
+  function sessionOf(sealedSession: string) {
+    if (state.multiUser) {
+      // Cookie is `<userId>` (initial) or `<userId>|org:<orgId>` (after refresh);
+      // a browser round-trip URL-encodes it. The LAST org segment is current.
+      const parts = decode(sealedSession).split("|org:");
+      const userPart = parts[0];
+      const orgPart = parts.length > 1 ? parts[parts.length - 1] : undefined;
+      return {
+        userId: userPart || "user_1",
+        email: "test@example.com",
+        firstName: "Test",
+        lastName: "User",
+        avatarUrl: null,
+        organizationId: orgPart ?? "",
+        sessionId: "session_id",
+        refreshedSession: undefined,
+      };
+    }
+    return {
+      userId: "user_1",
+      email: "test@example.com",
+      firstName: "Test",
+      lastName: "User",
+      avatarUrl: null,
+      organizationId: sealedSession.replace("session_", ""),
+      sessionId: "session_id",
+      refreshedSession: undefined,
+    };
+  }
 
   return new Proxy(service as WorkOSClient["Service"], {
     get: (target, prop) => {

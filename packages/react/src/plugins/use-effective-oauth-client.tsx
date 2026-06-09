@@ -122,9 +122,7 @@ export function selectClientsForEndpoints(
     const authorizationMatches =
       !wantedAuthorizationUrl || appAuthorizationUrl === wantedAuthorizationUrl;
     const fits =
-      app.grant === "client_credentials"
-        ? tokenMatches
-        : tokenMatches && authorizationMatches;
+      app.grant === "client_credentials" ? tokenMatches : tokenMatches && authorizationMatches;
     if (fits) matched.push(app);
     else unmatched.push(app);
   }

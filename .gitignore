@@ -60,6 +60,11 @@ apps/desktop/resources/
 apps/cloud/.dev-db/
 apps/cloud/.e2e-db/
 
+# e2e suite: generated run artifacts + throwaway target state
+e2e/runs/
+apps/cloud/.e2e-stub-db/
+apps/host-selfhost/.e2e-data/
+
 # playwright e2e artifacts
 test-results/
 playwright-report/

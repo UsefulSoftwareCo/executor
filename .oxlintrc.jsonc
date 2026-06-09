@@ -68,11 +68,25 @@
       },
     },
     {
-      // Playwright e2e specs drive a real browser: they stringify browser-side
-      // errors and use console/promise APIs that the Effect-domain rules forbid.
-      "files": ["apps/cloud/e2e/**/*.{ts,tsx}"],
+      // The e2e harness internals are adapter boundaries over promise-native
+      // drivers (Playwright, PTY, mcporter, raw HTTP) plus build tooling (the
+      // run viewer); they normalize untyped failures into the recorded
+      // transcript. Scenario code (e2e/scenarios, e2e/cloud, …) stays strict.
+      "files": [
+        "e2e/src/**/*.{ts,tsx}",
+        "e2e/setup/**/*.{ts,tsx}",
+        "e2e/targets/**/*.{ts,tsx}",
+        "e2e/scripts/**/*.{ts,tsx}",
+      ],
       "rules": {
+        "executor/no-effect-escape-hatch": "off",
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-instanceof-tagged-error": "off",
+        "executor/no-json-parse": "off",
+        "executor/no-manual-tag-check": "off",
         "executor/no-promise-catch": "off",
+        "executor/no-redundant-primitive-cast": "off",
         "executor/no-try-catch-or-throw": "off",
         "executor/no-unknown-error-message": "off",
       },
@@ -127,6 +141,10 @@
     ".turbo/",
     ".worktrees/",
     "dist/",
+    "vendor/",
+    "emulators/",
+    "testkit/",
+    "e2e/runs/",
     "integrationsdotsh/",
     "node_modules/",
     "packages/core/fumadb/",
