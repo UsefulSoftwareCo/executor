@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-http-source",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/http-source",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"

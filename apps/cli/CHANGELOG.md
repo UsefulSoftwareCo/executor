@@ -1,5 +1,19 @@
 # executor
 
+## 1.5.3
+
+### Patch Changes
+
+- [#939](https://github.com/RhysSullivan/executor/pull/939) [`db09372`](https://github.com/RhysSullivan/executor/commit/db093728ad1752d25a577cd7f89b705a3915a2d2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Desktop packaging follow-ups from the v1.5.2 release run:
+  - Fixed the Intel mac desktop build failing in CI (the cross-target dependency install was being glob-expanded by the shell).
+  - Fixed the first-launch data migration on Windows: renaming the previous database file could hit a transient `EBUSY` while the just-closed SQLite handle was released, so the move now retries briefly instead of failing startup.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.3
+  - @executor-js/runtime-quickjs@1.5.3
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.25
+
 ## 1.5.2
 
 ### Patch Changes

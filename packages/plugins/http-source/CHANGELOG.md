@@ -1,5 +1,13 @@
 # @executor-js/plugin-http-source
 
+## 2.0.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.3
+  - @executor-js/react@1.4.25
+
 ## 2.0.3
 
 ### Patch Changes
