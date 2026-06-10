@@ -245,23 +245,30 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
   if (error) return <div className="page error-text">failed to load run: {error}</div>;
   if (!run) return <div className="page dim">loading…</div>;
 
+  // MCP runs ARE a chat (a session of messages) and render as one. Everything
+  // else renders as action groups: the say() sentence is the visible unit, the
+  // API calls it explains collapse behind it, assertions stay visible.
+  const isMcpChat = run.turns.some((t) => t.surface === "mcp" || t.role === "auth");
+
   return (
     <div className="page">
       <div className="topbar">
         <a href="#/">← all runs</a>
-        <button
-          className="replay-btn"
-          onClick={() => {
-            if (replaying) {
-              setReplaying(false);
-              setVisible(Infinity);
-            } else {
-              setReplaying(true);
-            }
-          }}
-        >
-          {replaying ? "■ show all" : "▶ replay"}
-        </button>
+        {isMcpChat && (
+          <button
+            className="replay-btn"
+            onClick={() => {
+              if (replaying) {
+                setReplaying(false);
+                setVisible(Infinity);
+              } else {
+                setReplaying(true);
+              }
+            }}
+          >
+            {replaying ? "■ show all" : "▶ replay"}
+          </button>
+        )}
       </div>
       <h1 className={run.ok ? "ok-text" : "error-text"}>
         {run.ok ? "✓ PASSED" : "✗ FAILED"} · {run.scenario}
@@ -278,21 +285,146 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
           </p>
         </div>
       )}
-      <div className="chat">
-        {run.turns.map((turn, i) => (
-          <div key={i} className={`row ${i < visible ? "in" : "hidden"}`}>
-            <TurnView
-              turn={turn}
-              base={base}
-              onSeek={seekTo}
-              animate={replaying && i === visible - 1}
-            />
-          </div>
-        ))}
-      </div>
+      {isMcpChat ? (
+        <div className="chat">
+          {run.turns.map((turn, i) => (
+            <div key={i} className={`row ${i < visible ? "in" : "hidden"}`}>
+              <TurnView
+                turn={turn}
+                base={base}
+                onSeek={seekTo}
+                animate={replaying && i === visible - 1}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="chat">
+          {groupTurns(run.turns).map((item, i) =>
+            item.kind === "group" ? (
+              <ActionGroup key={i} group={item} base={base} onSeek={seekTo} />
+            ) : (
+              <div key={i} className="row">
+                <TurnView turn={item.turn} base={base} onSeek={seekTo} animate={false} />
+              </div>
+            ),
+          )}
+        </div>
+      )}
     </div>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Action groups: a say() sentence owns the API calls it explains. The sentence
+// and the assertions are always visible; the call payloads are a click away.
+// Browser/CLI steps and errors stand alone between groups.
+// ---------------------------------------------------------------------------
+
+interface TurnGroup {
+  kind: "group";
+  text?: string;
+  turns: Turn[];
+}
+
+type TranscriptItem = TurnGroup | { kind: "turn"; turn: Turn };
+
+const groupTurns = (turns: Turn[]): TranscriptItem[] => {
+  const out: TranscriptItem[] = [];
+  let current: TurnGroup | null = null;
+  const flush = () => {
+    if (current && (current.text || current.turns.length > 0)) out.push(current);
+    current = null;
+  };
+  for (const turn of turns) {
+    if (turn.role === "user") continue; // the header already names the scenario
+    if (turn.role === "assistant") {
+      flush();
+      current = { kind: "group", text: turn.text, turns: [] };
+      continue;
+    }
+    const belongsToGroup =
+      turn.role === "tool" ||
+      turn.role === "assert" ||
+      (turn.role === "step" && turn.surface === "api");
+    if (belongsToGroup) {
+      if (!current) current = { kind: "group", turns: [] };
+      current.turns.push(turn);
+      continue;
+    }
+    flush();
+    out.push({ kind: "turn", turn });
+  }
+  flush();
+  return out;
+};
+
+const ActionGroup = ({
+  group,
+  base,
+  onSeek,
+}: {
+  group: TurnGroup;
+  base: string;
+  onSeek: (ms: number) => void;
+}) => {
+  const calls = group.turns.filter((t) => t.role === "tool" || t.role === "step");
+  const asserts = group.turns.filter((t) => t.role === "assert");
+  const failed =
+    asserts.some((a) => a.assertion?.ok === false) ||
+    calls.some((c) => c.role === "tool" && c.ok === false);
+  const totalMs = calls.reduce((sum, c) => sum + (c.durationMs ?? 0), 0);
+
+  return (
+    <div className={`grp ${failed ? "bad" : ""}`}>
+      {group.text && <div className="grp-text">{group.text}</div>}
+      {calls.length > 0 && (
+        <details open={failed}>
+          <summary className="grp-calls">
+            {calls.length} API call{calls.length > 1 ? "s" : ""}
+            {totalMs > 0 && ` · ${totalMs}ms`}
+            {failed && " · ✗"}
+          </summary>
+          {calls.map((call, i) =>
+            call.role === "tool" ? (
+              <CallRow key={i} turn={call} base={base} onSeek={onSeek} />
+            ) : (
+              <div key={i} className="call-note">
+                {call.text}
+              </div>
+            ),
+          )}
+        </details>
+      )}
+      {asserts.map((a, i) => (
+        <TurnView key={i} turn={a} base={base} onSeek={onSeek} animate={false} />
+      ))}
+    </div>
+  );
+};
+
+const CallRow = ({
+  turn,
+  base,
+  onSeek,
+}: {
+  turn: Turn;
+  base: string;
+  onSeek: (ms: number) => void;
+}) => (
+  <details className={`call ${turn.ok === false ? "bad" : ""}`}>
+    <summary>
+      <span className="srf">{turn.surface}</span>
+      <b>{turn.call?.name}</b> {turn.ok ? "✓" : "✗"}{" "}
+      <span className="g">
+        → {String(turn.text ?? "").slice(0, 110)}
+        {turn.durationMs != null && ` · ${turn.durationMs}ms`}
+      </span>
+    </summary>
+    <pre>{JSON.stringify({ args: turn.call?.args, result: turn.result }, null, 2)}</pre>
+    <EvidenceList evidence={turn.evidence} base={base} onSeek={onSeek} />
+  </details>
+);
 
 // ---------------------------------------------------------------------------
 // Turn + evidence renderers.

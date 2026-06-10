@@ -282,3 +282,47 @@ details summary {
     opacity: 0;
   }
 }
+
+/* action groups: sentence visible, calls collapsed, asserts always shown */
+.grp {
+  background: #0f1620;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 0.55rem 0.8rem;
+  margin: 7px 0;
+}
+.grp.bad {
+  border-color: #6e2a2a;
+}
+.grp-text {
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+.grp-calls {
+  color: #6b7785;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.call {
+  margin: 0.3rem 0 0;
+  border-left: 2px solid #21262d;
+  padding-left: 0.6rem;
+}
+.call.bad {
+  border-left-color: #ff7b72;
+}
+.call summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  color: #d7dce5;
+  list-style: none;
+}
+.call summary .g {
+  color: #6b7785;
+}
+.call-note {
+  color: #6b7785;
+  font-size: 12.5px;
+  margin-top: 0.3rem;
+  padding-left: 0.6rem;
+}
