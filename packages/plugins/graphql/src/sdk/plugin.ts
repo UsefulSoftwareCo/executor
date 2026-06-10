@@ -54,6 +54,7 @@ import {
   decodeGraphqlIntegrationConfigOption,
   ExtractedField,
   GraphqlIntegrationConfig,
+  expandGraphqlAuthMethodInputs,
   normalizeGraphqlAuthMethods,
   OperationBinding,
   type GraphqlAuthMethod,
@@ -701,7 +702,9 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
             ? normalizeGraphqlAuthMethods(input.authenticationTemplate)
             : mergeAuthTemplates(
                 current.authenticationTemplate,
-                input.authenticationTemplate as readonly GraphqlAuthMethod[],
+                expandGraphqlAuthMethodInputs(
+                  input.authenticationTemplate,
+                ) as readonly GraphqlAuthMethod[],
               );
 
         const next = GraphqlIntegrationConfig.make({

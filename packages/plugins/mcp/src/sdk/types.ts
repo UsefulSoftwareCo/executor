@@ -1,7 +1,10 @@
 import { Effect, Option, Schema } from "effect";
 import {
   ApiKeyAuthMethod,
+  ApiKeyAuthTemplate,
   NoneAuthMethod,
+  apiKeyMethodFromAuthTemplate,
+  isApiKeyAuthTemplate,
   normalizeAuthMethodSlugs,
 } from "@executor-js/sdk/http-auth";
 
@@ -99,14 +102,21 @@ export const McpAuthMethodInput = Schema.Union([
     placements: ApiKeyAuthMethod.fields.placements,
   }),
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+  // Request-shaped authoring dialect: `{ type: "apiKey", headers: {
+  // Authorization: ["Bearer ", variable("token")] }, queryParams: { … } }`.
+  ApiKeyAuthTemplate,
 ]);
 export type McpAuthMethodInput = typeof McpAuthMethodInput.Type;
+
+/** The canonical (kind-keyed) subset of the input union — what the UI
+ *  authors directly; the request-shaped dialect expands into it. */
+export type McpCanonicalAuthMethodInput = Exclude<McpAuthMethodInput, ApiKeyAuthTemplate>;
 
 /** The default slug for a slug-less input method. Carrier-derived for the
  *  single-placement apikey cases (`header` / `query`) — the slugs those
  *  methods have always had — so the shorthand, UI, and migration paths all
  *  converge on the same names. */
-const defaultMcpAuthSlug = (method: McpAuthMethodInput): string => {
+const defaultMcpAuthSlug = (method: McpCanonicalAuthMethodInput): string => {
   if (method.kind !== "apikey") return method.kind;
   if (method.placements.length === 1) {
     return method.placements[0]!.carrier === "header" ? "header" : "query";
@@ -114,12 +124,30 @@ const defaultMcpAuthSlug = (method: McpAuthMethodInput): string => {
   return "apikey";
 };
 
+/** Expand request-shaped dialect entries into canonical placements; canonical
+ *  entries pass through. Slug backfill is the caller's concern
+ *  (`normalizeMcpAuthMethods` for declare flows, `mergeAuthTemplates` for the
+ *  custom-method merge). */
+export const expandMcpAuthMethodInputs = (
+  methods: readonly McpAuthMethodInput[],
+): readonly McpCanonicalAuthMethodInput[] =>
+  methods.map(
+    (method): McpCanonicalAuthMethodInput =>
+      isApiKeyAuthTemplate(method)
+        ? (apiKeyMethodFromAuthTemplate(method) as McpCanonicalAuthMethodInput)
+        : (method as McpCanonicalAuthMethodInput),
+  );
+
 /** Assign each method a stable slug: a caller-provided one wins, otherwise a
- *  kind/carrier-derived default, suffixed `_2`, `_3`, … on collision. */
+ *  kind/carrier-derived default, suffixed `_2`, `_3`, … on collision. The
+ *  request-shaped dialect is expanded to canonical placements first. */
 export const normalizeMcpAuthMethods = (
   methods: readonly McpAuthMethodInput[],
 ): readonly McpAuthMethod[] =>
-  normalizeAuthMethodSlugs(methods, defaultMcpAuthSlug) as readonly McpAuthMethod[];
+  normalizeAuthMethodSlugs(
+    expandMcpAuthMethodInputs(methods),
+    defaultMcpAuthSlug,
+  ) as readonly McpAuthMethod[];
 
 // ---------------------------------------------------------------------------
 // Integration config — the opaque blob stored on the integration row. A

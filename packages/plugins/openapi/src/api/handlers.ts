@@ -3,7 +3,7 @@ import { Context, Effect } from "effect";
 
 import { addGroup, capture } from "@executor-js/api";
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
-import type { Authentication } from "../sdk";
+import type { Authentication, AuthenticationInput } from "../sdk";
 import type { OpenApiPluginExtension } from "../sdk/plugin";
 import { OpenApiGroup } from "./group";
 
@@ -61,10 +61,12 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             headers: payload.headers ? { ...payload.headers } : undefined,
             queryParams: payload.queryParams ? { ...payload.queryParams } : undefined,
             authenticationTemplate: payload.authenticationTemplate?.map(
-              (entry): Authentication => ({
-                ...entry,
-                slug: AuthTemplateSlug.make(entry.slug),
-              }),
+              (entry): AuthenticationInput =>
+                // The request-shaped dialect may omit its slug (backfilled
+                // later); canonical entries carry the branded slug.
+                "type" in entry && entry.type === "apiKey"
+                  ? entry
+                  : ({ ...entry, slug: AuthTemplateSlug.make(entry.slug ?? "") } as Authentication),
             ),
           });
         }),
@@ -116,10 +118,10 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const ext = yield* OpenApiExtensionService;
           const authenticationTemplate = yield* ext.configure(params.slug, {
             authenticationTemplate: payload.authenticationTemplate.map(
-              (entry): Authentication => ({
-                ...entry,
-                slug: AuthTemplateSlug.make(entry.slug),
-              }),
+              (entry): AuthenticationInput =>
+                "type" in entry && entry.type === "apiKey"
+                  ? entry
+                  : ({ ...entry, slug: AuthTemplateSlug.make(entry.slug ?? "") } as Authentication),
             ),
             mode: payload.mode ?? "merge",
           });

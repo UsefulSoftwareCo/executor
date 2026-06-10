@@ -16,7 +16,7 @@ import {
   wirePlacementsFromEditor,
 } from "@executor-js/react/lib/shared-auth-method-codec";
 
-import type { McpAuthMethod, McpAuthMethodInput } from "../sdk/types";
+import type { McpAuthMethod, McpCanonicalAuthMethodInput } from "../sdk/types";
 
 const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
   id: slug,
@@ -34,9 +34,11 @@ const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
  *  placement falls back to `none`. */
 export function mcpAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
-): McpAuthMethodInput {
+): McpCanonicalAuthMethodInput {
   if (value.kind === "oauth") return { kind: "oauth2" };
-  return (sharedMethodInputFromEditorValue(value) ?? { kind: "none" }) as McpAuthMethodInput;
+  return (sharedMethodInputFromEditorValue(value) ?? {
+    kind: "none",
+  }) as McpCanonicalAuthMethodInput;
 }
 
 /** Convert one stored MCP method into the generic editor value. */
@@ -67,7 +69,7 @@ export function authMethodsFromConfig(
  *  Empty when no placement is usable. */
 export function mcpAuthMethodInputsFromPlacements(
   placements: readonly Placement[],
-): McpAuthMethodInput[] {
+): McpCanonicalAuthMethodInput[] {
   const wire = wirePlacementsFromEditor(placements);
   if (wire.length === 0) return [];
   return [{ kind: "apikey", placements: wire }];

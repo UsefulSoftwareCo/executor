@@ -70,8 +70,12 @@ export {
   TOKEN_VARIABLE,
   isApiKeyAuthentication,
   isOAuthAuthentication,
+  normalizeOpenApiAuthInputs,
   type Authentication,
+  type AuthenticationInput,
   type APIKeyAuthentication,
 } from "./types";
+// Request-shaped authoring: `headers: { Authorization: ["Bearer ", variable("token")] }`.
+export { variable, type ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 
 export { migrateOpenApiAuthConfig } from "./migrate-config";

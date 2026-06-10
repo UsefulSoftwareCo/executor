@@ -1,5 +1,8 @@
 import { Schema } from "effect";
 import {
+  ApiKeyAuthTemplate,
+  apiKeyMethodFromAuthTemplate,
+  isApiKeyAuthTemplate,
   ApiKeyAuthMethod,
   NoneAuthMethod,
   normalizeAuthMethodSlugs,
@@ -113,13 +116,20 @@ export const GraphqlAuthMethodInput = Schema.Union([
     header: Schema.optional(Schema.String),
     prefix: Schema.optional(Schema.String),
   }),
+  // Request-shaped authoring dialect: `{ type: "apiKey", headers: {
+  // Authorization: ["Bearer ", variable("token")] }, queryParams: { … } }`.
+  ApiKeyAuthTemplate,
 ]);
 export type GraphqlAuthMethodInput = typeof GraphqlAuthMethodInput.Type;
+
+/** The canonical (kind-keyed) subset of the input union — what the UI
+ *  authors directly; the request-shaped dialect expands into it. */
+export type GraphqlCanonicalAuthMethodInput = Exclude<GraphqlAuthMethodInput, ApiKeyAuthTemplate>;
 
 /** The default slug for a slug-less input method. Carrier-derived for the
  *  single-placement apikey cases (`header` / `query`) so the UI, agent, and
  *  migration paths all converge on the same names. */
-const defaultGraphqlAuthSlug = (method: GraphqlAuthMethodInput): string => {
+const defaultGraphqlAuthSlug = (method: GraphqlCanonicalAuthMethodInput): string => {
   if (method.kind !== "apikey") return method.kind;
   if (method.placements.length === 1) {
     return method.placements[0]!.carrier === "header" ? "header" : "query";
@@ -127,12 +137,30 @@ const defaultGraphqlAuthSlug = (method: GraphqlAuthMethodInput): string => {
   return "apikey";
 };
 
+/** Expand request-shaped dialect entries into canonical placements; canonical
+ *  entries pass through. Slug backfill is the caller's concern
+ *  (`normalizeGraphqlAuthMethods` for declare flows, `mergeAuthTemplates` for
+ *  the custom-method merge). */
+export const expandGraphqlAuthMethodInputs = (
+  methods: readonly GraphqlAuthMethodInput[],
+): readonly GraphqlCanonicalAuthMethodInput[] =>
+  methods.map(
+    (method): GraphqlCanonicalAuthMethodInput =>
+      isApiKeyAuthTemplate(method)
+        ? (apiKeyMethodFromAuthTemplate(method) as GraphqlCanonicalAuthMethodInput)
+        : (method as GraphqlCanonicalAuthMethodInput),
+  );
+
 /** Assign each method a stable slug: a caller-provided one wins, otherwise a
- *  kind/carrier-derived default, suffixed `_2`, `_3`, … on collision. */
+ *  kind/carrier-derived default, suffixed `_2`, `_3`, … on collision. The
+ *  request-shaped dialect is expanded to canonical placements first. */
 export const normalizeGraphqlAuthMethods = (
   methods: readonly GraphqlAuthMethodInput[],
 ): readonly GraphqlAuthMethod[] =>
-  normalizeAuthMethodSlugs(methods, defaultGraphqlAuthSlug) as readonly GraphqlAuthMethod[];
+  normalizeAuthMethodSlugs(
+    expandGraphqlAuthMethodInputs(methods),
+    defaultGraphqlAuthSlug,
+  ) as readonly GraphqlAuthMethod[];
 
 // ---------------------------------------------------------------------------
 // Integration config — the opaque-to-core blob the graphql plugin stores on the

@@ -25,7 +25,11 @@ import { Badge } from "@executor-js/react/components/badge";
 import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
 import { configureMcpAuth, mcpServerAtom } from "./atoms";
-import type { McpAuthMethod, McpAuthMethodInput, McpIntegrationConfig } from "../sdk/types";
+import type {
+  McpAuthMethod,
+  McpCanonicalAuthMethodInput,
+  McpIntegrationConfig,
+} from "../sdk/types";
 import {
   editorValueFromMcpAuthMethod,
   mcpAuthMethodInputFromEditorValue,
@@ -101,9 +105,9 @@ function RemoteEdit(props: {
   // The edited methods, slugs preserved for seeded rows so existing
   // connections (bound by template slug) stay attached. New rows omit the
   // slug — the backend assigns kind-based ones.
-  const editedMethods = useMemo<readonly McpAuthMethodInput[]>(
+  const editedMethods = useMemo<readonly McpCanonicalAuthMethodInput[]>(
     () =>
-      list.rows.map((row: AuthMethodRow): McpAuthMethodInput => {
+      list.rows.map((row: AuthMethodRow): McpCanonicalAuthMethodInput => {
         const input = mcpAuthMethodInputFromEditorValue(row.value);
         return row.seedSlug !== undefined ? { ...input, slug: row.seedSlug } : input;
       }),
@@ -113,7 +117,7 @@ function RemoteEdit(props: {
   const methodsChanged = useMemo(() => {
     const stored = server.config.authenticationTemplate;
     if (editedMethods.length !== stored.length) return true;
-    return editedMethods.some((method: McpAuthMethodInput, index: number) => {
+    return editedMethods.some((method: McpCanonicalAuthMethodInput, index: number) => {
       const current = stored[index];
       if (!current) return true;
       if ((method.slug ?? "") !== current.slug) return true;

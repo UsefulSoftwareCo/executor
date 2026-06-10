@@ -49,6 +49,7 @@ import {
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
+  expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
   parseMcpIntegrationConfig,
@@ -835,7 +836,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               ? normalizeMcpAuthMethods(input.authenticationTemplate)
               : mergeAuthTemplates(
                   current.authenticationTemplate,
-                  input.authenticationTemplate as readonly McpAuthMethod[],
+                  expandMcpAuthMethodInputs(
+                    input.authenticationTemplate,
+                  ) as readonly McpAuthMethod[],
                 );
 
           yield* ctx.core.integrations.update(slugFrom(slug), {

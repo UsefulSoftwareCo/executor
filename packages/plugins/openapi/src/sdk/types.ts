@@ -1,6 +1,11 @@
 import { Schema } from "effect";
 import type { OAuthAuthentication } from "@executor-js/sdk/shared";
-import type { ApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import {
+  apiKeyMethodFromAuthTemplate,
+  isApiKeyAuthTemplate,
+  type ApiKeyAuthMethod,
+  type ApiKeyAuthTemplate,
+} from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // Auth-template model.
@@ -32,6 +37,23 @@ export const isOAuthAuthentication = (template: Authentication): template is OAu
 export const isApiKeyAuthentication = (
   template: Authentication,
 ): template is APIKeyAuthentication => "kind" in template && template.kind === "apikey";
+
+/** What auth inputs accept: the canonical shapes plus the request-shaped
+ *  authoring dialect (`type: "apiKey"`, headers/queryParams records). */
+export type AuthenticationInput = Authentication | ApiKeyAuthTemplate;
+
+/** Expand the request-shaped dialect into canonical placements; canonical
+ *  entries pass through. A dialect entry without a slug gets a blank one —
+ *  `mergeAuthTemplates` backfills `custom_<id>` exactly like a slug-less
+ *  canonical entry. */
+export const normalizeOpenApiAuthInputs = (
+  inputs: readonly AuthenticationInput[],
+): readonly Authentication[] =>
+  inputs.map((input): Authentication => {
+    if (!isApiKeyAuthTemplate(input)) return input;
+    const method = apiKeyMethodFromAuthTemplate(input);
+    return { ...method, slug: method.slug ?? "" };
+  });
 
 // ---------------------------------------------------------------------------
 // Branded IDs

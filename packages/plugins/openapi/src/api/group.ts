@@ -1,6 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import { ApiKeyAuthMethod, ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 import {
   InternalError,
   IntegrationAlreadyExistsError,
@@ -56,6 +56,8 @@ const AuthenticationPayload = Schema.Union([
     tokenUrl: Schema.String,
     scopes: Schema.Array(Schema.String),
   }),
+  // Request-shaped authoring dialect (input sugar; responses are canonical).
+  ApiKeyAuthTemplate,
 ]);
 
 const AddSpecPayload = Schema.Struct({

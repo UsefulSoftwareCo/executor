@@ -79,8 +79,10 @@ describe("cloud auth tool failures", () => {
               authenticationTemplate: [
                 {
                   slug: AuthTemplateSlug.make(API_KEY_TEMPLATE),
-                  kind: "apikey",
-                  placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+                  type: "apiKey",
+                  headers: {
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
+                  },
                 },
               ],
             }),

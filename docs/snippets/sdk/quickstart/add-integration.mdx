@@ -4,9 +4,9 @@ Edit examples/docs-sdk-quickstart/src/main.ts between the docs:start/docs:end ma
 _/}
 
 ```ts
-// An integration is the API surface. The apikey method declares where a
+// An integration is the API surface. The auth template declares where a
 // connection's credential is placed on each request — here, an `X-API-Key`
-// header placement the resolved credential renders into.
+// header. `variable("token")` is the slot the resolved credential renders into.
 await executor.openapi.addSpec({
   slug: "inventory",
   description: "Inventory API",
@@ -18,8 +18,8 @@ await executor.openapi.addSpec({
   authenticationTemplate: [
     {
       slug: "apiKey",
-      kind: "apikey",
-      placements: [{ carrier: "header", name: "X-API-Key" }],
+      type: "apiKey",
+      headers: { "X-API-Key": [variable("token")] },
     },
   ],
 });

@@ -44,8 +44,17 @@ import { previewSpec, type SpecPreview } from "./preview";
 import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore, type StoredOperation } from "./store";
 import type { Authentication } from "./types";
-import { OperationBinding, isOAuthAuthentication } from "./types";
-import { ApiKeyAuthMethod, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import {
+  OperationBinding,
+  isOAuthAuthentication,
+  normalizeOpenApiAuthInputs,
+  type AuthenticationInput,
+} from "./types";
+import {
+  ApiKeyAuthMethod,
+  ApiKeyAuthTemplate,
+  describeApiKeyAuthMethod,
+} from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // Plugin config
@@ -154,8 +163,9 @@ export interface OpenApiSpecConfig {
   readonly headers?: Record<string, string>;
   /** Static query params applied to every request. */
   readonly queryParams?: Record<string, string>;
-  /** Auth methods a connection's value renders through. */
-  readonly authenticationTemplate?: readonly Authentication[];
+  /** Auth methods a connection's value renders through — canonical
+   *  placements or the request-shaped authoring dialect. */
+  readonly authenticationTemplate?: readonly AuthenticationInput[];
 }
 
 export interface OpenApiExtensionFailure {
@@ -169,7 +179,7 @@ export interface OpenApiConfigureInput {
    *  already exists, replaces) the integration's existing template array. A
    *  custom apiKey method with no `slug` is assigned a generated `custom_<id>`
    *  slug that is collision-checked against the existing template. */
-  readonly authenticationTemplate: readonly Authentication[];
+  readonly authenticationTemplate: readonly AuthenticationInput[];
   readonly mode?: "merge" | "replace";
 }
 
@@ -304,6 +314,9 @@ const AuthenticationSchema = Schema.Union([
     tokenUrl: Schema.String,
     scopes: Schema.Array(Schema.String),
   }),
+  // Request-shaped authoring dialect: `{ type: "apiKey", headers: {
+  // Authorization: ["Bearer ", variable("token")] }, queryParams: { … } }`.
+  ApiKeyAuthTemplate,
 ]);
 
 const AddSourceInputSchema = Schema.Struct({
@@ -734,7 +747,9 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             // Google Discovery converter derived from the spec (the bundle add
             // path relies on this — it has no preview to detect auth from).
             ...(config.authenticationTemplate
-              ? { authenticationTemplate: config.authenticationTemplate }
+              ? {
+                  authenticationTemplate: normalizeOpenApiAuthInputs(config.authenticationTemplate),
+                }
               : resolved.authenticationTemplate
                 ? { authenticationTemplate: resolved.authenticationTemplate }
                 : {}),
@@ -827,13 +842,11 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               const current = decodeOpenApiIntegrationConfig(record.config);
               if (!current) return [] as readonly Authentication[];
 
+              const incoming = normalizeOpenApiAuthInputs(input.authenticationTemplate);
               const merged =
                 input.mode === "replace"
-                  ? input.authenticationTemplate
-                  : mergeAuthTemplates(
-                      current.authenticationTemplate ?? [],
-                      input.authenticationTemplate,
-                    );
+                  ? incoming
+                  : mergeAuthTemplates(current.authenticationTemplate ?? [], incoming);
 
               const next: OpenApiIntegrationConfig = {
                 ...current,

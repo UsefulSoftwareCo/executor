@@ -29,6 +29,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { openApiPlugin } from "./plugin";
 import type { APIKeyAuthentication, Authentication } from "./types";
+import { variable } from "@executor-js/sdk/http-auth";
 import {
   makeOpenApiHttpApiTestSourceConfig,
   serveOpenApiHttpApiTestServer,
@@ -269,6 +270,55 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
         ).data as { "x-api-key"?: string };
 
         expect(result["x-api-key"]).toBe("configured-secret");
+      }),
+    ),
+  );
+
+  it.effect("the request-shaped dialect configures a method and renders on the wire", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: server.specJson },
+          slug: "cfg_authored",
+          baseUrl: server.baseUrl,
+        });
+
+        // Authored request-shaped; stored canonical.
+        yield* executor.openapi.configure("cfg_authored", {
+          authenticationTemplate: [
+            {
+              slug: "bearer",
+              type: "apiKey",
+              headers: { authorization: ["Bearer ", variable("token")] },
+            },
+          ],
+        });
+
+        const config = yield* executor.openapi.getConfig("cfg_authored");
+        expect(config?.authenticationTemplate?.[0]).toEqual({
+          slug: "bearer",
+          kind: "apikey",
+          placements: [{ carrier: "header", name: "authorization", prefix: "Bearer " }],
+        });
+
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("cfg_authored"),
+          template: AuthTemplateSlug.make("bearer"),
+          value: "authored-secret",
+        });
+
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            ToolAddress.make("tools.cfg_authored.org.main.items.echoHeaders"),
+            {},
+          ),
+        ).data as { authorization?: string };
+        expect(result.authorization).toBe("Bearer authored-secret");
       }),
     ),
   );

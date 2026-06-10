@@ -21,6 +21,7 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";
+import { variable } from "@executor-js/sdk/http-auth";
 import { makeGreetingGraphqlSchema, serveGraphqlTestServer } from "../testing";
 
 const serveGreetingServer = serveGraphqlTestServer({ schema: makeGreetingGraphqlSchema() });
@@ -34,6 +35,41 @@ const toolAddr = (integration: string, connection: string, tool: string): ToolAd
   ToolAddress.make(`tools.${integration}.org.${connection}.${tool}`);
 
 describe("GraphQL multi-placement auth", () => {
+  it.effect("the request-shaped authoring dialect lands identically on the wire", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.endpoint,
+        slug: "authored_gql",
+        name: "Authored GraphQL",
+        authenticationTemplate: [
+          {
+            slug: "token_and_team",
+            type: "apiKey",
+            headers: { Authorization: ["Bearer ", variable("api_token")] },
+            queryParams: { team_id: [variable("team_id")] },
+          },
+        ],
+      });
+
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("authored_gql"),
+        template: AuthTemplateSlug.make("token_and_team"),
+        values: { api_token: "tok_A", team_id: "team_B" },
+      });
+
+      const requests = yield* server.requests;
+      expect(requests.length).toBeGreaterThan(0);
+      const last = requests[requests.length - 1]!;
+      expect(last.headers["authorization"]).toBe("Bearer tok_A");
+      expect(last.url.includes("team_id=team_B")).toBe(true);
+    }),
+  );
+
   it.effect("one method renders a bearer header AND a team-id query param", () =>
     Effect.gen(function* () {
       const server = yield* serveGreetingServer;

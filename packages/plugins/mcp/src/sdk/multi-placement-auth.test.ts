@@ -21,6 +21,7 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
+import { variable } from "@executor-js/sdk/http-auth";
 import { makeEchoMcpServer, serveMcpServer } from "../testing";
 
 const serveRecordingServer = serveMcpServer(() =>
@@ -189,6 +190,51 @@ describe("MCP multi-placement auth", () => {
       const queryRequests = (yield* server.requests).slice(beforeQuery);
       expect(queryRequests.every((r) => r.url.includes("auth_token=query-secret"))).toBe(true);
       expect(queryRequests.every((r) => r.authorization === undefined)).toBe(true);
+    }),
+  );
+
+  it.effect("the request-shaped authoring dialect lands identically on the wire", () =>
+    Effect.gen(function* () {
+      const server = yield* serveRecordingServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+      );
+
+      // Same method as the mixed-case test, authored request-shaped.
+      yield* executor.mcp.addServer({
+        name: "Authored MCP",
+        endpoint: server.url,
+        slug: "authored_mcp",
+        authenticationTemplate: [
+          {
+            slug: "token_and_team",
+            type: "apiKey",
+            headers: { Authorization: ["Bearer ", variable("api_token")] },
+            queryParams: { team_id: [variable("team_id")] },
+          },
+        ],
+      });
+
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("authored_mcp"),
+        template: AuthTemplateSlug.make("token_and_team"),
+        values: { api_token: "tok_A", team_id: "team_B" },
+      });
+
+      const before = (yield* server.requests).length;
+      const result = yield* executor.execute(
+        ToolAddress.make("tools.authored_mcp.org.main.whoami"),
+        { marker: "authored" },
+        { onElicitation: "accept-all" },
+      );
+      expect(result).toMatchObject({ ok: true });
+
+      const requests = (yield* server.requests).slice(before);
+      expect(requests.length).toBeGreaterThan(0);
+      expect(requests.every((request) => request.authorization === "Bearer tok_A")).toBe(true);
+      expect(requests.every((request) => request.url.includes("team_id=team_B"))).toBe(true);
     }),
   );
 

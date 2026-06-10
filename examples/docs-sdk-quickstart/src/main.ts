@@ -7,7 +7,7 @@ import {
   ProviderKey,
   type CredentialProvider,
 } from "@executor-js/sdk/promise";
-import { openApiPlugin } from "@executor-js/plugin-openapi/promise";
+import { openApiPlugin, variable } from "@executor-js/plugin-openapi/promise";
 
 const inventoryApi = {
   openapi: "3.0.0",
@@ -99,9 +99,9 @@ const executor = await createExecutor({
 // docs:end create-executor
 
 // docs:start add-integration
-// An integration is the API surface. The apikey method declares where a
+// An integration is the API surface. The auth template declares where a
 // connection's credential is placed on each request — here, an `X-API-Key`
-// header placement the resolved credential renders into.
+// header. `variable("token")` is the slot the resolved credential renders into.
 await executor.openapi.addSpec({
   slug: "inventory",
   description: "Inventory API",
@@ -113,8 +113,8 @@ await executor.openapi.addSpec({
   authenticationTemplate: [
     {
       slug: "apiKey",
-      kind: "apikey",
-      placements: [{ carrier: "header", name: "X-API-Key" }],
+      type: "apiKey",
+      headers: { "X-API-Key": [variable("token")] },
     },
   ],
 });

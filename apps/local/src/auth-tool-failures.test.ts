@@ -235,10 +235,10 @@ describe("local auth tool failures", () => {
               authenticationTemplate: [
                 {
                   slug: AuthTemplateSlug.make(API_KEY_TEMPLATE),
-                  kind: "apikey" as const,
-                  placements: [
-                    { carrier: "header" as const, name: "Authorization", prefix: "Bearer " },
-                  ],
+                  type: "apiKey" as const,
+                  headers: {
+                    Authorization: ["Bearer ", { type: "variable" as const, name: "token" }],
+                  },
                 },
               ],
             }),

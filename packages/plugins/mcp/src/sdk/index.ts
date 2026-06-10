@@ -27,6 +27,9 @@ export {
 
 export { migrateMcpAuthConfig } from "./migrate-config";
 
+// Request-shaped authoring: `headers: { Authorization: ["Bearer ", variable("token")] }`.
+export { variable, type ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
+
 export {
   McpConnectionError,
   McpToolDiscoveryError,
