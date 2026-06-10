@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useState } from "react";
 
 const TestSource = React.lazy(() => import("./TestSource"));
+const TerminalCast = React.lazy(() => import("./TerminalCast"));
 
 // ---------------------------------------------------------------------------
 // The matrix (scenario × target health) plus a per-run artifact page. The
@@ -140,7 +141,7 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
   const base = `${target}/${slug}`;
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"video" | "source">("video");
+  const [tab, setTab] = useState<"media" | "source">("media");
 
   useEffect(() => {
     fetch(`${base}/result.json`)
@@ -155,6 +156,8 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
   const has = (name: string) => result.artifacts.includes(name);
   const screenshots = result.artifacts.filter((a) => a.endsWith(".png")).sort();
   const video = has("session.mp4") ? "session.mp4" : has("session.webm") ? "session.webm" : null;
+  const cast = has("terminal.cast") ? "terminal.cast" : null;
+  const media = video ?? cast;
   const traceUrl = has("trace.zip")
     ? `https://trace.playwright.dev/?trace=${encodeURIComponent(
         new URL(`${base}/trace.zip`, window.location.href).toString(),
@@ -184,13 +187,13 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
         {new Date(result.endedAt).toLocaleString()}
       </p>
       {result.error && <pre className="errbox">{result.error}</pre>}
-      {video && has("test.ts") && (
+      {media && has("test.ts") && (
         <div className="tabs">
           <button
-            className={tab === "video" ? "tab active" : "tab"}
-            onClick={() => setTab("video")}
+            className={tab === "media" ? "tab active" : "tab"}
+            onClick={() => setTab("media")}
           >
-            ▶ video
+            ▶ {video ? "video" : "terminal"}
           </button>
           <button
             className={tab === "source" ? "tab active" : "tab"}
@@ -200,13 +203,18 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
           </button>
         </div>
       )}
-      {(!video || tab === "source") && has("test.ts") && (
+      {(!media || tab === "source") && has("test.ts") && (
         <Suspense fallback={<p className="dim">loading test source…</p>}>
-          {!video && <h2 className="section">The test</h2>}
+          {!media && <h2 className="section">The test</h2>}
           <TestSource url={`${base}/test.ts`} />
         </Suspense>
       )}
-      {video && tab === "video" && (
+      {cast && !video && tab === "media" && (
+        <Suspense fallback={<p className="dim">loading recording…</p>}>
+          <TerminalCast url={`${base}/${cast}`} />
+        </Suspense>
+      )}
+      {video && tab === "media" && (
         <>
           {/* muted is required for browsers to honor autoplay */}
           <video
@@ -234,7 +242,7 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
           )}
         </>
       )}
-      {!video && !has("test.ts") && screenshots.length === 0 && (
+      {!media && !has("test.ts") && screenshots.length === 0 && (
         <p className="dim">
           No visual artifacts — this surface's source of truth is the test code and its assertions.
         </p>

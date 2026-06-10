@@ -21,6 +21,7 @@
     "@executor-js/sdk": "workspace:*",
     "@kitlangton/terminal-control": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "asciinema-player": "^3.15.1",
     "effect": "catalog:",
     "monaco-editor": "^0.55.1",
     "playwright": "^1.60.0",
