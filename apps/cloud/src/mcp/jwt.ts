@@ -3,7 +3,6 @@
 //
 // Kept as its own `cloudflare:workers`-free leaf: the node-pool test
 // (mcp-auth.node.test.ts) imports these verifiers at runtime, and
-// `test-bearer.ts` (shared with node tests) imports `VerifiedToken` from here.
 // `mcp/auth.ts` (which DOES read `cloudflare:workers` env) imports this leaf;
 // the dependency points one way only.
 // ---------------------------------------------------------------------------

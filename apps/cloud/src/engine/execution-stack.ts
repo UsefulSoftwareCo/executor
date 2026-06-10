@@ -79,8 +79,8 @@ export const CLOUD_MOUNT_PREFIX = "/api" as const;
 export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, () => ({
   // SSRF / private-network egress guard. Config-driven, NOT a test flag:
   // production leaves `ALLOW_LOCAL_NETWORK` unset so the guard stays ON (`false`);
-  // the test workers (`wrangler.test.jsonc` / `wrangler.miniflare.jsonc`) opt in
-  // with `"true"` so fixtures can reach localhost. See `hosted-http-client.ts`.
+  // the e2e dev-server env opts in with `"true"` so in-scenario fixture
+  // servers on localhost are reachable. See `hosted-http-client.ts`.
   allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
   webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
   // `oauthCallbackPath` is NOT set here — `ExecutorApp.make` derives it from the

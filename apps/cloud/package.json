@@ -23,9 +23,8 @@
     "deploy": "op run --env-file=.env.production -- bash -lc 'bun run build && wrangler deploy -c dist/server/wrangler.json'",
     "cf-typegen": "wrangler types",
     "typecheck": "tsgo --noEmit",
-    "test": "node ../../node_modules/vitest/vitest.mjs run && node ../../node_modules/vitest/vitest.mjs run --config vitest.node.config.ts",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
     "test:watch": "node ../../node_modules/vitest/vitest.mjs",
-    "test:node": "node ../../node_modules/vitest/vitest.mjs run --config vitest.node.config.ts",
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
@@ -72,7 +71,6 @@
     "sonner": "^2.0.7"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.15.0",
     "@cloudflare/workers-types": "^4.20250620.0",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
