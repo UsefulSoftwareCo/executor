@@ -359,10 +359,8 @@ describe("WorkOS Vault credential provider", () => {
     }),
   );
 
-  it.effect("files metadata under the executor owner binding", () =>
+  it.effect("an id without an embedded owner falls back to the caller binding", () =>
     Effect.gen(function* () {
-      // A bound subject writes the user partition; the provider still keys
-      // solely by the opaque id, so resolution is unchanged.
       const userBinding: OwnerBinding = {
         tenant: Tenant.make("tenant-a"),
         subject: Subject.make("subject-a"),
@@ -371,6 +369,185 @@ describe("WorkOS Vault credential provider", () => {
 
       yield* provider.set!(id("token"), "v");
       expect(yield* provider.get(id("token"))).toBe("v");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Owner-partition regression: a credential's metadata must be filed under the
+// CREDENTIAL's owner (embedded in the item id), not the acting caller's
+// binding. Org-shared credentials filed under the creator's user partition are
+// resolvable only by whoever pasted them — every other org member gets
+// `connection_value_missing`. This fake models the real cross-owner visibility
+// (`org` ∪ the caller's own `user` partition) the flat fake above does not.
+// ---------------------------------------------------------------------------
+
+const makePartitionedBacking = () => {
+  type Row = {
+    readonly owner: Owner;
+    readonly subject: string;
+    readonly collection: string;
+    readonly key: string;
+    readonly data: unknown;
+  };
+  const rows = new Map<string, Row>();
+  const partKey = (owner: string, subject: string, collection: string, key: string) =>
+    `${owner} ${subject} ${collection} ${key}`;
+  const subjectFor = (owner: Owner, binding: OwnerBinding) =>
+    owner === "org" ? "" : String(binding.subject ?? "");
+  const toEntry = (row: Row): PluginStorageEntry => ({
+    id: `${row.collection} ${row.key}`,
+    owner: row.owner,
+    pluginId: "workosVault",
+    collection: row.collection,
+    key: row.key,
+    data: row.data,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  });
+
+  const depsFor = (binding: OwnerBinding): StorageDeps => {
+    // Mirrors `ownerVisibilityCondition`: a pure-org caller sees only org rows;
+    // a bound subject sees its own user rows plus org rows (user first).
+    const visibleOwners: readonly Owner[] =
+      binding.subject == null ? [Owner.make("org")] : [Owner.make("user"), Owner.make("org")];
+    const findVisible = (collection: string, key: string): Row | null => {
+      for (const owner of visibleOwners) {
+        const row = rows.get(partKey(owner, subjectFor(owner, binding), collection, key));
+        if (row) return row;
+      }
+      return null;
+    };
+    const pluginStorage = {
+      collection: () => expect.unreachable("collection() not used by the metadata store"),
+      get: (input: { collection: string; key: string }) =>
+        Effect.sync(() => {
+          const row = findVisible(input.collection, input.key);
+          return row ? (toEntry(row) as never) : null;
+        }),
+      getForOwner: (input: { collection: string; key: string; owner: Owner }) =>
+        Effect.sync(() => {
+          const row = rows.get(
+            partKey(input.owner, subjectFor(input.owner, binding), input.collection, input.key),
+          );
+          return row ? (toEntry(row) as never) : null;
+        }),
+      list: (input: { collection: string }) =>
+        Effect.sync(
+          () =>
+            [...rows.values()]
+              .filter((row) => row.collection === input.collection)
+              .map(toEntry) as never,
+        ),
+      put: (input: { collection: string; key: string; owner: Owner; data: unknown }) =>
+        Effect.sync(() => {
+          const subject = subjectFor(input.owner, binding);
+          const row: Row = {
+            owner: input.owner,
+            subject,
+            collection: input.collection,
+            key: input.key,
+            data: input.data,
+          };
+          rows.set(partKey(input.owner, subject, input.collection, input.key), row);
+          return toEntry(row) as never;
+        }),
+      remove: (input: { collection: string; key: string; owner: Owner }) =>
+        Effect.sync(() => {
+          rows.delete(
+            partKey(input.owner, subjectFor(input.owner, binding), input.collection, input.key),
+          );
+        }),
+    };
+    return {
+      owner: binding,
+      // oxlint-disable-next-line executor/no-double-cast -- test boundary: blobs unused
+      blobs: undefined as never,
+      // oxlint-disable-next-line executor/no-double-cast -- test boundary: partition-aware fake
+      pluginStorage: pluginStorage as never,
+    };
+  };
+  return { depsFor };
+};
+
+const userBinding = (subject: string): OwnerBinding => ({
+  tenant: Tenant.make("tenant-a"),
+  subject: Subject.make(subject),
+});
+
+describe("WorkOS Vault — credential owner partitioning", () => {
+  it.effect("a workspace connection created by one member resolves for another", () =>
+    Effect.gen(function* () {
+      const backing = makePartitionedBacking();
+      const client = makeFakeClient(); // shared vault — the value object is org-wide
+      const creator = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-a"))),
+      });
+      const other = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-b"))),
+      });
+
+      // user A pastes the org connection's API key
+      yield* creator.set!(id("connection:org:exa_search_api:workspaceexa:token"), "exa_secret");
+
+      // user B (same org, different subject) resolves the same org connection
+      expect(yield* other.get(id("connection:org:exa_search_api:workspaceexa:token"))).toBe(
+        "exa_secret",
+      );
+      // …and an automation context with no subject resolves it too
+      const automation = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(
+          backing.depsFor({ tenant: Tenant.make("tenant-a"), subject: null }),
+        ),
+      });
+      expect(yield* automation.get(id("connection:org:exa_search_api:workspaceexa:token"))).toBe(
+        "exa_secret",
+      );
+    }),
+  );
+
+  it.effect("a personal connection stays private to its owner", () =>
+    Effect.gen(function* () {
+      const backing = makePartitionedBacking();
+      const client = makeFakeClient();
+      const userA = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-a"))),
+      });
+      const userB = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-b"))),
+      });
+
+      yield* userA.set!(id("connection:user:notion:personal:token"), "private_secret");
+
+      // user A resolves their own; user B cannot see the metadata → no value
+      expect(yield* userA.get(id("connection:user:notion:personal:token"))).toBe("private_secret");
+      expect(yield* userB.get(id("connection:user:notion:personal:token"))).toBeNull();
+    }),
+  );
+
+  it.effect("oauth and oauth-client ids are partitioned by their embedded owner", () =>
+    Effect.gen(function* () {
+      const backing = makePartitionedBacking();
+      const client = makeFakeClient();
+      const creator = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-a"))),
+      });
+      const other = makeWorkOSVaultCredentialProvider({
+        client,
+        store: makeWorkosVaultStore(backing.depsFor(userBinding("subject-b"))),
+      });
+
+      yield* creator.set!(id("oauth:org:slack:workspace"), "access_tok");
+      yield* creator.set!(id("oauth-client:org:my_app:secret"), "client_sec");
+
+      expect(yield* other.get(id("oauth:org:slack:workspace"))).toBe("access_tok");
+      expect(yield* other.get(id("oauth-client:org:my_app:secret"))).toBe("client_sec");
     }),
   );
 });
