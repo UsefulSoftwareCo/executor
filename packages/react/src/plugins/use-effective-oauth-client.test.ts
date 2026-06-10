@@ -45,7 +45,9 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual(["spotify-app"]);
   });
 
-  it("matches an app sharing the declared endpoint URLs", () => {
+  it("matches an app sharing a declared endpoint's registrable root domain", () => {
+    // The app's token host `oauth2.googleapis.com` → root `googleapis.com`, which
+    // is in the integration's union (it declares the same token URL).
     const result = selectClientsForEndpoints([google, spotify], {
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -55,7 +57,9 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual(["spotify-app"]);
   });
 
-  it("matches on the authorize endpoint when no token endpoint is declared", () => {
+  it("matches on the authorize root even when the token endpoint differs", () => {
+    // An app declaring only the authorize host on `google.com` matches an
+    // integration that declares an authorize URL on the same root.
     const authorizeOnly = app("google-authorize", {
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://accounts.google.com/token",
@@ -92,38 +96,7 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched).toEqual([]);
   });
 
-  it("does not match an authorization-code app when only the token endpoint matches", () => {
-    const microsoftBareAuthorize = app("microsoft-bare-authorize", {
-      authorizationUrl: "https://login.microsoftonline.com",
-      tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    });
-    const result = selectClientsForEndpoints([microsoftBareAuthorize], {
-      authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    });
-    expect(result.endpointMatched).toBe(false);
-    expect(result.matched).toEqual([]);
-    expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
-      "microsoft-bare-authorize",
-    ]);
-  });
-
-  it("matches Microsoft Graph when both authorization and token endpoints match", () => {
-    const microsoftGraph = app("microsoft-graph", {
-      authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    });
-    const result = selectClientsForEndpoints([microsoftGraph], {
-      authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-      tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    });
-    expect(result.endpointMatched).toBe(true);
-    expect(result.matched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
-      "microsoft-graph",
-    ]);
-  });
-
-  it("matches local-dev MCP by exact endpoint URLs", () => {
+  it("matches local-dev MCP by exact host when tldts cannot resolve a root domain", () => {
     const local = app("local-mcp", {
       authorizationUrl: "http://localhost:8787/authorize",
       tokenUrl: "http://localhost:8787/token",

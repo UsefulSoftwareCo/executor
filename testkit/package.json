@@ -1,9 +1,0 @@
-{
-  "name": "@executor-js/testkit",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@kitlangton/terminal-control": "^0.3.0",
-    "playwright": "^1.60.0"
-  }
-}
