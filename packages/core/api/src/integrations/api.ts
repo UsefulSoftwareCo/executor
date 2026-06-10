@@ -34,6 +34,12 @@ const PlacementDescriptor = Schema.Struct({
   carrier: Schema.Literals(["header", "query"]),
   name: Schema.String,
   prefix: Schema.String,
+  /** Input variable this placement renders from (absent ⇒ `token`). Without
+   *  it the client cannot derive per-variable credential inputs for
+   *  multi-input methods. */
+  variable: Schema.optional(Schema.String),
+  /** Static value rendered verbatim (no credential input). */
+  literal: Schema.optional(Schema.String),
 });
 
 /** OAuth specifics — mirrors the SDK's `AuthMethodOAuthDescriptor`. */

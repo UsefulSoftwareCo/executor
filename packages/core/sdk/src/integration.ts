@@ -35,6 +35,10 @@ export interface AuthPlacementDescriptor {
    *  methods; a distinct name per input for multi-input ones (e.g. Datadog).
    *  Absent → treated as `token`. */
   readonly variable?: string;
+  /** Set when the placement renders this exact value instead of a credential
+   *  (a static header/param the method carries). Such placements reference no
+   *  input variable. */
+  readonly literal?: string;
 }
 
 /** OAuth specifics for an `oauth` auth method. For probe-at-connect providers

@@ -1547,17 +1547,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         Effect.map((values) => values[PRIMARY_INPUT_VARIABLE] ?? null),
       );
 
-    const resolveConnectionValueByRef = (
-      ref: ConnectionRef,
-    ): Effect.Effect<string | null, StorageFailure> =>
-      Effect.gen(function* () {
-        const row = yield* findConnectionRow(ref);
-        if (!row) return null;
-        return yield* resolveConnectionValue(row);
-      }).pipe(
-        // The plugin-facing contract (`ctx.connections.resolveValue`, `getValue`)
-        // is `StorageFailure`-typed; fold a reauth-required resolution failure
-        // into a StorageError so the public surface stays stable.
+    // The plugin-facing contract (`ctx.connections.resolveValue`, `getValue`,
+    // `getValues`) is `StorageFailure`-typed; fold a reauth-required resolution
+    // failure into a StorageError so the public surface stays stable.
+    const foldResolutionFailure = <A>(
+      effect: Effect.Effect<A, StorageFailure | CredentialResolutionError>,
+    ): Effect.Effect<A, StorageFailure> =>
+      effect.pipe(
         Effect.catchTag("CredentialResolutionError", (err) =>
           Effect.fail(
             new StorageError({
@@ -1567,6 +1563,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             }),
           ),
         ),
+      );
+
+    const resolveConnectionValueByRef = (
+      ref: ConnectionRef,
+    ): Effect.Effect<string | null, StorageFailure> =>
+      foldResolutionFailure(
+        Effect.gen(function* () {
+          const row = yield* findConnectionRow(ref);
+          if (!row) return null;
+          return yield* resolveConnectionValue(row);
+        }),
+      );
+
+    const resolveConnectionValuesByRef = (
+      ref: ConnectionRef,
+    ): Effect.Effect<Record<string, string | null>, StorageFailure> =>
+      foldResolutionFailure(
+        Effect.gen(function* () {
+          const row = yield* findConnectionRow(ref);
+          if (!row) return {};
+          return yield* resolveConnectionValues(row);
+        }),
       );
 
     // ------------------------------------------------------------------
@@ -1810,6 +1828,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             connection: ref,
             template: existingRow ? AuthTemplateSlug.make(existingRow.template) : null,
             getValue: () => resolveConnectionValueByRef(ref),
+            getValues: () => resolveConnectionValuesByRef(ref),
           })
           .pipe(
             Effect.mapError((cause) =>

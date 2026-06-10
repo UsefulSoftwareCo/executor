@@ -201,6 +201,10 @@ export interface ResolveToolsInput {
   /** Lazily resolve the connection's credential value via its provider — only
    *  the kinds that actually call out (mcp) pay for it. */
   readonly getValue: () => Effect.Effect<string | null, StorageFailure>;
+  /** Lazily resolve every credential input (`variable → value`) — the
+   *  multi-input analog of `getValue`, for methods whose placements reference
+   *  more than one variable. Empty map when the connection isn't persisted. */
+  readonly getValues: () => Effect.Effect<Record<string, string | null>, StorageFailure>;
 }
 
 export interface ResolveToolsResult {

@@ -646,6 +646,21 @@
         "vitest": "catalog:",
       },
     },
+    "packages/http-auth": {
+      "name": "@executor-js/http-auth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@executor-js/sdk": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "tsup": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/kernel/core": {
       "name": "@executor-js/codemode-core",
       "version": "1.5.3",
@@ -843,57 +858,6 @@
         "@executor-js/api",
         "@executor-js/react",
         "@tanstack/react-router",
-        "react",
-      ],
-    },
-    "packages/plugins/graphql-greenfield": {
-      "name": "@executor-js/plugin-graphql-greenfield",
-      "version": "0.0.4",
-      "dependencies": {
-        "@effect/platform-node": "catalog:",
-        "@executor-js/sdk": "workspace:*",
-        "effect": "catalog:",
-        "graphql": "^16.12.0",
-        "graphql-yoga": "^5.17.0",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@executor-js/api": "workspace:*",
-        "@types/node": "catalog:",
-        "bun-types": "catalog:",
-        "tsup": "catalog:",
-        "vitest": "catalog:",
-      },
-      "peerDependencies": {
-        "@executor-js/api": "workspace:*",
-      },
-      "optionalPeers": [
-        "@executor-js/api",
-      ],
-    },
-    "packages/plugins/http-source": {
-      "name": "@executor-js/plugin-http-source",
-      "version": "2.0.4",
-      "dependencies": {
-        "@executor-js/sdk": "workspace:*",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@executor-js/react": "workspace:*",
-        "@types/node": "catalog:",
-        "@types/react": "catalog:",
-        "bun-types": "catalog:",
-        "react": "catalog:",
-        "tsup": "catalog:",
-        "vitest": "catalog:",
-      },
-      "peerDependencies": {
-        "@executor-js/react": "workspace:*",
-        "react": "catalog:",
-      },
-      "optionalPeers": [
-        "@executor-js/react",
         "react",
       ],
     },
@@ -1580,6 +1544,8 @@
 
     "@executor-js/host-selfhost": ["@executor-js/host-selfhost@workspace:apps/host-selfhost"],
 
+    "@executor-js/http-auth": ["@executor-js/http-auth@workspace:packages/http-auth"],
+
     "@executor-js/integrations-registry": ["@executor-js/integrations-registry@workspace:packages/core/integrations-registry"],
 
     "@executor-js/ir": ["@executor-js/ir@workspace:packages/kernel/ir"],
@@ -1597,10 +1563,6 @@
     "@executor-js/plugin-file-secrets": ["@executor-js/plugin-file-secrets@workspace:packages/plugins/file-secrets"],
 
     "@executor-js/plugin-graphql": ["@executor-js/plugin-graphql@workspace:packages/plugins/graphql"],
-
-    "@executor-js/plugin-graphql-greenfield": ["@executor-js/plugin-graphql-greenfield@workspace:packages/plugins/graphql-greenfield"],
-
-    "@executor-js/plugin-http-source": ["@executor-js/plugin-http-source@workspace:packages/plugins/http-source"],
 
     "@executor-js/plugin-keychain": ["@executor-js/plugin-keychain@workspace:packages/plugins/keychain"],
 
