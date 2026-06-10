@@ -58,6 +58,9 @@ const toServerInput = (
     queryParams?: Record<string, string>;
     headers?: Record<string, string>;
     slug?: string;
+    authenticationTemplate?: McpServerInput extends { authenticationTemplate?: infer T }
+      ? T
+      : never;
     auth?: McpServerInput extends { auth?: infer A } ? A : never;
   };
 
@@ -69,6 +72,7 @@ const toServerInput = (
     queryParams: p.queryParams,
     headers: p.headers,
     slug: p.slug,
+    authenticationTemplate: p.authenticationTemplate,
     auth: p.auth,
   };
 };
@@ -131,6 +135,18 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
           const ext = yield* McpExtensionService;
           yield* ext.configureServer(path.slug, payload.config);
           return { config: payload.config };
+        }),
+      ),
+    )
+    .handle("configureAuth", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          const authenticationTemplate = yield* ext.configureAuth(path.slug, {
+            authenticationTemplate: payload.authenticationTemplate,
+            mode: payload.mode ?? "merge",
+          });
+          return { authenticationTemplate: [...authenticationTemplate] };
         }),
       ),
     ),

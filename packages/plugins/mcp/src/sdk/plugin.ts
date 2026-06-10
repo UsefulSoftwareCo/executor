@@ -10,6 +10,7 @@ import {
   definePlugin,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
+  mergeAuthTemplates,
   OAuthClientSlug,
   tool,
   ToolResult,
@@ -35,11 +36,16 @@ import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
 import {
+  McpAuthMethodInput,
   McpAuthTemplate,
   McpRemoteTransport,
+  type McpAuthMethod,
   type McpToolAnnotations,
+  mcpAuthMethodFromLegacy,
+  normalizeMcpAuthMethods,
   parseMcpIntegrationConfig,
   type McpIntegrationConfig as McpIntegrationConfigType,
+  type McpRemoteIntegrationConfig,
   type McpStdioIntegrationConfig,
 } from "./types";
 
@@ -75,7 +81,13 @@ const legacyMcpClientMatches = (
   config: McpIntegrationConfigType | null,
 ): boolean => {
   if (!candidates.has(String(client.slug))) return false;
-  if (!config || config.transport !== "remote" || config.auth.kind !== "oauth2") return false;
+  if (
+    !config ||
+    config.transport !== "remote" ||
+    !config.authenticationTemplate.some((method: McpAuthMethod) => method.kind === "oauth2")
+  ) {
+    return false;
+  }
   return client.grant === "authorization_code" && (client.resource ?? null) === config.endpoint;
 };
 
@@ -129,7 +141,10 @@ const McpRemoteServerInputSchema = Schema.Struct({
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   slug: Schema.optional(Schema.String),
-  /** How a connection's value is applied to requests. Defaults to none. */
+  /** Declared auth methods a connection can be applied through. */
+  authenticationTemplate: Schema.optional(Schema.Array(McpAuthMethodInput)),
+  /** Single-method shorthand (legacy callers). Ignored when
+   *  `authenticationTemplate` is present. Defaults to none. */
   auth: Schema.optional(McpAuthTemplate),
 });
 
@@ -151,6 +166,15 @@ const McpAddServerInputSchema = Schema.Union([
 const McpAddServerOutputSchema = Schema.Struct({
   slug: Schema.String,
 });
+
+/** Input for the custom-method-create flow. `merge` (default) appends onto the
+ *  integration's existing `authenticationTemplate`; `replace` swaps the whole
+ *  declared set. Mirrors the OpenAPI/GraphQL `configureAuth` inputs. */
+export const McpConfigureAuthInputSchema = Schema.Struct({
+  authenticationTemplate: Schema.Array(McpAuthMethodInput),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+});
+export type McpConfigureAuthInput = typeof McpConfigureAuthInputSchema.Type;
 
 const McpProbeEndpointInputSchema = Schema.Struct({
   endpoint: Schema.String,
@@ -240,7 +264,9 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     remoteTransport: input.remoteTransport ?? "auto",
     queryParams: input.queryParams,
     headers: input.headers,
-    auth: input.auth ?? { kind: "none" },
+    authenticationTemplate: input.authenticationTemplate
+      ? normalizeMcpAuthMethods(input.authenticationTemplate)
+      : [mcpAuthMethodFromLegacy(input.auth ?? { kind: "none" })],
   };
 };
 
@@ -380,12 +406,31 @@ const makeOAuthProvider = (accessToken: string): OAuthClientProvider => ({
 
 // ---------------------------------------------------------------------------
 // Connector input — render the integration config + the connection's resolved
-// value through the auth template into a live `ConnectorInput`.
+// value through the auth method the connection references (by template slug)
+// into a live `ConnectorInput`.
 // ---------------------------------------------------------------------------
+
+/** The auth method a connection binds: its `template` slug when it matches a
+ *  declared method. Otherwise fall back to the sole declared method — single-
+ *  method integrations historically accepted any template slug (rendering was
+ *  config-driven), so existing connections keep working. Ambiguity across
+ *  several methods renders no auth rather than guessing. */
+const selectAuthMethod = (
+  config: McpRemoteIntegrationConfig,
+  templateSlug: string | null,
+): McpAuthMethod | undefined => {
+  const methods = config.authenticationTemplate;
+  if (templateSlug !== null) {
+    const match = methods.find((method: McpAuthMethod) => method.slug === templateSlug);
+    if (match) return match;
+  }
+  return methods.length === 1 ? methods[0] : undefined;
+};
 
 const buildConnectorInput = (
   config: McpIntegrationConfigType,
   value: string | null,
+  templateSlug: string | null,
   allowStdio: boolean,
 ): Effect.Effect<ConnectorInput, McpConnectionError> => {
   if (config.transport === "stdio") {
@@ -410,10 +455,10 @@ const buildConnectorInput = (
   const headers: Record<string, string> = { ...(config.headers ?? {}) };
   let authProvider: OAuthClientProvider | undefined;
 
-  const auth = config.auth;
-  if (auth.kind === "header" && value !== null) {
+  const auth = selectAuthMethod(config, templateSlug);
+  if (auth?.kind === "header" && value !== null) {
     headers[auth.headerName] = auth.prefix ? `${auth.prefix}${value}` : value;
-  } else if (auth.kind === "oauth2" && value !== null) {
+  } else if (auth?.kind === "oauth2" && value !== null) {
     authProvider = makeOAuthProvider(value);
   }
 
@@ -432,13 +477,14 @@ const buildConnectorInput = (
 
 // ---------------------------------------------------------------------------
 // Declared auth methods — project the stored MCP config into the catalog's
-// plugin-agnostic `AuthMethodDescriptor[]`. Pure and tolerant of a malformed or
-// foreign config blob (returns `[]`). Exported for tests.
+// plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. Pure and
+// tolerant of a malformed or foreign config blob (returns `[]`). Exported for
+// tests.
 //
-//   open (`none`)        → one none method carrying no credential inputs
+//   none                 → a no-auth method carrying no credential inputs
 //   stdio                → []          (no remote connection to configure)
-//   header               → one apikey method carrying the header placement
-//   oauth2               → one oauth method carrying the MCP endpoint to probe
+//   header               → an apikey method carrying the header placement
+//   oauth2               → an oauth method carrying the MCP endpoint to probe
 //                          (`discoveryUrl`); endpoints are discovered live at
 //                          connect time, so they are NOT pre-resolved here. We
 //                          mark `supportsDynamicRegistration: true` because MCP
@@ -452,40 +498,32 @@ export const describeMcpAuthMethods = (
   const config = parseMcpIntegrationConfig(record.config);
   if (!config || config.transport === "stdio") return [];
 
-  const auth = config.auth;
-  if (auth.kind === "none") {
-    return [
-      {
-        id: "none",
-        label: "No authentication",
-        kind: "none",
-        template: "none",
-      },
-    ];
-  }
-  if (auth.kind === "header") {
-    return [
-      {
-        id: "header",
-        label: "API key (header)",
+  return config.authenticationTemplate.map((method: McpAuthMethod): AuthMethodDescriptor => {
+    if (method.kind === "header") {
+      return {
+        id: method.slug,
+        label: `API key (${method.headerName})`,
         kind: "apikey",
-        template: "header",
-        placements: [{ carrier: "header", name: auth.headerName, prefix: auth.prefix ?? "" }],
-      },
-    ];
-  }
-  if (auth.kind === "oauth2") {
-    return [
-      {
-        id: "oauth2",
+        template: method.slug,
+        placements: [{ carrier: "header", name: method.headerName, prefix: method.prefix ?? "" }],
+      };
+    }
+    if (method.kind === "oauth2") {
+      return {
+        id: method.slug,
         label: "OAuth",
         kind: "oauth",
-        template: "oauth2",
+        template: method.slug,
         oauth: { discoveryUrl: config.endpoint, supportsDynamicRegistration: true },
-      },
-    ];
-  }
-  return [];
+      };
+    }
+    return {
+      id: method.slug,
+      label: "No authentication",
+      kind: "none",
+      template: method.slug,
+    };
+  });
 };
 
 export const describeMcpIntegrationDisplay = (
@@ -777,12 +815,49 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      /** Merge-append auth methods onto the integration's existing
+       *  `authenticationTemplate` (custom-method-create flow), mirroring the
+       *  OpenAPI/GraphQL `configureAuth`. Returns the merged array. A no-op
+       *  (returns `[]`) for an unknown slug, a stdio server, or an
+       *  undecodable config. */
+      const configureAuth = (slug: string, input: McpConfigureAuthInput) =>
+        Effect.gen(function* () {
+          const record = yield* ctx.core.integrations.get(slugFrom(slug));
+          const current = record ? parseMcpIntegrationConfig(record.config) : null;
+          if (!current || current.transport === "stdio") {
+            return [] as readonly McpAuthMethod[];
+          }
+
+          // Replace mode declares the full set — backfill kind-based slugs.
+          // Merge mode appends: `mergeAuthTemplates` replaces on slug match and
+          // assigns fresh `custom_<id>` slugs to slug-less entries, so a custom
+          // method never silently displaces a declared one.
+          const merged =
+            input.mode === "replace"
+              ? normalizeMcpAuthMethods(input.authenticationTemplate)
+              : mergeAuthTemplates(
+                  current.authenticationTemplate,
+                  input.authenticationTemplate as readonly McpAuthMethod[],
+                );
+
+          yield* ctx.core.integrations.update(slugFrom(slug), {
+            config: { ...current, authenticationTemplate: merged },
+          });
+
+          return merged;
+        }).pipe(
+          Effect.withSpan("mcp.plugin.configure_auth", {
+            attributes: { "mcp.integration.slug": slug },
+          }),
+        );
+
       return {
         probeEndpoint,
         addServer,
         removeServer,
         getServer,
         configureServer,
+        configureAuth,
       };
     },
 
@@ -794,14 +869,19 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // Discovery failures (auth not ready, server down) yield an empty tool set
     // rather than failing — the connection still lands and can be refreshed.
     // -----------------------------------------------------------------------
-    resolveTools: ({ config, connection, getValue }) =>
+    resolveTools: ({ config, connection, template, getValue }) =>
       Effect.gen(function* () {
         const parsed = parseMcpIntegrationConfig(config);
         if (!parsed) return { tools: [] as readonly ToolDef[] };
 
         const value = yield* getValue().pipe(Effect.orElseSucceed(() => null));
 
-        const built = yield* buildConnectorInput(parsed, value, allowStdio).pipe(
+        const built = yield* buildConnectorInput(
+          parsed,
+          value,
+          template === null ? null : String(template),
+          allowStdio,
+        ).pipe(
           Effect.map((ci) => createMcpConnector(ci)),
           Effect.result,
         );
@@ -848,6 +928,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const connector: McpConnector = yield* buildConnectorInput(
           parsed,
           credential.value,
+          String(credential.template),
           allowStdio,
         ).pipe(Effect.map((ci) => createMcpConnector(ci)));
 
@@ -1078,4 +1159,8 @@ export interface McpPluginExtension {
     slug: string,
     config: McpIntegrationConfigType,
   ) => Effect.Effect<void, McpExtensionFailure>;
+  readonly configureAuth: (
+    slug: string,
+    input: McpConfigureAuthInput,
+  ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure>;
 }

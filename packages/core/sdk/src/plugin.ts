@@ -194,6 +194,10 @@ export interface ResolveToolsInput {
   readonly config: IntegrationConfig;
   /** The connection whose tools are being resolved. */
   readonly connection: ConnectionRef;
+  /** Which of the integration's declared auth methods the connection binds
+   *  (`connection.template`), so multi-method integrations render the right
+   *  one during discovery. `null` when the connection row isn't persisted yet. */
+  readonly template: AuthTemplateSlug | null;
   /** Lazily resolve the connection's credential value via its provider — only
    *  the kinds that actually call out (mcp) pay for it. */
   readonly getValue: () => Effect.Effect<string | null, StorageFailure>;

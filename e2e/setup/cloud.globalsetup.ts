@@ -3,6 +3,7 @@
 // fully-stubbed instance (multi-user WorkOS stub, free-plan Autumn, no
 // network). Set E2E_CLOUD_URL to attach to an already-running instance
 // instead (e.g. while iterating on a scenario).
+import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,8 +18,19 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     return;
   }
 
+  // Fresh stub DB per suite run — hermetic, like the selfhost data dir. The
+  // WorkOS stub mints org ids from a per-process counter, so a persisted DB
+  // from a previous invocation collides with the new boot's ids (identities
+  // land in polluted orgs / org creation 500s).
+  const dbPath = resolve(cloudDir, ".e2e-stub-db");
+  rmSync(dbPath, { recursive: true, force: true });
+
   const env = {
     EXECUTOR_E2E_STUB: "1",
+    // The harness boots loopback MCP/OAuth test servers and points the
+    // instance at them; the hosted SSRF guard would otherwise block outbound
+    // probes/dials to localhost. Hermetic stub instance only.
+    ALLOW_LOCAL_NETWORK: "true",
     // Stub creds — never contacted; the stub layers replace the clients.
     WORKOS_API_KEY: "sk_e2e_stub",
     WORKOS_CLIENT_ID: "client_e2e_stub",
@@ -33,7 +45,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     MCP_RESOURCE_ORIGIN: CLOUD_BASE_URL,
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(CLOUD_DB_PORT),
-    DEV_DB_PATH: resolve(cloudDir, ".e2e-stub-db"),
+    DEV_DB_PATH: dbPath,
   };
 
   const procs = bootProcesses(

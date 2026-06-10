@@ -109,3 +109,5 @@ LEARNINGS.md
 # Throwaway UX prototype (not part of the app)
 ux-demo/
 
+# testkit run outputs (superseded by e2e/runs, also generated)
+testkit/runs/

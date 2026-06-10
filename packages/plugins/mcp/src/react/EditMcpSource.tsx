@@ -1,24 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 
-import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
-import { createConnection } from "@executor-js/react/api/atoms";
-import { connectionWriteKeys, integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { connectionIdentifier } from "@executor-js/react/lib/connection-name";
+import { IntegrationSlug } from "@executor-js/sdk/shared";
+import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  AuthTemplateEditor,
-  type AuthTemplateEditorValue,
-} from "@executor-js/react/components/auth-template-editor";
-import {
-  CredentialControlField,
-  ConnectionOwnerUsageRow,
-  useConnectionOwner,
-} from "@executor-js/react/plugins/connection-owner";
-import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
 import { Button } from "@executor-js/react/components/button";
-import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
 import {
   CardStack,
   CardStackContent,
@@ -27,16 +20,15 @@ import {
   CardStackEntryDescription,
   CardStackEntryTitle,
 } from "@executor-js/react/components/card-stack";
-import { Input } from "@executor-js/react/components/input";
 import { Badge } from "@executor-js/react/components/badge";
-import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
+import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
-import { configureMcpServer, mcpServerAtom } from "./atoms";
-import type { McpAuthTemplate, McpIntegrationConfig } from "../sdk/types";
-import { mcpAuthTemplateFromEditorValue } from "./auth-method-config";
-
-const HEADER_TEMPLATE = AuthTemplateSlug.make("header");
-const OAUTH_TEMPLATE = AuthTemplateSlug.make("oauth2");
+import { configureMcpAuth, mcpServerAtom } from "./atoms";
+import type { McpAuthMethod, McpAuthMethodInput, McpIntegrationConfig } from "../sdk/types";
+import {
+  editorValueFromMcpAuthMethod,
+  mcpAuthMethodInputFromEditorValue,
+} from "./auth-method-config";
 
 type McpServer = {
   readonly slug: IntegrationSlug;
@@ -47,34 +39,19 @@ type McpServer = {
   readonly config: McpIntegrationConfig;
 };
 
-const authTemplateToEditorValue = (auth: McpRemoteConfig["auth"]): AuthTemplateEditorValue => {
-  if (auth.kind === "none") return { kind: "none" };
-  if (auth.kind === "oauth2")
-    return { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] };
-  return {
-    kind: "apikey",
-    placements: [
-      {
-        carrier: "header",
-        name: auth.headerName,
-        prefix: auth.prefix ?? "",
-      },
-    ],
-  };
-};
+type McpRemoteConfig = Extract<McpIntegrationConfig, { transport: "remote" }>;
 
-const authTemplatesEqual = (left: McpAuthTemplate, right: McpAuthTemplate): boolean => {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "header" && right.kind === "header") {
-    return left.headerName === right.headerName && (left.prefix ?? "") === (right.prefix ?? "");
-  }
-  return true;
+const methodSeedLabel = (method: McpAuthMethod): string => {
+  if (method.kind === "oauth2") return "OAuth";
+  if (method.kind === "header") return `API key (${method.headerName})`;
+  return "No authentication";
 };
 
 // ---------------------------------------------------------------------------
-// Remote edit — v2: the integration's endpoint + auth template are part of its
-// identity (opaque-to-core config). The editable surface is the connection: an
-// API-key header value, or an OAuth sign-in, both owner-scoped.
+// Remote edit — v2: the integration's endpoint is part of its identity
+// (opaque-to-core config); the editable surface is the declared auth-method
+// LIST, through the same shared editor as the add flow. Accounts (credentials)
+// are managed from the integration page's accounts hub.
 // ---------------------------------------------------------------------------
 
 function RemoteEdit(props: {
@@ -82,115 +59,81 @@ function RemoteEdit(props: {
   onSave: () => void;
 }) {
   const { server } = props;
-  const auth = server.config.auth;
-  const { connectionOwner, setConnectionOwner, connectionOwnerOptions } = useConnectionOwner();
-  const doCreate = useAtomSet(createConnection, { mode: "promiseExit" });
-  const doConfigure = useAtomSet(configureMcpServer, { mode: "promiseExit" });
+  const doConfigureAuth = useAtomSet(configureMcpAuth, { mode: "promiseExit" });
 
-  const [authValue, setAuthValue] = useState<AuthTemplateEditorValue>(() =>
-    authTemplateToEditorValue(auth),
+  const seeds = useMemo<readonly AuthMethodSeed[]>(
+    () =>
+      server.config.authenticationTemplate.map(
+        (method: McpAuthMethod): AuthMethodSeed => ({
+          value: editorValueFromMcpAuthMethod(method),
+          slug: method.slug,
+          label: methodSeedLabel(method),
+        }),
+      ),
+    [server.config.authenticationTemplate],
   );
-  const [apiKey, setApiKey] = useState("");
+  const list = useAuthMethodList(seeds);
+
   const [saving, setSaving] = useState(false);
-  const [authSaving, setAuthSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [oauthModalOpen, setOauthModalOpen] = useState(false);
 
-  const editedAuth = mcpAuthTemplateFromEditorValue(authValue);
-  const authChanged = !authTemplatesEqual(editedAuth, auth);
+  // The edited methods, slugs preserved for seeded rows so existing
+  // connections (bound by template slug) stay attached. New rows omit the
+  // slug — the backend assigns kind-based ones.
+  const editedMethods = useMemo<readonly McpAuthMethodInput[]>(
+    () =>
+      list.rows.map((row: AuthMethodRow): McpAuthMethodInput => {
+        const input = mcpAuthMethodInputFromEditorValue(row.value);
+        return row.seedSlug !== undefined ? { ...input, slug: row.seedSlug } : input;
+      }),
+    [list.rows],
+  );
 
-  useEffect(() => {
-    setAuthValue(authTemplateToEditorValue(auth));
-  }, [auth]);
+  const methodsChanged = useMemo(() => {
+    const stored = server.config.authenticationTemplate;
+    if (editedMethods.length !== stored.length) return true;
+    return editedMethods.some((method: McpAuthMethodInput, index: number) => {
+      const current = stored[index];
+      if (!current) return true;
+      if ((method.slug ?? "") !== current.slug) return true;
+      if (method.kind !== current.kind) return true;
+      if (method.kind === "header" && current.kind === "header") {
+        return (
+          method.headerName !== current.headerName ||
+          (method.prefix ?? "") !== (current.prefix ?? "")
+        );
+      }
+      return false;
+    });
+  }, [editedMethods, server.config.authenticationTemplate]);
 
-  const handleSaveAuth = useCallback(async () => {
-    setAuthSaving(true);
+  const handleSave = useCallback(async () => {
+    setSaving(true);
     setError(null);
-    const nextConfig: McpRemoteConfig = {
-      ...server.config,
-      auth: mcpAuthTemplateFromEditorValue(authValue),
-    };
-    const exit = await doConfigure({
+    const exit = await doConfigureAuth({
       params: { slug: server.slug },
-      payload: { config: nextConfig },
+      payload: {
+        authenticationTemplate:
+          editedMethods.length > 0 ? editedMethods : [{ kind: "none" as const }],
+        mode: "replace",
+      },
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(exit)) {
-      setError("Failed to update authentication method");
-      setAuthSaving(false);
-      return;
-    }
-    setAuthSaving(false);
-  }, [authValue, doConfigure, server.config, server.slug]);
-
-  const handleSaveKey = useCallback(async () => {
-    if (apiKey.trim() === "") return;
-    setSaving(true);
-    setError(null);
-    const exit = await doCreate({
-      payload: {
-        owner: connectionOwner,
-        name: connectionIdentifier(`${server.slug} key`),
-        integration: server.slug,
-        template: HEADER_TEMPLATE,
-        identityLabel: server.description || String(server.slug),
-        value: apiKey.trim(),
-      },
-      reactivityKeys: connectionWriteKeys,
-    });
-    if (Exit.isFailure(exit)) {
-      setError("Failed to save credential");
+      setError("Failed to update authentication methods");
       setSaving(false);
       return;
     }
     setSaving(false);
-    setConnected(true);
-    props.onSave();
-  }, [apiKey, connectionOwner, doCreate, server, props]);
-
-  const handleOAuth = useCallback(() => {
-    setError(null);
-    setOauthModalOpen(true);
-  }, []);
-
-  const oauthMethods = useMemo<readonly AuthMethod[]>(
-    () =>
-      auth.kind === "oauth2"
-        ? [
-            {
-              id: "oauth2",
-              label: "OAuth",
-              kind: "oauth",
-              source: "spec",
-              template: OAUTH_TEMPLATE,
-              placements: [],
-              oauth: { discoveryUrl: server.config.endpoint, supportsDynamicRegistration: true },
-            },
-          ]
-        : [],
-    [auth.kind, server.config.endpoint],
-  );
-  const oauthInitialState = useMemo(
-    () =>
-      oauthModalOpen && auth.kind === "oauth2"
-        ? {
-            key: `${String(server.slug)}:${connectionOwner}:oauth`,
-            owner: connectionOwner,
-            template: String(OAUTH_TEMPLATE),
-            label: `${server.description || String(server.slug)} OAuth`,
-          }
-        : null,
-    [auth.kind, connectionOwner, oauthModalOpen, server],
-  );
+  }, [doConfigureAuth, editedMethods, server.slug]);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-foreground">Edit MCP Source</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Manage the connection for this MCP server. The endpoint is part of the server's identity —
-          remove and re-add to change it.
+          Manage how this MCP server authenticates. The endpoint is part of the server's identity —
+          remove and re-add to change it. Accounts are added from the integration page.
         </p>
       </div>
 
@@ -210,110 +153,23 @@ function RemoteEdit(props: {
         </CardStackContent>
       </CardStack>
 
-      <div className="space-y-3 rounded-lg border border-border bg-card p-4">
-        <div>
-          <p className="text-sm font-medium text-card-foreground">Authentication method</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Choose how a connection credential is sent to this MCP server.
-          </p>
-        </div>
-        <AuthTemplateEditor
-          value={authValue}
-          onChange={setAuthValue}
-          allowedKinds={["none", "apikey", "oauth"]}
-          oauthMetadata="discovered"
-        />
-        {authChanged ? (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => void handleSaveAuth()}
-              disabled={authSaving}
-            >
-              {authSaving ? "Saving…" : "Save authentication method"}
-            </Button>
-          </div>
-        ) : null}
-      </div>
+      <AuthMethodListEditor
+        list={list}
+        title="How does this server authenticate?"
+        oauthMetadata="discovered"
+        emptyHint="No methods declared. Add one, or save to mark this server as open (no authentication)."
+        footerHint="Connections pick one of these methods. Removing a method detaches connections created against it."
+      />
 
-      {authChanged ? (
-        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          Save the authentication method before adding a connection.
+      {methodsChanged ? (
+        <div className="flex justify-end">
+          <Button type="button" size="sm" onClick={() => void handleSave()} disabled={saving}>
+            {saving ? "Saving…" : "Save authentication methods"}
+          </Button>
         </div>
       ) : null}
 
-      {!authChanged && auth.kind === "header" && (
-        <ConnectionOwnerUsageRow
-          value={connectionOwner}
-          options={connectionOwnerOptions}
-          onChange={setConnectionOwner}
-          label="Connection saved to"
-          help="Choose who can use this credential."
-        >
-          <CredentialControlField label={`${auth.headerName} value`} help="Saved as a connection.">
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey((e.target as HTMLInputElement).value)}
-              placeholder="sk-…"
-              className="font-mono text-sm"
-              autoComplete="new-password"
-            />
-            <div className="mt-2 flex justify-end">
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void handleSaveKey()}
-                disabled={apiKey.trim() === "" || saving}
-              >
-                {saving ? "Saving…" : connected ? "Saved" : "Save connection"}
-              </Button>
-            </div>
-          </CredentialControlField>
-        </ConnectionOwnerUsageRow>
-      )}
-
-      {!authChanged && auth.kind === "oauth2" && (
-        <ConnectionOwnerUsageRow
-          value={connectionOwner}
-          options={connectionOwnerOptions}
-          onChange={setConnectionOwner}
-          label="Connection saved to"
-          help="Choose who can use the OAuth connection."
-        >
-          <CredentialControlField label="Connect via OAuth" help="Start the provider OAuth flow.">
-            <OAuthSignInButton
-              busy={false}
-              error={error}
-              isConnected={connected}
-              onSignIn={handleOAuth}
-              signingInLabel="Signing in…"
-              reconnectingLabel="Reconnecting…"
-            />
-            <AddAccountModal
-              integration={server.slug}
-              integrationName={server.description || String(server.slug)}
-              methods={oauthMethods}
-              open={oauthModalOpen}
-              onOpenChange={setOauthModalOpen}
-              initialState={oauthInitialState}
-            />
-          </CredentialControlField>
-        </ConnectionOwnerUsageRow>
-      )}
-
-      {!authChanged && auth.kind === "none" && (
-        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          This server does not require a credential.
-        </div>
-      )}
-
-      {error && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
+      {error && <FormErrorAlert message={error} />}
 
       <div className="flex items-center justify-end border-t border-border pt-4">
         <Button onClick={props.onSave}>Done</Button>
@@ -321,8 +177,6 @@ function RemoteEdit(props: {
     </div>
   );
 }
-
-type McpRemoteConfig = Extract<McpIntegrationConfig, { transport: "remote" }>;
 
 // ---------------------------------------------------------------------------
 // Stdio read-only view

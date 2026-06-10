@@ -92,6 +92,47 @@ export interface Integration {
  *  render auth / produce tools. Core treats it as an opaque JSON blob. */
 export type IntegrationConfig = unknown;
 
+// ---------------------------------------------------------------------------
+// Auth-template merge — shared by every plugin whose config carries a slugged
+// `authenticationTemplate` array (openapi, graphql, mcp). The custom-method
+// flow merge-appends: an incoming entry with a matching slug replaces the
+// existing entry in place; entries lacking a slug (or colliding with another
+// entry added in the same call) get a fresh `custom_<id>` slug.
+// ---------------------------------------------------------------------------
+
+const shortId = (): string => Math.random().toString(36).slice(2, 8);
+
+export const freshCustomAuthSlug = (taken: ReadonlySet<string>): string => {
+  let candidate = `custom_${shortId()}`;
+  while (taken.has(candidate)) candidate = `custom_${shortId()}`;
+  return candidate;
+};
+
+export const mergeAuthTemplates = <T extends { readonly slug: string }>(
+  existing: readonly T[],
+  incoming: readonly T[],
+): readonly T[] => {
+  const result: T[] = existing.map((entry: T) => entry);
+  const taken = new Set<string>(result.map((entry: T) => String(entry.slug)));
+  for (const entry of incoming) {
+    // `slug` may be branded-required in the plugin's schema, but JSON callers
+    // can submit it empty/blank — read defensively and backfill so every
+    // stored template has a stable slug.
+    const rawSlug = (entry as { readonly slug?: unknown }).slug;
+    const requested = typeof rawSlug === "string" ? rawSlug.trim() : "";
+    const existingIndex = result.findIndex((current: T) => String(current.slug) === requested);
+    if (requested.length > 0 && existingIndex >= 0) {
+      result[existingIndex] = entry;
+      continue;
+    }
+    const slug =
+      requested.length > 0 && !taken.has(requested) ? requested : freshCustomAuthSlug(taken);
+    taken.add(slug);
+    result.push({ ...entry, slug } as T);
+  }
+  return result;
+};
+
 /** What a plugin's extension method passes to `ctx.core.integrations.register`.
  *  The v2 analog of v1's `SourceInput`, minus the per-source tool list (tools are
  *  produced per-connection now). */

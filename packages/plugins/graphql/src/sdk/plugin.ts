@@ -9,6 +9,7 @@ import {
   IntegrationAlreadyExistsError,
   IntegrationDetectionResult,
   IntegrationSlug,
+  mergeAuthTemplates,
   ToolName,
   ToolResult,
   type AuthMethodDescriptor,
@@ -387,14 +388,17 @@ const toStoredOperations = (
 const introspectHeadersForConnection = (
   config: GraphqlIntegrationConfig,
   credentialValue: string | null,
+  templateSlug: AuthTemplateSlug | null,
 ): RenderedAuth => {
   const headers: Record<string, string> = { ...(config.headers ?? {}) };
   const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
   if (credentialValue !== null) {
-    // A connection references exactly one template; when several are declared we
-    // can't know which without the slug (not carried into `resolveTools`), so we
-    // apply the first. Most integrations declare a single auth method.
-    const template = config.authenticationTemplate[0];
+    // Render the exact template the connection references; with no slug
+    // (connection row not yet persisted) fall back to the first declared.
+    const template =
+      (templateSlug !== null
+        ? config.authenticationTemplate.find((t: AuthTemplate) => t.slug === String(templateSlug))
+        : undefined) ?? config.authenticationTemplate[0];
     if (template) {
       const rendered = renderAuthTemplate(template, credentialValue);
       Object.assign(headers, rendered.headers);
@@ -410,12 +414,13 @@ const introspectHeadersForConnection = (
 const introspectForConnection = (
   config: GraphqlIntegrationConfig,
   credentialValue: string | null,
+  templateSlug: AuthTemplateSlug | null,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): Effect.Effect<IntrospectionResult, GraphqlIntrospectionError> => {
   if (config.introspectionJson) {
     return parseIntrospectionJson(config.introspectionJson);
   }
-  const auth = introspectHeadersForConnection(config, credentialValue);
+  const auth = introspectHeadersForConnection(config, credentialValue, templateSlug);
   return introspect(
     config.endpoint,
     Object.keys(auth.headers).length > 0 ? auth.headers : undefined,
@@ -530,44 +535,6 @@ export const describeGraphqlIntegrationDisplay = (
 ): { readonly url?: string } => {
   const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
   return { url: config?.endpoint };
-};
-
-// ---------------------------------------------------------------------------
-// Auth-template merge — append the incoming custom methods onto the existing
-// `authenticationTemplate`, replacing entries whose slug matches and assigning a
-// fresh `custom_<id>` slug to entries that omit one (or collide). Mirrors the
-// OpenAPI plugin's `mergeAuthenticationTemplate` so the custom-method-create UX
-// is identical across plugins (item 2A).
-// ---------------------------------------------------------------------------
-
-const shortId = (): string => Math.random().toString(36).slice(2, 8);
-
-const freshCustomSlug = (taken: ReadonlySet<string>): string => {
-  let candidate = `custom_${shortId()}`;
-  while (taken.has(candidate)) candidate = `custom_${shortId()}`;
-  return candidate;
-};
-
-const mergeGraphqlAuthTemplate = (
-  existing: readonly AuthTemplate[],
-  incoming: readonly AuthTemplate[],
-): readonly AuthTemplate[] => {
-  const result: AuthTemplate[] = existing.map((entry: AuthTemplate) => entry);
-  const taken = new Set<string>(result.map((entry: AuthTemplate) => entry.slug));
-  for (const entry of incoming) {
-    // `slug` is a plain string; a JSON caller may submit it empty/blank — read
-    // defensively and backfill so every stored template has a stable slug.
-    const requested = entry.slug.trim();
-    const existingIndex = result.findIndex((current: AuthTemplate) => current.slug === requested);
-    if (requested.length > 0 && existingIndex >= 0) {
-      result[existingIndex] = entry;
-      continue;
-    }
-    const slug = requested.length > 0 && !taken.has(requested) ? requested : freshCustomSlug(taken);
-    taken.add(slug);
-    result.push({ ...entry, slug } as AuthTemplate);
-  }
-  return result;
 };
 
 // ---------------------------------------------------------------------------
@@ -735,10 +702,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         const merged =
           input.mode === "replace"
             ? input.authenticationTemplate
-            : mergeGraphqlAuthTemplate(
-                current.authenticationTemplate,
-                input.authenticationTemplate,
-              );
+            : mergeAuthTemplates(current.authenticationTemplate, input.authenticationTemplate);
 
         const next = GraphqlIntegrationConfig.make({
           ...current,
@@ -884,9 +848,11 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
     // -----------------------------------------------------------------------
     resolveTools: ({
       config,
+      template,
       getValue,
     }: {
       readonly config: IntegrationConfig;
+      readonly template: AuthTemplateSlug | null;
       readonly getValue: () => Effect.Effect<string | null, unknown>;
     }) =>
       Effect.gen(function* () {
@@ -902,6 +868,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         const introspection = yield* introspectForConnection(
           graphqlConfig,
           credentialValue,
+          template,
           options?.httpClientLayer ?? httpClientLayerFallback,
         ).pipe(Effect.option);
         if (Option.isNone(introspection)) return { tools: [] };

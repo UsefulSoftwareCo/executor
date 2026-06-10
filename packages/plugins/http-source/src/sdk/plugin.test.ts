@@ -107,6 +107,7 @@ describe("httpSourcePlugin.resolveTools", () => {
           integration: IntegrationSlug.make("example"),
           name: ConnectionName.make("default"),
         },
+        template: null,
         getValue: () => Effect.succeed(null),
       };
       const result = yield* plugin.resolveTools!(input);

@@ -10,8 +10,12 @@ import { TriangleAlert } from "lucide-react";
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
 import { Alert, AlertDescription, AlertTitle } from "@executor-js/react/components/alert";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import type { CreateCustomMethod } from "@executor-js/react/components/add-custom-method-modal";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
+import {
+  useCustomMethodActions,
+  type AuthMethodsCodec,
+  type ConfigureAuthMethods,
+} from "@executor-js/react/lib/custom-auth-methods";
 
 import { openApiConfigAtom, openapiConfigure } from "./atoms";
 import { authMethodsFromConfig, templateFromPlacements } from "./auth-method-config";
@@ -70,43 +74,41 @@ export default function OpenApiAccountsPanel(props: {
     return declared.length > 0 ? declared : [NO_AUTH_METHOD];
   }, [existingTemplate]);
 
-  // Add a custom apiKey method: build an `APIKeyAuthentication` from the generic
-  // placements (slug omitted → backend backfills `custom_<id>`), merge-append it
-  // onto the existing template, and persist. Returns the created `AuthMethod`
-  // (derived from the same template) so Add-account can select it immediately.
-  const createCustomMethod = useCallback<CreateCustomMethod>(
-    async (input: { readonly label: string; readonly placements: readonly Placement[] }) => {
-      const method = templateFromPlacements(input.placements);
+  // Custom-method create/remove: the shared skeleton (merge-append → diff out
+  // the created method; filter → replace) parameterized by the OpenAPI codec.
+  // Stays plugin-side only where it touches the OpenAPI `Authentication` types.
+  const configure = useCallback<ConfigureAuthMethods<Authentication>>(
+    async (input) => {
       const exit = await doConfigure({
         params: { slug },
-        payload: { authenticationTemplate: [...existingTemplate, method] },
+        payload: {
+          authenticationTemplate: input.authenticationTemplate,
+          ...(input.mode ? { mode: input.mode } : {}),
+        },
         reactivityKeys: integrationWriteKeys,
       });
-      if (Exit.isFailure(exit)) return null;
-      const before = new Set(existingTemplate.map((template) => String(template.slug)));
-      const created = authMethodsFromConfig(
-        exit.value.authenticationTemplate as readonly Authentication[],
-      ).find((candidate: AuthMethod) => !before.has(String(candidate.template)));
-      return created ?? null;
+      return Exit.map(exit, (result) => result.authenticationTemplate as readonly Authentication[]);
     },
-    [doConfigure, slug, existingTemplate],
+    [doConfigure, slug],
   );
 
-  const removeCustomMethod = useCallback(
-    async (method: AuthMethod): Promise<boolean> => {
-      if (method.source !== "custom") return false;
-      const next = existingTemplate.filter(
-        (template: Authentication) => String(template.slug) !== String(method.template),
-      );
-      const exit = await doConfigure({
-        params: { slug },
-        payload: { authenticationTemplate: next, mode: "replace" },
-        reactivityKeys: integrationWriteKeys,
-      });
-      return Exit.isSuccess(exit);
-    },
-    [doConfigure, existingTemplate, slug],
+  const codec = useMemo<AuthMethodsCodec<Authentication>>(
+    () => ({
+      toAuthMethods: authMethodsFromConfig,
+      // Slug omitted → backend backfills `custom_<id>`.
+      templatesFromPlacements: (placements: readonly Placement[]) => [
+        templateFromPlacements(placements),
+      ],
+      slugOf: (template: Authentication) => String(template.slug),
+    }),
+    [],
   );
+
+  const { createCustomMethod, removeCustomMethod } = useCustomMethodActions({
+    existing: existingTemplate,
+    codec,
+    configure,
+  });
 
   // For a bundled `google` integration, surface a caution when any selected API
   // needs a privileged or unsupported OAuth consent the user should know about

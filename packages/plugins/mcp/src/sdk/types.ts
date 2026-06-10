@@ -25,7 +25,10 @@ export const McpTransport = Schema.Literals(["streamable-http", "sse", "stdio", 
 export type McpTransport = typeof McpTransport.Type;
 
 // ---------------------------------------------------------------------------
-// Auth template — how a connection's resolved value is applied to the request.
+// Auth methods — the ways a connection's resolved value can be applied to the
+// request. An integration declares zero or more methods, each with a stable
+// `slug` a connection binds against (`connection.template`), mirroring the
+// OpenAPI/GraphQL `authenticationTemplate` arrays.
 //
 //   none   — no credential (open server)
 //   header — render the value into a request header (e.g. `Authorization:
@@ -34,6 +37,22 @@ export type McpTransport = typeof McpTransport.Type;
 //            via the MCP SDK's OAuthClientProvider
 // ---------------------------------------------------------------------------
 
+export const McpAuthMethod = Schema.Union([
+  Schema.Struct({ slug: Schema.String, kind: Schema.Literal("none") }),
+  Schema.Struct({
+    slug: Schema.String,
+    kind: Schema.Literal("header"),
+    headerName: Schema.String,
+    prefix: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({ slug: Schema.String, kind: Schema.Literal("oauth2") }),
+]);
+export type McpAuthMethod = typeof McpAuthMethod.Type;
+
+/** Legacy single-method template (pre-array configs and the `auth` input
+ *  shorthand on `addServer`): the method without a slug. Lifted into a
+ *  one-element `authenticationTemplate` whose slug is the method kind, which
+ *  matches the template slugs existing connections were created against. */
 export const McpAuthTemplate = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none") }),
   Schema.Struct({
@@ -44,6 +63,40 @@ export const McpAuthTemplate = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("oauth2") }),
 ]);
 export type McpAuthTemplate = typeof McpAuthTemplate.Type;
+
+export const mcpAuthMethodFromLegacy = (auth: McpAuthTemplate): McpAuthMethod => ({
+  ...auth,
+  slug: auth.kind,
+});
+
+/** Input variant of `McpAuthMethod` — callers (UI, agents) may omit the slug;
+ *  `normalizeMcpAuthMethods` backfills it from the kind. */
+export const McpAuthMethodInput = Schema.Union([
+  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("none") }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("header"),
+    headerName: Schema.String,
+    prefix: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+]);
+export type McpAuthMethodInput = typeof McpAuthMethodInput.Type;
+
+/** Assign each method a stable slug: a caller-provided one wins, otherwise the
+ *  kind (`oauth2`, `header`, `none`), suffixed `_2`, `_3`, … on collision. */
+export const normalizeMcpAuthMethods = (
+  methods: readonly McpAuthMethodInput[],
+): readonly McpAuthMethod[] => {
+  const taken = new Set<string>();
+  return methods.map((method: McpAuthMethodInput): McpAuthMethod => {
+    const requested = method.slug?.trim() || method.kind;
+    let slug = requested;
+    for (let n = 2; taken.has(slug); n += 1) slug = `${requested}_${n}`;
+    taken.add(slug);
+    return { ...method, slug };
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Integration config — the opaque blob stored on the integration row. A
@@ -65,8 +118,9 @@ export const McpRemoteIntegrationConfig = Schema.Struct({
   queryParams: Schema.optional(StringMap),
   /** Static headers sent on every request (non-credential) */
   headers: Schema.optional(StringMap),
-  /** Auth template — how the connection's value is rendered onto requests */
-  auth: McpAuthTemplate,
+  /** Declared auth methods — how a connection's value is rendered onto
+   *  requests. A connection's `template` picks one by slug. */
+  authenticationTemplate: Schema.Array(McpAuthMethod),
 });
 export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
@@ -90,18 +144,33 @@ export const McpIntegrationConfig = Schema.Union([
 export type McpIntegrationConfig = typeof McpIntegrationConfig.Type;
 
 const decodeIntegrationConfig = Schema.decodeUnknownOption(McpIntegrationConfig);
+const decodeLegacyAuth = Schema.decodeUnknownOption(McpAuthTemplate);
 
 /** Parse an opaque integration `config` blob into a typed MCP config, or null
- *  if it isn't this plugin's shape. */
+ *  if it isn't this plugin's shape. Stored legacy shapes are lifted in place:
+ *  a singular `auth` becomes a one-element `authenticationTemplate` (slug =
+ *  kind, matching the template slugs existing connections carry), and a remote
+ *  config with neither field is an open server (`[{ slug: "none", … }]`). */
 export const parseMcpIntegrationConfig = (config: unknown): McpIntegrationConfig | null => {
   if (
     typeof config === "object" &&
     config !== null &&
     "transport" in config &&
     config.transport === "remote" &&
-    !("auth" in config)
+    !("authenticationTemplate" in config)
   ) {
-    return Option.getOrNull(decodeIntegrationConfig({ ...config, auth: { kind: "none" } }));
+    const legacyAuth =
+      "auth" in config
+        ? Option.getOrNull(decodeLegacyAuth(config.auth))
+        : { kind: "none" as const };
+    if (legacyAuth === null) return null;
+    const { auth: _auth, ...rest } = config as { auth?: unknown };
+    return Option.getOrNull(
+      decodeIntegrationConfig({
+        ...rest,
+        authenticationTemplate: [mcpAuthMethodFromLegacy(legacyAuth)],
+      }),
+    );
   }
   return Option.getOrNull(decodeIntegrationConfig(config));
 };

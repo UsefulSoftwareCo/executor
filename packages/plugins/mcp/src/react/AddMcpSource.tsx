@@ -1,26 +1,20 @@
 import { useReducer, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
+import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as Match from "effect/Match";
-import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { integrationsOptimisticAtom } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
 import {
-  AuthTemplateEditor,
-  type AuthTemplateEditorKind,
-  type AuthTemplateEditorValue,
-} from "@executor-js/react/components/auth-template-editor";
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
 import {
   CardStack,
   CardStackContent,
   CardStackEntryField,
 } from "@executor-js/react/components/card-stack";
-import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
 import { Spinner } from "@executor-js/react/components/spinner";
@@ -31,20 +25,29 @@ import {
   IntegrationIdentityFields,
   useIntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
+import {
+  addIntegrationErrorMessage,
+  errorMessageFromExit,
+  FormErrorAlert,
+  SlugCollisionAlert,
+  useSlugAlreadyExists,
+} from "@executor-js/react/lib/integration-add";
 
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import type { McpAuthMethodInput } from "../sdk/types";
 import { probeMcpEndpoint, addMcpServer } from "./atoms";
 import { McpRemoteSourceFields } from "./McpRemoteSourceFields";
-import { mcpAuthTemplateFromEditorValue } from "./auth-method-config";
+import { mcpAuthMethodInputFromEditorValue } from "./auth-method-config";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
-// Post-redesign the remote add flow only REGISTERS the auth template through the
-// shared `AuthTemplateEditor` — accounts (the API key value / OAuth sign-in) are
-// added later from the integration's detail hub (P6: add without auth, connect
-// later). An OAuth-only server (DCR-capable) is constrained to the OAuth tab.
+// The remote add flow REGISTERS the server's declared auth methods through the
+// shared `AuthMethodListEditor` — accounts (the API key value / OAuth sign-in)
+// are added later from the integration's detail hub (P6: add without auth,
+// connect later). The probe SEEDS the list (detected OAuth → an OAuth row; a
+// 401 without OAuth → a bearer-header row; open server → a no-auth row) and
+// the user can add alternate methods (e.g. an API key alongside OAuth, or a
+// declared method on a server that advertises none).
 
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
 const STDIO_ENV_ESCAPE_REPLACEMENTS: Readonly<Record<string, string>> = {
   "\\": "\\",
   n: "\n",
@@ -52,21 +55,6 @@ const STDIO_ENV_ESCAPE_REPLACEMENTS: Readonly<Record<string, string>> = {
   t: "\t",
   '"': '"',
 };
-
-const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
-  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
-    onNone: () => fallback,
-    onSome: ({ message }) => message,
-  });
-
-const isIntegrationAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
-  Option.match(Exit.findErrorOption(exit), {
-    onNone: () => false,
-    onSome: Predicate.isTagged("IntegrationAlreadyExistsError"),
-  });
-
-const integrationExistsMessage = (slug: string): string =>
-  `An integration named "${slug}" already exists. To add more authentication, update your existing integration.`;
 
 // ---------------------------------------------------------------------------
 // Preset lookup
@@ -212,18 +200,35 @@ export default function AddMcpSource(props: {
   const doProbe = useAtomSet(probeMcpEndpoint, { mode: "promiseExit" });
   const doAddServer = useAtomSet(addMcpServer, { mode: "promiseExit" });
 
-  const [authValue, setAuthValue] = useState<AuthTemplateEditorValue>({ kind: "none" });
-
   const probe = "probe" in state ? state.probe : null;
 
-  // OAuth-only servers (DCR-capable) constrain the editor to the OAuth tab; all
-  // other servers offer none / API key / OAuth (matching the prior tab set).
-  const allowedAuthKinds: readonly AuthTemplateEditorKind[] =
-    probe?.requiresOAuth && probe.supportsDynamicRegistration
-      ? ["oauth"]
-      : probe?.requiresAuthentication
-        ? ["apikey", "oauth"]
-        : ["none", "apikey", "oauth"];
+  // The probe seeds the method list: detected OAuth → an OAuth row; a 401
+  // without OAuth metadata → a bearer-header row; an open server → a no-auth
+  // row. The user can edit any row or add alternate methods alongside.
+  const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(() => {
+    if (!probe) return [];
+    if (probe.requiresOAuth) {
+      return [
+        {
+          value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
+          label: "Detected",
+        },
+      ];
+    }
+    if (probe.requiresAuthentication) {
+      return [
+        {
+          value: {
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+          label: "Detected",
+        },
+      ];
+    }
+    return [{ value: { kind: "none" }, label: "Detected" }];
+  }, [probe]);
+  const authMethodList = useAuthMethodList(authMethodSeeds);
 
   const remoteIdentity = useIntegrationIdentity({
     fallbackName:
@@ -237,18 +242,10 @@ export default function AddMcpSource(props: {
   // so the API blocks it. Surface that here from the tenant-scoped catalog list.
   // A blank derived namespace lets the server assign the slug, so only flag a
   // collision when the user-derived slug is non-empty.
-  const integrationsResult = useAtomValue(integrationsOptimisticAtom);
-  const existingSlugs = useMemo(
-    () =>
-      AsyncResult.isSuccess(integrationsResult)
-        ? integrationsResult.value.map((integration) => String(integration.slug))
-        : [],
-    [integrationsResult],
-  );
   const remoteSlug = slugifyNamespace(remoteIdentity.namespace);
   const stdioSlug = slugifyNamespace(stdioIdentity.namespace);
-  const remoteSlugExists = remoteSlug.length > 0 && existingSlugs.includes(remoteSlug);
-  const stdioSlugExists = stdioSlug.length > 0 && existingSlugs.includes(stdioSlug);
+  const remoteSlugExists = useSlugAlreadyExists(remoteSlug);
+  const stdioSlugExists = useSlugAlreadyExists(stdioSlug);
 
   const canAdd = Boolean(probe) && !isAdding && !remoteSlugExists;
   // Probe failures are shown inline on the URL field; other failures
@@ -270,16 +267,6 @@ export default function AddMcpSource(props: {
       });
       return;
     }
-    setAuthValue(
-      exit.value.requiresOAuth
-        ? { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] }
-        : exit.value.requiresAuthentication
-          ? {
-              kind: "apikey",
-              placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
-            }
-          : { kind: "none" },
-    );
     dispatch({ type: "probe-ok", probe: exit.value });
   }, [state.url, doProbe]);
 
@@ -301,15 +288,10 @@ export default function AddMcpSource(props: {
     return () => clearTimeout(handle);
   }, [transport, state.step, state.url]);
 
-  // Register the integration with the chosen auth template, returning the
+  // Register the integration with the declared auth methods, returning the
   // assigned slug (or null on failure — an error is dispatched in that case).
   const registerIntegration = useCallback(
-    async (
-      auth:
-        | { kind: "none" }
-        | { kind: "header"; headerName: string; prefix?: string }
-        | { kind: "oauth2" },
-    ): Promise<string | null> => {
+    async (authenticationTemplate: readonly McpAuthMethodInput[]): Promise<string | null> => {
       const displayName = remoteIdentity.name.trim() || probe?.serverName || probe?.name || "MCP";
       const slug = slugifyNamespace(remoteIdentity.namespace) || undefined;
       const exit = await doAddServer({
@@ -318,16 +300,14 @@ export default function AddMcpSource(props: {
           name: displayName,
           endpoint: state.url.trim(),
           ...(slug ? { slug } : {}),
-          auth,
+          authenticationTemplate,
         },
         reactivityKeys: integrationWriteKeys,
       });
       if (Exit.isFailure(exit)) {
         dispatch({
           type: "add-fail",
-          error: isIntegrationAlreadyExistsExit(exit)
-            ? integrationExistsMessage(slug ?? displayName)
-            : errorMessageFromExit(exit, "Failed to add server"),
+          error: addIntegrationErrorMessage(exit, slug ?? displayName, "Failed to add server"),
         });
         return null;
       }
@@ -339,10 +319,17 @@ export default function AddMcpSource(props: {
   const handleAddRemote = useCallback(async () => {
     if (!probe) return;
     dispatch({ type: "add-start" });
-    const slug = await registerIntegration(mcpAuthTemplateFromEditorValue(authValue));
+    // Every row registers as a declared method (a lone no-auth row registers
+    // the open-server method). Slugs are assigned server-side by kind.
+    const methods = authMethodList.rows.map((row: AuthMethodRow) =>
+      mcpAuthMethodInputFromEditorValue(row.value),
+    );
+    const slug = await registerIntegration(
+      methods.length > 0 ? methods : [{ kind: "none" as const }],
+    );
     if (slug === null) return;
     props.onComplete(slug);
-  }, [probe, authValue, registerIntegration, props]);
+  }, [probe, authMethodList.rows, registerIntegration, props]);
 
   // ---- Stdio actions ----
 
@@ -406,11 +393,7 @@ export default function AddMcpSource(props: {
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(exit)) {
-      setStdioError(
-        isIntegrationAlreadyExistsExit(exit)
-          ? integrationExistsMessage(slug ?? displayName)
-          : errorMessageFromExit(exit, "Failed to add server"),
-      );
+      setStdioError(addIntegrationErrorMessage(exit, slug ?? displayName, "Failed to add server"));
       setStdioAdding(false);
       return;
     }
@@ -470,27 +453,24 @@ export default function AddMcpSource(props: {
             onRetry={handleProbe}
           />
 
-          {/* Authentication — declares the auth template to register through the
-              shared editor. The credential itself (API key value / OAuth sign-in)
-              is added from the integration's detail hub after adding. */}
+          {/* Authentication — declares the auth methods to register through the
+              shared list editor. The credentials themselves (API key value /
+              OAuth sign-in) are added from the integration's detail hub after
+              adding. */}
           {probe && (
-            <section className="space-y-2.5">
-              <FieldLabel>How does this server authenticate?</FieldLabel>
-              <AuthTemplateEditor
-                value={authValue}
-                onChange={setAuthValue}
-                allowedKinds={allowedAuthKinds}
-                oauthMetadata="discovered"
-              />
-            </section>
+            <AuthMethodListEditor
+              list={authMethodList}
+              title="How does this server authenticate?"
+              oauthMetadata="discovered"
+              emptyHint="No methods declared. Add a method, or add the server without auth and connect from the integration page later."
+              footerHint="Every method here is registered with the server. Connect an account from the integration page after adding."
+            />
           )}
 
           {/* Error (add server). Probe errors show inline on the field. */}
           {otherError && (
             <div className="space-y-2">
-              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-                <p className="text-[12px] text-destructive">{otherError}</p>
-              </div>
+              <FormErrorAlert message={otherError} />
               <Button
                 type="button"
                 variant="outline"
@@ -503,21 +483,7 @@ export default function AddMcpSource(props: {
             </div>
           )}
 
-          {remoteSlugExists && !isAdding && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-              <p className="text-[12px] text-destructive">
-                An integration named &quot;{remoteSlug}&quot; already exists. To add more
-                authentication, update your existing integration.{" "}
-                <Link
-                  to="/integrations/$namespace"
-                  params={{ namespace: remoteSlug }}
-                  className="font-medium underline underline-offset-2"
-                >
-                  Open it
-                </Link>
-              </p>
-            </div>
-          )}
+          {remoteSlugExists && !isAdding && <SlugCollisionAlert slug={remoteSlug} />}
 
           <FloatActions>
             <Button
@@ -589,27 +555,9 @@ export default function AddMcpSource(props: {
           <IntegrationIdentityFields identity={stdioIdentity} namePlaceholder="My MCP Server" />
 
           {/* Stdio error */}
-          {stdioError && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-              <p className="text-[12px] text-destructive">{stdioError}</p>
-            </div>
-          )}
+          {stdioError && <FormErrorAlert message={stdioError} />}
 
-          {stdioSlugExists && !stdioAdding && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-              <p className="text-[12px] text-destructive">
-                An integration named &quot;{stdioSlug}&quot; already exists. To add more
-                authentication, update your existing integration.{" "}
-                <Link
-                  to="/integrations/$namespace"
-                  params={{ namespace: stdioSlug }}
-                  className="font-medium underline underline-offset-2"
-                >
-                  Open it
-                </Link>
-              </p>
-            </div>
-          )}
+          {stdioSlugExists && !stdioAdding && <SlugCollisionAlert slug={stdioSlug} />}
 
           <FloatActions>
             <Button

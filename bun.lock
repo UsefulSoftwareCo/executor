@@ -321,6 +321,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@executor-js/api": "workspace:*",
+        "@executor-js/plugin-graphql": "workspace:*",
+        "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@kitlangton/terminal-control": "^0.3.0",

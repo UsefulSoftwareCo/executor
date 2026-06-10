@@ -14,19 +14,18 @@ import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
 import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
 
 import { mcpServerAtom } from "./atoms";
-
-const OAUTH_TEMPLATE = AuthTemplateSlug.make("oauth2");
+import type { McpAuthMethod } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // McpSignInButton — top-bar action on the integration detail page (v2).
 //
-// Reads the integration's auth template; for an `oauth2` server it runs the
-// OAuth flow to mint a connection. "Connected" is derived from whether ANY
-// owner already has a connection for this integration (the global owner toggle
-// is retired, so the check merges both owners). The NEW connection's owner is a
-// real create-target — chosen EXPLICITLY via the `owner` prop (default Workspace
-// `org` on an org-scoped host, Local `org` on a non-org host like local),
-// never read from an ambient owner.
+// Reads the integration's declared auth methods; when one is `oauth2` it runs
+// the OAuth flow to mint a connection through that method. "Connected" is
+// derived from whether ANY owner already has a connection for this integration
+// (the global owner toggle is retired, so the check merges both owners). The
+// NEW connection's owner is a real create-target — chosen EXPLICITLY via the
+// `owner` prop (default Workspace `org` on an org-scoped host, Local `org` on
+// a non-org host like local), never read from an ambient owner.
 // ---------------------------------------------------------------------------
 
 export default function McpSignInButton(props: { sourceId: string; owner?: Owner }) {
@@ -38,7 +37,9 @@ export default function McpSignInButton(props: { sourceId: string; owner?: Owner
 
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
   const remote = server !== null && server.config.transport === "remote" ? server.config : null;
-  const isOAuth = remote !== null && remote.auth.kind === "oauth2";
+  const oauthMethod =
+    remote?.authenticationTemplate.find((method: McpAuthMethod) => method.kind === "oauth2") ??
+    null;
   const connections: readonly Connection[] = AsyncResult.isSuccess(connectionsResult)
     ? connectionsResult.value
     : [];
@@ -48,35 +49,35 @@ export default function McpSignInButton(props: { sourceId: string; owner?: Owner
 
   const methods = useMemo<readonly AuthMethod[]>(
     () =>
-      remote === null
+      remote === null || oauthMethod === null
         ? []
         : [
             {
-              id: "oauth2",
+              id: oauthMethod.slug,
               label: "OAuth",
               kind: "oauth",
               source: "spec",
-              template: OAUTH_TEMPLATE,
+              template: AuthTemplateSlug.make(oauthMethod.slug),
               placements: [],
               oauth: { discoveryUrl: remote.endpoint, supportsDynamicRegistration: true },
             },
           ],
-    [remote],
+    [remote, oauthMethod],
   );
   const initialState = useMemo(
     () =>
-      modalOpen && server
+      modalOpen && server && oauthMethod
         ? {
             key: `${String(slug)}:${targetOwner}:oauth`,
             owner: targetOwner,
-            template: String(OAUTH_TEMPLATE),
+            template: oauthMethod.slug,
             label: `${server.description || String(slug)} OAuth`,
           }
         : null,
-    [modalOpen, server, slug, targetOwner],
+    [modalOpen, oauthMethod, server, slug, targetOwner],
   );
 
-  if (!isOAuth) return null;
+  if (oauthMethod === null) return null;
 
   return (
     <>

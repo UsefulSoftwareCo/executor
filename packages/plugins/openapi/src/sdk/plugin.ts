@@ -3,7 +3,6 @@ import type { Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
 import {
-  AuthTemplateSlug,
   IntegrationAlreadyExistsError,
   IntegrationDetectionResult,
   IntegrationSlug,
@@ -11,6 +10,7 @@ import {
   ToolResult,
   authToolFailure,
   definePlugin,
+  mergeAuthTemplates,
   tool,
   type AuthMethodDescriptor,
   type AuthPlacementDescriptor,
@@ -522,53 +522,6 @@ const specInputToGoogleBundle = (spec: OpenApiSpecInput): readonly string[] | un
   spec.kind === "googleDiscoveryBundle" ? spec.urls : undefined;
 
 // ---------------------------------------------------------------------------
-// Auth-template merge — `configure` appends custom methods to the integration's
-// existing `authenticationTemplate`. A method whose slug matches an existing
-// entry replaces it (in place); a method with no usable slug is assigned a
-// generated `custom_<id>` slug, collision-checked against the merged set so two
-// custom methods added in one call can't clash.
-// ---------------------------------------------------------------------------
-
-const shortId = (): string => Math.random().toString(36).slice(2, 8);
-
-/** Generate a `custom_<id>` slug not present in `taken`. */
-const freshCustomSlug = (taken: ReadonlySet<string>): AuthTemplateSlug => {
-  let candidate = `custom_${shortId()}`;
-  while (taken.has(candidate)) candidate = `custom_${shortId()}`;
-  return AuthTemplateSlug.make(candidate);
-};
-
-/** Merge incoming auth methods into the existing template array. Entries with a
- *  matching slug replace the existing entry; otherwise they are appended.
- *  Incoming entries lacking a slug (or whose slug collides with another entry
- *  added in this same call) get a fresh `custom_<id>` slug. */
-const mergeAuthenticationTemplate = (
-  existing: readonly Authentication[],
-  incoming: readonly Authentication[],
-): readonly Authentication[] => {
-  const result: Authentication[] = existing.map((entry) => entry);
-  const taken = new Set<string>(result.map((entry) => String(entry.slug)));
-  for (const entry of incoming) {
-    // `slug` is branded as required, but JSON callers may omit it; read defensively.
-    const rawSlug = (entry as { readonly slug?: unknown }).slug;
-    const requested = typeof rawSlug === "string" ? rawSlug.trim() : "";
-    const existingIndex = result.findIndex((current) => String(current.slug) === requested);
-    if (requested.length > 0 && existingIndex >= 0) {
-      // Replace the matching entry in place, preserving array order.
-      result[existingIndex] = entry;
-      continue;
-    }
-    const slug =
-      requested.length > 0 && !taken.has(requested)
-        ? AuthTemplateSlug.make(requested)
-        : freshCustomSlug(taken);
-    taken.add(String(slug));
-    result.push({ ...entry, slug } as Authentication);
-  }
-  return result;
-};
-
-// ---------------------------------------------------------------------------
 // Declared auth methods — project the stored `authenticationTemplate` into the
 // catalog's plugin-agnostic `AuthMethodDescriptor[]`. This mirrors the client's
 // `authMethodsFromConfig` (in the React auth-method-config module) on the
@@ -941,7 +894,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
               const merged =
                 input.mode === "replace"
                   ? input.authenticationTemplate
-                  : mergeAuthenticationTemplate(
+                  : mergeAuthTemplates(
                       current.authenticationTemplate ?? [],
                       input.authenticationTemplate,
                     );

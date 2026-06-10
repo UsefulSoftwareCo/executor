@@ -28,6 +28,7 @@ const failingExtension: McpPluginExtension = {
   removeServer: () => unused,
   getServer: () => Effect.succeed(null),
   configureServer: () => unused,
+  configureAuth: () => unused,
 };
 
 const Api = addGroup(McpGroup);

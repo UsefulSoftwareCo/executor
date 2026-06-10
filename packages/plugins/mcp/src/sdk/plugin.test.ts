@@ -301,6 +301,55 @@ describe("mcpPlugin", () => {
     ),
   );
 
+  // Custom-method create (configureAuth) merge-appends onto the declared set —
+  // adding an API key to an OAuth server must NOT displace the OAuth method.
+  it.effect("configureAuth merge-appends a custom method without clobbering oauth", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp.addServer({
+        name: "OAuth MCP",
+        endpoint: "https://mcp.example.com/mcp",
+        slug: "oauth_mcp",
+        auth: { kind: "oauth2" },
+      });
+
+      const merged = yield* executor.mcp.configureAuth("oauth_mcp", {
+        authenticationTemplate: [{ kind: "header", headerName: "X-Api-Key" }],
+      });
+
+      expect(merged.map((method) => method.kind)).toEqual(["oauth2", "header"]);
+      expect(merged[0]?.slug).toBe("oauth2");
+      expect(merged[1]?.slug).toMatch(/^custom_/);
+
+      // The catalog projects both methods.
+      const integration = yield* executor.integrations.get(IntegrationSlug.make("oauth_mcp"));
+      expect(integration?.authMethods.map((method) => method.kind)).toEqual(["oauth", "apikey"]);
+    }),
+  );
+
+  it.effect("configureAuth replace mode swaps the declared set with kind-based slugs", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp.addServer({
+        name: "Open MCP",
+        endpoint: "https://mcp.example.com/mcp",
+        slug: "open_mcp",
+      });
+
+      const merged = yield* executor.mcp.configureAuth("open_mcp", {
+        authenticationTemplate: [
+          { kind: "oauth2" },
+          { kind: "header", headerName: "Authorization", prefix: "Bearer " },
+        ],
+        mode: "replace",
+      });
+
+      expect(merged.map((method) => method.slug)).toEqual(["oauth2", "header"]);
+    }),
+  );
+
   // When discovery fails (auth, network, etc.) the connection still lands with
   // an empty tool set so the user can retry via `connections.refresh` once they
   // fix the underlying problem.

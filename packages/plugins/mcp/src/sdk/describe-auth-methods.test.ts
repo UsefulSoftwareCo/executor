@@ -5,8 +5,10 @@ import { describeMcpAuthMethods, describeMcpIntegrationDisplay } from "./plugin"
 
 // ---------------------------------------------------------------------------
 // `describeMcpAuthMethods` projects the stored MCP config into the catalog's
-// plugin-agnostic `AuthMethodDescriptor[]`. It is pure/sync and must tolerate a
-// malformed or foreign config blob by returning `[]`.
+// plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. It is
+// pure/sync and must tolerate a malformed or foreign config blob by returning
+// `[]`. Legacy configs (singular `auth`, or no auth field at all) are lifted
+// into a one-element `authenticationTemplate` whose slug is the method kind.
 // ---------------------------------------------------------------------------
 
 const recordWith = (config: IntegrationConfig): IntegrationRecord => ({
@@ -20,12 +22,12 @@ const recordWith = (config: IntegrationConfig): IntegrationRecord => ({
 });
 
 describe("describeMcpAuthMethods", () => {
-  it("projects a remote oauth2 config to one oauth method carrying the discovery URL", () => {
+  it("projects an oauth2 method carrying the discovery URL", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
         transport: "remote",
         endpoint: "https://x.example/oauth/mcp",
-        auth: { kind: "oauth2" },
+        authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
       }),
     );
 
@@ -43,23 +45,43 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("projects a remote header config to one apikey method carrying the header placement", () => {
+  it("projects a header method to an apikey method carrying the header placement", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
         transport: "remote",
         endpoint: "https://x.example/mcp",
-        auth: { kind: "header", headerName: "X-Api-Key", prefix: "Bearer " },
+        authenticationTemplate: [
+          { slug: "header", kind: "header", headerName: "X-Api-Key", prefix: "Bearer " },
+        ],
       }),
     );
 
     expect(methods).toEqual([
       {
         id: "header",
-        label: "API key (header)",
+        label: "API key (X-Api-Key)",
         kind: "apikey",
         template: "header",
         placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer " }],
       },
+    ]);
+  });
+
+  it("projects every declared method (multi-method configs)", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+        authenticationTemplate: [
+          { slug: "oauth2", kind: "oauth2" },
+          { slug: "custom_abc123", kind: "header", headerName: "X-Api-Key" },
+        ],
+      }),
+    );
+
+    expect(methods.map((m) => ({ id: m.id, kind: m.kind, template: m.template }))).toEqual([
+      { id: "oauth2", kind: "oauth", template: "oauth2" },
+      { id: "custom_abc123", kind: "apikey", template: "custom_abc123" },
     ]);
   });
 
@@ -68,7 +90,7 @@ describe("describeMcpAuthMethods", () => {
       recordWith({
         transport: "remote",
         endpoint: "https://x.example/mcp",
-        auth: { kind: "header", headerName: "Authorization" },
+        authenticationTemplate: [{ slug: "header", kind: "header", headerName: "Authorization" }],
       }),
     );
 
@@ -77,12 +99,12 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("projects an open (none) remote server to a no-auth method", () => {
+  it("projects an open (none) method to a no-auth method", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
         transport: "remote",
         endpoint: "https://x.example/mcp",
-        auth: { kind: "none" },
+        authenticationTemplate: [{ slug: "none", kind: "none" }],
       }),
     );
     expect(methods).toEqual([
@@ -91,6 +113,28 @@ describe("describeMcpAuthMethods", () => {
         label: "No authentication",
         kind: "none",
         template: "none",
+      },
+    ]);
+  });
+
+  it("lifts a legacy singular `auth` config into one method slugged by kind", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/oauth/mcp",
+        auth: { kind: "oauth2" },
+      }),
+    );
+    expect(methods).toEqual([
+      {
+        id: "oauth2",
+        label: "OAuth",
+        kind: "oauth",
+        template: "oauth2",
+        oauth: {
+          discoveryUrl: "https://x.example/oauth/mcp",
+          supportsDynamicRegistration: true,
+        },
       },
     ]);
   });
@@ -131,7 +175,7 @@ describe("describeMcpAuthMethods", () => {
         recordWith({
           transport: "remote",
           endpoint: "https://mcp.posthog.com/mcp",
-          auth: { kind: "none" },
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
         }),
       ),
     ).toEqual({ url: "https://mcp.posthog.com/mcp" });

@@ -24,6 +24,10 @@ export const bootProcesses = (
       cwd: proc.cwd,
       env: { ...process.env, ...proc.env },
       stdio: process.env.E2E_VERBOSE ? "inherit" : "ignore",
+      // Own process group, so teardown can signal the whole tree — `bunx vite`
+      // is a wrapper whose actual server child would otherwise outlive the
+      // kill and squat the port into the NEXT invocation's waitForHttp.
+      detached: true,
     });
     child.on("exit", (code) => {
       if (code !== 0 && code !== null && !tearingDown) {
@@ -32,12 +36,38 @@ export const bootProcesses = (
     });
     children.push(child);
   }
+
+  // Signal the process GROUP (negative pid); fall back to the direct child
+  // when the group is already gone.
+  const signalTree = (child: ChildProcess, signal: NodeJS.Signals) => {
+    if (child.pid === undefined || child.exitCode !== null) return;
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+
+  const exited = (child: ChildProcess): Promise<void> =>
+    child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => child.once("exit", () => resolve()));
+
   return {
     teardown: async () => {
       tearingDown = true;
-      for (const child of children) child.kill("SIGTERM");
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
+      const allExited = Promise.all(children.map(exited));
+      for (const child of children) signalTree(child, "SIGTERM");
+      // Wait for a REAL exit (not a fixed sleep) — a lingering server would
+      // answer the next invocation's waitForHttp as a half-dead zombie.
+      const graceful = await Promise.race([
+        allExited.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+      ]);
+      if (!graceful) {
+        for (const child of children) signalTree(child, "SIGKILL");
+        await Promise.race([allExited, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+      }
     },
   };
 };

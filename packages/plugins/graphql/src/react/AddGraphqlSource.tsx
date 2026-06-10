@@ -1,13 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
+import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { integrationsOptimisticAtom } from "@executor-js/react/api/atoms";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   integrationDisplayNameFromUrl,
@@ -16,41 +10,35 @@ import {
 } from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
 import {
-  AuthTemplateEditor,
-  type AuthTemplateEditorValue,
-} from "@executor-js/react/components/auth-template-editor";
-import { FieldLabel } from "@executor-js/react/components/field";
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Spinner } from "@executor-js/react/components/spinner";
+import {
+  addIntegrationErrorMessage,
+  FormErrorAlert,
+  SlugCollisionAlert,
+  useSlugAlreadyExists,
+} from "@executor-js/react/lib/integration-add";
 
 import { addGraphqlIntegrationOptimistic } from "./atoms";
 import { GraphqlSourceFields } from "./GraphqlSourceFields";
 import { graphqlTemplatesFromPlacements } from "./auth-method-config";
+import { GRAPHQL_APIKEY_TEMPLATE } from "./defaults";
+import type { AuthTemplate } from "../sdk/types";
 
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+// v2 GraphQL add flow: register the integration with its declared auth-method
+// LIST (the shared `AuthMethodListEditor` — GraphQL stays header/query apiKey;
+// OAuth is hidden), then route to the integration's detail hub. Connection
+// creation is no longer part of the add flow — accounts are added from the hub
+// (P6: add without auth, connect later).
 
-const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
-  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
-    onNone: () => fallback,
-    onSome: ({ message }) => message,
-  });
-
-const isIntegrationAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
-  Option.match(Exit.findErrorOption(exit), {
-    onNone: () => false,
-    onSome: Predicate.isTagged("IntegrationAlreadyExistsError"),
-  });
-
-const integrationExistsMessage = (slug: string): string =>
-  `An integration named "${slug}" already exists. To add more authentication, update your existing integration.`;
-
-// v2 GraphQL add flow (post-redesign): register the integration (introspects
-// the endpoint and declares an apiKey auth template when the user configures a
-// header), then route to the integration's detail hub. Connection creation is
-// no longer part of the add flow — accounts are added from the hub (P6: add
-// without auth, connect later). Auth is declared through the shared
-// `AuthTemplateEditor` (GraphQL stays header/query apiKey — OAuth is hidden).
+// GraphQL has no add-time detection, so the list starts empty (module constant
+// — a fresh [] every render would re-seed the list each render).
+const NO_SEEDS: readonly AuthMethodSeed[] = [];
 
 export default function AddGraphqlSource(props: {
   onComplete: (slug?: string) => void;
@@ -61,7 +49,7 @@ export default function AddGraphqlSource(props: {
   const identity = useIntegrationIdentity({
     fallbackName: integrationDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
   });
-  const [authValue, setAuthValue] = useState<AuthTemplateEditorValue>({ kind: "none" });
+  const authMethodList = useAuthMethodList(NO_SEEDS);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -69,10 +57,33 @@ export default function AddGraphqlSource(props: {
     mode: "promiseExit",
   });
 
-  // An apiKey method needs at least one named placement; `none` is always valid.
-  const apiKeyComplete =
-    authValue.kind !== "apikey" ||
-    authValue.placements.some((placement) => placement.name.trim().length > 0);
+  // The templates to register: each apikey row emits one template per named
+  // placement (GraphQL templates carry one header/query slot each). The first
+  // keeps the primary `apikey` slug (matching the prior single-method flow);
+  // the rest get deterministic `apikey-<n>` slugs. `none` rows register
+  // nothing.
+  const authenticationTemplate = useMemo<readonly AuthTemplate[]>(() => {
+    const templates: AuthTemplate[] = [];
+    for (const row of authMethodList.rows) {
+      if (row.value.kind !== "apikey") continue;
+      for (const template of graphqlTemplatesFromPlacements(row.value.placements, "")) {
+        const index = templates.length;
+        templates.push({
+          ...template,
+          slug: index === 0 ? GRAPHQL_APIKEY_TEMPLATE : `apikey-${index + 1}`,
+        });
+      }
+    }
+    return templates;
+  }, [authMethodList.rows]);
+
+  // Every apikey row needs at least one named placement; `none` rows are
+  // always valid.
+  const apiKeyComplete = authMethodList.rows.every(
+    (row: AuthMethodRow) =>
+      row.value.kind !== "apikey" ||
+      row.value.placements.some((placement) => placement.name.trim().length > 0),
+  );
 
   const resolvedSlug = useMemo(
     () =>
@@ -85,13 +96,7 @@ export default function AddGraphqlSource(props: {
   // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
   // whose slug already exists clobbers the existing one's connections/policies,
   // so the API blocks it. Surface that here from the tenant-scoped catalog list.
-  const integrationsResult = useAtomValue(integrationsOptimisticAtom);
-  const slugAlreadyExists = useMemo(
-    () =>
-      AsyncResult.isSuccess(integrationsResult) &&
-      integrationsResult.value.some((integration) => String(integration.slug) === resolvedSlug),
-    [integrationsResult, resolvedSlug],
-  );
+  const slugAlreadyExists = useSlugAlreadyExists(resolvedSlug);
 
   const canAdd = endpoint.trim().length > 0 && apiKeyComplete && !adding && !slugAlreadyExists;
 
@@ -108,24 +113,19 @@ export default function AddGraphqlSource(props: {
     setAddError(null);
     const { trimmedEndpoint, slug, displayName } = sourceIdentity();
 
-    const authenticationTemplate =
-      authValue.kind === "apikey" ? graphqlTemplatesFromPlacements(authValue.placements) : [];
-
     const integrationExit = await doAddIntegration({
       payload: {
         endpoint: trimmedEndpoint,
         slug,
         name: displayName,
-        ...(authenticationTemplate.length > 0 ? { authenticationTemplate } : {}),
+        ...(authenticationTemplate.length > 0
+          ? { authenticationTemplate: [...authenticationTemplate] }
+          : {}),
       },
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(integrationExit)) {
-      setAddError(
-        isIntegrationAlreadyExistsExit(integrationExit)
-          ? integrationExistsMessage(slug)
-          : errorMessageFromExit(integrationExit, "Failed to add source"),
-      );
+      setAddError(addIntegrationErrorMessage(integrationExit, slug, "Failed to add source"));
       setAdding(false);
       return;
     }
@@ -140,36 +140,16 @@ export default function AddGraphqlSource(props: {
 
       <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
 
-      <section className="space-y-2.5">
-        <FieldLabel>How does this API authenticate?</FieldLabel>
-        <AuthTemplateEditor
-          value={authValue}
-          onChange={setAuthValue}
-          allowedKinds={["none", "apikey"]}
-        />
-      </section>
+      <AuthMethodListEditor
+        list={authMethodList}
+        allowedKinds={["none", "apikey"]}
+        emptyHint="No authentication declared. Add a method, or add the source without auth and connect an account from the integration page later."
+        footerHint="Every method here is registered with the source. Connect an account from the integration page after adding."
+      />
 
-      {slugAlreadyExists && !adding && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">
-            An integration named &quot;{resolvedSlug}&quot; already exists. To add more
-            authentication, update your existing integration.{" "}
-            <Link
-              to="/integrations/$namespace"
-              params={{ namespace: resolvedSlug }}
-              className="font-medium underline underline-offset-2"
-            >
-              Open it
-            </Link>
-          </p>
-        </div>
-      )}
+      {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSlug} />}
 
-      {addError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">{addError}</p>
-        </div>
-      )}
+      {addError && <FormErrorAlert message={addError} />}
 
       <FloatActions>
         <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>

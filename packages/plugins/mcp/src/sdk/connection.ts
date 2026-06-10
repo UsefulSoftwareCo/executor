@@ -33,7 +33,7 @@ export type McpConnector = Effect.Effect<McpConnection, McpConnectionError>;
 
 export type RemoteConnectorInput = Omit<
   McpRemoteIntegrationConfig,
-  "auth" | "remoteTransport" | "headers" | "queryParams"
+  "authenticationTemplate" | "remoteTransport" | "headers" | "queryParams"
 > & {
   readonly remoteTransport?: McpRemoteIntegrationConfig["remoteTransport"];
   readonly headers?: Record<string, string>;

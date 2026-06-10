@@ -26,3 +26,5 @@ export const probeMcpEndpoint = McpClient.mutation("mcp", "probeEndpoint");
 export const addMcpServer = McpClient.mutation("mcp", "addServer");
 export const removeMcpServer = McpClient.mutation("mcp", "removeServer");
 export const configureMcpServer = McpClient.mutation("mcp", "configureServer");
+// Merge-append auth methods onto an integration's `authenticationTemplate`.
+export const configureMcpAuth = McpClient.mutation("mcp", "configureAuth");

@@ -79,6 +79,7 @@ export type {
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
+export { freshCustomAuthSlug, mergeAuthTemplates } from "./integration";
 export type {
   Connection,
   ConnectionRef,

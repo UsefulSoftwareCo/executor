@@ -7,7 +7,12 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
-import { McpAuthTemplate, McpIntegrationConfig } from "../sdk/types";
+import {
+  McpAuthMethod,
+  McpAuthMethodInput,
+  McpAuthTemplate,
+  McpIntegrationConfig,
+} from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Params
@@ -31,6 +36,10 @@ const AddRemoteServerPayload = Schema.Struct({
   slug: Schema.optional(Schema.String),
   queryParams: Schema.optional(StringMap),
   headers: Schema.optional(StringMap),
+  /** Declared auth methods a connection can be applied through. */
+  authenticationTemplate: Schema.optional(Schema.Array(McpAuthMethodInput)),
+  /** Single-method shorthand (legacy callers); ignored when
+   *  `authenticationTemplate` is present. */
   auth: Schema.optional(McpAuthTemplate),
 });
 
@@ -81,6 +90,18 @@ const ConfigureServerPayload = Schema.Struct({
 
 const ConfigureServerResponse = Schema.Struct({
   config: McpIntegrationConfig,
+});
+
+// The configureAuth payload/response — custom auth methods to merge-append
+// onto the integration's `authenticationTemplate` (or `replace` the set).
+// Mirrors the GraphQL/OpenAPI configure endpoints.
+const ConfigureAuthPayload = Schema.Struct({
+  authenticationTemplate: Schema.Array(McpAuthMethodInput),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+});
+
+const ConfigureAuthResponse = Schema.Struct({
+  authenticationTemplate: Schema.Array(McpAuthMethod),
 });
 
 const GetServerResponse = Schema.NullOr(
@@ -141,6 +162,14 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SlugParams,
       payload: ConfigureServerPayload,
       success: ConfigureServerResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("configureAuth", "/mcp/servers/:slug/auth", {
+      params: SlugParams,
+      payload: ConfigureAuthPayload,
+      success: ConfigureAuthResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   );

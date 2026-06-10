@@ -7,8 +7,12 @@ import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import type { CreateCustomMethod } from "@executor-js/react/components/add-custom-method-modal";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
+import {
+  useCustomMethodActions,
+  type AuthMethodsCodec,
+  type ConfigureAuthMethods,
+} from "@executor-js/react/lib/custom-auth-methods";
 
 import { graphqlConfigAtom, graphqlConfigure } from "./atoms";
 import { authMethodsFromConfig, graphqlTemplatesFromPlacements } from "./auth-method-config";
@@ -47,44 +51,40 @@ export default function GraphqlAccountsPanel(props: {
     [existingTemplate],
   );
 
-  // Add a custom apiKey method: build graphql `apiKey` templates from the
-  // generic placements (slug omitted → backend backfills `custom_<id>`),
-  // merge-append (the configure endpoint merges) and persist. Returns the
-  // created `AuthMethod` so Add-account can select it immediately.
-  const createCustomMethod = useCallback<CreateCustomMethod>(
-    async (input: { readonly label: string; readonly placements: readonly Placement[] }) => {
-      const templates = graphqlTemplatesFromPlacements(input.placements, "");
-      if (templates.length === 0) return null;
+  // Custom-method create/remove: the shared skeleton (merge-append → diff out
+  // the created method; filter → replace) parameterized by the GraphQL codec.
+  // Stays plugin-side only where it touches the graphql `AuthTemplate` types.
+  const configure = useCallback<ConfigureAuthMethods<AuthTemplate>>(
+    async (input) => {
       const exit = await doConfigure({
         params: { slug: String(slug) },
-        payload: { authenticationTemplate: templates },
+        payload: {
+          authenticationTemplate: input.authenticationTemplate,
+          ...(input.mode ? { mode: input.mode } : {}),
+        },
         reactivityKeys: integrationWriteKeys,
       });
-      if (Exit.isFailure(exit)) return null;
-      const before = new Set(existingTemplate.map((template: AuthTemplate) => template.slug));
-      const created = authMethodsFromConfig(exit.value.authenticationTemplate).find(
-        (candidate: AuthMethod) => !before.has(String(candidate.template)),
-      );
-      return created ?? null;
+      return Exit.map(exit, (result) => result.authenticationTemplate);
     },
-    [doConfigure, existingTemplate, slug],
+    [doConfigure, slug],
   );
 
-  const removeCustomMethod = useCallback(
-    async (method: AuthMethod): Promise<boolean> => {
-      if (method.source !== "custom") return false;
-      const next = existingTemplate.filter(
-        (template: AuthTemplate) => template.slug !== String(method.template),
-      );
-      const exit = await doConfigure({
-        params: { slug: String(slug) },
-        payload: { authenticationTemplate: next, mode: "replace" },
-        reactivityKeys: integrationWriteKeys,
-      });
-      return Exit.isSuccess(exit);
-    },
-    [doConfigure, existingTemplate, slug],
+  const codec = useMemo<AuthMethodsCodec<AuthTemplate>>(
+    () => ({
+      toAuthMethods: authMethodsFromConfig,
+      // Slug blank → backend backfills `custom_<id>` per emitted template.
+      templatesFromPlacements: (placements: readonly Placement[]) =>
+        graphqlTemplatesFromPlacements(placements, ""),
+      slugOf: (template: AuthTemplate) => template.slug,
+    }),
+    [],
   );
+
+  const { createCustomMethod, removeCustomMethod } = useCustomMethodActions({
+    existing: existingTemplate,
+    codec,
+    configure,
+  });
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">

@@ -1,19 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
+import { useAtomSet } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import {
   AuthTemplateSlug,
   IntegrationSlug,
   type OAuthAuthentication,
 } from "@executor-js/sdk/shared";
-import { integrationsOptimisticAtom } from "@executor-js/react/api/atoms";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   slugifyNamespace,
@@ -21,15 +16,23 @@ import {
 } from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
 import {
-  AuthTemplateEditor,
-  type AuthTemplateEditorValue,
-} from "@executor-js/react/components/auth-template-editor";
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
 import { CardStack, CardStackContent } from "@executor-js/react/components/card-stack";
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Textarea } from "@executor-js/react/components/textarea";
 import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
-import { PlusIcon, XIcon } from "lucide-react";
+import {
+  addIntegrationErrorMessage,
+  errorMessageFromExit,
+  FormErrorAlert,
+  SlugCollisionAlert,
+  useSlugAlreadyExists,
+} from "@executor-js/react/lib/integration-add";
 
 import { authenticationFromEditorValue, editorValueFromAuthentication } from "./auth-method-config";
 import { addOpenApiSpec, previewOpenApiSpec } from "./atoms";
@@ -71,24 +74,6 @@ const googleBundleUrls = (
   // Preset URLs first (stable order), then any custom Discovery URLs, de-duped.
   return [...new Set([...fromPresets, ...customUrls])];
 };
-
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
-
-const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
-  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
-    onNone: () => fallback,
-    onSome: ({ message }) => message,
-  });
-
-const isIntegrationAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
-  Option.match(Exit.findErrorOption(exit), {
-    onNone: () => false,
-    onSome: Predicate.isTagged("IntegrationAlreadyExistsError"),
-  });
-
-const integrationExistsMessage = (slug: string): string =>
-  `An integration named "${slug}" already exists. To add more authentication, update your existing integration.`;
 
 // ---------------------------------------------------------------------------
 // OpenAPI url helpers — specs sometimes ship relative OAuth endpoints; resolve
@@ -377,88 +362,46 @@ export default function AddOpenApiSource(props: {
     [preview, resolvedBaseUrl],
   );
 
-  const detectedMethodLabels: readonly string[] = useMemo(
-    () => [
-      ...(preview?.headerPresets ?? []).map((preset) => preset.label),
-      ...(preview?.oauth2Presets ?? []).map((preset) => preset.label),
-    ],
-    [preview],
-  );
-
   // Editable auth methods, seeded from the spec-detected templates. The add flow
   // registers EVERY method (P6) — so this is a LIST, preserving multi-method
-  // specs (e.g. apiKey + OAuth). Each row carries its editor value plus the
-  // detected template's original `seedSlug`, so an unedited detected method
-  // submits with its EXACT original slug (preserving behavior); added methods
-  // (no seed) get a deterministic fresh slug. The user can edit, add, or remove
-  // a method before submitting; on submit the list converts back to
-  // `Authentication[]`. Re-seeded whenever a fresh detection arrives (keyed on
-  // the detected templates, which are stable per analysis + base URL).
-  type AuthMethodRow = {
-    readonly value: AuthTemplateEditorValue;
-    readonly seedSlug?: string;
-  };
-  const [authMethods, setAuthMethods] = useState<readonly AuthMethodRow[]>([]);
-  const seededFromRef = useRef<readonly Authentication[] | null>(null);
-  useEffect(() => {
-    if (seededFromRef.current === authenticationTemplate) return;
-    seededFromRef.current = authenticationTemplate;
-    setAuthMethods(
-      authenticationTemplate.map((template: Authentication) => ({
+  // specs (e.g. apiKey + OAuth). Each seed carries the detected template's
+  // original slug, so an unedited detected method submits with its EXACT
+  // original slug (preserving behavior); added methods (no seed) get a
+  // deterministic fresh slug. Re-seeded whenever a fresh detection arrives
+  // (keyed on the detected templates, stable per analysis + base URL).
+  const authMethodSeeds: readonly AuthMethodSeed[] = useMemo(() => {
+    const labels = [
+      ...(preview?.headerPresets ?? []).map((preset) => preset.label),
+      ...(preview?.oauth2Presets ?? []).map((preset) => preset.label),
+    ];
+    return authenticationTemplate.map(
+      (template: Authentication, index: number): AuthMethodSeed => ({
         value: editorValueFromAuthentication(template),
-        seedSlug: String(template.slug),
-      })),
+        slug: String(template.slug),
+        ...(labels[index] !== undefined ? { label: labels[index] } : {}),
+      }),
     );
-  }, [authenticationTemplate]);
-
-  const setAuthMethodAt = useCallback((index: number, next: AuthTemplateEditorValue) => {
-    setAuthMethods((current: readonly AuthMethodRow[]) =>
-      current.map((row: AuthMethodRow, i: number) => (i === index ? { ...row, value: next } : row)),
-    );
-  }, []);
-
-  const removeAuthMethodAt = useCallback((index: number) => {
-    setAuthMethods((current: readonly AuthMethodRow[]) =>
-      current.filter((_row: AuthMethodRow, i: number) => i !== index),
-    );
-  }, []);
-
-  const addAuthMethod = useCallback(() => {
-    setAuthMethods((current: readonly AuthMethodRow[]) => [
-      ...current,
-      {
-        value: {
-          kind: "apikey",
-          placements: [{ carrier: "header", name: "Authorization", prefix: "" }],
-        },
-      },
-    ]);
-  }, []);
+  }, [preview, authenticationTemplate]);
+  const authMethodList = useAuthMethodList(authMethodSeeds);
 
   // The methods to register, mapped back to stored `Authentication[]`. Drops
   // `none` rows (nothing to register). An unedited detected method keeps its
   // original `seedSlug`; an added method gets a deterministic fresh slug.
   const editedAuthenticationTemplate: readonly Authentication[] = useMemo(() => {
     const templates: Authentication[] = [];
-    authMethods.forEach((row: AuthMethodRow, index: number) => {
+    authMethodList.rows.forEach((row: AuthMethodRow, index: number) => {
       const slug =
         row.seedSlug ?? (row.value.kind === "oauth" ? `oauth-${index}` : `apikey-${index}`);
       const template = authenticationFromEditorValue(row.value, slug);
       if (template !== null) templates.push(template);
     });
     return templates;
-  }, [authMethods]);
+  }, [authMethodList.rows]);
 
   // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
   // whose slug already exists clobbers the existing one's connections/policies,
   // so the API blocks it. Surface that here from the tenant-scoped catalog list.
-  const integrationsResult = useAtomValue(integrationsOptimisticAtom);
-  const slugAlreadyExists = useMemo(
-    () =>
-      AsyncResult.isSuccess(integrationsResult) &&
-      integrationsResult.value.some((integration) => integration.slug === resolvedSourceId),
-    [integrationsResult, resolvedSourceId],
-  );
+  const slugAlreadyExists = useSlugAlreadyExists(resolvedSourceId);
 
   // The bundle path is ready once at least one Google API is selected (no
   // network preview gates it); the single/custom-spec path still requires a
@@ -521,11 +464,7 @@ export default function AddOpenApiSource(props: {
       reactivityKeys: integrationWriteKeys,
     });
     if (Exit.isFailure(exit)) {
-      setAddError(
-        isIntegrationAlreadyExistsExit(exit)
-          ? integrationExistsMessage(resolvedSourceId)
-          : errorMessageFromExit(exit, "Failed to add integration"),
-      );
+      setAddError(addIntegrationErrorMessage(exit, resolvedSourceId, "Failed to add integration"));
       return null;
     }
     return exit.value.slug;
@@ -644,85 +583,21 @@ export default function AddOpenApiSource(props: {
         />
       ) : null}
 
-      {analyzeError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">{analyzeError}</p>
-        </div>
-      )}
+      {analyzeError && <FormErrorAlert message={analyzeError} />}
 
       {preview && !isGoogleBundlePreset && (
-        <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <FieldLabel>How does this API authenticate?</FieldLabel>
-            <Button type="button" variant="outline" size="sm" onClick={addAuthMethod}>
-              <PlusIcon />
-              Add method
-            </Button>
-          </div>
-          {authMethods.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">
-              No authentication detected. Add a method, or add the integration without auth and
-              connect an account from the integration page later.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {authMethods.map((row: AuthMethodRow, index: number) => (
-                <div
-                  key={index}
-                  className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Method {index + 1}
-                      {detectedMethodLabels[index] ? ` · ${detectedMethodLabels[index]}` : ""}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Remove method"
-                      className="text-muted-foreground hover:text-foreground"
-                      onClick={() => removeAuthMethodAt(index)}
-                    >
-                      <XIcon />
-                    </Button>
-                  </div>
-                  <AuthTemplateEditor
-                    value={row.value}
-                    onChange={(next: AuthTemplateEditorValue) => setAuthMethodAt(index, next)}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Every method here is registered with the integration. Connect an account from the
-            integration page after adding.
-          </p>
-        </section>
+        <AuthMethodListEditor
+          list={authMethodList}
+          emptyHint="No authentication detected. Add a method, or add the integration without auth and connect an account from the integration page later."
+          footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
+        />
       )}
 
       {hasPreviewOrBundle && slugAlreadyExists && !adding && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">
-            An integration named &quot;{resolvedSourceId}&quot; already exists. To add more
-            authentication, update your existing integration.{" "}
-            <Link
-              to="/integrations/$namespace"
-              params={{ namespace: resolvedSourceId }}
-              className="font-medium underline underline-offset-2"
-            >
-              Open it
-            </Link>
-          </p>
-        </div>
+        <SlugCollisionAlert slug={resolvedSourceId} />
       )}
 
-      {addError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">{addError}</p>
-        </div>
-      )}
+      {addError && <FormErrorAlert message={addError} />}
 
       <FloatActions>
         <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>

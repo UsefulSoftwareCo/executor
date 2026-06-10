@@ -34,6 +34,10 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
           EXECUTOR_BOOTSTRAP_ADMIN_EMAIL: SELFHOST_ADMIN.email,
           EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD: SELFHOST_ADMIN.password,
           EXECUTOR_WEB_BASE_URL: SELFHOST_BASE_URL,
+          // The harness boots loopback MCP/OAuth test servers and points the
+          // instance at them; the hosted SSRF guard would otherwise block
+          // outbound probes/dials to localhost. Hermetic test instance only.
+          EXECUTOR_ALLOW_LOCAL_NETWORK: "true",
         },
       },
     ],
