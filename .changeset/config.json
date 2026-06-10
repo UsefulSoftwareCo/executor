@@ -4,6 +4,7 @@
   "commit": false,
   "fixed": [
     [
+      "@executor-js/http-auth",
       "@executor-js/sdk",
       "@executor-js/codemode-core",
       "@executor-js/runtime-quickjs",
