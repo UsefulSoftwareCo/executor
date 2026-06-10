@@ -17,18 +17,52 @@ export const SELFHOST_ADMIN = {
   password: process.env.E2E_SELFHOST_ADMIN_PASSWORD ?? "e2e-admin-password-123",
 };
 
+// Sign the bootstrap admin in via Better Auth email and return the session
+// cookie in both shapes we need: the `Cookie` header the API surface attaches,
+// and the {name,value} list Playwright injects into a browser context. The
+// `origin` header is required — Better Auth rejects state-changing requests
+// without it.
+const signInSession = async (
+  baseUrl: string,
+  credentials: { readonly email: string; readonly password: string },
+): Promise<{
+  readonly cookieHeader: string;
+  readonly cookies: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+}> => {
+  const response = await fetch(new URL("/api/auth/sign-in/email", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: new URL(baseUrl).origin },
+    body: JSON.stringify(credentials),
+    redirect: "manual",
+  });
+  const pairs = (response.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]!.trim());
+  if (pairs.length === 0) throw new Error(`selfhost: sign-in set no cookie (${response.status})`);
+  const cookies = pairs.map((pair) => {
+    const eq = pair.indexOf("=");
+    return { name: pair.slice(0, eq), value: pair.slice(eq + 1) };
+  });
+  return { cookieHeader: pairs.join("; "), cookies };
+};
+
 export const selfhostTarget = (): Target => ({
   name: "selfhost",
   baseUrl: SELFHOST_BASE_URL,
   mcpUrl: `${SELFHOST_BASE_URL}/mcp`,
-  // No "billing" (no limits) and no "browser" yet (cookie injection for the
-  // Better Auth session isn't wired). Identity is the bootstrap admin for now —
-  // single-tenant; per-test invite-signup isolation is the next step here.
-  capabilities: new Set(["api", "mcp-oauth"]),
+  // No "billing" (no limits). Identity is the bootstrap admin for now —
+  // single-tenant; per-test invite-signup isolation is the next step here, so
+  // browser scenarios must prefix the resources they create.
+  capabilities: new Set(["api", "browser", "mcp-oauth"]),
   newIdentity: () =>
-    Effect.succeed<Identity>({
-      label: SELFHOST_ADMIN.email,
-      credentials: SELFHOST_ADMIN,
+    Effect.promise(async (): Promise<Identity> => {
+      // Sign in once and carry the session in both shapes: `headers` for the
+      // API surface, `cookies` for an injectable logged-in browser context.
+      const { cookieHeader, cookies } = await signInSession(SELFHOST_BASE_URL, SELFHOST_ADMIN);
+      return {
+        label: SELFHOST_ADMIN.email,
+        credentials: SELFHOST_ADMIN,
+        headers: { cookie: cookieHeader },
+        cookies,
+      };
     }),
   mcpConsent: (identity: Identity) =>
     cookieConsentStrategy({
