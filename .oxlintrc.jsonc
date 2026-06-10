@@ -72,13 +72,7 @@
       // drivers (Playwright, PTY, mcporter, raw HTTP) plus build tooling (the
       // run viewer); they normalize untyped failures into the recorded
       // transcript. Scenario code (e2e/scenarios, e2e/cloud, …) stays strict.
-      "files": [
-        "e2e/src/**/*.{ts,tsx}",
-        "e2e/setup/**/*.{ts,tsx}",
-        "e2e/targets/**/*.{ts,tsx}",
-        "e2e/scripts/**/*.{ts,tsx}",
-        "e2e/viewer/**/*.{ts,tsx}",
-      ],
+      "files": ["e2e/**/*.{ts,tsx}"],
       "rules": {
         // The viewer is standalone tooling — it deliberately doesn't pull the
         // product design system or Effect in.

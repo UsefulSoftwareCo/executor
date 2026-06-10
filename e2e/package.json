@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --project cloud && vitest run --project selfhost",
     "test:cloud": "vitest run --project cloud",
     "test:selfhost": "vitest run --project selfhost",
     "test:watch": "vitest",

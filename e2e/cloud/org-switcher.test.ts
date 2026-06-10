@@ -43,12 +43,24 @@ scenario(
 
         // ── Step 2: create the second org via the account-menu switcher ──
         await step('Open the org switcher and choose "Create organization"', async () => {
-          await page.getByRole("button", { name: /Test User/ }).click();
-          await page.getByRole("menuitem", { name: ORG_1 }).click();
-          const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
-          await subContent.waitFor({ state: "visible" });
-          await subContent.getByText("Create organization", { exact: true }).click();
-          await page.getByText("Add another organization").waitFor();
+          // Bounded retry: under parallel-suite load the radix menu re-renders
+          // while the org list loads and a click can land on a closing menu.
+          for (let attempt = 1; ; attempt++) {
+            try {
+              await page.keyboard.press("Escape");
+              await page.getByRole("button", { name: /Test User/ }).click();
+              await page.getByRole("menuitem", { name: ORG_1 }).click({ timeout: 5_000 });
+              const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+              await subContent.waitFor({ state: "visible", timeout: 5_000 });
+              await subContent
+                .getByText("Create organization", { exact: true })
+                .click({ timeout: 5_000 });
+              await page.getByText("Add another organization").waitFor({ timeout: 5_000 });
+              break;
+            } catch (error) {
+              if (attempt >= 3) throw error;
+            }
+          }
         });
 
         await step(`Create "${ORG_2}" via the org switcher modal`, async () => {

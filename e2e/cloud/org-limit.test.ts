@@ -40,16 +40,25 @@ scenario(
         });
 
         const openCreateOrgModal = async (currentOrg: string) => {
-          await page.getByRole("button", { name: /Test User/ }).click();
-          // The org entry is a radix submenu trigger; its content loads the
-          // org list from the API, so wait for the sub-content to mount and
-          // click "Create organization" scoped INSIDE it — clicking during
-          // the loading re-render dismisses the whole menu.
-          await page.getByRole("menuitem", { name: currentOrg }).click();
-          const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
-          await subContent.waitFor({ state: "visible" });
-          await subContent.getByText("Create organization", { exact: true }).click();
-          await page.getByText("Add another organization").waitFor();
+          // Under parallel-suite load the radix menu re-renders while the org
+          // list loads; a click can land on a closing menu. Bounded retry with
+          // a clean reopen keeps the journey honest without 30s hangs.
+          for (let attempt = 1; ; attempt++) {
+            try {
+              await page.keyboard.press("Escape");
+              await page.getByRole("button", { name: /Test User/ }).click();
+              await page.getByRole("menuitem", { name: currentOrg }).click({ timeout: 5_000 });
+              const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+              await subContent.waitFor({ state: "visible", timeout: 5_000 });
+              await subContent
+                .getByText("Create organization", { exact: true })
+                .click({ timeout: 5_000 });
+              await page.getByText("Add another organization").waitFor({ timeout: 5_000 });
+              return;
+            } catch (error) {
+              if (attempt >= 3) throw error;
+            }
+          }
         };
 
         for (let i = 2; i <= FREE_LIMIT; i++) {

@@ -19,7 +19,10 @@ const project = (name: string, overrides: Record<string, unknown> = {}) => ({
 export default defineConfig({
   test: {
     projects: [
-      project("cloud"),
+      // PGlite's socket server is effectively single-connection; parallel test
+      // files (each fanning out per-request postgres sockets) crash it. Run
+      // files serially — swap PGlite for real Postgres if wall-clock matters.
+      project("cloud", { fileParallelism: false }),
       // selfhost identities are the shared bootstrap admin for now — run files
       // serially until per-test invite-signup isolation lands.
       project("selfhost", { fileParallelism: false }),
