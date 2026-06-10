@@ -5,13 +5,11 @@
 ### Patch Changes
 
 - [#936](https://github.com/RhysSullivan/executor/pull/936) [`2db9d65`](https://github.com/RhysSullivan/executor/commit/2db9d65a828615c2ec0b209d54616dbf4264fefd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Desktop**
-
   - Fixed the desktop app failing to launch: the packaged sidecar was missing its native SQLite and keychain bindings, so the local server exited before the window appeared. The release pipeline now smoke-tests the compiled sidecar before publishing.
   - Mac auto-updates now serve the correct architecture — the arm64 and x64 update manifests previously collided, so Apple Silicon machines could be offered Intel builds.
   - If the local server fails to start, the app now shows the error (with a pointer to the log) and installs any available update on quit, instead of closing silently.
 
   **Integrations & auth**
-
   - Integrations can declare multiple authentication methods in every plugin. MCP servers join the slugged template model used by OpenAPI and GraphQL, so a server can offer OAuth and an API key side by side, and adding a custom method appends instead of replacing a detected one. Existing connections keep working with no migration.
   - OAuth app management is folded into the connect modal, so client setup happens where accounts are added.
 
@@ -40,7 +38,6 @@
 - [`c7bb2a4`](https://github.com/RhysSullivan/executor/commit/c7bb2a4da99aac4199b424d6d52e6ea843250e3a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Integrations and connections rework.
 
   **Highlights**
-
   - Sources are now split into integrations (the API surface) and connections (the credential). One integration can hold many connections — workspace-shared or personal — and each connection gets its own tool catalog.
   - Tool addresses carry the connection, so agents can target a specific account: `tools.vercel_api.org.workspace.deploy` vs `tools.vercel_api.user.personal.deploy`.
   - Existing data migrates automatically on first launch: sources become integrations, secrets and credential bindings become connections, OAuth apps and tool policies carry over, and the previous database is kept as a backup next to the new one.
@@ -50,7 +47,6 @@
   - Self-hosted Executor now publishes a multi-architecture GHCR image at `ghcr.io/rhyssullivan/executor-selfhost` (stable releases tagged `latest`, prereleases tagged `beta`).
 
   **Reliability**
-
   - OpenAPI, GraphQL, and MCP tools return structured authentication failures with recovery guidance instead of opaque internal errors — covering missing credentials, expired OAuth connections, upstream 401/403 responses, and MCP per-user isolation.
   - OAuth popups complete more reliably in Chrome by preserving the callback channel through the same-origin completion page.
   - OAuth Dynamic Client Registration data is reused across retries and reconnects, including scopes, so providers are not asked to register duplicate clients.
@@ -61,7 +57,6 @@
   - Integration icons survive migration, connected presets show their icons, and credentials show a loading badge while resolving.
 
   **Breaking changes**
-
   - Tool addresses gained two segments for the connection's owner and name: `tools.vercel_api.deploy` is now `tools.vercel_api.org.workspace.deploy`. Saved tool policies are rewritten automatically during migration; agent code that hard-codes v1.4 addresses needs the new shape (`tools.search()` returns ready-to-call paths).
   - The Google Discovery plugin was removed. Google integrations now go through the bundled Google flow; existing Google sources migrate automatically.
 

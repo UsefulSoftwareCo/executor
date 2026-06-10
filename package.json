@@ -50,7 +50,7 @@
     "format:check": "oxfmt --check .",
     "pull:references": "bun run scripts/pull-references.ts",
     "changeset": "changeset",
-    "changeset:version": "changeset version && bun install --lockfile-only",
+    "changeset:version": "changeset version && bun install --lockfile-only && oxfmt .",
     "release:check": "bun run --cwd apps/cli typecheck && bun run test:release:bootstrap && bun run release:publish:dry-run",
     "release:pre:enter": "changeset pre enter beta",
     "release:pre:exit": "changeset pre exit",
