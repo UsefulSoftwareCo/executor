@@ -4,6 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Viewer bakeoff — 10 angles</title>
+<script>
+  // Behind the /runs mount a missing trailing slash breaks every relative link.
+  if (!location.pathname.endsWith("/") && !location.pathname.endsWith(".html")) {
+    location.replace(location.pathname + "/" + location.search + location.hash);
+  }
+</script>
 <style>
   body { font: 15px/1.55 ui-sans-serif, system-ui; margin: 0; color: #d7dce5; background: #0b0f17; }
   .page { max-width: 980px; margin: 0 auto; padding: 24px; }

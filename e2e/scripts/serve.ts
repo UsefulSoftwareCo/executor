@@ -24,7 +24,12 @@ createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, "");
   if (path === "" || path === ".") path = "index.html";
-  const file = join(ROOT, path);
+  let file = join(ROOT, path);
+  // Directory request → its index.html (the page itself fixes a missing
+  // trailing slash client-side; a server redirect would drop the /runs mount).
+  if (file.startsWith(ROOT) && existsSync(file) && statSync(file).isDirectory()) {
+    file = join(file, "index.html");
+  }
   if (!file.startsWith(ROOT) || !existsSync(file) || !statSync(file).isFile()) {
     res.writeHead(404).end("not found");
     return;
