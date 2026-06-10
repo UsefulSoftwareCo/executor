@@ -1,6 +1,6 @@
 {
   "name": "executor",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "bin": {
     "executor": "./bin/executor.ts"
