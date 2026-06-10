@@ -51,6 +51,7 @@ import {
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
   IntegrationNotFoundError,
+  InvalidConnectionInputError,
   IntegrationRemovalNotAllowedError,
   NoHandlerError,
   PluginNotLoadedError,
@@ -64,6 +65,7 @@ import {
   ConnectionAddress,
   ConnectionName,
   IntegrationSlug,
+  NO_AUTH_TEMPLATE,
   OAuthClientSlug,
   Owner,
   PolicyId,
@@ -256,7 +258,10 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       input: CreateConnectionInput,
     ) => Effect.Effect<
       Connection,
-      IntegrationNotFoundError | CredentialProviderNotRegisteredError | StorageFailure
+      | IntegrationNotFoundError
+      | CredentialProviderNotRegisteredError
+      | InvalidConnectionInputError
+      | StorageFailure
     >;
     readonly list: (filter?: {
       readonly integration?: IntegrationSlug;
@@ -1764,15 +1769,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           );
 
         // Defense in depth (and cleanup for rows created before the create-time
-        // guard, or emptied by an external edit): a non-OAuth connection with no
-        // bound credential inputs can never resolve a value, so never advertise
-        // tools for it — every call would fail with `connection_value_missing`.
-        // OAuth connections resolve via refresh and carry their token outside
-        // `item_ids`, so they are exempt.
+        // guard, or emptied by an external edit): a credentialed non-OAuth
+        // connection with no bound credential inputs can never resolve a value,
+        // so never advertise tools for it — every call would fail with
+        // `connection_value_missing`. OAuth connections resolve via refresh and
+        // carry their token outside `item_ids`; no-auth (`"none"` template)
+        // connections legitimately bind nothing (an empty `item_ids` is their
+        // canonical shape) — both are exempt.
         const existingRow = yield* findConnectionRow(ref);
         if (
           existingRow &&
           existingRow.oauth_client == null &&
+          existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
           yield* transaction(
@@ -1876,11 +1884,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       input: CreateConnectionInput,
     ): Effect.Effect<
       Connection,
-      IntegrationNotFoundError | CredentialProviderNotRegisteredError | StorageFailure
+      | IntegrationNotFoundError
+      | CredentialProviderNotRegisteredError
+      | InvalidConnectionInputError
+      | StorageFailure
     > =>
       Effect.gen(function* () {
         const name = connectionIdentifier(String(input.name));
-        yield* requireUserSubject(input.owner);
+        // Typed (not StorageError) so the HTTP edge can answer 400 with the
+        // reason instead of an opaque 500 — callers can act on it.
+        if (input.owner === "user" && subject == null) {
+          return yield* new InvalidConnectionInputError({
+            message:
+              'Cannot create a personal connection: this context has no user subject. Create it with owner "org", or connect as a signed-in user.',
+          });
+        }
         const integrationRow = yield* findIntegrationRow(input.integration);
         if (!integrationRow) {
           return yield* new IntegrationNotFoundError({
@@ -1896,27 +1914,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const inputs = normalizeConnectionInputs(input);
         const pasted = inputs.filter((i) => "value" in i.origin);
         const external = inputs.filter((i) => "from" in i.origin);
-        // A connection is born wired: it must reference at least one credential
-        // input. An empty binding (no inputs at all — e.g. an empty `values`/
-        // `inputs` map) is a credential with no credential: it would persist,
-        // produce a full tool catalog, and then fail every invocation with
-        // `connection_value_missing`. Reject it here. (An empty-string value is
-        // NOT rejected — no-auth integrations like MCP deliberately bind one, and
-        // it yields a non-empty `item_ids`. OAuth connections are minted via
-        // `mintOAuthConnection`, not this path; an external `from` reference may
-        // resolve to null and is surfaced at invoke time, not here.)
-        if (inputs.length === 0) {
-          return yield* new StorageError({
+        // A credentialed connection is born wired: it must reference at least
+        // one credential input. An empty binding (no inputs at all — e.g. an
+        // empty `values`/`inputs` map) is a credential with no credential: it
+        // would persist, produce a full tool catalog, and then fail every
+        // invocation with `connection_value_missing`. Reject it here — EXCEPT
+        // for the no-auth template ("none"), where zero inputs and an empty
+        // `item_ids` map are the canonical shape (public MCP servers; the UI
+        // submits `values: {}` for them). OAuth connections are minted via
+        // `mintOAuthConnection`, not this path; an external `from` reference
+        // may resolve to null and is surfaced at invoke time, not here.
+        const isNoAuth = String(input.template) === String(NO_AUTH_TEMPLATE);
+        if (inputs.length === 0 && !isNoAuth) {
+          return yield* new InvalidConnectionInputError({
             message: "A connection must supply at least one credential input.",
-            cause: undefined,
           });
         }
         let providerKey: string;
         const itemIds: Record<string, string> = {};
         if (external.length > 0 && pasted.length > 0) {
-          return yield* new StorageError({
+          return yield* new InvalidConnectionInputError({
             message: "A connection cannot mix pasted and external-provider inputs.",
-            cause: undefined,
           });
         }
         if (external.length > 0) {
@@ -1924,9 +1942,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             external.map((i) => ("from" in i.origin ? String(i.origin.from.provider) : "")),
           );
           if (providers.size > 1) {
-            return yield* new StorageError({
+            return yield* new InvalidConnectionInputError({
               message: "A connection's inputs must all use the same external provider.",
-              cause: undefined,
             });
           }
           const [only] = [...providers];

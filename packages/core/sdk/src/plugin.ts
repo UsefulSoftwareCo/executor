@@ -36,6 +36,7 @@ import type {
   CredentialProviderNotRegisteredError,
   IntegrationNotFoundError,
   IntegrationRemovalNotAllowedError,
+  InvalidConnectionInputError,
 } from "./errors";
 import type { OAuthService } from "./oauth-client";
 import type { CredentialProvider, ProviderEntry } from "./provider";
@@ -140,7 +141,10 @@ export interface PluginCtx<TStore = unknown> {
       input: CreateConnectionInput,
     ) => Effect.Effect<
       Connection,
-      IntegrationNotFoundError | CredentialProviderNotRegisteredError | StorageFailure
+      | IntegrationNotFoundError
+      | CredentialProviderNotRegisteredError
+      | InvalidConnectionInputError
+      | StorageFailure
     >;
     readonly list: (filter?: {
       readonly integration?: IntegrationSlug;

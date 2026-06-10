@@ -40,7 +40,6 @@
     "typecheck:slow": "turbo run typecheck:slow",
     "ci": "bun run lint && bun run typecheck && bun run test",
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:changelog-stubs",
-    "lint:release-notes": "bun run scripts/check-release-notes.ts",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
@@ -67,6 +66,7 @@
   },
   "dependencies": {},
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.30.0",
     "@effect/language-service": "^0.85.1",
     "@effect/tsgo": "^0.5.2",

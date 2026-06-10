@@ -1117,6 +1117,179 @@ describe("planMigration (the weave)", () => {
     expect(plan.report.policies).toEqual({ ok: 2, static: 0, deadInert: 0 });
   });
 
+  // The prod Microsoft shape: v1 stored only a bare issuer origin plus the
+  // full token endpoint (no discrete authorize endpoint — v1 discovered it at
+  // runtime). A bare origin is a dead authorize URL (sign-in completes but
+  // never redirects back), so the planner must derive the same-origin
+  // `…/authorize` sibling of the token endpoint instead.
+  it("derives the authorize endpoint from the token endpoint when v1 only stored a bare issuer", () => {
+    const input: MigrationInput = {
+      nowMs: now,
+      sources: [
+        { scopeId: "org_X", id: "microsoft_graph", pluginId: "openapi", name: "Microsoft Graph" },
+      ],
+      migratedConfigs: new Map([
+        [
+          "org_X microsoft_graph",
+          cfg({
+            slotToTemplateSlug: { "oauth2:azureaddelegated:connection": "azureAdDelegated" },
+            slotToVariable: { "oauth2:azureaddelegated:connection": "token" },
+          }),
+        ],
+      ]),
+      connections: [
+        {
+          id: "openapi-oauth-microsoft-graph",
+          scopeId: "org_X",
+          provider: "oauth2",
+          identityLabel: null,
+          accessTokenSecretId: "ms-access",
+          refreshTokenSecretId: null,
+          expiresAt: null,
+          providerState: {
+            kind: "authorization-code",
+            clientId: "cid-ms",
+            issuerUrl: "https://login.microsoftonline.com",
+            tokenEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            scopes: ["User.Read"],
+          },
+        },
+      ],
+      bindings: [
+        {
+          scopeId: "org_X",
+          sourceId: "microsoft_graph",
+          slotKey: "oauth2:azureaddelegated:connection",
+          kind: "connection",
+          secretId: null,
+          connectionId: "openapi-oauth-microsoft-graph",
+          textValue: null,
+        },
+      ],
+      secrets: [
+        {
+          id: "ms-access",
+          scopeId: "org_X",
+          name: "",
+          provider: "workos-vault",
+          ownedByConnectionId: "openapi-oauth-microsoft-graph",
+        },
+      ],
+      policies: [],
+      toolSourceIds: [],
+    };
+
+    const plan = planMigration(input);
+
+    expect(plan.oauthClients).toHaveLength(1);
+    expect(plan.oauthClients[0]?.authorizationUrl).toBe(
+      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    );
+    expect(plan.oauthClients[0]?.tokenUrl).toBe(
+      "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    );
+  });
+
+  // v2 produces tools per connection, so a no-auth source (no credential
+  // bindings at all) must still get its canonical connection — template
+  // "none", empty item_ids — or the migrated integration is dead.
+  it("plans a workspace none-template connection for binding-less no-auth sources", () => {
+    const input: MigrationInput = {
+      nowMs: now,
+      sources: [{ scopeId: "org_X", id: "context7", pluginId: "mcp", name: "Context7" }],
+      migratedConfigs: new Map([
+        ["org_X context7", cfg({ config: { transport: "remote", auth: { kind: "none" } } })],
+      ]),
+      connections: [],
+      bindings: [],
+      secrets: [],
+      policies: [],
+      toolSourceIds: [],
+    };
+
+    const plan = planMigration(input);
+
+    expect(plan.connections).toHaveLength(1);
+    const conn = plan.connections[0];
+    expect(conn?.row.integration).toBe("context7");
+    expect(conn?.row.name).toBe("workspace");
+    expect(conn?.row.template).toBe("none");
+    expect(conn?.row.owner).toBe("org");
+    expect(conn?.itemIds).toEqual({});
+    // An OAuth-protected source must NOT get one.
+    const oauthInput: MigrationInput = {
+      ...input,
+      migratedConfigs: new Map([
+        ["org_X context7", cfg({ config: { transport: "remote", auth: { kind: "oauth2" } } })],
+      ]),
+    };
+    expect(planMigration(oauthInput).connections).toHaveLength(0);
+  });
+
+  it("skips secret-binding groups whose bindings reference no secrets, with a warning", () => {
+    const input: MigrationInput = {
+      nowMs: now,
+      sources: [{ scopeId: "org_X", id: "broken_api", pluginId: "openapi", name: "Broken" }],
+      migratedConfigs: new Map(),
+      connections: [],
+      bindings: [
+        {
+          scopeId: "org_X",
+          sourceId: "broken_api",
+          slotKey: "header:authorization",
+          kind: "secret",
+          secretId: null,
+          connectionId: null,
+          textValue: null,
+        },
+      ],
+      secrets: [],
+      policies: [],
+      toolSourceIds: [],
+    };
+
+    const plan = planMigration(input);
+
+    // No empty-item_ids ghost connection (the runtime would refuse it tools).
+    expect(plan.connections).toHaveLength(0);
+    expect(plan.report.warnings.some((w) => w.includes("reference no secrets"))).toBe(true);
+  });
+
+  it("keys text-binding item ids by source so same-slot bindings do not collide", () => {
+    const binding = (sourceId: string, textValue: string) => ({
+      scopeId: "org_X",
+      sourceId,
+      slotKey: "header:authorization",
+      kind: "text" as const,
+      secretId: null,
+      connectionId: null,
+      textValue,
+    });
+    const input: MigrationInput = {
+      nowMs: now,
+      sources: [
+        { scopeId: "org_X", id: "api_one", pluginId: "mcp", name: "One" },
+        { scopeId: "org_X", id: "api_two", pluginId: "mcp", name: "Two" },
+      ],
+      migratedConfigs: new Map(),
+      connections: [],
+      bindings: [binding("api_one", "value-one"), binding("api_two", "value-two")],
+      secrets: [],
+      policies: [],
+      toolSourceIds: [],
+    };
+
+    const plan = planMigration(input);
+
+    const ids = plan.connections.map((c) => Object.values(c.itemIds)).flat();
+    expect(new Set(ids).size).toBe(2);
+    const ops = plan.secretOps.filter((o) => o.role === "apikey");
+    expect(ops.map((o) => "fromText" in o && o.fromText).sort()).toEqual([
+      "value-one",
+      "value-two",
+    ]);
+  });
+
   it("plans a v1 client-credentials OAuth connection with secret-backed client credentials", () => {
     const input: MigrationInput = {
       nowMs: now,

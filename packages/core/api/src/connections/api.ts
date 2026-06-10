@@ -19,6 +19,7 @@ import {
   IntegrationNotFoundError,
   IntegrationSlug,
   InternalError,
+  InvalidConnectionInputError,
   OAuthClientSlug,
   Owner,
   ProviderItemId,
@@ -121,6 +122,9 @@ const IntegrationNotFound = IntegrationNotFoundError.annotate({
 const CredentialProviderNotRegistered = CredentialProviderNotRegisteredError.annotate({
   httpApiStatus: 409,
 });
+const InvalidConnectionInput = InvalidConnectionInputError.annotate({
+  httpApiStatus: 400,
+});
 
 // ---------------------------------------------------------------------------
 // Group
@@ -138,7 +142,12 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
     HttpApiEndpoint.post("create", "/connections", {
       payload: CreateConnectionPayload,
       success: ConnectionResponse,
-      error: [InternalError, IntegrationNotFound, CredentialProviderNotRegistered],
+      error: [
+        InternalError,
+        IntegrationNotFound,
+        CredentialProviderNotRegistered,
+        InvalidConnectionInput,
+      ],
     }),
   )
   .add(

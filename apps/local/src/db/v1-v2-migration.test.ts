@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import { Buffer } from "node:buffer";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +16,12 @@ import { migrateLocalV1ToV2IfNeeded } from "./v1-v2-migration";
 const AuthFile = Schema.Record(Schema.String, Schema.String);
 const decodeAuthFile = Schema.decodeUnknownSync(Schema.fromJsonString(AuthFile));
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+// Preserves every journal field (`when`, `breakpoints`, …) — drizzle's
+// migrator needs them, so only `entries` is typed for the truncation filter.
+const decodeJournal = (text: string) =>
+  decodeUnknownJson(text) as {
+    readonly entries: ReadonlyArray<{ readonly idx: number; readonly tag: string }>;
+  };
 
 let workDir: string;
 let previousXdgDataHome: string | undefined;
@@ -1105,6 +1113,77 @@ describe("local v1 -> v2 migration", () => {
         resource: "https://mcp.pscale.dev/mcp/planetscale",
       },
     ]);
+    client.close();
+  });
+
+  // Regression: a database last touched by a release OLDER than v1-final
+  // (pre-0011 — no `plugin_storage` table) must be replayed through the
+  // bundled legacy drizzle chain before the v1→v2 data migration reads it.
+  // Without the replay, migration crashed with "no such table: plugin_storage"
+  // on every fresh 1.5.0 install over old data.
+  it("replays the legacy drizzle chain for a v1 database that predates v1-final", async () => {
+    const scopeId = "executor-workspace-abcd1234";
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    mkdirSync(dataDir, { recursive: true });
+
+    // Build a REAL pre-0011 v1 database: apply the vendored legacy chain
+    // truncated after 0010, so drizzle records the genuine hashes and the
+    // schema has per-plugin source tables but no `plugin_storage`.
+    const legacyDir = join(import.meta.dirname, "../../drizzle-legacy-v1");
+    const truncatedDir = join(workDir, "legacy-truncated");
+    mkdirSync(join(truncatedDir, "meta"), { recursive: true });
+    const journal = decodeJournal(
+      readFileSync(join(legacyDir, "meta", "_journal.json")).toString(),
+    );
+    const kept = journal.entries.filter((entry) => entry.idx <= 10);
+    for (const entry of kept) {
+      writeFileSync(
+        join(truncatedDir, `${entry.tag}.sql`),
+        readFileSync(join(legacyDir, `${entry.tag}.sql`)),
+      );
+    }
+    writeFileSync(
+      join(truncatedDir, "meta", "_journal.json"),
+      JSON.stringify({ ...journal, entries: kept }),
+    );
+
+    const seed = await openLocalLibsql(dbPath);
+    await migrate(drizzle({ client: seed }), { migrationsFolder: truncatedDir });
+    const missing = await seed.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_storage'",
+    );
+    expect(missing.rows).toEqual([]); // genuinely pre-0011
+    const now = Date.now();
+    await executeSql(
+      seed,
+      "INSERT INTO source (id, scope_id, plugin_id, kind, name, url, can_remove, can_refresh, can_edit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?)",
+      ["context7", scopeId, "mcp", "mcp", "Context7", "https://mcp.context7.com/mcp", now, now],
+    );
+    await executeSql(
+      seed,
+      "INSERT INTO mcp_source (id, scope_id, name, config, created_at) VALUES (?, ?, ?, ?, ?)",
+      [
+        "context7",
+        scopeId,
+        "Context7",
+        JSON.stringify({ transport: "remote", endpoint: "https://mcp.context7.com/mcp" }),
+        now,
+      ],
+    );
+    seed.close();
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(true);
+    const client = await openLocalLibsql(dbPath);
+    const integrations = await client.execute("SELECT tenant, slug, plugin_id FROM integration");
+    expect(integrations.rows).toEqual([{ tenant: scopeId, slug: "context7", plugin_id: "mcp" }]);
     client.close();
   });
 });

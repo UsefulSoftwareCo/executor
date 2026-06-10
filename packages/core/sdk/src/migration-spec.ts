@@ -1256,12 +1256,41 @@ const nonEmptyString = (value: string | null | undefined): string | null => {
   return trimmed ? trimmed : null;
 };
 
-const authorizationUrlFromProviderState = (ps: V1ProviderState | null): string =>
-  nonEmptyString(ps?.authorizationEndpoint) ??
-  nonEmptyString(ps?.authorizationServerMetadata?.authorization_endpoint) ??
-  nonEmptyString(ps?.authorizationServerUrl) ??
-  nonEmptyString(ps?.issuerUrl) ??
-  "";
+/** True when the URL has no meaningful path — a bare origin like
+ *  `https://login.microsoftonline.com`. A bare origin is never a usable
+ *  authorize endpoint: redirecting there signs the user in and strands them
+ *  (observed in prod with migrated Microsoft clients). */
+const isBareOrigin = (url: string): boolean => /^https?:\/\/[^/]+\/?$/.test(url);
+
+const authorizationUrlFromProviderState = (
+  ps: V1ProviderState | null,
+  grant: MigrationGrant,
+): string => {
+  const explicit =
+    nonEmptyString(ps?.authorizationEndpoint) ??
+    nonEmptyString(ps?.authorizationServerMetadata?.authorization_endpoint);
+  if (explicit) return explicit;
+  const fallback =
+    nonEmptyString(ps?.authorizationServerUrl) ?? nonEmptyString(ps?.issuerUrl) ?? "";
+  // Client-credentials clients have no browser leg — an empty authorization
+  // URL is their correct shape; never derive one.
+  if (grant === "client_credentials") return fallback;
+  // v1 stored only an issuer/server origin for some providers and discovered
+  // the authorize endpoint at runtime. v2 stores the endpoint itself, so a
+  // bare origin would mint a broken client. When the token endpoint is a
+  // same-origin `…/token` URL, its `…/authorize` sibling is the convention
+  // (and exactly right for the Microsoft v2.0 endpoints that hit this path);
+  // prefer that over a guaranteed-dead bare origin.
+  const token = nonEmptyString(ps?.tokenEndpoint);
+  if (
+    (fallback === "" || isBareOrigin(fallback)) &&
+    token?.endsWith("/token") &&
+    (fallback === "" || token.startsWith(fallback.replace(/\/$/, "") + "/"))
+  ) {
+    return token.replace(/\/token$/, "/authorize");
+  }
+  return fallback;
+};
 
 const secretOpDedupeKey = (op: SecretOp): string =>
   `${op.targetProvider}\0${op.owner.tenant}\0${op.owner.owner}\0${op.owner.subject}\0${op.itemId}`;
@@ -1458,7 +1487,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         clientId: ps?.clientId ?? "",
         clientIdSecretRef,
         tokenUrl: ps?.tokenEndpoint ?? "",
-        authorizationUrl: authorizationUrlFromProviderState(ps),
+        authorizationUrl: authorizationUrlFromProviderState(ps, grant),
         authorizationServerMetadataUrl: nonEmptyString(ps?.authorizationServerMetadataUrl),
         grant,
         resource:
@@ -1530,6 +1559,15 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         template = slotTemplate(b.slotKey);
         consume(secretScopeId, b.secretId);
       }
+      // All-null secret ids (malformed v1 rows) would plan a credentialed
+      // connection with an empty `item_ids` map — a credential with no
+      // credential that the runtime refuses to produce tools for. Skip loudly.
+      if (Object.keys(itemIds).length === 0) {
+        warnings.push(
+          `Skipped binding group "${sourceId}" in scope "${scopeId}": its secret bindings reference no secrets.`,
+        );
+        continue;
+      }
       const provider = targetProvider ?? defaultWritableProvider;
       if (providers.size > 1) {
         warnings.push(
@@ -1567,7 +1605,11 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       let template = API_KEY_TEMPLATE_SLUG;
       for (const b of textBindings) {
         const variable = slotVar(b.slotKey);
-        const itemId = migratedItemId(scopeId, `text:${b.slotKey}`);
+        // The source id is part of the key: two sources in one scope can bind
+        // the same slot (e.g. `header:authorization`) with different values —
+        // without it they'd collide on one item id and one would silently
+        // read the other's secret.
+        const itemId = migratedItemId(scopeId, `text:${sourceId}:${b.slotKey}`);
         secretOps.push({
           itemId,
           role: "apikey",
@@ -1603,6 +1645,52 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
           refreshItemId: null,
         });
       }
+    } else {
+      // Nothing migratable in the group: a connection binding without a
+      // connection id, or only OAuth client-credential slots (the app config
+      // migrates via the bound connection's provider state — an app that was
+      // configured but never connected has nothing to attach to). Say so
+      // instead of dropping the group silently.
+      warnings.push(
+        `Skipped binding group "${sourceId}" in scope "${scopeId}": no migratable credential binding (its secrets fall to the orphan re-key).`,
+      );
+    }
+  }
+
+  // --- No-auth sources (mcp/graphql `auth.kind === "none"`) have no credential
+  // bindings, but v2 produces tools per CONNECTION — without one the migrated
+  // integration is dead (no tools, nothing to invoke). Plan the canonical
+  // no-auth connection: template "none", empty item_ids. (This is the planner
+  // fix for the gap that required the prod `{}` backfill.)
+  for (const source of input.sources) {
+    if (groups.has(sourceKey(source.scopeId, source.id))) continue;
+    const migrated = input.migratedConfigs.get(sourceKey(source.scopeId, source.id));
+    const auth = (migrated?.config as { auth?: { kind?: string } } | undefined)?.auth;
+    if (auth?.kind !== "none") continue;
+    const row = planConnectionRow({
+      scopeId: source.scopeId,
+      integration: source.id,
+      name: "workspace",
+      template: "none",
+      provider: defaultWritableProvider,
+      identityLabel: null,
+      grant: "authorization_code",
+      v1ExpiresAt: null,
+      oauthScopes: [],
+      oauthClientSlug: null,
+      oauthClientOwner: null,
+      nowMs: input.nowMs,
+      ownerForScope,
+    });
+    if (row) {
+      connections.push({
+        credentialScopeId: source.scopeId,
+        sourceScopeId: source.scopeId,
+        sourceId: source.id,
+        row,
+        itemIds: {},
+        refreshItemId: null,
+      });
     }
   }
 
@@ -1630,7 +1718,10 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
   for (const s of input.secrets) {
     if (consumed.has(`${s.scopeId} ${s.id}`)) continue;
     const owner = ownerForScope(s.scopeId);
-    if (!owner) continue; // unparseable scope orphan — skip + (counted via warnings below)
+    if (!owner) {
+      warnings.push(`Skipped orphan secret "${s.id}": unparseable scope "${s.scopeId}".`);
+      continue;
+    }
     secretOps.push({
       itemId: migratedItemId(s.scopeId, s.id),
       role: "orphan",

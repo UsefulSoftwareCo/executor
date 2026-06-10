@@ -91,6 +91,16 @@ export class ConnectionNotFoundError extends Schema.TaggedErrorClass<ConnectionN
   },
 ) {}
 
+/** A connection create request was rejected before anything was written: the
+ *  input is structurally invalid (no credential inputs for a credentialed
+ *  template, mixed pasted/external origins, …) or targets owner `user` in a
+ *  context that has no user subject. The message says which — it is safe to
+ *  show to the caller. */
+export class InvalidConnectionInputError extends Schema.TaggedErrorClass<InvalidConnectionInputError>()(
+  "InvalidConnectionInputError",
+  { message: Schema.String },
+) {}
+
 /** A connection references a credential provider key that isn't registered on
  *  the executor. */
 export class CredentialProviderNotRegisteredError extends Schema.TaggedErrorClass<CredentialProviderNotRegisteredError>()(

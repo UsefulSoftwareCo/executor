@@ -162,11 +162,19 @@ const resolveMigrationOAuthAuthorizationUrl = async (
 ): Promise<string | null> => {
   const metadataUrl = client.authorizationServerMetadataUrl?.trim();
   if (metadataUrl) {
-    return await fetchOAuthAuthorizationEndpoint(
-      validateMigrationOAuthUrl(metadataUrl, "authorizationServerMetadataUrl"),
-      fetchImpl,
-      timeoutMs,
-    );
+    // Best-effort like the resource/issuer discovery below: a dead, invalid,
+    // or unreachable metadata endpoint (offline machine, archived server)
+    // must not abort the whole migration — fall through to discovery.
+    try {
+      const endpoint = await fetchOAuthAuthorizationEndpoint(
+        validateMigrationOAuthUrl(metadataUrl, "authorizationServerMetadataUrl"),
+        fetchImpl,
+        timeoutMs,
+      );
+      if (endpoint) return endpoint;
+    } catch {
+      // fall through to issuer/resource discovery
+    }
   }
 
   if (client.grant !== "authorization_code") return null;

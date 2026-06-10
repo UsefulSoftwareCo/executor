@@ -252,13 +252,15 @@ const createEmbeddedWebUISource = async (mode: BuildMode) => {
 };
 
 // ---------------------------------------------------------------------------
-// Embedded drizzle migrations — inlined as text imports so drizzle's
+// Embedded legacy v1 drizzle migrations — inlined as text imports so drizzle's
 // `migrate()` (which reads a folder from disk) can be given a tmpdir
-// populated from the inlined contents at runtime.
+// populated from the inlined contents at runtime. The v1→v2 data migration
+// replays this chain to bring an older v1 database up to v1-final before
+// reading it (v2's own schema is created from FumaDB DDL, not this folder).
 // ---------------------------------------------------------------------------
 
 const createEmbeddedMigrationsSource = async () => {
-  const migrationsDir = resolve(webRoot, "drizzle");
+  const migrationsDir = resolve(webRoot, "drizzle-legacy-v1");
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: migrationsDir })))
     .map((f) => f.replaceAll("\\", "/"))
     .sort();

@@ -12,6 +12,11 @@ export type IntegrationSlug = typeof IntegrationSlug.Type;
 export const AuthTemplateSlug = Schema.String.pipe(Schema.brand("AuthTemplateSlug"));
 export type AuthTemplateSlug = typeof AuthTemplateSlug.Type;
 
+/** The sentinel template for integrations that require no credential (e.g. a
+ *  public MCP server). Connections on it legitimately bind zero inputs — an
+ *  empty `item_ids` map is their canonical persisted shape. */
+export const NO_AUTH_TEMPLATE = AuthTemplateSlug.make("none");
+
 /** A connection's name — the `<connection>` segment of an address, scoped under
  *  its integration + owner (so the same name can exist on two integrations). */
 export const ConnectionName = Schema.String.pipe(Schema.brand("ConnectionName"));
