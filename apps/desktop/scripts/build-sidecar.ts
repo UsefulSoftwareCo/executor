@@ -199,10 +199,18 @@ if (!existsSync(APPS_LOCAL_DIST)) {
 // Cross-target builds (e.g. the mac x64 leg on an arm64 runner) need the other
 // platform's optional native packages on disk before we can stage them.
 // `--cpu=* --os=*` extracts them all without modifying the lockfile. Mirrors
-// apps/cli/src/build.ts.
+// apps/cli/src/build.ts — Bun.spawn, not Bun.$, because the shell
+// glob-expands the bare `*` in `--cpu=*` and fails with "no matches found".
 if (!targetIsCurrentPlatform) {
   console.log("[build-sidecar] installing optional native deps for all platforms...");
-  await $`bun install --frozen-lockfile --cpu=* --os=*`.cwd(REPO_ROOT);
+  const proc = Bun.spawn(["bun", "install", "--frozen-lockfile", "--cpu=*", "--os=*"], {
+    cwd: REPO_ROOT,
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  if ((await proc.exited) !== 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
+    throw new Error("bun install --cpu=* --os=* failed");
+  }
 }
 
 // Resolve the native bindings up front so a missing platform package fails the
