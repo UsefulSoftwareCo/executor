@@ -139,3 +139,18 @@ a.watch.no {
   font-size: 12.5px;
   margin-top: 4px;
 }
+
+/* test source (monaco) */
+.section {
+  font-size: 13px;
+  color: #6b7785;
+  font-weight: 600;
+  margin: 1.2rem 0 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.code {
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  overflow: hidden;
+}
