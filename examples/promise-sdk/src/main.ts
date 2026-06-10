@@ -18,7 +18,7 @@ import {
 } from "@executor-js/sdk/promise";
 import { Effect } from "effect";
 import { mcpPlugin } from "@executor-js/plugin-mcp/promise";
-import { openApiPlugin, variable } from "@executor-js/plugin-openapi/promise";
+import { openApiPlugin } from "@executor-js/plugin-openapi/promise";
 import { graphqlPlugin } from "@executor-js/plugin-graphql/promise";
 
 // ---------------------------------------------------------------------------
@@ -118,8 +118,8 @@ await executor.connections.create({
 //   authenticationTemplate: [
 //     {
 //       slug: "bearer",
-//       type: "apiKey",
-//       headers: { Authorization: ["Bearer ", variable("token")] },
+//       kind: "apikey",
+//       placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
 //     },
 //   ],
 // });
@@ -130,7 +130,6 @@ await executor.connections.create({
 //   template: "bearer",
 //   value: "sk_live_...",
 // });
-void variable;
 
 // ---------------------------------------------------------------------------
 // 4. GraphQL — introspect an endpoint as an integration, then connect.

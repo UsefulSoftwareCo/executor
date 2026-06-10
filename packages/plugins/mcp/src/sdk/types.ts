@@ -1,9 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import {
-  ApiKeyAuthMethod,
-  NoneAuthMethod,
-  normalizeAuthMethodSlugs,
-} from "@executor-js/http-auth";
+import { ApiKeyAuthMethod, NoneAuthMethod, normalizeAuthMethodSlugs } from "@executor-js/http-auth";
 
 // ---------------------------------------------------------------------------
 // MCP plugin v2 data model.

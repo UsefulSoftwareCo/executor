@@ -580,9 +580,9 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
     // The derived oauth auth template carries the compacted/filtered set
     // (gmail.readonly collapsed, userinfo.email → email, chat.bot/chat.app.* dropped).
     const oauthTemplate = result.authenticationTemplate?.find((entry) => !("kind" in entry));
-    expect(oauthTemplate && !("kind" in oauthTemplate) ? [...oauthTemplate.scopes].sort() : undefined).toEqual(
-      [...expectedConsentScopes].sort(),
-    );
+    expect(
+      oauthTemplate && !("kind" in oauthTemplate) ? [...oauthTemplate.scopes].sort() : undefined,
+    ).toEqual([...expectedConsentScopes].sort());
 
     const spec = decodeConvertedSpecSecurity(result.specText);
     // The spec's securitySchemes flow scopes match the consent set exactly.

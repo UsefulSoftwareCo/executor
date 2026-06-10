@@ -37,7 +37,7 @@ import { graphqlPlugin } from "@executor-js/plugin-graphql";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { mcpPlugin } from "@executor-js/plugin-mcp";
 import { onepasswordPlugin } from "@executor-js/plugin-onepassword";
-import { openApiPlugin, variable } from "@executor-js/plugin-openapi";
+import { openApiPlugin } from "@executor-js/plugin-openapi";
 import { workosVaultPlugin } from "@executor-js/plugin-workos-vault";
 
 // ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ const program = Effect.gen(function* () {
   // -------------------------------------------------------------------------
   // Integration: OpenAPI — register a tiny spec as an integration. The
   // `authenticationTemplate` declares WHERE a connection's value renders on
-  // each request (here an `X-API-Key` header); `variable("token")` is the slot
+  // each request (here an `X-API-Key` header placement); `token` is the input
   // the resolved credential fills.
   // -------------------------------------------------------------------------
 
@@ -235,9 +235,9 @@ const program = Effect.gen(function* () {
     baseUrl: "https://example.com/api",
     authenticationTemplate: [
       {
-        slug: AuthTemplateSlug.make("apiKey"),
-        type: "apiKey",
-        headers: { "X-API-Key": [variable("token")] },
+        slug: "apiKey",
+        kind: "apikey",
+        placements: [{ carrier: "header", name: "X-API-Key" }],
       },
     ],
   });

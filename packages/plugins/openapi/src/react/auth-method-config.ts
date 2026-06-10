@@ -16,7 +16,11 @@ import {
   wirePlacementsFromEditor,
 } from "@executor-js/react/lib/shared-auth-method-codec";
 
-import { isOAuthAuthentication, type APIKeyAuthentication, type Authentication } from "../sdk/types";
+import {
+  isOAuthAuthentication,
+  type APIKeyAuthentication,
+  type Authentication,
+} from "../sdk/types";
 
 export const placementsFromApiKey = (template: APIKeyAuthentication): readonly Placement[] =>
   editorPlacementsFromWire(template.placements);

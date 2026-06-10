@@ -45,11 +45,7 @@ import {
   type GoogleOpenApiPreset,
 } from "../sdk/google-presets";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
-import {
-  type APIKeyAuthentication,
-  type Authentication,
-  type ServerInfo,
-} from "../sdk/types";
+import { type APIKeyAuthentication, type Authentication, type ServerInfo } from "../sdk/types";
 import { expandServerUrlOptions } from "../sdk/openapi-utils";
 
 const GOOGLE_BUNDLE_BASE_URL = "https://www.googleapis.com/";

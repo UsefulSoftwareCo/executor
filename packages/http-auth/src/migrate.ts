@@ -1,3 +1,4 @@
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-json-parse -- boundary: one-shot config migration drives a raw SQL client (JSON text columns, transaction + rollback) */
 // ---------------------------------------------------------------------------
 // One-off auth-config migration planner — the driver-agnostic core every app
 // wires its own SQL around. Each protocol plugin exports a pure

@@ -22,9 +22,9 @@ describe("renderAuthPlacements", () => {
   });
 
   it("renders a query param (the ui.sh '?token=' case)", () => {
-    expect(
-      renderAuthPlacements([{ carrier: "query", name: "token" }], { token: "tok_1" }),
-    ).toEqual({ headers: {}, queryParams: { token: "tok_1" } });
+    expect(renderAuthPlacements([{ carrier: "query", name: "token" }], { token: "tok_1" })).toEqual(
+      { headers: {}, queryParams: { token: "tok_1" } },
+    );
   });
 
   it("mixes header and query placements in one method", () => {
@@ -207,9 +207,9 @@ describe("catalog projection", () => {
   });
 
   it("falls back to the slug when no placement is named", () => {
-    expect(
-      apiKeyMethodLabel({ slug: "custom_y", kind: "apikey", placements: [] }),
-    ).toBe("API key (custom_y)");
+    expect(apiKeyMethodLabel({ slug: "custom_y", kind: "apikey", placements: [] })).toBe(
+      "API key (custom_y)",
+    );
   });
 
   it("projects a none method", () => {

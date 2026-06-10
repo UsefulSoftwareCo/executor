@@ -192,7 +192,9 @@ export function makeSharedAuthMethodCodec<TOAuth extends { readonly slug: string
   return {
     toAuthMethods: (templates) =>
       templates.map((template) =>
-        adapter.isOAuth(template) ? adapter.toAuthMethod(template) : authMethodFromSharedTemplate(template),
+        adapter.isOAuth(template)
+          ? adapter.toAuthMethod(template)
+          : authMethodFromSharedTemplate(template),
       ),
     templatesFromPlacements: (placements) => {
       const wire = wirePlacementsFromEditor(placements);

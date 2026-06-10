@@ -105,7 +105,11 @@ describe("migrateOpenApiAuthConfig", () => {
       ...BASE,
       authenticationTemplate: [
         oauth,
-        { slug: "key", type: "apiKey", queryParams: { key: [{ type: "variable", name: "token" }] } },
+        {
+          slug: "key",
+          type: "apiKey",
+          queryParams: { key: [{ type: "variable", name: "token" }] },
+        },
       ],
     }) as { authenticationTemplate: readonly unknown[] };
     expect(migrated.authenticationTemplate[0]).toBe(oauth);

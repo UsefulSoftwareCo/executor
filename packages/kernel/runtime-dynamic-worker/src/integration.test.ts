@@ -43,7 +43,7 @@ import {
   type FumaTables,
 } from "@executor-js/sdk";
 import { makeExecutorToolInvoker } from "@executor-js/execution";
-import { openApiPlugin, variable, type Authentication } from "@executor-js/plugin-openapi";
+import { openApiPlugin, type Authentication } from "@executor-js/plugin-openapi";
 
 import { makeDynamicWorkerExecutor } from "./executor";
 
@@ -86,9 +86,9 @@ const memoryProvider = (): CredentialProvider => {
 // `x-api-key` header. The body round-trip tests don't assert on auth, but a
 // template + connection are required for tools to exist per-connection.
 const apiKeyTemplate: Authentication = {
-  slug: AuthTemplateSlug.make("apiKey"),
-  type: "apiKey",
-  headers: { "x-api-key": [variable("token")] },
+  slug: "apiKey",
+  kind: "apikey",
+  placements: [{ carrier: "header", name: "x-api-key" }],
 };
 
 type CapturedRequest = {

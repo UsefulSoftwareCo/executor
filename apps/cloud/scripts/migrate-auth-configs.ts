@@ -1,3 +1,4 @@
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-json-parse -- boundary: out-of-band migration script over a raw postgres connection */
 // ---------------------------------------------------------------------------
 // One-off data migration: rewrite pre-canonical integration auth configs
 // into the shared placements model. Run OUT-OF-BAND against the database

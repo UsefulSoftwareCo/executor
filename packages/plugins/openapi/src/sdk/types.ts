@@ -26,9 +26,8 @@ export type Authentication = OAuthAuthentication | APIKeyAuthentication;
 
 /** The union mixes discriminator keys (`type: "oauth"` is a core shape;
  *  `kind: "apikey"` is the shared placements shape) — narrow through these. */
-export const isOAuthAuthentication = (
-  template: Authentication,
-): template is OAuthAuthentication => !("kind" in template);
+export const isOAuthAuthentication = (template: Authentication): template is OAuthAuthentication =>
+  !("kind" in template);
 
 export const isApiKeyAuthentication = (
   template: Authentication,

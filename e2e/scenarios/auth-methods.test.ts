@@ -16,11 +16,7 @@ import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { makeEchoMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 
@@ -412,7 +408,9 @@ scenario(
           "the bearer method rendered only its header",
         ).toBe(true);
         expect(
-          bearerRequests.every((r) => !r.url.includes("team_id=") && !r.url.includes("auth_token=")),
+          bearerRequests.every(
+            (r) => !r.url.includes("team_id=") && !r.url.includes("auth_token="),
+          ),
           "…with no query credential bleeding in from sibling methods",
         ).toBe(true);
 
