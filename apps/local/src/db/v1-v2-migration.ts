@@ -879,11 +879,29 @@ const insertPlan = async (
   }
 };
 
-const moveSqliteFileSet = (source: string, target: string): void => {
-  fs.renameSync(source, target);
+// Windows reports EBUSY/EPERM on rename for a short window after a SQLite
+// handle closes (handle release lags the close call, and antivirus scanners
+// briefly lock the file). POSIX renames never hit this — retry with a short
+// backoff instead of failing the whole migration.
+const renameWithRetry = async (source: string, target: string): Promise<void> => {
+  const delaysMs = [50, 100, 250, 500, 1000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if ((code !== "EBUSY" && code !== "EPERM") || attempt >= delaysMs.length) throw cause;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delaysMs[attempt]));
+    }
+  }
+};
+
+const moveSqliteFileSet = async (source: string, target: string): Promise<void> => {
+  await renameWithRetry(source, target);
   for (const suffix of ["-wal", "-shm"] as const) {
     if (fs.existsSync(`${source}${suffix}`))
-      fs.renameSync(`${source}${suffix}`, `${target}${suffix}`);
+      await renameWithRetry(`${source}${suffix}`, `${target}${suffix}`);
   }
 };
 
@@ -925,7 +943,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
     const backupPath = backupPathFor(options.sqlitePath);
 
     reader.close();
-    moveSqliteFileSet(options.sqlitePath, backupPath);
+    await moveSqliteFileSet(options.sqlitePath, backupPath);
 
     let target: Awaited<ReturnType<typeof createSqliteFumaDb>> | null = null;
     try {
@@ -955,7 +973,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
     } catch (cause) {
       if (target) await target.close();
       removeSqliteFileSet(options.sqlitePath);
-      if (fs.existsSync(backupPath)) moveSqliteFileSet(backupPath, options.sqlitePath);
+      if (fs.existsSync(backupPath)) await moveSqliteFileSet(backupPath, options.sqlitePath);
       throw cause;
     }
   } finally {
