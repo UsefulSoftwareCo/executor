@@ -12,7 +12,9 @@ export {
 } from "./plugin";
 
 export {
-  McpAuthTemplate,
+  McpAuthMethod,
+  McpAuthMethodInput,
+  McpAuthShorthand,
   McpIntegrationConfig,
   McpRemoteIntegrationConfig,
   McpStdioIntegrationConfig,

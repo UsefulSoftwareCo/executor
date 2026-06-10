@@ -23,64 +23,88 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "oauth2" });
   });
 
-  it("maps apiKey → a header method from the first named header placement (with prefix)", () => {
+  it("maps a header placement to an apikey method (prefix preserved)", () => {
     const value: AuthTemplateEditorValue = {
       kind: "apikey",
       placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
     };
     expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
-      kind: "header",
-      headerName: "Authorization",
-      prefix: "Bearer ",
+      kind: "apikey",
+      placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
     });
   });
 
-  it("omits the prefix when blank", () => {
+  it("maps a query placement to an apikey method (servers like ui.sh use ?token=)", () => {
     const value: AuthTemplateEditorValue = {
       kind: "apikey",
-      placements: [{ carrier: "header", name: "X-Token", prefix: "" }],
+      placements: [{ carrier: "query", name: "token", prefix: "" }],
     };
     expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
-      kind: "header",
-      headerName: "X-Token",
+      kind: "apikey",
+      placements: [{ carrier: "query", name: "token" }],
     });
   });
 
-  it("skips a query placement (MCP carries a single header) and falls back to none", () => {
-    const value: AuthTemplateEditorValue = {
-      kind: "apikey",
-      placements: [{ carrier: "query", name: "api_key", prefix: "" }],
-    };
-    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "none" });
-  });
-
-  it("uses the first NAMED header placement (skips unnamed)", () => {
+  it("keeps EVERY named placement — header + query mix in one method", () => {
     const value: AuthTemplateEditorValue = {
       kind: "apikey",
       placements: [
-        { carrier: "header", name: "", prefix: "" },
-        { carrier: "header", name: "X-Token", prefix: "" },
+        { carrier: "header", name: "Authorization", prefix: "Bearer " },
+        { carrier: "query", name: "team_id", prefix: "" },
       ],
     };
     expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
-      kind: "header",
-      headerName: "X-Token",
+      kind: "apikey",
+      placements: [
+        { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "authorization" },
+        { carrier: "query", name: "team_id", variable: "team_id" },
+      ],
     });
+  });
+
+  it("drops unnamed placements and degrades to none when nothing is usable", () => {
+    expect(
+      mcpAuthMethodInputFromEditorValue({
+        kind: "apikey",
+        placements: [{ carrier: "header", name: "  ", prefix: "" }],
+      }),
+    ).toEqual({ kind: "none" });
   });
 });
 
 describe("editorValueFromMcpAuthMethod", () => {
-  it("round-trips a header method into an apikey editor value", () => {
+  it("round-trips an apikey method, making the shared token variable explicit", () => {
     expect(
       editorValueFromMcpAuthMethod({
         slug: "header",
-        kind: "header",
-        headerName: "X-Api-Key",
-        prefix: "Bearer ",
+        kind: "apikey",
+        placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer " }],
       }),
     ).toEqual({
       kind: "apikey",
-      placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer " }],
+      placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer ", variable: "token" }],
+    });
+  });
+
+  it("round-trip edit preserves placement variables (sharing survives)", () => {
+    const stored = {
+      slug: "custom_two_spots",
+      kind: "apikey",
+      placements: [
+        { carrier: "header", name: "X-Token" },
+        { carrier: "query", name: "token" },
+      ],
+    } as const;
+    const editor = editorValueFromMcpAuthMethod(stored);
+    const back = mcpAuthMethodInputFromEditorValue(editor);
+    // Both placements still share the canonical `token` input (stored as
+    // absent on the wire) — a round-trip must not split one credential in two.
+    expect(back).toEqual({
+      kind: "apikey",
+      placements: [
+        { carrier: "header", name: "X-Token" },
+        { carrier: "query", name: "token" },
+      ],
     });
   });
 
@@ -99,7 +123,11 @@ describe("authMethodsFromConfig", () => {
     const methods = authMethodsFromConfig(
       [
         { slug: "oauth2", kind: "oauth2" },
-        { slug: "custom_abc123", kind: "header", headerName: "X-Api-Key" },
+        {
+          slug: "custom_abc123",
+          kind: "apikey",
+          placements: [{ carrier: "header", name: "X-Api-Key" }],
+        },
         { slug: "none", kind: "none" },
       ],
       "https://mcp.example.com/mcp",
@@ -119,21 +147,64 @@ describe("authMethodsFromConfig", () => {
     ]);
     expect(methods[0]?.oauth?.discoveryUrl).toBe("https://mcp.example.com/mcp");
   });
+
+  it("carries multi-placement methods through to the hub", () => {
+    const methods = authMethodsFromConfig(
+      [
+        {
+          slug: "custom_mix",
+          kind: "apikey",
+          placements: [
+            { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "api_token" },
+            { carrier: "query", name: "team_id", variable: "team_id" },
+          ],
+        },
+      ],
+      "https://mcp.example.com/mcp",
+    );
+    expect(methods[0]?.placements).toEqual([
+      { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "api_token" },
+      { carrier: "query", name: "team_id", prefix: "", variable: "team_id" },
+    ]);
+  });
 });
 
 describe("mcpAuthMethodInputsFromPlacements", () => {
-  it("builds one header method from the first named header placement", () => {
+  it("builds ONE method carrying every named placement", () => {
     expect(
       mcpAuthMethodInputsFromPlacements([
-        { carrier: "query", name: "api_key", prefix: "" },
         { carrier: "header", name: "X-Token", prefix: "Bearer " },
+        { carrier: "query", name: "team_id", prefix: "" },
       ]),
-    ).toEqual([{ kind: "header", headerName: "X-Token", prefix: "Bearer " }]);
+    ).toEqual([
+      {
+        kind: "apikey",
+        placements: [
+          { carrier: "header", name: "X-Token", prefix: "Bearer ", variable: "x_token" },
+          { carrier: "query", name: "team_id", variable: "team_id" },
+        ],
+      },
+    ]);
   });
 
-  it("is empty when no usable header placement exists", () => {
+  it("builds a query method from a query placement (the ui.sh '?token=' case)", () => {
     expect(
-      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "api_key", prefix: "" }]),
+      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "token", prefix: "" }]),
+    ).toEqual([{ kind: "apikey", placements: [{ carrier: "query", name: "token" }] }]);
+  });
+
+  it("skips unnamed placements", () => {
+    expect(
+      mcpAuthMethodInputsFromPlacements([
+        { carrier: "query", name: "", prefix: "" },
+        { carrier: "query", name: "token", prefix: "" },
+      ]),
+    ).toEqual([{ kind: "apikey", placements: [{ carrier: "query", name: "token" }] }]);
+  });
+
+  it("is empty when no placement has a usable name", () => {
+    expect(
+      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "  ", prefix: "" }]),
     ).toEqual([]);
   });
 });

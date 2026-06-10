@@ -28,6 +28,14 @@ import {
   ToolName,
 } from "@executor-js/sdk";
 
+import {
+  TOKEN_VARIABLE,
+  describeApiKeyAuthMethod,
+  describeNoneAuthMethod,
+  renderAuthPlacements,
+  requiredPlacementVariables,
+} from "@executor-js/http-auth";
+
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { discoverTools } from "./discover";
 import { McpConnectionError, McpToolDiscoveryError } from "./errors";
@@ -37,11 +45,11 @@ import { mcpPresets } from "./presets";
 import { probeMcpEndpointShape, type McpShapeProbeResult } from "./probe-shape";
 import {
   McpAuthMethodInput,
-  McpAuthTemplate,
+  McpAuthShorthand,
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
-  mcpAuthMethodFromLegacy,
+  mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
   parseMcpIntegrationConfig,
   type McpIntegrationConfig as McpIntegrationConfigType,
@@ -145,7 +153,7 @@ const McpRemoteServerInputSchema = Schema.Struct({
   authenticationTemplate: Schema.optional(Schema.Array(McpAuthMethodInput)),
   /** Single-method shorthand (legacy callers). Ignored when
    *  `authenticationTemplate` is present. Defaults to none. */
-  auth: Schema.optional(McpAuthTemplate),
+  auth: Schema.optional(McpAuthShorthand),
 });
 
 const McpStdioServerInputSchema = Schema.Struct({
@@ -266,7 +274,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     headers: input.headers,
     authenticationTemplate: input.authenticationTemplate
       ? normalizeMcpAuthMethods(input.authenticationTemplate)
-      : [mcpAuthMethodFromLegacy(input.auth ?? { kind: "none" })],
+      : [mcpAuthMethodFromShorthand(input.auth ?? { kind: "none" })],
   };
 };
 
@@ -429,7 +437,7 @@ const selectAuthMethod = (
 
 const buildConnectorInput = (
   config: McpIntegrationConfigType,
-  value: string | null,
+  values: Record<string, string | null>,
   templateSlug: string | null,
   allowStdio: boolean,
 ): Effect.Effect<ConnectorInput, McpConnectionError> => {
@@ -452,24 +460,27 @@ const buildConnectorInput = (
     } satisfies McpStdioIntegrationConfig);
   }
 
+  // Credential placements render OVER the integration's static headers /
+  // query params — a same-named static entry is overwritten.
   const headers: Record<string, string> = { ...(config.headers ?? {}) };
+  const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
   let authProvider: OAuthClientProvider | undefined;
 
   const auth = selectAuthMethod(config, templateSlug);
-  if (auth?.kind === "header" && value !== null) {
-    headers[auth.headerName] = auth.prefix ? `${auth.prefix}${value}` : value;
-  } else if (auth?.kind === "oauth2" && value !== null) {
-    authProvider = makeOAuthProvider(value);
+  if (auth?.kind === "apikey") {
+    const rendered = renderAuthPlacements(auth.placements, values);
+    Object.assign(headers, rendered.headers);
+    Object.assign(queryParams, rendered.queryParams);
+  } else if (auth?.kind === "oauth2") {
+    const token = values[TOKEN_VARIABLE];
+    if (token != null) authProvider = makeOAuthProvider(token);
   }
 
   return Effect.succeed({
     transport: "remote" as const,
     endpoint: config.endpoint,
     remoteTransport: config.remoteTransport ?? "auto",
-    queryParams:
-      config.queryParams && Object.keys(config.queryParams).length > 0
-        ? config.queryParams
-        : undefined,
+    queryParams: Object.keys(queryParams).length > 0 ? queryParams : undefined,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     authProvider,
   });
@@ -483,7 +494,7 @@ const buildConnectorInput = (
 //
 //   none                 → a no-auth method carrying no credential inputs
 //   stdio                → []          (no remote connection to configure)
-//   header               → an apikey method carrying the header placement
+//   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
 //                          (`discoveryUrl`); endpoints are discovered live at
 //                          connect time, so they are NOT pre-resolved here. We
@@ -499,15 +510,7 @@ export const describeMcpAuthMethods = (
   if (!config || config.transport === "stdio") return [];
 
   return config.authenticationTemplate.map((method: McpAuthMethod): AuthMethodDescriptor => {
-    if (method.kind === "header") {
-      return {
-        id: method.slug,
-        label: `API key (${method.headerName})`,
-        kind: "apikey",
-        template: method.slug,
-        placements: [{ carrier: "header", name: method.headerName, prefix: method.prefix ?? "" }],
-      };
-    }
+    if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
     if (method.kind === "oauth2") {
       return {
         id: method.slug,
@@ -517,12 +520,7 @@ export const describeMcpAuthMethods = (
         oauth: { discoveryUrl: config.endpoint, supportsDynamicRegistration: true },
       };
     }
-    return {
-      id: method.slug,
-      label: "No authentication",
-      kind: "none",
-      template: method.slug,
-    };
+    return describeNoneAuthMethod(method.slug);
   });
 };
 
@@ -869,16 +867,20 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // Discovery failures (auth not ready, server down) yield an empty tool set
     // rather than failing — the connection still lands and can be refreshed.
     // -----------------------------------------------------------------------
-    resolveTools: ({ config, connection, template, getValue }) =>
+    resolveTools: ({ config, connection, template, getValues }) =>
       Effect.gen(function* () {
         const parsed = parseMcpIntegrationConfig(config);
         if (!parsed) return { tools: [] as readonly ToolDef[] };
 
-        const value = yield* getValue().pipe(Effect.orElseSucceed(() => null));
+        // Discovery tolerates unresolved credentials (an open server lists
+        // tools unauthenticated; a bad value just yields zero tools).
+        const values = yield* getValues().pipe(
+          Effect.orElseSucceed(() => ({}) as Record<string, string | null>),
+        );
 
         const built = yield* buildConnectorInput(
           parsed,
-          value,
+          values,
           template === null ? null : String(template),
           allowStdio,
         ).pipe(
@@ -925,9 +927,28 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const transport: string =
           parsed.transport === "stdio" ? "stdio" : (parsed.remoteTransport ?? "auto");
 
+        // An apikey method with unresolved inputs fails the invocation
+        // explicitly instead of dialing unauthenticated.
+        if (parsed.transport === "remote") {
+          const method = selectAuthMethod(parsed, String(credential.template));
+          if (method?.kind === "apikey") {
+            const missing = requiredPlacementVariables(method.placements).filter(
+              (variable) => credential.values[variable] == null,
+            );
+            if (missing.length > 0) {
+              return authToolFailure({
+                code: "connection_value_missing",
+                message: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}. Re-create the connection with the required value(s).`,
+                source: { id: String(credential.integration) },
+                credential: { kind: "upstream", label: String(credential.connection) },
+              });
+            }
+          }
+        }
+
         const connector: McpConnector = yield* buildConnectorInput(
           parsed,
-          credential.value,
+          credential.values,
           String(credential.template),
           allowStdio,
         ).pipe(Effect.map((ci) => createMcpConnector(ci)));

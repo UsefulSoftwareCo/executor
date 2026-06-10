@@ -31,6 +31,10 @@ export interface Placement {
    *  each get a distinct variable. Two placements sharing a variable share one
    *  value. */
   readonly variable?: string;
+  /** Set when the placement renders this exact value instead of a credential
+   *  (a static header/param the method carries). Carried through edits; the
+   *  editor doesn't create these. */
+  readonly literal?: string;
 }
 
 /** A fresh, empty header placement — the default first row in an editor. */
@@ -167,6 +171,7 @@ function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod 
             name: placement.name,
             prefix: placement.prefix,
             ...(placement.variable ? { variable: placement.variable } : {}),
+            ...(placement.literal !== undefined ? { literal: placement.literal } : {}),
           }),
         )
       : DEFAULT_PLACEMENTS;

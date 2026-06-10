@@ -10,7 +10,7 @@ import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
 import {
   McpAuthMethod,
   McpAuthMethodInput,
-  McpAuthTemplate,
+  McpAuthShorthand,
   McpIntegrationConfig,
 } from "../sdk/types";
 
@@ -40,7 +40,7 @@ const AddRemoteServerPayload = Schema.Struct({
   authenticationTemplate: Schema.optional(Schema.Array(McpAuthMethodInput)),
   /** Single-method shorthand (legacy callers); ignored when
    *  `authenticationTemplate` is present. */
-  auth: Schema.optional(McpAuthTemplate),
+  auth: Schema.optional(McpAuthShorthand),
 });
 
 const AddStdioServerPayload = Schema.Struct({

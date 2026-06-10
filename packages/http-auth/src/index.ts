@@ -13,3 +13,11 @@ export {
   requiredPlacementVariables,
   type RenderedAuthPlacements,
 } from "./auth-method";
+
+// Migration-only legacy vocabulary — runtime code must not use these.
+export {
+  LegacyApiKeyTemplate,
+  LegacyTemplateValue,
+  apiKeyMethodFromLegacyTemplate,
+  decodeLegacyApiKeyTemplate,
+} from "./legacy";

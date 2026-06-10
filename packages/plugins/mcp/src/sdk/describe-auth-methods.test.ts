@@ -7,8 +7,9 @@ import { describeMcpAuthMethods, describeMcpIntegrationDisplay } from "./plugin"
 // `describeMcpAuthMethods` projects the stored MCP config into the catalog's
 // plugin-agnostic `AuthMethodDescriptor[]`, one per declared method. It is
 // pure/sync and must tolerate a malformed or foreign config blob by returning
-// `[]`. Legacy configs (singular `auth`, or no auth field at all) are lifted
-// into a one-element `authenticationTemplate` whose slug is the method kind.
+// `[]`. Pre-canonical blobs are rewritten by the one-off config migration
+// (see migrate-config.test.ts), so this projection only ever sees the
+// canonical placements model.
 // ---------------------------------------------------------------------------
 
 const recordWith = (config: IntegrationConfig): IntegrationRecord => ({
@@ -45,13 +46,17 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("projects a header method to an apikey method carrying the header placement", () => {
+  it("projects an apikey header method carrying the placement", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
         transport: "remote",
         endpoint: "https://x.example/mcp",
         authenticationTemplate: [
-          { slug: "header", kind: "header", headerName: "X-Api-Key", prefix: "Bearer " },
+          {
+            slug: "header",
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer " }],
+          },
         ],
       }),
     );
@@ -67,6 +72,57 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("projects an apikey query method (the ui.sh '?token=' shape)", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://ui.sh/mcp",
+        authenticationTemplate: [
+          { slug: "query", kind: "apikey", placements: [{ carrier: "query", name: "token" }] },
+        ],
+      }),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "query",
+        label: "API key (token)",
+        kind: "apikey",
+        template: "query",
+        placements: [{ carrier: "query", name: "token", prefix: "" }],
+      },
+    ]);
+  });
+
+  it("projects a mixed header+query method with per-placement variables", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+        authenticationTemplate: [
+          {
+            slug: "custom_mix",
+            kind: "apikey",
+            placements: [
+              {
+                carrier: "header",
+                name: "Authorization",
+                prefix: "Bearer ",
+                variable: "api_token",
+              },
+              { carrier: "query", name: "team_id", variable: "team_id" },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(methods[0]?.placements).toEqual([
+      { carrier: "header", name: "Authorization", prefix: "Bearer ", variable: "api_token" },
+      { carrier: "query", name: "team_id", prefix: "", variable: "team_id" },
+    ]);
+  });
+
   it("projects every declared method (multi-method configs)", () => {
     const methods = describeMcpAuthMethods(
       recordWith({
@@ -74,7 +130,11 @@ describe("describeMcpAuthMethods", () => {
         endpoint: "https://x.example/mcp",
         authenticationTemplate: [
           { slug: "oauth2", kind: "oauth2" },
-          { slug: "custom_abc123", kind: "header", headerName: "X-Api-Key" },
+          {
+            slug: "custom_abc123",
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "X-Api-Key" }],
+          },
         ],
       }),
     );
@@ -82,20 +142,6 @@ describe("describeMcpAuthMethods", () => {
     expect(methods.map((m) => ({ id: m.id, kind: m.kind, template: m.template }))).toEqual([
       { id: "oauth2", kind: "oauth", template: "oauth2" },
       { id: "custom_abc123", kind: "apikey", template: "custom_abc123" },
-    ]);
-  });
-
-  it("defaults the header prefix to an empty string when unset", () => {
-    const methods = describeMcpAuthMethods(
-      recordWith({
-        transport: "remote",
-        endpoint: "https://x.example/mcp",
-        authenticationTemplate: [{ slug: "header", kind: "header", headerName: "Authorization" }],
-      }),
-    );
-
-    expect(methods[0]?.placements).toEqual([
-      { carrier: "header", name: "Authorization", prefix: "" },
     ]);
   });
 
@@ -117,45 +163,6 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("lifts a legacy singular `auth` config into one method slugged by kind", () => {
-    const methods = describeMcpAuthMethods(
-      recordWith({
-        transport: "remote",
-        endpoint: "https://x.example/oauth/mcp",
-        auth: { kind: "oauth2" },
-      }),
-    );
-    expect(methods).toEqual([
-      {
-        id: "oauth2",
-        label: "OAuth",
-        kind: "oauth",
-        template: "oauth2",
-        oauth: {
-          discoveryUrl: "https://x.example/oauth/mcp",
-          supportsDynamicRegistration: true,
-        },
-      },
-    ]);
-  });
-
-  it("treats legacy remote configs with no auth field as open/no-auth", () => {
-    const methods = describeMcpAuthMethods(
-      recordWith({
-        transport: "remote",
-        endpoint: "https://x.example/mcp",
-      }),
-    );
-    expect(methods).toEqual([
-      {
-        id: "none",
-        label: "No authentication",
-        kind: "none",
-        template: "none",
-      },
-    ]);
-  });
-
   it("returns [] for a stdio transport", () => {
     const methods = describeMcpAuthMethods(
       recordWith({ transport: "stdio", command: "run-server" }),
@@ -163,10 +170,20 @@ describe("describeMcpAuthMethods", () => {
     expect(methods).toEqual([]);
   });
 
-  it("returns [] for a malformed / foreign config blob", () => {
+  it("returns [] for a malformed / foreign / pre-migration config blob", () => {
     expect(describeMcpAuthMethods(recordWith({ not: "an mcp config" }))).toEqual([]);
     expect(describeMcpAuthMethods(recordWith(null))).toEqual([]);
     expect(describeMcpAuthMethods(recordWith("garbage"))).toEqual([]);
+    // Pre-canonical blobs are the config migration's job, not the projection's.
+    expect(
+      describeMcpAuthMethods(
+        recordWith({
+          transport: "remote",
+          endpoint: "https://x.example/mcp",
+          authenticationTemplate: [{ slug: "header", kind: "header", headerName: "X" }],
+        }),
+      ),
+    ).toEqual([]);
   });
 
   it("projects remote endpoint as display metadata", () => {

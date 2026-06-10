@@ -4,6 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 
 import { IntegrationSlug } from "@executor-js/sdk/shared";
+import { apiKeyMethodLabel, type AuthPlacement } from "@executor-js/http-auth";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   AuthMethodListEditor,
@@ -43,8 +44,28 @@ type McpRemoteConfig = Extract<McpIntegrationConfig, { transport: "remote" }>;
 
 const methodSeedLabel = (method: McpAuthMethod): string => {
   if (method.kind === "oauth2") return "OAuth";
-  if (method.kind === "header") return `API key (${method.headerName})`;
+  if (method.kind === "apikey") return apiKeyMethodLabel(method);
   return "No authentication";
+};
+
+const samePlacements = (
+  a: readonly AuthPlacement[] | undefined,
+  b: readonly AuthPlacement[] | undefined,
+): boolean => {
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left.length !== right.length) return false;
+  return left.every((placement: AuthPlacement, index: number) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      placement.carrier === other.carrier &&
+      placement.name === other.name &&
+      (placement.prefix ?? "") === (other.prefix ?? "") &&
+      (placement.variable ?? "") === (other.variable ?? "") &&
+      (placement.literal ?? null) === (other.literal ?? null)
+    );
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -97,11 +118,8 @@ function RemoteEdit(props: {
       if (!current) return true;
       if ((method.slug ?? "") !== current.slug) return true;
       if (method.kind !== current.kind) return true;
-      if (method.kind === "header" && current.kind === "header") {
-        return (
-          method.headerName !== current.headerName ||
-          (method.prefix ?? "") !== (current.prefix ?? "")
-        );
+      if (method.kind === "apikey" && current.kind === "apikey") {
+        return !samePlacements(method.placements, current.placements);
       }
       return false;
     });
