@@ -37,6 +37,112 @@ const targetIsWindows = BUN_TARGET.includes("windows") || process.platform === "
 const binaryName = targetIsWindows ? "executor-sidecar.exe" : "executor-sidecar";
 const sidecarBinary = resolve(SIDECAR_OUT_DIR, binaryName);
 
+/**
+ * Normalized `<os>-<arch>[-<abi>]` key for the compile target, derived from
+ * BUN_TARGET (`bun` = the runner's own platform). Matches the keys used by
+ * apps/cli/src/build.ts's native-binding maps.
+ */
+const targetKey =
+  BUN_TARGET === "bun"
+    ? `${process.platform}-${process.arch}`
+    : BUN_TARGET.replace(/^bun-/, "").replace(/^windows-/, "win32-");
+
+const targetIsCurrentPlatform = targetKey === `${process.platform}-${process.arch}`;
+
+// `bun build --compile` does not bundle `.node` native addons into bunfs, so
+// the sidecar's eager `require('@libsql/<plat>')` (and the keychain plugin's
+// lazy keyring load) would fail at runtime. We stage each binding next to the
+// binary; src/sidecar/native-bindings.ts (the sidecar's first import) points
+// the loaders at them via EXECUTOR_LIBSQL_NATIVE_PATH /
+// EXECUTOR_KEYRING_NATIVE_PATH. Mirrors apps/cli/src/build.ts.
+const LIBSQL_NATIVE_VERSION = "0.5.29";
+const resolveLibsqlNative = (): string => {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "darwin-arm64",
+    "darwin-x64": "darwin-x64",
+    // The compiled binary runs on Bun, which libSQL's loader treats as glibc
+    // (its musl->gnu workaround), so non-musl linux targets need the -gnu binding.
+    "linux-arm64": "linux-arm64-gnu",
+    "linux-x64": "linux-x64-gnu",
+    "win32-arm64": "win32-arm64-msvc",
+    "win32-x64": "win32-x64-msvc",
+  };
+  const target = platformMap[targetKey];
+  if (!target) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
+    throw new Error(`No @libsql native binding mapping for target ${targetKey}`);
+  }
+  const pkg = `@libsql/${target}`;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: build-time resolution falls back to bun's store layout
+  try {
+    const req = createRequire(join(APPS_LOCAL, "package.json"));
+    return join(dirname(req.resolve(`${pkg}/package.json`)), "index.node");
+  } catch {
+    const bunPath = join(
+      REPO_ROOT,
+      `node_modules/.bun/${pkg.replace("/", "+")}@${LIBSQL_NATIVE_VERSION}/node_modules/${pkg}/index.node`,
+    );
+    if (!existsSync(bunPath)) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
+      throw new Error(
+        `Cannot resolve ${pkg} for the sidecar. Run \`bun install --cpu=* --os=*\` so cross-target native bindings are present.`,
+      );
+    }
+    return bunPath;
+  }
+};
+
+const resolveKeyringNative = (): string => {
+  const platformMap: Record<string, { pkg: string; node: string }> = {
+    "darwin-arm64": {
+      pkg: "@napi-rs/keyring-darwin-arm64",
+      node: "keyring.darwin-arm64.node",
+    },
+    "darwin-x64": {
+      pkg: "@napi-rs/keyring-darwin-x64",
+      node: "keyring.darwin-x64.node",
+    },
+    "linux-arm64": {
+      pkg: "@napi-rs/keyring-linux-arm64-gnu",
+      node: "keyring.linux-arm64-gnu.node",
+    },
+    "linux-x64": {
+      pkg: "@napi-rs/keyring-linux-x64-gnu",
+      node: "keyring.linux-x64-gnu.node",
+    },
+    "win32-arm64": {
+      pkg: "@napi-rs/keyring-win32-arm64-msvc",
+      node: "keyring.win32-arm64-msvc.node",
+    },
+    "win32-x64": {
+      pkg: "@napi-rs/keyring-win32-x64-msvc",
+      node: "keyring.win32-x64-msvc.node",
+    },
+  };
+  const entry = platformMap[targetKey];
+  if (!entry) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
+    throw new Error(`No @napi-rs/keyring native binding mapping for target ${targetKey}`);
+  }
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: build-time resolution falls back to bun's store layout
+  try {
+    const req = createRequire(join(REPO_ROOT, "node_modules", "@napi-rs/keyring", "package.json"));
+    return join(dirname(req.resolve(`${entry.pkg}/package.json`)), entry.node);
+  } catch {
+    const bunPath = join(
+      REPO_ROOT,
+      `node_modules/.bun/${entry.pkg.replace("/", "+")}@1.2.0/node_modules/${entry.pkg}/${entry.node}`,
+    );
+    if (!existsSync(bunPath)) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
+      throw new Error(
+        `Cannot resolve ${entry.pkg} for the sidecar. Run \`bun install --cpu=* --os=*\` so cross-target native bindings are present.`,
+      );
+    }
+    return bunPath;
+  }
+};
+
 // QuickJS ships its WASM as a side asset; `bun build --compile` can't pull
 // it into bunfs, so we stage it next to the binary and the sidecar entry
 // preloads it via `setQuickJSModule` before any server import.
@@ -54,11 +160,15 @@ const resolveQuickJsWasmPath = (): string => {
   return wasmPath;
 };
 
-// Drizzle's migrator takes a folder path at runtime. The compiled sidecar
-// cannot rely on apps/local/drizzle existing on disk, so inline every migration
-// as text and let apps/local extract them to a temp folder during startup.
+// The v1→v2 data migration replays the legacy v1 drizzle chain
+// (apps/local/drizzle-legacy-v1) before reading a legacy database. The
+// compiled sidecar cannot rely on that folder existing on disk, so inline
+// every migration as text and let apps/local extract them to a temp folder
+// during startup. Mirrors apps/cli/src/build.ts — embedding the wrong dir
+// (e.g. the v2 chain in drizzle/) makes the sidecar treat every real legacy
+// database as "history does not match" and skip the replay.
 const createEmbeddedMigrationsSource = async () => {
-  const migrationsDir = resolve(APPS_LOCAL, "drizzle");
+  const migrationsDir = resolve(APPS_LOCAL, "drizzle-legacy-v1");
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: migrationsDir })))
     .map((file) => file.replaceAll("\\", "/"))
     .sort();
@@ -86,6 +196,20 @@ if (!existsSync(APPS_LOCAL_DIST)) {
   );
 }
 
+// Cross-target builds (e.g. the mac x64 leg on an arm64 runner) need the other
+// platform's optional native packages on disk before we can stage them.
+// `--cpu=* --os=*` extracts them all without modifying the lockfile. Mirrors
+// apps/cli/src/build.ts.
+if (!targetIsCurrentPlatform) {
+  console.log("[build-sidecar] installing optional native deps for all platforms...");
+  await $`bun install --frozen-lockfile --cpu=* --os=*`.cwd(REPO_ROOT);
+}
+
+// Resolve the native bindings up front so a missing platform package fails the
+// build before the (slow) compile, and cross-target builds get a clear message.
+const libsqlNativePath = resolveLibsqlNative();
+const keyringNativePath = resolveKeyringNative();
+
 await rm(SIDECAR_OUT_DIR, { recursive: true, force: true });
 await rm(WEB_UI_OUT_DIR, { recursive: true, force: true });
 await mkdir(SIDECAR_OUT_DIR, { recursive: true });
@@ -107,6 +231,10 @@ try {
 
   console.log(`[build-sidecar] staging QuickJS WASM → ${SIDECAR_OUT_DIR}`);
   await cp(resolveQuickJsWasmPath(), join(SIDECAR_OUT_DIR, "emscripten-module.wasm"));
+
+  console.log(`[build-sidecar] staging native bindings (${targetKey}) → ${SIDECAR_OUT_DIR}`);
+  await cp(libsqlNativePath, join(SIDECAR_OUT_DIR, "libsql.node"));
+  await cp(keyringNativePath, join(SIDECAR_OUT_DIR, "keyring.node"));
 
   console.log(`[build-sidecar] staging web UI → ${WEB_UI_OUT_DIR}`);
   await cp(APPS_LOCAL_DIST, WEB_UI_OUT_DIR, { recursive: true });

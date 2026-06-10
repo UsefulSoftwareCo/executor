@@ -43,8 +43,14 @@ const config: Configuration = {
     entitlementsInherit: "build/entitlements.mac.plist",
     notarize: true,
   },
+  // Same arch rule as mac (see comment above): never pin `arch:` in the
+  // target objects. The win/linux pins used to force both archs out of a
+  // single x64 matrix leg, embedding an x64 sidecar binary inside the
+  // "arm64" installers — DOA on linux-arm64, emulated on win-arm64. Each
+  // workflow leg's --x64/--arm64 flag decides what gets built, so an arm64
+  // artifact only exists once a leg stages an arm64 sidecar for it.
   win: {
-    target: [{ target: "nsis", arch: ["x64", "arm64"] }],
+    target: ["nsis"],
   },
   nsis: {
     oneClick: true,
@@ -52,11 +58,7 @@ const config: Configuration = {
   },
   linux: {
     category: "Development",
-    target: [
-      { target: "AppImage", arch: ["x64", "arm64"] },
-      { target: "deb", arch: ["x64", "arm64"] },
-      { target: "rpm", arch: ["x64", "arm64"] },
-    ],
+    target: ["AppImage", "deb", "rpm"],
   },
   publish: {
     provider: "github",

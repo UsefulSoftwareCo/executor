@@ -29,22 +29,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # smoke: run the compiled-sidecar smoke test on legs whose target
+          # matches the runner (the mac x64 leg cross-compiles on an arm64
+          # runner, so its binary can't be executed natively there).
           - os: macos-latest
             arch: arm64
             platform: mac
             bun-target: bun-darwin-arm64
+            smoke: true
           - os: macos-latest
             arch: x64
             platform: mac
             bun-target: bun-darwin-x64
+            smoke: false
           - os: ubuntu-latest
             arch: x64
             platform: linux
             bun-target: bun-linux-x64
+            smoke: true
           - os: windows-latest
             arch: x64
             platform: win
             bun-target: bun-windows-x64
+            smoke: true
 
     runs-on: ${{ matrix.os }}
 
@@ -90,6 +97,15 @@ jobs:
         run: bun ./scripts/build-sidecar.ts
         working-directory: apps/desktop
 
+      # Gate the release on the compiled binary actually booting. v1.5.0/.1
+      # shipped sidecars that died on launch (missing libsql native binding) —
+      # a regression dev mode can't catch because `bun run` resolves
+      # node_modules that `bun build --compile` does not bundle.
+      - name: Smoke test compiled sidecar
+        if: matrix.smoke
+        run: bun run test:smoke
+        working-directory: apps/desktop
+
       - name: Build Electron main/preload/renderer
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
@@ -123,6 +139,16 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
+
+      # The two mac legs each emit a latest-mac.yml listing only their own
+      # arch. Rename per-arch here; the release job merges them back into the
+      # single latest-mac.yml electron-updater clients fetch. Without this,
+      # merge-multiple in the release job lets one arch clobber the other and
+      # every Mac gets pointed at whichever leg uploaded last.
+      - name: Rename mac update manifest per arch
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: mv apps/desktop/dist/latest-mac.yml "apps/desktop/dist/latest-mac-${{ matrix.arch }}.yml"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -165,6 +191,15 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Merge mac update manifests
+        run: |
+          set -euo pipefail
+          bun scripts/merge-latest-mac-yml.ts \
+            artifacts/latest-mac-x64.yml \
+            artifacts/latest-mac-arm64.yml \
+            artifacts/latest-mac.yml
+          rm artifacts/latest-mac-x64.yml artifacts/latest-mac-arm64.yml
 
       - name: Upload to GitHub Release
         env:

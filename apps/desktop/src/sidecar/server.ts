@@ -7,6 +7,9 @@
  * announces readiness with the resolved port on stdout so the Electron
  * main process can attach a BrowserWindow to it.
  */
+// MUST stay the first import — points libSQL/keyring at the `.node` bindings
+// staged next to the compiled binary before `@executor-js/local` loads them.
+import "./native-bindings";
 import { dirname, join } from "node:path";
 
 // Pre-load QuickJS WASM for compiled binaries. `bun build --compile` can't

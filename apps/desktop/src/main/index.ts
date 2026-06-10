@@ -93,7 +93,10 @@ const installBasicAuthHeader = (origin: string, password: string | null) => {
     { urls: [`${origin}/*`] },
     (details, callback) => {
       callback({
-        requestHeaders: { ...details.requestHeaders, Authorization: headerValue },
+        requestHeaders: {
+          ...details.requestHeaders,
+          Authorization: headerValue,
+        },
       });
     },
   );
@@ -234,6 +237,10 @@ const showPortInUseDialog = async (port: number) => {
   });
 };
 
+// Last non-port-conflict sidecar startup failure, surfaced by boot() in a
+// user-facing dialog instead of letting the app vanish without a window.
+let lastSidecarStartError: unknown = null;
+
 const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: bind failures surface as a user-facing dialog
   try {
@@ -244,6 +251,7 @@ const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => 
       await showPortInUseDialog(error.port);
       return null;
     }
+    lastSidecarStartError = error;
     log.error("Failed to start executor sidecar", error);
     return null;
   }
@@ -429,13 +437,41 @@ const runUpdateCheck = async ({ alertOnFail }: UpdateCheckOptions) => {
   }
 };
 
+// A sidecar that can't boot usually means a broken build or an incompatible
+// data dir — both states the user can't see from a dock icon that bounces
+// once and disappears. Surface the real error, and stage any available update
+// so a dead-on-arrival release can heal itself: without the explicit check
+// here, the boot-time update check never runs (it sits after a successful
+// sidecar start), so a broken app could never self-update its way out.
+const handleFatalSidecarFailure = async (error: unknown) => {
+  if (app.isPackaged) {
+    // Install whatever finishes downloading by the time the user quits the
+    // failure dialog; if it downloads while the dialog is open, the regular
+    // 'update-downloaded' prompt offers an immediate restart instead.
+    autoUpdater.autoInstallOnAppQuit = true;
+    void runUpdateCheck({ alertOnFail: false });
+  }
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: sidecar startup failures arrive as plain Node errors and render in a native dialog
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  await dialog.showMessageBox({
+    type: "error",
+    title: "Executor failed to start",
+    message: "The local Executor server crashed during startup.",
+    detail: `${detail.slice(0, 1800)}\n\nFull log: ${log.transports.file.getFile().path}`,
+    buttons: ["Quit"],
+  });
+};
+
 const installApplicationMenu = () => {
   const isMac = process.platform === "darwin";
   const appMenu: MenuItemConstructorOptions = {
     label: app.name,
     submenu: [
       { role: "about" },
-      { label: "Check for Updates…", click: () => void runUpdateCheck({ alertOnFail: true }) },
+      {
+        label: "Check for Updates…",
+        click: () => void runUpdateCheck({ alertOnFail: true }),
+      },
       { type: "separator" },
       ...(isMac
         ? ([
@@ -467,10 +503,14 @@ const boot = async () => {
   registerIpcHandlers();
   connection = await startWithCurrentSettings();
   if (!connection) {
-    // Even when the sidecar can't start, open the window so the user
-    // reaches Settings to change the port. Pointing at the (unreachable)
-    // baseUrl would just show ECONNREFUSED — a placeholder URL would be
-    // worse. For now: quit with the dialog already shown.
+    // Port conflicts already showed their dialog inside
+    // startWithCurrentSettings; every other failure surfaces here so the app
+    // never silently bounces-and-vanishes. Pointing a window at the
+    // (unreachable) baseUrl would just show ECONNREFUSED — a placeholder URL
+    // would be worse. For now: explain, offer the updater a chance, quit.
+    if (lastSidecarStartError != null) {
+      await handleFatalSidecarFailure(lastSidecarStartError);
+    }
     app.quit();
     return;
   }
