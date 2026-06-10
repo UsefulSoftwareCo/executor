@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -30,6 +32,11 @@ import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 // elicitation.test.ts + owner-isolation.test.ts.
 
 const TEMPLATE = AuthTemplateSlug.make("none");
+const JsonRpcRequest = Schema.Struct({
+  id: Schema.optional(Schema.Unknown),
+  method: Schema.String,
+});
+const decodeJsonRpcRequest = Schema.decodeUnknownOption(Schema.fromJsonString(JsonRpcRequest));
 
 // ---------------------------------------------------------------------------
 // Manifest extraction
@@ -384,6 +391,59 @@ describe("mcpPlugin", () => {
           requiresOAuth: false,
           supportsDynamicRegistration: false,
           toolCount: null,
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+
+  it.effect("probeEndpoint allows adding MCP-shaped endpoints when tool discovery fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.gen(function* () {
+            const body = yield* request.text.pipe(Effect.catch(() => Effect.succeed("")));
+            const parsed = Option.getOrElse(decodeJsonRpcRequest(body), () => ({
+              id: null,
+              method: "",
+            }));
+            const payload = parsed.method === "tools/list"
+              ? {
+                  jsonrpc: "2.0",
+                  id: parsed.id,
+                  error: {
+                    code: -32603,
+                    message: "Internal error while listing tools",
+                  },
+                }
+              : {
+                  jsonrpc: "2.0",
+                  id: parsed.id,
+                  result: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: { tools: { listChanged: true } },
+                    serverInfo: { name: "tinybird-mcp", version: "1.12.4" },
+                  },
+                };
+            return HttpServerResponse.text(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
+              headers: { "content-type": "text/event-stream" },
+            });
+          }),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const result = yield* executor.mcp.probeEndpoint(server.url("/"));
+
+        expect(result).toMatchObject({
+          connected: false,
+          requiresAuthentication: true,
+          requiresOAuth: false,
+          supportsDynamicRegistration: false,
+          toolCount: null,
+          serverName: null,
         });
 
         yield* executor.close();

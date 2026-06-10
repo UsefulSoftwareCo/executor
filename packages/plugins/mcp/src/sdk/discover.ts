@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type { McpConnector } from "./connection";
 import { McpToolDiscoveryError } from "./errors";
@@ -11,6 +13,15 @@ import {
   isListToolsResult,
   type McpToolManifest,
 } from "./manifest";
+
+const ErrorWithMessage = Schema.Struct({ message: Schema.String });
+const decodeErrorWithMessage = Schema.decodeUnknownOption(ErrorWithMessage);
+
+const listToolsFailureMessage = (error: unknown): string =>
+  Option.match(decodeErrorWithMessage(error), {
+    onNone: () => "Failed listing MCP tools",
+    onSome: ({ message }) => `Failed listing MCP tools: ${message}`,
+  });
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -38,10 +49,10 @@ export const discoverTools = (
     // List tools
     const listResult = yield* Effect.tryPromise({
       try: () => connection.client.listTools(),
-      catch: () =>
+      catch: (error) =>
         new McpToolDiscoveryError({
           stage: "list_tools",
-          message: "Failed listing MCP tools",
+          message: listToolsFailureMessage(error),
         }),
     });
 

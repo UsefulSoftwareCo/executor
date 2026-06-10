@@ -575,7 +575,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           const result = yield* discoverTools(connector).pipe(
             Effect.map((m) => ({ ok: true as const, manifest: m })),
-            Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
+            Effect.catch((error) =>
+              Effect.succeed({ ok: false as const, manifest: null, error }),
+            ),
             Effect.withSpan("mcp.plugin.discover_tools"),
           );
 
@@ -639,11 +641,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             } satisfies McpProbeResult;
           }
 
-          return yield* new McpConnectionError({
-            transport: "remote",
-            message:
-              "This endpoint looks like MCP, but Executor couldn't discover tools from it. Check the URL and try again.",
-          });
+          return {
+            connected: false,
+            requiresAuthentication: true,
+            requiresOAuth: false,
+            supportsDynamicRegistration: false,
+            name,
+            slug,
+            toolCount: null,
+            serverName: null,
+          } satisfies McpProbeResult;
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
             attributes: { "mcp.endpoint": typeof input === "string" ? input : input.endpoint },
