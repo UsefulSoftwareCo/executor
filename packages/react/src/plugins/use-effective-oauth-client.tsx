@@ -3,7 +3,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { OAuthClientSlug, type Owner } from "@executor-js/sdk/shared";
 import { getDomain } from "tldts";
 
-import { oauthClientsAtom } from "../api/atoms";
+import { oauthClientsOptimisticAtom } from "../api/atoms";
 
 // ---------------------------------------------------------------------------
 // OAuth client (registered app) selection for an integration's connect flow.
@@ -134,7 +134,11 @@ export function useOAuthClientsForIntegration(opts: {
   readonly tokenUrl?: string;
   readonly authorizationUrl?: string;
 }): UseOAuthClientsResult {
-  const clientsResult = useAtomValue(oauthClientsAtom);
+  // Read the optimistic list so a just-registered/edited/removed app paints
+  // immediately, instead of flashing the stale server list until the refetch
+  // lands. The modal's management menu reads the same optimistic atom, so the
+  // picker rows and their actions stay consistent.
+  const clientsResult = useAtomValue(oauthClientsOptimisticAtom);
   if (!AsyncResult.isSuccess(clientsResult)) {
     return {
       clients: [],

@@ -7,6 +7,8 @@ import {
   type ConnectionName,
   type IntegrationSlug,
   type OAuthClientSlug,
+  type OAuthClientSummary,
+  type OAuthGrant,
   type Owner,
   type ProviderItemId,
   type ToolAddress,
@@ -431,5 +433,49 @@ export const removeOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
         ),
       ),
     fn: removeOAuthClient,
+  }),
+);
+
+/** Register (or edit) an OAuth app and paint it into the list immediately.
+ *  `createClient` upserts by `(owner, slug)` server-side, so the reducer mirrors
+ *  that: an existing row is replaced (edit), a new slug is appended (register).
+ *  The client secret is never part of the summary, so it is dropped. The
+ *  post-commit refresh (`oauthClientWriteKeys`) reconciles with the server. */
+export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (
+      current,
+      arg: {
+        readonly payload: {
+          readonly owner: Owner;
+          readonly slug: OAuthClientSlug;
+          readonly authorizationUrl: string;
+          readonly tokenUrl: string;
+          readonly grant: OAuthGrant;
+          readonly clientId: string;
+          readonly resource?: string | null;
+        };
+      },
+    ) =>
+      AsyncResult.map(current, (rows) => {
+        const summary: OAuthClientSummary = {
+          owner: arg.payload.owner,
+          slug: arg.payload.slug,
+          grant: arg.payload.grant,
+          authorizationUrl: arg.payload.authorizationUrl,
+          tokenUrl: arg.payload.tokenUrl,
+          resource: arg.payload.resource ?? null,
+          clientId: arg.payload.clientId,
+          origin: { kind: "manual" },
+        };
+        const index = rows.findIndex(
+          (client) => client.owner === summary.owner && client.slug === summary.slug,
+        );
+        if (index === -1) return [...rows, summary];
+        const next = rows.slice();
+        next[index] = summary;
+        return next;
+      }),
+    fn: createOAuthClient,
   }),
 );

@@ -4,7 +4,7 @@ import * as Exit from "effect/Exit";
 import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
-import { createOAuthClient, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
+import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
 import { ownerLabelForHost } from "../api/owner-display";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
@@ -116,7 +116,7 @@ export function OAuthClientForm(props: {
   const endpointsKnown = (prefill?.tokenUrl ?? "").length > 0;
   const [showEndpoints, setShowEndpoints] = useState(!endpointsKnown);
 
-  const doCreate = useAtomSet(createOAuthClient, { mode: "promiseExit" });
+  const doCreate = useAtomSet(createOAuthClientOptimistic, { mode: "promiseExit" });
   const doProbe = useAtomSet(probeOAuth, { mode: "promiseExit" });
   const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, {
     mode: "promiseExit",
