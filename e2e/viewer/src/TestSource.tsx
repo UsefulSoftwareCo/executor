@@ -1,25 +1,19 @@
 // Read-only Monaco showing the run's test source (the scenario's code with
 // imports + sibling tests stripped, written by the runner as test.ts).
-// Lazy-loaded so the Monaco chunk never weighs down the matrix page.
+// Uses Monaco CORE + the monarch TypeScript colorizer only — no language
+// service, no ts.worker — a read-only pane needs highlighting, not IntelliSense
+// (the full build is ~12 MB of workers). Lazy-loaded so the matrix stays light.
 import React, { useEffect, useRef, useState } from "react";
-import * as monaco from "monaco-editor";
+import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
 declare global {
   interface Window {
     MonacoEnvironment?: { getWorker: (workerId: string, label: string) => Worker };
   }
 }
-self.MonacoEnvironment = {
-  getWorker: (_id, label) =>
-    label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
-};
-// The excerpt deliberately has no imports — keep the language service quiet.
-monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-  noSemanticValidation: true,
-  noSyntaxValidation: true,
-});
+self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
 export default function TestSource({ url }: { url: string }) {
   const container = useRef<HTMLDivElement>(null);
