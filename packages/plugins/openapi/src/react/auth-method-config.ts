@@ -3,7 +3,7 @@
 // shared codec (`@executor-js/react/lib/shared-auth-method-codec`). The
 // apikey/none paths (multi-placement, multi-variable) live in the shared
 // codec; OpenAPI only contributes its oauth flavor: stored endpoints + scopes
-// (`type: "oauth"`, a core shape) that pre-fill the client-registration form.
+// (`kind: "oauth2"`, the core `OAuthAuthentication` shape) that pre-fill the client-registration form.
 // ---------------------------------------------------------------------------
 
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
@@ -17,22 +17,17 @@ import {
   wirePlacementsFromEditor,
 } from "@executor-js/react/lib/shared-auth-method-codec";
 
-import {
-  isOAuthAuthentication,
-  type APIKeyAuthentication,
-  type Authentication,
-  type AuthenticationInput,
-} from "../sdk/types";
+import type { APIKeyAuthentication, Authentication, AuthenticationInput } from "../sdk/types";
 
 /** Serialize a canonical method into the wire input union (apikey → the
  *  request-shaped dialect; oauth passes through). */
 export const openApiWireAuthInput = (method: Authentication): AuthenticationInput =>
-  isOAuthAuthentication(method) ? method : (wireAuthInputFromShared(method) as AuthenticationInput);
+  method.kind === "oauth2" ? method : (wireAuthInputFromShared(method) as AuthenticationInput);
 
 export const placementsFromApiKey = (template: APIKeyAuthentication): readonly Placement[] =>
   editorPlacementsFromWire(template.placements);
 
-const oauthAuthMethod = (template: Extract<Authentication, { type: "oauth" }>): AuthMethod => {
+const oauthAuthMethod = (template: Extract<Authentication, { kind: "oauth2" }>): AuthMethod => {
   const slug = String(template.slug);
   return {
     id: slug,
@@ -54,7 +49,7 @@ const oauthAuthMethod = (template: Extract<Authentication, { type: "oauth" }>): 
 /** Map each stored auth template to a generic `AuthMethod`. */
 export function authMethodsFromConfig(templates: readonly Authentication[]): AuthMethod[] {
   return templates.map((template: Authentication): AuthMethod => {
-    if (isOAuthAuthentication(template)) return oauthAuthMethod(template);
+    if (template.kind === "oauth2") return oauthAuthMethod(template);
     return authMethodFromSharedTemplate(template);
   });
 }
@@ -78,7 +73,7 @@ export function templateFromPlacements(
 
 /** Convert one stored `Authentication` template into a generic editor value. */
 export function editorValueFromAuthentication(template: Authentication): AuthTemplateEditorValue {
-  if (isOAuthAuthentication(template)) {
+  if (template.kind === "oauth2") {
     return {
       kind: "oauth",
       authorizationUrl: template.authorizationUrl ?? "",
@@ -95,7 +90,7 @@ const oauthTemplateFromEditorValue = (
   slug?: string,
 ): Authentication => ({
   slug: AuthTemplateSlug.make(slug ?? ""),
-  type: "oauth",
+  kind: "oauth2",
   authorizationUrl: value.authorizationUrl,
   tokenUrl: value.tokenUrl,
   scopes: [...value.scopes],

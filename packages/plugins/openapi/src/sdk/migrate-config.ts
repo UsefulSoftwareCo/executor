@@ -11,7 +11,7 @@
 // variable, the variable name preserved VERBATIM (it keys the connections'
 // stored `item_ids`; the canonical `token` is stored as absent), a
 // literal-only value becomes a `literal` placement. OAuth templates
-// (`type: "oauth"`) are already canonical and pass through untouched.
+// re-key from the retired `type: "oauth"` spelling to `kind: "oauth2"`.
 // ---------------------------------------------------------------------------
 
 import { Option } from "effect";
@@ -25,11 +25,25 @@ import { decodeOpenApiIntegrationConfig } from "./config";
 const isCanonicalEntry = (entry: unknown): boolean =>
   typeof entry === "object" &&
   entry !== null &&
-  (("kind" in entry && (entry as { kind: unknown }).kind === "apikey") ||
-    ("type" in entry && (entry as { type: unknown }).type === "oauth"));
+  "kind" in entry &&
+  ((entry as { kind: unknown }).kind === "apikey" ||
+    (entry as { kind: unknown }).kind === "oauth2");
+
+/** The retired oauth spelling: `type: "oauth"` instead of `kind: "oauth2"`. */
+const isLegacyOAuthEntry = (
+  entry: unknown,
+): entry is { readonly type: "oauth" } & Record<string, unknown> =>
+  typeof entry === "object" &&
+  entry !== null &&
+  "type" in entry &&
+  (entry as { type: unknown }).type === "oauth";
 
 const migrateEntry = (entry: unknown): unknown | null => {
   if (isCanonicalEntry(entry)) return entry;
+  if (isLegacyOAuthEntry(entry)) {
+    const { type: _type, ...rest } = entry;
+    return { ...rest, kind: "oauth2" };
+  }
   const legacy = Option.getOrNull(decodeLegacyApiKeyTemplate(entry));
   if (legacy !== null) return apiKeyMethodFromLegacyTemplate(legacy);
   return null;

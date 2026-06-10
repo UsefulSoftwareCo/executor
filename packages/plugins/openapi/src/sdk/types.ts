@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { OAuthAuthentication } from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, type OAuthAuthentication } from "@executor-js/sdk/shared";
 import {
   apiKeyMethodFromAuthTemplate,
   isApiKeyAuthTemplate,
@@ -14,7 +14,7 @@ import {
 // the same shape the graphql/mcp plugins store): N header/query placements,
 // each rendered from its own credential input. The oauth template is
 // mechanism-intrinsic and comes from core (`OAuthAuthentication`, keyed
-// `type: "oauth"` with stored endpoints+scopes); an integration's
+// `kind: "oauth2"` with stored endpoints+scopes); an integration's
 // `Authentication` union composes the two. Client credentials
 // (clientId/secret) live on the core `OAuthClient`, not here.
 //
@@ -27,32 +27,29 @@ export { TOKEN_VARIABLE } from "@executor-js/sdk/http-auth";
 
 export type APIKeyAuthentication = ApiKeyAuthMethod;
 
+/** Every method is keyed by `kind` — `kind: "oauth2"` | `kind: "apikey"`. */
 export type Authentication = OAuthAuthentication | APIKeyAuthentication;
 
-/** The union mixes discriminator keys (`type: "oauth"` is a core shape;
- *  `kind: "apikey"` is the shared placements shape) — narrow through these. */
-export const isOAuthAuthentication = (template: Authentication): template is OAuthAuthentication =>
-  !("kind" in template);
+/** What auth inputs accept: oauth templates (wire-typed: plain slug) plus the
+ *  request-shaped apikey dialect (`type: "apiKey"`, headers/queryParams
+ *  records) — the ONE apikey authoring shape. Stored configs and the catalog
+ *  read as canonical placements; `apiKeyAuthTemplateFromMethod` serializes
+ *  them back for read-modify-write flows. */
+export type OAuthAuthenticationInput = Omit<OAuthAuthentication, "slug"> & {
+  readonly slug: string;
+};
+export type AuthenticationInput = OAuthAuthenticationInput | ApiKeyAuthTemplate;
 
-export const isApiKeyAuthentication = (
-  template: Authentication,
-): template is APIKeyAuthentication => "kind" in template && template.kind === "apikey";
-
-/** What auth inputs accept: oauth templates plus the request-shaped apikey
- *  dialect (`type: "apiKey"`, headers/queryParams records) — the ONE apikey
- *  authoring shape. Stored configs and the catalog read as canonical
- *  placements; `apiKeyAuthTemplateFromMethod` serializes them back for
- *  read-modify-write flows. */
-export type AuthenticationInput = OAuthAuthentication | ApiKeyAuthTemplate;
-
-/** Expand the request-shaped dialect into canonical placements; oauth
- *  entries pass through. A dialect entry without a slug gets a blank one —
+/** Expand the request-shaped dialect into canonical placements and brand the
+ *  oauth slugs. A dialect entry without a slug gets a blank one —
  *  `mergeAuthTemplates` backfills `custom_<id>`. */
 export const normalizeOpenApiAuthInputs = (
   inputs: readonly AuthenticationInput[],
 ): readonly Authentication[] =>
   inputs.map((input): Authentication => {
-    if (!isApiKeyAuthTemplate(input)) return input;
+    if (!isApiKeyAuthTemplate(input)) {
+      return { ...input, slug: AuthTemplateSlug.make(input.slug) };
+    }
     const method = apiKeyMethodFromAuthTemplate(input);
     return { ...method, slug: method.slug ?? "" };
   });

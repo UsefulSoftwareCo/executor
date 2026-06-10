@@ -68,8 +68,6 @@ export {
   HttpMethod,
   ParameterLocation,
   TOKEN_VARIABLE,
-  isApiKeyAuthentication,
-  isOAuthAuthentication,
   normalizeOpenApiAuthInputs,
   type Authentication,
   type AuthenticationInput,

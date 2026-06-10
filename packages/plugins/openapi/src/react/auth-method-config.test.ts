@@ -14,7 +14,7 @@ describe("authMethodsFromConfig", () => {
     const methods = authMethodsFromConfig([
       {
         slug: AuthTemplateSlug.make("oauth"),
-        type: "oauth",
+        kind: "oauth2",
         authorizationUrl: "https://x.example/auth",
         tokenUrl: "https://x.example/token",
         scopes: ["read"],
@@ -70,7 +70,7 @@ describe("editor round-trip", () => {
     expect(
       editorValueFromAuthentication({
         slug: AuthTemplateSlug.make("oauth"),
-        type: "oauth",
+        kind: "oauth2",
         authorizationUrl: "https://x.example/auth",
         tokenUrl: "https://x.example/token",
         scopes: ["a", "b"],

@@ -93,18 +93,17 @@ describe("migrateOpenApiAuthConfig", () => {
     });
   });
 
-  it("passes oauth templates through untouched (already canonical)", () => {
-    const oauth = {
-      slug: "oauth",
-      type: "oauth",
-      authorizationUrl: "https://x.example/auth",
-      tokenUrl: "https://x.example/token",
-      scopes: ["read"],
-    };
+  it('re-keys the retired `type: "oauth"` spelling to `kind: "oauth2"`', () => {
     const migrated = migrateOpenApiAuthConfig({
       ...BASE,
       authenticationTemplate: [
-        oauth,
+        {
+          slug: "oauth",
+          type: "oauth",
+          authorizationUrl: "https://x.example/auth",
+          tokenUrl: "https://x.example/token",
+          scopes: ["read"],
+        },
         {
           slug: "key",
           type: "apiKey",
@@ -112,7 +111,13 @@ describe("migrateOpenApiAuthConfig", () => {
         },
       ],
     }) as { authenticationTemplate: readonly unknown[] };
-    expect(migrated.authenticationTemplate[0]).toBe(oauth);
+    expect(migrated.authenticationTemplate[0]).toEqual({
+      slug: "oauth",
+      kind: "oauth2",
+      authorizationUrl: "https://x.example/auth",
+      tokenUrl: "https://x.example/token",
+      scopes: ["read"],
+    });
   });
 
   it("is idempotent — canonical configs return null", () => {

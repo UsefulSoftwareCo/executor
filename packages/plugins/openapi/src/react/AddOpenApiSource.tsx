@@ -188,7 +188,7 @@ const oauthTemplateFromPreset = (
   scopes: readonly string[],
 ): OAuthAuthentication => ({
   slug,
-  type: "oauth",
+  kind: "oauth2",
   authorizationUrl: resolveOAuthUrl(
     Option.getOrElse(preset.authorizationUrl, () => ""),
     baseUrl,

@@ -25,10 +25,11 @@ import {
 export type OAuthGrant = "authorization_code" | "client_credentials";
 
 /** Provider OAuth config an integration declares as one of its auth templates —
- *  what to request. (The flow itself runs off the self-contained OAuthClient.) */
+ *  what to request. (The flow itself runs off the self-contained OAuthClient.)
+ *  Keyed `kind: "oauth2"` like every auth method across the plugins. */
 export interface OAuthAuthentication {
   readonly slug: AuthTemplateSlug;
-  readonly type: "oauth";
+  readonly kind: "oauth2";
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly scopes: readonly string[];

@@ -163,7 +163,7 @@ const apiKeyTemplate: AuthenticationInput = {
 // An oauth template — the connection value renders as a bearer token.
 const oauthTemplate: AuthenticationInput = {
   slug: AuthTemplateSlug.make("oauth"),
-  type: "oauth",
+  kind: "oauth2",
   authorizationUrl: "https://auth.example.test/authorize",
   tokenUrl: "https://auth.example.test/token",
   scopes: ["read"],

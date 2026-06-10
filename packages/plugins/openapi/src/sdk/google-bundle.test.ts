@@ -205,8 +205,8 @@ describe("Google bundle add flow", () => {
           // collapses under `https://mail.google.com/`, so the requested consent
           // is clean rather than the raw per-method union.
           const config = yield* executor.openapi.getConfig("google");
-          const oauth = config?.authenticationTemplate?.find((entry) => !("kind" in entry));
-          expect(oauth && !("kind" in oauth) ? [...oauth.scopes].sort() : undefined).toEqual(
+          const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+          expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
             [
               "https://mail.google.com/",
               "https://www.googleapis.com/auth/calendar",

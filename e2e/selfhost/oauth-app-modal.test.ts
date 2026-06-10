@@ -63,7 +63,7 @@ scenario(
           authenticationTemplate: [
             {
               slug: "oauth",
-              type: "oauth",
+              kind: "oauth2",
               authorizationUrl: "https://auth.example/authorize",
               tokenUrl: "https://auth.example/token",
               scopes: [],

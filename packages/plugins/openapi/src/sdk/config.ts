@@ -7,7 +7,6 @@ import {
 } from "@executor-js/sdk/http-auth";
 
 import type { Authentication } from "./types";
-import { isOAuthAuthentication } from "./types";
 
 // ---------------------------------------------------------------------------
 // OpenAPI integration config — the opaque blob stored on the catalog
@@ -23,7 +22,7 @@ import { isOAuthAuthentication } from "./types";
 
 const OAuthAuthenticationSchema = Schema.Struct({
   slug: Schema.String,
-  type: Schema.Literal("oauth"),
+  kind: Schema.Literal("oauth2"),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   scopes: Schema.Array(Schema.String),
@@ -84,7 +83,7 @@ export const renderAuthTemplate = (
   template: Authentication,
   values: Record<string, string | null>,
 ): RenderedAuth => {
-  if (isOAuthAuthentication(template)) {
+  if (template.kind === "oauth2") {
     return {
       headers: { authorization: `Bearer ${values[TOKEN_VARIABLE] ?? ""}` },
       queryParams: {},
@@ -97,6 +96,6 @@ export const renderAuthTemplate = (
  *  must supply. An oauth template needs `token`; an apiKey method needs every
  *  variable across its placements. */
 export const requiredTemplateVariables = (template: Authentication): readonly string[] => {
-  if (isOAuthAuthentication(template)) return [TOKEN_VARIABLE];
+  if (template.kind === "oauth2") return [TOKEN_VARIABLE];
   return requiredPlacementVariables(template.placements);
 };

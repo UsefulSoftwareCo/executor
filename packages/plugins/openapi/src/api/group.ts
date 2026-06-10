@@ -49,7 +49,7 @@ const OpenApiSpecInputPayload = Schema.Union([
 
 const OAuthTemplatePayload = Schema.Struct({
   slug: Schema.String,
-  type: Schema.Literal("oauth"),
+  kind: Schema.Literal("oauth2"),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   scopes: Schema.Array(Schema.String),

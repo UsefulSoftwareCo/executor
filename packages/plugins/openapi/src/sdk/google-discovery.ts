@@ -623,7 +623,7 @@ const googleOauthTemplate = (scopes: Record<string, string>): readonly Authentic
   [
     {
       slug: AuthTemplateSlug.make(GOOGLE_OAUTH_SECURITY_SCHEME),
-      type: "oauth",
+      kind: "oauth2",
       authorizationUrl: GOOGLE_OAUTH_AUTHORIZATION_URL,
       tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
       scopes: Object.keys(scopes),

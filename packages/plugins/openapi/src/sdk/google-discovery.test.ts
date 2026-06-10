@@ -243,7 +243,7 @@ it.effect("converts Google Discovery documents into Executor-preserving OpenAPI 
     // than v1's `oauth2` source config.
     // removed: identityScopes assertion — that field belonged to the v1
     // OAuth2SourceConfig slot model, which no longer exists in v2.
-    const oauthTemplate = result.authenticationTemplate?.find((entry) => !("kind" in entry));
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
     expect(oauthTemplate).toBeDefined();
   }),
 );
@@ -440,8 +440,8 @@ it.effect("bundles Google Discovery documents into one Google OpenAPI source", (
     expect(extractedChatMessage?.pathTemplate).toBe("/v1/{+name}");
     expect(extractedChatMessage?.baseUrl).toBe("https://chat.googleapis.com/");
     // v2: the bundled oauth scopes are carried on the oauth auth template.
-    const oauthTemplate = result.authenticationTemplate?.find((entry) => !("kind" in entry));
-    expect(oauthTemplate && !("kind" in oauthTemplate) ? oauthTemplate.scopes : undefined).toEqual([
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
       "https://www.googleapis.com/auth/gmail.metadata",
       "https://www.googleapis.com/auth/chat.spaces.readonly",
     ]);
@@ -579,10 +579,10 @@ it.effect("compacts and filters the merged bundle scope set into a clean consent
 
     // The derived oauth auth template carries the compacted/filtered set
     // (gmail.readonly collapsed, userinfo.email → email, chat.bot/chat.app.* dropped).
-    const oauthTemplate = result.authenticationTemplate?.find((entry) => !("kind" in entry));
-    expect(
-      oauthTemplate && !("kind" in oauthTemplate) ? [...oauthTemplate.scopes].sort() : undefined,
-    ).toEqual([...expectedConsentScopes].sort());
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? [...oauthTemplate.scopes].sort() : undefined).toEqual(
+      [...expectedConsentScopes].sort(),
+    );
 
     const spec = decodeConvertedSpecSecurity(result.specText);
     // The spec's securitySchemes flow scopes match the consent set exactly.

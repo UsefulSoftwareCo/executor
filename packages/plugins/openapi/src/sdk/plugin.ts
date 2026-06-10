@@ -44,12 +44,7 @@ import { previewSpec, type SpecPreview } from "./preview";
 import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore, type StoredOperation } from "./store";
 import type { Authentication } from "./types";
-import {
-  OperationBinding,
-  isOAuthAuthentication,
-  normalizeOpenApiAuthInputs,
-  type AuthenticationInput,
-} from "./types";
+import { OperationBinding, normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
 import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
@@ -304,7 +299,7 @@ const OpenApiSpecInputSchema = Schema.Union([
 const AuthenticationSchema = Schema.Union([
   Schema.Struct({
     slug: Schema.String,
-    type: Schema.Literal("oauth"),
+    kind: Schema.Literal("oauth2"),
     authorizationUrl: Schema.String,
     tokenUrl: Schema.String,
     scopes: Schema.Array(Schema.String),
@@ -532,7 +527,7 @@ export const describeOpenApiAuthMethods = (
   if (!config) return [];
   return (config.authenticationTemplate ?? []).map(
     (template: Authentication): AuthMethodDescriptor => {
-      if (isOAuthAuthentication(template)) {
+      if (template.kind === "oauth2") {
         return {
           id: String(template.slug),
           label: "OAuth2",
@@ -1018,14 +1013,15 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           });
           if (missing.length > 0) {
             return openApiAuthToolFailure({
-              code: isOAuthAuthentication(template)
-                ? "oauth_connection_missing"
-                : "connection_value_missing",
+              code:
+                template.kind === "oauth2"
+                  ? "oauth_connection_missing"
+                  : "connection_value_missing",
               message: `Connection "${credential.connection}" for "${integration}" has no resolvable credential value. Re-authenticate or update the connection.`,
               owner: credential.owner,
               integration,
               connection: String(credential.connection),
-              credentialKind: isOAuthAuthentication(template) ? "oauth" : "secret",
+              credentialKind: template.kind === "oauth2" ? "oauth" : "secret",
             });
           }
           const rendered = renderAuthTemplate(template, credential.values);

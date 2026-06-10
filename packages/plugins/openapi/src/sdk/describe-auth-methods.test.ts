@@ -56,7 +56,7 @@ describe("describeOpenApiAuthMethods", () => {
       recordWith([
         {
           slug: AuthTemplateSlug.make("oauth"),
-          type: "oauth",
+          kind: "oauth2",
           authorizationUrl: "https://auth.example/authorize",
           tokenUrl: "https://auth.example/token",
           scopes: ["read", "write"],
