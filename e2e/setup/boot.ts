@@ -72,13 +72,18 @@ export const bootProcesses = (
   };
 };
 
-export const waitForHttp = async (url: string, timeoutMs = 90_000): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
+export const waitForHttp = async (
+  url: string,
+  options: { readonly timeoutMs?: number; readonly expectRedirect?: boolean } = {},
+): Promise<void> => {
+  const deadline = Date.now() + (options.timeoutMs ?? 90_000);
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { redirect: "manual" });
-      if (response.status < 500) return;
+      // During a cold vite compile /api/* falls back to the SPA's 200 HTML —
+      // expectRedirect waits for the real handler (302) instead.
+      if (options.expectRedirect ? response.status === 302 : response.status < 500) return;
       lastError = new Error(`status ${response.status}`);
     } catch (error) {
       lastError = error;

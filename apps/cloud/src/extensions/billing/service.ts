@@ -48,7 +48,11 @@ const make = Effect.sync(() => {
     } satisfies IAutumnService;
   }
 
-  const client = new Autumn({ secretKey });
+  // AUTUMN_API_URL points the real SDK at an Autumn emulator in tests/dev.
+  const client = new Autumn({
+    secretKey,
+    ...(env.AUTUMN_API_URL ? { serverURL: env.AUTUMN_API_URL } : {}),
+  });
 
   const use = <A>(fn: (client: Autumn) => Promise<A>) =>
     Effect.tryPromise({

@@ -34,7 +34,6 @@ import {
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
 import { OrgAuthLive, SessionAuthLive } from "../auth/middleware-live";
-import { E2E_STUB, E2EStubAutumnLayer } from "../testing/e2e-stub";
 import { OrgApi, OrgHttpApi } from "../org/api";
 import { OrgHandlers } from "../org/handlers";
 import { AutumnService } from "../extensions/billing/service";
@@ -75,11 +74,8 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
   const SessionRoutes = HttpApiBuilder.layer(NonProtectedApi).pipe(
     Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
     Layer.provide(requestScopedMiddleware(rsLive).layer),
-    // SessionAuthLive resolves the user from the wos-session cookie via WorkOSClient
-    // — which is the stub under EXECUTOR_E2E_STUB (app.ts), so the user is the cookie
-    // value. Only Autumn is swapped to the free-plan stub here. Off in production.
     Layer.provideMerge(SessionAuthLive),
-    Layer.provideMerge(E2E_STUB ? E2EStubAutumnLayer : AutumnService.Default),
+    Layer.provideMerge(AutumnService.Default),
     Layer.provide(apiPrefixedRouter),
   );
 

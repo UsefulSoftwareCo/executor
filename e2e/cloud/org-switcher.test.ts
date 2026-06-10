@@ -45,7 +45,9 @@ scenario(
         await step('Open the org switcher and choose "Create organization"', async () => {
           await page.getByRole("button", { name: /Test User/ }).click();
           await page.getByRole("menuitem", { name: ORG_1 }).click();
-          await page.getByRole("menuitem", { name: "Create organization" }).click();
+          const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+          await subContent.waitFor({ state: "visible" });
+          await subContent.getByText("Create organization", { exact: true }).click();
           await page.getByText("Add another organization").waitFor();
         });
 

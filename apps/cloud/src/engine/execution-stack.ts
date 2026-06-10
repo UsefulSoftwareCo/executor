@@ -62,6 +62,7 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
       workosCredentials: {
         apiKey: env.WORKOS_API_KEY,
         clientId: env.WORKOS_CLIENT_ID,
+        apiUrl: env.WORKOS_API_URL,
       },
     }),
 });

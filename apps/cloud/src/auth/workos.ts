@@ -110,6 +110,25 @@ class WorkOSConfigurationError extends Data.TaggedError("WorkOSConfigurationErro
   readonly message: string;
 }> {}
 
+/**
+ * Optional base-URL override for the WorkOS API (`WORKOS_API_URL`) — points
+ * the REAL SDK at a WorkOS emulator in tests/dev. Unset in production, where
+ * the SDK uses api.workos.com. Sealed-session crypto, JWKS verification, and
+ * every endpoint follow this host, so the whole auth stack runs against the
+ * emulator with zero code substitution.
+ */
+export const workosApiUrlOptions = (
+  url: string | undefined,
+): { apiHostname?: string; port?: number; https?: boolean } => {
+  if (!url) return {};
+  const parsed = new URL(url);
+  return {
+    apiHostname: parsed.hostname,
+    ...(parsed.port ? { port: Number(parsed.port) } : {}),
+    https: parsed.protocol === "https:",
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -125,7 +144,7 @@ const make = Effect.gen(function* () {
     });
   }
 
-  const workos = new WorkOS({ apiKey, clientId });
+  const workos = new WorkOS({ apiKey, clientId, ...workosApiUrlOptions(env.WORKOS_API_URL) });
 
   const use = <A>(fn: (wos: WorkOS) => Promise<A>) =>
     withServiceLogging(

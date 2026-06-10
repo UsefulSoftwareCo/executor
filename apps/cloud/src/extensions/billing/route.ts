@@ -57,6 +57,7 @@ const handler = Effect.gen(function* () {
       },
       clientOptions: {
         secretKey: env.AUTUMN_SECRET_KEY ?? "",
+        ...(env.AUTUMN_API_URL ? { serverURL: env.AUTUMN_API_URL } : {}),
       },
       pathPrefix: "/api/billing",
     }),

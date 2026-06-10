@@ -26,6 +26,11 @@ declare global {
 
       // Billing
       AUTUMN_SECRET_KEY?: string;
+      /** Optional Autumn base-URL override (Autumn emulator in tests/dev). */
+      AUTUMN_API_URL?: string;
+
+      /** Optional WorkOS base-URL override (WorkOS emulator in tests/dev). */
+      WORKOS_API_URL?: string;
 
       // MCP
       EXECUTOR_MCP_DEBUG?: string;

@@ -5,7 +5,6 @@ import { DbProvider, ExecutorApp } from "@executor-js/api/server";
 
 import { cloudPlugins } from "./plugins";
 import { CoreSharedServices } from "./auth/workos";
-import { E2E_STUB, E2EStubWorkOSLayer } from "./testing/e2e-stub";
 import { makeCloudExtensionRoutes } from "./extensions/routes";
 import { RequestScopedServicesLive } from "./api/layers";
 import { CloudMeteringEngineDecorator } from "./engine/execution-stack-metered";
@@ -56,12 +55,10 @@ import { WorkerTelemetryLive } from "./observability/telemetry";
 // the account provider + MCP seam, AND by the per-request identity layer below).
 // Lives in `boot`, so `workosIdentityLayer`'s residual `WorkOSClient |
 // ApiKeyService` (the long-lived control plane it reads) resolves from there.
-// EXECUTOR_E2E_STUB swaps the WorkOS control plane for an in-memory stub whose
-// `authenticateSealedSession` resolves to user_1 — so the whole app (session +
-// account + SSR) is logged in with no real WorkOS. Off in production.
-const workOSBase = E2E_STUB ? E2EStubWorkOSLayer : CoreSharedServices;
-const apiKeyService = ApiKeyService.WorkOS.pipe(Layer.provide(workOSBase));
-const controlPlane = Layer.mergeAll(workOSBase, apiKeyService);
+// Tests point the REAL client at a WorkOS emulator via WORKOS_API_URL — no
+// layer substitution.
+const apiKeyService = ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices));
+const controlPlane = Layer.mergeAll(CoreSharedServices, apiKeyService);
 
 // `CloudDbProvider` only reads the per-request `DbService` at runtime; we widen
 // its residual type to also carry the boot `AutumnService` the metering

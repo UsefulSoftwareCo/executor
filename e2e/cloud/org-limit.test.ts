@@ -41,10 +41,14 @@ scenario(
 
         const openCreateOrgModal = async (currentOrg: string) => {
           await page.getByRole("button", { name: /Test User/ }).click();
-          // The org entry + "Create organization" are radix menu items; role
-          // locators keep us off the look-alike trigger button beneath.
+          // The org entry is a radix submenu trigger; its content loads the
+          // org list from the API, so wait for the sub-content to mount and
+          // click "Create organization" scoped INSIDE it — clicking during
+          // the loading re-render dismisses the whole menu.
           await page.getByRole("menuitem", { name: currentOrg }).click();
-          await page.getByRole("menuitem", { name: "Create organization" }).click();
+          const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+          await subContent.waitFor({ state: "visible" });
+          await subContent.getByText("Create organization", { exact: true }).click();
           await page.getByText("Add another organization").waitFor();
         };
 
