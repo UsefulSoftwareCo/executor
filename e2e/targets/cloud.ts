@@ -5,10 +5,11 @@
 // /api/auth/callback → genuine sealed-session cookie. Isolation: every
 // identity is a fresh user (and org) — no resets.
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 import { Effect } from "effect";
 
-import type { Identity, Target } from "../src/target";
+import type { Capability, Identity, Target } from "../src/target";
 
 export const CLOUD_PORT = Number(process.env.E2E_CLOUD_PORT ?? 4798);
 export const CLOUD_DB_PORT = Number(process.env.E2E_CLOUD_DB_PORT ?? 5436);
@@ -50,11 +51,21 @@ const signIn = async (email: string): Promise<string> => {
   return session; // "wos-session=<sealed>"
 };
 
+// Real-client scenarios drive the actual installed binary; the capability is
+// environmental, not a property of the deployment.
+const hasOpenCode = (): boolean => spawnSync("opencode", ["--version"]).status === 0;
+
 export const cloudTarget = (): Target => ({
   name: "cloud",
   baseUrl: CLOUD_BASE_URL,
   mcpUrl: `${CLOUD_BASE_URL}/mcp`,
-  capabilities: new Set(["api", "browser", "billing", "mcp-oauth"]),
+  capabilities: new Set<Capability>([
+    "api",
+    "browser",
+    "billing",
+    "mcp-oauth",
+    ...(hasOpenCode() ? (["opencode"] as const) : []),
+  ]),
   newIdentity: ({ org = true } = {}) =>
     Effect.promise(async (): Promise<Identity> => {
       const label = `user-${randomUUID().slice(0, 8)}`;

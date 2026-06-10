@@ -11,7 +11,8 @@ export type Capability =
   | "browser" // web UI reachable + identity injectable into a browser context
   | "mcp-oauth" // MCP endpoint with a headless OAuth consent path
   | "cli" // a CLI/TUI entry point exists for this target
-  | "billing"; // billing limits are enforced (cloud-only)
+  | "billing" // billing limits are enforced (cloud-only)
+  | "opencode"; // the real OpenCode binary is installed on this host
 
 export interface Identity {
   /** Shown in transcripts ("user_ab12cd") */
