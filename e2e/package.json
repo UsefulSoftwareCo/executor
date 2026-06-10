@@ -17,6 +17,7 @@
     "@executor-js/sdk": "workspace:*",
     "@kitlangton/terminal-control": "^0.3.0",
     "effect": "catalog:",
+    "monaco-editor": "^0.55.1",
     "playwright": "^1.60.0",
     "react": "catalog:",
     "react-dom": "catalog:"

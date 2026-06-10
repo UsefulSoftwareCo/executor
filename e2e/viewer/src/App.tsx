@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
+
+const TestSource = React.lazy(() => import("./TestSource"));
 
 // ---------------------------------------------------------------------------
 // The matrix (scenario × target health) plus a per-run artifact page. The
@@ -181,6 +183,12 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
         {new Date(result.endedAt).toLocaleString()}
       </p>
       {result.error && <pre className="errbox">{result.error}</pre>}
+      {has("test.ts") && (
+        <Suspense fallback={<p className="dim">loading test source…</p>}>
+          <h2 className="section">The test</h2>
+          <TestSource url={`${base}/test.ts`} />
+        </Suspense>
+      )}
       {video && (
         <video className="hero-video" controls preload="metadata" src={`${base}/${video}`} />
       )}
