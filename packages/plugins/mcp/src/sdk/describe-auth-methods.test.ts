@@ -67,6 +67,26 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("projects a query method to an apikey method carrying the query placement", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://ui.sh/mcp",
+        authenticationTemplate: [{ slug: "query", kind: "query", paramName: "token" }],
+      }),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "query",
+        label: "API key (token)",
+        kind: "apikey",
+        template: "query",
+        placements: [{ carrier: "query", name: "token", prefix: "" }],
+      },
+    ]);
+  });
+
   it("projects every declared method (multi-method configs)", () => {
     const methods = describeMcpAuthMethods(
       recordWith({

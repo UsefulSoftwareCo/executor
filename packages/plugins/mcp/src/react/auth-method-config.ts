@@ -15,24 +15,37 @@ import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placemen
 
 import type { McpAuthMethod, McpAuthMethodInput } from "../sdk/types";
 
+/** Map a generic placement (header or query) to an MCP auth-method input. MCP
+ *  carries a single credential per method, so callers take the FIRST named
+ *  placement. Returns `null` when the placement has no usable name. */
+const mcpMethodFromPlacement = (placement: Placement): McpAuthMethodInput | null => {
+  const name = placement.name.trim();
+  if (name.length === 0) return null;
+  if (placement.carrier === "query") {
+    return {
+      kind: "query",
+      paramName: name,
+      ...(placement.prefix ? { prefix: placement.prefix } : {}),
+    };
+  }
+  return {
+    kind: "header",
+    headerName: name,
+    ...(placement.prefix ? { prefix: placement.prefix } : {}),
+  };
+};
+
 /** Convert a generic editor value into one MCP auth-method input (no slug —
  *  the backend assigns kind-based slugs). An apiKey method maps to a `header`
- *  method using its FIRST named header placement, preserving the prefix; an
- *  apiKey value with no usable header placement falls back to `none`. */
+ *  or `query` method using its FIRST named placement, preserving the prefix; an
+ *  apiKey value with no usable placement falls back to `none`. */
 export function mcpAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
 ): McpAuthMethodInput {
   if (value.kind === "oauth") return { kind: "oauth2" };
   if (value.kind === "apikey") {
-    const header = value.placements.find(
-      (placement) => placement.carrier === "header" && placement.name.trim().length > 0,
-    );
-    if (!header) return { kind: "none" };
-    return {
-      kind: "header",
-      headerName: header.name.trim(),
-      ...(header.prefix ? { prefix: header.prefix } : {}),
-    };
+    const placement = value.placements.find((p) => p.name.trim().length > 0);
+    return (placement && mcpMethodFromPlacement(placement)) ?? { kind: "none" };
   }
   return { kind: "none" };
 }
@@ -46,6 +59,12 @@ export function editorValueFromMcpAuthMethod(method: McpAuthMethod): AuthTemplat
     return {
       kind: "apikey",
       placements: [{ carrier: "header", name: method.headerName, prefix: method.prefix ?? "" }],
+    };
+  }
+  if (method.kind === "query") {
+    return {
+      kind: "apikey",
+      placements: [{ carrier: "query", name: method.paramName, prefix: method.prefix ?? "" }],
     };
   }
   return { kind: "none" };
@@ -83,6 +102,16 @@ export function authMethodsFromConfig(
         placements: [{ carrier: "header", name: method.headerName, prefix: method.prefix ?? "" }],
       };
     }
+    if (method.kind === "query") {
+      return {
+        id: method.slug,
+        label: `API key (${method.paramName})`,
+        kind: "apikey",
+        source,
+        template,
+        placements: [{ carrier: "query", name: method.paramName, prefix: method.prefix ?? "" }],
+      };
+    }
     return {
       id: method.slug,
       label: "No authentication",
@@ -94,22 +123,14 @@ export function authMethodsFromConfig(
   });
 }
 
-/** Build MCP header-method inputs for a custom method from generic placements.
- *  MCP carries one header per method, so only the FIRST named header placement
- *  is used (query placements have no MCP credential carrier). Empty when no
- *  usable header placement exists. */
+/** Build MCP auth-method inputs for a custom method from generic placements.
+ *  MCP carries one credential per method, so only the FIRST named placement is
+ *  used — a header placement → `header`, a query placement → `query` (servers
+ *  like ui.sh authenticate via `?token=`). Empty when no usable placement. */
 export function mcpAuthMethodInputsFromPlacements(
   placements: readonly Placement[],
 ): McpAuthMethodInput[] {
-  const header = placements.find(
-    (placement: Placement) => placement.carrier === "header" && placement.name.trim().length > 0,
-  );
-  if (!header) return [];
-  return [
-    {
-      kind: "header",
-      headerName: header.name.trim(),
-      ...(header.prefix ? { prefix: header.prefix } : {}),
-    },
-  ];
+  const placement = placements.find((p: Placement) => p.name.trim().length > 0);
+  const method = placement ? mcpMethodFromPlacement(placement) : null;
+  return method ? [method] : [];
 }

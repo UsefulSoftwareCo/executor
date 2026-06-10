@@ -178,6 +178,59 @@ scenario(
 );
 
 scenario(
+  "Auth methods · an MCP server can declare a query-parameter token method (ui.sh shape)",
+  { needs: ["api"] },
+  (ctx) =>
+    Effect.gen(function* () {
+      const identity = yield* ctx.target.newIdentity();
+      const client = yield* ctx.api.client(api, identity);
+      const slug = freshSlug("mcp-query-token");
+
+      // Servers like ui.sh authenticate via a `?token=` query parameter — not
+      // a header or OAuth. The MCP plugin must store/project that as an apikey
+      // method carrying a QUERY placement.
+      yield* client.mcp.addServer({
+        payload: {
+          transport: "remote",
+          name: "Query-token MCP",
+          endpoint: MCP_ENDPOINT,
+          slug,
+          authenticationTemplate: [{ kind: "query", paramName: "token" }],
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const integration = yield* client.integrations.get({
+          params: { slug: IntegrationSlug.make(slug) },
+        });
+        expect(
+          integration.authMethods.map((m) => ({ kind: m.kind, placements: m.placements })),
+          "the catalog projects a query-placement apikey method",
+        ).toEqual([
+          { kind: "apikey", placements: [{ carrier: "query", name: "token", prefix: "" }] },
+        ]);
+
+        // And the connect modal's "+ custom method" flow can ADD one via
+        // configureAuth (the path that returned "Failed to add method" before).
+        const configured = yield* client.mcp.configureAuth({
+          params: { slug: IntegrationSlug.make(slug) },
+          payload: { authenticationTemplate: [{ kind: "query", paramName: "apikey" }] },
+        });
+        expect(
+          configured.authenticationTemplate.map((m) => m.kind),
+          "the custom query method is appended, not rejected",
+        ).toEqual(["query", "query"]);
+      }).pipe(
+        Effect.ensuring(
+          client.mcp
+            .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+            .pipe(Effect.ignore),
+        ),
+      );
+    }),
+);
+
+scenario(
   "Auth methods · a GraphQL source registers multiple auth methods at add time",
   { needs: ["api"] },
   (ctx) =>

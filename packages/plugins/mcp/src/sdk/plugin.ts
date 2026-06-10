@@ -453,11 +453,14 @@ const buildConnectorInput = (
   }
 
   const headers: Record<string, string> = { ...(config.headers ?? {}) };
+  const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
   let authProvider: OAuthClientProvider | undefined;
 
   const auth = selectAuthMethod(config, templateSlug);
   if (auth?.kind === "header" && value !== null) {
     headers[auth.headerName] = auth.prefix ? `${auth.prefix}${value}` : value;
+  } else if (auth?.kind === "query" && value !== null) {
+    queryParams[auth.paramName] = auth.prefix ? `${auth.prefix}${value}` : value;
   } else if (auth?.kind === "oauth2" && value !== null) {
     authProvider = makeOAuthProvider(value);
   }
@@ -466,10 +469,7 @@ const buildConnectorInput = (
     transport: "remote" as const,
     endpoint: config.endpoint,
     remoteTransport: config.remoteTransport ?? "auto",
-    queryParams:
-      config.queryParams && Object.keys(config.queryParams).length > 0
-        ? config.queryParams
-        : undefined,
+    queryParams: Object.keys(queryParams).length > 0 ? queryParams : undefined,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     authProvider,
   });
@@ -506,6 +506,15 @@ export const describeMcpAuthMethods = (
         kind: "apikey",
         template: method.slug,
         placements: [{ carrier: "header", name: method.headerName, prefix: method.prefix ?? "" }],
+      };
+    }
+    if (method.kind === "query") {
+      return {
+        id: method.slug,
+        label: `API key (${method.paramName})`,
+        kind: "apikey",
+        template: method.slug,
+        placements: [{ carrier: "query", name: method.paramName, prefix: method.prefix ?? "" }],
       };
     }
     if (method.kind === "oauth2") {

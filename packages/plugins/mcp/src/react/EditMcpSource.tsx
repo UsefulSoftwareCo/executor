@@ -44,6 +44,7 @@ type McpRemoteConfig = Extract<McpIntegrationConfig, { transport: "remote" }>;
 const methodSeedLabel = (method: McpAuthMethod): string => {
   if (method.kind === "oauth2") return "OAuth";
   if (method.kind === "header") return `API key (${method.headerName})`;
+  if (method.kind === "query") return `API key (${method.paramName})`;
   return "No authentication";
 };
 
@@ -101,6 +102,11 @@ function RemoteEdit(props: {
         return (
           method.headerName !== current.headerName ||
           (method.prefix ?? "") !== (current.prefix ?? "")
+        );
+      }
+      if (method.kind === "query" && current.kind === "query") {
+        return (
+          method.paramName !== current.paramName || (method.prefix ?? "") !== (current.prefix ?? "")
         );
       }
       return false;

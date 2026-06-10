@@ -46,12 +46,24 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     });
   });
 
-  it("skips a query placement (MCP carries a single header) and falls back to none", () => {
+  it("maps a query placement → a query method (servers like ui.sh use ?token=)", () => {
     const value: AuthTemplateEditorValue = {
       kind: "apikey",
-      placements: [{ carrier: "query", name: "api_key", prefix: "" }],
+      placements: [{ carrier: "query", name: "token", prefix: "" }],
     };
-    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "none" });
+    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "query", paramName: "token" });
+  });
+
+  it("preserves a query placement prefix", () => {
+    const value: AuthTemplateEditorValue = {
+      kind: "apikey",
+      placements: [{ carrier: "query", name: "token", prefix: "tok_" }],
+    };
+    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
+      kind: "query",
+      paramName: "token",
+      prefix: "tok_",
+    });
   });
 
   it("uses the first NAMED header placement (skips unnamed)", () => {
@@ -81,6 +93,15 @@ describe("editorValueFromMcpAuthMethod", () => {
     ).toEqual({
       kind: "apikey",
       placements: [{ carrier: "header", name: "X-Api-Key", prefix: "Bearer " }],
+    });
+  });
+
+  it("round-trips a query method into an apikey editor value with a query placement", () => {
+    expect(
+      editorValueFromMcpAuthMethod({ slug: "query", kind: "query", paramName: "token" }),
+    ).toEqual({
+      kind: "apikey",
+      placements: [{ carrier: "query", name: "token", prefix: "" }],
     });
   });
 
@@ -122,18 +143,32 @@ describe("authMethodsFromConfig", () => {
 });
 
 describe("mcpAuthMethodInputsFromPlacements", () => {
-  it("builds one header method from the first named header placement", () => {
+  it("builds a header method from a header placement", () => {
     expect(
       mcpAuthMethodInputsFromPlacements([
-        { carrier: "query", name: "api_key", prefix: "" },
         { carrier: "header", name: "X-Token", prefix: "Bearer " },
       ]),
     ).toEqual([{ kind: "header", headerName: "X-Token", prefix: "Bearer " }]);
   });
 
-  it("is empty when no usable header placement exists", () => {
+  it("builds a query method from a query placement (the ui.sh '?token=' case)", () => {
     expect(
-      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "api_key", prefix: "" }]),
+      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "token", prefix: "" }]),
+    ).toEqual([{ kind: "query", paramName: "token" }]);
+  });
+
+  it("uses the first NAMED placement regardless of carrier", () => {
+    expect(
+      mcpAuthMethodInputsFromPlacements([
+        { carrier: "query", name: "", prefix: "" },
+        { carrier: "query", name: "token", prefix: "" },
+      ]),
+    ).toEqual([{ kind: "query", paramName: "token" }]);
+  });
+
+  it("is empty when no placement has a usable name", () => {
+    expect(
+      mcpAuthMethodInputsFromPlacements([{ carrier: "query", name: "  ", prefix: "" }]),
     ).toEqual([]);
   });
 });

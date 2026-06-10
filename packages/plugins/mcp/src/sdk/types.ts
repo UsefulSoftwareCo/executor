@@ -33,6 +33,9 @@ export type McpTransport = typeof McpTransport.Type;
 //   none   — no credential (open server)
 //   header — render the value into a request header (e.g. `Authorization:
 //            Bearer <value>`); `prefix` is prepended to the value
+//   query  — render the value into a query-string parameter on the endpoint
+//            URL (e.g. `?token=<value>`); `prefix` is prepended to the value.
+//            Servers like ui.sh authenticate this way.
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider
 // ---------------------------------------------------------------------------
@@ -43,6 +46,12 @@ export const McpAuthMethod = Schema.Union([
     slug: Schema.String,
     kind: Schema.Literal("header"),
     headerName: Schema.String,
+    prefix: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    slug: Schema.String,
+    kind: Schema.Literal("query"),
+    paramName: Schema.String,
     prefix: Schema.optional(Schema.String),
   }),
   Schema.Struct({ slug: Schema.String, kind: Schema.Literal("oauth2") }),
@@ -77,6 +86,12 @@ export const McpAuthMethodInput = Schema.Union([
     slug: Schema.optional(Schema.String),
     kind: Schema.Literal("header"),
     headerName: Schema.String,
+    prefix: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("query"),
+    paramName: Schema.String,
     prefix: Schema.optional(Schema.String),
   }),
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
