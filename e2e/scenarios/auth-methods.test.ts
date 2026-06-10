@@ -384,7 +384,9 @@ scenario(
           Effect.gen(function* () {
             const before = (yield* server.requests).length;
             const result = yield* session.call("execute", {
-              code: `const r = await tools.${slug}.org.${conn}.whoami({ marker: ${JSON.stringify(marker)} }); return r.content[0].text;`,
+              // Return the whole result — the assertion only needs the echoed
+              // marker to prove the call reached the server.
+              code: `return JSON.stringify(await tools.${slug}.org.${conn}.whoami({ marker: ${JSON.stringify(marker)} }));`,
             });
             expect(result.text, `the ${conn} invocation reached the server`).toContain(
               `ok:${marker}`,
