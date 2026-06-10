@@ -91,9 +91,30 @@ type WorkosVaultMetadataData = typeof WorkosVaultMetadataData.Type;
 
 /** Map the executor's (tenant, subject?) binding onto the storage `Owner`
  *  literal: a bound subject writes the user's own partition, otherwise the
- *  org-shared one. */
+ *  org-shared one. Fallback only — prefer `ownerForItemId`. */
 const ownerOf = (binding: OwnerBinding): Owner =>
   binding.subject == null ? Owner.make("org") : Owner.make("user");
+
+// Item ids whose SECOND colon-segment is the owning partition:
+//   connection:<owner>:<integration>:<name>:<variable>
+//   oauth:<owner>:<integration>:<name>[:refresh]
+//   oauth-client:<owner>:<slug>:secret
+const OWNER_SCOPED_PREFIXES: ReadonlySet<string> = new Set(["connection", "oauth", "oauth-client"]);
+
+/** The partition a credential's metadata belongs to: the CREDENTIAL's owner
+ *  (embedded in the item id), NOT the acting caller's binding. An org member
+ *  creating a workspace connection must file org-shared metadata so every
+ *  other member can resolve it — filing under the creator's user partition
+ *  (the old `ownerOf(binding)` behavior) made shared credentials resolvable
+ *  only by whoever pasted them. Ids without an embedded owner fall back to the
+ *  caller binding. */
+const ownerForItemId = (id: string, binding: OwnerBinding): Owner => {
+  const [prefix, owner] = id.split(":");
+  if (OWNER_SCOPED_PREFIXES.has(prefix ?? "") && (owner === "org" || owner === "user")) {
+    return Owner.make(owner);
+  }
+  return ownerOf(binding);
+};
 
 // ---------------------------------------------------------------------------
 // WorkosVaultStore — typed metadata-store the plugin uses internally.
@@ -113,7 +134,6 @@ export interface WorkosVaultStore {
 
 export const makeWorkosVaultStore = (deps: StorageDeps): WorkosVaultStore => {
   const { pluginStorage } = deps;
-  const owner = ownerOf(deps.owner);
 
   const find = (id: string): Effect.Effect<MetadataRow | null, StorageFailure> =>
     pluginStorage
@@ -129,7 +149,7 @@ export const makeWorkosVaultStore = (deps: StorageDeps): WorkosVaultStore => {
     upsert: (row: MetadataRow) =>
       pluginStorage
         .put({
-          owner,
+          owner: ownerForItemId(row.id, deps.owner),
           collection: METADATA_COLLECTION,
           key: row.id,
           data: metadataData(row),
@@ -139,7 +159,11 @@ export const makeWorkosVaultStore = (deps: StorageDeps): WorkosVaultStore => {
       Effect.gen(function* () {
         const existing = yield* find(id);
         if (!existing) return false;
-        yield* pluginStorage.remove({ owner, collection: METADATA_COLLECTION, key: id });
+        yield* pluginStorage.remove({
+          owner: ownerForItemId(id, deps.owner),
+          collection: METADATA_COLLECTION,
+          key: id,
+        });
         return true;
       }),
     list: () =>
