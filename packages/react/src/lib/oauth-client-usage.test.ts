@@ -11,7 +11,7 @@ import {
   type Owner,
 } from "@executor-js/sdk/shared";
 
-import { buildUsageMap, connectionsUsingClient, groupClientsByOwner } from "./oauth-apps";
+import { buildUsageMap, connectionsUsingClient } from "./oauth-client-usage";
 
 // Minimal app summary builder — only the fields the helpers read matter.
 const app = (slug: string, opts?: { readonly owner?: Owner }): OAuthClientSummary => ({
@@ -50,36 +50,6 @@ const connection = (
         ? null
         : OAuthClientSlug.make(opts.oauthClient),
   oauthClientOwner: opts?.oauthClientOwner ?? null,
-});
-
-describe("groupClientsByOwner", () => {
-  it("orders Workspace (org) before Personal (user) and drops empty groups", () => {
-    const groups = groupClientsByOwner([
-      app("personal-app", { owner: "user" }),
-      app("workspace-app", { owner: "org" }),
-    ]);
-    expect(groups.map((g) => g.owner)).toEqual(["org", "user"]);
-    expect(groups[0]!.clients.map((c: OAuthClientSummary) => String(c.slug))).toEqual([
-      "workspace-app",
-    ]);
-    expect(groups[1]!.clients.map((c: OAuthClientSummary) => String(c.slug))).toEqual([
-      "personal-app",
-    ]);
-  });
-
-  it("omits an owner group entirely when it has no apps", () => {
-    const groups = groupClientsByOwner([app("only-personal", { owner: "user" })]);
-    expect(groups.map((g) => g.owner)).toEqual(["user"]);
-  });
-
-  it("returns no groups for an empty list", () => {
-    expect(groupClientsByOwner([])).toEqual([]);
-  });
-
-  it("preserves original order within a group", () => {
-    const groups = groupClientsByOwner([app("b", { owner: "org" }), app("a", { owner: "org" })]);
-    expect(groups[0]!.clients.map((c: OAuthClientSummary) => String(c.slug))).toEqual(["b", "a"]);
-  });
 });
 
 describe("buildUsageMap / connectionsUsingClient", () => {

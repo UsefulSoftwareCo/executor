@@ -338,7 +338,6 @@ function SidebarContent(props: {
 }) {
   const isHome = props.pathname === "/";
   const isSecrets = props.pathname === "/secrets";
-  const isOAuthApps = props.pathname === "/oauth-apps";
   const isPolicies = props.pathname === "/policies";
 
   return (
@@ -360,12 +359,6 @@ function SidebarContent(props: {
       <nav className="flex flex-1 flex-col overflow-y-auto p-2">
         <NavItem to="/" label="Integrations" active={isHome} onNavigate={props.onNavigate} />
         <NavItem to="/secrets" label="Secrets" active={isSecrets} onNavigate={props.onNavigate} />
-        <NavItem
-          to="/oauth-apps"
-          label="OAuth Connections"
-          active={isOAuthApps}
-          onNavigate={props.onNavigate}
-        />
         <NavItem
           to="/policies"
           label="Policies"
