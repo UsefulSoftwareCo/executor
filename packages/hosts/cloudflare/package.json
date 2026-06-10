@@ -23,6 +23,10 @@
     "./mcp/durable-object": {
       "types": "./src/mcp/session-durable-object.ts",
       "default": "./src/mcp/session-durable-object.ts"
+    },
+    "./mcp/request-id-queue": {
+      "types": "./src/mcp/request-id-queue.ts",
+      "default": "./src/mcp/request-id-queue.ts"
     }
   },
   "scripts": {
