@@ -69,9 +69,9 @@ export const CloudPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(
 /**
  * The path prefix the cloud mounts its typed API under. SINGLE SOURCE OF TRUTH:
  * `app.ts` passes this as `ExecutorApp.make({ config: { mountPrefix } })`, and
- * `CloudHostConfig.oauthCallbackPath` derives the OAuth callback from it so the
- * redirect URI the host sends to providers (`${webBaseUrl}${CLOUD_MOUNT_PREFIX}/oauth/callback`)
- * always matches the route that actually serves the callback.
+ * `make` derives the OAuth callback (`${webBaseUrl}${CLOUD_MOUNT_PREFIX}/oauth/callback`)
+ * from that same `mountPrefix`, so the redirect URI the host sends to providers
+ * always matches the route that actually serves the callback — no second knob.
  */
 export const CLOUD_MOUNT_PREFIX = "/api" as const;
 
@@ -82,10 +82,9 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // with `"true"` so fixtures can reach localhost. See `hosted-http-client.ts`.
   allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
   webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
-  // The cloud serves the API (incl. the global `/oauth/callback`) under
-  // `${CLOUD_MOUNT_PREFIX}`, so the OAuth redirect URI MUST carry that prefix or
-  // it 404s on return and won't match the provider's registered redirect URI.
-  oauthCallbackPath: `${CLOUD_MOUNT_PREFIX}/oauth/callback`,
+  // `oauthCallbackPath` is NOT set here — `ExecutorApp.make` derives it from the
+  // `mountPrefix` cloud passes (`CLOUD_MOUNT_PREFIX`), so the callback can't drift
+  // from the route that serves it.
   // WorkOS Vault is cloud's credential storage implementation detail, not a
   // user-selectable provider surface.
   exposeCredentialProviders: false,

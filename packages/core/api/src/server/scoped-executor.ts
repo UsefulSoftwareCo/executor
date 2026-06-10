@@ -72,11 +72,11 @@ export interface HostConfigShape {
    * (packages/core/api/src/oauth/api.ts). The redirect URI sent to providers is
    * `${webBaseUrl}${oauthCallbackPath}`.
    *
-   * Defaults to `/oauth/callback` (correct for a host that serves the typed API
-   * at root, e.g. local). A host that mounts the API under a prefix MUST set this
-   * to `${mountPrefix}/oauth/callback` (cloud: `/api/oauth/callback`) — otherwise
-   * the redirect URI omits the prefix, so it 404s on return and never matches
-   * what the provider has registered.
+   * Hosts do NOT set this: `ExecutorApp.make` derives it from the same
+   * `config.mountPrefix` that prefixes the API router and injects it here, so the
+   * callback can't drift from the route that serves it. It stays optional only
+   * for the low-level `makeScopedExecutor` test seam (constructed without
+   * `make`), where it defaults to `/oauth/callback` (the root-mount path).
    */
   readonly oauthCallbackPath?: string;
   /**

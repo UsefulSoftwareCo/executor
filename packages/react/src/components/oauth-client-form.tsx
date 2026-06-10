@@ -16,6 +16,7 @@ import {
   normalizeConnectionOwner,
 } from "../plugins/connection-owner";
 import { Button } from "./button";
+import { CopyButton } from "./copy-button";
 import { Input } from "./input";
 import { Label } from "./label";
 import { RadioGroup, RadioGroupItem } from "./radio-group";
@@ -84,6 +85,13 @@ export function OAuthClientForm(props: {
     () => connectionOwnerOptionsForHost(organizationId),
     [organizationId],
   );
+
+  // The browser-facing callback the OAuth flow uses (this host's
+  // `${origin}/api/oauth/callback`). It is the SAME value handed to `oauth.start`
+  // and to DCR registration below, so showing it here is exactly the redirect a
+  // user must allow-list on their OAuth app. Resolved from `window.location` so
+  // it is automatically correct per platform (cloud / self-host / local).
+  const callbackUrl = useMemo(() => oauthCallbackUrl(), []);
 
   // Explicit create-time choice (no ambient owner). Default Workspace (`org`) on
   // an org host, Local (`org`) on a non-org host, or the locked owner when
@@ -322,6 +330,29 @@ export function OAuthClientForm(props: {
           <span className="h-px flex-1 bg-border/60" />
           or enter a client ID manually
           <span className="h-px flex-1 bg-border/60" />
+        </div>
+      ) : null}
+
+      {/* callback URL — the redirect the authorization-code flow uses. Show it
+          so the user can allow-list it on their OAuth app. Client-credentials
+          has no browser redirect, so it is hidden for that grant. */}
+      {grant === "authorization_code" ? (
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">
+            Callback URL
+            <span className="font-normal text-muted-foreground/70">
+              add this to your OAuth app&apos;s allowed redirects
+            </span>
+          </Label>
+          <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5">
+            <span
+              id="oauth-callback-url"
+              className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground"
+            >
+              {callbackUrl}
+            </span>
+            <CopyButton value={callbackUrl} />
+          </div>
         </div>
       ) : null}
 

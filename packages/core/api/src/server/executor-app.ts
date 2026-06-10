@@ -44,7 +44,8 @@ import { Effect, Layer } from "effect";
 
 import type { AnyPlugin } from "@executor-js/sdk";
 import type { DbProvider } from "./executor-fuma-db";
-import type { HostConfig, PluginsProvider } from "./scoped-executor";
+import { HostConfig } from "./scoped-executor";
+import type { PluginsProvider } from "./scoped-executor";
 import { requestScopedMiddleware } from "./request-scoped";
 import {
   McpServingRoutes,
@@ -386,6 +387,18 @@ export const make = <
       )
     : undefined;
 
+  // ---- the OAuth callback path, derived from the SAME `mountPrefix` ------
+  // The redirect URI the host serves and registers with providers is
+  // `${webBaseUrl}${mountPrefix}/oauth/callback` — the prefix that mounts the
+  // API (above) joined with the global `/oauth/callback` route. Deriving it here,
+  // the one place `mountPrefix` is known, makes the prefix a single source of
+  // truth: a host states it once via `config.mountPrefix` and cannot drift it
+  // out of sync with a second hand-written `oauthCallbackPath` (the omission that
+  // silently 404'd the redirect on every prefix-mounted host). Injected into the
+  // scoped executor's `HostConfig` below; the fixed model (local) sets its own
+  // `redirectUri` and is unaffected.
+  const oauthCallbackPath = `${prefix ?? ""}/oauth/callback`;
+
   // ---- (2) the ExecutionStackMiddleware ---------------------------------
   // The identity seam authenticates; the failure strategy renders; the stack
   // Layer + plugin tuple build the per-request executor. The facade ALWAYS builds
@@ -459,11 +472,18 @@ export const make = <
         strategy: config.failure,
         // db + plugins.provider + plugins.config + engine.codeExecutor +
         // engine.decorator (default no-op). The merged Layer leaves the
-        // boot-scoped `RDb` residual, satisfied by `boot` below.
+        // boot-scoped `RDb` residual, satisfied by `boot` below. The host's
+        // `HostConfig` is decorated with the derived `oauthCallbackPath` so the
+        // callback always tracks `mountPrefix`.
         stackLayer: Layer.mergeAll(
           providers.db,
           providers.plugins.provider,
-          providers.plugins.config,
+          Layer.effect(HostConfig)(
+            Effect.gen(function* () {
+              const hostConfig = yield* HostConfig;
+              return { ...hostConfig, oauthCallbackPath };
+            }),
+          ).pipe(Layer.provide(providers.plugins.config)),
           providers.engine.codeExecutor,
           providers.engine.decorator ?? EngineDecoratorNoop,
         ) as Layer.Layer<
