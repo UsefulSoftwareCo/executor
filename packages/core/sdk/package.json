@@ -23,7 +23,8 @@
     "./promise": "./src/promise.ts",
     "./client": "./src/client.ts",
     "./testing": "./src/testing.ts",
-    "./migration": "./src/migration-spec.ts"
+    "./migration": "./src/migration-spec.ts",
+    "./http-auth": "./src/http-auth/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -68,6 +69,12 @@
         "import": {
           "types": "./dist/migration-spec.d.ts",
           "default": "./dist/migration-spec.js"
+        }
+      },
+      "./http-auth": {
+        "import": {
+          "types": "./dist/http-auth.d.ts",
+          "default": "./dist/http-auth.js"
         }
       }
     }

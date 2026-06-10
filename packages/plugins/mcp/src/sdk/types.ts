@@ -1,5 +1,9 @@
 import { Effect, Option, Schema } from "effect";
-import { ApiKeyAuthMethod, NoneAuthMethod, normalizeAuthMethodSlugs } from "@executor-js/http-auth";
+import {
+  ApiKeyAuthMethod,
+  NoneAuthMethod,
+  normalizeAuthMethodSlugs,
+} from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // MCP plugin v2 data model.
@@ -25,7 +29,7 @@ export const McpTransport = Schema.Literals(["streamable-http", "sse", "stdio", 
 export type McpTransport = typeof McpTransport.Type;
 
 // ---------------------------------------------------------------------------
-// Auth methods — the shared placements vocabulary (`@executor-js/http-auth`)
+// Auth methods — the shared placements vocabulary (`@executor-js/sdk/http-auth`)
 // plus MCP's own oauth variant. An integration declares zero or more methods,
 // each with a stable `slug` a connection binds against (`connection.template`),
 // mirroring the OpenAPI/GraphQL `authenticationTemplate` arrays.

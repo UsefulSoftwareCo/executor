@@ -4,7 +4,7 @@ import { Layer } from "effect";
 
 import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
 
-import { runSqliteAuthConfigMigration } from "@executor-js/http-auth";
+import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 
 import { resolveAuthProviders } from "./auth";
 import { authConfigTransforms } from "./db/auth-config-migration";

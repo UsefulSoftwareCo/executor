@@ -22,7 +22,6 @@
   },
   "workspaces": [
     "packages/*/*",
-    "packages/http-auth",
     "packages/react",
     "packages/app",
     "apps/*",

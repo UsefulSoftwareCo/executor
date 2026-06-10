@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import postgres from "postgres";
-import { planAuthConfigMigration, type AuthConfigMigrationRow } from "@executor-js/http-auth";
+import { planAuthConfigMigration, type AuthConfigMigrationRow } from "@executor-js/sdk/http-auth";
 import { migrateGraphqlAuthConfig } from "@executor-js/plugin-graphql";
 import { migrateMcpAuthConfig } from "@executor-js/plugin-mcp";
 import { migrateOpenApiAuthConfig } from "@executor-js/plugin-openapi";

@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Shared auth-method codec — the one bridge between the canonical
-// placements-based wire model (`@executor-js/http-auth`: apikey/none methods
+// placements-based wire model (`@executor-js/sdk/http-auth`: apikey/none methods
 // every protocol plugin stores) and the client's presentational shapes
 // (`AuthMethod`, `Placement`, `AuthTemplateEditorValue`).
 //
@@ -20,7 +20,7 @@ import {
   type ApiKeyAuthMethod,
   type AuthPlacement,
   type NoneAuthMethod,
-} from "@executor-js/http-auth";
+} from "@executor-js/sdk/http-auth";
 
 import type { AuthTemplateEditorValue } from "../components/auth-template-editor";
 import type { AuthMethod, Placement } from "./auth-placements";

@@ -34,7 +34,7 @@ import {
   describeNoneAuthMethod,
   renderAuthPlacements,
   requiredPlacementVariables,
-} from "@executor-js/http-auth";
+} from "@executor-js/sdk/http-auth";
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { discoverTools } from "./discover";

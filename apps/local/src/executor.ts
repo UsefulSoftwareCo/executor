@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 
 import { Subject, Tenant, createExecutor, type AnyPlugin, type Executor } from "@executor-js/sdk";
-import { runSqliteAuthConfigMigration } from "@executor-js/http-auth";
+import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
 

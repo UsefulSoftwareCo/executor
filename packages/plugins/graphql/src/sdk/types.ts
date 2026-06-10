@@ -1,5 +1,9 @@
 import { Schema } from "effect";
-import { ApiKeyAuthMethod, NoneAuthMethod, normalizeAuthMethodSlugs } from "@executor-js/http-auth";
+import {
+  ApiKeyAuthMethod,
+  NoneAuthMethod,
+  normalizeAuthMethodSlugs,
+} from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // GraphQL operation kind
@@ -56,7 +60,7 @@ export const OperationBinding = Schema.Struct({
 export type OperationBinding = typeof OperationBinding.Type;
 
 // ---------------------------------------------------------------------------
-// Auth methods — the shared placements vocabulary (`@executor-js/http-auth`)
+// Auth methods — the shared placements vocabulary (`@executor-js/sdk/http-auth`)
 // plus GraphQL's own oauth variant. The integration's
 // `config.authenticationTemplate` declares zero or more methods, each with a
 // stable `slug` a connection binds against (`connection.template`). There are

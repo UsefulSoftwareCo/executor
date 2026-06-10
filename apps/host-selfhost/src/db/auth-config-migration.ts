@@ -5,7 +5,7 @@
 // placements model; this map only routes by `plugin_id`.
 // ---------------------------------------------------------------------------
 
-import type { AuthConfigTransform } from "@executor-js/http-auth";
+import type { AuthConfigTransform } from "@executor-js/sdk/http-auth";
 import { migrateGraphqlAuthConfig } from "@executor-js/plugin-graphql";
 import { migrateMcpAuthConfig } from "@executor-js/plugin-mcp";
 import { migrateOpenApiAuthConfig } from "@executor-js/plugin-openapi";

@@ -29,7 +29,7 @@ import {
   renderAuthPlacements,
   requiredPlacementVariables,
   type RenderedAuthPlacements,
-} from "@executor-js/http-auth";
+} from "@executor-js/sdk/http-auth";
 
 import {
   introspect,

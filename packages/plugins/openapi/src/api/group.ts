@@ -1,6 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ApiKeyAuthMethod } from "@executor-js/http-auth";
+import { ApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
   InternalError,
   IntegrationAlreadyExistsError,

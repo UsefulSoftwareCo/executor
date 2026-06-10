@@ -63,7 +63,6 @@
         "@executor-js/cloudflare": "workspace:*",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
@@ -208,7 +207,6 @@
         "@executor-js/app": "workspace:*",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/plugin-encrypted-secrets": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
@@ -253,7 +251,6 @@
         "@executor-js/config": "workspace:*",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/integrations-registry": "workspace:*",
         "@executor-js/plugin-desktop-settings": "workspace:*",
         "@executor-js/plugin-example": "workspace:*",
@@ -649,21 +646,6 @@
         "vitest": "catalog:",
       },
     },
-    "packages/http-auth": {
-      "name": "@executor-js/http-auth",
-      "version": "0.0.0",
-      "dependencies": {
-        "@executor-js/sdk": "workspace:*",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@types/node": "catalog:",
-        "bun-types": "catalog:",
-        "tsup": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
     "packages/kernel/core": {
       "name": "@executor-js/codemode-core",
       "version": "1.5.3",
@@ -831,7 +813,6 @@
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "graphql": "^16.12.0",
         "graphql-yoga": "^5.17.0",
@@ -891,7 +872,6 @@
         "@cfworker/json-schema": "^4.1.1",
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "zod": "^4.3.6",
@@ -965,7 +945,6 @@
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "@executor-js/config": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "lucide-react": "^1.7.0",
         "openapi-types": "^12.1.3",
@@ -1033,7 +1012,6 @@
         "@base-ui/react": "^1.3.0",
         "@effect/atom-react": "catalog:",
         "@executor-js/api": "workspace:*",
-        "@executor-js/http-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@hookform/resolvers": "^5.2.2",
         "@lobehub/icons": "^5.4.0",
@@ -1550,8 +1528,6 @@
     "@executor-js/host-mcp": ["@executor-js/host-mcp@workspace:packages/hosts/mcp"],
 
     "@executor-js/host-selfhost": ["@executor-js/host-selfhost@workspace:apps/host-selfhost"],
-
-    "@executor-js/http-auth": ["@executor-js/http-auth@workspace:packages/http-auth"],
 
     "@executor-js/integrations-registry": ["@executor-js/integrations-registry@workspace:packages/core/integrations-registry"],
 

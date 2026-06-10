@@ -15,7 +15,10 @@
 // ---------------------------------------------------------------------------
 
 import { Option } from "effect";
-import { apiKeyMethodFromLegacyTemplate, decodeLegacyApiKeyTemplate } from "@executor-js/http-auth";
+import {
+  apiKeyMethodFromLegacyTemplate,
+  decodeLegacyApiKeyTemplate,
+} from "@executor-js/sdk/http-auth";
 
 import { decodeOpenApiIntegrationConfig } from "./config";
 

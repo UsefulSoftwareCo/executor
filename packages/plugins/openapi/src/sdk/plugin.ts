@@ -45,7 +45,7 @@ import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore, type StoredOperation } from "./store";
 import type { Authentication } from "./types";
 import { OperationBinding, isOAuthAuthentication } from "./types";
-import { ApiKeyAuthMethod, describeApiKeyAuthMethod } from "@executor-js/http-auth";
+import { ApiKeyAuthMethod, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // Plugin config

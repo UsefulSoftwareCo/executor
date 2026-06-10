@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { AuthMethodDescriptor, AuthPlacementDescriptor } from "@executor-js/sdk/shared";
+import type { AuthMethodDescriptor, AuthPlacementDescriptor } from "../integration";
 
 // ---------------------------------------------------------------------------
 // The shared HTTP auth-method vocabulary for protocol plugins (openapi,
@@ -9,9 +9,10 @@ import type { AuthMethodDescriptor, AuthPlacementDescriptor } from "@executor-js
 // `values: Record<variable, string|null>`, the plugin renders them onto the
 // request).
 //
-// This deliberately lives OUTSIDE @executor-js/sdk: core is carrier-agnostic
-// (a connection could be a CLI login or a DB URL); headers and query params
-// are an HTTP-plugin concern.
+// Core itself never imports this module — core stays carrier-agnostic (a
+// connection could be a CLI login or a DB URL). It ships as the
+// `@executor-js/sdk/http-auth` subpath purely as a home: composition, not
+// location, is what keeps headers/query params an HTTP-plugin concern.
 //
 // OAuth methods are NOT modeled here — their config genuinely differs per
 // plugin (openapi stores endpoints+scopes, graphql an optional header

@@ -63,7 +63,6 @@
   "dependencies": {
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
-    "@executor-js/http-auth": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "graphql": "^16.12.0",
     "graphql-yoga": "^5.17.0"

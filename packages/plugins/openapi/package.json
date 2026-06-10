@@ -63,7 +63,6 @@
   "dependencies": {
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
-    "@executor-js/http-auth": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "lucide-react": "^1.7.0",
     "openapi-types": "^12.1.3",

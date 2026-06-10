@@ -20,7 +20,10 @@
 // ---------------------------------------------------------------------------
 
 import { Option, Schema } from "effect";
-import { apiKeyMethodFromLegacyTemplate, decodeLegacyApiKeyTemplate } from "@executor-js/http-auth";
+import {
+  apiKeyMethodFromLegacyTemplate,
+  decodeLegacyApiKeyTemplate,
+} from "@executor-js/sdk/http-auth";
 
 import { decodeGraphqlIntegrationConfigOption, type GraphqlAuthMethod } from "./types";
 

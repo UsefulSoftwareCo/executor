@@ -4,7 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 
 import { IntegrationSlug } from "@executor-js/sdk/shared";
-import { apiKeyMethodLabel, type AuthPlacement } from "@executor-js/http-auth";
+import { apiKeyMethodLabel, type AuthPlacement } from "@executor-js/sdk/http-auth";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   AuthMethodListEditor,

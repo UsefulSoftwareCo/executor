@@ -1,11 +1,11 @@
 import { Schema } from "effect";
 import type { OAuthAuthentication } from "@executor-js/sdk/shared";
-import type { ApiKeyAuthMethod } from "@executor-js/http-auth";
+import type { ApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 
 // ---------------------------------------------------------------------------
 // Auth-template model.
 //
-// The apiKey method is the SHARED placements model (`@executor-js/http-auth`,
+// The apiKey method is the SHARED placements model (`@executor-js/sdk/http-auth`,
 // the same shape the graphql/mcp plugins store): N header/query placements,
 // each rendered from its own credential input. The oauth template is
 // mechanism-intrinsic and comes from core (`OAuthAuthentication`, keyed
@@ -18,7 +18,7 @@ import type { ApiKeyAuthMethod } from "@executor-js/http-auth";
 // (`migrate-config.ts`) — runtime code knows only this model.
 // ---------------------------------------------------------------------------
 
-export { TOKEN_VARIABLE } from "@executor-js/http-auth";
+export { TOKEN_VARIABLE } from "@executor-js/sdk/http-auth";
 
 export type APIKeyAuthentication = ApiKeyAuthMethod;
 

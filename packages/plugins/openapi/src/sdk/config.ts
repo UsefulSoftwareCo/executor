@@ -4,7 +4,7 @@ import {
   TOKEN_VARIABLE,
   renderAuthPlacements,
   requiredPlacementVariables,
-} from "@executor-js/http-auth";
+} from "@executor-js/sdk/http-auth";
 
 import type { Authentication } from "./types";
 import { isOAuthAuthentication } from "./types";
