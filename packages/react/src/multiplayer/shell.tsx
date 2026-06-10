@@ -42,7 +42,6 @@ export type ShellNavItem = { readonly to: string; readonly label: string };
 export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
-  { to: "/oauth-apps", label: "OAuth apps" },
   { to: "/policies", label: "Policies" },
 ];
 

@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as PoliciesRouteImport } from './routes/policies'
-import { Route as OauthAppsRouteImport } from './routes/oauth-apps'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ResumeExecutionIdRouteImport } from './routes/resume.$executionId'
 import { Route as IntegrationsNamespaceRouteImport } from './routes/integrations.$namespace'
@@ -32,11 +31,6 @@ const SecretsRoute = SecretsRouteImport.update({
 const PoliciesRoute = PoliciesRouteImport.update({
   id: '/policies',
   path: '/policies',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OauthAppsRoute = OauthAppsRouteImport.update({
-  id: '/oauth-apps',
-  path: '/oauth-apps',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -68,7 +62,6 @@ const IntegrationsAddPluginKeyRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -79,7 +72,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -91,7 +83,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
   '/tools': typeof ToolsRoute
@@ -104,7 +95,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/oauth-apps'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -115,7 +105,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/oauth-apps'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -126,7 +115,6 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/oauth-apps'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -138,7 +126,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  OauthAppsRoute: typeof OauthAppsRoute
   PoliciesRoute: typeof PoliciesRoute
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
@@ -169,13 +156,6 @@ declare module '@tanstack/react-router' {
       path: '/policies'
       fullPath: '/policies'
       preLoaderRoute: typeof PoliciesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/oauth-apps': {
-      id: '/oauth-apps'
-      path: '/oauth-apps'
-      fullPath: '/oauth-apps'
-      preLoaderRoute: typeof OauthAppsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -218,7 +198,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  OauthAppsRoute: OauthAppsRoute,
   PoliciesRoute: PoliciesRoute,
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,

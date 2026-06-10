@@ -14,7 +14,6 @@ import { Route as SetupMcpRouteImport } from './routes/setup-mcp'
 import { Route as SecretsRouteImport } from './routes/secrets'
 import { Route as PoliciesRouteImport } from './routes/policies'
 import { Route as OrgRouteImport } from './routes/org'
-import { Route as OauthAppsRouteImport } from './routes/oauth-apps'
 import { Route as CreateOrgRouteImport } from './routes/create-org'
 import { Route as BillingRouteImport } from './routes/billing'
 import { Route as ApiKeysRouteImport } from './routes/api-keys'
@@ -47,11 +46,6 @@ const PoliciesRoute = PoliciesRouteImport.update({
 const OrgRoute = OrgRouteImport.update({
   id: '/org',
   path: '/org',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OauthAppsRoute = OauthAppsRouteImport.update({
-  id: '/oauth-apps',
-  path: '/oauth-apps',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreateOrgRoute = CreateOrgRouteImport.update({
@@ -101,7 +95,6 @@ export interface FileRoutesByFullPath {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/create-org': typeof CreateOrgRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
@@ -117,7 +110,6 @@ export interface FileRoutesByTo {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/create-org': typeof CreateOrgRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
@@ -134,7 +126,6 @@ export interface FileRoutesById {
   '/api-keys': typeof ApiKeysRoute
   '/billing': typeof BillingRoute
   '/create-org': typeof CreateOrgRoute
-  '/oauth-apps': typeof OauthAppsRoute
   '/org': typeof OrgRoute
   '/policies': typeof PoliciesRoute
   '/secrets': typeof SecretsRoute
@@ -152,7 +143,6 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/create-org'
-    | '/oauth-apps'
     | '/org'
     | '/policies'
     | '/secrets'
@@ -168,7 +158,6 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/create-org'
-    | '/oauth-apps'
     | '/org'
     | '/policies'
     | '/secrets'
@@ -184,7 +173,6 @@ export interface FileRouteTypes {
     | '/api-keys'
     | '/billing'
     | '/create-org'
-    | '/oauth-apps'
     | '/org'
     | '/policies'
     | '/secrets'
@@ -201,7 +189,6 @@ export interface RootRouteChildren {
   ApiKeysRoute: typeof ApiKeysRoute
   BillingRoute: typeof BillingRoute
   CreateOrgRoute: typeof CreateOrgRoute
-  OauthAppsRoute: typeof OauthAppsRoute
   OrgRoute: typeof OrgRoute
   PoliciesRoute: typeof PoliciesRoute
   SecretsRoute: typeof SecretsRoute
@@ -248,13 +235,6 @@ declare module '@tanstack/react-router' {
       path: '/org'
       fullPath: '/org'
       preLoaderRoute: typeof OrgRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/oauth-apps': {
-      id: '/oauth-apps'
-      path: '/oauth-apps'
-      fullPath: '/oauth-apps'
-      preLoaderRoute: typeof OauthAppsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/create-org': {
@@ -321,7 +301,6 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKeysRoute: ApiKeysRoute,
   BillingRoute: BillingRoute,
   CreateOrgRoute: CreateOrgRoute,
-  OauthAppsRoute: OauthAppsRoute,
   OrgRoute: OrgRoute,
   PoliciesRoute: PoliciesRoute,
   SecretsRoute: SecretsRoute,

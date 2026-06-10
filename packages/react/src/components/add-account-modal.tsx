@@ -8,6 +8,7 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  type OAuthClientSummary,
   type Owner,
 } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
@@ -15,10 +16,13 @@ import { toast } from "sonner";
 
 import {
   addConnectionOptimistic,
+  connectionsAllAtom,
+  oauthClientsOptimisticAtom,
   probeOAuth,
   providerItemsAtom,
   providersAtom,
   registerDynamicOAuthClient,
+  removeOAuthClientOptimistic,
   startOAuth,
 } from "../api/atoms";
 import { connectionWriteKeys, oauthClientWriteKeys } from "../api/reactivity-keys";
@@ -42,12 +46,20 @@ import {
   type OAuthClientOption,
 } from "../plugins/use-effective-oauth-client";
 import { cn } from "../lib/utils";
+import { buildUsageMap, connectionsUsingClient } from "../lib/oauth-client-usage";
 import { OAuthClientForm } from "./oauth-client-form";
+import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./dropdown-menu";
 import { PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
@@ -509,6 +521,72 @@ export async function runDcrConnect(
   return { kind: "started" };
 }
 
+// ---------------------------------------------------------------------------
+// One row in the OAuth app picker: a radio-select Label plus an actions menu
+// (Edit / Remove) so the registered app can be managed inline. The page that
+// used to own this management was removed in favour of doing it here, next to
+// where the app is picked. The menu lives OUTSIDE the <label> so clicking it
+// never toggles the radio.
+// ---------------------------------------------------------------------------
+function OAuthAppRadioRow(props: {
+  readonly app: OAuthClientOption;
+  readonly idPrefix: string;
+  readonly variant: "matched" | "other";
+  readonly showOwnerLabel: boolean;
+  readonly onManage?: { readonly onEdit: () => void; readonly onRemove: () => void };
+}) {
+  const { app, idPrefix, variant, showOwnerLabel, onManage } = props;
+  return (
+    <div className="flex items-center gap-1">
+      <Label
+        htmlFor={`${idPrefix}-${app.slug}`}
+        className={cn(
+          "flex flex-1 cursor-pointer items-center gap-3 rounded-lg border border-border/60 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40",
+          variant === "matched" ? "bg-muted/30" : "bg-background/40",
+        )}
+      >
+        <RadioGroupItem id={`${idPrefix}-${app.slug}`} value={String(app.slug)} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{clientDisplayName(String(app.slug))}</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {clientHost(app.tokenUrl)} ·{" "}
+            {app.grant === "client_credentials" ? "app-to-app" : "you'll sign in"}
+          </span>
+        </span>
+        {showOwnerLabel ? <Badge variant="outline">{ownerLabel(app.owner)}</Badge> : null}
+      </Label>
+      {onManage ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 text-muted-foreground"
+              aria-label={`Actions for ${String(app.slug)}`}
+            >
+              <svg viewBox="0 0 16 16" className="size-3.5">
+                <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                <circle cx="8" cy="13" r="1.2" fill="currentColor" />
+              </svg>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onClick={onManage.onEdit}>Edit</DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive text-sm"
+              onClick={onManage.onRemove}
+            >
+              Remove
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+    </div>
+  );
+}
+
 export function AddAccountModal(props: {
   readonly integration: IntegrationSlug;
   readonly integrationName: string;
@@ -579,6 +657,12 @@ export function AddAccountModal(props: {
   // FIX 3 escape hatch: when no registered app matched the integration's
   // endpoints, the unmatched apps are collapsed behind an opt-in expander.
   const [showOtherApps, setShowOtherApps] = useState(false);
+  // Inline OAuth app management — edit re-opens the registration form for an
+  // existing app (upsert by owner+slug); remove confirms before deleting. Both
+  // hold the FULL app summary (with endpoints + resource) so the edit prefill
+  // and the remove warning have everything they need.
+  const [editingClient, setEditingClient] = useState<OAuthClientSummary | null>(null);
+  const [removingClient, setRemovingClient] = useState<OAuthClientSummary | null>(null);
 
   const doCreate = useAtomSet(addConnectionOptimistic(owner), {
     mode: "promiseExit",
@@ -588,6 +672,22 @@ export function AddAccountModal(props: {
   const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, {
     mode: "promiseExit",
   });
+  const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promise" });
+
+  // Full registered-app summaries (carry endpoints + resource the picker's
+  // lightweight options omit) and the connection→app usage map that powers the
+  // remove warning. Both are secondary reads — a not-yet-loaded list just means
+  // no management affordance / no usage badge until it arrives.
+  const allClientsResult = useAtomValue(oauthClientsOptimisticAtom);
+  const connectionsResult = useAtomValue(connectionsAllAtom);
+  const clientSummaries = useMemo<readonly OAuthClientSummary[]>(
+    () => (AsyncResult.isSuccess(allClientsResult) ? allClientsResult.value : []),
+    [allClientsResult],
+  );
+  const usage = useMemo(
+    () => buildUsageMap(AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : []),
+    [connectionsResult],
+  );
 
   const method = useMemo(
     () => allMethods.find((m: AuthMethod) => m.id === methodId) ?? allMethods[0],
@@ -688,6 +788,9 @@ export function AddAccountModal(props: {
     oauthEndpointMatched && oauthApps.length > 0 ? String(oauthApps[0]?.slug) : "";
   const selectedApp = pickedApp ?? oauthDefaultApp;
   const oauthRegistering = isOAuth && registeringOAuthClient;
+  // Editing reuses the registration form (createClient upserts by owner+slug),
+  // so it occupies the same full-bleed sub-view as registering.
+  const oauthEditing = isOAuth && editingClient !== null;
   const chosenClient: OAuthClientOption | null =
     oauthApps.find((c: OAuthClientOption) => String(c.slug) === selectedApp) ?? null;
   const oauthBusy = ccBusy || oauthPopup.busy;
@@ -728,9 +831,42 @@ export function AddAccountModal(props: {
     setDcrBusy(false);
     setDcrFailed(false);
     setShowOtherApps(false);
+    setEditingClient(null);
+    setRemovingClient(null);
     setCreatedMethods([]);
     setRemovedMethodIds(new Set());
     setAddingMethod(false);
+  };
+
+  // Build the picker row's Edit/Remove menu for an app, but only once its full
+  // summary has loaded (the picker option lacks endpoints/resource). Until then
+  // the row shows no actions menu rather than a broken one.
+  const manageHandlersFor = (
+    appOption: OAuthClientOption,
+  ): { readonly onEdit: () => void; readonly onRemove: () => void } | undefined => {
+    const summary = clientSummaries.find(
+      (c: OAuthClientSummary) =>
+        c.owner === appOption.owner && String(c.slug) === String(appOption.slug),
+    );
+    if (!summary) return undefined;
+    return {
+      onEdit: () => setEditingClient(summary),
+      onRemove: () => setRemovingClient(summary),
+    };
+  };
+
+  // Remove a registered app. Removal never cascades into its connections (they
+  // reconnect at their next refresh); clear the picked app if it was the one
+  // removed so the connect button doesn't point at a gone slug.
+  const handleRemoveApp = async (client: OAuthClientSummary): Promise<void> => {
+    setRemovingClient(null);
+    await doRemoveOAuthClient({
+      params: { slug: client.slug },
+      payload: { owner: client.owner },
+      reactivityKeys: oauthClientWriteKeys,
+    });
+    toast.success(`Removed ${String(client.slug)}`);
+    if (pickedApp === String(client.slug)) setPickedApp(null);
   };
 
   const selectMethod = (nextMethodId: string): void => {
@@ -957,7 +1093,7 @@ export function AddAccountModal(props: {
       <DialogContent
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
-          (addingMethod && createCustomMethod) || oauthRegistering
+          (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing
             ? "gap-0 p-0 sm:max-w-2xl"
             : "sm:max-w-xl",
         )}
@@ -975,6 +1111,36 @@ export function AddAccountModal(props: {
               onCreated={handleCustomMethodCreated}
               onCancel={() => setAddingMethod(false)}
             />
+          </>
+        ) : oauthEditing && editingClient ? (
+          <>
+            <DialogHeader className="border-b border-border/60 px-5 py-4">
+              <DialogTitle className="text-base">Edit {String(editingClient.slug)}</DialogTitle>
+              <DialogDescription className="text-sm">
+                Update this {ownerLabel(editingClient.owner).toLowerCase()} app&apos;s client
+                credentials or endpoints. Re-enter the client secret to save.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="px-5 py-5">
+              <OAuthClientForm
+                integrationName={integrationName}
+                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
+                  String(app.slug),
+                )}
+                fixedSlug={editingClient.slug}
+                fixedOwner={editingClient.owner}
+                prefill={{
+                  authorizationUrl: editingClient.authorizationUrl,
+                  tokenUrl: editingClient.tokenUrl,
+                  resource: editingClient.resource ?? null,
+                  grant: editingClient.grant,
+                  clientId: editingClient.clientId,
+                }}
+                onCreated={() => setEditingClient(null)}
+                onCancel={() => setEditingClient(null)}
+                surface="plain"
+              />
+            </div>
           </>
         ) : oauthRegistering && method?.kind === "oauth" ? (
           <>
@@ -1166,32 +1332,14 @@ export function AddAccountModal(props: {
                                         className="gap-2 pt-1"
                                       >
                                         {oauthOtherApps.map((app: OAuthClientOption) => (
-                                          <Label
+                                          <OAuthAppRadioRow
                                             key={String(app.slug)}
-                                            htmlFor={`other-app-${app.slug}`}
-                                            className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                                          >
-                                            <RadioGroupItem
-                                              id={`other-app-${app.slug}`}
-                                              value={String(app.slug)}
-                                            />
-                                            <span className="min-w-0 flex-1">
-                                              <span className="block text-sm font-medium">
-                                                {clientDisplayName(String(app.slug))}
-                                              </span>
-                                              <span className="block truncate text-xs text-muted-foreground">
-                                                {clientHost(app.tokenUrl)} ·{" "}
-                                                {app.grant === "client_credentials"
-                                                  ? "app-to-app"
-                                                  : "you'll sign in"}
-                                              </span>
-                                            </span>
-                                            {ownerDisplay.showOwnerLabels ? (
-                                              <Badge variant="outline">
-                                                {ownerLabel(app.owner)}
-                                              </Badge>
-                                            ) : null}
-                                          </Label>
+                                            app={app}
+                                            idPrefix="other-app"
+                                            variant="other"
+                                            showOwnerLabel={ownerDisplay.showOwnerLabels}
+                                            onManage={manageHandlersFor(app)}
+                                          />
                                         ))}
                                       </RadioGroup>
                                     ) : null}
@@ -1205,30 +1353,14 @@ export function AddAccountModal(props: {
                                     className="gap-2"
                                   >
                                     {oauthApps.map((app: OAuthClientOption) => (
-                                      <Label
+                                      <OAuthAppRadioRow
                                         key={String(app.slug)}
-                                        htmlFor={`app-${app.slug}`}
-                                        className="flex cursor-pointer items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
-                                      >
-                                        <RadioGroupItem
-                                          id={`app-${app.slug}`}
-                                          value={String(app.slug)}
-                                        />
-                                        <span className="min-w-0 flex-1">
-                                          <span className="block text-sm font-medium">
-                                            {clientDisplayName(String(app.slug))}
-                                          </span>
-                                          <span className="block truncate text-xs text-muted-foreground">
-                                            {clientHost(app.tokenUrl)} ·{" "}
-                                            {app.grant === "client_credentials"
-                                              ? "app-to-app"
-                                              : "you'll sign in"}
-                                          </span>
-                                        </span>
-                                        {ownerDisplay.showOwnerLabels ? (
-                                          <Badge variant="outline">{ownerLabel(app.owner)}</Badge>
-                                        ) : null}
-                                      </Label>
+                                        app={app}
+                                        idPrefix="app"
+                                        variant="matched"
+                                        showOwnerLabel={ownerDisplay.showOwnerLabels}
+                                        onManage={manageHandlersFor(app)}
+                                      />
                                     ))}
                                     <Button
                                       type="button"
@@ -1331,6 +1463,18 @@ export function AddAccountModal(props: {
             </DialogFooter>
           </>
         )}
+
+        {/* Remove-app confirmation — layered over the picker. Renders into its
+            own portal, so it sits cleanly above the modal regardless of which
+            sub-view is active. */}
+        {removingClient ? (
+          <RemoveOAuthAppDialog
+            client={removingClient}
+            connections={connectionsUsingClient(usage, removingClient)}
+            onConfirm={() => void handleRemoveApp(removingClient)}
+            onClose={() => setRemovingClient(null)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

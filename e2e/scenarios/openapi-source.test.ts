@@ -53,42 +53,63 @@ scenario(
       const slug = `openapi-scn-greet-${randomBytes(4).toString("hex")}`;
       const specBaseUrl = "http://127.0.0.1:59999"; // never contacted during registration
 
-      const added = yield* client.openapi.addSpec({
-        payload: {
-          spec: { kind: "blob", value: greetSpec(specBaseUrl) },
-          slug,
-          baseUrl: specBaseUrl,
-          authenticationTemplate: [
-            {
-              slug: "apiKey",
-              type: "apiKey",
-              headers: { "x-api-key": [{ type: "variable", name: "token" }] },
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const added = yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: greetSpec(specBaseUrl) },
+              slug,
+              baseUrl: specBaseUrl,
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: { "x-api-key": [{ type: "variable", name: "token" }] },
+                },
+              ],
             },
-          ],
-        },
-      });
-      expect(added.toolCount, "the spec's operations were extracted as tools").toBeGreaterThan(0);
-      expect(added.slug, "the integration keeps the requested slug").toBe(slug);
+          });
+          expect(added.toolCount, "the spec's operations were extracted as tools").toBeGreaterThan(
+            0,
+          );
+          expect(added.slug, "the integration keeps the requested slug").toBe(slug);
 
-      // The catalog stamps tools once a connection exists; a `from` provider
-      // reference avoids any vault round-trip.
-      const providers = yield* client.providers.list();
-      expect(providers.length, "a credential provider is available").toBeGreaterThan(0);
+          // The catalog stamps tools once a connection exists; a `from` provider
+          // reference avoids any vault round-trip.
+          const providers = yield* client.providers.list();
+          expect(providers.length, "a credential provider is available").toBeGreaterThan(0);
 
-      yield* client.connections.create({
-        payload: {
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: IntegrationSlug.make(slug),
-          template: AuthTemplateSlug.make("apiKey"),
-          from: { provider: providers[0]!, id: ProviderItemId.make(randomUUID()) },
-        },
-      });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: IntegrationSlug.make(slug),
+              template: AuthTemplateSlug.make("apiKey"),
+              from: { provider: providers[0]!, id: ProviderItemId.make(randomUUID()) },
+            },
+          });
 
-      const tools = yield* client.tools.list();
-      const mine = tools.filter((tool) => String(tool.integration) === slug).map((t) => t.name);
-      expect(mine.join(", "), "the spec's operation is in the tool catalog").toContain(
-        "getGreeting",
+          const tools = yield* client.tools.list();
+          const mine = tools.filter((tool) => String(tool.integration) === slug).map((t) => t.name);
+          expect(mine.join(", "), "the spec's operation is in the tool catalog").toContain(
+            "getGreeting",
+          );
+        }),
+        // Selfhost shares one bootstrap admin, so this scenario must not leak
+        // its connection or integration — otherwise a cross-target guarantee
+        // like "a fresh identity starts with zero connections" would see it.
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({
+              params: {
+                owner: "org",
+                integration: IntegrationSlug.make(slug),
+                name: ConnectionName.make("main"),
+              },
+            })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
       );
     }),
 );
