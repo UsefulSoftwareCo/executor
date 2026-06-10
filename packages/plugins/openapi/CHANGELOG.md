@@ -1,5 +1,15 @@
 # @executor-js/plugin-openapi
 
+## 1.5.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.2
+  - @executor-js/config@1.5.2
+  - @executor-js/api@1.4.24
+  - @executor-js/react@1.4.24
+
 ## 1.5.1
 
 ### Patch Changes
