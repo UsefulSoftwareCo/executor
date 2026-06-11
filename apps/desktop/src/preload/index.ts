@@ -48,6 +48,14 @@ const api = {
     return ipcRenderer.invoke("executor:diagnostics:export");
   },
   /**
+   * Run an interactive update check (menu-flow semantics: native dialogs
+   * for "update ready", "no updates", and failures). Used by the crash
+   * screen so a broken release can heal itself.
+   */
+  checkForUpdates(): Promise<void> {
+    return ipcRenderer.invoke("executor:updates:check");
+  },
+  /**
    * Crash-reporting config for the renderer. Null unless this desktop build
    * shipped with a DSN baked in — the shared web UI only initializes its
    * error reporting when this returns a config.

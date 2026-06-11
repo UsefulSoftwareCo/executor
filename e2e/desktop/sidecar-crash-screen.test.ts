@@ -79,8 +79,9 @@ const run = async (runDir: string) => {
       await page.getByText("stopped unexpectedly").waitFor({ timeout: 30_000 });
     });
 
-    await step("crash screen offers restart and diagnostics", async () => {
+    await step("crash screen offers restart, update, and diagnostics", async () => {
       await page.locator("#restart").waitFor({ timeout: 5_000 });
+      await page.locator("#update").waitFor({ timeout: 5_000 });
       await page.locator("#export").waitFor({ timeout: 5_000 });
     });
 

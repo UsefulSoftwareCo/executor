@@ -329,6 +329,10 @@ const registerIpcHandlers = () => {
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
   ipcMain.handle("executor:diagnostics:export", () => exportDiagnostics());
   ipcMain.handle("executor:crash-reporting:get", () => getCrashReportingConfig());
+  // Crash-screen escape hatch: a recurring sidecar crash may already be
+  // fixed upstream. Reuses the menu flow — staged updates prompt to install,
+  // "no updates" / failures surface in their own dialogs.
+  ipcMain.handle("executor:updates:check", () => runUpdateCheck({ alertOnFail: true }));
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
@@ -535,6 +539,10 @@ const boot = async () => {
     if (!window) return;
     const html = sidecarCrashHtml({ reported: errorReportingEnabled });
     void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    // A crashing sidecar may be a broken release — quietly stage any
+    // available update so the install prompt appears on its own (same
+    // self-heal as the fatal startup path).
+    void runUpdateCheck({ alertOnFail: false });
   });
   connection = await startWithCurrentSettings();
   if (!connection) {

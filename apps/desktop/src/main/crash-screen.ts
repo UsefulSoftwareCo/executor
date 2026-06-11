@@ -41,6 +41,7 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
         font: inherit;
         font-size: 0.875rem;
         cursor: pointer;
+        white-space: nowrap;
       }
       button.secondary { background: transparent; color: #fafafa; border-color: #3f3f46; }
       #status { margin-top: 1.25rem; min-height: 1.2em; font-size: 0.8rem; color: #a1a1aa; }
@@ -56,6 +57,7 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
       </p>
       <div class="row">
         <button id="restart">Restart server</button>
+        <button id="update" class="secondary">Check for updates</button>
         <button id="export" class="secondary">Export diagnostics</button>
       </div>
       <p id="status"></p>
@@ -69,6 +71,16 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
           await window.executor.restartServer();
         } catch {
           status.textContent = "Restart failed \\u2014 try quitting and reopening Executor.";
+        }
+      });
+      document.getElementById("update").addEventListener("click", async () => {
+        status.textContent = "Checking for updates\\u2026";
+        try {
+          // Outcomes surface as native dialogs (install prompt / no updates).
+          await window.executor.checkForUpdates();
+          status.textContent = "";
+        } catch {
+          status.textContent = "Update check failed \\u2014 check your network.";
         }
       });
       document.getElementById("export").addEventListener("click", async () => {
