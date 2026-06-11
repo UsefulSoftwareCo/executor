@@ -14,11 +14,18 @@ const ELECTRON_EXTERNALS = [
   "electron-store",
   "electron-updater",
   "electron-window-state",
+  "@sentry/electron",
+  "@sentry/electron/main",
 ];
 
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    define: {
+      // Crash-report DSN baked in at build time (publish-desktop.yml).
+      // Empty in local/dev builds → Sentry stays fully disabled.
+      __EXECUTOR_SENTRY_DSN__: JSON.stringify(process.env.SENTRY_DSN ?? ""),
+    },
     build: {
       rollupOptions: {
         input: { index: "src/main/index.ts" },

@@ -51,6 +51,8 @@ interface ExecutorBridge {
   ) => Promise<DesktopServerSettings>;
   readonly regeneratePassword: () => Promise<DesktopServerSettings>;
   readonly restartServer: () => Promise<DesktopServerConnection>;
+  // Optional: present in desktop builds that ship the diagnostics export.
+  readonly exportDiagnostics?: () => Promise<string>;
 }
 
 const readBridge = (): ExecutorBridge | null => {
@@ -132,6 +134,23 @@ function SettingsPage() {
     },
     [bridge, restartAndRefreshConnection],
   );
+
+  const [diagnostics, setDiagnostics] = useState<
+    { readonly state: "idle" | "exporting" } | { readonly state: "done"; readonly path: string }
+  >({ state: "idle" });
+
+  const exportDiagnostics = useCallback(async () => {
+    if (!bridge?.exportDiagnostics) return;
+    setDiagnostics({ state: "exporting" });
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC, errors surface in the form
+    try {
+      const path = await bridge.exportDiagnostics();
+      setDiagnostics({ state: "done", path });
+    } catch {
+      setError("Diagnostics export failed — check the desktop log for details.");
+      setDiagnostics({ state: "idle" });
+    }
+  }, [bridge]);
 
   const regenerate = useCallback(async () => {
     if (!bridge) return;
@@ -346,6 +365,51 @@ function SettingsPage() {
             <span style={{ fontSize: "0.8rem", color: "var(--destructive, #c00)" }}>{error}</span>
           )}
         </div>
+
+        {bridge.exportDiagnostics && (
+          <section
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.5rem",
+              padding: "0.85rem",
+              borderRadius: 6,
+              border: "1px solid var(--border, #ddd)",
+            }}
+          >
+            <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
+            <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
+              Packs app and server logs, crash dumps, and version info into a zip in your Downloads
+              folder — attach it when reporting a bug. Your sources, secrets, and passwords are not
+              included.
+            </span>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+              <button
+                type="button"
+                onClick={() => void exportDiagnostics()}
+                disabled={diagnostics.state === "exporting"}
+                style={{
+                  padding: "0.45rem 0.85rem",
+                  borderRadius: 6,
+                  border: "1px solid var(--border, #ddd)",
+                  background: "var(--background, white)",
+                  fontFamily: "inherit",
+                  fontSize: "0.85rem",
+                  cursor: diagnostics.state === "exporting" ? "default" : "pointer",
+                  width: "fit-content",
+                }}
+              >
+                {diagnostics.state === "exporting" ? "Exporting…" : "Export diagnostics"}
+              </button>
+              {diagnostics.state === "done" && (
+                <code style={{ fontSize: "0.75rem", overflow: "auto", whiteSpace: "nowrap" }}>
+                  {diagnostics.path}
+                </code>
+              )}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

@@ -40,6 +40,13 @@ const api = {
   openExternal(url: string): Promise<void> {
     return ipcRenderer.invoke("executor:shell:open-external", url);
   },
+  /**
+   * Pack logs + crash dumps + a redacted manifest into a zip in Downloads
+   * and reveal it in the file manager. Returns the zip path.
+   */
+  exportDiagnostics(): Promise<string> {
+    return ipcRenderer.invoke("executor:diagnostics:export");
+  },
 } as const;
 
 contextBridge.exposeInMainWorld("executor", api);

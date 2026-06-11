@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { app } from "electron";
+import log from "electron-log/main.js";
 import { Option, Schema } from "effect";
 import {
   normalizeExecutorServerConnection,
@@ -23,7 +24,34 @@ import {
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
 import { getServerSettings } from "./settings";
+import { reportSidecarCrash } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
+
+// Sidecar output is echoed to the terminal (visible when Electron is run
+// from a shell) AND persisted to main.log under the "sidecar" scope — the
+// log file is what a user can actually send us after a crash.
+const sidecarLog = log.scope("sidecar");
+
+// Rolling stderr tail attached to crash reports. Bounded so a chatty
+// sidecar can't grow it unbounded over a long session.
+const STDERR_TAIL_LIMIT = 8 * 1024;
+
+// Children deliberately stopped via stopSidecar (quit, restart, update) —
+// their exits are expected and must not be reported as crashes.
+const expectedExits = new WeakSet<ChildProcess>();
+
+/** Buffer chunked output into whole lines before handing them to `write`. */
+const makeLineSplitter = (write: (line: string) => void) => {
+  let buffer = "";
+  return (text: string) => {
+    buffer += text;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim().length > 0) write(line);
+    }
+  };
+};
 
 export interface SidecarConnection {
   readonly baseUrl: string;
@@ -271,6 +299,9 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     let resolved = false;
     let rejected = false;
 
+    const logStdoutLine = makeLineSplitter((line) => sidecarLog.info(line));
+    const logStderrLine = makeLineSplitter((line) => sidecarLog.error(line));
+
     const reject = (err: Error) => {
       if (resolved || rejected) return;
       rejected = true;
@@ -282,6 +313,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     const onStdout = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       process.stdout.write(`[executor-sidecar] ${text}`);
+      logStdoutLine(text);
       const match = text.match(/EXECUTOR_READY:(\d+)/);
       if (match && !resolved) {
         if (!child.pid) {
@@ -315,12 +347,26 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
     const onStderr = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
-      stderrBuffer += text;
+      stderrBuffer = (stderrBuffer + text).slice(-STDERR_TAIL_LIMIT);
       process.stderr.write(`[executor-sidecar] ${text}`);
+      logStderrLine(text);
     };
 
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      if (resolved || rejected) return;
+      if (resolved) {
+        // Post-boot exit: expected when we stopped it ourselves (quit,
+        // restart, update); anything else is a sidecar crash under a live
+        // window — log it and report upstream with the stderr tail.
+        if (expectedExits.has(child)) {
+          sidecarLog.info(`exited (code=${code} signal=${signal})`);
+          return;
+        }
+        const message = `Sidecar exited unexpectedly (code=${code} signal=${signal})`;
+        sidecarLog.error(message);
+        reportSidecarCrash(message, stderrBuffer);
+        return;
+      }
+      if (rejected) return;
       // Detect bind failure — the Node listener prints either "EADDRINUSE" or
       // "address already in use" on stderr before exiting non-zero.
       if (/EADDRINUSE|address already in use/i.test(stderrBuffer)) {
@@ -339,6 +385,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 }
 
 export async function stopSidecar(child: ChildProcess): Promise<void> {
+  expectedExits.add(child);
   const cleanupManifest = () => {
     if (!child.pid) return;
     const dataDir = sidecarManifestPathByPid.get(child.pid);

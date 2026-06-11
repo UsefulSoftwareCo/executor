@@ -23,6 +23,7 @@ import {
   SidecarPortInUseError,
   type SidecarConnection,
 } from "./sidecar";
+import { exportDiagnostics, exportDiagnosticsInteractive, initErrorReporting } from "./diagnostics";
 import {
   getServerProfiles,
   getServerSettings,
@@ -46,6 +47,12 @@ app.setPath("userData", join(app.getPath("appData"), "Executor"));
 
 log.initialize({ preload: true });
 log.transports.file.level = "info";
+
+// Crash reporting must attach before app.whenReady() so Crashpad covers
+// every child process (renderer, GPU). Sentry-backed only when a DSN was
+// baked in at build time; otherwise dumps stay local for the diagnostics
+// export.
+initErrorReporting();
 
 let mainWindow: BrowserWindow | null = null;
 let connection: SidecarConnection | null = null;
@@ -311,6 +318,7 @@ const registerIpcHandlers = () => {
     setServerProfiles(value);
   });
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
+  ipcMain.handle("executor:diagnostics:export", () => exportDiagnostics());
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
@@ -471,6 +479,10 @@ const installApplicationMenu = () => {
       {
         label: "Check for Updates…",
         click: () => void runUpdateCheck({ alertOnFail: true }),
+      },
+      {
+        label: "Export Diagnostics…",
+        click: () => void exportDiagnosticsInteractive(),
       },
       { type: "separator" },
       ...(isMac
