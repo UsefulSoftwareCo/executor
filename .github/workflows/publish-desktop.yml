@@ -111,7 +111,7 @@ jobs:
           # Crash-report DSN baked into the main bundle (see the define in
           # electron.vite.config.ts). Unset (forks, local) → crash reporting
           # is compiled out and dumps stay local.
-          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_SENTRY_DSN }}
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
 

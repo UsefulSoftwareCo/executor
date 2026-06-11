@@ -24,7 +24,7 @@ export default defineConfig({
     define: {
       // Crash-report DSN baked in at build time (publish-desktop.yml).
       // Empty in local/dev builds → Sentry stays fully disabled.
-      __EXECUTOR_SENTRY_DSN__: JSON.stringify(process.env.SENTRY_DSN ?? ""),
+      __EXECUTOR_SENTRY_DSN__: JSON.stringify(process.env.DESKTOP_SENTRY_DSN ?? ""),
     },
     build: {
       rollupOptions: {

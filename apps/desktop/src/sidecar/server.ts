@@ -40,7 +40,7 @@ if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
 }
 
 // Crash reporting — only when the Electron main process handed us a DSN
-// (desktop builds with SENTRY_DSN baked in). `executor web` and self-host
+// (desktop builds with DESKTOP_SENTRY_DSN baked in). `executor web` and self-host
 // never set these env vars, so this stays inert everywhere else. Captures
 // uncaught exceptions / unhandled rejections in the server process; the
 // shared runId ties events to the main process and diagnostics zip.

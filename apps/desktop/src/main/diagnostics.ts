@@ -2,7 +2,7 @@
  * Crash reporting + diagnostics export for the Electron main process.
  *
  * Error reporting is Sentry-backed and gated entirely on a DSN being baked
- * in at build time (publish-desktop.yml exports SENTRY_DSN; see the define
+ * in at build time (publish-desktop.yml exports DESKTOP_SENTRY_DSN; see the define
  * in electron.vite.config.ts). Local/dev builds have no DSN, so nothing is
  * ever sent — instead Electron's native crash reporter still writes
  * minidumps locally so they ride along in the diagnostics zip.
