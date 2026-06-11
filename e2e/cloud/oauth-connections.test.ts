@@ -23,6 +23,7 @@ import {
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -40,188 +41,194 @@ const redirected = <R extends { status: string }>(
 
 scenario(
   "OAuth · probe discovers an authorization server's endpoints from its issuer URL",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const oauth = yield* serveOAuthTestServer();
-        const identity = yield* ctx.target.newIdentity();
-        const client = yield* ctx.api.client(api, identity);
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const oauth = yield* serveOAuthTestServer();
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
 
-        const probed = yield* client.oauth.probe({ payload: { url: oauth.issuerUrl } });
-        expect(probed.authorizationUrl, "probe found the authorization endpoint").toBe(
-          oauth.authorizationEndpoint,
-        );
-        expect(probed.tokenUrl, "probe found the token endpoint").toBe(oauth.tokenEndpoint);
-      }),
-    ),
+      const probed = yield* client.oauth.probe({ payload: { url: oauth.issuerUrl } });
+      expect(probed.authorizationUrl, "probe found the authorization endpoint").toBe(
+        oauth.authorizationEndpoint,
+      );
+      expect(probed.tokenUrl, "probe found the token endpoint").toBe(oauth.tokenEndpoint);
+    }),
+  ),
 );
 
 scenario(
   "OAuth · a registered OAuth app is listed for its owner without leaking the secret",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const oauth = yield* serveOAuthTestServer();
-        const identity = yield* ctx.target.newIdentity();
-        const client = yield* ctx.api.client(api, identity);
-        const slug = OAuthClientSlug.make(unique("oauthc"));
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const oauth = yield* serveOAuthTestServer();
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const slug = OAuthClientSlug.make(unique("oauthc"));
 
-        const created = yield* client.oauth.createClient({
-          payload: {
-            owner: "org",
-            slug,
-            authorizationUrl: oauth.authorizationEndpoint,
-            tokenUrl: oauth.tokenEndpoint,
-            grant: "authorization_code",
-            clientId: "test-client",
-            clientSecret: "test-secret",
-          },
-        });
-        expect(created.client, "the app keeps the requested slug").toBe(slug);
-
-        const clients = yield* client.oauth.listClients();
-        const mine = clients.find((entry) => entry.slug === slug);
-        expect(mine, "the registered app appears in the owner's list").toMatchObject({
+      const created = yield* client.oauth.createClient({
+        payload: {
           owner: "org",
           slug,
+          authorizationUrl: oauth.authorizationEndpoint,
+          tokenUrl: oauth.tokenEndpoint,
           grant: "authorization_code",
           clientId: "test-client",
-        });
-        expect(
-          JSON.stringify(clients),
-          "the client secret never appears in the list projection",
-        ).not.toContain("test-secret");
-      }),
-    ),
+          clientSecret: "test-secret",
+        },
+      });
+      expect(created.client, "the app keeps the requested slug").toBe(slug);
+
+      const clients = yield* client.oauth.listClients();
+      const mine = clients.find((entry) => entry.slug === slug);
+      expect(mine, "the registered app appears in the owner's list").toMatchObject({
+        owner: "org",
+        slug,
+        grant: "authorization_code",
+        clientId: "test-client",
+      });
+      expect(
+        JSON.stringify(clients),
+        "the client secret never appears in the list projection",
+      ).not.toContain("test-secret");
+    }),
+  ),
 );
 
 scenario(
   "OAuth · the authorization-code flow mints a connection (start → consent → complete)",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const oauth = yield* serveOAuthTestServer();
-        const identity = yield* ctx.target.newIdentity();
-        const client = yield* ctx.api.client(api, identity);
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const oauth = yield* serveOAuthTestServer();
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
 
-        // An integration that declares an oauth auth template — the integration
-        // is what the minted connection attaches to.
-        const integration = IntegrationSlug.make(unique("oauthint"));
-        yield* client.openapi.addSpec({
-          payload: {
-            spec: {
-              kind: "blob",
-              value: JSON.stringify({
-                openapi: "3.0.3",
-                info: { title: "OAuth-protected API", version: "1.0.0" },
-                paths: {
-                  "/me": {
-                    get: {
-                      operationId: "getMe",
-                      tags: ["default"],
-                      responses: { "200": { description: "the caller" } },
-                    },
+      // An integration that declares an oauth auth template — the integration
+      // is what the minted connection attaches to.
+      const integration = IntegrationSlug.make(unique("oauthint"));
+      yield* client.openapi.addSpec({
+        payload: {
+          spec: {
+            kind: "blob",
+            value: JSON.stringify({
+              openapi: "3.0.3",
+              info: { title: "OAuth-protected API", version: "1.0.0" },
+              paths: {
+                "/me": {
+                  get: {
+                    operationId: "getMe",
+                    tags: ["default"],
+                    responses: { "200": { description: "the caller" } },
                   },
                 },
-              }),
-            },
-            slug: integration,
-            baseUrl: "http://127.0.0.1:59999",
-            authenticationTemplate: [
-              {
-                slug: "oauth",
-                type: "oauth",
-                authorizationUrl: oauth.authorizationEndpoint,
-                tokenUrl: oauth.tokenEndpoint,
-                scopes: ["read"],
               },
-            ],
+            }),
           },
-        });
-
-        const clientSlug = OAuthClientSlug.make(unique("oauthc"));
-        yield* client.oauth.createClient({
-          payload: {
-            owner: "org",
-            slug: clientSlug,
-            authorizationUrl: oauth.authorizationEndpoint,
-            tokenUrl: oauth.tokenEndpoint,
-            grant: "authorization_code",
-            clientId: "test-client",
-            clientSecret: "test-secret",
-          },
-        });
-
-        // start: the product persists a session and hands back the authorize URL.
-        const started = redirected(
-          yield* client.oauth.start({
-            payload: {
-              client: clientSlug,
-              clientOwner: "org",
-              owner: "org",
-              name: ConnectionName.make("main"),
-              integration,
-              template: AuthTemplateSlug.make("oauth"),
+          slug: integration,
+          baseUrl: "http://127.0.0.1:59999",
+          authenticationTemplate: [
+            {
+              slug: "oauth",
+              kind: "oauth2",
+              authorizationUrl: oauth.authorizationEndpoint,
+              tokenUrl: oauth.tokenEndpoint,
+              scopes: ["read"],
             },
-          }),
-        );
-        expect(
-          started.authorizationUrl,
-          "the redirect points at the authorization server",
-        ).toContain(oauth.authorizationEndpoint);
+          ],
+        },
+      });
 
-        // The user consents on the authorization server (headless here): the
-        // authorize page bounces to the login form, and submitting credentials
-        // redirects back to the product's callback with an authorization code.
-        const authorize = yield* Effect.promise(() =>
-          fetch(started.authorizationUrl, { redirect: "manual" }),
-        );
-        expect(authorize.status, "the authorize endpoint sends the user to log in").toBe(302);
-        const consent = yield* Effect.promise(() =>
-          fetch(authorize.headers.get("location") ?? "", {
-            method: "POST",
-            redirect: "manual",
-            headers: {
-              authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
-            },
-          }),
-        );
-        expect(consent.status, "granting consent redirects back to the product").toBe(302);
-        const callback = new URL(consent.headers.get("location") ?? "");
-        expect(callback.searchParams.get("state"), "the callback carries the session's state").toBe(
-          String(started.state),
-        );
-        const code = callback.searchParams.get("code");
-        expect(code, "the callback carries an authorization code").not.toBeNull();
-
-        // complete: the product exchanges the code and mints the connection.
-        const connection = yield* client.oauth.complete({
-          payload: { state: started.state, code: code ?? "" },
-        });
-        expect(connection, "the minted connection is bound to the integration").toMatchObject({
+      const clientSlug = OAuthClientSlug.make(unique("oauthc"));
+      yield* client.oauth.createClient({
+        payload: {
           owner: "org",
-          name: "main",
-          integration,
-          template: "oauth",
-          oauthClient: clientSlug,
-        });
+          slug: clientSlug,
+          authorizationUrl: oauth.authorizationEndpoint,
+          tokenUrl: oauth.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        },
+      });
 
-        const connections = yield* client.connections.list({ query: { integration } });
-        expect(
-          connections.map((c) => `${c.owner}/${String(c.name)}`),
-          "the connection is listed for the integration",
-        ).toContain("org/main");
-      }),
-    ),
+      // start: the product persists a session and hands back the authorize URL.
+      const started = redirected(
+        yield* client.oauth.start({
+          payload: {
+            client: clientSlug,
+            clientOwner: "org",
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration,
+            template: AuthTemplateSlug.make("oauth"),
+          },
+        }),
+      );
+      expect(started.authorizationUrl, "the redirect points at the authorization server").toContain(
+        oauth.authorizationEndpoint,
+      );
+
+      // The user consents on the authorization server (headless here): the
+      // authorize page bounces to the login form, and submitting credentials
+      // redirects back to the product's callback with an authorization code.
+      const authorize = yield* Effect.promise(() =>
+        fetch(started.authorizationUrl, { redirect: "manual" }),
+      );
+      expect(authorize.status, "the authorize endpoint sends the user to log in").toBe(302);
+      const consent = yield* Effect.promise(() =>
+        fetch(authorize.headers.get("location") ?? "", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
+          },
+        }),
+      );
+      expect(consent.status, "granting consent redirects back to the product").toBe(302);
+      const callback = new URL(consent.headers.get("location") ?? "");
+      expect(callback.searchParams.get("state"), "the callback carries the session's state").toBe(
+        String(started.state),
+      );
+      const code = callback.searchParams.get("code");
+      expect(code, "the callback carries an authorization code").not.toBeNull();
+
+      // complete: the product exchanges the code and mints the connection.
+      const connection = yield* client.oauth.complete({
+        payload: { state: started.state, code: code ?? "" },
+      });
+      expect(connection, "the minted connection is bound to the integration").toMatchObject({
+        owner: "org",
+        name: "main",
+        integration,
+        template: "oauth",
+        oauthClient: clientSlug,
+      });
+
+      const connections = yield* client.connections.list({ query: { integration } });
+      expect(
+        connections.map((c) => `${c.owner}/${String(c.name)}`),
+        "the connection is listed for the integration",
+      ).toContain("org/main");
+    }),
+  ),
 );
 
-scenario("OAuth · cancelling an unknown session is idempotent", { needs: ["api"] }, (ctx) =>
+scenario(
+  "OAuth · cancelling an unknown session is idempotent",
+  {},
   Effect.gen(function* () {
-    const identity = yield* ctx.target.newIdentity();
-    const client = yield* ctx.api.client(api, identity);
+    const target = yield* Target;
+    const { client: makeClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeClient(api, identity);
 
     const cancelled = yield* client.oauth.cancel({
       payload: { state: OAuthState.make("oauth2_session_does_not_exist") },

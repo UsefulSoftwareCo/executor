@@ -13,6 +13,7 @@ import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -49,89 +50,91 @@ const addPingSpec = (client: Client, slug: IntegrationSlug, description?: string
 
 scenario(
   "Tenant isolation · integrations, tools, and connections in one org are invisible to another",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const orgA = yield* ctx.target.newIdentity();
-      const orgB = yield* ctx.target.newIdentity();
-      const clientA = yield* ctx.api.client(api, orgA);
-      const clientB = yield* ctx.api.client(api, orgB);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const orgA = yield* target.newIdentity();
+    const orgB = yield* target.newIdentity();
+    const clientA = yield* client(api, orgA);
+    const clientB = yield* client(api, orgB);
 
-      const slug = IntegrationSlug.make(`tenant-scn-${randomBytes(4).toString("hex")}`);
-      const connectionName = ConnectionName.make(`tenantconn${randomBytes(4).toString("hex")}`);
-      const secretValue = `tenant-secret-${randomBytes(8).toString("hex")}`;
+    const slug = IntegrationSlug.make(`tenant-scn-${randomBytes(4).toString("hex")}`);
+    const connectionName = ConnectionName.make(`tenantconn${randomBytes(4).toString("hex")}`);
+    const secretValue = `tenant-secret-${randomBytes(8).toString("hex")}`;
 
-      // Org A registers an integration and stores a credential against it.
-      yield* addPingSpec(clientA, slug);
-      yield* clientA.connections.create({
-        payload: {
-          owner: "org",
-          name: connectionName,
-          integration: slug,
-          template: TEMPLATE_API_KEY,
-          value: secretValue,
-        },
-      });
+    // Org A registers an integration and stores a credential against it.
+    yield* addPingSpec(clientA, slug);
+    yield* clientA.connections.create({
+      payload: {
+        owner: "org",
+        name: connectionName,
+        integration: slug,
+        template: TEMPLATE_API_KEY,
+        value: secretValue,
+      },
+    });
 
-      // Sanity from org A's own side: the integration is really there.
-      const aIntegrations = yield* clientA.integrations.list();
-      expect(
-        aIntegrations.map((integration) => integration.slug),
-        "org A sees its own integration",
-      ).toContain(slug);
+    // Sanity from org A's own side: the integration is really there.
+    const aIntegrations = yield* clientA.integrations.list();
+    expect(
+      aIntegrations.map((integration) => integration.slug),
+      "org A sees its own integration",
+    ).toContain(slug);
 
-      // Org B sees none of it — catalog, tools, connections, or secret bytes.
-      const bIntegrations = yield* clientB.integrations.list();
-      expect(
-        bIntegrations.map((integration) => integration.slug),
-        "org B's integration catalog has no trace of org A's integration",
-      ).not.toContain(slug);
+    // Org B sees none of it — catalog, tools, connections, or secret bytes.
+    const bIntegrations = yield* clientB.integrations.list();
+    expect(
+      bIntegrations.map((integration) => integration.slug),
+      "org B's integration catalog has no trace of org A's integration",
+    ).not.toContain(slug);
 
-      const bTools = yield* clientB.tools.list();
-      const leakedTools = bTools
-        .filter((tool) => String(tool.address).includes(slug))
-        .map((tool) => tool.address);
-      expect(leakedTools, "no org-A tool leaks into org B's tool catalog").toEqual([]);
+    const bTools = yield* clientB.tools.list({ query: {} });
+    const leakedTools = bTools
+      .filter((tool) => String(tool.address).includes(slug))
+      .map((tool) => tool.address);
+    expect(leakedTools, "no org-A tool leaks into org B's tool catalog").toEqual([]);
 
-      const bView = yield* clientB.openapi.getIntegration({ params: { slug } });
-      expect(bView, "fetching org A's integration by slug from org B yields nothing").toBeNull();
+    const bView = yield* clientB.openapi.getIntegration({ params: { slug } });
+    expect(bView, "fetching org A's integration by slug from org B yields nothing").toBeNull();
 
-      const bConnections = yield* clientB.connections.list({ query: {} });
-      expect(
-        bConnections.map((connection) => connection.name),
-        "org A's connection is not in org B's connection list",
-      ).not.toContain(connectionName);
-      expect(
-        JSON.stringify(bConnections),
-        "org A's secret value appears nowhere in org B's view",
-      ).not.toContain(secretValue);
-    }),
+    const bConnections = yield* clientB.connections.list({ query: {} });
+    expect(
+      bConnections.map((connection) => connection.name),
+      "org A's connection is not in org B's connection list",
+    ).not.toContain(connectionName);
+    expect(
+      JSON.stringify(bConnections),
+      "org A's secret value appears nowhere in org B's view",
+    ).not.toContain(secretValue);
+  }),
 );
 
 scenario(
   "Tenant isolation · the same integration slug in two orgs is two independent records",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const orgA = yield* ctx.target.newIdentity();
-      const orgB = yield* ctx.target.newIdentity();
-      const clientA = yield* ctx.api.client(api, orgA);
-      const clientB = yield* ctx.api.client(api, orgB);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const orgA = yield* target.newIdentity();
+    const orgB = yield* target.newIdentity();
+    const clientA = yield* client(api, orgA);
+    const clientB = yield* client(api, orgB);
 
-      // Both orgs register the SAME slug — neither blocks the other.
-      const slug = IntegrationSlug.make(`shared-scn-${randomBytes(4).toString("hex")}`);
-      yield* addPingSpec(clientA, slug, "Org A API");
-      yield* addPingSpec(clientB, slug, "Org B API");
+    // Both orgs register the SAME slug — neither blocks the other.
+    const slug = IntegrationSlug.make(`shared-scn-${randomBytes(4).toString("hex")}`);
+    yield* addPingSpec(clientA, slug, "Org A API");
+    yield* addPingSpec(clientB, slug, "Org B API");
 
-      // Updating org A's record must not mutate org B's same-slug record.
-      yield* clientA.integrations.update({
-        params: { slug },
-        payload: { description: "Org A Updated API" },
-      });
+    // Updating org A's record must not mutate org B's same-slug record.
+    yield* clientA.integrations.update({
+      params: { slug },
+      payload: { description: "Org A Updated API" },
+    });
 
-      const aIntegration = yield* clientA.integrations.get({ params: { slug } });
-      const bIntegration = yield* clientB.integrations.get({ params: { slug } });
-      expect(aIntegration.description, "org A sees its own update").toBe("Org A Updated API");
-      expect(bIntegration.description, "org B's same-slug record is untouched").toBe("Org B API");
-    }),
+    const aIntegration = yield* clientA.integrations.get({ params: { slug } });
+    const bIntegration = yield* clientB.integrations.get({ params: { slug } });
+    expect(aIntegration.description, "org A sees its own update").toBe("Org A Updated API");
+    expect(bIntegration.description, "org B's same-slug record is untouched").toBe("Org B API");
+  }),
 );

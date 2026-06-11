@@ -19,7 +19,8 @@ import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
-import type { Identity, Target } from "../src/target";
+import { Api, Target } from "../src/services";
+import type { Identity, Target as TargetShape } from "../src/target";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -66,7 +67,7 @@ const freshConnectionName = () => ConnectionName.make(`conn${randomBytes(4).toSt
 
 const cookieOf = (identity: Identity): string => identity.headers?.["cookie"] ?? "";
 
-const postJson = (target: Target, path: string, identity: Identity, body: unknown) =>
+const postJson = (target: TargetShape, path: string, identity: Identity, body: unknown) =>
   Effect.promise(async () => {
     const response = await fetch(new URL(path, target.baseUrl), {
       method: "POST",
@@ -94,7 +95,7 @@ const withRefreshedSession = (identity: Identity, response: Response): Identity 
 
 /** Invite `member` into `admin`'s org and accept — the real invite flow.
  *  Returns the member identity with its session re-bound to that org. */
-const joinOrg = (target: Target, admin: Identity, member: Identity) =>
+const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
     const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
       email: member.credentials?.email,
@@ -107,14 +108,14 @@ const joinOrg = (target: Target, admin: Identity, member: Identity) =>
   });
 
 /** Create another org for this account; returns the identity bound to it. */
-const createAnotherOrg = (target: Target, identity: Identity, name: string) =>
+const createAnotherOrg = (target: TargetShape, identity: Identity, name: string) =>
   Effect.gen(function* () {
     const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
     return withRefreshedSession(identity, response);
   });
 
 /** Switch this account's active org; returns the identity bound to it. */
-const switchOrg = (target: Target, identity: Identity, organizationId: string) =>
+const switchOrg = (target: TargetShape, identity: Identity, organizationId: string) =>
   Effect.gen(function* () {
     const response = yield* postJson(target, "/api/auth/switch-organization", identity, {
       organizationId,
@@ -123,7 +124,7 @@ const switchOrg = (target: Target, identity: Identity, organizationId: string) =
   });
 
 /** The org this identity's session is currently bound to. */
-const activeOrganizationId = (target: Target, identity: Identity) =>
+const activeOrganizationId = (target: TargetShape, identity: Identity) =>
   Effect.promise(async () => {
     const response = await fetch(new URL("/api/auth/me", target.baseUrl), {
       headers: { cookie: cookieOf(identity) },
@@ -136,154 +137,157 @@ const activeOrganizationId = (target: Target, identity: Identity) =>
 
 scenario(
   "Connections · a user-owned connection is private to its creator, even inside the same org",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const admin = yield* ctx.target.newIdentity();
-      const invitee = yield* ctx.target.newIdentity({ org: false });
-      const colleague = yield* joinOrg(ctx.target, admin, invitee);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const admin = yield* target.newIdentity();
+    const invitee = yield* target.newIdentity({ org: false });
+    const colleague = yield* joinOrg(target, admin, invitee);
 
-      const adminClient = yield* ctx.api.client(api, admin);
-      const colleagueClient = yield* ctx.api.client(api, colleague);
+    const adminClient = yield* client(api, admin);
+    const colleagueClient = yield* client(api, colleague);
 
-      const integration = yield* registerIntegration(adminClient);
-      const name = freshConnectionName();
-      const secretValue = `personal-token-${randomBytes(8).toString("hex")}`;
+    const integration = yield* registerIntegration(adminClient);
+    const name = freshConnectionName();
+    const secretValue = `personal-token-${randomBytes(8).toString("hex")}`;
 
-      // The admin stores a PERSONAL (user-owned) credential.
-      yield* adminClient.connections.create({
-        payload: {
-          owner: "user",
-          name,
-          integration,
-          template: TEMPLATE_API_KEY,
-          value: secretValue,
-        },
-      });
+    // The admin stores a PERSONAL (user-owned) credential.
+    yield* adminClient.connections.create({
+      payload: {
+        owner: "user",
+        name,
+        integration,
+        template: TEMPLATE_API_KEY,
+        value: secretValue,
+      },
+    });
 
-      // A colleague in the SAME org sees neither the connection nor its bytes.
-      const colleagueUserList = yield* colleagueClient.connections.list({
-        query: { integration, owner: "user" },
-      });
-      expect(
-        colleagueUserList.map((connection) => connection.name),
-        "a co-worker's user-owned list has no trace of the admin's personal connection",
-      ).not.toContain(name);
+    // A colleague in the SAME org sees neither the connection nor its bytes.
+    const colleagueUserList = yield* colleagueClient.connections.list({
+      query: { integration, owner: "user" },
+    });
+    expect(
+      colleagueUserList.map((connection) => connection.name),
+      "a co-worker's user-owned list has no trace of the admin's personal connection",
+    ).not.toContain(name);
 
-      const colleagueAll = yield* colleagueClient.connections.list({ query: {} });
-      expect(
-        colleagueAll.map((connection) => connection.name),
-        "the personal connection is absent from the co-worker's full list too",
-      ).not.toContain(name);
-      expect(
-        JSON.stringify(colleagueAll),
-        "the personal secret appears nowhere in the co-worker's view",
-      ).not.toContain(secretValue);
+    const colleagueAll = yield* colleagueClient.connections.list({ query: {} });
+    expect(
+      colleagueAll.map((connection) => connection.name),
+      "the personal connection is absent from the co-worker's full list too",
+    ).not.toContain(name);
+    expect(
+      JSON.stringify(colleagueAll),
+      "the personal secret appears nowhere in the co-worker's view",
+    ).not.toContain(secretValue);
 
-      // And the creator still sees their own connection.
-      const adminUserList = yield* adminClient.connections.list({
-        query: { integration, owner: "user" },
-      });
-      expect(
-        adminUserList.map((connection) => connection.name),
-        "the creator still sees their own personal connection",
-      ).toContain(name);
-    }),
+    // And the creator still sees their own connection.
+    const adminUserList = yield* adminClient.connections.list({
+      query: { integration, owner: "user" },
+    });
+    expect(
+      adminUserList.map((connection) => connection.name),
+      "the creator still sees their own personal connection",
+    ).toContain(name);
+  }),
 );
 
 scenario(
   "Connections · an org-owned connection is shared with every member of the org",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const admin = yield* ctx.target.newIdentity();
-      const invitee = yield* ctx.target.newIdentity({ org: false });
-      const member = yield* joinOrg(ctx.target, admin, invitee);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const admin = yield* target.newIdentity();
+    const invitee = yield* target.newIdentity({ org: false });
+    const member = yield* joinOrg(target, admin, invitee);
 
-      const adminClient = yield* ctx.api.client(api, admin);
-      const memberClient = yield* ctx.api.client(api, member);
+    const adminClient = yield* client(api, admin);
+    const memberClient = yield* client(api, member);
 
-      const integration = yield* registerIntegration(adminClient);
-      const name = freshConnectionName();
+    const integration = yield* registerIntegration(adminClient);
+    const name = freshConnectionName();
 
-      // The admin stores a SHARED (org-owned) credential.
-      yield* adminClient.connections.create({
-        payload: {
-          owner: "org",
-          name,
-          integration,
-          template: TEMPLATE_API_KEY,
-          value: "shared-org-key",
-        },
-      });
+    // The admin stores a SHARED (org-owned) credential.
+    yield* adminClient.connections.create({
+      payload: {
+        owner: "org",
+        name,
+        integration,
+        template: TEMPLATE_API_KEY,
+        value: "shared-org-key",
+      },
+    });
 
-      const adminOrgList = yield* adminClient.connections.list({
-        query: { integration, owner: "org" },
-      });
-      const memberOrgList = yield* memberClient.connections.list({
-        query: { integration, owner: "org" },
-      });
-      expect(
-        adminOrgList.map((connection) => connection.name),
-        "the admin sees the shared org connection",
-      ).toContain(name);
-      expect(
-        memberOrgList.map((connection) => connection.name),
-        "an invited member sees the shared org connection too",
-      ).toContain(name);
-    }),
+    const adminOrgList = yield* adminClient.connections.list({
+      query: { integration, owner: "org" },
+    });
+    const memberOrgList = yield* memberClient.connections.list({
+      query: { integration, owner: "org" },
+    });
+    expect(
+      adminOrgList.map((connection) => connection.name),
+      "the admin sees the shared org connection",
+    ).toContain(name);
+    expect(
+      memberOrgList.map((connection) => connection.name),
+      "an invited member sees the shared org connection too",
+    ).toContain(name);
+  }),
 );
 
 scenario(
   "Connections · the same account in two orgs gets two separate credential spaces",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const userInOrgA = yield* ctx.target.newIdentity();
-      const orgAId = yield* activeOrganizationId(ctx.target, userInOrgA);
-      const clientA = yield* ctx.api.client(api, userInOrgA);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const userInOrgA = yield* target.newIdentity();
+    const orgAId = yield* activeOrganizationId(target, userInOrgA);
+    const clientA = yield* client(api, userInOrgA);
 
-      const integration = yield* registerIntegration(clientA);
-      const name = freshConnectionName();
-      yield* clientA.connections.create({
-        payload: {
-          owner: "user",
-          name,
-          integration,
-          template: TEMPLATE_API_KEY,
-          value: "value-in-org-a",
-        },
-      });
+    const integration = yield* registerIntegration(clientA);
+    const name = freshConnectionName();
+    yield* clientA.connections.create({
+      payload: {
+        owner: "user",
+        name,
+        integration,
+        template: TEMPLATE_API_KEY,
+        value: "value-in-org-a",
+      },
+    });
 
-      // The SAME account creates and switches into a second org.
-      const userInOrgB = yield* createAnotherOrg(
-        ctx.target,
-        userInOrgA,
-        `Second Org ${randomBytes(3).toString("hex")}`,
-      );
-      const clientB = yield* ctx.api.client(api, userInOrgB);
+    // The SAME account creates and switches into a second org.
+    const userInOrgB = yield* createAnotherOrg(
+      target,
+      userInOrgA,
+      `Second Org ${randomBytes(3).toString("hex")}`,
+    );
+    const clientB = yield* client(api, userInOrgB);
 
-      const orgBIntegrations = yield* clientB.integrations.list();
-      expect(
-        orgBIntegrations.map((entry) => entry.slug),
-        "the new org does not see org A's integration",
-      ).not.toContain(integration);
+    const orgBIntegrations = yield* clientB.integrations.list();
+    expect(
+      orgBIntegrations.map((entry) => entry.slug),
+      "the new org does not see org A's integration",
+    ).not.toContain(integration);
 
-      const orgBConnections = yield* clientB.connections.list({ query: {} });
-      expect(
-        orgBConnections.map((connection) => connection.name),
-        "the user's org-A connection is invisible from their second org",
-      ).not.toContain(name);
+    const orgBConnections = yield* clientB.connections.list({ query: {} });
+    expect(
+      orgBConnections.map((connection) => connection.name),
+      "the user's org-A connection is invisible from their second org",
+    ).not.toContain(name);
 
-      // Switching back to org A, the connection is still theirs.
-      const backInOrgA = yield* switchOrg(ctx.target, userInOrgB, orgAId);
-      const clientABack = yield* ctx.api.client(api, backInOrgA);
-      const orgAUserList = yield* clientABack.connections.list({
-        query: { integration, owner: "user" },
-      });
-      expect(
-        orgAUserList.map((connection) => connection.name),
-        "back in org A, the user-owned connection is still there",
-      ).toContain(name);
-    }),
+    // Switching back to org A, the connection is still theirs.
+    const backInOrgA = yield* switchOrg(target, userInOrgB, orgAId);
+    const clientABack = yield* client(api, backInOrgA);
+    const orgAUserList = yield* clientABack.connections.list({
+      query: { integration, owner: "user" },
+    });
+    expect(
+      orgAUserList.map((connection) => connection.name),
+      "back in org A, the user-owned connection is still there",
+    ).toContain(name);
+  }),
 );

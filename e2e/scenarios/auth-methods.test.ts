@@ -21,6 +21,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { variable } from "@executor-js/sdk/http-auth";
 
 import { scenario } from "../src/scenario";
+import { Api, Mcp, Target } from "../src/services";
 
 const api = composePluginApi([mcpHttpPlugin(), graphqlHttpPlugin()] as const);
 
@@ -32,205 +33,209 @@ const MCP_ENDPOINT = "http://127.0.0.1:59998/mcp";
 
 scenario(
   "Auth methods · an MCP server can declare OAuth and an API key side by side",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
-      const slug = freshSlug("mcp_multiauth");
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: makeApiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeApiClient(api, identity);
+    const slug = freshSlug("mcp_multiauth");
 
-      yield* client.mcp.addServer({
-        payload: {
-          transport: "remote",
-          name: "Multi-auth MCP",
-          endpoint: MCP_ENDPOINT,
-          slug,
-          authenticationTemplate: [
-            { kind: "oauth2" },
-            { type: "apiKey", headers: { "X-Api-Key": ["Bearer ", variable("token")] } },
-          ],
-        },
+    yield* client.mcp.addServer({
+      payload: {
+        transport: "remote",
+        name: "Multi-auth MCP",
+        endpoint: MCP_ENDPOINT,
+        slug,
+        authenticationTemplate: [
+          { kind: "oauth2" },
+          { type: "apiKey", headers: { "X-Api-Key": ["Bearer ", variable("token")] } },
+        ],
+      },
+    });
+
+    yield* Effect.gen(function* () {
+      const integration = yield* client.integrations.get({
+        params: { slug: IntegrationSlug.make(slug) },
       });
 
-      yield* Effect.gen(function* () {
-        const integration = yield* client.integrations.get({
-          params: { slug: IntegrationSlug.make(slug) },
-        });
+      // Both methods project into the catalog (a slug-less single-header
+      // apikey method gets the carrier-derived `header` slug), so the
+      // connect flow can offer either and a connection binds one by slug.
+      expect(
+        integration.authMethods.map((m) => ({ kind: m.kind, template: m.template })),
+        "the catalog lists both declared methods",
+      ).toEqual([
+        { kind: "oauth", template: "oauth2" },
+        { kind: "apikey", template: "header" },
+      ]);
 
-        // Both methods project into the catalog (a slug-less single-header
-        // apikey method gets the carrier-derived `header` slug), so the
-        // connect flow can offer either and a connection binds one by slug.
-        expect(
-          integration.authMethods.map((m) => ({ kind: m.kind, template: m.template })),
-          "the catalog lists both declared methods",
-        ).toEqual([
-          { kind: "oauth", template: "oauth2" },
-          { kind: "apikey", template: "header" },
-        ]);
-
-        const apiKey = integration.authMethods.find((m) => m.kind === "apikey");
-        expect(apiKey?.placements, "the API key method carries its header placement").toEqual([
-          { carrier: "header", name: "X-Api-Key", prefix: "Bearer " },
-        ]);
-      }).pipe(
-        Effect.ensuring(
-          client.mcp
-            .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
-            .pipe(Effect.ignore),
-        ),
-      );
-    }),
+      const apiKey = integration.authMethods.find((m) => m.kind === "apikey");
+      expect(apiKey?.placements, "the API key method carries its header placement").toEqual([
+        { carrier: "header", name: "X-Api-Key", prefix: "Bearer " },
+      ]);
+    }).pipe(
+      Effect.ensuring(
+        client.mcp
+          .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+          .pipe(Effect.ignore),
+      ),
+    );
+  }),
 );
 
 scenario(
   "Auth methods · adding an API key method keeps a detected OAuth method",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
-      const slug = freshSlug("mcp_oauth_plus_key");
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: makeApiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeApiClient(api, identity);
+    const slug = freshSlug("mcp_oauth_plus_key");
 
-      // The add flow registered what the probe detected: OAuth only.
-      yield* client.mcp.addServer({
+    // The add flow registered what the probe detected: OAuth only.
+    yield* client.mcp.addServer({
+      payload: {
+        transport: "remote",
+        name: "OAuth MCP",
+        endpoint: MCP_ENDPOINT,
+        slug,
+        authenticationTemplate: [{ kind: "oauth2" }],
+      },
+    });
+
+    yield* Effect.gen(function* () {
+      // "+ Custom method" merge-appends — it must not displace OAuth.
+      const configured = yield* client.mcp.configureAuth({
+        params: { slug: IntegrationSlug.make(slug) },
         payload: {
-          transport: "remote",
-          name: "OAuth MCP",
-          endpoint: MCP_ENDPOINT,
-          slug,
-          authenticationTemplate: [{ kind: "oauth2" }],
+          authenticationTemplate: [
+            { type: "apiKey", headers: { "X-Api-Key": [variable("token")] } },
+          ],
         },
       });
+      expect(
+        configured.authenticationTemplate.map((m) => m.kind),
+        "the declared set now holds both methods",
+      ).toEqual(["oauth2", "apikey"]);
+      expect(
+        configured.authenticationTemplate[1]?.slug,
+        "the custom method gets its own custom_ slug",
+      ).toMatch(/^custom_/);
 
-      yield* Effect.gen(function* () {
-        // "+ Custom method" merge-appends — it must not displace OAuth.
-        const configured = yield* client.mcp.configureAuth({
-          params: { slug: IntegrationSlug.make(slug) },
-          payload: {
-            authenticationTemplate: [
-              { type: "apiKey", headers: { "X-Api-Key": [variable("token")] } },
-            ],
-          },
-        });
-        expect(
-          configured.authenticationTemplate.map((m) => m.kind),
-          "the declared set now holds both methods",
-        ).toEqual(["oauth2", "apikey"]);
-        expect(
-          configured.authenticationTemplate[1]?.slug,
-          "the custom method gets its own custom_ slug",
-        ).toMatch(/^custom_/);
-
-        const integration = yield* client.integrations.get({
-          params: { slug: IntegrationSlug.make(slug) },
-        });
-        expect(
-          integration.authMethods.map((m) => m.kind),
-          "the catalog offers OAuth and the API key",
-        ).toEqual(["oauth", "apikey"]);
-      }).pipe(
-        Effect.ensuring(
-          client.mcp
-            .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
-            .pipe(Effect.ignore),
-        ),
-      );
-    }),
+      const integration = yield* client.integrations.get({
+        params: { slug: IntegrationSlug.make(slug) },
+      });
+      expect(
+        integration.authMethods.map((m) => m.kind),
+        "the catalog offers OAuth and the API key",
+      ).toEqual(["oauth", "apikey"]);
+    }).pipe(
+      Effect.ensuring(
+        client.mcp
+          .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+          .pipe(Effect.ignore),
+      ),
+    );
+  }),
 );
 
 scenario(
   "Auth methods · a no-auth MCP server can declare an API key method later",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
-      const slug = freshSlug("mcp_open_plus_key");
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: makeApiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeApiClient(api, identity);
+    const slug = freshSlug("mcp_open_plus_key");
 
-      // No declared auth — the server advertises nothing.
-      yield* client.mcp.addServer({
-        payload: { transport: "remote", name: "Open MCP", endpoint: MCP_ENDPOINT, slug },
+    // No declared auth — the server advertises nothing.
+    yield* client.mcp.addServer({
+      payload: { transport: "remote", name: "Open MCP", endpoint: MCP_ENDPOINT, slug },
+    });
+
+    yield* Effect.gen(function* () {
+      const before = yield* client.integrations.get({
+        params: { slug: IntegrationSlug.make(slug) },
       });
+      expect(
+        before.authMethods.map((m) => m.kind),
+        "an open server starts with the no-auth method",
+      ).toEqual(["none"]);
 
-      yield* Effect.gen(function* () {
-        const before = yield* client.integrations.get({
-          params: { slug: IntegrationSlug.make(slug) },
-        });
-        expect(
-          before.authMethods.map((m) => m.kind),
-          "an open server starts with the no-auth method",
-        ).toEqual(["none"]);
-
-        yield* client.mcp.configureAuth({
-          params: { slug: IntegrationSlug.make(slug) },
-          payload: {
-            authenticationTemplate: [
-              { type: "apiKey", headers: { Authorization: ["Bearer ", variable("token")] } },
-            ],
-          },
-        });
-
-        const after = yield* client.integrations.get({
-          params: { slug: IntegrationSlug.make(slug) },
-        });
-        expect(
-          after.authMethods.map((m) => m.kind),
-          "no-auth and the declared API key coexist",
-        ).toEqual(["none", "apikey"]);
-      }).pipe(
-        Effect.ensuring(
-          client.mcp
-            .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
-            .pipe(Effect.ignore),
-        ),
-      );
-    }),
-);
-
-scenario(
-  "Auth methods · a GraphQL source registers multiple auth methods at add time",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
-      const slug = freshSlug("graphql_multiauth");
-
-      yield* client.graphql.addIntegration({
+      yield* client.mcp.configureAuth({
+        params: { slug: IntegrationSlug.make(slug) },
         payload: {
-          endpoint: "http://127.0.0.1:59998/graphql",
-          slug,
-          name: "Multi-auth GraphQL",
           authenticationTemplate: [
-            { slug: "apiKey", type: "apiKey", headers: { "X-Api-Key": [variable("token")] } },
-            { slug: "apikey-2", type: "apiKey", queryParams: { api_key: [variable("token")] } },
+            { type: "apiKey", headers: { Authorization: ["Bearer ", variable("token")] } },
           ],
         },
       });
 
-      yield* Effect.gen(function* () {
-        const integration = yield* client.integrations.get({
-          params: { slug: IntegrationSlug.make(slug) },
-        });
-        expect(
-          integration.authMethods.map((m) => ({ template: m.template, kind: m.kind })),
-          "both declared methods are in the catalog",
-        ).toEqual([
-          { template: "apiKey", kind: "apikey" },
-          { template: "apikey-2", kind: "apikey" },
-        ]);
-        expect(
-          integration.authMethods[1]?.placements,
-          "the second method carries its query placement",
-        ).toEqual([{ carrier: "query", name: "api_key", prefix: "" }]);
-      }).pipe(
-        Effect.ensuring(
-          client.integrations
-            .remove({ params: { slug: IntegrationSlug.make(slug) } })
-            .pipe(Effect.ignore),
-        ),
-      );
-    }),
+      const after = yield* client.integrations.get({
+        params: { slug: IntegrationSlug.make(slug) },
+      });
+      expect(
+        after.authMethods.map((m) => m.kind),
+        "no-auth and the declared API key coexist",
+      ).toEqual(["none", "apikey"]);
+    }).pipe(
+      Effect.ensuring(
+        client.mcp
+          .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+          .pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
+
+scenario(
+  "Auth methods · a GraphQL source registers multiple auth methods at add time",
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: makeApiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeApiClient(api, identity);
+    const slug = freshSlug("graphql_multiauth");
+
+    yield* client.graphql.addIntegration({
+      payload: {
+        endpoint: "http://127.0.0.1:59998/graphql",
+        slug,
+        name: "Multi-auth GraphQL",
+        authenticationTemplate: [
+          { slug: "apiKey", type: "apiKey", headers: { "X-Api-Key": [variable("token")] } },
+          { slug: "apikey-2", type: "apiKey", queryParams: { api_key: [variable("token")] } },
+        ],
+      },
+    });
+
+    yield* Effect.gen(function* () {
+      const integration = yield* client.integrations.get({
+        params: { slug: IntegrationSlug.make(slug) },
+      });
+      expect(
+        integration.authMethods.map((m) => ({ template: m.template, kind: m.kind })),
+        "both declared methods are in the catalog",
+      ).toEqual([
+        { template: "apiKey", kind: "apikey" },
+        { template: "apikey-2", kind: "apikey" },
+      ]);
+      expect(
+        integration.authMethods[1]?.placements,
+        "the second method carries its query placement",
+      ).toEqual([{ carrier: "query", name: "api_key", prefix: "" }]);
+    }).pipe(
+      Effect.ensuring(
+        client.integrations
+          .remove({ params: { slug: IntegrationSlug.make(slug) } })
+          .pipe(Effect.ignore),
+      ),
+    );
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -244,11 +249,14 @@ scenario(
 
 scenario(
   "Auth methods · one source mixes oauth, a 2-input header+query method, a bearer header, and a query token",
-  { needs: ["api", "mcp-oauth"] },
-  (ctx) =>
+  {},
+  Effect.scoped(
     Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
+      const target = yield* Target;
+      const { client: makeApiClient } = yield* Api;
+      const mcp = yield* Mcp;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
       const slug = freshSlug("mcp_extreme");
 
       // A real MCP server that records every request it receives.
@@ -346,7 +354,7 @@ scenario(
 
         // Discovery dialed the server per connection; every connection
         // produced its own addressed tool.
-        const tools = yield* client.tools.list();
+        const tools = yield* client.tools.list({ query: {} });
         const names = tools
           .filter((tool) => String(tool.integration) === slug)
           .map((tool) => String(tool.address));
@@ -359,7 +367,7 @@ scenario(
         // Invoke through the MCP surface (the real agent path: execute runs
         // sandbox code that calls the addressed tool), then assert the WIRE:
         // what the recording server received for each connection.
-        const session = ctx.mcp.session(identity);
+        const session = mcp.session(identity);
 
         const invokeAndCapture = (conn: string, marker: string) =>
           Effect.gen(function* () {
@@ -427,4 +435,5 @@ scenario(
         ),
       );
     }),
+  ),
 );

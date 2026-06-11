@@ -1,23 +1,30 @@
-// scenario(): the one way a test is written. Picks the target from E2E_TARGET
-// (set by the vitest project), skips when the target lacks a needed capability,
-// and provides the surface drivers. Correctness lives in the test code and its
-// vitest assertions — there is no recording layer. What survives per run is a
-// small result.json (for the scenario × target matrix) plus whatever artifacts
-// the browser surface produced (video, screenshots, trace.zip).
+// scenario(): the one way a test is written. The body is an Effect whose
+// requirements ARE its capability declaration: it yields services (src/
+// services.ts) and nothing else — no needs list. The target provides what it
+// has; yielding a service the target lacks surfaces as Effect's own
+// missing-service defect, which the runner classifies into a vitest skip
+// with the missing service named in the matrix. Convention: yield services
+// at the top of the body, so a skip happens before any real work.
+// Correctness lives in the test code and its vitest assertions — there is no
+// recording layer. What survives per run is a small result.json (for the
+// scenario × target matrix) plus whatever artifacts the surfaces produced
+// (browser video/trace/screenshots, terminal casts).
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { it } from "@effect/vitest";
-import { Cause, Effect } from "effect";
+import { Cause, Context, Effect } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
-import type { Capability, Target } from "./target";
+import type { Target as TargetShape } from "./target";
 import { resolveTarget } from "../targets/registry";
-import { makeApiSurface, type ApiSurface } from "./surfaces/api";
-import { makeBrowserSurface, type BrowserSurface } from "./surfaces/browser";
-import { makeCliSurface, type CliSurface } from "./surfaces/cli";
-import { makeMcpSurface, type McpSurface } from "./surfaces/mcp";
+import { makeApiSurface } from "./surfaces/api";
+import { makeBrowserSurface } from "./surfaces/browser";
+import { makeCliSurface } from "./surfaces/cli";
+import { makeMcpSurface } from "./surfaces/mcp";
+import { completeOAuthConsent, hasOpenCode, makeOpenCodeHome, warmUp } from "./clients/opencode";
+import { Api, Billing, Browser, Cli, Mcp, OpenCode, RunDir, Target, TtlControl } from "./services";
 import { buildManifest } from "./viewer/manifest";
 
 export const RUNS_DIR = fileURLToPath(new URL("../runs/", import.meta.url));
@@ -29,59 +36,84 @@ export const slugify = (text: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-export interface ScenarioContext {
-  readonly target: Target;
-  /** Artifact directory for this run (browser video/screenshots/trace land here). */
-  readonly dir: string;
-  readonly api: ApiSurface;
-  readonly browser: BrowserSurface;
-  readonly cli: CliSurface;
-  readonly mcp: McpSurface;
-}
-
 export interface ScenarioOptions {
-  readonly needs?: ReadonlyArray<Capability>;
   readonly timeout?: number;
 }
+
+type AllServices = Target | RunDir | Cli | Api | Browser | Mcp | Billing | OpenCode | TtlControl;
+
+/**
+ * What this target on this host can provide. Services beyond the base are
+ * conditional, so the claimed type is the full union — yielding an absent
+ * one fails with Effect's missing-service defect, which the runner turns
+ * into the skip.
+ */
+const contextFor = (target: TargetShape, dir: string): Context.Context<AllServices> => {
+  let context = Context.empty().pipe(
+    Context.add(Target, target),
+    Context.add(RunDir, dir),
+    Context.add(Cli, makeCliSurface()),
+  ) as Context.Context<AllServices>;
+  const has = target.capabilities.has.bind(target.capabilities);
+  if (has("api")) context = Context.add(context, Api, makeApiSurface(target));
+  if (has("browser")) context = Context.add(context, Browser, makeBrowserSurface(dir, target));
+  if (has("mcp-oauth")) context = Context.add(context, Mcp, makeMcpSurface(target));
+  if (has("billing")) context = Context.add(context, Billing, true);
+  if (hasOpenCode()) {
+    context = Context.add(context, OpenCode, {
+      makeHome: makeOpenCodeHome,
+      warmUp,
+      completeOAuthConsent,
+    });
+  }
+  if (target.setAccessTokenTtl) {
+    context = Context.add(context, TtlControl, target.setAccessTokenTtl);
+  }
+  return context;
+};
 
 export const scenario = (
   name: string,
   options: ScenarioOptions,
-  body: (ctx: ScenarioContext) => Effect.Effect<void, unknown, HttpClient.HttpClient>,
+  body: Effect.Effect<void, unknown, AllServices | HttpClient.HttpClient>,
 ): void => {
   const target = resolveTarget();
-  const missing = (options.needs ?? []).filter((c) => !target.capabilities.has(c));
   const dir = join(RUNS_DIR, target.name, slugify(name));
+  const context = contextFor(target, dir);
   const testFile = captureTestFile();
-
-  if (missing.length > 0) {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "skipped.json"),
-      JSON.stringify({ scenario: name, target: target.name, missing }, null, 1),
-    );
-    it.skip(`${name} [needs ${missing.join(", ")} — not on ${target.name}]`, () => {});
-    return;
-  }
 
   it.live(
     name,
-    () =>
+    (testCtx) =>
       Effect.gen(function* () {
         // A run's directory is the run — never mix artifacts across attempts.
         rmSync(dir, { recursive: true, force: true });
         mkdirSync(dir, { recursive: true });
         const startedAt = Date.now();
-        const ctx: ScenarioContext = {
-          target,
-          dir,
-          api: makeApiSurface(target),
-          browser: makeBrowserSurface(dir, target),
-          cli: makeCliSurface(),
-          mcp: makeMcpSurface(target),
-        };
-        const exit = yield* Effect.exit(body(ctx));
+        const exit = yield* Effect.exit(
+          body.pipe(Effect.provideContext(context)) as Effect.Effect<
+            void,
+            unknown,
+            HttpClient.HttpClient
+          >,
+        );
         const endedAt = Date.now();
+
+        // Yielding a service this target can't provide is the skip signal.
+        const missing = exit._tag === "Failure" ? missingServices(exit.cause) : [];
+        if (missing.length > 0) {
+          rmSync(dir, { recursive: true, force: true });
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(
+            join(dir, "skipped.json"),
+            JSON.stringify({ scenario: name, target: target.name, missing }, null, 1),
+          );
+          buildManifest(RUNS_DIR);
+          return yield* Effect.sync(() =>
+            testCtx.skip(`needs ${missing.join(", ")} — not on ${target.name}`),
+          );
+        }
+
         const error = exit._tag === "Failure" ? failureMessage(exit.cause) : undefined;
         // The test source is the review artifact — ship this scenario's code
         // (imports + sibling scenarios stripped) alongside the run.
@@ -111,6 +143,14 @@ export const scenario = (
       }).pipe(Effect.provide(FetchHttpClient.layer)),
     options.timeout ?? 120_000,
   );
+};
+
+/** Service keys (sans the e2e/ prefix) whose absence caused this failure. */
+const missingServices = (cause: Cause.Cause<unknown>): ReadonlyArray<string> => {
+  const rendered = String(Cause.squash(cause));
+  return [...rendered.matchAll(/Service not found: e2e\/([^\s(]+)/g)]
+    .map((match) => match[1] ?? "")
+    .filter((name, index, all) => name !== "" && all.indexOf(name) === index);
 };
 
 const failureMessage = (cause: Cause.Cause<unknown>): string => {

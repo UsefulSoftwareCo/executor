@@ -30,6 +30,8 @@ export interface McpSession {
 }
 
 export interface McpSurface {
+  /** The target's MCP endpoint — yield this surface to depend on it existing. */
+  readonly url: string;
   readonly session: (identity: Identity) => McpSession;
   /**
    * Mint a real MCP bearer headlessly: protected-resource discovery →
@@ -104,7 +106,10 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
     createHash("sha256").update(verifier).digest("base64url"),
   );
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  const { code } = await consent({ authorizationUrl: authorizeUrl.toString() });
+  const { code } = await consent({
+    authorizationUrl: authorizeUrl.toString(),
+    redirectUrl: redirectUri,
+  });
 
   const token = (await (
     await fetch(metadata.token_endpoint, {
@@ -124,6 +129,7 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
 };
 
 export const makeMcpSurface = (target: Target): McpSurface => ({
+  url: target.mcpUrl,
   mintBearer: (email) => Effect.promise(() => mintBearerFlow(target, email)),
   session: (identity) => {
     const serverName = target.name;

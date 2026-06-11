@@ -6,8 +6,7 @@ import { Effect } from "effect";
 
 import { cookieConsentStrategy } from "@executor-js/mcporter";
 
-import type { Capability, Identity, Target } from "../src/target";
-import { hasOpenCode } from "../src/clients/opencode";
+import type { Identity, Target } from "../src/target";
 
 export const SELFHOST_PORT = Number(process.env.E2E_SELFHOST_PORT ?? 4799);
 export const SELFHOST_BASE_URL =
@@ -49,17 +48,12 @@ export const selfhostTarget = (): Target => ({
   name: "selfhost",
   baseUrl: SELFHOST_BASE_URL,
   mcpUrl: `${SELFHOST_BASE_URL}/mcp`,
-  // No "billing" (no limits) and no "ttl-control" yet (Better Auth is the
+  // No "billing" (no limits) and no setAccessTokenTtl yet (Better Auth is the
   // authorization server; its token TTL isn't test-adjustable, so token-expiry
   // scenarios skip here). Identity is the bootstrap admin for now —
   // single-tenant; per-test invite-signup isolation is the next step here, so
   // browser scenarios must prefix the resources they create.
-  capabilities: new Set<Capability>([
-    "api",
-    "browser",
-    "mcp-oauth",
-    ...(hasOpenCode() ? (["opencode"] as const) : []),
-  ]),
+  capabilities: new Set(["api", "browser", "mcp-oauth"]),
   newIdentity: () =>
     Effect.promise(async (): Promise<Identity> => {
       // Sign in once and carry the session in both shapes: `headers` for the

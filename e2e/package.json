@@ -9,7 +9,8 @@
     "test:selfhost": "vitest run --project selfhost",
     "test:watch": "vitest",
     "viewer:build": "bun scripts/rebuild-viewer.ts",
-    "serve": "bun scripts/rebuild-viewer.ts && bun scripts/serve.ts"
+    "serve": "bun scripts/rebuild-viewer.ts && bun scripts/serve.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",
@@ -30,9 +31,11 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@types/node": "^25.9.2",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
+    "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"
   }

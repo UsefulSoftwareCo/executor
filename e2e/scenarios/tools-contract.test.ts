@@ -6,14 +6,19 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const);
 
-scenario("Tools · every advertised tool is well-formed enough to call", { needs: ["api"] }, (ctx) =>
+scenario(
+  "Tools · every advertised tool is well-formed enough to call",
+  {},
   Effect.gen(function* () {
-    const identity = yield* ctx.target.newIdentity();
-    const client = yield* ctx.api.client(coreApi, identity);
-    const tools = yield* client.tools.list();
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const api = yield* client(coreApi, identity);
+    const tools = yield* api.tools.list({ query: {} });
 
     expect(tools.length, "the catalog advertises tools").toBeGreaterThan(0);
 

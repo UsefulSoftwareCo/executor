@@ -13,6 +13,7 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 
 import { scenario } from "../src/scenario";
+import { Api, Mcp, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const);
 
@@ -23,17 +24,22 @@ const result = await tools.executor.coreTools.policies.list({});
 return JSON.stringify(result);
 `;
 
-scenario("MCP · a paused execution resumes after human approval", { needs: ["mcp-oauth"] }, (ctx) =>
+scenario(
+  "MCP · a paused execution resumes after human approval",
+  {},
   Effect.gen(function* () {
-    const identity = yield* ctx.target.newIdentity();
-    const client = yield* ctx.api.client(coreApi, identity);
+    const target = yield* Target;
+    const apiSurface = yield* Api;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const client = yield* apiSurface.client(coreApi, identity);
 
     const policy = yield* client.policies.create({
       payload: { owner: "org", pattern: APPROVAL_TARGET_TOOL, action: "require_approval" },
     });
 
     yield* Effect.gen(function* () {
-      const session = ctx.mcp.session(identity);
+      const session = mcp.session(identity);
 
       // Warm up the MCP session before the gated call so the OAuth handshake
       // does not race with the policy window.

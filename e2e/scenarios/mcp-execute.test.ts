@@ -5,11 +5,16 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
+import { Mcp, Target } from "../src/services";
 
-scenario("MCP · OAuth connect, then execute code in the sandbox", { needs: ["mcp-oauth"] }, (ctx) =>
+scenario(
+  "MCP · OAuth connect, then execute code in the sandbox",
+  {},
   Effect.gen(function* () {
-    const identity = yield* ctx.target.newIdentity();
-    const session = ctx.mcp.session(identity);
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const session = mcp.session(identity);
 
     const tools = yield* session.listTools();
     expect(tools, "the execute tool is advertised").toContain("execute");

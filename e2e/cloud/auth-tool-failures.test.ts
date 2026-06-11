@@ -18,6 +18,7 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -35,75 +36,76 @@ const pingSpec = JSON.stringify({
 
 scenario(
   "Executions · a tool call with an unresolvable credential fails with connection_value_missing",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(api, identity);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client: apiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* apiClient(api, identity);
 
-      // Identifier-safe slug: it becomes a property path in the sandbox code.
-      const slug = IntegrationSlug.make(`authscn${randomBytes(4).toString("hex")}`);
-      yield* client.openapi.addSpec({
-        payload: {
-          spec: { kind: "blob", value: pingSpec },
-          slug,
-          baseUrl: "https://api.example.test",
-          authenticationTemplate: [
-            {
-              slug: "apiKey",
-              type: "apiKey",
-              headers: { Authorization: ["Bearer ", { type: "variable", name: "token" }] },
-            },
-          ],
-        },
-      });
-
-      // A connection whose value cannot resolve: a `from` reference into the
-      // real credential provider, pointing at an item that was never stored.
-      const providers = yield* client.providers.list();
-      expect(providers.length, "a credential provider is registered").toBeGreaterThan(0);
-      yield* client.connections.create({
-        payload: {
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: slug,
-          template: AuthTemplateSlug.make("apiKey"),
-          from: { provider: providers[0]!, id: ProviderItemId.make(`${slug}-never-stored`) },
-        },
-      });
-
-      // The tool is in the catalog; its address is the sandbox call path.
-      const tools = yield* client.tools.list();
-      const tool = tools.find((entry) => String(entry.integration) === String(slug));
-      expect(tool?.address, "the integration's tool is in the catalog").toBeDefined();
-
-      const execution = yield* client.executions.execute({
-        payload: {
-          code: [`const result = await ${tool!.address}({});`, "return result;"].join("\n"),
-        },
-      });
-
-      expect(execution.status, "the execution itself completes").toBe("completed");
-      if (execution.status !== "completed") return; // unreachable — narrowing only
-      expect(execution.isError, "an auth failure is a model-visible result, not a tool error").toBe(
-        false,
-      );
-      expect(
-        JSON.stringify(execution.structured).toLowerCase(),
-        "no opaque internal tool error reaches the model",
-      ).not.toContain("internal tool error");
-      expect(
-        execution.structured,
-        "the model sees a structured authentication failure it can act on",
-      ).toMatchObject({
-        status: "completed",
-        result: {
-          ok: false,
-          error: {
-            code: "connection_value_missing",
-            details: { category: "authentication" },
+    // Identifier-safe slug: it becomes a property path in the sandbox code.
+    const slug = IntegrationSlug.make(`authscn${randomBytes(4).toString("hex")}`);
+    yield* client.openapi.addSpec({
+      payload: {
+        spec: { kind: "blob", value: pingSpec },
+        slug,
+        baseUrl: "https://api.example.test",
+        authenticationTemplate: [
+          {
+            slug: "apiKey",
+            type: "apiKey",
+            headers: { Authorization: ["Bearer ", { type: "variable", name: "token" }] },
           },
+        ],
+      },
+    });
+
+    // A connection whose value cannot resolve: a `from` reference into the
+    // real credential provider, pointing at an item that was never stored.
+    const providers = yield* client.providers.list();
+    expect(providers.length, "a credential provider is registered").toBeGreaterThan(0);
+    yield* client.connections.create({
+      payload: {
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: slug,
+        template: AuthTemplateSlug.make("apiKey"),
+        from: { provider: providers[0]!, id: ProviderItemId.make(`${slug}-never-stored`) },
+      },
+    });
+
+    // The tool is in the catalog; its address is the sandbox call path.
+    const tools = yield* client.tools.list({ query: {} });
+    const tool = tools.find((entry) => String(entry.integration) === String(slug));
+    expect(tool?.address, "the integration's tool is in the catalog").toBeDefined();
+
+    const execution = yield* client.executions.execute({
+      payload: {
+        code: [`const result = await ${tool!.address}({});`, "return result;"].join("\n"),
+      },
+    });
+
+    expect(execution.status, "the execution itself completes").toBe("completed");
+    if (execution.status !== "completed") return; // unreachable — narrowing only
+    expect(execution.isError, "an auth failure is a model-visible result, not a tool error").toBe(
+      false,
+    );
+    expect(
+      JSON.stringify(execution.structured).toLowerCase(),
+      "no opaque internal tool error reaches the model",
+    ).not.toContain("internal tool error");
+    expect(
+      execution.structured,
+      "the model sees a structured authentication failure it can act on",
+    ).toMatchObject({
+      status: "completed",
+      result: {
+        ok: false,
+        error: {
+          code: "connection_value_missing",
+          details: { category: "authentication" },
         },
-      });
-    }),
+      },
+    });
+  }),
 );

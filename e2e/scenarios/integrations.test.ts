@@ -6,28 +6,30 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const);
 
 scenario(
   "Integrations · a fresh workspace ships the built-in executor integration ready to use",
-  { needs: ["api"] },
-  (ctx) =>
-    Effect.gen(function* () {
-      const identity = yield* ctx.target.newIdentity();
-      const client = yield* ctx.api.client(coreApi, identity);
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const api = yield* client(coreApi, identity);
 
-      const integrations = yield* client.integrations.list();
-      const builtin = integrations.find((i) => i.slug === "executor");
-      expect(builtin, "the 'executor' integration is in the catalog").toBeDefined();
-      expect(builtin?.kind).toBe("built-in");
-      expect(builtin?.canRemove, "the built-in integration is permanent").toBe(false);
+    const integrations = yield* api.integrations.list();
+    const builtin = integrations.find((i) => i.slug === "executor");
+    expect(builtin, "the 'executor' integration is in the catalog").toBeDefined();
+    expect(builtin?.kind).toBe("built-in");
+    expect(builtin?.canRemove, "the built-in integration is permanent").toBe(false);
 
-      const tools = yield* client.tools.list();
-      const executorTools = tools.filter((t) => t.integration === "executor");
-      expect(
-        executorTools.length,
-        "tools are available out of the box, no connection setup needed",
-      ).toBeGreaterThan(0);
-    }),
+    const tools = yield* api.tools.list({ query: {} });
+    const executorTools = tools.filter((t) => t.integration === "executor");
+    expect(
+      executorTools.length,
+      "tools are available out of the box, no connection setup needed",
+    ).toBeGreaterThan(0);
+  }),
 );

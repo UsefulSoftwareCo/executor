@@ -5,19 +5,21 @@
 // vitest's job; a failed call surfaces as a typed HttpClientError in the
 // test output.
 import { Effect } from "effect";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { HttpApiClient, type HttpApi, type HttpApiGroup } from "effect/unstable/httpapi";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { Identity, Target } from "../target";
 
-type AnyApi = Parameters<typeof HttpApiClient.make>[0];
-
 export interface ApiSurface {
   /** Typed client for `apiDef`, authenticated as `identity`. */
-  readonly client: <A extends AnyApi>(
-    apiDef: A,
+  readonly client: <ApiId extends string, Groups extends HttpApiGroup.Any>(
+    apiDef: HttpApi.HttpApi<ApiId, Groups>,
     identity: Identity,
-  ) => Effect.Effect<HttpApiClient.Client<A, never>, unknown, HttpClient.HttpClient>;
+  ) => Effect.Effect<
+    HttpApiClient.Client<Groups>,
+    unknown,
+    HttpClient.HttpClient | HttpApiGroup.MiddlewareClient<Groups>
+  >;
 }
 
 export const makeApiSurface = (target: Target): ApiSurface => ({

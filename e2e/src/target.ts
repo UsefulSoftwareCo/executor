@@ -6,14 +6,14 @@
 // own dev-server boot (see setup/*.globalsetup.ts which call into the app).
 import type { Effect } from "effect";
 
+// Deployment traits only. Host-environment services (the OpenCode binary)
+// and ones implied by an optional Target method (setAccessTokenTtl →
+// TtlControl) are derived in scenario.ts, not declared here.
 export type Capability =
   | "api" // typed HttpApiClient over the wire
   | "browser" // web UI reachable + identity injectable into a browser context
   | "mcp-oauth" // MCP endpoint with a headless OAuth consent path
-  | "cli" // a CLI/TUI entry point exists for this target
-  | "billing" // billing limits are enforced (cloud-only)
-  | "opencode" // the real OpenCode binary is installed on this host
-  | "ttl-control"; // the authorization server's access-token TTL is test-adjustable
+  | "billing"; // billing limits are enforced (cloud-only)
 
 export interface Identity {
   /** Shown in transcripts ("user_ab12cd") */
@@ -41,7 +41,7 @@ export interface Target {
   /** Headless OAuth consent for the MCP surface, when "mcp-oauth" is supported. */
   readonly mcpConsent?: (
     identity: Identity,
-  ) => (request: { authorizationUrl: string }) => Promise<{ code: string }>;
+  ) => (request: { authorizationUrl: string; redirectUrl: string }) => Promise<{ code: string }>;
   /**
    * Compress (or restore, with null) the authorization server's access-token
    * lifetime, when "ttl-control" is supported — what lets token-expiry
