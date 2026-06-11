@@ -19,6 +19,21 @@ attribution/trailers to commits, commit messages, PRs, or generated files.
 Pull request titles and descriptions are going to a public GitHub repo, so
 avoid using specific names or internal info unless explicitly stated to.
 
+## Show Changes in PR Descriptions
+
+When a change is user-visible and an e2e scenario covers it, embed the run's
+recording in the PR description — reviewers should see the change, not just
+read about it.
+
+```
+bun e2e/scripts/pr-media.ts e2e/runs/<target>/<scenario-slug>
+```
+
+converts the run's recording (browser `session.mp4` or `terminal.cast`) to a
+gif, uploads it to the `e2e-media` branch, and prints PR-ready markdown to
+paste into the body. Run screenshots (`*.png`) can be passed directly too. If
+no scenario covers the change yet, that is usually the cue to write one.
+
 ## Collaboration Notes
 
 The user uses speech to text occasionally, so if sentences are weird or words
