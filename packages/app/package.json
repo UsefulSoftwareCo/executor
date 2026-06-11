@@ -22,6 +22,7 @@
     "@executor-js/react": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
+    "@sentry/browser": "^10.57.0",
     "@tanstack/react-router": "catalog:",
     "effect": "catalog:",
     "lucide-react": "^1.7.0",

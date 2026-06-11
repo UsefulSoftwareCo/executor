@@ -30,6 +30,43 @@ const sentryDsn = __EXECUTOR_SENTRY_DSN__;
 export const errorReportingEnabled = sentryDsn.length > 0;
 
 /**
+ * One id per app launch, shared by every process (main, renderer, sidecar)
+ * and stamped into the diagnostics manifest — lets a user-sent zip be
+ * matched to its Sentry events and vice versa.
+ */
+export const runId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+
+const releaseTag = () => `executor-desktop@${app.getVersion()}`;
+const environmentTag = () => (app.isPackaged ? "production" : "development");
+
+/**
+ * Runtime crash-reporting config for the renderer (fetched over the preload
+ * bridge). The web UI is the same bundle `executor web` serves, so nothing
+ * is baked in at build time — outside the desktop app this returns null and
+ * the renderer never initializes Sentry.
+ */
+export const getCrashReportingConfig = () =>
+  errorReportingEnabled
+    ? {
+        dsn: sentryDsn,
+        release: releaseTag(),
+        environment: environmentTag(),
+        runId,
+      }
+    : null;
+
+/** Env vars handed to the sidecar so its process reports under the same id. */
+export const sidecarCrashReportingEnv = (): Record<string, string> =>
+  errorReportingEnabled
+    ? {
+        EXECUTOR_SENTRY_DSN: sentryDsn,
+        EXECUTOR_SENTRY_RELEASE: releaseTag(),
+        EXECUTOR_SENTRY_ENVIRONMENT: environmentTag(),
+        EXECUTOR_RUN_ID: runId,
+      }
+    : {};
+
+/**
  * Must run before `app.whenReady()` so the Crashpad handler attaches to
  * every child process Electron spawns.
  */
@@ -37,12 +74,13 @@ export const initErrorReporting = () => {
   if (errorReportingEnabled) {
     Sentry.init({
       dsn: sentryDsn,
-      release: `executor-desktop@${app.getVersion()}`,
-      environment: app.isPackaged ? "production" : "development",
+      release: releaseTag(),
+      environment: environmentTag(),
       initialScope: {
         tags: {
           platform: process.platform,
           arch: process.arch,
+          runId,
         },
       },
     });
@@ -66,6 +104,23 @@ export const initErrorReporting = () => {
   // keeps the process alive (matching its default), Sentry (when enabled)
   // captures them via its own integrations.
   log.errorHandler.startCatching({ showDialog: false });
+
+  // Every log line becomes a Sentry breadcrumb, so an error event arrives
+  // with the recent log context (sidecar restarts, update checks, …) instead
+  // of a bare stack. Hooked on the file transport only so each line is
+  // recorded once. No-ops when Sentry is disabled.
+  log.hooks.push((message, transport) => {
+    if (transport !== log.transports.file) return message;
+    Sentry.addBreadcrumb({
+      category: message.scope ?? "main",
+      level: message.level === "warn" ? "warning" : message.level === "error" ? "error" : "info",
+      message: message.data
+        .map((part) => (typeof part === "string" ? part : JSON.stringify(part)))
+        .join(" ")
+        .slice(0, 1024),
+    });
+    return message;
+  });
 };
 
 /**
@@ -123,6 +178,7 @@ const buildManifest = () => {
   return {
     generated: new Date().toISOString(),
     app: app.getName(),
+    runId,
     version: app.getVersion(),
     packaged: app.isPackaged,
     platform: process.platform,
@@ -171,6 +227,33 @@ export const exportDiagnostics = async (): Promise<string> => {
   log.info("[diagnostics] exported", { output, files: entries.length });
   shell.showItemInFolder(output);
   return output;
+};
+
+/**
+ * "Report a Problem…" menu flow: export the diagnostics zip, then open a
+ * prefilled GitHub issue. The zip is revealed in the file manager so the
+ * user can drag it onto the issue; nothing is uploaded automatically.
+ */
+export const reportAProblem = async () => {
+  await exportDiagnosticsInteractive();
+  const body = [
+    "<!-- Describe what happened and what you expected. -->",
+    "",
+    "",
+    "---",
+    "",
+    "| | |",
+    "|---|---|",
+    `| Version | ${app.getVersion()} |`,
+    `| OS | ${process.platform} ${process.arch} |`,
+    `| Run ID | ${runId} |`,
+    "",
+    "_A diagnostics zip was saved to your Downloads folder — please drag it into this issue._",
+  ].join("\n");
+  const url = new URL("https://github.com/RhysSullivan/executor/issues/new");
+  url.searchParams.set("title", "[desktop] ");
+  url.searchParams.set("body", body);
+  await shell.openExternal(url.toString());
 };
 
 /** Menu-item wrapper: surface failures in a dialog instead of dying silently. */

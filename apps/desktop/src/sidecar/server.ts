@@ -39,6 +39,30 @@ if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
   setQuickJSModule(mod);
 }
 
+// Crash reporting — only when the Electron main process handed us a DSN
+// (desktop builds with SENTRY_DSN baked in). `executor web` and self-host
+// never set these env vars, so this stays inert everywhere else. Captures
+// uncaught exceptions / unhandled rejections in the server process; the
+// shared runId ties events to the main process and diagnostics zip.
+const sentryDsn = process.env.EXECUTOR_SENTRY_DSN;
+if (sentryDsn) {
+  const Sentry = await import("@sentry/bun");
+  Sentry.init({
+    dsn: sentryDsn,
+    release: process.env.EXECUTOR_SENTRY_RELEASE,
+    environment: process.env.EXECUTOR_SENTRY_ENVIRONMENT ?? "production",
+    tracesSampleRate: 0,
+    initialScope: {
+      tags: {
+        process: "sidecar",
+        platform: process.platform,
+        arch: process.arch,
+        ...(process.env.EXECUTOR_RUN_ID ? { runId: process.env.EXECUTOR_RUN_ID } : {}),
+      },
+    },
+  });
+}
+
 import { startServer } from "@executor-js/local";
 
 const requestedPort = parseInt(process.env.EXECUTOR_PORT ?? "0", 10);

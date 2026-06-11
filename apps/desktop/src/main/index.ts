@@ -23,7 +23,13 @@ import {
   SidecarPortInUseError,
   type SidecarConnection,
 } from "./sidecar";
-import { exportDiagnostics, exportDiagnosticsInteractive, initErrorReporting } from "./diagnostics";
+import {
+  exportDiagnostics,
+  exportDiagnosticsInteractive,
+  getCrashReportingConfig,
+  initErrorReporting,
+  reportAProblem,
+} from "./diagnostics";
 import {
   getServerProfiles,
   getServerSettings,
@@ -319,6 +325,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
   ipcMain.handle("executor:diagnostics:export", () => exportDiagnostics());
+  ipcMain.handle("executor:crash-reporting:get", () => getCrashReportingConfig());
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
@@ -483,6 +490,10 @@ const installApplicationMenu = () => {
       {
         label: "Export Diagnostics…",
         click: () => void exportDiagnosticsInteractive(),
+      },
+      {
+        label: "Report a Problem…",
+        click: () => void reportAProblem(),
       },
       { type: "separator" },
       ...(isMac

@@ -24,7 +24,7 @@ import {
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
 import { getServerSettings } from "./settings";
-import { reportSidecarCrash } from "./diagnostics";
+import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
 
 // Sidecar output is echoed to the terminal (visible when Electron is run
@@ -286,6 +286,10 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         EXECUTOR_SCOPE_DIR: scopeDir,
         EXECUTOR_DATA_DIR: dataDir,
         EXECUTOR_CLIENT: "desktop",
+        // Crash reporting (desktop builds with a baked-in DSN only). The
+        // CLI's `executor web` never sets these, so the shared server code
+        // stays telemetry-free outside the desktop app.
+        ...sidecarCrashReportingEnv(),
       },
     });
   } catch (error) {

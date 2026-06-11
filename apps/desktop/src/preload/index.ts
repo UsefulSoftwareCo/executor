@@ -47,6 +47,19 @@ const api = {
   exportDiagnostics(): Promise<string> {
     return ipcRenderer.invoke("executor:diagnostics:export");
   },
+  /**
+   * Crash-reporting config for the renderer. Null unless this desktop build
+   * shipped with a DSN baked in — the shared web UI only initializes its
+   * error reporting when this returns a config.
+   */
+  getCrashReporting(): Promise<{
+    readonly dsn: string;
+    readonly release: string;
+    readonly environment: string;
+    readonly runId: string;
+  } | null> {
+    return ipcRenderer.invoke("executor:crash-reporting:get");
+  },
 } as const;
 
 contextBridge.exposeInMainWorld("executor", api);
