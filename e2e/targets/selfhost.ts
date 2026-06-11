@@ -4,7 +4,7 @@
 // in setup/selfhost.globalsetup.ts.
 import { Effect } from "effect";
 
-import { cookieConsentStrategy } from "../../vendor/mcporter/dist/index.js";
+import { cookieConsentStrategy } from "@executor-js/mcporter";
 
 import type { Identity, Target } from "../src/target";
 

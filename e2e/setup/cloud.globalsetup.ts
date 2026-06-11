@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Vendored fork import (same pattern as mcporter).
-import { createEmulator } from "../../vendor/emulate/packages/emulate/dist/api.js";
+import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForHttp } from "./boot";
 import {

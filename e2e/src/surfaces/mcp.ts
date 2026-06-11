@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { Effect } from "effect";
 
-import { createRuntime, type Runtime } from "../../../vendor/mcporter/dist/index.js";
+import { createRuntime, type Runtime } from "@executor-js/mcporter";
 
 import type { Identity, Target } from "../target";
 
