@@ -1,5 +1,5 @@
 {
-  "name": "fumadb",
+  "name": "@executor-js/fumadb",
   "description": "A library for interacting with different databases for your package.",
   "version": "0.3.0",
   "repository": {

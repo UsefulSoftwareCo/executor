@@ -1,12 +1,12 @@
 import { type Client } from "@libsql/client";
 import { Layer } from "effect";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
-import { type FumaDB } from "fumadb";
+import { type FumaDB } from "@executor-js/fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   createDrizzleRuntimeSchemaSqlFromTables,
-} from "fumadb/adapters/drizzle";
-import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+} from "@executor-js/fumadb/adapters/drizzle";
+import { type schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 
 import { createExecutorFumaDb, DbProvider, type ExecutorDbHandle } from "@executor-js/api/server";
 import type { FumaDb, FumaTables } from "@executor-js/sdk";

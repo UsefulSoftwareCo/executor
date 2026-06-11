@@ -173,7 +173,7 @@ export function generateSchema(
           const value = JSON.stringify(column.default.value);
           col.push(`default(${value})`);
         } else if (column.default.runtime === "auto") {
-          imports.addImport("createId", "fumadb/cuid");
+          imports.addImport("createId", "@executor-js/fumadb/cuid");
           col.push("$defaultFn(() => createId())");
         } else if (column.default.runtime === "now") {
           col.push("defaultNow()");

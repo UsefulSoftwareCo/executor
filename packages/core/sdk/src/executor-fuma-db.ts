@@ -18,10 +18,10 @@
 // root barrel — host code imports it from `@executor-js/sdk/host-internal`.
 // ---------------------------------------------------------------------------
 
-import { fumadb, type FumaDB } from "fumadb";
-import { type DrizzleRuntimeProvider } from "fumadb/adapters/drizzle";
-import { drizzleAdapter } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+import { fumadb, type FumaDB } from "@executor-js/fumadb";
+import { type DrizzleRuntimeProvider } from "@executor-js/fumadb/adapters/drizzle";
+import { drizzleAdapter } from "@executor-js/fumadb/adapters/drizzle";
+import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 

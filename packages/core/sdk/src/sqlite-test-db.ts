@@ -2,12 +2,12 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { type FumaDB } from "fumadb";
+import { type FumaDB } from "@executor-js/fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   createDrizzleRuntimeSchemaSqlFromTables,
-} from "fumadb/adapters/drizzle";
-import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+} from "@executor-js/fumadb/adapters/drizzle";
+import { type schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 
 import { createExecutorFumaDb } from "./executor-fuma-db";
 import type { FumaDb, FumaTables } from "./fuma-runtime";

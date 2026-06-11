@@ -36,7 +36,7 @@
     "test": "turbo run test --filter=!@executor-js/e2e",
     "test:e2e": "bun run --cwd e2e test",
     "test:release:bootstrap": "vitest run tests/release-bootstrap-smoke.test.ts",
-    "build:packages": "bun run --filter='fumadb' build && bun run --filter='@executor-js/codemode-core' build && bun run --filter='@executor-js/runtime-quickjs' build && bun run --filter='@executor-js/sdk' build && bun run --filter='@executor-js/config' build && bun run --filter='@executor-js/execution' build && bun run --filter='@executor-js/cli' build && bun run --filter='@executor-js/plugin-*' build",
+    "build:packages": "bun run --filter='@executor-js/fumadb' build && bun run --filter='@executor-js/codemode-core' build && bun run --filter='@executor-js/runtime-quickjs' build && bun run --filter='@executor-js/sdk' build && bun run --filter='@executor-js/config' build && bun run --filter='@executor-js/execution' build && bun run --filter='@executor-js/cli' build && bun run --filter='@executor-js/plugin-*' build",
     "typecheck": "turbo run typecheck",
     "typecheck:slow": "turbo run typecheck:slow",
     "ci": "bun run lint && bun run typecheck && bun run test",

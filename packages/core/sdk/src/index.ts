@@ -16,11 +16,17 @@ export {
 } from "effect/unstable/httpapi";
 
 // FumaDB integration.
-export { fumadb } from "fumadb";
-export type { FumaDB } from "fumadb";
-export type { AbstractQuery, Condition, ConditionBuilder } from "fumadb/query";
-export { column, idColumn, schema as fumaSchema, table } from "fumadb/schema";
-export type { AnyColumn, AnySchema, AnyTable, Column, Schema as FumaSchema } from "fumadb/schema";
+export { fumadb } from "@executor-js/fumadb";
+export type { FumaDB } from "@executor-js/fumadb";
+export type { AbstractQuery, Condition, ConditionBuilder } from "@executor-js/fumadb/query";
+export { column, idColumn, schema as fumaSchema, table } from "@executor-js/fumadb/schema";
+export type {
+  AnyColumn,
+  AnySchema,
+  AnyTable,
+  Column,
+  Schema as FumaSchema,
+} from "@executor-js/fumadb/schema";
 
 export type {
   FumaDb,

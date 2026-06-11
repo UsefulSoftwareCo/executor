@@ -1,5 +1,5 @@
-import { type Condition, type ConditionBuilder } from "fumadb/query";
-import type { AnyColumn, AnyTable } from "fumadb/schema";
+import { type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
+import type { AnyColumn, AnyTable } from "@executor-js/fumadb/schema";
 
 import { StorageError } from "./fuma-runtime";
 

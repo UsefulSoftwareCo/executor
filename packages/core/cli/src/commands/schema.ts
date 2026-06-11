@@ -36,9 +36,9 @@ const schemaGenerateAction = async (opts: SchemaGenerateOptions) => {
   }
 
   const [{ fumadb }, { drizzleAdapter }, { schema: fumaSchema }] = await Promise.all([
-    import("fumadb"),
-    import("fumadb/adapters/drizzle"),
-    import("fumadb/schema"),
+    import("@executor-js/fumadb"),
+    import("@executor-js/fumadb/adapters/drizzle"),
+    import("@executor-js/fumadb/schema"),
   ]);
 
   const schema = fumaSchema({

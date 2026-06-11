@@ -3,12 +3,12 @@ import { dirname, resolve } from "node:path";
 
 import { createClient, type Client } from "@libsql/client";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
-import { type FumaDB } from "fumadb";
+import { type FumaDB } from "@executor-js/fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   ensureDrizzleRuntimeSchemaFromTables,
-} from "fumadb/adapters/drizzle";
-import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+} from "@executor-js/fumadb/adapters/drizzle";
+import { type schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 import { Context, Effect, Layer } from "effect";
 
 import {

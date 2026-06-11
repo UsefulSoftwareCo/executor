@@ -1,7 +1,7 @@
 import { Effect, Layer } from "effect";
-import { type FumaDB } from "fumadb";
-import { type DrizzleConfig } from "fumadb/adapters/drizzle";
-import { type schema as fumaSchema, type RelationsMap } from "fumadb/schema";
+import { type FumaDB } from "@executor-js/fumadb";
+import { type DrizzleConfig } from "@executor-js/fumadb/adapters/drizzle";
+import { type schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
 
 import {
   createExecutorFumaDb,

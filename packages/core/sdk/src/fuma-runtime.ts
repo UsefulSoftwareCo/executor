@@ -1,6 +1,6 @@
 import { Cause, Context, Data, Effect, Exit, Layer, Predicate } from "effect";
-import type { AbstractQuery } from "fumadb/query";
-import type { AnySchema, AnyTable, Schema as FumaSchema } from "fumadb/schema";
+import type { AbstractQuery } from "@executor-js/fumadb/query";
+import type { AnySchema, AnyTable, Schema as FumaSchema } from "@executor-js/fumadb/schema";
 
 export class StorageError extends Data.TaggedError("StorageError")<{
   readonly message: string;

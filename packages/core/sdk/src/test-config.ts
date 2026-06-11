@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect";
-import { withQueryContext } from "fumadb/query";
+import { withQueryContext } from "@executor-js/fumadb/query";
 import { collectTables, createExecutor, type Executor, type ExecutorConfig } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
 import { ProviderItemId, ProviderKey, Subject, Tenant } from "./ids";

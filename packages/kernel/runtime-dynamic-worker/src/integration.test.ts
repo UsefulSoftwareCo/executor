@@ -21,9 +21,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/unstable/http";
-import { fumadb } from "fumadb";
-import { createDrizzleRuntimeSchemaFromTables, drizzleAdapter } from "fumadb/adapters/drizzle";
-import { schema as fumaSchema } from "fumadb/schema";
+import { fumadb } from "@executor-js/fumadb";
+import {
+  createDrizzleRuntimeSchemaFromTables,
+  drizzleAdapter,
+} from "@executor-js/fumadb/adapters/drizzle";
+import { schema as fumaSchema } from "@executor-js/fumadb/schema";
 import postgres from "postgres";
 
 import {

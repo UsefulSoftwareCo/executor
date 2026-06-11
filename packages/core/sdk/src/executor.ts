@@ -1,10 +1,10 @@
 import { Effect, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
-import { fumadb } from "fumadb";
-import { memoryAdapter } from "fumadb/adapters/memory";
-import { withQueryContext, type Condition, type ConditionBuilder } from "fumadb/query";
-import { schema as fumaSchema, type RelationsMap } from "fumadb/schema";
-import type { AnyColumn } from "fumadb/schema";
+import { fumadb } from "@executor-js/fumadb";
+import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
+import { withQueryContext, type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
+import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/schema";
+import type { AnyColumn } from "@executor-js/fumadb/schema";
 import { generateKeyBetween } from "fractional-indexing";
 
 import {

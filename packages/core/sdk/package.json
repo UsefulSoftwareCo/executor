@@ -86,9 +86,9 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/fumadb": "workspace:*",
     "@standard-schema/spec": "^1.1.0",
     "fractional-indexing": "^3.2.0",
-    "fumadb": "workspace:*",
     "oauth4webapi": "^3.8.5"
   },
   "devDependencies": {

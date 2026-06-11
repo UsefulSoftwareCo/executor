@@ -7,7 +7,7 @@ import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import {
   createDrizzleRuntimeSchemaFromTables,
   ensureDrizzleRuntimeSchemaFromTables,
-} from "fumadb/adapters/drizzle";
+} from "@executor-js/fumadb/adapters/drizzle";
 
 import type { FumaTables } from "@executor-js/sdk";
 

@@ -4,7 +4,7 @@ import type { Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Effect } from "effect";
-import { createId } from "fumadb/cuid";
+import { createId } from "@executor-js/fumadb/cuid";
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";

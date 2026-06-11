@@ -166,7 +166,7 @@ export function fromKysely(
   const {
     db: kysely,
     provider,
-    relationMode = provider === "mssql" ? "fumadb" : "foreign-keys",
+    relationMode = provider === "mssql" ? "@executor-js/fumadb" : "foreign-keys",
   } = config;
 
   /**
@@ -520,7 +520,7 @@ export function fromKysely(
     },
   };
 
-  if (relationMode === "fumadb")
+  if (relationMode === "@executor-js/fumadb")
     adapter = createSoftForeignKey(schema, {
       ...adapter,
       generateInsertValuesDefault(table, values) {

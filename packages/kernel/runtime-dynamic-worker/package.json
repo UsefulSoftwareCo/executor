@@ -23,11 +23,11 @@
     "@electric-sql/pglite": "^0.4.4",
     "@electric-sql/pglite-socket": "^0.1.4",
     "@executor-js/execution": "workspace:*",
+    "@executor-js/fumadb": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@types/node": "catalog:",
     "drizzle-orm": "catalog:",
-    "fumadb": "workspace:*",
     "postgres": "^3.4.9",
     "vitest": "catalog:",
     "wrangler": "^4.81.0"

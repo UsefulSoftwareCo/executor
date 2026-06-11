@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import {
   createDrizzleRuntimeSchemaFromTables,
   ensureDrizzleRuntimeSchemaFromTables,
-} from "fumadb/adapters/drizzle";
+} from "@executor-js/fumadb/adapters/drizzle";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 
 import { wrapD1WithR2Offload } from "./r2-blob-offload";

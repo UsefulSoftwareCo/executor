@@ -1,5 +1,5 @@
 import { mysqlTable, varchar, foreignKey, text, customType } from "drizzle-orm/mysql-core"
-import { createId } from "fumadb/cuid"
+import { createId } from "@executor-js/fumadb/cuid"
 import { relations } from "drizzle-orm"
 
 export const users = mysqlTable("users", {

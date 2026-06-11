@@ -35,4 +35,4 @@ export interface KyselyConfig {
   relationMode?: RelationMode;
 }
 
-export type RelationMode = "foreign-keys" | "fumadb";
+export type RelationMode = "foreign-keys" | "@executor-js/fumadb";

@@ -8,7 +8,7 @@ import {
   uniqueIndex,
   bigint,
 } from "drizzle-orm/pg-core";
-import { createId } from "fumadb/cuid";
+import { createId } from "@executor-js/fumadb/cuid";
 
 export const integration = pgTable(
   "integration",

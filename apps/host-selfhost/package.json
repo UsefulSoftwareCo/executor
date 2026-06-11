@@ -23,6 +23,7 @@
     "@executor-js/api": "workspace:*",
     "@executor-js/app": "workspace:*",
     "@executor-js/execution": "workspace:*",
+    "@executor-js/fumadb": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/plugin-encrypted-secrets": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
@@ -38,7 +39,6 @@
     "better-auth": "^1.6.11",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "fumadb": "workspace:*",
     "react": "catalog:",
     "react-dom": "catalog:"
   },
