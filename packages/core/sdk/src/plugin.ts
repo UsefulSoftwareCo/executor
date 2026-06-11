@@ -187,11 +187,16 @@ export interface PluginCtx<TStore = unknown> {
 // refresh / oauth.complete; the result is stamped with addresses and persisted.
 // ---------------------------------------------------------------------------
 
-export interface ResolveToolsInput {
+export interface ResolveToolsInput<TStore = unknown> {
   /** The catalog record (public projection) whose connection is being resolved. */
   readonly integration: Integration;
   /** The plugin's stored opaque config for that integration. */
   readonly config: IntegrationConfig;
+  /** The plugin's typed store — the same instance the extension ctx sees.
+   *  Lets spec-derived plugins load build artifacts kept behind the storage
+   *  facades (e.g. a content-addressed spec blob) instead of inlining them
+   *  in `config`. */
+  readonly storage: TStore;
   /** The connection whose tools are being resolved. */
   readonly connection: ConnectionRef;
   /** Which of the integration's declared auth methods the connection binds
@@ -443,7 +448,7 @@ export interface PluginSpec<
    *  create / refresh / oauth.complete; the result is stamped with addresses
    *  and persisted per-connection. Omit for plugins with no dynamic tools. */
   readonly resolveTools?: (
-    input: ResolveToolsInput,
+    input: ResolveToolsInput<TStore>,
   ) => Effect.Effect<ResolveToolsResult, StorageFailure>;
 
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the

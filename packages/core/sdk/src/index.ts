@@ -174,6 +174,7 @@ export {
   pluginBlobStore,
   makeInMemoryBlobStore,
   makeFumaBlobStore,
+  sha256Hex,
   type BlobStore,
   type PluginBlobStore,
   type OwnerPartitions,

@@ -172,9 +172,13 @@ export const GraphqlIntegrationConfig = Schema.Struct({
   endpoint: Schema.String,
   /** Display name for the integration. */
   name: Schema.String,
-  /** Optional introspection JSON text (when the endpoint doesn't support
-   *  live introspection). */
+  /** Inlined introspection JSON text. Legacy rows only: new snapshots live in
+   *  the plugin blob store and the config carries `introspectionHash` instead,
+   *  so a multi-MB schema never rides along on catalog reads. */
   introspectionJson: Schema.optional(Schema.String),
+  /** Hex SHA-256 of the introspection JSON snapshot — the content address of
+   *  the blob (`introspection/<hash>` in the plugin blob store). */
+  introspectionHash: Schema.optional(Schema.String),
   /** Static headers applied to every request (and to add-time introspection). */
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Static query parameters applied to every request. */

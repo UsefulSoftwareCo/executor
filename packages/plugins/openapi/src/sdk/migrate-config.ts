@@ -54,7 +54,7 @@ const migrateEntry = (entry: unknown): unknown | null => {
  *  canonical, no auth templates, or not this plugin's shape). Idempotent. */
 export const migrateOpenApiAuthConfig = (config: unknown): unknown | null => {
   if (typeof config !== "object" || config === null) return null;
-  if (!("spec" in config)) return null;
+  if (!("spec" in config) && !("specHash" in config)) return null;
   if (!("authenticationTemplate" in config)) return null;
 
   const entries = (config as { authenticationTemplate: unknown }).authenticationTemplate;

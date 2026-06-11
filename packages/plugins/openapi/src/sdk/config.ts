@@ -15,9 +15,13 @@ import type { Authentication } from "./types";
 //
 // In v2 there are NO credential bindings, NO per-source secret slots, and NO
 // StoredSource credential config. The config carries only:
-//   - the OpenAPI spec text (inlined) OR the source URL to (re)fetch from,
+//   - the content hash of the spec blob (legacy rows inline the text instead)
+//     and/or the source URL to (re)fetch from,
 //   - the optional base URL override,
 //   - the auth templates a connection's value is rendered through.
+// The resolved spec text itself lives in the plugin blob store, keyed
+// `spec/<specHash>` — it's a build input for resolveTools/refresh, not data
+// any list/invoke path should pay to load.
 // ---------------------------------------------------------------------------
 
 const OAuthAuthenticationSchema = Schema.Struct({
@@ -31,8 +35,13 @@ const OAuthAuthenticationSchema = Schema.Struct({
 export const AuthenticationSchema = Schema.Union([OAuthAuthenticationSchema, ApiKeyAuthMethod]);
 
 export const OpenApiIntegrationConfigSchema = Schema.Struct({
-  /** Inlined OpenAPI document text (resolved + parsed source of truth). */
-  spec: Schema.String,
+  /** Inlined OpenAPI document text. Legacy rows only: new registrations store
+   *  the resolved text in the plugin blob store and carry `specHash` instead,
+   *  so multi-MB documents never ride along on catalog reads. */
+  spec: Schema.optional(Schema.String),
+  /** Hex SHA-256 of the resolved spec text — the content address of the spec
+   *  blob (`spec/<hash>` in the plugin blob store). */
+  specHash: Schema.optional(Schema.String),
   /** Origin URL the spec was fetched from, when known. Enables refresh. */
   sourceUrl: Schema.optional(Schema.String),
   /** Google Discovery bundle URLs, when the spec came from a Google bundle. */

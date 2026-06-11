@@ -9,8 +9,10 @@ import {
 import { OperationBinding } from "./types";
 
 // ---------------------------------------------------------------------------
-// OpenAPI plugin store (v2). The catalog row (integration.config) owns the spec
-// + auth templates; this store keeps only the per-operation invocation bindings
+// OpenAPI plugin store (v2). The catalog row (integration.config) owns the
+// auth templates plus the spec's content hash; the resolved spec text itself
+// lives in the plugin blob store under `spec/<hash>` (it's multi-MB and only
+// a build input). This store keeps the per-operation invocation bindings
 // (method / path / params), keyed by integration slug, so `invokeTool` can map
 // a tool name back to its HTTP operation without re-parsing the spec on every
 // call. There are NO credential bindings, slots, or StoredSource credential
@@ -64,6 +66,10 @@ const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
 const operationKey = (integration: string, toolName: string): string =>
   `${integration}.${toolName}`;
 
+/** Blob key for a spec's content hash. Content-addressed so re-puts are
+ *  idempotent and identical specs share one blob per partition. */
+export const specBlobKey = (specHash: string): string => `spec/${specHash}`;
+
 export interface OpenapiStore {
   /** Replace all stored operations for an integration. */
   readonly putOperations: (
@@ -81,9 +87,15 @@ export interface OpenapiStore {
   ) => Effect.Effect<readonly StoredOperation[], StorageFailure>;
   /** Drop all stored operations for an integration. */
   readonly removeOperations: (integration: string) => Effect.Effect<void, StorageFailure>;
+  /** Persist resolved spec text under its content hash. Org-owned and
+   *  content-addressed; never removed on integration removal because another
+   *  integration in the tenant may share the hash. */
+  readonly putSpec: (specHash: string, specText: string) => Effect.Effect<void, StorageFailure>;
+  /** Load spec text by content hash; null when no blob exists. */
+  readonly getSpec: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
 }
 
-export const makeDefaultOpenapiStore = ({ pluginStorage }: StorageDeps): OpenapiStore => {
+export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): OpenapiStore => {
   const operationData = (operation: StoredOperation) => ({
     integration: operation.integration,
     toolName: operation.toolName,
@@ -133,5 +145,10 @@ export const makeDefaultOpenapiStore = ({ pluginStorage }: StorageDeps): Openapi
       ),
 
     removeOperations,
+
+    putSpec: (specHash, specText) =>
+      blobs.put(specBlobKey(specHash), specText, { owner: STORE_OWNER }),
+
+    getSpec: (specHash) => blobs.get(specBlobKey(specHash)),
   };
 };

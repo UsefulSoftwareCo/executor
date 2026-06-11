@@ -10,6 +10,7 @@ import {
   IntegrationDetectionResult,
   IntegrationSlug,
   mergeAuthTemplates,
+  sha256Hex,
   ToolName,
   ToolResult,
   type AuthMethodDescriptor,
@@ -413,17 +414,32 @@ const introspectHeadersForConnection = (
   return { headers, queryParams };
 };
 
-/** Introspect a config live or from its stored JSON, applying connection auth.
- *  `parseIntrospectionJson` short-circuits the network when a schema snapshot is
- *  present; otherwise this introspects the endpoint with the rendered credential. */
+/** Resolve a config's introspection snapshot text: legacy rows inline it in
+ *  `introspectionJson`; new rows point at the plugin blob store via
+ *  `introspectionHash`. Null when the integration has no snapshot (live
+ *  introspection territory). */
+const loadIntrospectionJson = (
+  storage: GraphqlStore,
+  config: GraphqlIntegrationConfig,
+): Effect.Effect<string | null, StorageFailure> => {
+  if (config.introspectionJson != null) return Effect.succeed(config.introspectionJson);
+  if (config.introspectionHash != null) return storage.getIntrospection(config.introspectionHash);
+  return Effect.succeed(null);
+};
+
+/** Introspect a config live or from its stored snapshot, applying connection
+ *  auth. A non-null `introspectionJson` (loaded via `loadIntrospectionJson`)
+ *  short-circuits the network; otherwise this introspects the endpoint with
+ *  the rendered credential. */
 const introspectForConnection = (
   config: GraphqlIntegrationConfig,
+  introspectionJson: string | null,
   values: Record<string, string | null>,
   templateSlug: AuthTemplateSlug | null,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ): Effect.Effect<IntrospectionResult, GraphqlIntrospectionError> => {
-  if (config.introspectionJson) {
-    return parseIntrospectionJson(config.introspectionJson);
+  if (introspectionJson != null) {
+    return parseIntrospectionJson(introspectionJson);
   }
   const auth = introspectHeadersForConnection(config, values, templateSlug);
   return introspect(
@@ -463,13 +479,15 @@ const materializeOperations = (
       Object.assign(queryParams, rendered.queryParams);
     }
 
-    const introspection = config.introspectionJson
-      ? yield* parseIntrospectionJson(config.introspectionJson)
-      : yield* introspect(
-          config.endpoint,
-          Object.keys(headers).length > 0 ? headers : undefined,
-          Object.keys(queryParams).length > 0 ? queryParams : undefined,
-        ).pipe(Effect.provide(httpClientLayer));
+    const introspectionJson = yield* loadIntrospectionJson(ctx.storage, config);
+    const introspection =
+      introspectionJson != null
+        ? yield* parseIntrospectionJson(introspectionJson)
+        : yield* introspect(
+            config.endpoint,
+            Object.keys(headers).length > 0 ? headers : undefined,
+            Object.keys(queryParams).length > 0 ? queryParams : undefined,
+          ).pipe(Effect.provide(httpClientLayer));
 
     const { result } = yield* extract(introspection).pipe(
       Effect.catch(() =>
@@ -577,55 +595,68 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
     });
 
   const addIntegrationTransaction = (input: GraphqlAddIntegrationInput, slug: IntegrationSlug) =>
-    ctx.transaction(
-      Effect.gen(function* () {
-        const baseConfig = buildConfig(input);
+    Effect.gen(function* () {
+      const baseConfig = buildConfig(input);
 
-        // No pre-supplied schema → register WITHOUT introspecting. Tools (and
-        // their operation bindings) are produced lazily when a connection is
-        // created (`resolveTools`) / a tool is first invoked (`invokeTool`),
-        // using that connection's credential.
-        if (baseConfig.introspectionJson === undefined) {
-          yield* ctx.core.integrations.register({
+      // No pre-supplied schema → register WITHOUT introspecting. Tools (and
+      // their operation bindings) are produced lazily when a connection is
+      // created (`resolveTools`) / a tool is first invoked (`invokeTool`),
+      // using that connection's credential.
+      if (baseConfig.introspectionJson === undefined) {
+        yield* ctx.transaction(
+          ctx.core.integrations.register({
             slug,
             description: baseConfig.name,
             config: baseConfig,
             canRemove: true,
             canRefresh: true,
+          }),
+        );
+        return { slug: String(slug), name: baseConfig.name, toolCount: 0 };
+      }
+
+      // Pre-supplied introspection JSON: parse it offline (no network) and
+      // persist the operation bindings + snapshot so production stays offline.
+      const introspection = yield* parseIntrospectionJson(baseConfig.introspectionJson);
+      const { result } = yield* extract(introspection);
+      const prepared = prepareOperations(result.fields, introspection);
+
+      // Snapshot the resolved schema so tool production never needs a live
+      // HTTP layer (D6: tools are spec-derived and identical per connection).
+      // The snapshot text goes to the plugin blob store (content-addressed,
+      // written OUTSIDE the transaction — re-puts are idempotent and an
+      // aborted register leaves only an unreferenced blob), and the config
+      // carries only its hash.
+      const snapshotJson = JSON.stringify({ data: introspection });
+      const introspectionHash = yield* sha256Hex(snapshotJson);
+      const { introspectionJson: _inline, ...withoutInline } = baseConfig;
+      const config = GraphqlIntegrationConfig.make({
+        ...withoutInline,
+        introspectionHash,
+      });
+
+      yield* ctx.storage.putIntrospection(introspectionHash, snapshotJson);
+
+      yield* ctx.transaction(
+        Effect.gen(function* () {
+          yield* ctx.storage.replaceOperations(String(slug), toStoredOperations(slug, prepared));
+
+          yield* ctx.core.integrations.register({
+            slug,
+            description: config.name,
+            config,
+            canRemove: true,
+            canRefresh: true,
           });
-          return { slug: String(slug), name: baseConfig.name, toolCount: 0 };
-        }
+        }),
+      );
 
-        // Pre-supplied introspection JSON: parse it offline (no network) and
-        // persist the operation bindings + snapshot so production stays offline.
-        const introspection = yield* parseIntrospectionJson(baseConfig.introspectionJson);
-        const { result } = yield* extract(introspection);
-        const prepared = prepareOperations(result.fields, introspection);
-
-        // Snapshot the resolved schema so tool production never needs a live
-        // HTTP layer (D6: tools are spec-derived and identical per connection).
-        const config = GraphqlIntegrationConfig.make({
-          ...baseConfig,
-          introspectionJson: JSON.stringify({ data: introspection }),
-        });
-
-        yield* ctx.storage.replaceOperations(String(slug), toStoredOperations(slug, prepared));
-
-        yield* ctx.core.integrations.register({
-          slug,
-          description: config.name,
-          config,
-          canRemove: true,
-          canRefresh: true,
-        });
-
-        return {
-          slug: String(slug),
-          name: config.name,
-          toolCount: prepared.length,
-        };
-      }),
-    );
+      return {
+        slug: String(slug),
+        name: config.name,
+        toolCount: prepared.length,
+      };
+    });
 
   const configureIntegration = (slug: string, input: GraphqlConfigureInput) =>
     Effect.gen(function* () {
@@ -648,6 +679,9 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         name: input.name?.trim() || current.name,
         ...(current.introspectionJson !== undefined
           ? { introspectionJson: current.introspectionJson }
+          : {}),
+        ...(current.introspectionHash !== undefined
+          ? { introspectionHash: current.introspectionHash }
           : {}),
         ...((input.headers ?? current.headers) !== undefined
           ? { headers: input.headers ?? current.headers }
@@ -852,26 +886,30 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
     resolveTools: ({
       config,
       template,
+      storage,
       getValues,
     }: {
       readonly config: IntegrationConfig;
       readonly template: AuthTemplateSlug | null;
+      readonly storage: GraphqlStore;
       readonly getValues: () => Effect.Effect<Record<string, string | null>, unknown>;
     }) =>
       Effect.gen(function* () {
         const decoded = yield* decodeGraphqlIntegrationConfig(config).pipe(Effect.option);
         if (Option.isNone(decoded)) return { tools: [] };
         const graphqlConfig = decoded.value;
+        const introspectionJson = yield* loadIntrospectionJson(storage, graphqlConfig);
         // Live introspection (no stored snapshot) needs the connection's
         // credential inputs for auth-required endpoints; resolve them lazily.
         const values =
-          graphqlConfig.introspectionJson === undefined
+          introspectionJson == null
             ? yield* getValues().pipe(
                 Effect.catch(() => Effect.succeed({} as Record<string, string | null>)),
               )
             : ({} as Record<string, string | null>);
         const introspection = yield* introspectForConnection(
           graphqlConfig,
+          introspectionJson,
           values,
           template,
           options?.httpClientLayer ?? httpClientLayerFallback,

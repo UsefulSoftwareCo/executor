@@ -87,7 +87,6 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           const config = yield* ext.getConfig(params.slug);
           return config
             ? {
-                spec: config.spec,
                 sourceUrl: config.sourceUrl,
                 googleDiscoveryUrls: config.googleDiscoveryUrls
                   ? [...config.googleDiscoveryUrls]

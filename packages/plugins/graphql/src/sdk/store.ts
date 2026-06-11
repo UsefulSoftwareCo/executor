@@ -71,6 +71,12 @@ const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
   };
 };
 
+/** Blob key for an introspection snapshot's content hash. Content-addressed
+ *  so re-puts are idempotent and identical schemas share one blob per
+ *  partition. */
+export const introspectionBlobKey = (introspectionHash: string): string =>
+  `introspection/${introspectionHash}`;
+
 export interface GraphqlStore {
   /** Replace the stored operation bindings for an integration. */
   readonly replaceOperations: (
@@ -85,9 +91,20 @@ export interface GraphqlStore {
     integration: string,
   ) => Effect.Effect<readonly StoredOperation[], StorageFailure>;
   readonly removeOperations: (integration: string) => Effect.Effect<void, StorageFailure>;
+  /** Persist an introspection JSON snapshot under its content hash. Org-owned
+   *  and content-addressed; never removed on integration removal because
+   *  another integration in the tenant may share the hash. */
+  readonly putIntrospection: (
+    introspectionHash: string,
+    introspectionJson: string,
+  ) => Effect.Effect<void, StorageFailure>;
+  /** Load an introspection snapshot by content hash; null when absent. */
+  readonly getIntrospection: (
+    introspectionHash: string,
+  ) => Effect.Effect<string | null, StorageFailure>;
 }
 
-export const makeDefaultGraphqlStore = ({ pluginStorage }: StorageDeps): GraphqlStore => {
+export const makeDefaultGraphqlStore = ({ pluginStorage, blobs }: StorageDeps): GraphqlStore => {
   const listOperationRows = (integration: string) =>
     pluginStorage
       .list({
@@ -137,5 +154,12 @@ export const makeDefaultGraphqlStore = ({ pluginStorage }: StorageDeps): Graphql
       ),
 
     removeOperations,
+
+    putIntrospection: (introspectionHash, introspectionJson) =>
+      blobs.put(introspectionBlobKey(introspectionHash), introspectionJson, {
+        owner: CATALOG_OWNER,
+      }),
+
+    getIntrospection: (introspectionHash) => blobs.get(introspectionBlobKey(introspectionHash)),
   };
 };

@@ -11,6 +11,7 @@ import {
   authToolFailure,
   definePlugin,
   mergeAuthTemplates,
+  sha256Hex,
   tool,
   type AuthMethodDescriptor,
   type Integration,
@@ -553,6 +554,22 @@ export const describeOpenApiIntegrationDisplay = (
 };
 
 // ---------------------------------------------------------------------------
+// Spec text resolution — the stored config carries the spec's content hash
+// (`specHash` → blob `spec/<hash>`); legacy rows still inline the text in
+// `spec`. Every reader goes through this loader so both shapes work until the
+// inline rows are backfilled.
+// ---------------------------------------------------------------------------
+
+const loadSpecText = (
+  storage: OpenapiStore,
+  config: OpenApiIntegrationConfig,
+): Effect.Effect<string | null, StorageFailure> => {
+  if (config.spec != null) return Effect.succeed(config.spec);
+  if (config.specHash != null) return storage.getSpec(config.specHash);
+  return Effect.succeed(null);
+};
+
+// ---------------------------------------------------------------------------
 // Spec → tool definitions (shared by addSpec, resolveTools, and detect)
 // ---------------------------------------------------------------------------
 
@@ -721,8 +738,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             return yield* new IntegrationAlreadyExistsError({ slug });
           }
 
+          const specHash = yield* sha256Hex(resolved.specText);
+
           const integrationConfig: OpenApiIntegrationConfig = {
-            spec: resolved.specText,
+            specHash,
             ...(specInputToSourceUrl(config.spec) !== undefined
               ? { sourceUrl: specInputToSourceUrl(config.spec) }
               : {}),
@@ -745,6 +764,12 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
                 ? { authenticationTemplate: resolved.authenticationTemplate }
                 : {}),
           };
+
+          // The spec blob is written OUTSIDE the transaction: it's
+          // content-addressed (re-puts are idempotent) and an aborted register
+          // leaves only an unreferenced blob behind — while blob backends like
+          // R2 couldn't roll back with the transaction anyway.
+          yield* ctx.storage.putSpec(specHash, resolved.specText);
 
           yield* ctx.transaction(
             Effect.gen(function* () {
@@ -936,17 +961,22 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     // Produce one tool per spec operation. Spec-derived, identical for every
     // connection on the integration — so `getValue` is never called here. The
     // operation bindings invokeTool needs are persisted at addSpec time; this
-    // hook only shapes the per-connection ToolDefs from the catalog config.
+    // hook only shapes the per-connection ToolDefs from the spec blob the
+    // catalog config points at.
     resolveTools: ({
       config,
+      storage,
     }: {
       readonly integration: Integration;
       readonly config: IntegrationConfig;
+      readonly storage: OpenapiStore;
     }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
       Effect.gen(function* () {
         const openApiConfig = decodeOpenApiIntegrationConfig(config);
         if (!openApiConfig) return { tools: [], definitions: {} };
-        const compiled = yield* compileSpec(openApiConfig.spec).pipe(
+        const specText = yield* loadSpecText(storage, openApiConfig);
+        if (specText == null) return { tools: [], definitions: {} };
+        const compiled = yield* compileSpec(specText).pipe(
           Effect.catch(() => Effect.succeed(null)),
         );
         if (!compiled) return { tools: [], definitions: {} };
@@ -973,13 +1003,18 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         const config = decodeOpenApiIntegrationConfig(credential.config);
 
         // Resolve the operation binding from the plugin store; fall back to
-        // deriving it from the catalog spec when the store has no row (e.g. an
-        // integration registered without going through addSpec).
+        // re-deriving it from the spec blob when the store has no row (e.g. an
+        // integration registered without going through addSpec). The fallback
+        // is the ONLY invoke-path spec read — the hot path never loads it.
         let binding = (yield* invokeCtx.storage.getOperation(integration, toolRow.name))?.binding;
         if (!binding && config) {
-          const compiled = yield* compileSpec(config.spec).pipe(
+          const specText = yield* loadSpecText(invokeCtx.storage, config).pipe(
             Effect.catch(() => Effect.succeed(null)),
           );
+          const compiled =
+            specText == null
+              ? null
+              : yield* compileSpec(specText).pipe(Effect.catch(() => Effect.succeed(null)));
           binding = compiled
             ? storedOperationsFromCompiled(integration, compiled).find(
                 (op) => op.toolName === toolRow.name,

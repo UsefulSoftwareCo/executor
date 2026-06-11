@@ -157,6 +157,17 @@ export const makeInMemoryBlobStore = (): BlobStore => {
   };
 };
 
+/** Hex SHA-256 of a UTF-8 string — the content-address key plugins use for
+ *  write-once blobs (`put(key(hash), …)` is then idempotent and orphaned
+ *  writes are harmless). Web Crypto, so it runs on Workers/Bun/Node alike. */
+export const sha256Hex = (text: string): Effect.Effect<string> =>
+  Effect.promise(async () => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+  });
+
 const blobId = (namespace: string, key: string): string => JSON.stringify([namespace, key]);
 
 type BlobRow = {

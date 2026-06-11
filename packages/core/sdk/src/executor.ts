@@ -1834,6 +1834,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             config: decodeJsonColumn(integrationRow.config),
             connection: ref,
             template: existingRow ? AuthTemplateSlug.make(existingRow.template) : null,
+            storage: runtime.storage,
             getValue: () => resolveConnectionValueByRef(ref),
             getValues: () => resolveConnectionValuesByRef(ref),
           })

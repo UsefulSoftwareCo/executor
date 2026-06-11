@@ -100,11 +100,12 @@ const IntegrationView = Schema.Struct({
   canRefresh: Schema.Boolean,
 });
 
-// The full opaque integration config, surfaced for the configure UX. Unlike
+// The integration config surfaced for the configure UX. Unlike
 // `IntegrationView` (catalog identity only), this carries the
-// `authenticationTemplate` the configure flow reads/writes.
+// `authenticationTemplate` the configure flow reads/writes. The spec text is
+// deliberately NOT served: it's a multi-MB build artifact in the plugin blob
+// store, and no client reads it (the configure UI only touches the template).
 const OpenApiConfigView = Schema.Struct({
-  spec: Schema.String,
   sourceUrl: Schema.optional(Schema.String),
   googleDiscoveryUrls: Schema.optional(Schema.Array(Schema.String)),
   baseUrl: Schema.optional(Schema.String),
