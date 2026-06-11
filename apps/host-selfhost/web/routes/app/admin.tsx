@@ -17,7 +17,7 @@ import {
 } from "@executor-js/react/api/account-atoms";
 import { orgMemberWriteKeys } from "@executor-js/react/api/reactivity-keys";
 
-import { createInvite, invitesAtom, inviteWriteKeys, revokeInvite } from "../admin-atoms";
+import { createInvite, invitesAtom, inviteWriteKeys, revokeInvite } from "../../admin-atoms";
 
 export const Route = createFileRoute("/admin")({
   component: AdminPage,

@@ -5,7 +5,7 @@ import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
-import { authClient } from "../auth-client";
+import { authClient } from "../../auth-client";
 
 export const Route = createFileRoute("/join/$code")({
   component: JoinPage,

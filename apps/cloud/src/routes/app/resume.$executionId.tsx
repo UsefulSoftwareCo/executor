@@ -7,7 +7,7 @@ import {
   ResumeApprovalPageView,
 } from "@executor-js/react/pages/resume-approval";
 
-import { mcpPausedExecutionAtom, resumeMcpExecution } from "../web/mcp-resume-atoms";
+import { mcpPausedExecutionAtom, resumeMcpExecution } from "../../web/mcp-resume-atoms";
 
 const SearchParams = Schema.toStandardSchemaV1(
   Schema.Struct({

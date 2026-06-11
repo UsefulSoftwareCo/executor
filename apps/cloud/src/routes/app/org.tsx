@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@executor-js/react/components/dropdown-menu";
 import { OrgPage as SharedOrgPage } from "@executor-js/react/pages/org";
-import { orgDomainsAtom, getDomainVerificationLink, deleteDomain } from "../web/org-atoms";
+import { orgDomainsAtom, getDomainVerificationLink, deleteDomain } from "../../web/org-atoms";
 
 // ---------------------------------------------------------------------------
 // Cloud organization page. The members / roles / invite / org-name surface is

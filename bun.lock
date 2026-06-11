@@ -107,6 +107,7 @@
         "@executor-js/cli": "workspace:*",
         "@rhyssul/portless": "^0.13.0",
         "@tailwindcss/vite": "catalog:",
+        "@tanstack/virtual-file-routes": "^1.162.0",
         "@types/react": "catalog:",
         "@types/react-dom": "catalog:",
         "@vitejs/plugin-react": "catalog:",
@@ -230,6 +231,7 @@
         "@executor-js/vite-plugin": "workspace:*",
         "@tailwindcss/vite": "catalog:",
         "@tanstack/router-plugin": "^1.167.12",
+        "@tanstack/virtual-file-routes": "^1.162.0",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@types/react-dom": "catalog:",
@@ -410,6 +412,7 @@
       "devDependencies": {
         "@tailwindcss/vite": "catalog:",
         "@tanstack/router-plugin": "^1.167.12",
+        "@tanstack/virtual-file-routes": "^1.162.0",
         "@types/react": "catalog:",
         "@types/react-dom": "catalog:",
         "@vitejs/plugin-react": "catalog:",

@@ -23,6 +23,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "routes:gen": "tsr generate",
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit",

@@ -9,87 +9,95 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as ToolsRouteImport } from './routes/tools'
-import { Route as SecretsRouteImport } from './routes/secrets'
-import { Route as PoliciesRouteImport } from './routes/policies'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as ResumeExecutionIdRouteImport } from './routes/resume.$executionId'
-import { Route as IntegrationsNamespaceRouteImport } from './routes/integrations.$namespace'
-import { Route as PluginsPluginIdSplatRouteImport } from './routes/plugins.$pluginId.$'
-import { Route as IntegrationsAddPluginKeyRouteImport } from './routes/integrations.add.$pluginKey'
+import { Route as DotDotDotDotDotDotReactSrcRoutesToolsRouteImport } from './../../react/src/routes/tools'
+import { Route as SecretsRouteImport } from './routes/app/secrets'
+import { Route as DotDotDotDotDotDotReactSrcRoutesPoliciesRouteImport } from './../../react/src/routes/policies'
+import { Route as DotDotDotDotDotDotReactSrcRoutesIndexRouteImport } from './../../react/src/routes/index'
+import { Route as DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRouteImport } from './../../react/src/routes/resume.$executionId'
+import { Route as DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRouteImport } from './../../react/src/routes/integrations.$namespace'
+import { Route as DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRouteImport } from './../../react/src/routes/plugins.$pluginId.$'
+import { Route as DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport } from './../../react/src/routes/integrations.add.$pluginKey'
 
-const ToolsRoute = ToolsRouteImport.update({
-  id: '/tools',
-  path: '/tools',
-  getParentRoute: () => rootRouteImport,
-} as any)
+const DotDotDotDotDotDotReactSrcRoutesToolsRoute =
+  DotDotDotDotDotDotReactSrcRoutesToolsRouteImport.update({
+    id: '/tools',
+    path: '/tools',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const SecretsRoute = SecretsRouteImport.update({
   id: '/secrets',
   path: '/secrets',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PoliciesRoute = PoliciesRouteImport.update({
-  id: '/policies',
-  path: '/policies',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ResumeExecutionIdRoute = ResumeExecutionIdRouteImport.update({
-  id: '/resume/$executionId',
-  path: '/resume/$executionId',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const IntegrationsNamespaceRoute = IntegrationsNamespaceRouteImport.update({
-  id: '/integrations/$namespace',
-  path: '/integrations/$namespace',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PluginsPluginIdSplatRoute = PluginsPluginIdSplatRouteImport.update({
-  id: '/plugins/$pluginId/$',
-  path: '/plugins/$pluginId/$',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const IntegrationsAddPluginKeyRoute =
-  IntegrationsAddPluginKeyRouteImport.update({
-    id: '/integrations/add/$pluginKey',
-    path: '/integrations/add/$pluginKey',
+const DotDotDotDotDotDotReactSrcRoutesPoliciesRoute =
+  DotDotDotDotDotDotReactSrcRoutesPoliciesRouteImport.update({
+    id: '/policies',
+    path: '/policies',
     getParentRoute: () => rootRouteImport,
   } as any)
+const DotDotDotDotDotDotReactSrcRoutesIndexRoute =
+  DotDotDotDotDotDotReactSrcRoutesIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute =
+  DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRouteImport.update({
+    id: '/resume/$executionId',
+    path: '/resume/$executionId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute =
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRouteImport.update({
+    id: '/integrations/$namespace',
+    path: '/integrations/$namespace',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute =
+  DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRouteImport.update({
+    id: '/plugins/$pluginId/$',
+    path: '/plugins/$pluginId/$',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute =
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport.update(
+    {
+      id: '/integrations/add/$pluginKey',
+      path: '/integrations/add/$pluginKey',
+      getParentRoute: () => rootRouteImport,
+    } as any,
+  )
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/policies': typeof PoliciesRoute
+  '/': typeof DotDotDotDotDotDotReactSrcRoutesIndexRoute
+  '/policies': typeof DotDotDotDotDotDotReactSrcRoutesPoliciesRoute
   '/secrets': typeof SecretsRoute
-  '/tools': typeof ToolsRoute
-  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
-  '/resume/$executionId': typeof ResumeExecutionIdRoute
-  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
-  '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
+  '/tools': typeof DotDotDotDotDotDotReactSrcRoutesToolsRoute
+  '/integrations/$namespace': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute
+  '/resume/$executionId': typeof DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute
+  '/integrations/add/$pluginKey': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute
+  '/plugins/$pluginId/$': typeof DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/policies': typeof PoliciesRoute
+  '/': typeof DotDotDotDotDotDotReactSrcRoutesIndexRoute
+  '/policies': typeof DotDotDotDotDotDotReactSrcRoutesPoliciesRoute
   '/secrets': typeof SecretsRoute
-  '/tools': typeof ToolsRoute
-  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
-  '/resume/$executionId': typeof ResumeExecutionIdRoute
-  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
-  '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
+  '/tools': typeof DotDotDotDotDotDotReactSrcRoutesToolsRoute
+  '/integrations/$namespace': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute
+  '/resume/$executionId': typeof DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute
+  '/integrations/add/$pluginKey': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute
+  '/plugins/$pluginId/$': typeof DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/policies': typeof PoliciesRoute
+  '/': typeof DotDotDotDotDotDotReactSrcRoutesIndexRoute
+  '/policies': typeof DotDotDotDotDotDotReactSrcRoutesPoliciesRoute
   '/secrets': typeof SecretsRoute
-  '/tools': typeof ToolsRoute
-  '/integrations/$namespace': typeof IntegrationsNamespaceRoute
-  '/resume/$executionId': typeof ResumeExecutionIdRoute
-  '/integrations/add/$pluginKey': typeof IntegrationsAddPluginKeyRoute
-  '/plugins/$pluginId/$': typeof PluginsPluginIdSplatRoute
+  '/tools': typeof DotDotDotDotDotDotReactSrcRoutesToolsRoute
+  '/integrations/$namespace': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute
+  '/resume/$executionId': typeof DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute
+  '/integrations/add/$pluginKey': typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute
+  '/plugins/$pluginId/$': typeof DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -125,14 +133,14 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  PoliciesRoute: typeof PoliciesRoute
+  DotDotDotDotDotDotReactSrcRoutesIndexRoute: typeof DotDotDotDotDotDotReactSrcRoutesIndexRoute
+  DotDotDotDotDotDotReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotReactSrcRoutesPoliciesRoute
   SecretsRoute: typeof SecretsRoute
-  ToolsRoute: typeof ToolsRoute
-  IntegrationsNamespaceRoute: typeof IntegrationsNamespaceRoute
-  ResumeExecutionIdRoute: typeof ResumeExecutionIdRoute
-  IntegrationsAddPluginKeyRoute: typeof IntegrationsAddPluginKeyRoute
-  PluginsPluginIdSplatRoute: typeof PluginsPluginIdSplatRoute
+  DotDotDotDotDotDotReactSrcRoutesToolsRoute: typeof DotDotDotDotDotDotReactSrcRoutesToolsRoute
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute: typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute
+  DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute: typeof DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute: typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute
+  DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute: typeof DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -141,7 +149,7 @@ declare module '@tanstack/react-router' {
       id: '/tools'
       path: '/tools'
       fullPath: '/tools'
-      preLoaderRoute: typeof ToolsRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesToolsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/secrets': {
@@ -155,56 +163,63 @@ declare module '@tanstack/react-router' {
       id: '/policies'
       path: '/policies'
       fullPath: '/policies'
-      preLoaderRoute: typeof PoliciesRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesPoliciesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
       id: '/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/resume/$executionId': {
       id: '/resume/$executionId'
       path: '/resume/$executionId'
       fullPath: '/resume/$executionId'
-      preLoaderRoute: typeof ResumeExecutionIdRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/integrations/$namespace': {
       id: '/integrations/$namespace'
       path: '/integrations/$namespace'
       fullPath: '/integrations/$namespace'
-      preLoaderRoute: typeof IntegrationsNamespaceRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/plugins/$pluginId/$': {
       id: '/plugins/$pluginId/$'
       path: '/plugins/$pluginId/$'
       fullPath: '/plugins/$pluginId/$'
-      preLoaderRoute: typeof PluginsPluginIdSplatRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/integrations/add/$pluginKey': {
       id: '/integrations/add/$pluginKey'
       path: '/integrations/add/$pluginKey'
       fullPath: '/integrations/add/$pluginKey'
-      preLoaderRoute: typeof IntegrationsAddPluginKeyRouteImport
+      preLoaderRoute: typeof DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  PoliciesRoute: PoliciesRoute,
+  DotDotDotDotDotDotReactSrcRoutesIndexRoute:
+    DotDotDotDotDotDotReactSrcRoutesIndexRoute,
+  DotDotDotDotDotDotReactSrcRoutesPoliciesRoute:
+    DotDotDotDotDotDotReactSrcRoutesPoliciesRoute,
   SecretsRoute: SecretsRoute,
-  ToolsRoute: ToolsRoute,
-  IntegrationsNamespaceRoute: IntegrationsNamespaceRoute,
-  ResumeExecutionIdRoute: ResumeExecutionIdRoute,
-  IntegrationsAddPluginKeyRoute: IntegrationsAddPluginKeyRoute,
-  PluginsPluginIdSplatRoute: PluginsPluginIdSplatRoute,
+  DotDotDotDotDotDotReactSrcRoutesToolsRoute:
+    DotDotDotDotDotDotReactSrcRoutesToolsRoute,
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute:
+    DotDotDotDotDotDotReactSrcRoutesIntegrationsDotnamespaceRoute,
+  DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute:
+    DotDotDotDotDotDotReactSrcRoutesResumeDotexecutionIdRoute,
+  DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute:
+    DotDotDotDotDotDotReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute,
+  DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute:
+    DotDotDotDotDotDotReactSrcRoutesPluginsDotpluginIdDotsplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
