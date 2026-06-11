@@ -24,8 +24,18 @@ export interface OpenCodeHome {
   ) => { accessToken?: string; refreshToken?: string; expiresAt?: number } | undefined;
 }
 
-/** A throwaway OpenCode installation configured with one remote MCP server. */
-export const makeOpenCodeHome = (serverName: string, mcpUrl: string): OpenCodeHome => {
+/** A throwaway OpenCode installation configured with one remote MCP server.
+ *
+ *  With `chatBrainUrl` set, the config also declares a `replay` provider
+ *  pointing OpenCode's LLM traffic at a local replay brain
+ *  (clients/replay-brain.ts) and selects it as the model — real agent,
+ *  scripted conversation. Tool permissions are pre-allowed so the recorded
+ *  TUI session flows without approval dialogs. */
+export const makeOpenCodeHome = (
+  serverName: string,
+  mcpUrl: string,
+  options?: { readonly chatBrainUrl?: string },
+): OpenCodeHome => {
   const root = mkdtempSync(join(tmpdir(), "e2e-opencode-"));
   const projectDir = join(root, "project");
   const dataDir = join(root, "data");
@@ -38,6 +48,22 @@ export const makeOpenCodeHome = (serverName: string, mcpUrl: string): OpenCodeHo
     JSON.stringify({
       $schema: "https://opencode.ai/config.json",
       mcp: { [serverName]: { type: "remote", url: mcpUrl } },
+      ...(options?.chatBrainUrl
+        ? {
+            autoupdate: false,
+            share: "disabled",
+            model: "replay/replay-model",
+            permission: { "*": "allow" },
+            provider: {
+              replay: {
+                name: "Replay",
+                npm: "@ai-sdk/openai-compatible",
+                options: { baseURL: options.chatBrainUrl, apiKey: "replay-key" },
+                models: { "replay-model": { name: "Replay Model" } },
+              },
+            },
+          }
+        : {}),
     }),
   );
   // OpenCode launches the OAuth URL via `open`; the shim records it instead.
