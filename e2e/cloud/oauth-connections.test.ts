@@ -137,7 +137,7 @@ scenario(
           authenticationTemplate: [
             {
               slug: "oauth",
-              type: "oauth",
+              kind: "oauth2",
               authorizationUrl: oauth.authorizationEndpoint,
               tokenUrl: oauth.tokenEndpoint,
               scopes: ["read"],
