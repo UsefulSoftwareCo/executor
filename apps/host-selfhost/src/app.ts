@@ -5,6 +5,7 @@ import { Layer } from "effect";
 import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
 
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
+import { runSqliteOpenApiOutputSchemaMigration } from "@executor-js/plugin-openapi";
 
 import { resolveAuthProviders } from "./auth";
 import { authConfigTransforms } from "./db/auth-config-migration";
@@ -61,6 +62,11 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // into the shared placements model. Idempotent — a no-op once every row is
   // canonical (same defensive-at-boot pattern as the column adds above).
   await runSqliteAuthConfigMigration(dbHandle.client, authConfigTransforms);
+
+  // One-off data migration: unwrap the retired {status, headers, data}
+  // transport envelope from persisted openapi tool output schemas (mirrors
+  // cloud's drizzle 0002). Idempotent — payload-shaped rows don't match.
+  await runSqliteOpenApiOutputSchemaMigration(dbHandle.client);
 
   // ---- auth providers ---------------------------------------------------
   // Better Auth: cookie/bearer/api-key identity + /api/auth handler + account

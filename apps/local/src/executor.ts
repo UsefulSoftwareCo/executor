@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 
 import { Subject, Tenant, createExecutor, type AnyPlugin, type Executor } from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
+import { runSqliteOpenApiOutputSchemaMigration } from "@executor-js/plugin-openapi";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
 
@@ -174,6 +175,16 @@ const createLocalExecutorLayer = () => {
       // Idempotent — a no-op once every row is canonical.
       yield* Effect.tryPromise({
         try: () => runSqliteAuthConfigMigration(sqlite.client, authConfigTransforms),
+        catch: (cause) =>
+          new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
+      });
+
+      // One-off data migration: unwrap the retired {status, headers, data}
+      // transport envelope from persisted openapi tool output schemas
+      // (mirrors cloud's drizzle 0002). Idempotent — payload-shaped rows
+      // don't match the envelope signature.
+      yield* Effect.tryPromise({
+        try: () => runSqliteOpenApiOutputSchemaMigration(sqlite.client),
         catch: (cause) =>
           new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
       });
