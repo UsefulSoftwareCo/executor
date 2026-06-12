@@ -3,11 +3,13 @@
 ## Fresh Checkout / Worktree Setup
 
 Run `bun run bootstrap` first in any fresh checkout or worktree. It is
-idempotent: inits the vendor submodules (`vendor/emulate`, `vendor/mcporter` —
-the e2e suite needs both), runs `bun install` (whose prepare hook builds the
-internal packages dev servers fail without), and installs Playwright chromium.
+idempotent: runs `bun install` (whose prepare hook builds the internal
+packages dev servers fail without) and installs Playwright chromium.
 Skipping it is why fresh worktrees die with "Failed to resolve entry for
-package '@executor-js/vite-plugin'".
+package '@executor-js/vite-plugin'". The `vendor/` submodules are NOT
+needed — nothing imports from `vendor/` at runtime; those forks are consumed
+from npm (see `vendor/README.md`). `bun run bootstrap --forks` inits them
+only when you're deliberately developing a fork.
 
 ## Environment Gotchas (learned the hard way)
 

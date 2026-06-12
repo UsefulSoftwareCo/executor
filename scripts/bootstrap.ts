@@ -1,7 +1,12 @@
-// One-command setup for a fresh checkout or agent worktree: submodules,
-// dependencies (whose prepare hook builds the internal packages dev servers
-// need), and the Playwright browser the e2e suite drives. Idempotent and
-// safe to re-run; each step prints what it is doing.
+// One-command setup for a fresh checkout or agent worktree: dependencies
+// (whose prepare hook builds the internal packages dev servers need) and the
+// Playwright browser the e2e suite drives. Idempotent and safe to re-run;
+// each step prints what it is doing.
+//
+// The vendor/ submodules are intentionally NOT initialized: nothing imports
+// from vendor/ at runtime — those forks are consumed as published npm
+// packages (see vendor/README.md). Pass --forks only when deliberately
+// developing a fork.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,7 +19,9 @@ const run = (label: string, cmd: string, args: ReadonlyArray<string>) => {
   execFileSync(cmd, [...args], { cwd: repoRoot, stdio: "inherit" });
 };
 
-run("vendor submodules", "git", ["submodule", "update", "--init", "--recursive"]);
+if (process.argv.includes("--forks")) {
+  run("vendor fork submodules", "git", ["submodule", "update", "--init", "--recursive"]);
+}
 
 // `bun install` runs the workspace prepare hook, which builds
 // @executor-js/vite-plugin and @executor-js/react — the two artifacts the
