@@ -29,6 +29,7 @@ import { CopyButton } from "./copy-button";
 import { ChevronRight, ChevronDownIcon } from "lucide-react";
 import { cn } from "../lib/utils";
 import { toPolicyPattern } from "../lib/policy-pattern";
+import { trackEvent } from "../api/analytics";
 import {
   POLICY_ACTION_LABEL,
   POLICY_ACTIONS_IN_ORDER,
@@ -223,7 +224,17 @@ export function ToolDetail(props: {
           )}
           <div className="mt-1 flex items-center gap-2">
             <h3 className="text-base font-semibold text-foreground truncate">{displayName}</h3>
-            <CopyButton value={String(props.address)} label="Copy tool ID" />
+            <CopyButton
+              value={String(props.address)}
+              label="Copy tool ID"
+              onCopy={() => {
+                const nameParts = props.toolName.split(".");
+                trackEvent("tool_id_copied", {
+                  integration_slug: nameParts[0] ?? props.toolName,
+                  tool_name: nameParts.slice(1).join(".") || props.toolName,
+                });
+              }}
+            />
             <PolicyBadgeMenu
               toolName={props.toolName}
               policy={props.policy}

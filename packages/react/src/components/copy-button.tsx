@@ -7,16 +7,20 @@ function CopyButton({
   value,
   label,
   className,
+  onCopy,
 }: {
   value: string;
   label?: string;
   className?: string;
+  /** Fires after a successful copy. Receives nothing — the copied value may be sensitive. */
+  onCopy?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
     void navigator.clipboard.writeText(value).then(() => {
       setCopied(true);
+      onCopy?.();
       setTimeout(() => setCopied(false), 1500);
     });
   };

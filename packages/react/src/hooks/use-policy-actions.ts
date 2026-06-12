@@ -11,6 +11,7 @@ import {
   updatePolicyOptimistic,
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
+import { trackEvent } from "../api/analytics";
 
 // Specificity score for ordering. Higher = more specific = should sit at a
 // lower position-key (higher precedence). New rules are auto-placed below
@@ -107,6 +108,7 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
 
   const set = useCallback(
     async (pattern: string, action: ToolPolicyAction) => {
+      const patternKind = pattern.endsWith(".*") ? "group" : "exact";
       const existing = findExact(pattern);
       if (existing) {
         if (existing.action === action) return;
@@ -115,6 +117,7 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
           payload: { owner, action },
           reactivityKeys: policyWriteKeys,
         });
+        trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
         return;
       }
       const position = computePosition(pattern);
@@ -125,6 +128,7 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
             : { owner, pattern, action, position },
         reactivityKeys: policyWriteKeys,
       });
+      trackEvent("tool_policy_set", { action, pattern_kind: patternKind, owner });
     },
     [owner, doCreate, doUpdate, findExact, computePosition],
   );
@@ -137,6 +141,10 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
         params: { policyId: PolicyId.make(existing.id) },
         payload: { owner },
         reactivityKeys: policyWriteKeys,
+      });
+      trackEvent("tool_policy_cleared", {
+        pattern_kind: pattern.endsWith(".*") ? "group" : "exact",
+        owner,
       });
     },
     [owner, doRemove, findExact],

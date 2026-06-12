@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { trackEvent } from "../api/analytics";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
 import OpenCodeIcon from "@lobehub/icons/es/OpenCode/components/Mono";
@@ -179,7 +180,11 @@ export function McpInstallCard(props: { className?: string }) {
           <NativeSelect
             size="sm"
             value={elicitationMode}
-            onChange={(event) => setHttpElicitationMode(event.target.value as McpElicitationMode)}
+            onChange={(event) => {
+              const next = event.target.value as McpElicitationMode;
+              setHttpElicitationMode(next);
+              trackEvent("mcp_install_elicitation_mode_changed", { elicitation_mode: next });
+            }}
             aria-label="Elicitation mode"
             className="min-w-44"
           >
@@ -241,7 +246,17 @@ export function McpInstallCard(props: { className?: string }) {
   const body = (
     <CardStackContent>
       <div className="px-4 pt-1 pb-3">
-        <CodeBlock code={command} lang="bash" />
+        <CodeBlock
+          code={command}
+          lang="bash"
+          onCopy={() =>
+            trackEvent("mcp_install_command_copied", {
+              transport: mode,
+              elicitation_mode: elicitationMode,
+              surface: "integrations",
+            })
+          }
+        />
         {advancedControls && <div className="mt-3">{advancedControls}</div>}
       </div>
       <div className="flex items-center px-4 py-3">{agentLogos}</div>
@@ -251,7 +266,14 @@ export function McpInstallCard(props: { className?: string }) {
   return (
     <CardStack className={props.className}>
       {showStdio ? (
-        <Tabs value={mode} onValueChange={(v) => setMode(v as TransportMode)}>
+        <Tabs
+          value={mode}
+          onValueChange={(v) => {
+            const next = v as TransportMode;
+            setMode(next);
+            trackEvent("mcp_install_transport_switched", { transport: next });
+          }}
+        >
           {header}
           <TabsContent value="http">{body}</TabsContent>
           <TabsContent value="stdio">{body}</TabsContent>

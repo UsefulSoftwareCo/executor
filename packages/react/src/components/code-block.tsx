@@ -87,8 +87,10 @@ export function CodeBlock(props: {
   maxHeight?: string;
   className?: string;
   theme?: ShikiThemeProp;
+  /** Fires after a successful copy. Receives nothing — the code may be sensitive. */
+  onCopy?: () => void;
 }) {
-  const { code, lang: langHint, title, className, theme } = props;
+  const { code, lang: langHint, title, className, theme, onCopy } = props;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -102,9 +104,10 @@ export function CodeBlock(props: {
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(code).then(() => {
       setCopied(true);
+      onCopy?.();
       setTimeout(() => setCopied(false), 1500);
     });
-  }, [code]);
+  }, [code, onCopy]);
 
   return (
     <div className={cn("rounded-lg border border-border bg-card/60 overflow-hidden", className)}>

@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { PlusIcon } from "lucide-react";
+import { trackEvent } from "../api/analytics";
 import type { Integration } from "@executor-js/sdk/shared";
 import { IntegrationFavicon, integrationPresetIconUrl } from "./integration-favicon";
 import { integrationsOptimisticAtom } from "../api/atoms";
@@ -92,6 +93,7 @@ export function CommandPalette() {
   const goToIntegration = useCallback(
     (id: string) => {
       close();
+      trackEvent("command_palette_navigated", { kind: "integration", plugin_key: id });
       void navigate({ to: "/integrations/$namespace", params: { namespace: id } });
     },
     [close, navigate],
@@ -100,6 +102,8 @@ export function CommandPalette() {
   const goToAdd = useCallback(
     (pluginKey: string) => {
       close();
+      trackEvent("command_palette_navigated", { kind: "add_integration", plugin_key: pluginKey });
+      trackEvent("integration_add_started", { plugin_key: pluginKey, via: "command_palette" });
       void navigate({
         to: "/integrations/add/$pluginKey",
         params: { pluginKey },
@@ -111,6 +115,12 @@ export function CommandPalette() {
   const goToPreset = useCallback(
     (pluginKey: string, presetId: string, presetUrl?: string) => {
       close();
+      trackEvent("command_palette_navigated", { kind: "preset", plugin_key: pluginKey });
+      trackEvent("integration_add_started", {
+        plugin_key: pluginKey,
+        via: "command_palette",
+        preset_id: presetId,
+      });
       const search: Record<string, string> = { preset: presetId };
       if (presetUrl) search.url = presetUrl;
       void navigate({

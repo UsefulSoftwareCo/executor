@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 import { cancelOAuth, oauthConnectionCompleted, startOAuth } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { messageFromExit, messageFromUnknown, useReportHandledError } from "../api/error-reporting";
 import {
   openOAuthPopup,
@@ -166,6 +167,7 @@ export function useOAuthPopupFlow<
       const reservedPopup = desktopBridge ? null : reserveOAuthPopup({ popupName });
       if (!desktopBridge && !reservedPopup) {
         const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
+        trackEvent("oauth_popup_blocked");
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -213,6 +215,7 @@ export function useOAuthPopupFlow<
         sessionRef.current = null;
 
         if (!result.ok) {
+          trackEvent("oauth_completed", { success: false });
           setBusy(false);
           setError(result.error);
           input.onError?.(result.error, result.errorDetails);
@@ -230,6 +233,7 @@ export function useOAuthPopupFlow<
             message,
             metadata: input.reportMetadata,
           });
+          trackEvent("oauth_completed", { success: false });
           setBusy(false);
           setError(message);
           input.onError?.(message);
@@ -248,11 +252,13 @@ export function useOAuthPopupFlow<
             message,
             metadata: input.reportMetadata,
           });
+          trackEvent("oauth_completed", { success: false });
           setBusy(false);
           setError(message);
           input.onError?.(message);
           return;
         }
+        trackEvent("oauth_completed", { success: true });
         setBusy(false);
       };
       const handleClosed = () => {
@@ -263,6 +269,7 @@ export function useOAuthPopupFlow<
         // callback or TTL cleanup; only explicit cancel deletes the session.
         const message =
           popupClosedMessage ?? "Sign-in cancelled - popup was closed before completing the flow.";
+        trackEvent("oauth_completed", { success: false });
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -272,6 +279,7 @@ export function useOAuthPopupFlow<
         sessionRef.current = null;
         cancelSession(response.state);
         const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
+        trackEvent("oauth_completed", { success: false });
         setBusy(false);
         setError(message);
         input.onError?.(message);

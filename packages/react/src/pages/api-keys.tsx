@@ -4,6 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { toast } from "sonner";
 import { apiKeyWriteKeys } from "../api/reactivity-keys";
+import { trackEvent } from "../api/analytics";
 import { apiKeysAtom, createApiKey, revokeApiKey } from "../api/account-atoms";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
@@ -71,6 +72,7 @@ export function ApiKeysPage() {
     setCreating(true);
     const exit = await doCreate({ payload: { name: trimmed }, reactivityKeys: apiKeyWriteKeys });
     setCreating(false);
+    trackEvent("api_key_created", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       setCreatedKey(exit.value);
       setName("");
@@ -84,6 +86,7 @@ export function ApiKeysPage() {
     setRevokingId(key.id);
     const exit = await doRevoke({ params: { apiKeyId: key.id }, reactivityKeys: apiKeyWriteKeys });
     setRevokingId(null);
+    trackEvent("api_key_revoked", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       toast.success(`Revoked ${key.name}`);
       return;
@@ -212,7 +215,10 @@ export function ApiKeysPage() {
                     className="font-mono text-xs"
                     data-ph-mask
                   />
-                  <CopyButton value={createdKey.value} />
+                  <CopyButton
+                    value={createdKey.value}
+                    onCopy={() => trackEvent("api_key_copied", { kind: "value" })}
+                  />
                 </div>
               </div>
               <div className="grid gap-1.5">
@@ -224,7 +230,10 @@ export function ApiKeysPage() {
                     className="font-mono text-xs"
                     data-ph-mask
                   />
-                  <CopyButton value={`Authorization: Bearer ${createdKey.value}`} />
+                  <CopyButton
+                    value={`Authorization: Bearer ${createdKey.value}`}
+                    onCopy={() => trackEvent("api_key_copied", { kind: "bearer_header" })}
+                  />
                 </div>
               </div>
               <p className="text-sm leading-6 text-muted-foreground">

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, MoreHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
 import type { EffectivePolicy, Owner, ToolPolicyAction } from "@executor-js/sdk/shared";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
+import { trackEvent } from "../api/analytics";
 import { toPolicyPattern } from "../lib/policy-pattern";
 import { Badge } from "./badge";
 import { Button } from "./button";
@@ -498,7 +499,14 @@ function ToolTreeBody(props: {
             tool={row.tool}
             depth={row.depth}
             active={row.tool.id === selectedToolId}
-            onSelect={() => onSelect(row.tool.id)}
+            onSelect={() => {
+              const nameParts = row.tool.name.split(".");
+              trackEvent("tool_selected", {
+                integration_slug: nameParts[0] ?? row.tool.name,
+                tool_name: nameParts.slice(1).join(".") || row.tool.name,
+              });
+              onSelect(row.tool.id);
+            }}
             search={search}
             onSetPolicy={onSetPolicy}
             onClearPolicy={onClearPolicy}

@@ -1,4 +1,5 @@
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../auth/api";
 import { OrgMenuSlot } from "./components/org-menu-slot";
 import { SupportSlot } from "./components/support-slot";
@@ -22,6 +23,7 @@ const navItems = [
 
 const signOut = async () => {
   await fetch(AUTH_PATHS.logout, { method: "POST" });
+  trackEvent("signed_out");
   window.location.href = "/";
 };
 

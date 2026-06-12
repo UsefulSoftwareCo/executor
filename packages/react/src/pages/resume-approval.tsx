@@ -6,6 +6,7 @@ import { Check, ExternalLink, Loader2, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { pausedExecutionAtom, resumeExecution } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
 import { type ElicitationAction, useElicitationApproval } from "../components/elicitation-approval";
@@ -173,6 +174,12 @@ export function ResumeApprovalPageView(props: {
       const exit = await resume(currentExecutionId, action, content);
 
       if (Exit.isFailure(exit)) {
+        trackEvent("resume_approval_submitted", {
+          action,
+          ...(interaction?.kind != null ? { interaction_kind: interaction.kind } : {}),
+          chained_to_next: false,
+          success: false,
+        });
         setStatus({ state: "failed", message: failureMessage(exit) });
         return;
       }
@@ -180,6 +187,12 @@ export function ResumeApprovalPageView(props: {
       if (exit.value.status === "paused") {
         const nextExecutionId = executionIdFromStructured(exit.value.structured);
         if (!nextExecutionId) {
+          trackEvent("resume_approval_submitted", {
+            action,
+            ...(interaction?.kind != null ? { interaction_kind: interaction.kind } : {}),
+            chained_to_next: false,
+            success: false,
+          });
           setStatus({
             state: "failed",
             message: "The next paused execution did not include an id.",
@@ -187,19 +200,31 @@ export function ResumeApprovalPageView(props: {
           return;
         }
 
+        trackEvent("resume_approval_submitted", {
+          action,
+          ...(interaction?.kind != null ? { interaction_kind: interaction.kind } : {}),
+          chained_to_next: true,
+          success: true,
+        });
         setCurrentExecutionId(nextExecutionId);
         setNextPaused({ text: exit.value.text, structured: exit.value.structured });
         setStatus({ state: "idle" });
         return;
       }
 
+      trackEvent("resume_approval_submitted", {
+        action,
+        ...(interaction?.kind != null ? { interaction_kind: interaction.kind } : {}),
+        chained_to_next: false,
+        success: true,
+      });
       setStatus({
         state: "done",
         action,
         text: exit.value.text || "The paused execution has been resumed.",
       });
     },
-    [approval, currentExecutionId, resume],
+    [approval, currentExecutionId, interaction, resume],
   );
 
   const busy = status.state === "submitting";
@@ -276,6 +301,7 @@ export function ResumeApprovalPageView(props: {
               value={returnPrompt[status.action]}
               label="Copy prompt"
               className="h-9 px-4"
+              onCopy={() => trackEvent("resume_return_prompt_copied", { action: status.action })}
             />
           ) : (
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { trackEvent } from "../api/analytics";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -52,6 +53,10 @@ export function AddIntegrationPage(props: {
             initialPreset={preset}
             initialNamespace={namespace}
             onComplete={(slug?: string) => {
+              trackEvent("integration_added", {
+                plugin_key: pluginKey,
+                ...(slug ? { integration_slug: slug } : {}),
+              });
               void navigate(
                 slug
                   ? { to: "/integrations/$namespace", params: { namespace: slug } }
@@ -59,6 +64,7 @@ export function AddIntegrationPage(props: {
               );
             }}
             onCancel={() => {
+              trackEvent("integration_add_cancelled", { plugin_key: pluginKey });
               void navigate({ to: "/" });
             }}
           />

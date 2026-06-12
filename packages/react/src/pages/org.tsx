@@ -3,6 +3,7 @@ import { Exit, Match } from "effect";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { toast } from "sonner";
+import { trackEvent } from "../api/analytics";
 import { orgMemberWriteKeys, orgInfoWriteKeys } from "../api/reactivity-keys";
 import {
   Dialog,
@@ -144,6 +145,7 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
       params: { membershipId },
       reactivityKeys: orgMemberWriteKeys,
     });
+    trackEvent("org_member_removed", { success: Exit.isSuccess(exit) });
     toast[Exit.isSuccess(exit) ? "success" : "error"](
       Exit.isSuccess(exit) ? `Removed ${name}` : "Failed to remove member",
     );
@@ -155,6 +157,7 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
       payload: { roleSlug },
       reactivityKeys: orgMemberWriteKeys,
     });
+    trackEvent("org_member_role_changed", { role: roleSlug, success: Exit.isSuccess(exit) });
     toast[Exit.isSuccess(exit) ? "success" : "error"](
       Exit.isSuccess(exit) ? `Role changed to ${roleName}` : "Failed to change role",
     );
@@ -171,6 +174,7 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
       payload: { name: trimmed },
       reactivityKeys: orgInfoWriteKeys,
     });
+    trackEvent("org_renamed", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       toast.success("Organization name updated");
     } else {
@@ -397,6 +401,7 @@ function InviteDialog(props: {
       },
       reactivityKeys: orgMemberWriteKeys,
     });
+    trackEvent("org_member_invited", { role: state.roleSlug, success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       toast.success(`Invitation sent to ${state.email.trim()}`);
       dispatch({ type: "reset" });
