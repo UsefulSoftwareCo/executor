@@ -414,18 +414,18 @@ const introspectHeadersForConnection = (
   return { headers, queryParams };
 };
 
-/** Resolve a config's introspection snapshot text: legacy rows inline it in
- *  `introspectionJson`; new rows point at the plugin blob store via
- *  `introspectionHash`. Null when the integration has no snapshot (live
- *  introspection territory). */
+/** Resolve a config's introspection snapshot text from the plugin blob store
+ *  (`introspectionHash`). Null when the integration has no snapshot (live
+ *  introspection territory). Pre-blob rows that inlined the JSON are
+ *  rewritten by the introspection-to-blob migrations before this code reads
+ *  them. */
 const loadIntrospectionJson = (
   storage: GraphqlStore,
   config: GraphqlIntegrationConfig,
-): Effect.Effect<string | null, StorageFailure> => {
-  if (config.introspectionJson != null) return Effect.succeed(config.introspectionJson);
-  if (config.introspectionHash != null) return storage.getIntrospection(config.introspectionHash);
-  return Effect.succeed(null);
-};
+): Effect.Effect<string | null, StorageFailure> =>
+  config.introspectionHash != null
+    ? storage.getIntrospection(config.introspectionHash)
+    : Effect.succeed(null);
 
 /** Introspect a config live or from its stored snapshot, applying connection
  *  auth. A non-null `introspectionJson` (loaded via `loadIntrospectionJson`)
@@ -558,9 +558,6 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
     GraphqlIntegrationConfig.make({
       endpoint: input.endpoint,
       name: input.name?.trim() || slugFromEndpoint(input.endpoint),
-      ...(input.introspectionJson !== undefined
-        ? { introspectionJson: input.introspectionJson }
-        : {}),
       ...(input.headers !== undefined ? { headers: input.headers } : {}),
       ...(input.queryParams !== undefined ? { queryParams: input.queryParams } : {}),
       authenticationTemplate: input.authenticationTemplate
@@ -602,7 +599,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
       // their operation bindings) are produced lazily when a connection is
       // created (`resolveTools`) / a tool is first invoked (`invokeTool`),
       // using that connection's credential.
-      if (baseConfig.introspectionJson === undefined) {
+      if (input.introspectionJson === undefined) {
         yield* ctx.transaction(
           ctx.core.integrations.register({
             slug,
@@ -617,7 +614,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
 
       // Pre-supplied introspection JSON: parse it offline (no network) and
       // persist the operation bindings + snapshot so production stays offline.
-      const introspection = yield* parseIntrospectionJson(baseConfig.introspectionJson);
+      const introspection = yield* parseIntrospectionJson(input.introspectionJson);
       const { result } = yield* extract(introspection);
       const prepared = prepareOperations(result.fields, introspection);
 
@@ -629,9 +626,8 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
       // carries only its hash.
       const snapshotJson = JSON.stringify({ data: introspection });
       const introspectionHash = yield* sha256Hex(snapshotJson);
-      const { introspectionJson: _inline, ...withoutInline } = baseConfig;
       const config = GraphqlIntegrationConfig.make({
-        ...withoutInline,
+        ...baseConfig,
         introspectionHash,
       });
 
@@ -677,9 +673,6 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
       const next = GraphqlIntegrationConfig.make({
         endpoint: input.endpoint ?? current.endpoint,
         name: input.name?.trim() || current.name,
-        ...(current.introspectionJson !== undefined
-          ? { introspectionJson: current.introspectionJson }
-          : {}),
         ...(current.introspectionHash !== undefined
           ? { introspectionHash: current.introspectionHash }
           : {}),

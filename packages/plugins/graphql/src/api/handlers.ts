@@ -66,7 +66,6 @@ export const GraphqlHandlers = HttpApiBuilder.group(ExecutorApiWithGraphql, "gra
             ? {
                 endpoint: config.endpoint,
                 name: config.name,
-                introspectionJson: config.introspectionJson,
                 headers: config.headers ? { ...config.headers } : undefined,
                 queryParams: config.queryParams ? { ...config.queryParams } : undefined,
                 authenticationTemplate: [...config.authenticationTemplate],

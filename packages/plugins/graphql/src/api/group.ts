@@ -45,12 +45,13 @@ const AddIntegrationResponse = Schema.Struct({
   name: Schema.String,
 });
 
-// The full opaque integration config, surfaced for the configure UX. Carries
-// the `authenticationTemplate` the configure / custom-method flow reads/writes.
+// The integration config surfaced for the configure UX. Carries the
+// `authenticationTemplate` the configure / custom-method flow reads/writes.
+// The introspection snapshot is deliberately NOT served: it's a multi-MB
+// build artifact in the plugin blob store, and no client reads it.
 const GraphqlConfigView = Schema.Struct({
   endpoint: Schema.String,
   name: Schema.String,
-  introspectionJson: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   authenticationTemplate: Schema.Array(GraphqlAuthMethod),

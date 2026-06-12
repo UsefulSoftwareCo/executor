@@ -542,19 +542,15 @@ export const describeOpenApiIntegrationDisplay = (
 
 // ---------------------------------------------------------------------------
 // Spec text resolution — the stored config carries the spec's content hash
-// (`specHash` → blob `spec/<hash>`); legacy rows still inline the text in
-// `spec`. Every reader goes through this loader so both shapes work until the
-// inline rows are backfilled.
+// (`specHash` → blob `spec/<hash>`). Pre-blob rows that inlined the text are
+// rewritten by the spec-to-blob migrations before this code reads them.
 // ---------------------------------------------------------------------------
 
 const loadSpecText = (
   storage: OpenapiStore,
   config: OpenApiIntegrationConfig,
-): Effect.Effect<string | null, StorageFailure> => {
-  if (config.spec != null) return Effect.succeed(config.spec);
-  if (config.specHash != null) return storage.getSpec(config.specHash);
-  return Effect.succeed(null);
-};
+): Effect.Effect<string | null, StorageFailure> =>
+  config.specHash != null ? storage.getSpec(config.specHash) : Effect.succeed(null);
 
 // ---------------------------------------------------------------------------
 // Spec → tool definitions (shared by addSpec, resolveTools, and detect)

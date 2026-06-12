@@ -15,13 +15,16 @@ import type { Authentication } from "./types";
 //
 // In v2 there are NO credential bindings, NO per-source secret slots, and NO
 // StoredSource credential config. The config carries only:
-//   - the content hash of the spec blob (legacy rows inline the text instead)
-//     and/or the source URL to (re)fetch from,
+//   - the content hash of the spec blob and/or the source URL to (re)fetch
+//     from,
 //   - the optional base URL override,
 //   - the auth templates a connection's value is rendered through.
 // The resolved spec text itself lives in the plugin blob store, keyed
 // `spec/<specHash>` — it's a build input for resolveTools/refresh, not data
-// any list/invoke path should pay to load.
+// any list/invoke path should pay to load. Rows that predate the blob store
+// (inline `spec` text) are rewritten before this schema sees them: cloud by
+// the out-of-band migrate-specs-to-blobs script, the libSQL hosts by the
+// boot-time ledger migration.
 // ---------------------------------------------------------------------------
 
 const OAuthAuthenticationSchema = Schema.Struct({
@@ -35,10 +38,6 @@ const OAuthAuthenticationSchema = Schema.Struct({
 export const AuthenticationSchema = Schema.Union([OAuthAuthenticationSchema, ApiKeyAuthMethod]);
 
 export const OpenApiIntegrationConfigSchema = Schema.Struct({
-  /** Inlined OpenAPI document text. Legacy rows only: new registrations store
-   *  the resolved text in the plugin blob store and carry `specHash` instead,
-   *  so multi-MB documents never ride along on catalog reads. */
-  spec: Schema.optional(Schema.String),
   /** Hex SHA-256 of the resolved spec text — the content address of the spec
    *  blob (`spec/<hash>` in the plugin blob store). */
   specHash: Schema.optional(Schema.String),

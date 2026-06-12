@@ -85,7 +85,7 @@ describe("OpenAPI plugin — spec blob storage", () => {
         });
 
         const config = yield* executor.openapi.getConfig("blob_api");
-        expect(config?.spec).toBeUndefined();
+        expect(Object.keys(config ?? {})).not.toContain("spec");
         expect(config?.specHash).toBe(yield* sha256Hex(text));
       }),
     ),
@@ -126,41 +126,50 @@ describe("OpenAPI plugin — spec blob storage", () => {
     ),
   );
 
-  it.effect("resolveTools still derives tools from a legacy inline-spec config", () =>
+  it.effect("resolveTools reads the spec from the store, never an inline field", () =>
     Effect.gen(function* () {
       const plugin = openApiPlugin({ httpClientLayer: FetchHttpClient.layer });
-      // A legacy row inlines the spec; the loader must never touch the store.
+      const text = specText();
+      const hash = yield* sha256Hex(text);
       const storage: OpenapiStore = {
         putOperations: () => Effect.void,
         getOperation: () => Effect.succeed(null),
         listOperations: () => Effect.succeed([]),
         removeOperations: () => Effect.void,
         putSpec: () => Effect.void,
-        getSpec: () => Effect.succeed(null),
+        getSpec: (specHash) => Effect.succeed(specHash === hash ? text : null),
       };
 
-      const result = yield* plugin.resolveTools!({
-        integration: {
-          slug: IntegrationSlug.make("legacy_api"),
-          description: "legacy",
-          kind: "openapi",
-          canRemove: true,
-          canRefresh: false,
-          authMethods: [],
-        },
-        config: { spec: specText() } as IntegrationConfig,
-        connection: {
-          owner: "org",
-          integration: IntegrationSlug.make("legacy_api"),
-          name: ConnectionName.make("main"),
-        },
-        template: null,
-        storage,
-        getValue: () => Effect.succeed(null),
-        getValues: () => Effect.succeed({}),
-      });
+      const resolve = (config: IntegrationConfig) =>
+        plugin.resolveTools!({
+          integration: {
+            slug: IntegrationSlug.make("pointer_api"),
+            description: "pointer",
+            kind: "openapi",
+            canRemove: true,
+            canRefresh: false,
+            authMethods: [],
+          },
+          config,
+          connection: {
+            owner: "org",
+            integration: IntegrationSlug.make("pointer_api"),
+            name: ConnectionName.make("main"),
+          },
+          template: null,
+          storage,
+          getValue: () => Effect.succeed(null),
+          getValues: () => Effect.succeed({}),
+        });
 
-      expect(result.tools.map((tool) => String(tool.name))).toContain("items.echoHeaders");
+      const fromPointer = yield* resolve({ specHash: hash } as IntegrationConfig);
+      expect(fromPointer.tools.map((tool) => String(tool.name))).toContain("items.echoHeaders");
+
+      // A pre-migration row that still inlines `spec` yields no tools: the
+      // spec-to-blob migrations rewrite those rows before this code runs, so
+      // the runtime carries no inline-read path.
+      const fromInline = yield* resolve({ spec: text } as IntegrationConfig);
+      expect(fromInline.tools).toHaveLength(0);
     }),
   );
 
