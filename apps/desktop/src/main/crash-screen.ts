@@ -45,6 +45,8 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
       }
       button.secondary { background: transparent; color: #fafafa; border-color: #3f3f46; }
       #status { margin-top: 1.25rem; min-height: 1.2em; font-size: 0.8rem; color: #a1a1aa; }
+      .reset-row { margin-top: 1.75rem; font-size: 0.75rem; color: #71717a; }
+      .reset-row a { color: #f87171; text-decoration: underline; cursor: pointer; }
     </style>
   </head>
   <body>
@@ -61,6 +63,11 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
         <button id="export" class="secondary">Export diagnostics</button>
       </div>
       <p id="status"></p>
+      <p class="reset-row">
+        Keeps crashing?
+        <a id="reset" href="#">Reset data</a>
+        — your current data is backed up first, never deleted.
+      </p>
     </main>
     <script>
       const status = document.getElementById("status");
@@ -90,6 +97,18 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
           status.textContent = "Diagnostics saved to Downloads.";
         } catch {
           status.textContent = "Export failed \\u2014 see the log file.";
+        }
+      });
+      document.getElementById("reset").addEventListener("click", async (event) => {
+        event.preventDefault();
+        try {
+          // Native confirm runs in main; on accept, state is backed up and
+          // the server restarts (window reloads on success). false = cancel.
+          const didReset = await window.executor.resetState();
+          if (!didReset) return;
+          status.textContent = "";
+        } catch {
+          status.textContent = "Reset failed \\u2014 see the log file.";
         }
       });
     </script>

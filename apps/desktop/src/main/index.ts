@@ -33,6 +33,7 @@ import {
   reportAProblem,
 } from "./diagnostics";
 import { sidecarCrashHtml } from "./crash-screen";
+import { confirmResetState, resetExecutorState } from "./reset-state";
 import {
   getServerProfiles,
   getServerSettings,
@@ -333,6 +334,19 @@ const registerIpcHandlers = () => {
   // fixed upstream. Reuses the menu flow — staged updates prompt to install,
   // "no updates" / failures surface in their own dialogs.
   ipcMain.handle("executor:updates:check", () => runUpdateCheck({ alertOnFail: true }));
+  // Crash-screen last resort for damaged state: confirm, move the data dir
+  // aside (never delete), then restart the sidecar against the fresh dir.
+  // Returns false when the user cancelled.
+  ipcMain.handle("executor:state:reset", async (): Promise<boolean> => {
+    if (!(await confirmResetState())) return false;
+    if (connection) {
+      await stopSidecar(connection.child);
+      connection = null;
+    }
+    resetExecutorState();
+    await restartSidecarAndReload();
+    return true;
+  });
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
@@ -475,13 +489,23 @@ const handleFatalSidecarFailure = async (error: unknown) => {
   }
   // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: sidecar startup failures arrive as plain Node errors and render in a native dialog
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  await dialog.showMessageBox({
+  const { response } = await dialog.showMessageBox({
     type: "error",
     title: "Executor failed to start",
     message: "The local Executor server crashed during startup.",
     detail: `${detail.slice(0, 1800)}\n\nFull log: ${log.transports.file.getFile().path}`,
-    buttons: ["Quit"],
+    buttons: ["Quit", "Reset data and retry…"],
+    defaultId: 0,
+    cancelId: 0,
   });
+  // Damaged executor state (failed migration, corrupt SQLite) makes startup
+  // fail forever — updating can't fix it. Offer the move-aside reset and one
+  // immediate retry. Returns true when boot should be attempted again.
+  if (response === 1 && (await confirmResetState())) {
+    resetExecutorState();
+    return true;
+  }
+  return false;
 };
 
 const installApplicationMenu = () => {
@@ -545,15 +569,22 @@ const boot = async () => {
     void runUpdateCheck({ alertOnFail: false });
   });
   connection = await startWithCurrentSettings();
-  if (!connection) {
+  if (!connection && lastSidecarStartError != null) {
     // Port conflicts already showed their dialog inside
     // startWithCurrentSettings; every other failure surfaces here so the app
-    // never silently bounces-and-vanishes. Pointing a window at the
-    // (unreachable) baseUrl would just show ECONNREFUSED — a placeholder URL
-    // would be worse. For now: explain, offer the updater a chance, quit.
-    if (lastSidecarStartError != null) {
-      await handleFatalSidecarFailure(lastSidecarStartError);
+    // never silently bounces-and-vanishes. The dialog offers a data reset
+    // (move-aside, for damaged state) — when taken, retry the boot once
+    // against the fresh dir.
+    const retryAfterReset = await handleFatalSidecarFailure(lastSidecarStartError);
+    if (retryAfterReset) {
+      lastSidecarStartError = null;
+      connection = await startWithCurrentSettings();
+      if (!connection && lastSidecarStartError != null) {
+        await handleFatalSidecarFailure(lastSidecarStartError);
+      }
     }
+  }
+  if (!connection) {
     app.quit();
     return;
   }

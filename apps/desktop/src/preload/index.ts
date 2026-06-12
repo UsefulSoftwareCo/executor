@@ -56,6 +56,14 @@ const api = {
     return ipcRenderer.invoke("executor:updates:check");
   },
   /**
+   * Last-resort recovery for damaged executor state: after a native confirm,
+   * back up the data dir (move-aside, never delete), then restart the
+   * sidecar fresh. Resolves false when the user cancels the confirm.
+   */
+  resetState(): Promise<boolean> {
+    return ipcRenderer.invoke("executor:state:reset");
+  },
+  /**
    * Crash-reporting config for the renderer. Null unless this desktop build
    * shipped with a DSN baked in — the shared web UI only initializes its
    * error reporting when this returns a config.
