@@ -65,34 +65,53 @@ describe("isValidOrgSlug", () => {
 
 describe("generateOrgSlug", () => {
   const taken = (slugs: ReadonlyArray<string>) => async (slug: string) => slugs.includes(slug);
+  // `acme-corp` + "-" + 4 chars of the look-alike-free alphabet.
+  const discriminated = (base: string) => new RegExp(`^${base}-[a-z2-9]{4}$`);
 
   it("uses the clean derivation when free", async () => {
     expect(await generateOrgSlug("Acme Corp", taken([]))).toBe("acme-corp");
   });
 
-  it("suffixes on collision", async () => {
-    expect(await generateOrgSlug("Acme Corp", taken(["acme-corp"]))).toBe("acme-corp-2");
-    expect(await generateOrgSlug("Acme Corp", taken(["acme-corp", "acme-corp-2"]))).toBe(
-      "acme-corp-3",
-    );
+  it("appends a random discriminator on collision, not an ordinal", async () => {
+    const slug = await generateOrgSlug("Acme Corp", taken(["acme-corp"]));
+    expect(slug).toMatch(discriminated("acme-corp"));
+    expect(slug).not.toBe("acme-corp-2");
+    expect(isValidOrgSlug(slug)).toBe(true);
   });
 
-  it("suffixes reserved names instead of claiming them", async () => {
-    expect(await generateOrgSlug("MCP", taken([]))).toBe("mcp-2");
-    expect(await generateOrgSlug("API", taken(["api-2"]))).toBe("api-3");
+  it("retries the discriminator until free", async () => {
+    // Reject every candidate once by remembering refusals — the generator
+    // must come back with a DIFFERENT discriminator, not loop on one.
+    const refused = new Set<string>(["acme-corp"]);
+    let refusals = 0;
+    const slug = await generateOrgSlug("Acme Corp", async (candidate) => {
+      if (refused.has(candidate)) return true;
+      if (refusals < 2) {
+        refusals += 1;
+        refused.add(candidate);
+        return true;
+      }
+      return false;
+    });
+    expect(slug).toMatch(discriminated("acme-corp"));
+    expect(refused.has(slug)).toBe(false);
+  });
+
+  it("discriminates reserved names instead of claiming them", async () => {
+    expect(await generateOrgSlug("MCP", taken([]))).toMatch(discriminated("mcp"));
+    expect(await generateOrgSlug("API", taken([]))).toMatch(discriminated("api"));
   });
 
   it("falls back to team handles for unusable names", async () => {
-    // "team" itself is reserved, so the fallback starts at the first suffix.
-    expect(await generateOrgSlug("🚀🚀🚀", taken([]))).toBe("team-2");
-    expect(await generateOrgSlug("🚀🚀🚀", taken(["team-2"]))).toBe("team-3");
+    // "team" itself is reserved, so the fallback is always discriminated.
+    expect(await generateOrgSlug("🚀🚀🚀", taken([]))).toMatch(discriminated("team"));
   });
 
-  it("keeps suffixed slugs within budget", async () => {
+  it("keeps discriminated slugs within budget", async () => {
     const longName = `${"very-".repeat(20)}long name`;
     const base = await generateOrgSlug(longName, taken([]));
-    const suffixed = await generateOrgSlug(longName, taken([base]));
-    expect(suffixed.length).toBeLessThanOrEqual(48);
-    expect(isValidOrgSlug(suffixed)).toBe(true);
+    const collided = await generateOrgSlug(longName, taken([base]));
+    expect(collided.length).toBeLessThanOrEqual(48);
+    expect(isValidOrgSlug(collided)).toBe(true);
   });
 });

@@ -147,24 +147,42 @@ export const slugifyOrgName = (name: string): string | null => {
   return slug;
 };
 
+// Discriminator alphabet: lowercase base32 without the look-alikes (0/o, 1/l)
+// so a slug read aloud or retyped from a screenshot survives the round trip.
+const DISCRIMINATOR_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
+const DISCRIMINATOR_LENGTH = 4;
+
+/** A short random handle suffix (`x7k2`): ~1M combinations per base. */
+const discriminator = (): string => {
+  let out = "";
+  for (let i = 0; i < DISCRIMINATOR_LENGTH; i++) {
+    out += DISCRIMINATOR_ALPHABET[Math.floor(Math.random() * DISCRIMINATOR_ALPHABET.length)]!;
+  }
+  return out;
+};
+
 /**
  * Mint a unique slug for an org name: try the clean derivation, then
- * `name-2`, `name-3`, … against `isTaken`. Reserved words fall straight
- * through to the suffixed forms (`mcp` becomes `mcp-2`, which is valid).
- * Names that yield nothing usable fall back to `team` handles.
+ * `name-<discriminator>` (`acme-x7k2`) against `isTaken`. A short RANDOM
+ * discriminator rather than `-2`/`-3` ordinals — ordinals are enumerable,
+ * advertise how many orgs share the name, and rank whoever came second.
+ * Reserved words fall straight through to the discriminated forms (`mcp`
+ * becomes `mcp-x7k2`, which is valid). Names that yield nothing usable fall
+ * back to `team-<discriminator>` handles.
  */
 export const generateOrgSlug = async (
   name: string,
   isTaken: (slug: string) => Promise<boolean>,
 ): Promise<string> => {
   const base = slugifyOrgName(name) ?? "team";
-  // Leave room for "-NN" suffixes within the 48-char budget.
-  const trimmed = base.slice(0, 44).replace(/-+$/g, "");
+  // Leave room for the "-xxxx" discriminator within the 48-char budget.
+  const trimmed = base.slice(0, 48 - DISCRIMINATOR_LENGTH - 1).replace(/-+$/g, "");
   if (isValidOrgSlug(trimmed) && !(await isTaken(trimmed))) return trimmed;
-  for (let n = 2; n < 1000; n++) {
-    const candidate = `${trimmed}-${n}`;
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const candidate = `${trimmed}-${discriminator()}`;
     if (isValidOrgSlug(candidate) && !(await isTaken(candidate))) return candidate;
   }
-  // Practically unreachable; bail out with a random handle rather than loop.
-  return `team-${Math.random().toString(36).slice(2, 8)}`;
+  // Practically unreachable (32 misses on a ~1M space means isTaken is
+  // broken); a longer random handle beats looping forever.
+  return `team-${discriminator()}${discriminator()}`;
 };
