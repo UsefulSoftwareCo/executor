@@ -122,6 +122,7 @@ export {
   type OAuthClientRow,
   type OAuthSessionRow,
   type ToolRow,
+  type ToolInvocationRow,
   type DefinitionRow,
   type ToolPolicyRow,
   type PluginStorageRow,

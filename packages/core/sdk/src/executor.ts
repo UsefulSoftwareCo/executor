@@ -28,10 +28,12 @@ import type {
 import {
   coreSchema,
   isToolPolicyAction,
+  TOOL_INVOCATION_COLUMNS,
   type ConnectionRow,
   type CoreSchema,
   type IntegrationRow,
   type OAuthClientRow,
+  type ToolInvocationRow,
   type ToolRow,
   type ToolPolicyRow,
 } from "./core-schema";
@@ -513,7 +515,13 @@ const connectionItemIds = (row: ConnectionRow): Record<string, string> => {
   return decoded as Record<string, string>;
 };
 
-const rowToTool = (row: ToolRow, annotations?: ToolAnnotations): Tool => {
+// Accepts a projected row (the invoke/list paths select away the heavy
+// schema columns); `Tool.inputSchema`/`outputSchema` are optional and stay
+// absent for those callers — `tools.schema` is the schema-bearing surface.
+const rowToTool = (
+  row: ToolInvocationRow & Partial<Pick<ToolRow, "input_schema" | "output_schema">>,
+  annotations?: ToolAnnotations,
+): Tool => {
   const owner = row.owner as Owner;
   const integration = IntegrationSlug.make(row.integration);
   const connection = ConnectionName.make(row.connection);
@@ -539,16 +547,29 @@ const rowToTool = (row: ToolRow, annotations?: ToolAnnotations): Tool => {
 type AnyCb = ConditionBuilder<Record<string, AnyColumn>>;
 type CoreTableName = keyof CoreSchema & string;
 type CoreRow<TName extends CoreTableName> = FumaRow<CoreSchema[TName]>;
+type CoreColumn<TName extends CoreTableName> = keyof CoreRow<TName> & string;
 type CoreWhere = (b: AnyCb) => Condition | boolean;
-type CoreFindManyOptions = {
+type CoreFindManyOptions<TName extends CoreTableName = CoreTableName> = {
   readonly where?: CoreWhere;
   readonly limit?: number;
   readonly offset?: number;
   readonly orderBy?:
     | readonly [string, "asc" | "desc"]
     | readonly (readonly [string, "asc" | "desc"])[];
+  /** Column projection (fumadb `select`). Omit for all columns. Use on hot
+   *  paths whose rows carry heavy JSON columns the caller discards — e.g. a
+   *  tool row is ~KBs of schemas but invoke routing needs only the names. */
+  readonly select?: readonly CoreColumn<TName>[];
 };
-type CoreFindFirstOptions = Omit<CoreFindManyOptions, "limit" | "offset">;
+type CoreFindFirstOptions<TName extends CoreTableName = CoreTableName> = Omit<
+  CoreFindManyOptions<TName>,
+  "limit" | "offset"
+>;
+/** The narrowed row a projected query returns: the selected columns keep
+ *  their types, everything else is absent. */
+type CoreProjectedRow<TName extends CoreTableName, TSelect> = TSelect extends readonly (infer K)[]
+  ? Pick<CoreRow<TName>, Extract<K, keyof CoreRow<TName>>>
+  : CoreRow<TName>;
 
 type LooseStorageDb = {
   readonly count: (tableName: string, options?: unknown) => Promise<number>;
@@ -603,20 +624,20 @@ const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
     fuma.use(`${tableName}.deleteMany`, (db) =>
       asLooseStorageDb(db).deleteMany(tableName, options),
     ),
-  findFirst: <TName extends CoreTableName>(
+  findFirst: <TName extends CoreTableName, const TOptions extends CoreFindFirstOptions<TName>>(
     tableName: TName,
-    options: CoreFindFirstOptions,
-  ): Effect.Effect<CoreRow<TName> | null, StorageFailure> =>
+    options: TOptions,
+  ): Effect.Effect<CoreProjectedRow<TName, TOptions["select"]> | null, StorageFailure> =>
     fuma.use(`${tableName}.findFirst`, (db) =>
       asLooseStorageDb(db).findFirst(tableName, options),
-    ) as Effect.Effect<CoreRow<TName> | null, StorageFailure>,
-  findMany: <TName extends CoreTableName>(
+    ) as Effect.Effect<CoreProjectedRow<TName, TOptions["select"]> | null, StorageFailure>,
+  findMany: <TName extends CoreTableName, const TOptions extends CoreFindManyOptions<TName>>(
     tableName: TName,
-    options: CoreFindManyOptions = {},
-  ): Effect.Effect<readonly CoreRow<TName>[], StorageFailure> =>
+    options: TOptions = {} as TOptions,
+  ): Effect.Effect<readonly CoreProjectedRow<TName, TOptions["select"]>[], StorageFailure> =>
     fuma.use(`${tableName}.findMany`, (db) =>
       asLooseStorageDb(db).findMany(tableName, options),
-    ) as Effect.Effect<readonly CoreRow<TName>[], StorageFailure>,
+    ) as Effect.Effect<readonly CoreProjectedRow<TName, TOptions["select"]>[], StorageFailure>,
   updateMany: <TName extends CoreTableName>(
     tableName: TName,
     options: {
@@ -2300,6 +2321,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
+        // Projected: the list surface is metadata (address, description,
+        // annotations) — loading every tool's input/output schema JSON made
+        // an unbounded list scale with schema bytes, not tool count.
         const rows = yield* core.findMany("tool", {
           where: (b: AnyCb) =>
             b.and(
@@ -2311,6 +2335,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 ? true
                 : b("connection", "=", String(filter.connection)),
             ),
+          select: TOOL_INVOCATION_COLUMNS,
         });
         const includeBlocked = filter?.includeBlocked ?? false;
         const policyRows = yield* core.findMany("tool_policy", {});
@@ -2650,7 +2675,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const TOOL_SUGGESTION_LIMIT = 5;
 
-    const toolSuggestions = (rows: readonly ToolRow[]): readonly ToolAddress[] =>
+    const toolSuggestions = (rows: readonly ToolInvocationRow[]): readonly ToolAddress[] =>
       rows.map((row) => rowToTool(row).address);
 
     const toolRowsForConnectionWhere = (parsed: ParsedToolAddress) => (b: AnyCb) =>
@@ -2662,7 +2687,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const searchToolRowsForConnection = (
       parsed: ParsedToolAddress,
-    ): Effect.Effect<readonly ToolRow[], StorageFailure> =>
+    ): Effect.Effect<readonly ToolInvocationRow[], StorageFailure> =>
       core.findMany("tool", {
         where: (b: AnyCb) =>
           b.and(
@@ -2674,15 +2699,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
         orderBy: ["name", "asc"],
         limit: TOOL_SUGGESTION_LIMIT,
+        select: TOOL_INVOCATION_COLUMNS,
       });
 
     const findToolRowsForConnection = (
       parsed: ParsedToolAddress,
-    ): Effect.Effect<readonly ToolRow[], StorageFailure> =>
+    ): Effect.Effect<readonly ToolInvocationRow[], StorageFailure> =>
       core.findMany("tool", {
         where: toolRowsForConnectionWhere(parsed),
         orderBy: ["name", "asc"],
         limit: TOOL_SUGGESTION_LIMIT,
+        select: TOOL_INVOCATION_COLUMNS,
       });
 
     const execute = (
@@ -2743,7 +2770,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return yield* new ToolNotFoundError({ address });
         }
 
-        // Find the tool row.
+        // Find the tool row — projected: invoke needs routing/policy fields
+        // only, never the multi-KB input/output schema JSON (`tools.schema`
+        // is the schema-bearing surface).
         const row = yield* core.findFirst("tool", {
           where: (b: AnyCb) =>
             b.and(
@@ -2752,6 +2781,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               b("connection", "=", String(parsed.connection)),
               b("name", "=", String(parsed.tool)),
             ),
+          select: TOOL_INVOCATION_COLUMNS,
         });
         if (!row) {
           const searchMatches = yield* searchToolRowsForConnection(parsed);

@@ -288,6 +288,25 @@ export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
 export type ToolRow = FumaRow<CoreSchema["tool"]>;
+/** The tool-row projection the invoke/list hot paths load: everything except
+ *  the heavy `input_schema`/`output_schema` JSON, which only `tools.schema`
+ *  (describe) needs. Plugin `invokeTool` receives this shape — operation
+ *  details ride in plugin storage or `annotations`, not the row schemas. */
+export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema">;
+/** The columns backing {@link ToolInvocationRow}, for `select` projections. */
+export const TOOL_INVOCATION_COLUMNS = [
+  "tenant",
+  "owner",
+  "subject",
+  "integration",
+  "connection",
+  "plugin_id",
+  "name",
+  "description",
+  "annotations",
+  "created_at",
+  "updated_at",
+] as const satisfies readonly (keyof ToolRow)[];
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
 export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;

@@ -14,7 +14,7 @@ import type {
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
-import type { ToolRow } from "./core-schema";
+import type { ToolInvocationRow } from "./core-schema";
 import type {
   AuthTemplateSlug,
   ConnectionName,
@@ -339,7 +339,7 @@ export interface InvokeToolInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   /** Already-loaded per-connection tool row (carries integration, connection,
    *  owner, name, schemas). */
-  readonly toolRow: ToolRow;
+  readonly toolRow: ToolInvocationRow;
   /** The resolved credential to apply to the outbound request. */
   readonly credential: ToolInvocationCredential;
   readonly args: unknown;
@@ -460,7 +460,7 @@ export interface PluginSpec<
     readonly ctx: PluginCtx<TStore>;
     readonly integration: IntegrationSlug;
     readonly connection: ConnectionName;
-    readonly toolRows: readonly ToolRow[];
+    readonly toolRows: readonly ToolInvocationRow[];
   }) => Effect.Effect<Record<string, ToolAnnotations>, unknown>;
 
   /** Plugin-side cleanup when a connection is removed. */

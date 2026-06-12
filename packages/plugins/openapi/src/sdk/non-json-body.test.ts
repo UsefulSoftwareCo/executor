@@ -297,10 +297,11 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         baseUrl: "https://example.com",
       });
 
-      const tools = yield* executor.tools.list();
-      const submit = tools.find((t) => String(t.address) === String(conn.address("body.submit")));
-      expect(submit).toBeDefined();
-      const schema = submit!.inputSchema as {
+      // `tools.schema` is the schema-bearing surface — `tools.list` is
+      // metadata-only (the hot path projects the schema columns away).
+      const view = yield* executor.tools.schema(conn.address("body.submit"));
+      expect(view).not.toBeNull();
+      const schema = view!.inputSchema as {
         properties?: {
           contentType?: { enum?: string[]; default?: string };
         };
