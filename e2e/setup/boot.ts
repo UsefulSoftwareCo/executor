@@ -3,9 +3,12 @@
 // what runs (their dev stack, their stub flags); this file only owns process
 // lifecycle, so it stays target-agnostic.
 import { spawn, type ChildProcess } from "node:child_process";
+import { openSync } from "node:fs";
 
 export interface BootedProcesses {
   readonly teardown: () => Promise<void>;
+  /** Process-group leader pids — what an external `down` must signal. */
+  readonly pids: ReadonlyArray<number>;
 }
 
 export const bootProcesses = (
@@ -14,16 +17,20 @@ export const bootProcesses = (
     readonly args: ReadonlyArray<string>;
     readonly cwd: string;
     readonly env?: Record<string, string | undefined>;
+    /** Append stdout+stderr here (long-lived boots need inspectable logs). */
+    readonly logFile?: string;
   }>,
   options: { readonly label: string },
 ): BootedProcesses => {
   const children: ChildProcess[] = [];
   let tearingDown = false;
   for (const proc of procs) {
+    const log = proc.logFile ? openSync(proc.logFile, "a") : undefined;
     const child = spawn(proc.cmd, [...proc.args], {
       cwd: proc.cwd,
       env: { ...process.env, ...proc.env },
-      stdio: process.env.E2E_VERBOSE ? "inherit" : "ignore",
+      stdio:
+        log !== undefined ? ["ignore", log, log] : process.env.E2E_VERBOSE ? "inherit" : "ignore",
       // Own process group, so teardown can signal the whole tree — `bunx vite`
       // is a wrapper whose actual server child would otherwise outlive the
       // kill and squat the port into the NEXT invocation's waitForHttp.
@@ -69,6 +76,7 @@ export const bootProcesses = (
         await Promise.race([allExited, new Promise((resolve) => setTimeout(resolve, 2_000))]);
       }
     },
+    pids: children.flatMap((child) => (child.pid === undefined ? [] : [child.pid])),
   };
 };
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "cli": "bun scripts/cli.ts",
     "test": "vitest run --project cloud && vitest run --project selfhost",
     "test:cloud": "vitest run --project cloud",
     "test:selfhost": "vitest run --project selfhost",

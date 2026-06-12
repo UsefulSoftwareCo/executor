@@ -1,16 +1,11 @@
-// Boot the selfhost target: the app's real dev server (`bunx --bun vite dev`,
-// Bun required for bun:sqlite) on a throwaway data dir with known bootstrap
-// admin credentials. Set E2E_SELFHOST_URL to attach to a running instance
-// (with E2E_SELFHOST_ADMIN_EMAIL/PASSWORD matching it).
-import { rmSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+// Boot the selfhost target: claim this checkout's port atomically
+// (src/ports.ts), then run the shared boot recipe (selfhost.boot.ts — the
+// same one the dev CLI uses). Set E2E_SELFHOST_URL to attach to a running
+// instance (with E2E_SELFHOST_ADMIN_EMAIL/PASSWORD matching it).
 import { claimPorts } from "../src/ports";
 import { SELFHOST_ADMIN } from "../targets/selfhost";
-import { bootProcesses, waitForHttp } from "./boot";
-
-const selfhostDir = fileURLToPath(new URL("../../apps/host-selfhost/", import.meta.url));
+import { waitForHttp } from "./boot";
+import { bootSelfhost } from "./selfhost.boot";
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_SELFHOST_URL) {
@@ -20,45 +15,23 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
 
   // Claim a free port (preferred block first, walk forward past squatters)
   // and publish via env so the test workers derive the same URL. The imported
-  // targets/selfhost constants were computed BEFORE the claim — don't use them
-  // for ports/URLs here.
+  // targets/selfhost constants were computed BEFORE the claim — don't use
+  // them for ports/URLs here.
   const { ports, release } = await claimPorts([
     { envVar: "E2E_SELFHOST_PORT", offset: 4, label: "selfhost vite dev" },
   ]);
   const port = ports.E2E_SELFHOST_PORT!;
-  const baseUrl = `http://localhost:${port}`;
 
   // Fresh data dir per suite run — hermetic; in-suite isolation comes from
-  // fresh identities, not resets.
-  const dataDir = resolve(selfhostDir, ".e2e-data");
-  rmSync(dataDir, { recursive: true, force: true });
-
-  const procs = bootProcesses(
-    [
-      {
-        cmd: "bunx",
-        args: ["--bun", "vite", "dev", "--port", String(port), "--strictPort"],
-        cwd: selfhostDir,
-        env: {
-          EXECUTOR_DATA_DIR: dataDir,
-          BETTER_AUTH_SECRET: "executor-selfhost-e2e-secret-0123456789",
-          EXECUTOR_BOOTSTRAP_ADMIN_EMAIL: SELFHOST_ADMIN.email,
-          EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD: SELFHOST_ADMIN.password,
-          EXECUTOR_WEB_BASE_URL: baseUrl,
-          // The harness boots loopback MCP/OAuth test servers and points the
-          // instance at them; the hosted SSRF guard would otherwise block
-          // outbound probes/dials to localhost. Hermetic test instance only.
-          EXECUTOR_ALLOW_LOCAL_NETWORK: "true",
-        },
-      },
-    ],
-    { label: "selfhost" },
-  );
-
+  // fresh identities, not resets (bootSelfhost wipes it).
+  let procs;
   try {
-    await waitForHttp(baseUrl);
+    procs = await bootSelfhost({
+      port,
+      webBaseUrl: `http://localhost:${port}`,
+      admin: SELFHOST_ADMIN,
+    });
   } catch (error) {
-    await procs.teardown();
     await release();
     throw error;
   }
