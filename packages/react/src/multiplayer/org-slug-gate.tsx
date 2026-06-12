@@ -12,7 +12,9 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 //   - active slug in URL  → render
 //   - other slug in URL   → `foreignSlug(slug)` when provided (cloud renders a
 //                           switch-organization resolver); single-org hosts
-//                           omit it and the URL canonicalizes
+//                           omit it and the slug reads as a wrong address —
+//                           a NOT-FOUND page, never a silent redirect into a
+//                           workspace the URL didn't name
 //
 // "Foreign" is judged against where the SESSION has been, not just the URL:
 // when the active slug changes while mounted (an org create/switch elsewhere
@@ -31,12 +33,38 @@ export interface OrgSlugGateProps {
   readonly activeSlug: string;
   /**
    * Rendered INSTEAD of children when the URL carries a different org's slug
-   * at load time. Multi-org hosts resolve it (switch the session, or bounce);
-   * single-org hosts leave it unset and the URL canonicalizes to the active
-   * slug.
+   * at load time. Multi-org hosts resolve it (switch the session when the
+   * caller is a member, not-found otherwise); single-org hosts leave it unset
+   * and get {@link OrgSlugNotFound}.
    */
   readonly foreignSlug?: (slug: string) => ReactNode;
+  /** The host's not-found page for foreign slugs; default {@link OrgSlugNotFound}. */
+  readonly notFound?: ReactNode;
   readonly children: ReactNode;
+}
+
+/**
+ * The default not-found page for a URL naming an org this session can't see.
+ * The home link is BARE on purpose — it canonicalizes onto the active org.
+ */
+export function OrgSlugNotFound() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6 py-10">
+      <section className="w-full max-w-md text-center">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">404</p>
+        <h1 className="mt-2 text-xl font-semibold text-foreground">Page not found</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          There&apos;s nothing at this address.
+        </p>
+        <a
+          href="/"
+          className="mt-6 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors"
+        >
+          Go home
+        </a>
+      </section>
+    </main>
+  );
 }
 
 export function OrgSlugGate(props: OrgSlugGateProps) {
@@ -55,7 +83,10 @@ export function OrgSlugGate(props: OrgSlugGateProps) {
   const sessionMoved = agreedSlug.current !== activeSlug;
 
   const isForeign = urlSlug !== null && urlSlug !== activeSlug && !sessionMoved;
-  const needsCanonicalize = urlSlug !== activeSlug && !(isForeign && foreignSlug);
+  // Only URLs that don't NAME a different org canonicalize: bare paths, and
+  // stale slugs after the session itself moved. A foreign slug never does —
+  // it either resolves (the host's foreignSlug) or reads as a wrong address.
+  const needsCanonicalize = urlSlug === null || sessionMoved;
 
   useEffect(() => {
     if (!needsCanonicalize) return;
@@ -71,7 +102,9 @@ export function OrgSlugGate(props: OrgSlugGateProps) {
     });
   }, [needsCanonicalize, activeSlug, navigate]);
 
-  if (isForeign && foreignSlug) return <>{foreignSlug(urlSlug)}</>;
+  if (isForeign) {
+    return <>{foreignSlug ? foreignSlug(urlSlug) : (props.notFound ?? <OrgSlugNotFound />)}</>;
+  }
 
   // Render through while canonicalizing — the target is the same route, so
   // withholding children would only flash the page.

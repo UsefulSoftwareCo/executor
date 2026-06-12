@@ -5,8 +5,9 @@
 //
 //   - /account/me advertises the org's URL slug (valid grammar)
 //   - a bare deep link (/policies) canonicalizes to /<slug>/policies
-//   - an unknown slug (/zz-no-such-org/policies) snaps back to the active
-//     org's URL instead of rendering as if it were that org
+//   - an unknown slug (/zz-no-such-org/policies) is a wrong address — a
+//     not-found page, never a silent redirect into a workspace the URL
+//     didn't name
 //   - in-shell navigation keeps the slug prefix on every link
 //
 // Cloud's switch-into-another-org-by-URL behavior is covered separately by
@@ -44,20 +45,19 @@ scenario(
         await page.getByText("Policies").first().waitFor();
       });
 
-      await step("An unknown org slug snaps back to the active org", async () => {
+      await step("An unknown org slug is a wrong address, not a redirect", async () => {
         await page.goto("/zz-no-such-org/policies", { waitUntil: "networkidle" });
-        await page.waitForURL((url) => url.pathname === `/${slug}/policies`, {
-          timeout: 30_000,
-        });
+        await page.getByText("Page not found").waitFor({ timeout: 30_000 });
       });
 
       await step("In-shell navigation keeps the slug prefix", async () => {
-        await page.getByRole("link", { name: "Integrations" }).first().click();
-        await page.waitForURL((url) => url.pathname === `/${slug}`, { timeout: 30_000 });
+        await page.goto(`/${slug}`, { waitUntil: "networkidle" });
         await page.getByRole("link", { name: "Policies" }).first().click();
         await page.waitForURL((url) => url.pathname === `/${slug}/policies`, {
           timeout: 30_000,
         });
+        await page.getByRole("link", { name: "Integrations" }).first().click();
+        await page.waitForURL((url) => url.pathname === `/${slug}`, { timeout: 30_000 });
       });
     });
   }),
