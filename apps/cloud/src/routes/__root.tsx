@@ -14,21 +14,16 @@ import { PostHogProvider } from "posthog-js/react";
 import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
-import { Skeleton } from "@executor-js/react/components/skeleton";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
+import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
+import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
 import { SupportOptions } from "../web/components/support-options";
 import { Shell } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
-
-const ONBOARDING_PATHS = new Set(["/create-org", "/setup-mcp"]);
-// Routes that render for SIGNED-OUT visitors — the auth gate stays out of
-// their way entirely (the SSR gate in auth/ssr-gate.ts bounces signed-in
-// visitors off /login before the document is even served).
-const PUBLIC_PATHS = new Set(["/login"]);
 
 if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_SENTRY_DSN) {
   Sentry.init({
@@ -98,6 +93,16 @@ function NotFoundPage() {
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
+  // The verified identity the SSR gate attached to this document request
+  // (ssr-gate.ts → middleware context → serverContext). Loader data is
+  // dehydrated, so the client's first render sees the SAME hint the server
+  // rendered with — the two can't disagree. Client-side re-runs have no
+  // serverContext and return null, which is fine: the hint only seeds
+  // initial state (AuthProvider holds it from there).
+  loader: (opts) => ({
+    authHint:
+      (opts as { serverContext?: { authHint?: AuthHint | null } }).serverContext?.authHint ?? null,
+  }),
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -137,74 +142,22 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
+  const { authHint } = Route.useLoaderData();
   return (
     <PostHogProvider client={posthog}>
-      <AuthProvider>
+      <AuthProvider initialHint={authHint}>
         <AuthGate />
       </AuthProvider>
     </PostHogProvider>
   );
 }
 
-function ShellSkeleton() {
-  return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Desktop sidebar skeleton */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <div className="flex h-12 shrink-0 items-center border-b border-sidebar-border px-4">
-          <Skeleton className="h-4 w-20" />
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <div className="mt-5 mb-2 px-2.5">
-            <Skeleton className="h-3 w-14" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Skeleton className="h-7 w-11/12 rounded-md" />
-            <Skeleton className="h-7 w-10/12 rounded-md" />
-            <Skeleton className="h-7 w-9/12 rounded-md" />
-          </div>
-        </nav>
-        <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <Skeleton className="size-7 rounded-full" />
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="h-3 w-16" />
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main content skeleton */}
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Mobile top bar */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
-          <Skeleton className="size-7 rounded-md" />
-          <Skeleton className="h-4 w-20" />
-          <div className="w-7 shrink-0" />
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-6 w-40" />
-              <Skeleton className="h-4 w-64" />
-            </div>
-            <Skeleton className="h-8 w-28 rounded-md" />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-24 w-full rounded-lg" />
-            ))}
-          </div>
-        </div>
-      </main>
-    </div>
-  );
+// Neutral, layout-free placeholder for the moments no UI is correct yet: a
+// redirect in flight, or the (post-gate, near-impossible) hint-less verified
+// load. Never the app shell's silhouette — that bet is the bug this file's
+// gate exists to prevent.
+function BlankScreen() {
+  return <div className="h-screen bg-background" />;
 }
 
 function ShellErrorFallback() {
@@ -236,6 +189,9 @@ function AuthGate() {
   const isOnboardingRoute = ONBOARDING_PATHS.has(location.pathname);
   const isPublicRoute = PUBLIC_PATHS.has(location.pathname);
 
+  // The SSR gate already bounced fresh org-less document requests to
+  // /create-org; this catches the MID-SESSION transitions (org deleted,
+  // membership revoked → /account/me now reports no org).
   const needsOrgRedirect =
     auth.status === "authenticated" &&
     auth.organization == null &&
@@ -262,20 +218,14 @@ function AuthGate() {
     return <Outlet />;
   }
 
-  // Signed-out visitors never reach this point on a fresh document request —
-  // the SSR gate (auth/ssr-gate.ts) redirected them to /login before the SPA
-  // was served. So "loading" here means a VERIFIED signed-in user whose
-  // /account/me is still in flight (and usually not even that: the auth-hint
-  // cookie resolves them to "authenticated" a frame after mount), making the
-  // app-shell skeleton the right placeholder again.
-  if (auth.status === "loading") {
-    return <ShellSkeleton />;
-  }
-
-  // Mid-session sign-out (logout elsewhere, expiry): blank for the moment the
-  // redirect effect above needs — never a skeleton for an app they're out of.
-  if (auth.status === "unauthenticated") {
-    return <div className="h-screen bg-background" />;
+  // Every state that isn't "authenticated with an org, on a page that wants
+  // the shell" is a moment between redirects or an edge the gates make
+  // near-impossible (a verified user whose hint hasn't seeded yet). Neutral
+  // blank — the one placeholder that's correct whatever happens next. The
+  // app-shell skeleton this file used to render here is exactly the
+  // wrong-UI flash the SSR gate + hint exist to prevent.
+  if (auth.status === "loading" || auth.status === "unauthenticated") {
+    return <BlankScreen />;
   }
 
   if (isOnboardingRoute) {
@@ -283,14 +233,14 @@ function AuthGate() {
   }
 
   if (auth.organization == null) {
-    return <ShellSkeleton />;
+    return <BlankScreen />;
   }
 
   return (
     <AutumnProvider pathPrefix="/api/billing">
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
         <ExecutorProvider onHandledError={captureFrontendError}>
-          <React.Suspense fallback={<ShellSkeleton />}>
+          <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider organizationId={auth.organization.id}>
                 <Shell />

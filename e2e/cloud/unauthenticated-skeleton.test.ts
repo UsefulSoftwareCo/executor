@@ -162,10 +162,17 @@ scenario(
         await page.goto("/this-page-does-not-exist", { waitUntil: "commit" });
         await page.getByText("Page not found").waitFor();
       });
+      // The 404 renders INSIDE the real shell (nav + identity), not as a
+      // text-free full-page silhouette. Per-section skeletons in the sidebar
+      // (the integration list mid-fetch) are honest loading states and fine.
       expect(
-        await page.locator('[data-slot="skeleton"]').count(),
-        "no app-shell skeleton on the 404 page",
-      ).toBe(0);
+        await page.getByRole("link", { name: "Policies" }).isVisible(),
+        "the real shell frames the 404",
+      ).toBe(true);
+      expect(
+        await page.getByText("Go home").isVisible(),
+        "with the 404 page's action, not a dead end",
+      ).toBe(true);
     });
   }),
 );

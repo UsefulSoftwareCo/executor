@@ -25,6 +25,13 @@ import {
 // as loading — which the host should never let happen for signed-out users
 // (cloud redirects them to /login during SSR). The hint is display-only;
 // the resolved `/account/me` answer always wins.
+//
+// Hosts whose server can see the hint at render time (cloud: the SSR gate
+// passes it through the root loader) provide `initialHint`, and the
+// authenticated shell is SSR'd outright — both the server render and the
+// first client render derive from the same dehydrated value, so they agree
+// by construction. Hosts without that seam (self-host) omit it and keep the
+// post-mount cookie read: SSR paints loading, the hint applies a frame later.
 // ---------------------------------------------------------------------------
 
 export type AuthUser = {
@@ -63,19 +70,23 @@ const hintState = (hint: AuthHint | null): AuthState | null =>
 const AuthProviderClient = ({
   children,
   onIdentify,
+  initialHint = null,
 }: {
   children: React.ReactNode;
   onIdentify?: IdentifyFn;
+  initialHint?: AuthHint | null;
 }) => {
   const result = useAtomValue(meAtom);
 
-  // The hint applies one frame AFTER mount: SSR always renders the loading
-  // state and the first client render must match that HTML, so the cookie
-  // read is deferred to an effect (the documented pattern for client-only
-  // values). The flip costs a frame, not a network round trip.
-  const [hint, setHint] = useState<AuthHint | null>(null);
+  // With a server-provided hint the first client render matches the SSR'd
+  // authenticated HTML outright (both derive from the same dehydrated value).
+  // Without one, the cookie read is deferred to an effect: SSR rendered
+  // loading, and the first client render must match that HTML — the flip
+  // costs a frame, not a network round trip. Initial-value-only state: later
+  // loader re-runs (which lose the server context) must not yank the seed.
+  const [hint, setHint] = useState<AuthHint | null>(initialHint);
   useEffect(() => {
-    setHint(readAuthHintCookie());
+    setHint((current) => current ?? readAuthHintCookie());
   }, []);
 
   // What `/account/me` actually said — the authority. The atom value only
@@ -127,12 +138,27 @@ const AuthProviderClient = ({
 export const AuthProvider = ({
   children,
   onIdentify,
+  initialHint = null,
 }: {
   children: React.ReactNode;
   onIdentify?: IdentifyFn;
+  /**
+   * The auth hint as the HOST's server saw it on this request (cloud: from
+   * the SSR gate via the root loader, dehydrated to the client). When set,
+   * SSR paints the authenticated shell instead of a loading state.
+   */
+  initialHint?: AuthHint | null;
 }) => {
   if (typeof window === "undefined") {
-    return <AuthContext.Provider value={{ status: "loading" }}>{children}</AuthContext.Provider>;
+    return (
+      <AuthContext.Provider value={hintState(initialHint) ?? { status: "loading" }}>
+        {children}
+      </AuthContext.Provider>
+    );
   }
-  return <AuthProviderClient onIdentify={onIdentify}>{children}</AuthProviderClient>;
+  return (
+    <AuthProviderClient onIdentify={onIdentify} initialHint={initialHint}>
+      {children}
+    </AuthProviderClient>
+  );
 };

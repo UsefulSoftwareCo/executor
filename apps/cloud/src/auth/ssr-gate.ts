@@ -1,13 +1,19 @@
 // ---------------------------------------------------------------------------
 // SSR auth gate — the server-side session check for DOCUMENT requests.
 //
-// Before this gate, every signed-out visitor was served the SPA, whose root
-// AuthGate SSRs the AUTHENTICATED app-shell skeleton until a client-side
-// `/account/me` round trip 401s — the "bad skeleton on unauthed state" flash.
-// The sealed `wos-session` cookie can be verified right here in the worker
+// The sealed `wos-session` cookie is verified right here in the worker
 // (unseal + JWT check against cached JWKS — no per-request WorkOS round trip
-// except token refresh), so signed-out visitors are 302'd to /login before any
-// app HTML exists, and signed-in visitors proceed knowing the session is real.
+// except token refresh), so by the time the SPA is served the server KNOWS
+// who it's serving:
+//
+// - signed out → 302 /login (carrying ?returnTo=) before any app HTML exists
+// - org-less   → 302 /create-org (onboarding owns those sessions)
+// - signed in  → the document is served WITH the verified identity: the
+//   auth-hint travels to the SSR render via request-middleware context (the
+//   root loader picks it up), and is minted as a cookie when the browser
+//   doesn't hold a current one — so the very first paint is the real app
+//   shell, never a skeleton. The hint is display-only; /account/me remains
+//   the authority and the client keeps it fresh from then on.
 //
 // Scope: GET/HEAD requests that are document navigations (sec-fetch-dest /
 // accept), excluding app-owned paths (/api, /mcp — they answer for themselves
@@ -15,19 +21,31 @@
 // ---------------------------------------------------------------------------
 
 import { createMiddleware } from "@tanstack/react-start";
-import { Effect, Exit, ManagedRuntime } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime } from "effect";
 
-import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
+import {
+  AUTH_HINT_COOKIE,
+  AUTH_HINT_MAX_AGE_SECONDS,
+  decodeAuthHint,
+  encodeAuthHint,
+  type AuthHint,
+} from "@executor-js/react/multiplayer/auth-hint";
 
 import { isAppOwnedPath } from "../app-paths";
+import { makeDbLayer } from "../db/db";
+import { makeUserStoreLayer, UserStoreService } from "./context";
 import { parseCookie } from "./cookies";
+import { sealedSessionDisplayName } from "./middleware";
 import { loginPath, safeReturnTo } from "./return-to";
+import { ONBOARDING_PATHS, PUBLIC_PATHS } from "./route-paths";
 import { WorkOSClient } from "./workos";
 
 const SESSION_COOKIE = "wos-session";
 /** Mirrors the handlers' COOKIE_OPTIONS (path /, HttpOnly, Lax, 7d, Secure). */
 const SESSION_COOKIE_ATTRIBUTES = "Path=/; HttpOnly; Secure; SameSite=Lax";
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
+/** Same attributes the client write uses — minus HttpOnly: the SPA reads it. */
+const HINT_COOKIE_ATTRIBUTES = "Path=/; Secure; SameSite=Lax";
 
 const isDocumentRequest = (request: Request): boolean => {
   if (request.method !== "GET" && request.method !== "HEAD") return false;
@@ -48,7 +66,14 @@ const isDocumentRequest = (request: Request): boolean => {
 let runtime: ManagedRuntime.ManagedRuntime<WorkOSClient, unknown> | undefined;
 const getRuntime = () => (runtime ??= ManagedRuntime.make(WorkOSClient.Default));
 
-type VerifiedSession = { readonly refreshedSession?: string | undefined };
+type VerifiedSession = {
+  readonly userId: string;
+  readonly email: string;
+  readonly name: string | null;
+  readonly avatarUrl: string | null;
+  readonly organizationId: string | null;
+  readonly refreshedSession?: string | undefined;
+};
 
 // EVERY failure collapses to "signed out" — WorkOS errors inside the effect
 // and layer-construction errors like a bad cookie password (runPromiseExit
@@ -58,8 +83,74 @@ const verifySession = async (sealed: string): Promise<VerifiedSession | null> =>
   const exit = await getRuntime().runPromiseExit(
     Effect.flatMap(WorkOSClient.asEffect(), (workos) => workos.authenticateSealedSession(sealed)),
   );
-  return Exit.isSuccess(exit) ? exit.value : null;
+  if (!Exit.isSuccess(exit) || exit.value === null) return null;
+  const result = exit.value;
+  return {
+    userId: result.userId,
+    email: result.email,
+    name: sealedSessionDisplayName(result),
+    avatarUrl: result.avatarUrl ?? null,
+    organizationId: result.organizationId ?? null,
+    refreshedSession: result.refreshedSession,
+  };
 };
+
+// ── Auth hint ────────────────────────────────────────────────────────────────
+
+/**
+ * The hint this request should be served with: the browser's own cookie when
+ * it already matches the verified identity, else one minted fresh from the
+ * session. `mint` is set when the cookie must also be (re)written — identity
+ * data freshness (a renamed user/org) is the CLIENT's job via /account/me,
+ * so the gate only steps in when the ids are wrong, never to rewrite display
+ * fields (which would ping-pong with the client's authoritative write).
+ */
+const resolveAuthHint = async (
+  session: VerifiedSession,
+  cookieHeader: string | null,
+): Promise<{ hint: AuthHint; mint: boolean }> => {
+  const existing = decodeAuthHint(parseCookie(cookieHeader, AUTH_HINT_COOKIE));
+  if (
+    existing &&
+    existing.user.id === session.userId &&
+    (existing.organization?.id ?? null) === session.organizationId
+  ) {
+    return { hint: existing, mint: false };
+  }
+  return {
+    hint: {
+      v: 1,
+      user: {
+        id: session.userId,
+        email: session.email,
+        name: session.name,
+        avatarUrl: session.avatarUrl,
+      },
+      organization: session.organizationId
+        ? { id: session.organizationId, name: await organizationName(session.organizationId) }
+        : null,
+    },
+    mint: true,
+  };
+};
+
+// The sealed session carries the org ID but not its name; the local mirror
+// has it. Only consulted when minting (absent/mismatched hint) — never on the
+// steady-state path — and over per-request layers, because a connection cached
+// in the shared runtime would be reused across requests, which Cloudflare
+// forbids. A miss or failure reads as "" — display-only, corrected by the
+// client's /account/me write.
+const organizationName = async (organizationId: string): Promise<string> => {
+  const exit = await getRuntime().runPromiseExit(
+    Effect.flatMap(UserStoreService.asEffect(), (users) =>
+      users.use((store) => store.getOrganization(organizationId)),
+    ).pipe(Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer()))),
+  );
+  return Exit.isSuccess(exit) ? (exit.value?.name ?? "") : "";
+};
+
+const hintSetCookie = (hint: AuthHint) =>
+  `${AUTH_HINT_COOKIE}=${encodeAuthHint(hint)}; ${HINT_COOKIE_ATTRIBUTES}; Max-Age=${AUTH_HINT_MAX_AGE_SECONDS}`;
 
 const sessionSetCookie = (sealed: string) =>
   `${SESSION_COOKIE}=${sealed}; ${SESSION_COOKIE_ATTRIBUTES}; Max-Age=${SESSION_MAX_AGE}`;
@@ -88,12 +179,13 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
   async ({ pathname, request, next }) => {
     if (isAppOwnedPath(pathname) || !isDocumentRequest(request)) return next();
 
-    const sealed = parseCookie(request.headers.get("cookie"), SESSION_COOKIE);
+    const cookieHeader = request.headers.get("cookie");
+    const sealed = parseCookie(cookieHeader, SESSION_COOKIE);
     const url = new URL(request.url);
 
-    // /login is the one page signed-out visitors are FOR; a signed-in visitor
-    // landing here is bounced straight back to where they were headed.
-    if (pathname === "/login") {
+    // Public pages are what signed-out visitors are FOR; a signed-in visitor
+    // landing on /login is bounced straight back to where they were headed.
+    if (PUBLIC_PATHS.has(pathname)) {
       const session = sealed ? await verifySession(sealed) : null;
       if (!session) return next();
       return redirect(safeReturnTo(url.searchParams.get("returnTo")) ?? "/", {
@@ -118,14 +210,32 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
       return redirect("/", { refreshedSession: session.refreshedSession });
     }
 
-    const result = await next();
+    // A session with no organization belongs in onboarding — same decision
+    // the client AuthGate makes mid-session, made here before the document
+    // exists so the app shell is never painted for an org-less session.
+    if (!session.organizationId && !ONBOARDING_PATHS.has(pathname)) {
+      return redirect("/create-org", { refreshedSession: session.refreshedSession });
+    }
+
+    // Serve the document WITH the verified identity: the hint rides to the
+    // SSR render through middleware context (the root loader reads it), so
+    // the server paints the real authenticated shell — no loading state, no
+    // skeleton. Set-cookie writes ride on the rendered response.
+    const { hint, mint } = await resolveAuthHint(session, cookieHeader);
+    const result = await next({ context: { authHint: hint } });
+    if (!mint && !session.refreshedSession) return result;
+
+    const response = new Response(result.response.body, result.response);
+    if (mint) {
+      // The browser holds no current hint — mint one so the NEXT load (and
+      // any client-side read) sees the same identity this render used.
+      response.headers.append("set-cookie", hintSetCookie(hint));
+    }
     if (session.refreshedSession) {
       // WorkOS refresh tokens are single-use: the rotated sealed session MUST
       // reach the browser or the next expiry logs the user out.
-      const response = new Response(result.response.body, result.response);
       response.headers.append("set-cookie", sessionSetCookie(session.refreshedSession));
-      return response;
     }
-    return result;
+    return { ...result, response };
   },
 );

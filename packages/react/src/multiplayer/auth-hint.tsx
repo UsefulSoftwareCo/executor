@@ -40,12 +40,13 @@ export type AuthHint = typeof AuthHintSchema.Type;
 
 const AuthHintFromJson = Schema.fromJsonString(AuthHintSchema);
 const decodeAuthHintJson = Schema.decodeUnknownOption(AuthHintFromJson);
-const encodeAuthHintJson = Schema.encodeSync(AuthHintFromJson);
 // The cookie value arrives percent-encoded; a truncated/corrupted one can
 // make decodeURIComponent itself throw, which must read as "no hint".
 const decodeUriComponentOption = Option.liftThrowable(decodeURIComponent);
 
-/** Encode a hint as a cookie VALUE (URI-encoded JSON). */
+const encodeAuthHintJson = Schema.encodeSync(AuthHintFromJson);
+
+/** Encode a hint as a wire-ready cookie VALUE (URI-encoded JSON). */
 export const encodeAuthHint = (hint: AuthHint): string =>
   encodeURIComponent(encodeAuthHintJson(hint));
 

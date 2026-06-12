@@ -7,6 +7,7 @@ import {
   useAuth,
   type IdentifyFn,
 } from "@executor-js/react/multiplayer/auth-context";
+import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 
 import { CloudApiClient } from "./client";
 
@@ -44,7 +45,13 @@ export const acceptInvitation = CloudApiClient.mutation("cloudAuth", "acceptInvi
 
 // ── Provider ───────────────────────────────────────────────────────────────
 
-export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+export const AuthProvider = ({
+  children,
+  initialHint,
+}: {
+  children: React.ReactNode;
+  initialHint?: AuthHint | null;
+}) => {
   const posthog = usePostHog();
 
   const onIdentify = React.useCallback<IdentifyFn>(
@@ -64,5 +71,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     [posthog],
   );
 
-  return <SharedAuthProvider onIdentify={onIdentify}>{children}</SharedAuthProvider>;
+  return (
+    <SharedAuthProvider onIdentify={onIdentify} initialHint={initialHint}>
+      {children}
+    </SharedAuthProvider>
+  );
 };

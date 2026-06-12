@@ -81,6 +81,34 @@ scenario(
   }),
 );
 
+scenario(
+  "Session gate · an org-less session is sent to onboarding before the app shell exists",
+  {},
+  Effect.gen(function* () {
+    // Gate: the REST API plane is mounted on this target.
+    yield* Api;
+    const target = yield* Target;
+
+    // A verified user with no organization belongs in onboarding — the gate
+    // decides that at the edge, so the app shell (whose every query needs an
+    // org) is never even served.
+    const orgless = yield* target.newIdentity({ org: false });
+    const gated = yield* documentRequest(
+      new URL("/tools", target.baseUrl),
+      orgless.headers!.cookie!,
+    );
+    expect(gated.status, "the app page is not served org-less").toBe(302);
+    expect(gated.headers.get("location"), "…onboarding owns this session").toBe("/create-org");
+
+    // The onboarding page itself is served (no redirect loop).
+    const onboarding = yield* documentRequest(
+      new URL("/create-org", target.baseUrl),
+      orgless.headers!.cookie!,
+    );
+    expect(onboarding.status, "/create-org renders for the org-less session").toBe(200);
+  }),
+);
+
 // The sealed wos-session is iron-sealed JSON { accessToken, refreshToken, … }.
 // Corrupting the access token's signature makes the gate's verify fail the
 // same way an EXPIRED token does (invalid JWT → refresh path) — without

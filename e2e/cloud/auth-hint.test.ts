@@ -1,10 +1,11 @@
-// Cloud-specific: the auth-hint cookie lifecycle. The sealed session is
-// HttpOnly, so on a fresh page load the SPA can't know it's signed in until
-// /account/me resolves — the hint (executor-auth-hint, non-HttpOnly, written
-// by AuthProvider once /account/me confirms) is what lets the NEXT load paint
-// the real app shell immediately instead of a skeleton. These scenarios pin
-// the full loop: confirmed identity writes it, the next load seeds from it
-// while the probe is still in flight, and logout takes it away.
+// Cloud-specific: the auth-hint lifecycle that lets the app paint the REAL
+// authenticated shell with no full-page skeleton, ever. The sealed session is
+// HttpOnly, so the SPA can't derive identity from it — instead the SSR gate
+// verifies the session per document request, renders the shell from that
+// verified identity, and MINTS the non-HttpOnly hint cookie
+// (executor-auth-hint) when the browser doesn't hold a current one. From
+// then on AuthProvider keeps the hint fresh on every confirmed /account/me
+// and logout takes it away with the session.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -14,7 +15,7 @@ import { Browser, Target } from "../src/services";
 const HINT_COOKIE = "executor-auth-hint";
 
 scenario(
-  "Auth hint · a confirmed session writes the hint, and the next load paints the real shell from it",
+  "Auth hint · the FIRST load on a fresh browser paints the real shell — the gate minted the hint",
   {},
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -22,25 +23,10 @@ scenario(
     const identity = yield* target.newIdentity();
 
     yield* browser.session(identity, async ({ page, step }) => {
-      const hintCookie = async () =>
-        (await page.context().cookies()).find((cookie) => cookie.name === HINT_COOKIE);
-
-      await step("First signed-in load → /account/me confirms → the hint is written", async () => {
-        await page.goto("/", { waitUntil: "commit" });
-        await page.getByRole("link", { name: "Policies" }).waitFor();
-        // The write happens in an effect after /account/me resolves.
-        await expect.poll(hintCookie, { timeout: 10_000 }).toBeTruthy();
-      });
-
-      const hint = (await hintCookie())!;
-      expect(hint.httpOnly, "the hint is readable by the SPA — that's its job").toBe(false);
-      expect(
-        decodeURIComponent(hint.value),
-        "it carries the confirmed identity (display data only)",
-      ).toContain(identity.label);
-
-      // Hold the auth probe open on the SECOND load. Without the hint this
-      // window is a full-page skeleton; with it, the real shell.
+      // Hold the auth probe open from the very first request. This browser
+      // has NEVER loaded the app — no hint cookie exists — which used to be
+      // the one case that still showed a full-page skeleton for the whole
+      // /account/me round trip.
       let probeResolved = false;
       await page.route("**/api/account/me", async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -48,19 +34,34 @@ scenario(
         await route.continue();
       });
 
-      await step("Reload: the real app shell paints while /account/me is in flight", async () => {
+      await step("First-ever load: the real app shell, immediately", async () => {
         await page.goto("/", { waitUntil: "commit" });
-        // Real nav text — the loading skeleton has no text at all.
+        // Real nav text — a skeleton has no text at all.
         await page.getByRole("link", { name: "Policies" }).waitFor();
       });
 
-      expect(probeResolved, "the shell did NOT wait for /account/me — the hint seeded it").toBe(
-        false,
-      );
+      expect(probeResolved, "the shell did NOT wait for /account/me").toBe(false);
+      // The full-page skeleton was a text-free silhouette; the real shell has
+      // the nav AND this identity's own data in the footer — the SSR render
+      // knew who it was serving. (Per-SECTION skeletons for in-flight data
+      // are fine; the silhouette of the whole app is what must never paint.)
+      // newIdentity names the org after the user (`Org user-xxxx`), so the
+      // footer's org line is identity-specific text no other user would show.
+      const orgName = `Org ${identity.label.split("@")[0]}`;
       expect(
-        await page.getByRole("link", { name: "Billing" }).isVisible(),
-        "it is the full signed-in nav, not a placeholder",
+        await page.getByText(orgName).first().isVisible(),
+        "the shell footer shows THIS identity's organization",
       ).toBe(true);
+
+      // The identity the shell painted from is now pinned for next time: the
+      // gate minted the hint cookie on the document response itself.
+      const hint = (await page.context().cookies()).find((c) => c.name === HINT_COOKIE);
+      expect(hint, "the gate minted the hint on the first response").toBeTruthy();
+      expect(hint!.httpOnly, "the hint is readable by the SPA — that's its job").toBe(false);
+      expect(
+        decodeURIComponent(hint!.value),
+        "it carries the verified identity (display data only)",
+      ).toContain(identity.label);
     });
   }),
 );
@@ -74,7 +75,7 @@ scenario(
     const identity = yield* target.newIdentity();
 
     yield* browser.session(identity, async ({ page, step }) => {
-      await step("Load the app signed in (the hint gets written)", async () => {
+      await step("Load the app signed in (the hint arrives with it)", async () => {
         await page.goto("/", { waitUntil: "commit" });
         await page.getByRole("link", { name: "Policies" }).waitFor();
         await expect
