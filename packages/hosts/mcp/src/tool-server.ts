@@ -340,6 +340,29 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   };
 };
 
+// A paused execution lives in the session runtime's memory: it expires when
+// the user takes too long to answer, and dies early when the runtime is
+// rebuilt (host restart, redeploy). Either way the recovery is the same and
+// the model should be told it, not just handed a miss.
+const missingExecutionResult = (executionId: string): McpToolResult => ({
+  content: [
+    {
+      type: "text" as const,
+      text: [
+        `No paused execution: ${executionId}.`,
+        "The paused execution expired or was lost when its session was restarted — paused executions only stay resumable for a few minutes.",
+        "To recover, run the execute tool again with the original code; if it pauses, a fresh executionId will be issued.",
+      ].join(" "),
+    },
+  ],
+  structuredContent: {
+    status: "execution_not_found",
+    executionId,
+    recovery: "re_execute",
+  },
+  isError: true,
+});
+
 const JsonObjectFromString = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 const decodeJsonObjectString = Schema.decodeUnknownOption(JsonObjectFromString);
 
@@ -460,10 +483,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const outcome = yield* engine.resume(executionId, { action, content });
         if (!outcome) {
           debugLog("resume.missing_execution", { executionId });
-          return {
-            content: [{ type: "text" as const, text: `No paused execution: ${executionId}` }],
-            isError: true,
-          } satisfies McpToolResult;
+          return missingExecutionResult(executionId);
         }
         debugLog("resume.result", {
           executionId,
@@ -535,10 +555,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
         const outcome = yield* engine.resume(executionId, response);
         if (!outcome) {
-          return {
-            content: [{ type: "text" as const, text: `No paused execution: ${executionId}` }],
-            isError: true,
-          } satisfies McpToolResult;
+          return missingExecutionResult(executionId);
         }
         return outcome.status === "completed"
           ? toMcpResult(formatExecuteResult(outcome.result))

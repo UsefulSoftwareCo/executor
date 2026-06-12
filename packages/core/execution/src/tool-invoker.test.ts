@@ -1290,6 +1290,94 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
+  it.effect(
+    "execution ids are unique across engine instances (no counter reuse)",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engineA = createExecutionEngine({ executor, codeExecutor });
+        const engineB = createExecutionEngine({ executor, codeExecutor });
+        const code = "return await tools.api.org.main.singleApproval({});";
+
+        const pausedA = yield* engineA.executeWithPause(code);
+        const pausedB = yield* engineB.executeWithPause(code);
+        expect(pausedA.status).toBe("paused");
+        expect(pausedB.status).toBe("paused");
+        if (pausedA.status !== "paused" || pausedB.status !== "paused") return;
+
+        // A rebuilt engine (host restart) must never re-mint an id a client
+        // may still hold — a stale resume would bind to the wrong pause.
+        expect(pausedA.execution.id).not.toBe(pausedB.execution.id);
+
+        yield* engineA.resume(pausedA.execution.id, { action: "accept" });
+        yield* engineB.resume(pausedB.execution.id, { action: "accept" });
+      }),
+    { timeout: 10000 },
+  );
+
+  it.effect(
+    "a duplicate resume replays the delivered outcome instead of reporting a missing pause",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
+        const code = "return await tools.api.org.main.singleApproval({});";
+
+        const outcome1 = yield* engine.executeWithPause(code);
+        expect(outcome1.status).toBe("paused");
+        if (outcome1.status !== "paused") return;
+        const executionId = outcome1.execution.id;
+
+        const first = yield* engine.resume(executionId, { action: "accept" });
+        expect(first?.status).toBe("completed");
+
+        // The MCP client retries resume when the response is lost in
+        // transit; the retry must return the same completed outcome.
+        const retry = yield* engine.resume(executionId, { action: "accept" });
+        expect(retry?.status).toBe("completed");
+        const completed = retry as Extract<NonNullable<typeof retry>, { status: "completed" }>;
+        expect(completed.result.error).toBeUndefined();
+        expect(completed.result.result).toMatchObject({ ok: true });
+      }),
+    { timeout: 10000 },
+  );
+
+  // live clock: the sandbox timeout is a real timer, so the test must
+  // actually wait for it rather than suspend on the virtual TestClock.
+  it.live(
+    "a pause abandoned by a failing sandbox is dropped and its resume replays the failure outcome",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        // Sandbox times out while suspended on the elicitation, so the fiber
+        // settles without a resume ever arriving.
+        const engine = createExecutionEngine({
+          executor,
+          codeExecutor: makeQuickJsExecutor({ timeoutMs: 250 }),
+        });
+        const code = "return await tools.api.org.main.singleApproval({});";
+
+        const outcome1 = yield* engine.executeWithPause(code);
+        expect(outcome1.status).toBe("paused");
+        if (outcome1.status !== "paused") return;
+        const executionId = outcome1.execution.id;
+
+        // Wait for the sandbox timeout to settle the detached fiber.
+        yield* Effect.sleep("600 millis");
+
+        // The dead pause must no longer be reported as live...
+        const stillPaused = yield* engine.getPausedExecution(executionId);
+        expect(stillPaused).toBeNull();
+
+        // ...and a late resume surfaces the terminal outcome, not a miss.
+        const late = yield* engine.resume(executionId, { action: "accept" });
+        expect(late?.status).toBe("completed");
+        const completed = late as Extract<NonNullable<typeof late>, { status: "completed" }>;
+        expect(completed.result.error).toContain("timed out");
+      }),
+    { timeout: 10000 },
+  );
+
   // Regression: use separate top-level runPromise calls to match HTTP/CLI
   // pause/resume, and a single-elicit tool so no later pause can mask a dead
   // sandbox fiber.

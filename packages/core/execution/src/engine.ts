@@ -1,5 +1,6 @@
 import { Deferred, Effect, Fiber, Predicate, Queue } from "effect";
 import type * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 
 import type {
   Executor,
@@ -377,7 +378,29 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 ): ExecutionEngine<E> => {
   const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
-  let nextId = 0;
+  // Outcomes of executions that already settled (resumed to completion, hit a
+  // new pause, or died while paused). MCP clients retry `resume` when a
+  // response gets lost in transit; without this cache the retry of an
+  // already-delivered resume answers "no paused execution" (observed in
+  // production seconds after a successful resume). Bounded FIFO — pause
+  // volume is tiny (human approvals), so a small window is plenty.
+  const settledOutcomes = new Map<string, Exit.Exit<ExecutionResult, E>>();
+  const SETTLED_OUTCOME_LIMIT = 64;
+  // Resumes whose outcome is still being computed, so a concurrent duplicate
+  // awaits the same result instead of missing the (already-consumed) pause.
+  const pendingResumes = new Map<string, Deferred.Deferred<ExecutionResult, E>>();
+
+  // Exits (not just successes) so a replayed failure re-fails through the
+  // typed channel — hosts render engine failures opaquely, and a replay must
+  // not bypass that by flattening the cause into result text.
+  const recordSettledOutcome = (executionId: string, exit: Exit.Exit<ExecutionResult, E>): void => {
+    settledOutcomes.set(executionId, exit);
+    while (settledOutcomes.size > SETTLED_OUTCOME_LIMIT) {
+      const oldest = settledOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      settledOutcomes.delete(oldest);
+    }
+  };
 
   /**
    * Race a running fiber against the pause queue. Returns when either
@@ -427,7 +450,11 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const elicitationHandler: ElicitationHandler = (ctx) =>
       Effect.gen(function* () {
         const responseDeferred = yield* Deferred.make<typeof ElicitationResponse.Type>();
-        const id = `exec_${++nextId}`;
+        // Globally unique — engine instances are rebuilt on host restarts
+        // (Durable Object cold restores, redeploys), so a counter would
+        // re-mint the same ids and let a stale client resume bind to a
+        // different execution's pause.
+        const id = `exec_${crypto.randomUUID()}`;
 
         const paused: InternalPausedExecution<E> = {
           id,
@@ -453,12 +480,41 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
 
+    // When the fiber settles on its own (sandbox timeout, failure) while
+    // pauses are still outstanding, drop them: getPausedExecution must not
+    // report a pause whose fiber can no longer consume a response, and the
+    // map must not grow forever. A resume retry still finds the terminal
+    // outcome via the settled-outcome cache.
+    const sandboxFiber = fiber;
+    yield* Effect.forkDetach(
+      Fiber.await(sandboxFiber).pipe(
+        Effect.flatMap((exit) =>
+          Effect.sync(() => {
+            const outcome = Exit.map(
+              exit,
+              (result): ExecutionResult => ({ status: "completed", result }),
+            );
+            for (const [id, paused] of pausedExecutions) {
+              if (paused.fiber !== sandboxFiber) continue;
+              pausedExecutions.delete(id);
+              recordSettledOutcome(id, outcome);
+            }
+          }),
+        ),
+      ),
+    );
+
     return (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
   });
 
   /**
    * Resume a paused execution. Completes the response Deferred to unblock the
    * fiber, then races completion against the next queued or future pause.
+   *
+   * Idempotent per executionId: MCP clients retry `resume` when a response is
+   * lost in transit, so a duplicate of an already-delivered resume replays the
+   * recorded outcome, and a duplicate that arrives while the first is still
+   * in flight awaits the same outcome instead of reporting a missing pause.
    */
   const resumeExecution = Effect.fn("mcp.execute.resume")(function* (
     executionId: string,
@@ -468,16 +524,39 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.resume.action": response.action,
     });
 
+    const settled = settledOutcomes.get(executionId);
+    if (settled) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.replayed": true });
+      return (yield* settled) as ExecutionResult;
+    }
+
+    const pending = pendingResumes.get(executionId);
+    if (pending) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.joined_inflight": true });
+      return (yield* Deferred.await(pending)) as ExecutionResult;
+    }
+
     const paused = pausedExecutions.get(executionId);
     if (!paused) return null;
     pausedExecutions.delete(executionId);
+
+    const inflight = yield* Deferred.make<ExecutionResult, E>();
+    pendingResumes.set(executionId, inflight);
 
     yield* Deferred.succeed(paused.response, {
       action: response.action as typeof ElicitationResponse.Type.action,
       content: response.content,
     });
 
-    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue)) as ExecutionResult;
+    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          recordSettledOutcome(executionId, exit);
+          pendingResumes.delete(executionId);
+          yield* Deferred.done(inflight, exit);
+        }),
+      ),
+    )) as ExecutionResult;
   });
 
   /**
