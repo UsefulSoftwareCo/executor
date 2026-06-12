@@ -324,6 +324,16 @@ export { InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
 export { ToolResult, isToolResult, type ToolError, type ToolHttpMeta } from "./tool-result";
+
+// Stamped boot-time data-migration ledger for the libSQL-backed apps.
+export {
+  DataMigrationError,
+  DuplicateDataMigrationError,
+  runSqliteDataMigrations,
+  sqliteDataMigration,
+  type SqliteDataMigration,
+  type SqliteDataMigrationClient,
+} from "./sqlite-data-migrations";
 export {
   authToolFailure,
   type AuthToolFailureCode,

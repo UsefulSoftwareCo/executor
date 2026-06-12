@@ -1,17 +1,21 @@
-/* oxlint-disable executor/no-try-catch-or-throw, executor/no-json-parse -- boundary: one-shot data migration drives a raw SQL client (JSON text columns, transaction + rollback) */
 // ---------------------------------------------------------------------------
-// One-off boot migration: unwrap the retired {status, headers, data}
-// transport envelope from persisted OpenAPI tool output schemas. The runtime
-// returns the upstream payload as `data` (status/headers live in the
-// ToolResult `http` side channel), so persisted schemas must describe the
-// payload only — otherwise describe previews show an envelope invocations no
+// Data migration: unwrap the retired {status, headers, data} transport
+// envelope from persisted OpenAPI tool output schemas. The runtime returns
+// the upstream payload as `data` (status/headers live in the ToolResult
+// `http` side channel), so persisted schemas must describe the payload
+// only — otherwise describe previews show an envelope invocations no
 // longer return. Mirrors the cloud drizzle migration
 // (apps/cloud/drizzle/0002_unwrap_openapi_output_envelope.sql) for the
-// libSQL-backed apps, which have no SQL migration chain at boot.
+// libSQL-backed apps, where it runs once through the data-migration ledger.
 //
-// Idempotent by construction: payload-shaped rows don't match the envelope
-// signature, so re-running plans zero updates.
+// Idempotent: payload-shaped rows don't match the envelope signature, so
+// re-running plans zero updates.
 // ---------------------------------------------------------------------------
+
+import { Effect, Option, Schema } from "effect";
+import { DataMigrationError, type SqliteDataMigrationClient } from "@executor-js/sdk/core";
+
+const MIGRATION_NAME = "2026-06-11-openapi-output-envelope-unwrap";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,61 +58,65 @@ export const unwrapOpenApiTransportEnvelope = (
   return { outputSchema };
 };
 
-// ---------------------------------------------------------------------------
-// SQLite runner — shared by the libSQL-backed apps (local boot, selfhost
-// boot). Structural client interface so the plugin doesn't take a driver
-// dependency; `@libsql/client` satisfies it.
-// ---------------------------------------------------------------------------
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 
-export interface SqliteToolSchemaClient {
-  execute(
-    stmt: string | { readonly sql: string; readonly args: readonly unknown[] },
-  ): Promise<{ readonly rows: readonly Record<string, unknown>[] }>;
-}
+const execute = (
+  client: SqliteDataMigrationClient,
+  stmt: string | { readonly sql: string; readonly args: readonly unknown[] },
+) =>
+  Effect.tryPromise({
+    try: () => client.execute(stmt),
+    catch: (cause) => new DataMigrationError({ migration: MIGRATION_NAME, cause }),
+  });
 
 /** Unwrap envelope-shaped openapi tool output schemas in a SQLite database.
- *  Idempotent; returns the number of rows rewritten. The `tool` table may
- *  not exist yet on a fresh database — that counts as nothing to migrate. */
-export const runSqliteOpenApiOutputSchemaMigration = async (
-  client: SqliteToolSchemaClient,
-): Promise<number> => {
-  const exists = await client.execute(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool'",
-  );
-  if (exists.rows.length === 0) return 0;
+ *  Returns the number of rows rewritten. The `tool` table may not exist yet
+ *  on a fresh database — that counts as nothing to migrate. */
+export const runSqliteOpenApiOutputSchemaMigration = (
+  client: SqliteDataMigrationClient,
+): Effect.Effect<number, DataMigrationError> =>
+  Effect.gen(function* () {
+    const exists = yield* execute(
+      client,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tool'",
+    );
+    if (exists.rows.length === 0) return 0;
 
-  const result = await client.execute(
-    "SELECT row_id, output_schema FROM tool WHERE plugin_id = 'openapi' AND output_schema IS NOT NULL",
-  );
-  const updates: { readonly rowId: string; readonly outputSchema: unknown | null }[] = [];
-  for (const row of result.rows) {
-    if (typeof row.row_id !== "string" || typeof row.output_schema !== "string") continue;
-    let schema: unknown;
-    try {
-      schema = JSON.parse(row.output_schema);
-    } catch {
-      continue;
+    const result = yield* execute(
+      client,
+      "SELECT row_id, output_schema FROM tool WHERE plugin_id = 'openapi' AND output_schema IS NOT NULL",
+    );
+    const updates: { readonly rowId: string; readonly outputSchema: unknown | null }[] = [];
+    for (const row of result.rows) {
+      if (typeof row.row_id !== "string" || typeof row.output_schema !== "string") continue;
+      const schema = decodeJsonOption(row.output_schema);
+      if (Option.isNone(schema)) continue;
+      const unwrapped = unwrapOpenApiTransportEnvelope(schema.value);
+      if (unwrapped !== undefined) updates.push({ rowId: row.row_id, ...unwrapped });
     }
-    const unwrapped = unwrapOpenApiTransportEnvelope(schema);
-    if (unwrapped !== undefined) updates.push({ rowId: row.row_id, ...unwrapped });
-  }
-  if (updates.length === 0) return 0;
+    if (updates.length === 0) return 0;
 
-  await client.execute("BEGIN");
-  try {
-    for (const update of updates) {
-      await client.execute({
-        sql: "UPDATE tool SET output_schema = ? WHERE row_id = ?",
-        args: [
-          update.outputSchema === null ? null : JSON.stringify(update.outputSchema),
-          update.rowId,
-        ],
-      });
-    }
-    await client.execute("COMMIT");
-  } catch (cause) {
-    await client.execute("ROLLBACK");
-    throw cause;
-  }
-  return updates.length;
+    const applyAll = Effect.gen(function* () {
+      for (const update of updates) {
+        yield* execute(client, {
+          sql: "UPDATE tool SET output_schema = ? WHERE row_id = ?",
+          args: [
+            update.outputSchema === null ? null : JSON.stringify(update.outputSchema),
+            update.rowId,
+          ],
+        });
+      }
+      yield* execute(client, "COMMIT");
+    });
+
+    yield* execute(client, "BEGIN");
+    yield* applyAll.pipe(Effect.tapError(() => execute(client, "ROLLBACK").pipe(Effect.ignore)));
+    return updates.length;
+  });
+
+/** Registry entry for the boot-time data-migration ledger. */
+export const openApiOutputSchemaDataMigration = {
+  name: MIGRATION_NAME,
+  run: (client: SqliteDataMigrationClient) =>
+    runSqliteOpenApiOutputSchemaMigration(client).pipe(Effect.asVoid),
 };

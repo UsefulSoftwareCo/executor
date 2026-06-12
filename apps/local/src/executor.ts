@@ -4,14 +4,19 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 
-import { Subject, Tenant, createExecutor, type AnyPlugin, type Executor } from "@executor-js/sdk";
-import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
-import { runSqliteOpenApiOutputSchemaMigration } from "@executor-js/plugin-openapi";
+import {
+  Subject,
+  Tenant,
+  createExecutor,
+  runSqliteDataMigrations,
+  type AnyPlugin,
+  type Executor,
+} from "@executor-js/sdk";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
 
 import executorConfig from "../executor.config";
-import { authConfigTransforms } from "./db/auth-config-migration";
+import { localDataMigrations } from "./db/data-migrations";
 import { createSqliteFumaDb } from "./db/sqlite-fumadb";
 import { migrateLocalV1ToV2IfNeeded } from "./db/v1-v2-migration";
 
@@ -170,24 +175,14 @@ const createLocalExecutorLayer = () => {
         (db) => Effect.promise(() => db.close()).pipe(Effect.ignore),
       );
 
-      // One-off data migration: rewrite pre-canonical integration auth
-      // configs (incl. v1→v2 outputs) into the shared placements model.
-      // Idempotent — a no-op once every row is canonical.
-      yield* Effect.tryPromise({
-        try: () => runSqliteAuthConfigMigration(sqlite.client, authConfigTransforms),
-        catch: (cause) =>
-          new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
-      });
-
-      // One-off data migration: unwrap the retired {status, headers, data}
-      // transport envelope from persisted openapi tool output schemas
-      // (mirrors cloud's drizzle 0002). Idempotent — payload-shaped rows
-      // don't match the envelope signature.
-      yield* Effect.tryPromise({
-        try: () => runSqliteOpenApiOutputSchemaMigration(sqlite.client),
-        catch: (cause) =>
-          new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
-      });
+      // Boot-time data migrations: each registry entry runs once and is
+      // stamped in the `data_migration` ledger; stamped entries are skipped
+      // without touching the data.
+      yield* runSqliteDataMigrations(sqlite.client, localDataMigrations).pipe(
+        Effect.mapError(
+          (cause) => new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
+        ),
+      );
 
       // webBaseUrl is where the executor's web UI listens — same port as the
       // daemon API since the daemon serves both. Mirrors serve.ts's port
