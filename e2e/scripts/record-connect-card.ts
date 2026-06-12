@@ -79,7 +79,14 @@ const shoot = async (label: string, javaScriptEnabled: boolean, outPath: string)
   });
   await context.addCookies([{ name: cookieName!, value: cookieValue!, url: baseUrl }]);
   const page = await context.newPage();
-  await page.goto("/", { waitUntil: javaScriptEnabled ? "networkidle" : "commit" });
+  // Always wait for the stylesheet to land (networkidle) before shooting: it's
+  // render-blocking, so a real first paint already has `color-scheme: light
+  // dark` applied and shiki's light-dark() syntax colors resolve to the dark
+  // palette. Screenshotting at `commit` (pre-stylesheet) would instead capture
+  // the light palette — an artifact no user sees. JS stays disabled for the
+  // SSR shot only to freeze the pre-hydration origin (no client correction),
+  // not to skip CSS.
+  await page.goto("/", { waitUntil: "networkidle" });
   // The install command is the thing that flashes; screenshot just its block.
   const command = page.locator('pre:has-text("add-mcp")').first();
   await command.waitFor({ state: "visible", timeout: 15_000 });
