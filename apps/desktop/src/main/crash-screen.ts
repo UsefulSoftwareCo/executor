@@ -64,9 +64,9 @@ export const sidecarCrashHtml = ({ reported }: CrashScreenOptions): string => `<
       </div>
       <p id="status"></p>
       <p class="reset-row">
-        Keeps crashing?
+        Still won't start after restarting?
         <a id="reset" href="#">Reset data</a>
-        — your current data is backed up first, never deleted.
+        clears a damaged database to get the app running again.
       </p>
     </main>
     <script>

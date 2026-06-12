@@ -33,7 +33,7 @@ import {
   reportAProblem,
 } from "./diagnostics";
 import { sidecarCrashHtml } from "./crash-screen";
-import { confirmResetState, resetExecutorState } from "./reset-state";
+import { announceBackup, confirmResetState, resetExecutorState } from "./reset-state";
 import {
   getServerProfiles,
   getServerSettings,
@@ -343,8 +343,9 @@ const registerIpcHandlers = () => {
       await stopSidecar(connection.child);
       connection = null;
     }
-    resetExecutorState();
+    const { backupDir } = resetExecutorState();
     await restartSidecarAndReload();
+    await announceBackup(backupDir);
     return true;
   });
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
@@ -502,7 +503,8 @@ const handleFatalSidecarFailure = async (error: unknown) => {
   // fail forever — updating can't fix it. Offer the move-aside reset and one
   // immediate retry. Returns true when boot should be attempted again.
   if (response === 1 && (await confirmResetState())) {
-    resetExecutorState();
+    const { backupDir } = resetExecutorState();
+    await announceBackup(backupDir);
     return true;
   }
   return false;

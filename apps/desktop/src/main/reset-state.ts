@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { dialog } from "electron";
+import { dialog, shell } from "electron";
 import log from "electron-log/main.js";
 
 const STATE_ENTRIES = ["data.db", "data.db-wal", "data.db-shm", "server-control"];
@@ -75,4 +75,30 @@ export const confirmResetState = async (): Promise<boolean> => {
     cancelId: 1,
   });
   return response === 0;
+};
+
+/**
+ * Make the "your data is backed up" promise concrete after a reset: name the
+ * exact folder and offer to open it. Without this the user is told their data
+ * is safe somewhere but has no way to act on it.
+ */
+export const announceBackup = async (backupDir: string): Promise<void> => {
+  // Same test seam as confirmResetState: a modal with no one to dismiss it
+  // would hang the e2e reset path.
+  if (process.env.EXECUTOR_TEST_AUTO_CONFIRM_RESET === "1") {
+    log.info("[reset-state] backup announced (test mode, dialog skipped)", { backupDir });
+    return;
+  }
+  const { response } = await dialog.showMessageBox({
+    type: "info",
+    title: "Executor data reset",
+    message: "Your previous data has been backed up.",
+    detail:
+      `If you need anything from before the reset, it's all here:\n\n${backupDir}\n\n` +
+      "You can ignore this folder otherwise — Executor is now running on a fresh data directory.",
+    buttons: ["Show in folder", "OK"],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  if (response === 0) shell.showItemInFolder(backupDir);
 };
