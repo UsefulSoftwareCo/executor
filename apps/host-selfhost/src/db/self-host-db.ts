@@ -109,6 +109,24 @@ export const createSqliteExecutorDb = async <const TTables extends FumaTables>(
     provider: "sqlite",
   });
 
+  // Defensive column adds for databases created by earlier releases — the
+  // bring-up above is CREATE TABLE IF NOT EXISTS and never alters an existing
+  // table (same idiom as apps/local's sqlite-fumadb.ts; pinned by
+  // upgrade-replay.test.ts). Idempotent.
+  const oauthClientColumns = await client.execute("PRAGMA table_info('oauth_client')");
+  if (
+    oauthClientColumns.rows.length > 0 &&
+    !oauthClientColumns.rows.some((column) => column["name"] === "origin_kind")
+  ) {
+    await client.execute("ALTER TABLE oauth_client ADD COLUMN origin_kind TEXT");
+  }
+  if (
+    oauthClientColumns.rows.length > 0 &&
+    !oauthClientColumns.rows.some((column) => column["name"] === "origin_integration")
+  ) {
+    await client.execute("ALTER TABLE oauth_client ADD COLUMN origin_integration TEXT");
+  }
+
   const { db, fuma } = createExecutorFumaDb(drizzleDb, {
     tables: options.tables,
     namespace: options.namespace,

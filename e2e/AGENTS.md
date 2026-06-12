@@ -114,6 +114,22 @@ When handing results to the user, follow the evidence contract in the root
 - To see payload shapes, read the API definitions under
   `packages/core/api/src/<group>/api.ts` (READ ONLY — for shapes, not imports).
 
+## Multi-user organizations (cloud)
+
+`newIdentity()` is always a fresh user+org. To build a REAL team — several
+users in one org — compose the helpers in `src/org.ts`, which drive the
+genuine product flows (invite → accept-invitation, create-organization,
+switch-organization) and re-bind each identity to the refreshed session:
+
+```ts
+const admin = yield * target.newIdentity(); // fresh user + org
+const teammate = yield * joinOrg(target, admin, yield * target.newIdentity({ org: false }));
+// also: createAnotherOrg / switchOrg / activeOrganizationId
+```
+
+The free plan seats 3 members (admin + 2 invites). See
+`cloud/org-lifecycle.test.ts` for the full team journey.
+
 ## Isolation rules
 
 - Cloud: `newIdentity()` is a fresh user+org — you are isolated for free.

@@ -18,9 +18,9 @@ import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
+import { activeOrganizationId, createAnotherOrg, joinOrg, switchOrg } from "../src/org";
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
-import type { Identity, Target as TargetShape } from "../src/target";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -60,80 +60,6 @@ const registerIntegration = (client: Client) =>
   });
 
 const freshConnectionName = () => ConnectionName.make(`conn${randomBytes(4).toString("hex")}`);
-
-// ── Session plumbing over the real auth endpoints ───────────────────────────
-// These mirror what the product web app does: cookie-authenticated calls whose
-// responses re-seal the session when the active org changes.
-
-const cookieOf = (identity: Identity): string => identity.headers?.["cookie"] ?? "";
-
-const postJson = (target: TargetShape, path: string, identity: Identity, body: unknown) =>
-  Effect.promise(async () => {
-    const response = await fetch(new URL(path, target.baseUrl), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        origin: new URL(target.baseUrl).origin,
-        cookie: cookieOf(identity),
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(`${path} failed (${response.status}): ${await response.text()}`);
-    }
-    return response;
-  });
-
-/** The identity re-bound to the refreshed session cookie a response set. */
-const withRefreshedSession = (identity: Identity, response: Response): Identity => {
-  const refreshed = (response.headers.getSetCookie?.() ?? [])
-    .find((header) => header.startsWith("wos-session="))
-    ?.split(";")[0];
-  if (!refreshed) throw new Error("response did not refresh the session cookie");
-  return { ...identity, headers: { cookie: refreshed } };
-};
-
-/** Invite `member` into `admin`'s org and accept — the real invite flow.
- *  Returns the member identity with its session re-bound to that org. */
-const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
-  Effect.gen(function* () {
-    const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
-      email: member.credentials?.email,
-    });
-    const invitation = (yield* Effect.promise(() => inviteResponse.json())) as { id: string };
-    const acceptResponse = yield* postJson(target, "/api/auth/accept-invitation", member, {
-      invitationId: invitation.id,
-    });
-    return withRefreshedSession(member, acceptResponse);
-  });
-
-/** Create another org for this account; returns the identity bound to it. */
-const createAnotherOrg = (target: TargetShape, identity: Identity, name: string) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
-    return withRefreshedSession(identity, response);
-  });
-
-/** Switch this account's active org; returns the identity bound to it. */
-const switchOrg = (target: TargetShape, identity: Identity, organizationId: string) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/switch-organization", identity, {
-      organizationId,
-    });
-    return withRefreshedSession(identity, response);
-  });
-
-/** The org this identity's session is currently bound to. */
-const activeOrganizationId = (target: TargetShape, identity: Identity) =>
-  Effect.promise(async () => {
-    const response = await fetch(new URL("/api/auth/me", target.baseUrl), {
-      headers: { cookie: cookieOf(identity) },
-    });
-    if (!response.ok) throw new Error(`/api/auth/me failed (${response.status})`);
-    const body = (await response.json()) as { organization: { id: string } | null };
-    if (!body.organization) throw new Error("identity has no active organization");
-    return body.organization.id;
-  });
 
 scenario(
   "Connections · a user-owned connection is private to its creator, even inside the same org",

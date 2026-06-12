@@ -7,8 +7,9 @@
 // QuickJS execution → live upstream request.
 //
 // Ported from apps/cloud/src/api/sources-api.node.test.ts. Cross-user
-// isolation of personal connections (alice/bob in one org) is NOT covered
-// here: minting a second member of an existing org has no public API surface.
+// isolation of personal connections (alice/bob in one org) is covered by
+// org-lifecycle.test.ts and connection-owner-isolation.test.ts via the real
+// invite → accept flow (src/org.ts), not here.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
