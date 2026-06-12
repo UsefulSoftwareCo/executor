@@ -6,8 +6,9 @@ import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bootProcesses, ensurePortsFree, waitForHttp } from "./boot";
-import { SELFHOST_ADMIN, SELFHOST_BASE_URL, SELFHOST_PORT } from "../targets/selfhost";
+import { claimPorts } from "../src/ports";
+import { SELFHOST_ADMIN } from "../targets/selfhost";
+import { bootProcesses, waitForHttp } from "./boot";
 
 const selfhostDir = fileURLToPath(new URL("../../apps/host-selfhost/", import.meta.url));
 
@@ -17,7 +18,15 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     return;
   }
 
-  await ensurePortsFree([{ port: SELFHOST_PORT, label: "selfhost vite dev" }]);
+  // Claim a free port (preferred block first, walk forward past squatters)
+  // and publish via env so the test workers derive the same URL. The imported
+  // targets/selfhost constants were computed BEFORE the claim — don't use them
+  // for ports/URLs here.
+  const { ports, release } = await claimPorts([
+    { envVar: "E2E_SELFHOST_PORT", offset: 4, label: "selfhost vite dev" },
+  ]);
+  const port = ports.E2E_SELFHOST_PORT!;
+  const baseUrl = `http://localhost:${port}`;
 
   // Fresh data dir per suite run — hermetic; in-suite isolation comes from
   // fresh identities, not resets.
@@ -28,14 +37,14 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     [
       {
         cmd: "bunx",
-        args: ["--bun", "vite", "dev", "--port", String(SELFHOST_PORT), "--strictPort"],
+        args: ["--bun", "vite", "dev", "--port", String(port), "--strictPort"],
         cwd: selfhostDir,
         env: {
           EXECUTOR_DATA_DIR: dataDir,
           BETTER_AUTH_SECRET: "executor-selfhost-e2e-secret-0123456789",
           EXECUTOR_BOOTSTRAP_ADMIN_EMAIL: SELFHOST_ADMIN.email,
           EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD: SELFHOST_ADMIN.password,
-          EXECUTOR_WEB_BASE_URL: SELFHOST_BASE_URL,
+          EXECUTOR_WEB_BASE_URL: baseUrl,
           // The harness boots loopback MCP/OAuth test servers and points the
           // instance at them; the hosted SSRF guard would otherwise block
           // outbound probes/dials to localhost. Hermetic test instance only.
@@ -47,10 +56,14 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
   );
 
   try {
-    await waitForHttp(SELFHOST_BASE_URL);
+    await waitForHttp(baseUrl);
   } catch (error) {
     await procs.teardown();
+    await release();
     throw error;
   }
-  return procs.teardown;
+  return async () => {
+    await procs.teardown();
+    await release();
+  };
 }

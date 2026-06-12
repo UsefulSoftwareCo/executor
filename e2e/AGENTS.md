@@ -89,10 +89,13 @@ E2E_CLOUD_URL=http://127.0.0.1:<port> ../node_modules/.bin/vitest run --project 
 E2E_SELFHOST_URL=http://localhost:<port> ../node_modules/.bin/vitest run --project selfhost <file>
 ```
 
-Ports are derived per checkout (hash of the repo root — see `src/ports.ts`),
-so suites in different worktrees never fight. If a port is somehow taken, the
-boot fails fast naming the squatting process; kill it or override with
-`E2E_CLOUD_PORT`-style env vars.
+Ports are claimed at boot (see `src/ports.ts`): each checkout hashes its repo
+root to a preferred block, atomically locks it (a held lock port makes races
+impossible), and walks to the next free block if it's locked or squatted — so
+concurrent suites in different worktrees can never collide or attach to each
+other's servers. `bun run ports` shows the preferred block; the boot log says
+if a suite moved. `E2E_*_PORT` env vars pin ports explicitly (no probing) and
+`E2E_<TARGET>_URL` attaches to a running instance.
 
 Each run writes `runs/<target>/<slug>/result.json` plus any browser artifacts
 (trace.zip / session.mp4 / screenshots). `bun run serve` hosts the scenario ×

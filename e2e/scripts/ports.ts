@@ -1,5 +1,8 @@
-// Print this checkout's derived e2e ports (see src/ports.ts) so an agent or
-// human can curl the booted servers or attach with E2E_<TARGET>_URL.
+// Print this checkout's PREFERRED e2e ports (see src/ports.ts). These are
+// where a suite normally boots; if the block is locked or squatted at boot
+// time, claimPorts walks to the next free block and the suite logs the move.
+// When attaching mid-run, the booted vite's actual port is authoritative —
+// check the suite's log line or `ps | grep 'vite dev'`.
 import {
   AUTUMN_EMULATOR_PORT,
   CLOUD_DB_PORT,
@@ -9,7 +12,7 @@ import {
 import { SELFHOST_PORT } from "../targets/selfhost";
 import { repoRoot } from "../src/ports";
 
-console.log(`e2e ports for ${repoRoot}`);
+console.log(`preferred e2e ports for ${repoRoot}`);
 console.log(`  cloud           http://127.0.0.1:${CLOUD_PORT}`);
 console.log(`  cloud dev-db    ${CLOUD_DB_PORT}`);
 console.log(`  workos emulator ${WORKOS_EMULATOR_PORT}`);
