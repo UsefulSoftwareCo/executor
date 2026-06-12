@@ -1,6 +1,5 @@
 import { createHighlighterCoreSync, type HighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-import { useIsDark } from "../hooks/use-is-dark";
 
 // ---------------------------------------------------------------------------
 // Eagerly loaded languages (sync — available immediately)
@@ -113,18 +112,30 @@ export const DEFAULT_DARK_THEME: SupportedTheme = "github-dark";
 export type ShikiThemeProp = SupportedTheme | { light: SupportedTheme; dark: SupportedTheme };
 
 /**
- * Resolve a `ShikiThemeProp` (either a single theme or a `{ light, dark }`
- * pair) to the theme that should currently be used, reacting to system
- * dark-mode changes. When no theme is provided, the default github pair is
- * used.
+ * Resolve a `ShikiThemeProp` to the `{ light, dark }` pair handed to shiki's
+ * dual-theme mode. A single theme means "this theme in BOTH modes".
+ *
+ * Dual-theme + `light-dark()` colors is what keeps highlighting correct from
+ * the FIRST frame: the rendered markup carries both palettes and the
+ * browser's own color-scheme picks one — no JS dark-mode probe, so an SSR'd
+ * page can't paint light-theme tokens and then snap once `useIsDark` syncs.
  */
-export function useResolvedShikiTheme(theme?: ShikiThemeProp): SupportedTheme {
-  const isDark = useIsDark();
-  if (typeof theme === "string") return theme;
-  const light = theme?.light ?? DEFAULT_LIGHT_THEME;
-  const dark = theme?.dark ?? DEFAULT_DARK_THEME;
-  return isDark ? dark : light;
+export function resolveShikiThemes(theme?: ShikiThemeProp): {
+  light: SupportedTheme;
+  dark: SupportedTheme;
+} {
+  if (typeof theme === "string") return { light: theme, dark: theme };
+  return {
+    light: theme?.light ?? DEFAULT_LIGHT_THEME,
+    dark: theme?.dark ?? DEFAULT_DARK_THEME,
+  };
 }
+
+/** The shiki options that render dual-theme `light-dark(...)` colors. */
+export const dualThemeOptions = (theme?: ShikiThemeProp) => ({
+  themes: resolveShikiThemes(theme),
+  defaultColor: "light-dark()" as const,
+});
 
 export function resolveLang(lang: string): SupportedLang | null {
   const l = lang.trim().toLowerCase();
@@ -197,16 +208,6 @@ import type { CodeHighlighterPlugin, ThemeInput } from "streamdown";
 type HighlightResult = NonNullable<ReturnType<CodeHighlighterPlugin["highlight"]>>;
 const tokensCache = new Map<string, HighlightResult>();
 
-/**
- * Read the current system color-scheme preference synchronously. Used in
- * non-React contexts (like the streamdown plugin) where hooks aren't
- * available.
- */
-const prefersDarkNow = (): boolean => {
-  if (typeof window === "undefined") return false;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-};
-
 export function createCodeHighlighterPlugin(): CodeHighlighterPlugin {
   return {
     name: "shiki" as const,
@@ -217,28 +218,24 @@ export function createCodeHighlighterPlugin(): CodeHighlighterPlugin {
     highlight(options, callback) {
       const resolved = resolveLang(options.language);
       const lang = resolved ?? "json";
-      const activeTheme = prefersDarkNow() ? DEFAULT_DARK_THEME : DEFAULT_LIGHT_THEME;
-      const key = `${activeTheme}:${lang}:${options.code.length}:${options.code.slice(0, 128)}`;
+      // Dual-theme tokens (light-dark() colors): correct in both color
+      // schemes, so the cache never holds the wrong palette and a mid-stream
+      // scheme flip needs no re-render.
+      const key = `${lang}:${options.code.length}:${options.code.slice(0, 128)}`;
 
       const cached = tokensCache.get(key);
       if (cached) return cached;
 
       const isReady = ensureLang(lang, () => {
         // Language just loaded — highlight and notify via callback
-        const result = highlighter.codeToTokens(options.code, {
-          lang,
-          themes: { light: activeTheme, dark: activeTheme },
-        });
+        const result = highlighter.codeToTokens(options.code, { lang, ...dualThemeOptions() });
         tokensCache.set(key, result);
         callback?.(result);
       });
 
       if (!isReady) return null;
 
-      const result = highlighter.codeToTokens(options.code, {
-        lang,
-        themes: { light: activeTheme, dark: activeTheme },
-      });
+      const result = highlighter.codeToTokens(options.code, { lang, ...dualThemeOptions() });
       tokensCache.set(key, result);
       return result;
     },

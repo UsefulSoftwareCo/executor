@@ -1,10 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import {
-  getHighlighter,
-  useResolvedShikiTheme,
-  type ShikiThemeProp,
-  type SupportedTheme,
-} from "../lib/shiki";
+import { useCallback, useMemo, useState, type CSSProperties } from "react";
+import { dualThemeOptions, getHighlighter, type ShikiThemeProp } from "../lib/shiki";
 import { cn } from "../lib/utils";
 import { Button } from "./button";
 import type { ThemedToken } from "shiki/core";
@@ -103,14 +98,21 @@ const CheckIcon = () => (
 // Shiki tokenization hook — non-blocking
 // ---------------------------------------------------------------------------
 
-function useTokens(code: string, theme: SupportedTheme): ThemedToken[][] {
+function useTokens(code: string, theme?: ShikiThemeProp): ThemedToken[][] {
   const highlighter = getHighlighter();
+  // Dual-theme light-dark() colors (token.htmlStyle): correct in both color
+  // schemes from the first frame — no JS dark-mode probe to catch up to.
   const result = highlighter.codeToTokens(code, {
     lang: "typescript",
-    theme,
+    ...dualThemeOptions(theme),
   });
   return result.tokens;
 }
+
+/** A dual-theme token's inline style (light-dark color + per-theme CSS vars). */
+const tokenStyle = (token: Pick<ThemedToken, "color" | "htmlStyle">): CSSProperties | undefined =>
+  (token.htmlStyle as CSSProperties | undefined) ??
+  (token.color ? { color: token.color } : undefined);
 
 // ---------------------------------------------------------------------------
 // Inline-expand logic
@@ -176,12 +178,13 @@ const applyExpansions = (
 // ---------------------------------------------------------------------------
 
 type RenderToken =
-  | { kind: "text"; content: string; color?: string }
-  | { kind: "ref"; name: string; color?: string };
+  | { kind: "text"; content: string; style?: CSSProperties }
+  | { kind: "ref"; name: string; style?: CSSProperties };
 
 const splitToken = (token: ThemedToken, clickableNames: ReadonlySet<string>): RenderToken[] => {
+  const style = tokenStyle(token);
   if (clickableNames.size === 0) {
-    return [{ kind: "text", content: token.content, color: token.color }];
+    return [{ kind: "text", content: token.content, style }];
   }
 
   const text = token.content;
@@ -205,14 +208,14 @@ const splitToken = (token: ThemedToken, clickableNames: ReadonlySet<string>): Re
     }
 
     if (earliest === -1) {
-      results.push({ kind: "text", content: remaining, color: token.color });
+      results.push({ kind: "text", content: remaining, style });
       break;
     }
 
     if (earliest > 0) {
-      results.push({ kind: "text", content: remaining.slice(0, earliest), color: token.color });
+      results.push({ kind: "text", content: remaining.slice(0, earliest), style });
     }
-    results.push({ kind: "ref", name: matchedName, color: token.color });
+    results.push({ kind: "ref", name: matchedName, style });
     remaining = remaining.slice(earliest + matchedName.length);
   }
 
@@ -242,7 +245,7 @@ function HighlightedCode(props: {
             return parts.map((part, pi) => {
               if (part.kind === "text") {
                 return (
-                  <span key={`${ti}-${pi}`} style={part.color ? { color: part.color } : undefined}>
+                  <span key={`${ti}-${pi}`} style={part.style}>
                     {part.content}
                   </span>
                 );
@@ -269,7 +272,7 @@ function HighlightedCode(props: {
                     "cursor-pointer underline underline-offset-2 hover:opacity-80",
                     isExpanded ? "decoration-current/50" : "decoration-current/30",
                   )}
-                  style={part.color ? { color: part.color } : undefined}
+                  style={part.style}
                   title={isExpanded ? `Collapse ${part.name}` : `Expand ${part.name}`}
                 >
                   {part.name}
@@ -294,7 +297,6 @@ export function ExpandableCodeBlock(props: {
   theme?: ShikiThemeProp;
 }) {
   const { code, definitions = [], className, theme } = props;
-  const resolvedTheme = useResolvedShikiTheme(theme);
   // Auto-expand trivial aliases (primitives, simple unions, string literals)
   const trivialNames = useMemo(() => {
     const trivial = new Set<string>();
@@ -341,7 +343,7 @@ export function ExpandableCodeBlock(props: {
     return formatTypeScript(withExpansions);
   }, [code, allExpanded, definitionMap, emptyAncestors]);
 
-  const tokens = useTokens(displayCode, resolvedTheme);
+  const tokens = useTokens(displayCode, theme);
 
   const handleToggle = useCallback((name: string) => {
     setExpanded((prev) => {
