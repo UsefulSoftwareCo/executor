@@ -15,7 +15,9 @@ export interface HostedHttpClientOptions {
   readonly fetch?: typeof globalThis.fetch;
 }
 
-const parseIpv4 = (hostname: string): readonly [number, number, number, number] | null => {
+const parseIpv4 = (
+  hostname: string,
+): readonly [number, number, number, number] | null => {
   const parts = hostname.split(".");
   if (parts.length !== 4) return null;
   const parsed: number[] = [];
@@ -58,7 +60,12 @@ const parseIpv4MappedIpv6 = (
   return [high >> 8, high & 0xff, low >> 8, low & 0xff];
 };
 
-const isPrivateIpv4 = ([a, b]: readonly [number, number, number, number]): boolean =>
+const isPrivateIpv4 = ([a, b]: readonly [
+  number,
+  number,
+  number,
+  number,
+]): boolean =>
   a === 0 ||
   a === 10 ||
   a === 127 ||
@@ -78,7 +85,8 @@ const isBlockedMetadataHostname = (hostname: string): boolean => {
 
 const isLocalOrPrivateHostname = (hostname: string): boolean => {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+  if (normalized === "localhost" || normalized.endsWith(".localhost"))
+    return true;
   const ipv4 = parseIpv4(normalized);
   if (ipv4) return isPrivateIpv4(ipv4);
   const mappedIpv4 = parseIpv4MappedIpv6(normalized);
@@ -127,6 +135,18 @@ export const validateHostedOutboundUrl = (
     }
   });
 
+const CREDENTIAL_HEADERS = [
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+] as const;
+
+const stripCredentialHeaders = (init: RequestInit | undefined): RequestInit => {
+  const headers = new Headers(init?.headers);
+  for (const name of CREDENTIAL_HEADERS) headers.delete(name);
+  return { ...init, headers };
+};
+
 const guardFetch = (
   underlying: typeof globalThis.fetch,
   options: HostedHttpClientOptions,
@@ -134,10 +154,14 @@ const guardFetch = (
   (async (input, init) => {
     const maxRedirects = options.maxRedirects ?? 10;
     let current: Parameters<typeof globalThis.fetch>[0] | URL = input;
+    let currentInit = init;
     for (let redirects = 0; redirects <= maxRedirects; redirects++) {
       const url = current instanceof Request ? current.url : String(current);
       Effect.runSync(validateHostedOutboundUrl(url, options));
-      const response = await underlying(current, { ...init, redirect: "manual" });
+      const response = await underlying(current, {
+        ...currentInit,
+        redirect: "manual",
+      });
       if (
         response.status >= 300 &&
         response.status < 400 &&
@@ -145,19 +169,18 @@ const guardFetch = (
         redirects < maxRedirects
       ) {
         const next = new URL(response.headers.get("location")!, url);
+        // Cross-origin redirects are followed (the loop re-validates every
+        // hop), but credentials minted for the original origin must not leak
+        // to the redirect target — same as fetch/curl behavior.
         if (next.origin !== new URL(url).origin) {
-          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch-compatible adapter must reject blocked requests
-          throw new HostedOutboundRequestBlocked({
-            url: next.toString(),
-            reason: "Cross-origin redirects are not allowed",
-          });
+          currentInit = stripCredentialHeaders(currentInit);
         }
         current = next.toString();
         continue;
       }
       return response;
     }
-    return await underlying(current, { ...init, redirect: "manual" });
+    return await underlying(current, { ...currentInit, redirect: "manual" });
   }) as typeof globalThis.fetch;
 
 export const makeHostedHttpClientLayer = (
@@ -166,7 +189,9 @@ export const makeHostedHttpClientLayer = (
   FetchHttpClient.layer.pipe(
     Layer.provide(
       options.fetch
-        ? Layer.succeed(FetchHttpClient.Fetch)(guardFetch(options.fetch, options))
+        ? Layer.succeed(FetchHttpClient.Fetch)(
+            guardFetch(options.fetch, options),
+          )
         : Layer.effect(
             FetchHttpClient.Fetch,
             Effect.map(Effect.service(FetchHttpClient.Fetch), (underlying) =>
