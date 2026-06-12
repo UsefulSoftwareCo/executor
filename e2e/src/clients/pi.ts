@@ -7,17 +7,19 @@
 // credentials and without touching anyone's pi/OpenCode state.
 //
 // Consumers:
-//   - `bun run cli infer "..."` — the interactive command (scripts/cli.ts).
-//   - future eval tiers — fan out runAgent() trials and grade the results.
+//   - `bun run cli pi "..."` — the interactive command (scripts/cli.ts).
+//   - future eval tiers — fan out runPi() trials and grade the results.
 //
 // This is deliberately NOT the OpenCode binary: pi's headless mode is built
 // for this (clean JSONL events, --no-tools, hermetic config dir via env),
 // while OpenCode stays what it already is in this suite — the MCP-native
 // real-client actor (src/clients/opencode.ts).
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // The subscription credential (OpenCode Zen — an OpenAI-compatible gateway)
@@ -57,19 +59,19 @@ export const DEFAULT_MODEL: string = ZEN_MODELS[0];
 // Result shape — distilled from pi's JSONL event stream
 // ---------------------------------------------------------------------------
 
-export interface AgentToolCall {
+export interface PiToolCall {
   readonly name: string;
   readonly args: unknown;
   readonly result?: unknown;
   readonly isError?: boolean;
 }
 
-export interface AgentRunResult {
+export interface PiRunResult {
   /** All assistant text parts of the final answer, joined. */
   readonly answerText: string;
   /** The model's reasoning text, when the model emits it. */
   readonly thinkingText: string;
-  readonly toolCalls: readonly AgentToolCall[];
+  readonly toolCalls: readonly PiToolCall[];
   /** Every JSONL event pi emitted, parsed, in order — for grading/artifacts. */
   readonly events: readonly Record<string, unknown>[];
   readonly usage?: { readonly input: number; readonly output: number };
@@ -79,7 +81,7 @@ export interface AgentRunResult {
   readonly stderr: string;
 }
 
-export interface AgentRunOptions {
+export interface PiRunOptions {
   readonly prompt: string;
   /** Zen model id (see ZEN_MODELS). Default: cheap + fast. */
   readonly model?: string;
@@ -91,10 +93,24 @@ export interface AgentRunOptions {
   readonly cwd?: string;
   /** Replace pi's coding system prompt. */
   readonly systemPrompt?: string;
+  /** Resume/create a named persistent session (multi-turn). Sessions live in
+   *  `sessionDir` (default e2e/.dev/pi-sessions), so a follow-up call with
+   *  the same name continues the conversation. Omit for a one-shot. */
+  readonly session?: string;
+  readonly sessionDir?: string;
   readonly timeoutMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+const defaultSessionDir = (): string =>
+  fileURLToPath(new URL("../../.dev/pi-sessions/", import.meta.url));
+
+/** pi wants a UUID session id; derive one stably from the friendly name. */
+const sessionUuid = (name: string): string => {
+  const hex = createHash("sha256").update(name).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
 
 // ---------------------------------------------------------------------------
 // Run
@@ -121,7 +137,7 @@ const providerExtension = (modelIds: readonly string[]): string => `export defau
 }
 `;
 
-export const runAgent = async (options: AgentRunOptions): Promise<AgentRunResult> => {
+export const runPi = async (options: PiRunOptions): Promise<PiRunResult> => {
   const key = zenApiKey();
   if (!key) {
     throw new Error(
@@ -142,7 +158,23 @@ export const runAgent = async (options: AgentRunOptions): Promise<AgentRunResult
     ? ZEN_MODELS
     : [...ZEN_MODELS, model];
   writeFileSync(extensionPath, providerExtension(modelIds));
-  const cwd = options.cwd ?? join(scratch, "project");
+
+  // Named sessions persist (and resume) under sessionDir; one-shots don't.
+  // pi session ids are PROJECT-scoped, so a named session also pins its cwd —
+  // otherwise every call's fresh scratch dir would start a new conversation.
+  const sessionRoot = options.session
+    ? join(options.sessionDir ?? defaultSessionDir(), options.session)
+    : undefined;
+  const sessionArgs = sessionRoot
+    ? [
+        "--session-id",
+        sessionUuid(options.session!),
+        "--session-dir",
+        join(sessionRoot, "sessions"),
+      ]
+    : ["--no-session"];
+  const cwd =
+    options.cwd ?? (sessionRoot ? join(sessionRoot, "project") : join(scratch, "project"));
   mkdirSync(cwd, { recursive: true });
 
   const args = [
@@ -152,7 +184,7 @@ export const runAgent = async (options: AgentRunOptions): Promise<AgentRunResult
     "zen",
     "--model",
     model,
-    "--no-session",
+    ...sessionArgs,
     "--mode",
     "json",
     ...(options.tools ? [] : ["--no-tools"]),
@@ -230,7 +262,7 @@ interface AgentEndEvent {
 
 const distill = (
   jsonl: string,
-): Pick<AgentRunResult, "answerText" | "thinkingText" | "toolCalls" | "events" | "usage"> => {
+): Pick<PiRunResult, "answerText" | "thinkingText" | "toolCalls" | "events" | "usage"> => {
   const events: Record<string, unknown>[] = [];
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
@@ -242,10 +274,10 @@ const distill = (
     }
   }
 
-  const toolCalls = new Map<string, AgentToolCall>();
+  const toolCalls = new Map<string, PiToolCall>();
   let answerText = "";
   let thinkingText = "";
-  let usage: AgentRunResult["usage"];
+  let usage: PiRunResult["usage"];
 
   for (const event of events as readonly AgentEndEvent[]) {
     if (event.type === "tool_execution_start" && event.toolCallId) {

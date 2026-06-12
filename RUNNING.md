@@ -76,7 +76,8 @@ bun run cli identity selfhost     # fresh identity (headers / cookies / creds)
 bun run cli api selfhost tools.list
 bun run cli mcp selfhost call execute '{"code":"return 1+1;"}'
 bun run cli ledger cloud workos   # what hit the emulator
-bun run cli infer "..."           # real model inference (see below)
+bun run cli pi "..."              # real model inference via pi (see below)
+bun run cli opencode "..."        # the same through the OpenCode binary
 bun run cli down selfhost         # tear down (also removes tailscale serves)
 ```
 
@@ -97,20 +98,33 @@ hostname (`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`).
 
 ## Real inference for development
 
-`bun run cli infer [-m model] [--tools] [--json] "prompt"` runs a real model
-through the **pi agent harness** (`@earendil-works/pi-coding-agent`,
-headless `--mode json`), reached via the machine's OpenCode Zen subscription
-(key auto-discovered from `~/.local/share/opencode/auth.json`; run
-`opencode auth login` once if missing). Every run is hermetic: throwaway pi
-config dir, no session persisted, and `--tools` confines the model's
-read/bash/edit/write to a fresh scratch dir. Default model is cheap+fast
-(deepseek-v4-flash); `-m glm-5.1` etc. selects others on the subscription.
-`--json` prints the distilled result (answer, thinking, tool calls, usage,
-full event stream) for programmatic use; the same primitive is importable as
-`runAgent()` from `e2e/src/clients/agent.ts` for eval-style harnesses.
-OpenCode (`e2e/src/clients/opencode.ts`) remains the MCP-native real-client
-actor for scenarios that test OAuth/tool-discovery behavior; pi is the
-inference workhorse.
+The agent-tool commands are named after the actual tools — they're devtools,
+same as the dev server or the browser. Both ride the machine's OpenCode
+subscription (`~/.local/share/opencode/auth.json`; run `opencode auth login`
+once if missing); both are hermetic (throwaway homes, nothing touches your
+own pi/OpenCode state); both take `--json` for the distilled result (answer,
+events, tool calls) for programmatic/grading use.
+
+`bun run cli pi [-m model] [-s session] [--tools] [--json] "prompt"` — the
+**pi agent harness** (`@earendil-works/pi-coding-agent`, headless
+`--mode json`), reaching the Zen gateway through a generated provider
+extension. Fast (~2s), `--no-tools` by default; `--tools` confines pi's
+read/bash/edit/write to a scratch dir. `-s NAME` makes the conversation
+resumable (state under `e2e/.dev/pi-sessions/<name>`). Programmatic:
+`runPi()` in `e2e/src/clients/pi.ts`. pi has no MCP by design — for
+MCP-tool work, either drive the typed API/MCP through this CLI's other
+commands, or use opencode below.
+
+`bun run cli opencode [-m provider/model] [-s session] [--continue]
+[--json] "prompt"` — the same ask through the **real OpenCode binary**
+(hermetic XDG home seeded with the credential). `-s NAME` pins a reusable
+home under `e2e/.dev/opencode-homes/<name>`; `--continue` resumes its last
+conversation. OpenCode is also the **MCP-native client**: programmatically,
+`runOpenCode({ mcp: { serverName, url } })` configures a remote MCP server
+(OAuth consent is the caller's job — see the `mcp-opencode-real` scenario
+for the full dance). This is the actor to use when the thing under test is
+client behavior (tool discovery, OAuth hops); pi is the everyday inference
+workhorse.
 
 ## Environment gotchas (learned the hard way)
 

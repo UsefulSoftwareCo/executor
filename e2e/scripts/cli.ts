@@ -496,33 +496,71 @@ const logs = (targetName: string) => {
   console.log(readFileSync(state.logFile, "utf8"));
 };
 
-// Real inference through the pi agent harness (Zen subscription). Plain
-// question→answer by default; --tools gives the model pi's coding tools in a
-// scratch dir; --json dumps the full distilled result for grading.
-const infer = async (args: ReadonlyArray<string>, flags: ReadonlySet<string>) => {
-  const { runAgent, DEFAULT_MODEL, hasInferenceCredential } = await import("../src/clients/agent");
-  if (!hasInferenceCredential()) {
-    throw new Error(
-      "infer: no inference credential — run `opencode auth login` once on this machine",
-    );
-  }
-  let model = DEFAULT_MODEL;
+// Shared arg parsing for the agent-tool commands: -m model, -s session name,
+// everything else is the prompt.
+const parseAgentArgs = (args: ReadonlyArray<string>) => {
+  let model: string | undefined;
+  let session: string | undefined;
   const prompt: string[] = [];
   for (let index = 0; index < args.length; index++) {
-    if (args[index] === "-m") model = args[++index] ?? model;
+    if (args[index] === "-m") model = args[++index];
+    else if (args[index] === "-s") session = args[++index];
     else prompt.push(args[index]!);
   }
-  if (prompt.length === 0) throw new Error('usage: infer [-m model] [--tools] [--json] "prompt"');
-  const result = await runAgent({
-    prompt: prompt.join(" "),
-    model,
-    tools: flags.has("--tools"),
-  });
+  return { model, session, prompt: prompt.join(" ") };
+};
+
+// `bun run cli pi` — real inference through the pi agent harness (Zen
+// subscription). Plain question→answer by default; --tools gives the model
+// pi's coding tools in a scratch dir; -s NAME makes it multi-turn.
+const piCmd = async (args: ReadonlyArray<string>, flags: ReadonlySet<string>) => {
+  const { runPi, hasInferenceCredential } = await import("../src/clients/pi");
+  if (!hasInferenceCredential()) {
+    throw new Error("pi: no inference credential — run `opencode auth login` once on this machine");
+  }
+  const { model, session, prompt } = parseAgentArgs(args);
+  if (!prompt) throw new Error('usage: pi [-m model] [-s session] [--tools] [--json] "prompt"');
+  const result = await runPi({ prompt, model, session, tools: flags.has("--tools") });
   if (flags.has("--json")) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     if (result.exitCode !== 0 && !result.answerText) {
-      throw new Error(`infer: pi exited ${result.exitCode}\n${result.stderr.slice(0, 800)}`);
+      throw new Error(`pi exited ${result.exitCode}\n${result.stderr.slice(0, 800)}`);
+    }
+    console.log(result.answerText);
+  }
+};
+
+// `bun run cli opencode` — the same ask through the real OpenCode binary
+// (hermetic home, subscription credential seeded). --continue resumes the
+// hermetic home's last session — pass -s NAME to pick which home.
+const opencodeCmd = async (args: ReadonlyArray<string>, flags: ReadonlySet<string>) => {
+  const { runOpenCode, hasOpenCode, makeOpenCodeHome } = await import("../src/clients/opencode");
+  if (!hasOpenCode()) throw new Error("opencode: binary not installed");
+  const { model, session, prompt } = parseAgentArgs(args);
+  if (!prompt) {
+    throw new Error(
+      'usage: opencode [-m provider/model] [-s session] [--continue] [--json] "prompt"',
+    );
+  }
+  // A named "session" here = a reusable hermetic home under .dev, so a later
+  // invocation with the same -s NAME --continue finds the same conversation.
+  const home = session
+    ? makeOpenCodeHome("none", "http://127.0.0.1:9/", {
+        root: join(devDir, "opencode-homes", session),
+      })
+    : undefined;
+  const result = await runOpenCode({
+    prompt,
+    model,
+    home,
+    continueSession: flags.has("--continue"),
+  });
+  if (flags.has("--json")) {
+    console.log(JSON.stringify({ ...result, home: undefined }, null, 2));
+  } else {
+    if (result.exitCode !== 0 && !result.answerText) {
+      throw new Error(`opencode exited ${result.exitCode}\n${result.stderr.slice(0, 800)}`);
     }
     console.log(result.answerText);
   }
@@ -540,9 +578,14 @@ const HELP = `e2e dev CLI — the scenario primitives, interactive (see e2e/AGEN
   api <target> <group.endpoint> [json]   typed API call as a fresh identity
   mcp <target> tools | call <tool> [json]   MCP session call
   ledger <target> [workos|autumn]   the emulator's request ledger (cloud)
-  infer [-m model] [--tools] [--json] "prompt"   real inference via the pi
-                             agent harness (Zen subscription; --tools gives
-                             the model coding tools in a scratch dir)
+  pi [-m model] [-s session] [--tools] [--json] "prompt"
+                             real inference via the pi agent harness (Zen
+                             subscription); --tools = coding tools in a
+                             scratch dir; -s NAME = resumable conversation
+  opencode [-m provider/model] [-s session] [--continue] [--json] "prompt"
+                             the same ask through the real OpenCode binary
+                             (hermetic home; native MCP client available
+                             programmatically via runOpenCode({mcp}))
   logs <target>              dump the instance's dev-server log
   down <target>              tear down (kills servers, removes tailscale serves)
 
@@ -569,8 +612,10 @@ const main = async () => {
       return mcpCall(args[0] ?? "", args[1], args.slice(2));
     case "ledger":
       return ledger(args[0] ?? "", args[1]);
-    case "infer":
-      return infer(args, flags);
+    case "pi":
+      return piCmd(args, flags);
+    case "opencode":
+      return opencodeCmd(args, flags);
     case "logs":
       return logs(args[0] ?? "");
     case "down":
