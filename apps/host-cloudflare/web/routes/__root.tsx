@@ -74,6 +74,9 @@ function AuthenticatedApp() {
   return (
     <ExecutorProvider>
       <ExecutorPluginsProvider plugins={clientPlugins}>
+        {/* No organizationSlug: the worker serves only the bare /mcp (see
+            wrangler.jsonc run_worker_first), so a slug-pinned URL would fall
+            through to the SPA. */}
         <OrganizationProvider organizationId={organization?.id ?? null}>
           {organization ? <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate> : gated}
         </OrganizationProvider>

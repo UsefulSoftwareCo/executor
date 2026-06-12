@@ -19,6 +19,12 @@ describe("isAppOwnedPath", () => {
     "/mcp",
     "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-authorization-server",
+    // Org-pinned MCP: the org's URL slug (what the install card prints) and
+    // the legacy WorkOS org-id form both select an org on the MCP plane.
+    "/acme-corp/mcp",
+    "/org_01ABCDEF/mcp",
+    "/.well-known/oauth-protected-resource/acme-corp/mcp",
+    "/.well-known/oauth-protected-resource/org_01ABCDEF/mcp",
   ];
   for (const pathname of appOwned) {
     it(`forwards ${pathname} to the app handler`, () => {
@@ -28,7 +34,19 @@ describe("isAppOwnedPath", () => {
 
   // Start-owned: the React shell + its routes. Note `/billing` (the React page)
   // is distinct from `/api/billing/*` (the proxy) — only the latter is app-owned.
-  const startOwned = ["/", "/policies", "/login", "/billing", "/org", "/assets/app.js"];
+  // `/settings/mcp` guards the slug-selector grammar: a RESERVED first segment
+  // can never be an org slug, so console-route-shaped paths ending in /mcp fall
+  // through to the SPA instead of being swallowed by the MCP plane.
+  const startOwned = [
+    "/",
+    "/policies",
+    "/login",
+    "/billing",
+    "/org",
+    "/assets/app.js",
+    "/settings/mcp",
+    "/integrations/mcp",
+  ];
   for (const pathname of startOwned) {
     it(`leaves ${pathname} to the Start router`, () => {
       expect(isAppOwnedPath(pathname)).toBe(false);

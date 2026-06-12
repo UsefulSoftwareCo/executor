@@ -45,7 +45,10 @@ scenario(
 
       const mcpUrlSection = page.getByRole("region", { name: "MCP server URL" });
       const mcpUrl = await mcpUrlSection.locator("span.font-mono").innerText();
-      expect(mcpUrl, "MCP URL is org-scoped").toMatch(/\/org_[^/]+\/mcp/);
+      // Org-scoped via the org's URL slug (the readable form), not the raw
+      // WorkOS org_… id — and not the bare /mcp path.
+      expect(mcpUrl, "MCP URL is slug-scoped").toMatch(/\/[a-z0-9-]+\/mcp/);
+      expect(mcpUrl, "the slug form, not the org_ id").not.toMatch(/\/org_[^/]+\/mcp/);
 
       const installSection = page.getByRole("region", { name: "Install command" });
       await installSection.waitFor();
@@ -53,8 +56,10 @@ scenario(
 
       // The install command must reference the SAME org as the displayed URL
       // — not a different one or a bare /mcp path.
-      const orgId = /\/(org_[^/]+)\/mcp/.exec(mcpUrl)?.[1] ?? "(no org segment in MCP URL)";
-      expect(installCommand, "the install command references the same org").toContain(orgId);
+      const orgSlug = /\/([a-z0-9-]+)\/mcp/.exec(mcpUrl)?.[1] ?? "(no org segment in MCP URL)";
+      expect(installCommand, "the install command references the same org").toContain(
+        `/${orgSlug}/mcp`,
+      );
     });
   }),
 );

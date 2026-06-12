@@ -27,6 +27,7 @@
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { Layer } from "effect";
 
+import { isValidOrgSlug } from "@executor-js/api";
 import { McpServingRoutes } from "@executor-js/host-mcp";
 
 import {
@@ -45,20 +46,27 @@ type McpRouteKind = "mcp" | "oauth-protected-resource" | "oauth-authorization-se
 
 type McpRoute = {
   readonly kind: McpRouteKind;
-  /** Org id pinned in the URL (`/org_xxx/mcp`), or `null` for the bare path. */
+  /** Org selector pinned in the URL (`/acme/mcp` slug or legacy `/org_xxx/mcp`
+   *  id), or `null` for the bare path. Resolved to an org id — and re-checked
+   *  against live membership — in the auth provider. */
   readonly organizationId: string | null;
 } | null;
 
-// A path segment counts as an org selector only when it has the WorkOS org-id
-// shape (`org_…`), so an unrelated `/<seg>/mcp` still falls through to routing.
-const orgIdSegment = (segment: string | undefined): string | null =>
-  segment && segment.startsWith("org_") ? segment : null;
+// A path segment counts as an org selector when it's the org's URL slug (the
+// canonical form the install card prints) or has the WorkOS org-id shape
+// (`org_…`, the legacy form already in agents' configs). The slug grammar
+// reserves every routable root segment (`integrations`, `api-keys`, …), so an
+// unrelated `/<seg>/mcp` still falls through to routing.
+const orgSelectorSegment = (segment: string | undefined): string | null =>
+  segment && (segment.startsWith("org_") || isValidOrgSlug(segment)) ? segment : null;
 
 // Matches a trailing MCP endpoint — `mcp` (bare) or `<org>/mcp`. Returns the org
-// id, `null` for the bare form, or `undefined` when the segments are neither.
+// selector, `null` for the bare form, or `undefined` when the segments are neither.
 const matchMcpSuffix = (segments: readonly string[]): string | null | undefined => {
   if (segments.length === 1 && segments[0] === "mcp") return null;
-  if (segments.length === 2 && segments[1] === "mcp") return orgIdSegment(segments[0]) ?? undefined;
+  if (segments.length === 2 && segments[1] === "mcp") {
+    return orgSelectorSegment(segments[0]) ?? undefined;
+  }
   return undefined;
 };
 

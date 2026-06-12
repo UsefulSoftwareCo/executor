@@ -10,7 +10,7 @@ import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import { NativeSelect, NativeSelectOption } from "./native-select";
 import { cn } from "../lib/utils";
-import { useOrganizationId } from "../api/organization-context";
+import { useOrganizationSlug } from "../api/organization-context";
 import {
   getExecutorServerAuthorizationHeader,
   useExecutorServerConnection,
@@ -48,13 +48,15 @@ export const buildMcpHttpEndpoint = (input: {
     readonly port: number;
   } | null;
   readonly elicitationMode?: McpElicitationMode;
-  // Cloud only: pins the URL to `/<org_id>/mcp`. Desktop/local pass nothing and
-  // get the bare `/mcp` path.
-  readonly organizationId?: string | null;
+  // Cloud only: pins the URL to `/<org-slug>/mcp` (the server also accepts the
+  // legacy `/<org_id>/mcp` form). Desktop/local pass nothing and get the bare
+  // `/mcp` path.
+  readonly organizationSlug?: string | null;
 }): string => {
   // The desktop sidecar isn't org-scoped, so the org only applies to the
   // origin/remote forms.
-  const mcpPath = input.organizationId && !input.desktop ? `/${input.organizationId}/mcp` : "/mcp";
+  const mcpPath =
+    input.organizationSlug && !input.desktop ? `/${input.organizationSlug}/mcp` : "/mcp";
   const endpoint = input.desktop
     ? `http://127.0.0.1:${input.desktop.port}${mcpPath}`
     : input.origin
@@ -90,14 +92,14 @@ export const buildMcpInstallCommand = (input: {
   readonly authorizationHeader?: string | null;
   readonly elicitationMode?: McpElicitationMode;
   readonly devCliCwd?: string;
-  readonly organizationId?: string | null;
+  readonly organizationSlug?: string | null;
 }): string => {
   if (input.mode === "http") {
     const endpoint = buildMcpHttpEndpoint({
       origin: input.origin,
       desktop: input.desktop ? { port: input.desktop.port } : null,
       elicitationMode: input.elicitationMode,
-      organizationId: input.organizationId,
+      organizationSlug: input.organizationSlug,
     });
     const headerFlags: string[] = [];
     if (input.authorizationHeader) {
@@ -130,7 +132,7 @@ export function McpInstallCard(props: { className?: string }) {
   const [mode, setMode] = useState<TransportMode>("http");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
-  const organizationId = useOrganizationId();
+  const organizationSlug = useOrganizationSlug();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
   // PATH, and the bundled sidecar is locked to the running app. Force the
@@ -148,7 +150,7 @@ export function McpInstallCard(props: { className?: string }) {
     authorizationHeader,
     elicitationMode,
     devCliCwd,
-    organizationId,
+    organizationSlug,
   });
 
   const subtitle =

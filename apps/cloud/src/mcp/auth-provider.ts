@@ -123,33 +123,35 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // not on the org outcome, to preserve that telemetry.
         const parseBody = request.method === "POST";
 
-        // URL is the source of truth for the active org when pinned (`/org_xxx/mcp`,
-        // carried in the header by `prepareMcpOrgScope`); the bare `/mcp` falls back
-        // to the token's `org_id`. Either way `orgAuth.authorize` re-checks live
-        // WorkOS membership below, so the URL is a selector, not a trust boundary.
-        const organizationId = mcpOrganizationFromRequest(request) ?? token.organizationId;
-        if (!organizationId) {
+        // URL is the source of truth for the active org when pinned — the org's
+        // slug (`/acme/mcp`, what the install card prints) or a legacy org id
+        // (`/org_xxx/mcp`), carried in the header by `prepareMcpOrgScope`; the
+        // bare `/mcp` falls back to the token's `org_id`. Either way
+        // `orgAuth.authorize` resolves the selector and re-checks live WorkOS
+        // membership below, so the URL is a selector, not a trust boundary.
+        const organizationSelector = mcpOrganizationFromRequest(request) ?? token.organizationId;
+        if (!organizationSelector) {
           yield* annotateMcpRequest(request, { token, parseBody });
           return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
         }
 
-        const allowed = yield* orgAuth.authorize(token.accountId, organizationId).pipe(
+        const organizationId = yield* orgAuth.authorize(token.accountId, organizationSelector).pipe(
           Effect.catchCause((error) =>
             Effect.gen(function* () {
               yield* Effect.annotateCurrentSpan({
                 "mcp.auth.organization_authorize_error": Cause.pretty(error),
               });
-              return false;
+              return null;
             }),
           ),
           Effect.withSpan("mcp.auth.authorize_organization", {
-            attributes: { "mcp.auth.organization_id": organizationId },
+            attributes: { "mcp.auth.organization_selector": organizationSelector },
           }),
         );
 
         yield* annotateMcpRequest(request, { token, parseBody });
 
-        if (!allowed) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+        if (!organizationId) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
         return authenticated(principalFromToken(token, organizationId));
       });
 

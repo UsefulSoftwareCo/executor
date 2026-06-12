@@ -16,7 +16,7 @@ import { createCachedRemoteJWKSet } from "../auth/jwks-cache";
 import { ApiKeyService } from "../auth/api-keys";
 import { BEARER_PREFIX } from "../auth/bearer";
 import { authorizeOrganization } from "../auth/organization";
-import { makeUserStoreLayer } from "../auth/context";
+import { UserStoreService, makeUserStoreLayer } from "../auth/context";
 import { CoreSharedServices } from "../auth/workos";
 import { makeDbLayer } from "../db/db";
 import { bearerChallenge } from "./responses";
@@ -68,14 +68,16 @@ export const MCP_ORGANIZATION_HEADER = "x-executor-mcp-organization";
 export const mcpOrganizationFromRequest = (request: Request): string | null =>
   request.headers.get(MCP_ORGANIZATION_HEADER);
 
-/** The MCP resource URL for an org (`…/org_xxx/mcp`), or the bare resource. */
-export const resourceUrlFor = (organizationId: string | null): string =>
-  organizationId ? `${RESOURCE_ORIGIN}/${organizationId}${MCP_PATH}` : RESOURCE_URL;
+/** The MCP resource URL for an org selector (`…/acme/mcp` slug or legacy
+ *  `…/org_xxx/mcp` id — echoed verbatim so it matches the URL the client
+ *  used), or the bare resource. */
+export const resourceUrlFor = (organizationSelector: string | null): string =>
+  organizationSelector ? `${RESOURCE_ORIGIN}/${organizationSelector}${MCP_PATH}` : RESOURCE_URL;
 
-/** The protected-resource-metadata URL for an org, or the bare one. */
-export const protectedResourceMetadataUrlFor = (organizationId: string | null): string =>
-  organizationId
-    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationId}/mcp`
+/** The protected-resource-metadata URL for an org selector, or the bare one. */
+export const protectedResourceMetadataUrlFor = (organizationSelector: string | null): string =>
+  organizationSelector
+    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationSelector}/mcp`
     : PROTECTED_RESOURCE_METADATA_URL;
 
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
@@ -137,10 +139,16 @@ export class McpAuth extends Context.Service<
 export class McpOrganizationAuth extends Context.Service<
   McpOrganizationAuth,
   {
+    /**
+     * Authorize `accountId` against an org SELECTOR — a WorkOS org id
+     * (`org_…`, from the token or a legacy URL) or the org's URL slug (the
+     * form the install card prints). Returns the resolved org id when the
+     * caller holds an active membership, `null` otherwise.
+     */
     readonly authorize: (
       accountId: string,
-      organizationId: string,
-    ) => Effect.Effect<boolean, unknown>;
+      organizationSelector: string,
+    ) => Effect.Effect<string | null, unknown>;
   }
 >()("@executor-js/cloud/McpOrganizationAuth") {}
 
@@ -164,10 +172,28 @@ const makeMcpOrganizationAuthServices = () => {
   return Layer.mergeAll(dbLive, userStoreLive, CoreSharedServices);
 };
 
+// A URL slug resolves through the mirror to its org id before the membership
+// check; an unknown slug authorizes nothing. Ids pass straight through —
+// `authorizeOrganization` verifies live WorkOS membership either way.
+const resolveOrgSelector = (selector: string) =>
+  selector.startsWith("org_")
+    ? Effect.succeed(selector)
+    : Effect.gen(function* () {
+        const users = yield* UserStoreService;
+        const org = yield* users.use((s) => s.getOrganizationBySlug(selector));
+        return org?.id ?? null;
+      });
+
 export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
-  authorize: (accountId, organizationId) =>
-    authorizeOrganization(accountId, organizationId).pipe(
-      Effect.map((org) => org !== null),
+  authorize: (accountId, organizationSelector) =>
+    resolveOrgSelector(organizationSelector).pipe(
+      Effect.flatMap((organizationId) =>
+        organizationId
+          ? authorizeOrganization(accountId, organizationId).pipe(
+              Effect.map((org) => (org ? org.id : null)),
+            )
+          : Effect.succeed(null),
+      ),
       Effect.provide(makeMcpOrganizationAuthServices()),
     ),
 });

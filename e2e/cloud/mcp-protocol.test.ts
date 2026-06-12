@@ -296,6 +296,37 @@ scenario(
     ).toBeTruthy();
     yield* Effect.promise(() => member.text());
 
+    // The slug form — what the install card prints (`/acme/mcp`) — selects
+    // the same org. The slug comes from the account surface.
+    const me = yield* Effect.promise(() =>
+      fetch(new URL("/api/account/me", target.baseUrl), { headers: identity.headers }).then(
+        (r) => r.json() as Promise<{ organization: { slug: string } | null }>,
+      ),
+    );
+    const ownSlug = me.organization?.slug;
+    expect(ownSlug, "the account surface advertises the org's URL slug").toBeTruthy();
+    const slugged = yield* Effect.promise(() =>
+      mcpPost(new URL(`/${ownSlug}/mcp`, target.baseUrl), {
+        bearer,
+        body: INITIALIZE_REQUEST,
+      }),
+    );
+    expect(slugged.status, "the member's slug-pinned URL opens a session").toBe(200);
+    expect(
+      slugged.headers.get("mcp-session-id"),
+      "the slug-pinned session is a real session",
+    ).toBeTruthy();
+    yield* Effect.promise(() => slugged.text());
+
+    // An unknown slug selects nothing — same rejection as a foreign org id.
+    const unknownSlug = yield* Effect.promise(() =>
+      mcpPost(new URL(`/zz-no-such-org-${randomBytes(3).toString("hex")}/mcp`, target.baseUrl), {
+        bearer,
+        body: INITIALIZE_REQUEST,
+      }),
+    );
+    expect(unknownSlug.status, "an unknown slug authorizes nothing").toBe(403);
+
     const foreignOrg = `org_e2e_${randomBytes(4).toString("hex")}`;
     const foreign = yield* Effect.promise(() =>
       mcpPost(new URL(`/${foreignOrg}/mcp`, target.baseUrl), {
