@@ -36,6 +36,20 @@ export default defineConfig({
         fileParallelism: false,
         testTimeout: 300_000,
       }),
+      // Real-inference evals (EVAL=1; see evals/EVALS.md). Selfhost target,
+      // real OpenCode binary, Go-subscription models. Burns quota and takes
+      // minutes per model — on-demand / nightly, never the PR path.
+      {
+        test: {
+          name: "evals",
+          include: ["evals/**/*.test.ts"],
+          env: { E2E_TARGET: "selfhost" },
+          globalSetup: ["./setup/selfhost.globalsetup.ts"],
+          testTimeout: 360_000,
+          hookTimeout: 120_000,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });

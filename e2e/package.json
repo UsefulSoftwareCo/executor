@@ -11,7 +11,8 @@
     "viewer:build": "bun scripts/rebuild-viewer.ts",
     "serve": "bun scripts/rebuild-viewer.ts && bun scripts/serve.ts",
     "typecheck": "tsc --noEmit",
-    "test:desktop": "vitest run --project desktop"
+    "test:desktop": "vitest run --project desktop",
+    "test:evals": "EVAL=1 vitest run --project evals"
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",
