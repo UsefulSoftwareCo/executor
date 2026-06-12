@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Predicate, Schema } from "effect";
+import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -139,6 +139,7 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
+import { annotateToolResultOutcome } from "./tool-result";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
@@ -2719,10 +2720,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<unknown, ExecuteError> => {
       const handler = pickHandler(options);
       return Effect.gen(function* () {
+        // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
         const formatInvocationCauseMessage = (cause: unknown): string => {
-          // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: preserve public execute error message wrapping for unknown plugin failures
-          return cause instanceof Error ? cause.message : String(cause);
+          if (cause instanceof Error && cause.message.length > 0) return cause.message;
+          // Non-Error / empty-message causes: `String(plainObject)` renders
+          // "[object Object]", which is what telemetry then shows as the only
+          // label for the failure. Prefer the tag, else stringify structurally.
+          if (typeof cause === "object" && cause !== null) {
+            const tag = (cause as { readonly _tag?: unknown })._tag;
+            if (typeof tag === "string") return tag;
+            return Inspectable.toStringUnknown(cause, 0);
+          }
+          return String(cause);
         };
+        // oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check
         const wrapInvocationError = <A, E>(
           effect: Effect.Effect<A, E>,
         ): Effect.Effect<A, ToolInvocationError> =>
@@ -2877,8 +2888,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
       }).pipe(
+        // Expected tool failures (`ToolResult.fail`) resolve through the
+        // success channel, so the tracer alone would record them as healthy
+        // spans. Stamp the outcome + error code so telemetry can distinguish
+        // "tool ran fine" from "user hit an upstream error / auth wall"
+        // without parsing response bodies.
+        Effect.tap(annotateToolResultOutcome),
         Effect.withSpan("executor.tool.execute", {
-          attributes: { "mcp.tool.name": String(address) },
+          attributes: {
+            "mcp.tool.name": String(address),
+            "executor.tenant": tenant,
+            ...(subject != null ? { "executor.subject": subject } : {}),
+          },
         }),
       );
     };

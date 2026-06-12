@@ -32,7 +32,11 @@ import {
   IntegrationSlug,
   ToolAddress,
 } from "@executor-js/sdk";
-import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import {
+  makeTestConfig,
+  memoryCredentialsPlugin,
+  runWithRecordingTracer,
+} from "@executor-js/sdk/testing";
 import {
   addOpenApiTestConnection,
   makeOpenApiHttpApiTestSourceConfig,
@@ -265,6 +269,56 @@ describe("OpenAPI upstream failure modes", () => {
       // Must be observable — either the plugin coerces (string) or fails;
       // the smoke-test guarantees no defect.
       expect(Exit.isFailure(exit) || Exit.isSuccess(exit)).toBe(true);
+    }),
+  );
+
+  // Telemetry contract: the spans production queries depend on must carry
+  // the upstream outcome. This pins two real prod regressions: (1)
+  // `http.status_code` was annotated inside `OpenApi.invoke` but queries
+  // target the `plugin.openapi.invoke` wrapper span, which carried it on
+  // 0 of 19.5k spans; (2) ToolResult.fail rides the success channel, so
+  // without outcome attributes a 5xx-spewing integration looks healthy.
+  it.effect("a failing invocation stamps status + outcome on its spans", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 502,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"message":"bad gateway"}}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const { exit, recording } = yield* runWithRecordingTracer(executor.execute(address, {}));
+      expect(Exit.isSuccess(exit)).toBe(true);
+
+      const invokeSpan = recording.single("plugin.openapi.invoke");
+      expect(invokeSpan.attributes.get("http.status_code")).toBe(502);
+      expect(invokeSpan.attributes.get("plugin.openapi.method")).toBe("GET");
+
+      const executeSpan = recording.single("executor.tool.execute");
+      expect(executeSpan.attributes.get("executor.tool.outcome")).toBe("fail");
+      expect(executeSpan.attributes.get("executor.tool.error_code")).toBe("upstream_http_error");
+      expect(executeSpan.attributes.get("executor.tool.error_status")).toBe(502);
+      expect(executeSpan.attributes.get("executor.tenant")).toBe("test-tenant");
+    }),
+  );
+
+  it.effect("a successful invocation stamps status + outcome=ok on its spans", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: "[]",
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const { exit, recording } = yield* runWithRecordingTracer(executor.execute(address, {}));
+      expect(Exit.isSuccess(exit)).toBe(true);
+
+      const invokeSpan = recording.single("plugin.openapi.invoke");
+      expect(invokeSpan.attributes.get("http.status_code")).toBe(200);
+
+      const executeSpan = recording.single("executor.tool.execute");
+      expect(executeSpan.attributes.get("executor.tool.outcome")).toBe("ok");
     }),
   );
 

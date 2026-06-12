@@ -37,6 +37,14 @@ export {
   type OutputTypeScriptContract,
   type TypeCheckOutputTypeScriptOptions,
 } from "./testing/tool-output-contract";
+export {
+  makeRecordingTracer,
+  runWithRecordingTracer,
+  spanEndedWithError,
+  spanExit,
+  type RecordedSpan,
+  type RecordingTracer,
+} from "./testing/recording-tracer";
 
 export class TestHttpServerAddressError extends Data.TaggedError("TestHttpServerAddressError")<{
   readonly address: unknown;

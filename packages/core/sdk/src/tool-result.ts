@@ -5,7 +5,7 @@
 // the Effect failure channel.
 // ---------------------------------------------------------------------------
 
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 export const ToolErrorSchema = Schema.Struct({
   code: Schema.String,
@@ -56,3 +56,30 @@ const isUnknownToolResult = Schema.is(ToolResultSchema);
 
 export const isToolResult = (value: unknown): value is ToolResult<unknown> =>
   isUnknownToolResult(value);
+
+/**
+ * Annotate the current span with the outcome of a tool invocation.
+ *
+ * `ToolResult.fail` rides the Effect *success* channel by design (expected
+ * failures are values, not defects), which means the tracer records those
+ * spans as healthy. Without this, "user keeps hitting 4xx walls" is invisible
+ * to telemetry — the exact class of signal that lets us catch product issues
+ * before they're reported. Stamped attributes:
+ *
+ *   - `executor.tool.outcome`      — "ok" | "fail" (always, on ToolResults)
+ *   - `executor.tool.error_code`   — ToolError.code (fail only)
+ *   - `executor.tool.error_status` — upstream HTTP status (fail, when present)
+ *
+ * Codes/statuses are enumerable identifiers, never user content — safe span
+ * attributes. Non-ToolResult values (raw success payloads) annotate "ok".
+ */
+export const annotateToolResultOutcome = (value: unknown): Effect.Effect<void> => {
+  if (isToolResult(value) && !value.ok) {
+    return Effect.annotateCurrentSpan({
+      "executor.tool.outcome": "fail",
+      "executor.tool.error_code": value.error.code,
+      ...(value.error.status != null ? { "executor.tool.error_status": value.error.status } : {}),
+    });
+  }
+  return Effect.annotateCurrentSpan({ "executor.tool.outcome": "ok" });
+};

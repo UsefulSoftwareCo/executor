@@ -625,6 +625,11 @@ export const invokeWithLayer = (
 
   return invoke(operation, args, resolvedHeaders, sourceQueryParams).pipe(
     Effect.provide(clientWithBaseUrl),
+    // `invoke` annotates http.status_code on ITS span (`OpenApi.invoke`,
+    // via Effect.fn) — annotateCurrentSpan inside it never reaches this
+    // wrapper span. Stamp the status here too so queries against
+    // `plugin.openapi.invoke` see the upstream outcome directly.
+    Effect.tap((result) => Effect.annotateCurrentSpan({ "http.status_code": result.status })),
     Effect.withSpan("plugin.openapi.invoke", {
       attributes: {
         "plugin.openapi.method": operation.method.toUpperCase(),
