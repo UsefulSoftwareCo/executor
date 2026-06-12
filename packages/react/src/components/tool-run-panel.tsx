@@ -13,6 +13,7 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { executeCode, toolSchemaAtom } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { Badge } from "./badge";
 import { Button } from "./button";
 import { Label } from "./label";
@@ -219,15 +220,34 @@ export function ToolRunPanel(props: {
     setRunning(false);
 
     if (Exit.isFailure(exit)) {
+      trackEvent("tool_run_submitted", {
+        integration_slug: integration,
+        tool_name: toolName,
+        args_mode: argsMode,
+        result: "failed",
+      });
       toast.error("Failed to run tool");
       return;
     }
 
     const value = exit.value;
     if (value.status === "paused") {
+      trackEvent("tool_run_submitted", {
+        integration_slug: integration,
+        tool_name: toolName,
+        args_mode: argsMode,
+        result: "paused",
+      });
       setResult({ kind: "paused", text: value.text });
       return;
     }
+    trackEvent("tool_run_submitted", {
+      integration_slug: integration,
+      tool_name: toolName,
+      args_mode: argsMode,
+      result: "completed",
+      ...(value.isError ? { is_error: true } : {}),
+    });
     setResult({
       kind: "completed",
       text: value.text,

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
 import {
@@ -199,6 +200,19 @@ function PlansPage() {
                         type="button"
                         disabled={loadingPlan !== null}
                         onClick={async () => {
+                          // Before attach(): it assigns window.location.href to
+                          // the checkout URL while resolving, so anything after
+                          // the await races the page unload.
+                          if (
+                            action === "activate" ||
+                            action === "upgrade" ||
+                            action === "downgrade"
+                          ) {
+                            trackEvent("billing_plan_selected", {
+                              plan_id: plan.id,
+                              action: action as "activate" | "upgrade" | "downgrade",
+                            });
+                          }
                           setLoadingPlan(plan.id);
                           await attach({ planId: plan.id, redirectMode: "always" });
                           setLoadingPlan(null);

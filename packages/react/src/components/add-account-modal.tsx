@@ -27,6 +27,7 @@ import {
 } from "../api/atoms";
 import { connectionWriteKeys, oauthClientWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
+import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { ownerLabel, ownerLabelForHost, useOwnerDisplay } from "../api/owner-display";
 import {
@@ -865,6 +866,7 @@ export function AddAccountModal(props: {
       payload: { owner: client.owner },
       reactivityKeys: oauthClientWriteKeys,
     });
+    trackEvent("oauth_client_removed", { owner: client.owner });
     toast.success(`Removed ${String(client.slug)}`);
     if (pickedApp === String(client.slug)) setPickedApp(null);
   };
@@ -880,6 +882,10 @@ export function AddAccountModal(props: {
   // so the user can immediately add an account with it. The catalog refresh
   // (via the plugin's `integrationWriteKeys`) reconciles it shortly after.
   const handleCustomMethodCreated = (created: AuthMethod): void => {
+    trackEvent("custom_auth_method_created", {
+      integration_slug: String(integration),
+      kind: created.kind,
+    });
     setCreatedMethods((current: readonly AuthMethod[]) => [
       ...current.filter((m: AuthMethod) => m.id !== created.id),
       created,
@@ -897,6 +903,7 @@ export function AddAccountModal(props: {
     if (!removeCustomMethod) return;
     const removed = await removeCustomMethod(methodToRemove);
     if (!removed) return;
+    trackEvent("custom_auth_method_removed", { integration_slug: String(integration) });
     setCreatedMethods((current: readonly AuthMethod[]) =>
       current.filter((m: AuthMethod) => authMethodKey(m) !== authMethodKey(methodToRemove)),
     );
@@ -948,6 +955,12 @@ export function AddAccountModal(props: {
           : { ...commonPayload, values: payloadOrigin.values },
       reactivityKeys: connectionWriteKeys,
     });
+    trackEvent("connection_credential_submitted", {
+      integration_slug: String(integration),
+      owner,
+      credential_origin: credentialOrigin,
+      success: Exit.isSuccess(exit),
+    });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
       toast.error(messageFromExit(exit, "Failed to add connection"));
@@ -986,6 +999,12 @@ export function AddAccountModal(props: {
         reactivityKeys: connectionWriteKeys,
       });
       setCcBusy(false);
+      trackEvent("connection_oauth_started", {
+        integration_slug: String(integration),
+        owner: connectionOwner,
+        flow: "byo",
+        success: Exit.isSuccess(exit),
+      });
       if (Exit.isFailure(exit)) {
         toast.error(messageFromExit(exit, "Failed to connect"));
         return;
@@ -994,8 +1013,31 @@ export function AddAccountModal(props: {
       close();
       return;
     }
+    // Fire once per attempt: success when the authorization actually started
+    // (URL minted, popup open), failure only for start-phase errors — later
+    // completion errors belong to oauth_completed, not this event.
+    let startReported = false;
     void oauthPopup.start({
       payload,
+      onAuthorizationStarted: () => {
+        startReported = true;
+        trackEvent("connection_oauth_started", {
+          integration_slug: String(integration),
+          owner: connectionOwner,
+          flow: "byo",
+          success: true,
+        });
+      },
+      onError: () => {
+        if (startReported) return;
+        startReported = true;
+        trackEvent("connection_oauth_started", {
+          integration_slug: String(integration),
+          owner: connectionOwner,
+          flow: "byo",
+          success: false,
+        });
+      },
       onSuccess: () => {
         toast.success("Connection added");
         close();
@@ -1076,6 +1118,13 @@ export function AddAccountModal(props: {
       },
     );
     setDcrBusy(false);
+    trackEvent("connection_oauth_started", {
+      integration_slug: String(integration),
+      owner: dcrOwner,
+      flow: "dcr",
+      success: outcome.kind === "started",
+      ...(outcome.kind === "fallback" ? { dcr_fallback: true } : {}),
+    });
     if (outcome.kind === "fallback") {
       setDcrFailed(true);
       toast.error("Automatic setup unavailable — register an app");

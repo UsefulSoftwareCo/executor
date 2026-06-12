@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { Skeleton } from "@executor-js/react/components/skeleton";
 
@@ -62,6 +63,7 @@ export const CreateOrgPage = () => {
       reactivityKeys: authWriteKeys,
     });
     setAcceptingId(null);
+    trackEvent("org_invitation_accepted", { success: Exit.isSuccess(exit) });
     if (!Exit.isSuccess(exit)) {
       setErrorByInvitationId((prev) => ({
         ...prev,

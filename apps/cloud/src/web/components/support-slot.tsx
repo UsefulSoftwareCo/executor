@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import {
   Dialog,
@@ -34,7 +35,10 @@ export function SupportSlot() {
       <Button
         type="button"
         variant="ghost"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          trackEvent("support_opened");
+          setOpen(true);
+        }}
         className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground"
       >
         <HelpIcon className="size-3.5 text-muted-foreground" />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { CodeBlock } from "@executor-js/react/components/code-block";
 import {
@@ -69,7 +70,18 @@ export const SetupMcpPage = () => {
             <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground/90">
               {endpoint || "…"}
             </span>
-            {endpoint && <CopyButton value={endpoint} />}
+            {endpoint && (
+              <CopyButton
+                value={endpoint}
+                onCopy={() =>
+                  trackEvent("mcp_install_command_copied", {
+                    transport: "http",
+                    elicitation_mode: elicitationMode,
+                    surface: "setup_mcp",
+                  })
+                }
+              />
+            )}
           </div>
           <p className="text-xs text-muted-foreground">Paste this into your MCP client config.</p>
         </section>
@@ -117,7 +129,17 @@ export const SetupMcpPage = () => {
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Install command
           </p>
-          <CodeBlock code={command} lang="bash" />
+          <CodeBlock
+            code={command}
+            lang="bash"
+            onCopy={() =>
+              trackEvent("mcp_install_command_copied", {
+                transport: "http",
+                elicitation_mode: elicitationMode,
+                surface: "setup_mcp",
+              })
+            }
+          />
           <p className="text-xs text-muted-foreground">Adds the server to a supported agent.</p>
         </section>
 
@@ -125,12 +147,21 @@ export const SetupMcpPage = () => {
           {/* oxlint-disable-next-line react/forbid-elements */}
           <button
             type="button"
-            onClick={() => void navigate({ to: "/" })}
+            onClick={() => {
+              trackEvent("setup_mcp_skipped");
+              void navigate({ to: "/" });
+            }}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             Skip for now
           </button>
-          <Button size="sm" onClick={() => void navigate({ to: "/" })}>
+          <Button
+            size="sm"
+            onClick={() => {
+              trackEvent("setup_mcp_completed");
+              void navigate({ to: "/" });
+            }}
+          >
             Continue to app
           </Button>
         </div>

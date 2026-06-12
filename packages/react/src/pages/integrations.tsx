@@ -11,6 +11,7 @@ import {
   type IntegrationPreset,
 } from "@executor-js/sdk/client";
 import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { McpInstallCard } from "../components/mcp-install-card";
 import { Button } from "../components/button";
 import { Badge } from "../components/badge";
@@ -77,7 +78,14 @@ export function IntegrationsPage() {
               Tool providers available in this workspace.
             </p>
           </div>
-          <Button onClick={() => setConnectOpen(true)} size="sm" className="shrink-0 gap-1.5">
+          <Button
+            onClick={() => {
+              setConnectOpen(true);
+              trackEvent("integration_connect_dialog_opened");
+            }}
+            size="sm"
+            className="shrink-0 gap-1.5"
+          >
             <PlusIcon className="size-4" />
             Connect
           </Button>
@@ -94,7 +102,14 @@ export function IntegrationsPage() {
           onFailure: () => <p className="text-sm text-destructive">Failed to load integrations</p>,
           onSuccess: ({ value }) => {
             if (value.length === 0) {
-              return <EmptyIntegrations onConnect={() => setConnectOpen(true)} />;
+              return (
+                <EmptyIntegrations
+                  onConnect={() => {
+                    setConnectOpen(true);
+                    trackEvent("integration_connect_dialog_opened");
+                  }}
+                />
+              );
             }
 
             return (
@@ -158,24 +173,33 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
       reactivityKeys: [],
     });
     if (Exit.isFailure(exit)) {
+      trackEvent("integration_detect_submitted", { success: false });
       setError("Detection failed. Try adding an integration manually.");
       setDetecting(false);
       return;
     }
     const results = exit.value;
     if (results.length === 0) {
+      trackEvent("integration_detect_submitted", { success: false });
       setError("Could not detect an integration type from this URL. Try adding manually.");
       setDetecting(false);
       return;
     }
     const detected = bestDetection(results);
     if (!detected) {
+      trackEvent("integration_detect_submitted", { success: false });
       setError("Could not detect an integration type from this URL. Try adding manually.");
       setDetecting(false);
       return;
     }
+    trackEvent("integration_detect_submitted", {
+      success: true,
+      detected_kind: detected.kind,
+      confidence: detected.confidence,
+    });
     const pluginKey = KIND_TO_PLUGIN_KEY[detected.kind] ?? detected.kind;
     if (integrationPlugins.some((p) => p.key === pluginKey)) {
+      trackEvent("integration_add_started", { plugin_key: pluginKey, via: "detect" });
       closeAndReset();
       void navigate({
         to: "/integrations/add/$pluginKey",
@@ -238,7 +262,10 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
                   key={p.key}
                   to="/integrations/add/$pluginKey"
                   params={{ pluginKey: p.key }}
-                  onClick={closeAndReset}
+                  onClick={() => {
+                    trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
+                    closeAndReset();
+                  }}
                   className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
                 >
                   {p.label}
@@ -347,7 +374,14 @@ function PresetGrid(props: {
                     to="/integrations/add/$pluginKey"
                     params={{ pluginKey }}
                     search={search}
-                    onClick={props.onPick}
+                    onClick={() => {
+                      trackEvent("integration_add_started", {
+                        plugin_key: pluginKey,
+                        via: "preset",
+                        preset_id: preset.id,
+                      });
+                      props.onPick();
+                    }}
                   >
                     <CardStackEntryMedia>
                       {preset.icon ? (

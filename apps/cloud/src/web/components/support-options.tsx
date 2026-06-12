@@ -1,3 +1,4 @@
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import {
   Popover,
@@ -43,6 +44,7 @@ export function SupportOptions() {
         <a
           key={link.label}
           href={link.href}
+          onClick={() => trackEvent("support_link_clicked", { label: link.label })}
           className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 font-medium text-foreground transition-colors hover:bg-muted"
         >
           <link.icon className="size-4" />
