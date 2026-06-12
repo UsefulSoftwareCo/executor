@@ -70,7 +70,9 @@ apps/host-selfhost/.e2e-data*/
 test-results/
 playwright-report/
 .last-run.json
-.claude/
+# .claude is local agent state (worktrees, settings), EXCEPT checked-in skills
+.claude/*
+!.claude/skills/
 .nitro/
 .output/
 .tanstack/

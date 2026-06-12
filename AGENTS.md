@@ -34,6 +34,20 @@ gif, uploads it to the `e2e-media` branch, and prints PR-ready markdown to
 paste into the body. Run screenshots (`*.png`) can be passed directly too. If
 no scenario covers the change yet, that is usually the cue to write one.
 
+## Service Emulators
+
+When a test or demo needs an upstream API, OAuth/OIDC provider, or webhook
+source, use the `@executor-js/emulate` emulators (GitHub, Google, Stripe,
+Resend, WorkOS, and a dozen more) instead of writing a stub. They are
+wire-level and stateful — real SDKs run against them unmodified — and each
+one serves a full OpenAPI spec (`/_emulate/openapi`, ready for addSpec),
+mints real-shaped credentials (`POST /_emulate/credentials`), runs working
+OAuth flows, and records every call in a request ledger
+(`/_emulate/ledger`) you can assert against. Hosted instances exist at
+`https://<service>.emulators.dev` with zero setup. See the `emulate` skill
+(`.claude/skills/emulate/SKILL.md`) for the control-plane reference and
+recipes.
+
 ## Collaboration Notes
 
 The user uses speech to text occasionally, so if sentences are weird or words
