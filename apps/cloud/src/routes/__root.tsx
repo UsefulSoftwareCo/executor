@@ -12,6 +12,7 @@ import { AutumnProvider } from "autumn-js/react";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
+import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { Toaster } from "@executor-js/react/components/sonner";
@@ -55,6 +56,11 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
     },
   });
 }
+
+const analyticsClient: AnalyticsClient | undefined =
+  typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY
+    ? (name, properties) => posthog.capture(name, properties)
+    : undefined;
 
 const captureFrontendError: FrontendErrorReporter = (error, context) => {
   Sentry.captureException(error, (scope) => {
@@ -156,9 +162,11 @@ function RootComponent() {
   const { authHint, origin } = Route.useLoaderData();
   return (
     <PostHogProvider client={posthog}>
-      <AuthProvider initialHint={authHint}>
-        <AuthGate ssrOrigin={origin} />
-      </AuthProvider>
+      <AnalyticsProvider client={analyticsClient}>
+        <AuthProvider initialHint={authHint}>
+          <AuthGate ssrOrigin={origin} />
+        </AuthProvider>
+      </AnalyticsProvider>
     </PostHogProvider>
   );
 }

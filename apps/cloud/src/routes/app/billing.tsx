@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
 
@@ -93,7 +94,10 @@ function BillingPage() {
               <Button
                 variant="ghost"
                 type="button"
-                onClick={() => openCustomerPortal()}
+                onClick={() => {
+                  trackEvent("billing_cancel_plan_clicked", { plan_id: planId });
+                  openCustomerPortal();
+                }}
                 className="rounded-md px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
               >
                 Cancel plan
@@ -101,6 +105,7 @@ function BillingPage() {
             )}
             <Link
               to="/billing/plans"
+              onClick={() => trackEvent("billing_manage_opened")}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
               Manage

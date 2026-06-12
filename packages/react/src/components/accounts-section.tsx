@@ -16,6 +16,7 @@ import {
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
+import { trackEvent } from "../api/analytics";
 import type { AuthMethod } from "../lib/auth-placements";
 import {
   connectionNeedsReconsent,
@@ -182,11 +183,21 @@ function OwnerAccounts(props: {
       });
       if (Exit.isFailure(startExit)) {
         toast.error(messageFromExit(startExit, "Failed to reconnect"));
+        trackEvent("connection_reconnected", {
+          integration_slug: String(connection.integration),
+          owner: connection.owner,
+          success: false,
+        });
         return;
       }
       const started = startExit.value;
       if (started.status === "connected") {
         toast.success("Reconnected");
+        trackEvent("connection_reconnected", {
+          integration_slug: String(connection.integration),
+          owner: connection.owner,
+          success: true,
+        });
         return;
       }
       void oauthPopup.openAuthorization({
@@ -198,9 +209,19 @@ function OwnerAccounts(props: {
           }),
         onSuccess: () => {
           toast.success("Reconnected");
+          trackEvent("connection_reconnected", {
+            integration_slug: String(connection.integration),
+            owner: connection.owner,
+            success: true,
+          });
         },
         onError: () => {
           toast.error("Failed to reconnect");
+          trackEvent("connection_reconnected", {
+            integration_slug: String(connection.integration),
+            owner: connection.owner,
+            success: false,
+          });
         },
       });
       return;
@@ -213,6 +234,11 @@ function OwnerAccounts(props: {
         name: connection.name,
       },
       reactivityKeys: connectionWriteKeys,
+    });
+    trackEvent("connection_reconnected", {
+      integration_slug: String(connection.integration),
+      owner: connection.owner,
+      success: Exit.isSuccess(exit),
     });
     if (Exit.isFailure(exit)) {
       toast.error(messageFromExit(exit, "Failed to reconnect"));
@@ -227,6 +253,11 @@ function OwnerAccounts(props: {
         name: connection.name,
       },
       reactivityKeys: connectionWriteKeys,
+    });
+    trackEvent("connection_removed", {
+      integration_slug: String(connection.integration),
+      owner: connection.owner,
+      success: Exit.isSuccess(exit),
     });
     if (Exit.isFailure(exit)) {
       toast.error(messageFromExit(exit, "Failed to remove connection"));
@@ -333,7 +364,16 @@ export function AccountsSection(props: {
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setAdding(true)}
+          onClick={() => {
+            trackEvent("connection_add_opened", {
+              integration_slug: String(integration),
+              has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
+              has_api_key_method: methods.some(
+                (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
+              ),
+            });
+            setAdding(true);
+          }}
           disabled={!canAddConnection}
         >
           Add connection
@@ -355,7 +395,16 @@ export function AccountsSection(props: {
             type="button"
             className="mt-4"
             size="sm"
-            onClick={() => setAdding(true)}
+            onClick={() => {
+              trackEvent("connection_add_opened", {
+                integration_slug: String(integration),
+                has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
+                has_api_key_method: methods.some(
+                  (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
+                ),
+              });
+              setAdding(true);
+            }}
             disabled={!canAddConnection}
           >
             Add a connection

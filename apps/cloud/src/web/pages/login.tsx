@@ -1,4 +1,5 @@
 import React from "react";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../../auth/api";
 import { safeReturnTo } from "../../auth/return-to";
 
@@ -16,6 +17,7 @@ export const LoginPage = ({ returnTo }: { returnTo?: string | undefined }) => {
         </div>
         <a
           href={loginHref}
+          onClick={() => trackEvent("login_cta_clicked")}
           className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors"
         >
           Sign in

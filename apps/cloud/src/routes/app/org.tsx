@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Exit } from "effect";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { useCustomer } from "autumn-js/react";
 import { toast } from "sonner";
@@ -65,6 +66,7 @@ function DomainsSection() {
       params: { domainId },
       reactivityKeys: orgDomainWriteKeys,
     });
+    trackEvent("org_domain_removed", { success: Exit.isSuccess(exit) });
     toast[Exit.isSuccess(exit) ? "success" : "error"](
       Exit.isSuccess(exit) ? `Removed ${domain}` : "Failed to remove domain",
     );
@@ -74,6 +76,7 @@ function DomainsSection() {
     const exit = await doGetVerificationLink({
       reactivityKeys: orgDomainWriteKeys,
     });
+    trackEvent("org_domain_added", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       window.open(exit.value.link, "_blank");
     } else {

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
 import { ownerLabelForHost } from "../api/owner-display";
+import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
 import { uniqueClientSlug } from "../plugins/use-effective-oauth-client";
@@ -199,9 +200,11 @@ export function OAuthClientForm(props: {
     });
     if (Exit.isFailure(exit)) {
       setRegistering(false);
+      trackEvent("oauth_client_registered", { owner, grant, via_dcr: true, success: false });
       toast.error("Automatic registration failed — enter a client ID and secret instead");
       return;
     }
+    trackEvent("oauth_client_registered", { owner, grant, via_dcr: true, success: true });
     toast.success(`Registered ${integrationName} OAuth app`);
     onCreated({ owner, slug });
   };
@@ -225,9 +228,11 @@ export function OAuthClientForm(props: {
     });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
+      trackEvent("oauth_client_registered", { owner, grant, via_dcr: false, success: false });
       toast.error("Failed to register OAuth app");
       return;
     }
+    trackEvent("oauth_client_registered", { owner, grant, via_dcr: false, success: true });
     toast.success(`Registered ${integrationName} OAuth app`);
     onCreated({ owner, slug });
   };

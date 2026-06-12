@@ -3,6 +3,7 @@ import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import {
   Dialog,
@@ -59,6 +60,7 @@ function OrganizationSwitcherItems(props: { activeOrganizationId: string | null 
       payload: { organizationId },
       reactivityKeys: authWriteKeys,
     });
+    trackEvent("org_switched", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) window.location.reload();
   };
 

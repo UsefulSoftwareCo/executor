@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet, useAtomRefresh } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { trackEvent } from "../api/analytics";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   AuthTemplateSlug,
@@ -281,6 +282,10 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       params: { slug },
       reactivityKeys: integrationWriteKeys,
     });
+    trackEvent("integration_removed", {
+      integration_slug: String(slug),
+      success: Exit.isSuccess(exit),
+    });
     if (Exit.isFailure(exit)) {
       setDeleting(false);
       setConfirmDelete(false);
@@ -295,13 +300,22 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     // v2: refresh re-resolves tools per connection. Refresh every connection of
     // this integration for the active owner.
     const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
+    const refreshExits: boolean[] = [];
+    let connectionCount = 0;
     for (const connection of connections) {
       if (connection.integration !== slug) continue;
-      await doRefresh({
+      connectionCount++;
+      const refreshExit = await doRefresh({
         params: { owner: connection.owner, integration: slug, name: connection.name },
         reactivityKeys: connectionWriteKeys,
       });
+      refreshExits.push(Exit.isSuccess(refreshExit));
     }
+    trackEvent("integration_refreshed", {
+      integration_slug: String(slug),
+      connection_count: connectionCount,
+      success: connectionCount > 0 && refreshExits.every(Boolean),
+    });
     setRefreshing(false);
   };
 
@@ -335,6 +349,10 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       reactivityKeys: integrationWriteKeys,
     });
     setSavingName(false);
+    trackEvent("integration_renamed", {
+      integration_slug: String(slug),
+      success: Exit.isSuccess(exit),
+    });
     if (Exit.isFailure(exit)) return;
     cancelRename();
   };

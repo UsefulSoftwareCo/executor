@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
+import { trackEvent } from "../api/analytics";
 import { generateKeyBetween } from "fractional-indexing";
 import { ChevronDownIcon } from "lucide-react";
 import {
@@ -281,8 +282,8 @@ function PolicyRow(props: {
 export function PoliciesPage() {
   const policies = useAtomValue(policiesOptimisticAtom);
   const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
-  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promise" });
-  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promise" });
+  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
+  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
   const [busy, setBusy] = useState(false);
   const ownerDisplay = useOwnerDisplay();
   // Policies default to org/workspace. On local this is the hidden Local owner
@@ -303,6 +304,11 @@ export function PoliciesPage() {
       },
       reactivityKeys: policyWriteKeys,
     });
+    trackEvent("policy_created", {
+      action: input.action,
+      owner: input.owner,
+      success: Exit.isSuccess(exit),
+    });
     if (Exit.isFailure(exit)) {
       setBusy(false);
       return;
@@ -311,26 +317,41 @@ export function PoliciesPage() {
   };
 
   const handleUpdate = async (policy: { id: string; owner: Owner }, action: ToolPolicyAction) => {
-    await doUpdate({
+    const exit = await doUpdate({
       params: { policyId: PolicyId.make(policy.id) },
       payload: { owner: policy.owner, action },
       reactivityKeys: policyWriteKeys,
     });
+    trackEvent("policy_action_changed", {
+      action,
+      owner: policy.owner,
+      success: Exit.isSuccess(exit),
+    });
   };
 
   const handleRemove = async (policy: { id: string; owner: Owner }) => {
-    await doRemove({
+    const exit = await doRemove({
       params: { policyId: PolicyId.make(policy.id) },
       payload: { owner: policy.owner },
       reactivityKeys: policyWriteKeys,
     });
+    trackEvent("policy_removed", { owner: policy.owner, success: Exit.isSuccess(exit) });
   };
 
-  const handleMove = async (policy: { id: string; owner: Owner }, position: string) => {
-    await doUpdate({
+  const handleMove = async (
+    policy: { id: string; owner: Owner },
+    position: string,
+    direction: "up" | "down",
+  ) => {
+    const exit = await doUpdate({
       params: { policyId: PolicyId.make(policy.id) },
       payload: { owner: policy.owner, position },
       reactivityKeys: policyWriteKeys,
+    });
+    trackEvent("policy_reordered", {
+      owner: policy.owner,
+      direction,
+      success: Exit.isSuccess(exit),
     });
   };
 
@@ -444,10 +465,18 @@ export function PoliciesPage() {
                             handleUpdate({ id: p.id, owner: p.owner }, action)
                           }
                           onMoveUp={() =>
-                            handleMove({ id: p.id, owner: p.owner }, positionAbove(p.id, p.owner))
+                            handleMove(
+                              { id: p.id, owner: p.owner },
+                              positionAbove(p.id, p.owner),
+                              "up",
+                            )
                           }
                           onMoveDown={() =>
-                            handleMove({ id: p.id, owner: p.owner }, positionBelow(p.id, p.owner))
+                            handleMove(
+                              { id: p.id, owner: p.owner },
+                              positionBelow(p.id, p.owner),
+                              "down",
+                            )
                           }
                         />
                       );
