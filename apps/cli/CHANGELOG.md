@@ -1,5 +1,23 @@
 # executor
 
+## 1.5.9
+
+### Patch Changes
+
+- [`fe4153d`](https://github.com/RhysSullivan/executor/commit/fe4153d0956d09332465f2e7bcbdee6ce55f0494) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix a Windows race in the local v1→v2 database migration: the legacy
+  database rename could hit `EBUSY` (file still held by the just-closed
+  SQLite handle or an antivirus scan) and crash the app at boot. The retry
+  window now covers the lock instead of giving up after ~2 seconds.
+
+  Also hardens the desktop release pipeline so a hung platform build fails
+  fast instead of blocking later releases.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.9
+  - @executor-js/runtime-quickjs@1.5.9
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.29
+
 ## 1.5.8
 
 ### Patch Changes

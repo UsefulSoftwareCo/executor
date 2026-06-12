@@ -1,5 +1,12 @@
 # @executor-js/plugin-keychain
 
+## 1.5.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.9
+
 ## 1.5.8
 
 ### Patch Changes
