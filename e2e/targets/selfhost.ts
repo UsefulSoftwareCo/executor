@@ -6,9 +6,10 @@ import { Effect } from "effect";
 
 import { cookieConsentStrategy } from "@executor-js/mcporter";
 
+import { e2ePort } from "../src/ports";
 import type { Identity, Target } from "../src/target";
 
-export const SELFHOST_PORT = Number(process.env.E2E_SELFHOST_PORT ?? 4799);
+export const SELFHOST_PORT = e2ePort("E2E_SELFHOST_PORT", 4);
 export const SELFHOST_BASE_URL =
   process.env.E2E_SELFHOST_URL ?? `http://localhost:${SELFHOST_PORT}`;
 

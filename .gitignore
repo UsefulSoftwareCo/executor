@@ -102,6 +102,9 @@ executor.jsonc
 MISTAKES.md
 DESIRES.md
 LEARNINGS.md
+
+# Agent scratch scripts (workspace-resolvable alternative to /tmp)
+scratch/
 .alchemy/
 
 # Pi coding agent

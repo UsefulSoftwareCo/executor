@@ -1,5 +1,28 @@
 # AGENTS.md
 
+## Fresh Checkout / Worktree Setup
+
+Run `bun run bootstrap` first in any fresh checkout or worktree. It is
+idempotent: inits the vendor submodules (`vendor/emulate`, `vendor/mcporter` —
+the e2e suite needs both), runs `bun install` (whose prepare hook builds the
+internal packages dev servers fail without), and installs Playwright chromium.
+Skipping it is why fresh worktrees die with "Failed to resolve entry for
+package '@executor-js/vite-plugin'".
+
+## Environment Gotchas (learned the hard way)
+
+- The shell is fish, and the working directory resets between Bash calls. Use
+  absolute paths rooted at THIS worktree (check `pwd`), never
+  `/Users/rhys/src/executor` from memory, and don't rely on a prior `cd`.
+- Don't write probe scripts to `/tmp` — they can't resolve workspace packages
+  (`effect`, `playwright`, ...). Put scratch scripts under the repo root
+  (`scratch/` is gitignored) so bun resolves the workspace.
+- `bun.lock` conflicts on rebase/merge: take either side, then re-run
+  `bun install` to regenerate it — never hand-merge the lockfile.
+- e2e dev-server ports are derived per checkout (`cd e2e && bun run ports`).
+  If a boot reports a squatted port, an old dev server leaked — kill it by
+  PID from the error message; don't move your own ports to dodge it.
+
 ## Task Completion Requirements
 
 - Use Effect Vitest for tests.

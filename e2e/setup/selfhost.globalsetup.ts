@@ -6,7 +6,7 @@ import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bootProcesses, waitForHttp } from "./boot";
+import { bootProcesses, ensurePortsFree, waitForHttp } from "./boot";
 import { SELFHOST_ADMIN, SELFHOST_BASE_URL, SELFHOST_PORT } from "../targets/selfhost";
 
 const selfhostDir = fileURLToPath(new URL("../../apps/host-selfhost/", import.meta.url));
@@ -16,6 +16,8 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     await waitForHttp(process.env.E2E_SELFHOST_URL);
     return;
   }
+
+  await ensurePortsFree([{ port: SELFHOST_PORT, label: "selfhost vite dev" }]);
 
   // Fresh data dir per suite run — hermetic; in-suite isolation comes from
   // fresh identities, not resets.

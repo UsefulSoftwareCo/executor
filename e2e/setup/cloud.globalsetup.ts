@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 // Vendored fork import (same pattern as mcporter).
 import { createEmulator } from "@executor-js/emulate";
 
-import { bootProcesses, waitForHttp } from "./boot";
+import { bootProcesses, ensurePortsFree, waitForHttp } from "./boot";
 import {
   CLOUD_BASE_URL,
   CLOUD_DB_PORT,
@@ -28,6 +28,13 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     await waitForHttp(process.env.E2E_CLOUD_URL);
     return;
   }
+
+  await ensurePortsFree([
+    { port: CLOUD_PORT, label: "cloud vite dev" },
+    { port: CLOUD_DB_PORT, label: "cloud dev-db (PGlite)" },
+    { port: WORKOS_EMULATOR_PORT, label: "WorkOS emulator" },
+    { port: AUTUMN_EMULATOR_PORT, label: "Autumn emulator" },
+  ]);
 
   // Fresh dev DB per suite run — hermetic, like the selfhost data dir. The
   // WorkOS emulator mints org ids from a per-process counter, so a persisted

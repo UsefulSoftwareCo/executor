@@ -184,13 +184,12 @@ scenario(
         }),
       );
       expect(execution.isError, "the execution succeeded").toBe(false);
+      // Payload-first: `data` IS the upstream body; transport facts (status,
+      // headers) ride in the optional `http` side channel.
       expect(execution.structured, "the tool returned the upstream's echo").toMatchObject({
         result: {
           ok: true,
-          data: {
-            status: 200,
-            data: { message: "hello", suffix: "world", path: "/echo/hello" },
-          },
+          data: { message: "hello", suffix: "world", path: "/echo/hello" },
         },
       });
 

@@ -2,7 +2,8 @@
 // server, wait until it answers HTTP, and hand vitest a teardown. The apps own
 // what runs (their dev stack, their stub flags); this file only owns process
 // lifecycle, so it stays target-agnostic.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { connect } from "node:net";
 
 export interface BootedProcesses {
   readonly teardown: () => Promise<void>;
@@ -70,6 +71,43 @@ export const bootProcesses = (
       }
     },
   };
+};
+
+// A port already in LISTEN before we boot means waitForHttp would silently
+// attach to a FOREIGN server (a leaked dev server from another checkout or a
+// crashed prior run) — every scenario then fails with baffling auth errors
+// instead of one clear message. Fail fast and name the squatter.
+export const ensurePortsFree = async (
+  ports: ReadonlyArray<{ readonly port: number; readonly label: string }>,
+): Promise<void> => {
+  for (const { port, label } of ports) {
+    const inUse = await new Promise<boolean>((resolve) => {
+      const socket = connect({ port, host: "127.0.0.1" });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+      socket.setTimeout(1_000, () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (!inUse) continue;
+    let owner = "(lsof unavailable)";
+    try {
+      owner = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"], {
+        encoding: "utf8",
+      }).trim();
+    } catch {
+      // lsof failing is fine — the error below carries the essential fact.
+    }
+    throw new Error(
+      `e2e: port ${port} (${label}) is already in use — likely a leaked dev server ` +
+        `from another checkout or a previous run. Kill it or set the E2E_*_PORT/URL ` +
+        `env vars to relocate.\n${owner}`,
+    );
+  }
 };
 
 export const waitForHttp = async (

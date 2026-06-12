@@ -30,6 +30,8 @@
   ],
   "type": "module",
   "scripts": {
+    "bootstrap": "bun run scripts/bootstrap.ts",
+    "reap": "bun run scripts/reap-dev-servers.ts",
     "dev": "turbo run dev --filter='!@executor-js/desktop' --filter='!@executor-js/cloud'",
     "dev:desktop": "turbo run dev",
     "dev:cli": "EXECUTOR_DEV=1 EXECUTOR_DATA_DIR=${EXECUTOR_DATA_DIR:-apps/local/.executor-dev} bun run apps/cli/src/main.ts",
