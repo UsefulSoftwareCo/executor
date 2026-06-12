@@ -13,6 +13,7 @@ import { NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
 import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
 import { SessionContext, SessionCookies } from "./middleware";
+import { encodeLoginState, decodeLoginState } from "./login-state";
 import { safeReturnTo } from "./return-to";
 import { UserStoreService } from "./context";
 import { env } from "cloudflare:workers";
@@ -39,10 +40,6 @@ const COOKIE_OPTIONS = {
 };
 
 const STATE_COOKIE = "wos-login-state";
-// Where the user was headed before login (set by /auth/login from its
-// validated returnTo query, read once by the callback). Same lifetime and
-// flags as the CSRF state it travels with.
-const RETURN_TO_COOKIE = "wos-login-return-to";
 const STATE_COOKIE_OPTIONS = {
   path: "/",
   httpOnly: true,
@@ -70,7 +67,7 @@ const DELETE_COOKIE_OPTIONS = {
   secure: true,
 };
 
-const randomState = (): string => {
+const randomNonce = (): string => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -157,25 +154,19 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           // header points at the internal proxy target, not the public URL
           // WorkOS needs to redirect back to.
           const origin = env.VITE_PUBLIC_SITE_URL ?? "";
-          const state = randomState();
+          // OAuth round-trips `state` verbatim, so the validated returnTo
+          // rides inside it next to the CSRF nonce — no extra cookie.
+          const state = encodeLoginState({
+            nonce: randomNonce(),
+            returnTo: safeReturnTo(query.returnTo) ?? undefined,
+          });
           const url = workos.getAuthorizationUrl(`${origin}${AUTH_PATHS.callback}`, state);
-          const returnTo = safeReturnTo(query.returnTo);
-          const withState = setResponseCookie(
+          return setResponseCookie(
             HttpServerResponse.redirect(url, { status: 302 }),
             STATE_COOKIE,
             state,
             RESPONSE_STATE_COOKIE_OPTIONS,
           );
-          // Raw value: HttpServerResponse.setCookieUnsafe URI-encodes it for
-          // the wire and `request.cookies` decodes it back on the callback.
-          return returnTo
-            ? setResponseCookie(
-                withState,
-                RETURN_TO_COOKIE,
-                returnTo,
-                RESPONSE_STATE_COOKIE_OPTIONS,
-              )
-            : withState;
         }),
       )
       .handleRaw("callback", ({ request, query }) =>
@@ -229,21 +220,20 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             return HttpServerResponse.text("Failed to create session", { status: 500 });
           }
 
-          // Resume where the SSR gate interrupted them; the cookie value is
-          // browser-writable, so it gets the same validation as the query.
-          const returnTo = safeReturnTo(request.cookies[RETURN_TO_COOKIE]) ?? "/";
+          // Resume where the SSR gate interrupted them. The state passed the
+          // CSRF check above whenever it's present, but it's still a
+          // round-tripped value — so the returnTo inside it is re-validated
+          // like any other untrusted path.
+          const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
 
           return deleteResponseCookie(
-            deleteResponseCookie(
-              setResponseCookie(
-                HttpServerResponse.redirect(returnTo, { status: 302 }),
-                "wos-session",
-                sealedSession,
-                RESPONSE_COOKIE_OPTIONS,
-              ),
-              STATE_COOKIE,
+            setResponseCookie(
+              HttpServerResponse.redirect(returnTo, { status: 302 }),
+              "wos-session",
+              sealedSession,
+              RESPONSE_COOKIE_OPTIONS,
             ),
-            RETURN_TO_COOKIE,
+            STATE_COOKIE,
           );
         }),
       ),

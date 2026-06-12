@@ -81,52 +81,43 @@ scenario(
       "/login?returnTo=%2Ftools",
     );
 
-    // 2. Starting login with that returnTo pins it in a short-lived cookie
-    //    beside the CSRF state.
-    const login = yield* Effect.promise(() =>
-      fetch(new URL("/api/auth/login?returnTo=%2Ftools", target.baseUrl), {
-        redirect: "manual",
-      }),
-    );
-    expect(login.status, "login hands the browser to AuthKit").toBe(302);
-    const stateCookie = cookiePair(login, "wos-login-state");
-    const returnToCookie = cookiePair(login, "wos-login-return-to");
-    expect(returnToCookie, "the destination travels with the login state").toBe(
-      "wos-login-return-to=%2Ftools",
-    );
+    // Drive /api/auth/login → AuthKit (the emulator signs in headlessly via
+    // login_hint) → the app's callback, and report where the callback lands
+    // the signed-in browser. returnTo rides INSIDE the OAuth state param the
+    // whole way — the state cookie is the only thing the browser carries.
+    const completeLogin = (loginQuery: string) =>
+      Effect.promise(async () => {
+        const login = await fetch(new URL(`/api/auth/login${loginQuery}`, target.baseUrl), {
+          redirect: "manual",
+        });
+        expect(login.status, "login hands the browser to AuthKit").toBe(302);
+        const stateCookie = cookiePair(login, "wos-login-state");
+        expect(stateCookie, "the CSRF state is pinned in a cookie").toBeTruthy();
 
-    // 3. Complete the hosted flow (the emulator signs in headlessly via
-    //    login_hint) — the callback sends the user to the deep link, not "/".
-    const authorizeUrl = new URL(login.headers.get("location") ?? "");
-    authorizeUrl.searchParams.set("login_hint", `returnto-${Date.now()}@e2e.test`);
-    const consent = yield* Effect.promise(() => fetch(authorizeUrl, { redirect: "manual" }));
-    const callbackUrl = consent.headers.get("location");
-    expect(callbackUrl, "AuthKit redirects back to the app's callback").toBeTruthy();
+        const authorizeUrl = new URL(login.headers.get("location") ?? "");
+        authorizeUrl.searchParams.set("login_hint", `returnto-${Date.now()}@e2e.test`);
+        const consent = await fetch(authorizeUrl, { redirect: "manual" });
+        const callbackUrl = consent.headers.get("location");
+        expect(callbackUrl, "AuthKit redirects back to the app's callback").toBeTruthy();
 
-    const callback = yield* Effect.promise(() =>
-      fetch(callbackUrl!, {
-        redirect: "manual",
-        headers: { cookie: `${stateCookie}; ${returnToCookie}` },
-      }),
-    );
-    expect(callback.status, "the callback completes the login").toBe(302);
-    expect(
-      callback.headers.get("location"),
-      "…and resumes exactly where the gate interrupted the visitor",
-    ).toBe("/tools");
-    expect(cookiePair(callback, "wos-session"), "with a real session cookie minted").toBeTruthy();
+        const callback = await fetch(callbackUrl!, {
+          redirect: "manual",
+          headers: { cookie: stateCookie! },
+        });
+        expect(callback.status, "the callback completes the login").toBe(302);
+        expect(cookiePair(callback, "wos-session"), "a real session cookie is minted").toBeTruthy();
+        return callback.headers.get("location");
+      });
 
-    // 4. The returnTo channel never becomes an open redirect: an off-origin
-    //    destination is dropped before it's even recorded.
-    const forged = yield* Effect.promise(() =>
-      fetch(new URL("/api/auth/login?returnTo=https%3A%2F%2Fevil.example", target.baseUrl), {
-        redirect: "manual",
-      }),
-    );
-    expect(
-      cookiePair(forged, "wos-login-return-to"),
-      "an off-origin returnTo is not recorded",
-    ).toBeUndefined();
+    // 2. Completing the hosted flow resumes exactly where the gate
+    //    interrupted the visitor — the deep link, not "/".
+    const landed = yield* completeLogin("?returnTo=%2Ftools");
+    expect(landed, "login resumes where the gate interrupted the visitor").toBe("/tools");
+
+    // 3. The returnTo channel never becomes an open redirect: an off-origin
+    //    destination is dropped at the login door, so the flow lands on "/".
+    const forgedLanding = yield* completeLogin("?returnTo=https%3A%2F%2Fevil.example");
+    expect(forgedLanding, "an off-origin returnTo falls back to the root").toBe("/");
   }),
 );
 

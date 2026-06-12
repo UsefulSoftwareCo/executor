@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
 // returnTo — the "send me back where I was" path carried through the login
-// flow (SSR gate → /login → /api/auth/login → state cookie → callback).
+// flow (SSR gate → /login → /api/auth/login → OAuth state param → callback).
 //
-// The value crosses trust boundaries (query params, a cookie the browser can
-// rewrite), so every consumer validates with `isSafeReturnTo` before using
-// it: same-origin relative paths only — no absolute/protocol-relative URLs
-// (open redirect) and nothing under /api (bouncing a fresh login into an API
-// endpoint is never what the user meant).
+// The value crosses trust boundaries (query params, the state round-tripped
+// through the identity provider), so every consumer validates with
+// `isSafeReturnTo` before using it: same-origin relative paths only — no
+// absolute/protocol-relative URLs (open redirect) and nothing under /api
+// (bouncing a fresh login into an API endpoint is never what the user meant).
 //
 // Pure string code — imported by server handlers and the login page alike.
 // ---------------------------------------------------------------------------

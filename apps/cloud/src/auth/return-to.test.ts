@@ -3,9 +3,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { isSafeReturnTo, loginPath, safeReturnTo } from "./return-to";
 
 // Guards the login round-trip channel (SSR gate → /login → /api/auth/login →
-// state cookie → callback redirect). Everything here crosses a trust boundary,
-// so the validator is what stands between "resume where you were" and an open
-// redirect.
+// OAuth state param → callback redirect). Everything here crosses a trust
+// boundary, so the validator is what stands between "resume where you were"
+// and an open redirect.
 describe("isSafeReturnTo", () => {
   const safe = ["/", "/tools", "/integrations/sentry?addAccount=1", "/billing/plans"];
   for (const path of safe) {
