@@ -374,10 +374,9 @@ const collectTags = (result: ExtractionResult): string[] => {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Preview an OpenAPI spec — extract metadata without registering anything.
- *  Accepts either a URL or raw JSON/YAML text. */
-export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: string) {
-  const specText = yield* resolveSpecText(input);
+/** Preview already-resolved spec text — extract metadata without registering
+ *  anything and without any HTTP dependency. */
+export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (specText: string) {
   const doc: ParsedDocument = yield* parse(specText);
   const result = yield* extract(doc);
 
@@ -416,4 +415,11 @@ export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: st
     headerPresets: buildHeaderPresets(securitySchemes, authStrategies),
     oauth2Presets: buildOAuth2Presets(securitySchemes),
   });
+});
+
+/** Preview an OpenAPI spec — extract metadata without registering anything.
+ *  Accepts either a URL or raw JSON/YAML text. */
+export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: string) {
+  const specText = yield* resolveSpecText(input);
+  return yield* previewSpecText(specText);
 });

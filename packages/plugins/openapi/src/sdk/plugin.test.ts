@@ -506,6 +506,118 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
+  it.effect("addSpec derives auth methods from the spec's security schemes by default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // The spec declares bearer auth; the caller passes NO template — the
+        // agentic add path (MCP/API) does exactly this. Without server-side
+        // derivation the integration is auth-less and its Add-connection
+        // modal is a dead end (e2e/scenarios/connect-handoff.test.ts).
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithBearer = JSON.stringify({
+          ...spec,
+          components: {
+            ...(spec.components as Record<string, unknown> | undefined),
+            securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
+          },
+          security: [{ auth_token: [] }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithBearer },
+          slug: "derived_auth_api",
+          baseUrl: server.baseUrl,
+        });
+
+        // The derived template is persisted on the integration…
+        const config = yield* executor.openapi.getConfig("derived_auth_api");
+        const derived = config?.authenticationTemplate ?? [];
+        expect(derived.map((a) => ({ slug: String(a.slug), kind: a.kind }))).toEqual([
+          { slug: "apikey-0", kind: "apikey" },
+        ]);
+
+        // …and it renders a pasted credential as a bearer Authorization header.
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("derived_auth_api"),
+          template: AuthTemplateSlug.make("apikey-0"),
+          value: "pasted-token-xyz",
+        });
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            ToolAddress.make("tools.derived_auth_api.org.main.items.echoHeaders"),
+            {},
+          ),
+        ).data as { authorization?: string };
+        expect(result.authorization).toBe("Bearer pasted-token-xyz");
+      }),
+    ),
+  );
+
+  it.effect("addSpec defaults baseUrl to the spec's first server when omitted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // No baseUrl passed — the spec's own servers entry must fill it, or
+        // every invocation on the integration fails with no host to call.
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithServer = JSON.stringify({
+          ...spec,
+          servers: [{ url: server.baseUrl }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithServer },
+          slug: "derived_base_api",
+        });
+
+        const config = yield* executor.openapi.getConfig("derived_base_api");
+        expect(config?.baseUrl).toBe(server.baseUrl);
+      }),
+    ),
+  );
+
+  it.effect("addSpec treats an explicit empty authenticationTemplate as no auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // The add page sends [] when the user deletes every detected method.
+        // That intent must survive — deriving methods back from the spec here
+        // would silently override the user's choice.
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithBearer = JSON.stringify({
+          ...spec,
+          components: {
+            ...(spec.components as Record<string, unknown> | undefined),
+            securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
+          },
+          security: [{ auth_token: [] }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithBearer },
+          slug: "no_auth_api",
+          baseUrl: server.baseUrl,
+          authenticationTemplate: [],
+        });
+
+        const config = yield* executor.openapi.getConfig("no_auth_api");
+        expect(config?.authenticationTemplate ?? []).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect("removeSpec cleans up the integration and its tools", () =>
     Effect.scoped(
       Effect.gen(function* () {

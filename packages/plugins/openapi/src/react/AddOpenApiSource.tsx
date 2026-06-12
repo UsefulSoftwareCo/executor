@@ -4,11 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import {
-  AuthTemplateSlug,
-  IntegrationSlug,
-  type OAuthAuthentication,
-} from "@executor-js/sdk/shared";
+import { IntegrationSlug } from "@executor-js/sdk/shared";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
   slugifyNamespace,
@@ -48,9 +44,10 @@ import {
   googleOpenApiPresets,
   type GoogleOpenApiPreset,
 } from "../sdk/google-presets";
-import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
-import { type APIKeyAuthentication, type Authentication, type ServerInfo } from "../sdk/types";
+import type { SpecPreview } from "../sdk/preview";
+import { type Authentication, type ServerInfo } from "../sdk/types";
 import { expandServerUrlOptions } from "../sdk/openapi-utils";
+import { detectedAuthenticationTemplates, firstBaseUrlForPreview } from "../sdk/derive-auth";
 
 const GOOGLE_BUNDLE_BASE_URL = "https://www.googleapis.com/";
 const GOOGLE_BUNDLE_FAVICON = "https://fonts.gstatic.com/s/i/productlogos/googleg/v6/192px.svg";
@@ -71,46 +68,6 @@ const googleBundleUrls = (
   );
   // Preset URLs first (stable order), then any custom Discovery URLs, de-duped.
   return [...new Set([...fromPresets, ...customUrls])];
-};
-
-// ---------------------------------------------------------------------------
-// OpenAPI url helpers — specs sometimes ship relative OAuth endpoints; resolve
-// them against the chosen base URL so the stored auth template is absolute.
-// ---------------------------------------------------------------------------
-
-export function resolveOAuthUrl(url: string, baseUrl: string): string {
-  if (!url) return url;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor normalizes provider metadata URLs
-  try {
-    new URL(url);
-    return url;
-  } catch {
-    if (!baseUrl) return url;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor resolves relative provider metadata URLs
-    try {
-      return new URL(url, baseUrl).toString();
-    } catch {
-      return url;
-    }
-  }
-}
-
-const standardOidcIdentityScopes = ["openid", "email", "profile"] as const;
-
-const identityScopesForPreset = (
-  identityScopes: OAuth2Preset["identityScopes"],
-): readonly string[] => {
-  if (identityScopes === false) return [];
-  return identityScopes === "auto" ? standardOidcIdentityScopes : identityScopes;
-};
-
-const resolvedOAuthScopes = (
-  apiScopes: Iterable<string>,
-  identityScopes: OAuth2Preset["identityScopes"],
-): string[] => {
-  const merged = new Set(apiScopes);
-  for (const scope of identityScopesForPreset(identityScopes)) merged.add(scope);
-  return [...merged];
 };
 
 const isGoogleDiscoveryUrl = (url: string): boolean => {
@@ -146,99 +103,8 @@ const specInputForAdd = (input: string) => {
     : { kind: "blob" as const, value };
 };
 
-// ---------------------------------------------------------------------------
-// Auth-template builders — turn a preview preset into the integration's stored
-// `Authentication` template (v2). The header preset becomes an `apiKey` template
-// whose secret header value renders the resolved credential via `variable(token)`;
-// the oauth2 preset becomes an `oauth` template carrying the provider endpoints.
-//
-// Post-redesign the add flow no longer asks the user to pick ONE method: every
-// spec-detected method is registered so the integration's detail hub can list
-// them and Add-account can choose among them (P6: add without auth, connect
-// later).
-// ---------------------------------------------------------------------------
-
-const headerPrefix = (preset: HeaderPreset, headerName: string): string | undefined => {
-  const label = preset.label.toLowerCase();
-  if (headerName.toLowerCase() === "authorization") {
-    if (label.includes("bearer")) return "Bearer ";
-    if (label.includes("basic")) return "Basic ";
-  }
-  return undefined;
-};
-
-const apiKeyTemplateFromHeaderPreset = (
-  preset: HeaderPreset,
-  slug: AuthTemplateSlug,
-): APIKeyAuthentication => ({
-  slug,
-  kind: "apikey",
-  // Every secret header shares the one credential input (the canonical
-  // `token`, stored as an absent placement variable).
-  placements: preset.secretHeaders.map((headerName) => {
-    const prefix = headerPrefix(preset, headerName);
-    return { carrier: "header" as const, name: headerName, ...(prefix ? { prefix } : {}) };
-  }),
-});
-
-const oauthTemplateFromPreset = (
-  preset: OAuth2Preset,
-  baseUrl: string,
-  slug: AuthTemplateSlug,
-  scopes: readonly string[],
-): OAuthAuthentication => ({
-  slug,
-  kind: "oauth2",
-  authorizationUrl: resolveOAuthUrl(
-    Option.getOrElse(preset.authorizationUrl, () => ""),
-    baseUrl,
-  ),
-  tokenUrl: resolveOAuthUrl(preset.tokenUrl, baseUrl),
-  scopes: [...scopes],
-});
-
 const expandServerOptions = (server: ServerInfo) =>
   expandServerUrlOptions(server).map((value) => ({ value, label: value }));
-
-const firstBaseUrlForPreview = (preview: SpecPreview): string => {
-  const firstServer = preview.servers[0];
-  return firstServer ? (expandServerUrlOptions(firstServer)[0] ?? "") : "";
-};
-
-// ---------------------------------------------------------------------------
-// All spec-detected auth methods → the union of stored `Authentication`
-// templates. Header presets become apiKey templates; each oauth2 preset becomes
-// an oauth template (with its declared API scopes plus, for auth-code flows,
-// the standard identity scopes). Slugs stay deterministic per method so the
-// stored template is stable across previews of the same spec. Adding an
-// integration whose slug already exists is blocked (see the existing-slug
-// guard below); to add more auth, update the existing integration instead.
-// ---------------------------------------------------------------------------
-
-const detectedAuthenticationTemplates = (
-  headerPresets: readonly HeaderPreset[],
-  oauth2Presets: readonly OAuth2Preset[],
-  baseUrl: string,
-): readonly Authentication[] => {
-  const templates: Authentication[] = [];
-  headerPresets.forEach((preset, index) => {
-    templates.push(
-      apiKeyTemplateFromHeaderPreset(preset, AuthTemplateSlug.make(`apikey-${index}`)),
-    );
-  });
-  for (const preset of oauth2Presets) {
-    const scopes = resolvedOAuthScopes(Object.keys(preset.scopes), preset.identityScopes);
-    templates.push(
-      oauthTemplateFromPreset(
-        preset,
-        baseUrl,
-        AuthTemplateSlug.make(`oauth-${preset.securitySchemeName}`),
-        scopes,
-      ),
-    );
-  }
-  return templates;
-};
 
 // ---------------------------------------------------------------------------
 // Component — single progressive form. Post-redesign: preview → addSpec
@@ -452,7 +318,13 @@ export default function AddOpenApiSource(props: {
         slug: resolvedSourceId,
         description: resolvedDisplayName,
         baseUrl: resolvedBaseUrl,
-        ...(!isGoogleBundlePreset && editedAuthenticationTemplate.length > 0
+        // Always send the edited method list (even empty) when the user has
+        // inspected a preview: an explicit [] means "no auth methods", while
+        // OMITTING the field tells the server to derive defaults from the
+        // spec — which would silently resurrect methods the user deleted.
+        // The Google bundle path stays omitted; its auth is converter-derived
+        // server-side.
+        ...(!isGoogleBundlePreset
           ? {
               // Serialize to the wire input dialect (apikey → request-shaped).
               authenticationTemplate: editedAuthenticationTemplate.map(openApiWireAuthInput),
