@@ -93,16 +93,27 @@ function NotFoundPage() {
 
 export const Route = createRootRoute({
   notFoundComponent: NotFoundPage,
-  // The verified identity the SSR gate attached to this document request
-  // (ssr-gate.ts → middleware context → serverContext). Loader data is
-  // dehydrated, so the client's first render sees the SAME hint the server
-  // rendered with — the two can't disagree. Client-side re-runs have no
-  // serverContext and return null, which is fine: the hint only seeds
-  // initial state (AuthProvider holds it from there).
-  loader: (opts) => ({
-    authHint:
-      (opts as { serverContext?: { authHint?: AuthHint | null } }).serverContext?.authHint ?? null,
-  }),
+  // What the SSR gate attached to this document request (ssr-gate.ts →
+  // middleware context → serverContext). Loader data is dehydrated, so the
+  // client's first render sees the SAME values the server rendered with — the
+  // two can't disagree:
+  //   - authHint: the verified identity, seeding AuthProvider's initial state.
+  //   - origin:   the request origin, seeding the server connection so the
+  //               connect-card MCP URL SSRs as the real origin instead of the
+  //               127.0.0.1 client-side default (which would flash to the real
+  //               value at hydration).
+  // Client-side re-runs have no serverContext and return null; both consumers
+  // fall back gracefully (the hint is already held, the origin to the
+  // window-derived global).
+  loader: (opts) => {
+    const serverContext = (
+      opts as { serverContext?: { authHint?: AuthHint | null; origin?: string } }
+    ).serverContext;
+    return {
+      authHint: serverContext?.authHint ?? null,
+      origin: serverContext?.origin ?? null,
+    };
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -142,11 +153,11 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
-  const { authHint } = Route.useLoaderData();
+  const { authHint, origin } = Route.useLoaderData();
   return (
     <PostHogProvider client={posthog}>
       <AuthProvider initialHint={authHint}>
-        <AuthGate />
+        <AuthGate ssrOrigin={origin} />
       </AuthProvider>
     </PostHogProvider>
   );
@@ -182,7 +193,7 @@ function ShellErrorFallback() {
   );
 }
 
-function AuthGate() {
+function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -236,10 +247,17 @@ function AuthGate() {
     return <BlankScreen />;
   }
 
+  // Seed the server connection from the SSR origin so origin-derived UI (the
+  // connect card's MCP URL) renders the real host on the first paint instead
+  // of the 127.0.0.1 default the client-side global falls back to during SSR.
+  // Null on client loader re-runs → undefined → the window-derived global,
+  // which is the same origin, so the key never changes and nothing remounts.
+  const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
+
   return (
     <AutumnProvider pathPrefix="/api/billing">
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
-        <ExecutorProvider onHandledError={captureFrontendError}>
+        <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider organizationId={auth.organization.id}>

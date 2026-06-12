@@ -220,9 +220,14 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
     // Serve the document WITH the verified identity: the hint rides to the
     // SSR render through middleware context (the root loader reads it), so
     // the server paints the real authenticated shell — no loading state, no
-    // skeleton. Set-cookie writes ride on the rendered response.
+    // skeleton. The request origin rides along too: it's what the connect
+    // card's MCP URL is built from, and the server knows it (the SPA only
+    // learns `window.location.origin` after mount), so passing it here lets
+    // SSR render the real `https://…/<org>/mcp` instead of the client-side
+    // `http://127.0.0.1:4000` default — which would otherwise flash until
+    // hydration corrected it. Set-cookie writes ride on the rendered response.
     const { hint, mint } = await resolveAuthHint(session, cookieHeader);
-    const result = await next({ context: { authHint: hint } });
+    const result = await next({ context: { authHint: hint, origin: url.origin } });
     if (!mint && !session.refreshedSession) return result;
 
     const response = new Response(result.response.body, result.response);
