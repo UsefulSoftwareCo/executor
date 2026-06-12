@@ -18,6 +18,14 @@ const setCookieFor = (response: Response, name: string): string => {
   return "";
 };
 
+// state = base64url(JSON { nonce, returnTo? }) — the app's login-state
+// envelope (apps/cloud/src/auth/login-state.ts).
+const decodeLoginState = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ nonce: Schema.String, returnTo: Schema.optional(Schema.String) }),
+  ),
+);
+
 scenario(
   "Auth · login redirects to hosted AuthKit carrying a short-lived CSRF state cookie",
   {},
@@ -33,13 +41,11 @@ scenario(
 
     const authorizeUrl = new URL(response.headers.get("location") ?? "");
     const state = authorizeUrl.searchParams.get("state") ?? "";
-    // state = base64url(JSON { nonce, returnTo? }) — the nonce is the CSRF
-    // secret; returnTo (absent here, no query was passed) rides beside it.
-    const decoded = Schema.decodeUnknownOption(
-      Schema.fromJsonString(
-        Schema.Struct({ nonce: Schema.String, returnTo: Schema.optional(Schema.String) }),
-      ),
-    )(Result.getOrElse(Encoding.decodeBase64UrlString(state), () => ""));
+    // The nonce is the CSRF secret; returnTo (absent here, no query was
+    // passed) rides beside it.
+    const decoded = decodeLoginState(
+      Result.getOrElse(Encoding.decodeBase64UrlString(state), () => ""),
+    );
     expect(decoded._tag, "the state decodes as our login-state envelope").toBe("Some");
     expect(
       decoded._tag === "Some" ? decoded.value.nonce : "",
