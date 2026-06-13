@@ -32,11 +32,13 @@ import { SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "../config";
 //
 // Driver: libSQL (@libsql/client + drizzle-orm/libsql), not bun:sqlite, so the
 // self-host server runs on Node AND Bun (and the same code path serves edge by
-// swapping the `file:` URL for an https Turso URL). Better Auth opens its OWN
-// libSQL connection (LibsqlDialect) to the SAME file: URL — see better-auth.ts.
-// Because libSQL connections are NOT a single shared in-process handle the way
-// bun:sqlite's was, the WAL/busy_timeout/synchronous/foreign_keys PRAGMAs are
-// re-applied PER connection (here, and again in the Better Auth dialect path).
+// swapping the `file:` URL for an https Turso URL). Better Auth SHARES this very
+// `@libsql/client` (its LibsqlDialect is built with `{ client }`, not a fresh
+// `{ url }` connection) — so the PRAGMAs set here cover auth queries too, and
+// there is exactly ONE connection and ONE WAL. That sharing is load-bearing: a
+// second libSQL connection to the same file unlinks this one's `-wal`/`-shm` on
+// open, orphaning executor-core writes onto a deleted inode that vanishes on
+// restart (the self-host data-loss bug — see better-auth.ts's header).
 // ---------------------------------------------------------------------------
 
 /**
@@ -55,10 +57,10 @@ export interface SelfHostDbHandle<TTables extends FumaTables = FumaTables> {
   readonly fuma: FumaDB<SelfHostFumaSchema<TTables>[]>;
   readonly drizzle: LibSQLDatabase<Record<string, unknown>>;
   /**
-   * The libSQL client for this handle's `file:` URL. Better Auth opens its own
-   * separate connection to the same file via LibsqlDialect; the seed reads
-   * Better Auth's tables through this client (async), so the URL is carried
-   * alongside so callers can hand it to the dialect.
+   * The libSQL client for this handle's `file:` URL. Better Auth's LibsqlDialect
+   * is built on THIS client (one shared connection — see better-auth.ts), and
+   * the seed reads Better Auth's tables through it too. `url` is retained for
+   * callers that still need the `file:` string (diagnostics, edge swap).
    */
   readonly client: Client;
   readonly url: string;
@@ -82,11 +84,11 @@ export const createSqliteExecutorDb = async <const TTables extends FumaTables>(
 
   const url = toLibsqlFileUrl(options.path);
   const client = createClient({ url });
-  // PER-CONNECTION PRAGMAs: libSQL gives drizzle and Better Auth SEPARATE
-  // connections to this file (no single shared handle), so these must be set on
-  // this connection here and again on Better Auth's dialect connection. WAL is a
-  // file-level mode once any connection enables it; foreign_keys is strictly
-  // per-connection and MUST be re-set on each.
+  // Connection PRAGMAs. This is the ONE libSQL connection for the process —
+  // drizzle (executor tables) and Better Auth's LibsqlDialect both run on this
+  // same client (see better-auth.ts), so these apply to every query, auth
+  // included. WAL is a file-level mode; foreign_keys/busy_timeout/synchronous
+  // are connection-level and set once here.
   await client.execute("PRAGMA foreign_keys = ON");
   await client.execute("PRAGMA journal_mode = WAL");
   // Survive concurrent writes from the multi-user HTTP server, and trade

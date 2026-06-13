@@ -3,7 +3,7 @@ import { APIError } from "better-auth/api";
 import { admin, bearer, mcp, organization } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { type Client } from "@libsql/client";
-import { LibsqlDialect } from "@libsql/kysely-libsql";
+import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
 import { loadConfig } from "../config";
@@ -26,42 +26,42 @@ interface SignupGate {
 const SIGNUP_PATH = "/sign-up/email";
 
 // ---------------------------------------------------------------------------
-// Better Auth instance over the SAME libSQL `file:` URL as the FumaDB executor
-// tables ("one file, two schema regions").
+// Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
+// tables ("one connection, two schema regions").
 //
-// Schema-at-boot: passing `{ dialect: new LibsqlDialect({ url }), type: "sqlite" }`
-// makes Better Auth's createKyselyAdapter take its `"dialect" in db` branch (no
-// native dep, no bun:sqlite); `runMigrations()` creates the auth tables
-// idempotently in that file. `makeAuthOptions` is the single source of truth so
-// the migrator and runtime instance never drift.
+// Schema-at-boot: passing `{ dialect: new LibsqlDialect({ client }), type:
+// "sqlite" }` makes Better Auth's createKyselyAdapter take its `"dialect" in db`
+// branch (no native dep, no bun:sqlite); `runMigrations()` creates the auth
+// tables idempotently. `makeAuthOptions` is the single source of truth so the
+// migrator and runtime instance never drift.
 //
-// CRITICAL: LibsqlDialect opens its OWN libSQL connection to the file — it does
-// NOT share SelfHostDb's drizzle connection. Both target one file, and a row
-// Better Auth writes via this dialect is immediately readable through the
-// drizzle/FumaDB client (proven by seed.ts's reads + better-auth.test.ts). The
-// per-connection foreign_keys/WAL PRAGMAs SelfHostDb set on its own connection
-// do NOT carry to this one; for the auth tables that is fine (Kysely issues no
-// FK-dependent reads at boot and WAL is already a file-level mode), and the
-// shared file stays consistent because writes go through SQLite's file lock.
+// CRITICAL: LibsqlDialect is handed SelfHostDb's EXISTING `@libsql/client` (the
+// `{ client }` config branch), NOT a fresh `{ url }` connection. This is the
+// crux of the self-host data-loss fix: libSQL connections each manage their own
+// `-wal`/`-shm`, and when Better Auth opened a SECOND connection to the same
+// file (`{ url }`), its open unlinked SelfHostDb's `-wal`/`-shm` and created new
+// ones — orphaning SelfHostDb onto a now-deleted WAL inode. Every executor-core
+// write (integrations, connections, tools) then landed in that deleted inode
+// and vanished on the next restart, while Better Auth's own writes (on the live
+// WAL) survived — the "reconnected account, zero tools" bug, reproducing even
+// after the throwaway-bootstrap-instance fix because the LONG-LIVED auth
+// connection unlinked it just the same. Sharing one client means one WAL: no
+// unlink, and SelfHostDb's foreign_keys/WAL/busy_timeout PRAGMAs now cover auth
+// queries too (same connection). `{ client }` sets closeClient=false, so the
+// dialect never closes the handle — SelfHostDb owns the file lifecycle and
+// closes its client at shutdown. NEVER call .destroy() during normal operation.
 //
 // We build exactly ONE auth instance, held for the process lifetime. An earlier
-// design built a throwaway "bootstrap" instance to run migrations + seed before
-// the org id was known, then discarded it — but its LibsqlDialect connection
-// (a DIFFERENT native libSQL build than SelfHostDb's) was GC-closed mid-boot,
-// and that close unlinked the shared `-wal` out from under SelfHostDb's
-// still-open connection. Every executor write then landed in a deleted WAL
-// inode and vanished on the next restart (the "reconnected account, zero tools"
-// data-loss bug). Keeping one long-lived auth connection — with the org id
-// late-bound the same way the signup gate's `getAuth` already is — removes the
-// discarded connection entirely. NEVER call .destroy() during normal operation;
-// SelfHostDb owns the file lifecycle and closes its client at shutdown.
+// design also built a throwaway "bootstrap" instance (discarded mid-boot); that
+// is gone too — the org id is late-bound the same way the signup gate's
+// `getAuth` already is, so no second instance is ever needed.
 //
 // `satisfies BetterAuthOptions` (not a return annotation) keeps the literal
 // plugin tuple so `betterAuth` infers the plugin-augmented `auth.api` and
 // session/user shapes (activeOrganizationId, role, createUser, ...).
 // ---------------------------------------------------------------------------
 
-const makeAuthOptions = (url: string, getOrganizationId: () => string, gate?: SignupGate) => {
+const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?: SignupGate) => {
   const config = loadConfig();
   // Always resolved (generated + persisted when no env is set); this guards only
   // an explicitly-set env secret that is too weak.
@@ -71,7 +71,22 @@ const makeAuthOptions = (url: string, getOrganizationId: () => string, gate?: Si
     throw new Error("BETTER_AUTH_SECRET (or AUTH_SECRET), if set, must be at least 32 characters");
   }
   return {
-    database: { dialect: new LibsqlDialect({ url }), type: "sqlite" as const },
+    // Hand Better Auth the SAME libSQL client SelfHostDb already opened — NOT a
+    // fresh `{ url }` connection. `{ client }` makes LibsqlDialect adopt the
+    // existing handle (closeClient=false, so SelfHostDb keeps ownership). One
+    // connection means one WAL: see the header comment for why a second
+    // connection is the self-host data-loss bug.
+    //
+    // The cast bridges a dependency skew: @libsql/kysely-libsql pins an older
+    // @libsql/core (0.8) than @libsql/client (0.17), so the two `Client` types
+    // differ — only in `.sync()` (embedded-replica replication, unused here).
+    // The dialect calls execute/batch/transaction/close, which are identical
+    // across both versions, so sharing the 0.17 client is sound at runtime.
+    database: {
+      // oxlint-disable-next-line executor/no-double-cast -- boundary: the two @libsql/core versions' Client types are structurally identical for the calls the dialect makes (see above); no schema/decode applies to a native client handle.
+      dialect: new LibsqlDialect({ client } as unknown as LibsqlDialectConfig),
+      type: "sqlite" as const,
+    },
     secret,
     baseURL: config.webBaseUrl,
     // The browser Origin must match this exactly; CLI/MCP bearer requests carry
@@ -191,11 +206,12 @@ const inviteCodeFrom = (context: { body?: unknown }): string | undefined => {
   return undefined;
 };
 
-// Count org members via Better Auth's OWN adapter — the SAME connection that
-// `addMember` writes through. SelfHostDb opens a SEPARATE libSQL connection
-// whose snapshot can lag Better Auth's writes (observed under Bun: a just-added
-// member is invisible to that connection for a while), so any membership read
-// that gates behaviour MUST go through here to stay consistent with the writes.
+// Count org members via Better Auth's OWN adapter. Now that auth shares
+// SelfHostDb's libSQL client (one connection), this no longer guards against a
+// cross-connection snapshot lag — that lag is gone with the second connection.
+// It stays the canonical read because the adapter already models the `member`
+// table and the count gates the first-run claim; reading through it keeps the
+// gate logic next to the writes.
 export const countOrgMembers = (auth: Auth, organizationId: string): Promise<number> =>
   auth.$context.then(({ adapter }) =>
     adapter.count({ model: "member", where: [{ field: "organizationId", value: organizationId }] }),
@@ -208,8 +224,8 @@ const orgHasNoMembers = async (gate: SignupGate): Promise<boolean> => {
   return (await countOrgMembers(auth, gate.organizationId)) === 0;
 };
 
-const createAuthInstance = (url: string, getOrganizationId: () => string, gate?: SignupGate) =>
-  betterAuth(makeAuthOptions(url, getOrganizationId, gate));
+const createAuthInstance = (client: Client, getOrganizationId: () => string, gate?: SignupGate) =>
+  betterAuth(makeAuthOptions(client, getOrganizationId, gate));
 
 export type Auth = ReturnType<typeof createAuthInstance>;
 
@@ -241,13 +257,13 @@ export class BetterAuth extends Context.Service<BetterAuth, BetterAuthHandle>()(
  * `/sign-up/email` path — the seed's admin `createUser`/`createOrganization`
  * pass straight through, exactly as the old gate-free bootstrap instance did.
  *
- * `url` is the SAME libSQL `file:` URL SelfHostDb opened; `client` is
- * SelfHostDb's drizzle connection to that file, used by the seed for its two
- * idempotency reads against the auth tables Better Auth just migrated (proving
- * the cross-connection invariant: Better Auth writes via LibsqlDialect are
- * visible through SelfHostDb's client on the same file).
+ * `client` is SelfHostDb's libSQL connection. Better Auth's LibsqlDialect is
+ * built on this SAME client (not a fresh `{ url }` one — see the header
+ * comment's data-loss note), so auth tables and executor tables share one
+ * connection and one WAL. The seed also uses it directly for its two
+ * idempotency reads against the auth tables Better Auth just migrated.
  */
-export const buildBetterAuth = async (url: string, client: Client): Promise<BetterAuthHandle> => {
+export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle> => {
   const config = loadConfig();
 
   // The org id is resolved by the seed below, AFTER this instance is built; the
@@ -265,7 +281,7 @@ export const buildBetterAuth = async (url: string, client: Client): Promise<Bett
     getAuth: () => auth,
   };
 
-  auth = createAuthInstance(url, () => orgRef.id, gate);
+  auth = createAuthInstance(client, () => orgRef.id, gate);
   // `runMigrations()` flows through the LibsqlDialect and is idempotent.
   await (await auth.$context).runMigrations();
   await ensureInviteCodeTable(client);
