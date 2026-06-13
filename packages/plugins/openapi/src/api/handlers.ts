@@ -54,6 +54,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
           return yield* ext.addSpec({
             spec: payload.spec,
             slug: payload.slug,
+            name: payload.name,
             description: payload.description,
             baseUrl: payload.baseUrl,
             headers: payload.headers ? { ...payload.headers } : undefined,
@@ -111,6 +112,22 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             mode: payload.mode ?? "merge",
           });
           return { authenticationTemplate: [...authenticationTemplate] };
+        }),
+      ),
+    )
+    .handle("updateSpec", ({ params, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* OpenApiExtensionService;
+          const result = yield* ext.updateSpec(params.slug, {
+            ...(payload.spec !== undefined ? { spec: payload.spec } : {}),
+          });
+          return {
+            slug: result.slug,
+            toolCount: result.toolCount,
+            addedTools: [...result.addedTools],
+            removedTools: [...result.removedTools],
+          };
         }),
       ),
     )

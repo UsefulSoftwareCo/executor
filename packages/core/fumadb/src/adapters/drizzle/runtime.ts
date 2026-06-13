@@ -330,6 +330,39 @@ export const createDrizzleRuntimeSchemaSql = (
   createSettingsTableSql(options.namespace, options.schema.version, options.provider),
 ];
 
+/** `ALTER TABLE … ADD COLUMN` statements for every NULLABLE column, one per
+ *  column. `CREATE TABLE IF NOT EXISTS` never touches an existing table, so a
+ *  schema-evolution column would otherwise only exist in fresh databases. Each
+ *  statement fails with a duplicate-column error when the column already
+ *  exists — callers run them individually and swallow exactly that error,
+ *  which keeps this idempotent without provider-specific catalog probes.
+ *  Non-nullable additions can't be backfilled blindly and still need a real
+ *  migration. */
+const addNullableColumnsSql = (options: DrizzleRuntimeSchemaOptions): readonly string[] =>
+  Object.values(options.schema.tables).flatMap((table) =>
+    Object.values(table.columns)
+      .filter((column) => column.isNullable && !(column instanceof IdColumn))
+      .map((column) =>
+        [
+          "ALTER TABLE",
+          quoteIdent(table.names.sql),
+          "ADD COLUMN",
+          columnDefinitionSql(column, options.provider),
+        ].join(" "),
+      ),
+  );
+
+const isDuplicateColumnError = (error: unknown): boolean => {
+  // Drivers wrap the SQL error (e.g. DrizzleQueryError → LibsqlError), so
+  // match anywhere down the cause chain.
+  for (let current = error, depth = 0; current != null && depth < 8; depth += 1) {
+    const message = current instanceof Error ? current.message : String(current);
+    if (/duplicate column|already exists/i.test(message)) return true;
+    current = current instanceof Error ? current.cause : null;
+  }
+  return false;
+};
+
 export const createDrizzleRuntimeSchemaSqlFromTables = (
   options: DrizzleRuntimeTablesOptions,
 ): readonly string[] =>
@@ -369,6 +402,17 @@ export const ensureDrizzleRuntimeSchema = async (
     await db.transaction(run);
   } else {
     await run(db);
+  }
+
+  // Evolve existing tables: add any nullable columns they predate. Outside
+  // the transaction — each statement individually either succeeds (column was
+  // missing) or fails with a duplicate-column error (column exists, ignored).
+  for (const statement of addNullableColumnsSql(options)) {
+    try {
+      await runStatement(db, statement);
+    } catch (error) {
+      if (!isDuplicateColumnError(error)) throw error;
+    }
   }
 };
 

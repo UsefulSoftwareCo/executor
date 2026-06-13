@@ -3,11 +3,11 @@ import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { mcpPresets } from "../sdk/presets";
 
 const importAdd = () => import("./AddMcpSource");
-const importEdit = () => import("./EditMcpSource");
+const importEditSheet = () => import("./EditMcpSource");
 const importAccounts = () => import("./McpAccountsPanel");
 
 const LazyAddMcpSource = lazy(importAdd);
-const LazyEditMcpSource = lazy(importEdit);
+const LazyEditMcpSheet = lazy(importEditSheet);
 const LazyMcpAccountsPanel = lazy(importAccounts);
 
 type AddProps = ComponentProps<IntegrationPlugin["add"]>;
@@ -42,12 +42,12 @@ export const createMcpIntegrationPlugin = (
     key: "mcp",
     label: "MCP",
     add: AddWithFlag,
-    edit: LazyEditMcpSource,
+    editSheet: LazyEditMcpSheet,
     accounts: LazyMcpAccountsPanel,
     presets,
     preload: () => {
       void importAdd();
-      void importEdit();
+      void importEditSheet();
       void importAccounts();
     },
   };

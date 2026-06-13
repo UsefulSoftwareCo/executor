@@ -141,6 +141,10 @@ export const createConnection = ExecutorApiClient.mutation("connections", "creat
 
 export const removeConnection = ExecutorApiClient.mutation("connections", "remove");
 
+/** Edit a connection's user-curated metadata (description, identityLabel).
+ *  Pass `reactivityKeys: connectionWriteKeys` at the call site. */
+export const updateConnection = ExecutorApiClient.mutation("connections", "update");
+
 export const refreshConnection = ExecutorApiClient.mutation("connections", "refresh");
 
 export const updateIntegration = ExecutorApiClient.mutation("integrations", "update");
@@ -279,6 +283,7 @@ type CreateConnectionArg = {
     readonly integration: IntegrationSlug;
     readonly template: AuthTemplateSlug;
     readonly identityLabel?: string | null;
+    readonly description?: string | null;
   } & (
     | { readonly value: string }
     | { readonly values: Record<string, string> }
@@ -314,6 +319,7 @@ export const addConnectionOptimistic = Atom.family((owner: Owner) =>
               `tools.${payload.integration}.${payload.owner}.${payload.name}`,
             ),
             identityLabel: payload.identityLabel ?? null,
+            description: payload.description ?? null,
             expiresAt: null,
             // Optimistic placeholder predates the server resolving which app (if
             // any) minted this connection; reconciled on refresh. Matches the

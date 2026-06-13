@@ -435,7 +435,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
           const plugin = pluginByKind.get(pluginKey);
           const SummaryComponent = plugin?.summary;
           const slug = String(integration.slug);
-          const name = integration.description || slug;
+          const name = integration.name || slug;
           return (
             <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
               <Link to="/integrations/$namespace" params={{ namespace: slug }}>

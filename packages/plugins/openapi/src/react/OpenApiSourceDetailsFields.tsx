@@ -12,16 +12,24 @@ import {
   type FreeformComboboxOption,
 } from "@executor-js/react/components/combobox";
 import { Input } from "@executor-js/react/components/input";
+import { Textarea } from "@executor-js/react/components/textarea";
 import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 import {
   IntegrationIdentityFieldRows,
   type IntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 
+/** The spec input is shown as a one-line "Spec URL" field only when it IS a
+ *  URL; pasted document content gets a multi-line editor instead. */
+const isUrlInput = (value: string): boolean => URL.canParse(value.trim());
+
 export function OpenApiSourceDetailsFields(props: {
   readonly title: string;
-  readonly description?: string;
+  readonly subtitle?: string;
   readonly identity: IntegrationIdentity;
+  /** The integration's agent-visible description (prefilled from the spec). */
+  readonly description?: string;
+  readonly onDescriptionChange?: (value: string) => void;
   readonly baseUrl: string;
   readonly onBaseUrlChange: (value: string) => void;
   readonly baseUrlOptions?: readonly FreeformComboboxOption[];
@@ -38,6 +46,8 @@ export function OpenApiSourceDetailsFields(props: {
   readonly baseUrlMissingMessage?: string;
   readonly footer?: string;
 }) {
+  const specIsUrl = props.specUrl !== undefined && isUrlInput(props.specUrl);
+
   return (
     <CardStack>
       <CardStackContent className="border-t-0">
@@ -47,8 +57,8 @@ export function OpenApiSourceDetailsFields(props: {
           )}
           <CardStackEntryContent>
             <CardStackEntryTitle>{props.title}</CardStackEntryTitle>
-            {props.description && (
-              <CardStackEntryDescription>{props.description}</CardStackEntryDescription>
+            {props.subtitle && (
+              <CardStackEntryDescription>{props.subtitle}</CardStackEntryDescription>
             )}
           </CardStackEntryContent>
           {props.saveState && props.saveState !== "idle" && (
@@ -61,6 +71,18 @@ export function OpenApiSourceDetailsFields(props: {
           identity={props.identity}
           namespaceReadOnly={props.namespaceReadOnly}
         />
+        {props.onDescriptionChange && (
+          <CardStackEntryField label="Description">
+            <Textarea
+              value={props.description ?? ""}
+              onChange={(e) => props.onDescriptionChange?.((e.target as HTMLTextAreaElement).value)}
+              placeholder="What this API is and when to reach for it"
+              rows={2}
+              maxRows={6}
+              className="text-sm"
+            />
+          </CardStackEntryField>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2">
           <CardStackEntryField label={props.baseUrlLabel ?? "Base URL"}>
             {props.baseUrlOptions && props.baseUrlOptions.length > 0 ? (
@@ -90,7 +112,7 @@ export function OpenApiSourceDetailsFields(props: {
               <p className="text-[11px] text-muted-foreground">{props.baseUrlHint}</p>
             )}
           </CardStackEntryField>
-          {props.specUrl !== undefined && props.onSpecUrlChange && (
+          {specIsUrl && props.onSpecUrlChange && (
             <CardStackEntryField label="Spec URL">
               <Input
                 value={props.specUrl}
@@ -102,6 +124,19 @@ export function OpenApiSourceDetailsFields(props: {
             </CardStackEntryField>
           )}
         </div>
+        {props.specUrl !== undefined && !specIsUrl && props.onSpecUrlChange && (
+          <CardStackEntryField label="Spec">
+            <Textarea
+              value={props.specUrl}
+              onChange={(e) => props.onSpecUrlChange?.((e.target as HTMLTextAreaElement).value)}
+              placeholder="Pasted OpenAPI JSON/YAML"
+              rows={4}
+              maxRows={12}
+              className="font-mono text-xs"
+              disabled={props.specUrlDisabled}
+            />
+          </CardStackEntryField>
+        )}
         {props.footer && (
           <CardStackEntry>
             <CardStackEntryContent>

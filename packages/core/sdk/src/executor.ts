@@ -24,6 +24,7 @@ import type {
   ConnectionRef,
   CreateConnectionInput,
   ConnectionValueInput,
+  UpdateConnectionInput,
 } from "./connection";
 import {
   coreSchema,
@@ -245,7 +246,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly get: (slug: IntegrationSlug) => Effect.Effect<Integration | null, StorageFailure>;
     readonly update: (
       slug: IntegrationSlug,
-      patch: { readonly description?: string },
+      patch: { readonly name?: string; readonly description?: string },
     ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
     readonly remove: (
       slug: IntegrationSlug,
@@ -270,6 +271,12 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       readonly owner?: Owner;
     }) => Effect.Effect<readonly Connection[], StorageFailure>;
     readonly get: (ref: ConnectionRef) => Effect.Effect<Connection | null, StorageFailure>;
+    /** Edit user-curated metadata (description, identityLabel). Credentials and
+     *  OAuth lifecycle fields are not editable here. */
+    readonly update: (
+      ref: ConnectionRef,
+      input: UpdateConnectionInput,
+    ) => Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure>;
     readonly remove: (
       ref: ConnectionRef,
     ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
@@ -440,6 +447,8 @@ const rowToIntegration = (
   displayUrl?: string,
 ): Integration => ({
   slug: IntegrationSlug.make(row.slug),
+  // Pre-split rows have no `name`; their description WAS the display name.
+  name: row.name ?? row.description ?? row.slug,
   description: row.description,
   kind: row.plugin_id,
   canRemove: Boolean(row.can_remove),
@@ -468,6 +477,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
     provider: ProviderKey.make(row.provider),
     address: connectionAddress(owner, integration, name),
     identityLabel: row.identity_label ?? null,
+    description: row.description ?? null,
     expiresAt: row.expires_at == null ? null : Number(row.expires_at),
     oauthClient: row.oauth_client == null ? null : OAuthClientSlug.make(String(row.oauth_client)),
     oauthClientOwner:
@@ -1269,6 +1279,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const staticSourceToIntegration = (source: StaticSourceDecl): Integration => ({
       slug: IntegrationSlug.make(source.id),
+      name: source.name,
       description: source.name,
       kind: source.kind,
       canRemove: source.canRemove ?? false,
@@ -1704,6 +1715,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               where: (b: AnyCb) => b("slug", "=", String(input.slug)),
               set: {
                 plugin_id: pluginId,
+                name: input.name ?? existing.name ?? null,
                 description: input.description,
                 config,
                 can_remove: input.canRemove ?? Boolean(existing.can_remove),
@@ -1717,6 +1729,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tenant,
             slug: String(input.slug),
             plugin_id: pluginId,
+            name: input.name ?? null,
             description: input.description,
             config,
             can_remove: input.canRemove ?? true,
@@ -1730,14 +1743,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationsUpdate = (
       slug: IntegrationSlug,
       patch: {
+        readonly name?: string;
         readonly description?: string;
         readonly config?: IntegrationConfig;
       },
     ): Effect.Effect<void, StorageFailure> =>
       Effect.gen(function* () {
-        const set: Record<string, unknown> = { updated_at: new Date() };
+        const now = new Date();
+        const set: Record<string, unknown> = { updated_at: now };
+        if (patch.name !== undefined) set.name = patch.name;
         if (patch.description !== undefined) set.description = patch.description;
-        if (patch.config !== undefined) set.config = patch.config;
+        if (patch.config !== undefined) {
+          set.config = patch.config;
+          // A config change can change the derived tools. The writer can only
+          // rebuild catalogs in its own partition (owner policy), so revise
+          // the integration: other subjects' connections compare this stamp
+          // against their `tools_synced_at` and lazily rebuild on next read.
+          set.tools_revised_at = now.getTime();
+        }
         yield* core.updateMany("integration", {
           where: (b: AnyCb) => b("slug", "=", String(slug)),
           set,
@@ -1746,7 +1769,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const integrationsUpdatePublic = (
       slug: IntegrationSlug,
-      patch: { readonly description?: string },
+      patch: { readonly name?: string; readonly description?: string },
     ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const existing = yield* findIntegrationRow(slug);
@@ -1813,6 +1836,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("connection", "=", String(ref.name)),
           );
+        // Every exit stamps the sync time — including the cleanup paths that
+        // produce zero tools — so the stale-catalog check (`tools_revised_at`
+        // vs `tools_synced_at`) doesn't re-attempt this connection per read.
+        const stampSynced = core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(owner)(b),
+              b("integration", "=", String(ref.integration)),
+              b("name", "=", String(ref.name)),
+            ),
+          set: { tools_synced_at: Date.now() },
+        });
 
         // Defense in depth (and cleanup for rows created before the create-time
         // guard, or emptied by an external edit): a credentialed non-OAuth
@@ -1833,6 +1868,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
+              yield* stampSynced;
             }),
           );
           return [];
@@ -1844,6 +1880,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
+              yield* stampSynced;
             }),
           );
           return [];
@@ -1900,6 +1937,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             yield* core.deleteMany("definition", { where });
             yield* core.createMany("tool", toolRows);
             yield* core.createMany("definition", definitionRows);
+            yield* stampSynced;
           }),
         );
 
@@ -2040,6 +2078,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               provider: providerKey,
               item_ids: itemIds,
               identity_label: input.identityLabel ?? null,
+              // Re-saving a credential keeps an existing curated description
+              // unless the caller explicitly provides one.
+              ...(input.description !== undefined ? { description: input.description } : {}),
               updated_at: now,
             };
             if (existing) {
@@ -2063,6 +2104,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 provider: providerKey,
                 item_ids: itemIds,
                 identity_label: input.identityLabel ?? null,
+                description: input.description ?? null,
                 oauth_client: null,
                 refresh_item_id: null,
                 expires_at: null,
@@ -2098,6 +2140,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               provider: providerKey,
               item_ids: itemIds,
               identity_label: input.identityLabel ?? null,
+              description: input.description ?? null,
               oauth_client: null,
               refresh_item_id: null,
               expires_at: null,
@@ -2171,6 +2214,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 provider: input.provider,
                 item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
                 identity_label: input.identityLabel ?? null,
+                // Curated description: never stamped by a mint — a reconnect
+                // or token refresh must not erase what the user wrote.
+                description: null,
                 oauth_client: String(input.oauthClient),
                 oauth_client_owner: input.oauthClientOwner,
                 refresh_item_id: input.refreshItemId,
@@ -2203,6 +2249,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               provider: input.provider,
               item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
               identity_label: input.identityLabel ?? null,
+              description: null,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
               refresh_item_id: input.refreshItemId,
@@ -2232,6 +2279,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const connectionsGet = (ref: ConnectionRef): Effect.Effect<Connection | null, StorageFailure> =>
       findConnectionRow(ref).pipe(Effect.map((row) => (row ? rowToConnection(row) : null)));
+
+    const connectionsUpdate = (
+      ref: ConnectionRef,
+      input: UpdateConnectionInput,
+    ): Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* findConnectionRow(ref);
+        if (!row) {
+          return yield* new ConnectionNotFoundError({
+            owner: ref.owner,
+            integration: ref.integration,
+            name: ref.name,
+          });
+        }
+        const set: Record<string, unknown> = { updated_at: new Date() };
+        if (input.description !== undefined) set.description = input.description;
+        if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
+        yield* core.updateMany("connection", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(ref.owner)(b),
+              b("integration", "=", String(ref.integration)),
+              b("name", "=", String(ref.name)),
+            ),
+          set,
+        });
+        const updated = yield* findConnectionRow(ref);
+        return rowToConnection(updated ?? row);
+      });
 
     const connectionsRemove = (
       ref: ConnectionRef,
@@ -2319,8 +2395,50 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       return true;
     };
 
+    // Rebuild any visible connection whose tool catalog predates its
+    // integration's last tool-affecting config change. The change's author
+    // could only rewrite catalogs in their own partition (owner policy);
+    // every other subject converges here, on their own read, under their own
+    // binding. Best-effort: a failed rebuild leaves the stale-but-working
+    // catalog in place and retries on the next read.
+    const syncStaleConnectionTools = Effect.gen(function* () {
+      const revised = yield* core.findMany("integration", {
+        where: (b: AnyCb) => b.isNotNull("tools_revised_at"),
+      });
+      if (revised.length === 0) return;
+      const revisedAt = new Map(
+        revised.map((row) => [row.slug, Number(row.tools_revised_at)] as const),
+      );
+      const connections = yield* core.findMany("connection", {
+        where: (b: AnyCb) => b.or(...revised.map((row) => b("integration", "=", row.slug))),
+      });
+      for (const connection of connections) {
+        const revisedTime = revisedAt.get(connection.integration);
+        if (revisedTime === undefined) continue;
+        const syncedAt =
+          connection.tools_synced_at == null ? 0 : Number(connection.tools_synced_at);
+        if (syncedAt >= revisedTime) continue;
+        const integrationRow = revised.find((row) => row.slug === connection.integration);
+        if (!integrationRow) continue;
+        yield* produceConnectionTools(integrationRow, {
+          owner: connection.owner as Owner,
+          integration: IntegrationSlug.make(connection.integration),
+          name: ConnectionName.make(connection.name),
+        }).pipe(
+          Effect.catch(() => Effect.succeed([] as readonly Tool[])),
+          Effect.withSpan("executor.tools.sync_stale", {
+            attributes: {
+              "executor.integration": connection.integration,
+              "executor.connection": connection.name,
+            },
+          }),
+        );
+      }
+    });
+
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
+        yield* syncStaleConnectionTools;
         // Projected: the list surface is metadata (address, description,
         // annotations) — loading every tool's input/output schema JSON made
         // an unbounded list scale with schema bytes, not tool count.
@@ -2997,6 +3115,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           create: (input) => connectionsCreate(input),
           list: (filter) => connectionsList(filter),
           get: (ref) => connectionsGet(ref),
+          update: (ref, input) => connectionsUpdate(ref, input),
           remove: (ref) => connectionsRemove(ref),
           refresh: (ref) => connectionsRefresh(ref),
           resolveValue: (ref) => resolveConnectionValueByRef(ref),
@@ -3103,6 +3222,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         create: connectionsCreate,
         list: connectionsList,
         get: connectionsGet,
+        update: connectionsUpdate,
         remove: connectionsRemove,
         refresh: connectionsRefresh,
       },

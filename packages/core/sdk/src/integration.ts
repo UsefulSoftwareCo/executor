@@ -74,6 +74,11 @@ export interface AuthMethodDescriptor {
  *  Carries no credentials and no plugin-internal config. */
 export interface Integration {
   readonly slug: IntegrationSlug;
+  /** Display name. Pre-split rows stored the name in `description`; readers
+   *  fall back, so this is always populated. */
+  readonly name: string;
+  /** Agent-visible context ("what this API is and when to reach for it").
+   *  Distinct from the display name; may equal it on legacy rows. */
   readonly description: string;
   /** The plugin that owns this integration kind (e.g. "openapi", "mcp"). */
   readonly kind: string;
@@ -142,6 +147,9 @@ export const mergeAuthTemplates = <T extends { readonly slug: string }>(
  *  produced per-connection now). */
 export interface RegisterIntegrationInput {
   readonly slug: IntegrationSlug;
+  /** Display name. Falls back to `description` then the slug when omitted
+   *  (legacy callers registered with description-as-name). */
+  readonly name?: string;
   readonly description: string;
   /** Opaque plugin config (auth templates, spec ref, mcp url, …). */
   readonly config: IntegrationConfig;

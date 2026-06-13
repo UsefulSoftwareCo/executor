@@ -36,6 +36,11 @@ export const addOpenApiSpec = OpenApiClient.mutation("openapi", "addSpec");
 
 export const removeOpenApiSpec = OpenApiClient.mutation("openapi", "removeSpec");
 
+/** Re-fetch (or replace) the integration's spec and rebuild its tools in
+ *  place — connections, policies, and the description survive. Pass
+ *  `reactivityKeys: integrationWriteKeys` at the call site. */
+export const updateOpenApiSpec = OpenApiClient.mutation("openapi", "updateSpec");
+
 // Add / merge custom auth methods onto an integration's `authenticationTemplate`.
 export const openapiConfigure = OpenApiClient.mutation("openapi", "configure");
 

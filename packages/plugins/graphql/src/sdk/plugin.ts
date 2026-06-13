@@ -95,6 +95,9 @@ const GraphqlAddIntegrationInputSchema = Schema.Struct({
   endpoint: Schema.String,
   slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
+  /** Agent-visible catalog description. Falls back to the introspected
+   *  schema's own description, then the display name. */
+  description: Schema.optional(Schema.String),
   introspectionJson: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -603,7 +606,8 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         yield* ctx.transaction(
           ctx.core.integrations.register({
             slug,
-            description: baseConfig.name,
+            name: baseConfig.name,
+            description: input.description?.trim() || baseConfig.name,
             config: baseConfig,
             canRemove: true,
             canRefresh: true,
@@ -637,9 +641,17 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         Effect.gen(function* () {
           yield* ctx.storage.replaceOperations(String(slug), toStoredOperations(slug, prepared));
 
+          // Prefill order: caller's description, then the schema's own
+          // description (present when introspection ran with schema
+          // descriptions), then the display name.
+          const schemaDescription =
+            typeof (introspection as { description?: unknown }).description === "string"
+              ? ((introspection as { description?: string }).description ?? "").trim()
+              : "";
           yield* ctx.core.integrations.register({
             slug,
-            description: config.name,
+            name: config.name,
+            description: input.description?.trim() || schemaDescription || config.name,
             config,
             canRemove: true,
             canRefresh: true,

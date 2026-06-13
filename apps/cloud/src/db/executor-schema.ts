@@ -15,7 +15,9 @@ export const integration = pgTable(
   {
     slug: varchar("slug", { length: 255 }).notNull(),
     plugin_id: text("plugin_id").notNull(),
+    name: text("name"),
     description: text("description").notNull(),
+    tools_revised_at: bigint("tools_revised_at", { mode: "bigint" }),
     config: json("config"),
     can_remove: boolean("can_remove").notNull().default(true),
     can_refresh: boolean("can_refresh").notNull().default(false),
@@ -39,6 +41,8 @@ export const connection = pgTable(
     provider: text("provider").notNull(),
     item_ids: json("item_ids").notNull(),
     identity_label: text("identity_label"),
+    description: text("description"),
+    tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),

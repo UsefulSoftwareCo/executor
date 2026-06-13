@@ -110,7 +110,7 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
         "{ items: ExecutorSourceListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
       typeScriptDefinitions: {
         ExecutorSourceListItem:
-          "{ id: string; name: string; kind: string; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
+          "{ id: string; name: string; description?: string; kind: string; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
       },
     },
   ],
@@ -315,6 +315,7 @@ export type ToolDiscoveryResult = {
 export type ExecutorSourceListItem = {
   readonly id: string;
   readonly name: string;
+  readonly description?: string;
   readonly kind: string;
   readonly canRemove?: boolean;
   readonly canRefresh?: boolean;
@@ -677,6 +678,14 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
         ({
           id: String(integration.slug),
           name: String(integration.slug),
+          // The integration's catalog description — user-editable context the
+          // agent can use to pick a source. Omitted when it just repeats the
+          // slug or display name (no information beyond identity).
+          ...(integration.description &&
+          integration.description.toLowerCase() !== String(integration.slug).toLowerCase() &&
+          integration.description.toLowerCase() !== integration.name.toLowerCase()
+            ? { description: integration.description }
+            : {}),
           kind: integration.kind,
           canRemove: integration.canRemove,
           canRefresh: integration.canRefresh,

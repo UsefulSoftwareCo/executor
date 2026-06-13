@@ -115,6 +115,18 @@ export interface IntegrationAccountHandoff {
   readonly label?: string;
 }
 
+/** Outcome of applying an edit-sheet section's staged change. `summary` is
+ *  toasted on success; `ok: false` keeps the sheet open (the section renders
+ *  its own error inline). */
+export type EditSheetApplyResult =
+  | { readonly ok: true; readonly summary: string | null }
+  | { readonly ok: false };
+
+export interface EditSheetSectionProps {
+  readonly sourceId: string;
+  readonly onPendingChange?: (apply: (() => Promise<EditSheetApplyResult>) | null) => void;
+}
+
 export interface IntegrationPlugin {
   /** Unique key matching the SDK plugin id (e.g. "openapi"). */
   readonly key: string;
@@ -130,10 +142,19 @@ export interface IntegrationPlugin {
     readonly initialPreset?: string;
     readonly initialNamespace?: string;
   }>;
-  readonly edit: ComponentType<{
+  /** Legacy full-page edit surface. No host renders this anymore — plugin
+   *  configuration lives in the integration Edit sheet via `editSheet`. */
+  readonly edit?: ComponentType<{
     readonly sourceId: string;
     readonly onSave: () => void;
   }>;
+  /** Plugin-owned configuration rendered inside the integration's Edit sheet,
+   *  below the shared metadata fields (e.g. the OpenAPI spec-update controls).
+   *  The sheet has ONE Save: the section stages its pending change locally and
+   *  reports it through `onPendingChange` — a thunk that applies the staged
+   *  change. Save runs the metadata update, then the staged apply; a failed
+   *  apply keeps the sheet open with the section showing its own error. */
+  readonly editSheet?: ComponentType<EditSheetSectionProps>;
   readonly summary?: ComponentType<{
     readonly sourceId: string;
     readonly variant?: "badge" | "panel";

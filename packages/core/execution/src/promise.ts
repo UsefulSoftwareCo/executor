@@ -90,6 +90,10 @@ const wrapPromiseExecutor = (pe: PromiseExecutor): EffectExecutor => {
         fromPromise(() => pe.connections.list(filter)),
       get: (ref: Parameters<PromiseExecutor["connections"]["get"]>[0]) =>
         fromPromise(() => pe.connections.get(ref)),
+      update: (
+        ref: Parameters<PromiseExecutor["connections"]["update"]>[0],
+        input: Parameters<PromiseExecutor["connections"]["update"]>[1],
+      ) => fromPromise(() => pe.connections.update(ref, input)),
       remove: (ref: Parameters<PromiseExecutor["connections"]["remove"]>[0]) =>
         fromPromise(() => pe.connections.remove(ref)),
       refresh: (ref: Parameters<PromiseExecutor["connections"]["refresh"]>[0]) =>

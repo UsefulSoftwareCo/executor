@@ -135,6 +135,8 @@ export type PreviewOperation = typeof PreviewOperation.Type;
 
 export const SpecPreview = Schema.Struct({
   title: Schema.OptionFromOptional(Schema.String),
+  /** The spec's `info.description` — prefills the add form's description field. */
+  description: Schema.OptionFromOptional(Schema.String),
   version: Schema.OptionFromOptional(Schema.String),
   /** Reuses ServerInfo from extraction */
   servers: Schema.Array(ServerInfo),
@@ -396,6 +398,7 @@ export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (s
 
   return SpecPreview.make({
     title: result.title,
+    description: result.description,
     version: result.version,
     servers: result.servers,
     operationCount: result.operations.length,

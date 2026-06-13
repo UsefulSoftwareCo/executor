@@ -48,6 +48,7 @@ const ConnectionResponse = Schema.Struct({
   provider: ProviderKey,
   address: ConnectionAddress,
   identityLabel: Schema.NullOr(Schema.String),
+  description: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.Number),
   // The OAuth app that minted this connection (its `oauth_client` slug), or null
   // for static credentials. Lets the UI map a connection back to its app. Just a
@@ -80,7 +81,14 @@ const CommonCreateFields = {
   integration: IntegrationSlug,
   template: AuthTemplateSlug,
   identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+  description: Schema.optional(Schema.NullOr(Schema.String)),
 } as const;
+
+// User-curated metadata edits. Absent field = unchanged; null = cleared.
+const UpdateConnectionPayload = Schema.Struct({
+  description: Schema.optional(Schema.NullOr(Schema.String)),
+  identityLabel: Schema.optional(Schema.NullOr(Schema.String)),
+});
 
 const CreateConnectionPayload = Schema.Struct({
   ...CommonCreateFields,
@@ -153,6 +161,14 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
   .add(
     HttpApiEndpoint.get("get", "/connections/:owner/:integration/:name", {
       params: ConnectionParams,
+      success: ConnectionResponse,
+      error: [InternalError, ConnectionNotFound],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.patch("update", "/connections/:owner/:integration/:name", {
+      params: ConnectionParams,
+      payload: UpdateConnectionPayload,
       success: ConnectionResponse,
       error: [InternalError, ConnectionNotFound],
     }),

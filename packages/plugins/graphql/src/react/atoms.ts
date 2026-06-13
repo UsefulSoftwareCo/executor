@@ -59,13 +59,14 @@ export const addGraphqlIntegrationOptimistic = integrationsOptimisticAtom.pipe(
         const integration = {
           slug,
           kind: "graphql",
+          name: arg.payload.name ?? arg.payload.endpoint,
           description: arg.payload.name ?? arg.payload.endpoint,
           canRemove: false,
           canRefresh: false,
           authMethods: [],
         };
         return [integration, ...rows.filter((row) => row.slug !== slug)].sort((a, b) =>
-          a.description.localeCompare(b.description),
+          a.name.localeCompare(b.name),
         );
       }),
     fn: addGraphqlIntegration,

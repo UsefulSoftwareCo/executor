@@ -8,6 +8,7 @@ import { capture } from "@executor-js/api";
 
 const toResponse = (i: Integration) => ({
   slug: i.slug,
+  name: i.name,
   description: i.description,
   kind: i.kind,
   canRemove: i.canRemove,
@@ -44,7 +45,8 @@ export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrati
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           yield* executor.integrations.update(path.slug, {
-            description: payload.description,
+            ...(payload.name !== undefined ? { name: payload.name } : {}),
+            ...(payload.description !== undefined ? { description: payload.description } : {}),
           });
           const integration = yield* executor.integrations.get(path.slug);
           if (integration === null) {

@@ -20,19 +20,18 @@ import {
   policiesOptimisticAtom,
   refreshConnection,
   removeIntegrationOptimistic,
-  updateIntegration,
 } from "../api/atoms";
 import { connectionWriteKeys, integrationWriteKeys } from "../api/reactivity-keys";
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
 import { AccountsSection } from "../components/accounts-section";
+import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
 import { usePolicyActions } from "../hooks/use-policy-actions";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
-import { Input } from "../components/input";
 import { Skeleton } from "../components/skeleton";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
@@ -64,7 +63,6 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const refreshTools = useAtomRefresh(integrationToolsAllAtom(slug));
   const doRemove = useAtomSet(removeIntegrationOptimistic, { mode: "promiseExit" });
   const doRefresh = useAtomSet(refreshConnection, { mode: "promiseExit" });
-  const doUpdate = useAtomSet(updateIntegration, { mode: "promiseExit" });
   // Policies are owner-partitioned on write; the integration policy menu writes
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
@@ -87,10 +85,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
-  const [savingName, setSavingName] = useState(false);
+  const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"accounts" | "tools">("accounts");
   const [locationSearch] = useState(() =>
     typeof window === "undefined" ? "" : window.location.search,
@@ -98,7 +93,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
 
   useEffect(() => {
     setConfirmDelete(false);
-    setRenaming(false);
+    setEditSheetOpen(false);
   }, [namespace]);
 
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
@@ -319,68 +314,15 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setRefreshing(false);
   };
 
-  const handleEditSave = () => {
-    setEditing(false);
-  };
-
-  const startRename = () => {
-    setNameDraft(integrationData?.description || namespace);
-    setRenaming(true);
-  };
-
-  const cancelRename = () => {
-    setRenaming(false);
-    setNameDraft("");
-  };
-
-  // Inline rename of the integration's description. Plugin-agnostic: writes the
-  // core `integrations.update` mutation; the catalog list query refreshes via
-  // `integrationWriteKeys` so the derived `integrationAtom` reflects the change.
-  const handleRenameSave = async () => {
-    const next = nameDraft.trim();
-    if (!integrationData || next.length === 0 || next === integrationData.description) {
-      cancelRename();
-      return;
-    }
-    setSavingName(true);
-    const exit = await doUpdate({
-      params: { slug },
-      payload: { description: next },
-      reactivityKeys: integrationWriteKeys,
-    });
-    setSavingName(false);
-    trackEvent("integration_renamed", {
-      integration_slug: String(slug),
-      success: Exit.isSuccess(exit),
-    });
-    if (Exit.isFailure(exit)) return;
-    cancelRename();
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header bar */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-3">
-          {renaming ? (
-            <Input
-              autoFocus
-              value={nameDraft}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNameDraft(e.target.value)}
-              onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                if (e.key === "Enter") void handleRenameSave();
-                if (e.key === "Escape") cancelRename();
-              }}
-              disabled={savingName}
-              aria-label="Integration name"
-              className="h-7 w-56 text-sm"
-            />
-          ) : (
-            <h2 className="truncate text-sm font-semibold text-foreground">
-              {integrationData?.description || namespace}
-            </h2>
-          )}
-          {AsyncResult.isSuccess(tools) && !editing && !renaming && (
+          <h2 className="truncate text-sm font-semibold text-foreground">
+            {integrationData?.name || namespace}
+          </h2>
+          {AsyncResult.isSuccess(tools) && (
             <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">
               {distinctToolCount} {distinctToolCount === 1 ? "tool" : "tools"}
             </span>
@@ -388,33 +330,13 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {renaming ? (
-            <>
-              <Button variant="outline" size="sm" onClick={cancelRename} disabled={savingName}>
-                Cancel
-              </Button>
-              <Button size="sm" onClick={() => void handleRenameSave()} disabled={savingName}>
-                {savingName ? "Saving..." : "Save"}
-              </Button>
-            </>
-          ) : (
-            !editing &&
-            !confirmDelete &&
-            !isBuiltInIntegration &&
-            integrationData && (
-              <Button variant="outline" size="sm" onClick={startRename}>
-                Edit
-              </Button>
-            )
-          )}
-
-          {editing && (
-            <Button variant="outline" size="sm" onClick={() => setEditing(false)}>
-              Back to tools
+          {!confirmDelete && !isBuiltInIntegration && integrationData && (
+            <Button variant="outline" size="sm" onClick={() => setEditSheetOpen(true)}>
+              Edit
             </Button>
           )}
 
-          {canRefresh && !editing && !renaming && (
+          {canRefresh && (
             <Button
               variant="outline"
               size="sm"
@@ -426,8 +348,6 @@ export function IntegrationDetailPage(props: { namespace: string }) {
           )}
 
           {canRemove &&
-            !editing &&
-            !renaming &&
             (confirmDelete ? (
               <div className="flex items-center gap-2">
                 <Button
@@ -460,117 +380,105 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         </div>
       </div>
 
-      {/* Edit view */}
-      {editing && editPlugin ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-2xl px-6 py-8">
-            <Suspense fallback={<EditFormSkeleton />}>
-              <editPlugin.edit sourceId={namespace} onSave={handleEditSave} />
-            </Suspense>
-          </div>
+      <Tabs
+        value={currentTab}
+        onValueChange={(value: string) => setActiveTab(value as "accounts" | "tools")}
+        className="min-h-0 flex-1 gap-0 overflow-hidden"
+      >
+        <div className="shrink-0 border-b border-border/60 px-4 py-2">
+          <TabsList variant="line">
+            {!isBuiltInIntegration && <TabsTrigger value="accounts">Accounts</TabsTrigger>}
+            <TabsTrigger value="tools">Tools</TabsTrigger>
+          </TabsList>
         </div>
-      ) : (
-        <Tabs
-          value={currentTab}
-          onValueChange={(value: string) => setActiveTab(value as "accounts" | "tools")}
-          className="min-h-0 flex-1 gap-0 overflow-hidden"
-        >
-          <div className="shrink-0 border-b border-border/60 px-4 py-2">
-            <TabsList variant="line">
-              {!isBuiltInIntegration && <TabsTrigger value="accounts">Accounts</TabsTrigger>}
-              <TabsTrigger value="tools">Tools</TabsTrigger>
-            </TabsList>
-          </div>
 
-          {/* Hub: integration-level auth methods + accounts. Plugins that
+        {/* Hub: integration-level auth methods + accounts. Plugins that
               declare auth methods fill the `accounts` slot (real methods from
               the plugin's config); otherwise we render the generic fallback. */}
-          {!isBuiltInIntegration && (
-            <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
-              {editPlugin?.accounts ? (
-                <Suspense fallback={<AccountsSkeleton />}>
-                  <editPlugin.accounts
-                    sourceId={namespace}
-                    integrationName={integrationData?.description || namespace}
-                    accountHandoff={accountHandoff}
-                  />
-                </Suspense>
-              ) : (
-                <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
-                  <AccountsSection
-                    integration={slug}
-                    integrationName={integrationData?.description || namespace}
-                    methods={accountsMethods}
-                    accountHandoff={accountHandoff}
-                  />
-                </div>
-              )}
-            </TabsContent>
-          )}
-
-          {/* Tools -- split pane (unchanged behavior) */}
-          <TabsContent
-            value="tools"
-            className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
-          >
-            {editPlugin?.summary && (
-              <Suspense fallback={null}>
-                <editPlugin.summary
+        {!isBuiltInIntegration && (
+          <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
+            {editPlugin?.accounts ? (
+              <Suspense fallback={<AccountsSkeleton />}>
+                <editPlugin.accounts
                   sourceId={namespace}
-                  variant="panel"
-                  onAction={() => setEditing(true)}
+                  integrationName={integrationData?.name || namespace}
+                  accountHandoff={accountHandoff}
                 />
               </Suspense>
+            ) : (
+              <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
+                <AccountsSection
+                  integration={slug}
+                  integrationName={integrationData?.name || namespace}
+                  methods={accountsMethods}
+                  accountHandoff={accountHandoff}
+                />
+              </div>
             )}
+          </TabsContent>
+        )}
 
-            {AsyncResult.match(tools, {
-              onInitial: () => <IntegrationDetailSkeleton />,
-              onFailure: () => (
-                <div className="p-6 text-sm text-destructive">Failed to load tools</div>
-              ),
-              onSuccess: () => (
-                <div className="flex min-h-0 flex-1 overflow-hidden">
-                  {/* Left: tool tree */}
-                  <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
-                    <ToolTree
-                      tools={integrationTools}
-                      selectedToolId={selectedToolId}
-                      onSelect={setSelectedToolId}
+        {/* Tools -- split pane (unchanged behavior) */}
+        <TabsContent
+          value="tools"
+          className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
+        >
+          {AsyncResult.match(tools, {
+            onInitial: () => <IntegrationDetailSkeleton />,
+            onFailure: () => (
+              <div className="p-6 text-sm text-destructive">Failed to load tools</div>
+            ),
+            onSuccess: () => (
+              <div className="flex min-h-0 flex-1 overflow-hidden">
+                {/* Left: tool tree */}
+                <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
+                  <ToolTree
+                    tools={integrationTools}
+                    selectedToolId={selectedToolId}
+                    onSelect={setSelectedToolId}
+                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
+                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                    policies={sortedPolicies}
+                    groupByConnection={!isBuiltInIntegration}
+                  />
+                </div>
+
+                {/* Right: tool detail with Schema · TypeScript · Run tabs */}
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                  {selectedTool && selectedAddress && selectedBareName ? (
+                    <ToolDetail
+                      address={selectedAddress}
+                      toolName={selectedTool.name}
+                      policy={selectedTool.policy}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                      policies={sortedPolicies}
-                      groupByConnection={!isBuiltInIntegration}
+                      {...(!selection?.static && selectedBareName
+                        ? {
+                            integration: slug,
+                            runToolName: selectedBareName,
+                            connections: integrationConnections,
+                            initialConnectionName: selection?.connection ?? null,
+                          }
+                        : {})}
                     />
-                  </div>
-
-                  {/* Right: tool detail with Schema · TypeScript · Run tabs */}
-                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                    {selectedTool && selectedAddress && selectedBareName ? (
-                      <ToolDetail
-                        address={selectedAddress}
-                        toolName={selectedTool.name}
-                        policy={selectedTool.policy}
-                        onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                        onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                        {...(!selection?.static && selectedBareName
-                          ? {
-                              integration: slug,
-                              runToolName: selectedBareName,
-                              connections: integrationConnections,
-                              initialConnectionName: selection?.connection ?? null,
-                            }
-                          : {})}
-                      />
-                    ) : (
-                      <ToolDetailEmpty hasTools={integrationTools.length > 0} />
-                    )}
-                  </div>
+                  ) : (
+                    <ToolDetailEmpty hasTools={integrationTools.length > 0} />
+                  )}
                 </div>
-              ),
-            })}
-          </TabsContent>
-        </Tabs>
-      )}
+              </div>
+            ),
+          })}
+        </TabsContent>
+      </Tabs>
+
+      <IntegrationEditSheet
+        slug={slug}
+        open={editSheetOpen}
+        name={integrationData?.name || namespace}
+        description={integrationData?.description ?? ""}
+        {...(editPlugin?.editSheet ? { pluginSection: editPlugin.editSheet } : {})}
+        onOpenChange={setEditSheetOpen}
+      />
     </div>
   );
 }
@@ -618,29 +526,6 @@ function AccountsSkeleton() {
       <div className="space-y-3">
         <Skeleton className="h-4 w-24" />
         <Skeleton className="h-20 w-full rounded-lg" />
-      </div>
-    </div>
-  );
-}
-
-function EditFormSkeleton() {
-  return (
-    <div className="flex flex-col gap-5 p-6">
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-20" />
-        <Skeleton className="h-9 w-full rounded-md" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-9 w-full rounded-md" />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-28" />
-        <Skeleton className="h-24 w-full rounded-md" />
-      </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <Skeleton className="h-9 w-20 rounded-md" />
-        <Skeleton className="h-9 w-24 rounded-md" />
       </div>
     </div>
   );

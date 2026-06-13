@@ -168,6 +168,8 @@ export type ExtractedOperation = typeof ExtractedOperation.Type;
 
 export const ExtractionResult = Schema.Struct({
   title: Schema.OptionFromOptional(Schema.String),
+  /** The spec's `info.description` — the author's own summary of the API. */
+  description: Schema.OptionFromOptional(Schema.String),
   version: Schema.OptionFromOptional(Schema.String),
   servers: Schema.Array(ServerInfo),
   operations: Schema.Array(ExtractedOperation),

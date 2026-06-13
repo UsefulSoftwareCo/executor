@@ -54,7 +54,7 @@ export function CommandPalette() {
         onSuccess: ({ value }) =>
           value.map((integration: Integration) => ({
             id: String(integration.slug),
-            name: integration.description || String(integration.slug),
+            name: integration.name || String(integration.slug),
             kind: integration.kind,
             url: integration.displayUrl,
           })),

@@ -45,6 +45,7 @@ export default function AddGraphqlSource(props: {
   initialUrl?: string;
 }) {
   const [endpoint, setEndpoint] = useState(props.initialUrl ?? "");
+  const [description, setDescription] = useState("");
   const identity = useIntegrationIdentity({
     fallbackName: integrationDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
   });
@@ -111,6 +112,7 @@ export default function AddGraphqlSource(props: {
         endpoint: trimmedEndpoint,
         slug,
         name: displayName,
+        ...(description.trim().length > 0 ? { description: description.trim() } : {}),
         ...(authenticationTemplate.length > 0
           ? { authenticationTemplate: [...authenticationTemplate] }
           : {}),
@@ -131,7 +133,13 @@ export default function AddGraphqlSource(props: {
     <div className="flex flex-1 flex-col gap-6">
       <h1 className="text-xl font-semibold text-foreground">Add GraphQL Source</h1>
 
-      <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
+      <GraphqlSourceFields
+        endpoint={endpoint}
+        onEndpointChange={setEndpoint}
+        identity={identity}
+        description={description}
+        onDescriptionChange={setDescription}
+      />
 
       <AuthMethodListEditor
         list={authMethodList}

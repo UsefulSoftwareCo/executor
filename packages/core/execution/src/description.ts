@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { Connection, Executor } from "@executor-js/sdk/core";
+import type { Connection, Integration, Executor } from "@executor-js/sdk/core";
 
 /**
  * Builds a tool description dynamically.
@@ -19,9 +19,14 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
       Effect.orDie,
       Effect.withSpan("executor.connections.list"),
     );
+    const integrations: readonly Integration[] = yield* executor.integrations.list().pipe(
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: same getDescription error-channel constraint as connections.list above
+      Effect.orDie,
+      Effect.withSpan("executor.integrations.list"),
+    );
 
     const description = yield* Effect.sync(() =>
-      formatDescription(connections.map((connection) => connectionPath(connection))),
+      formatDescription(connections.map((connection) => connectionEntry(connection, integrations))),
     ).pipe(
       Effect.withSpan("schema.compile.description", {
         attributes: { "executor.connection_count": connections.length },
@@ -53,7 +58,44 @@ const connectionPath = (connection: Connection): string => {
   return address.startsWith("tools.") ? address.slice("tools.".length) : address;
 };
 
-const formatDescription = (connectionPrefixes: readonly string[]): string => {
+/** One inventory line: the callable prefix plus the best available context.
+ *  Connection description wins (the user wrote it about THIS credential);
+ *  otherwise the integration description, unless it is just the slug again. */
+interface ConnectionInventoryEntry {
+  readonly prefix: string;
+  readonly description?: string;
+}
+
+const inventoryNote = (
+  text: string | null | undefined,
+  identityEchoes: readonly string[],
+): string | undefined => {
+  const firstLine = (text ?? "").split("\n", 1)[0]!.trim();
+  if (firstLine.length === 0) return undefined;
+  // A description that just restates the slug or display name carries no
+  // information beyond identity — drop it from the inventory line.
+  if (identityEchoes.some((echo) => firstLine.toLowerCase() === echo.toLowerCase())) {
+    return undefined;
+  }
+  return firstLine.length > 140 ? `${firstLine.slice(0, 139)}…` : firstLine;
+};
+
+const connectionEntry = (
+  connection: Connection,
+  integrations: readonly Integration[],
+): ConnectionInventoryEntry => {
+  const slug = String(connection.integration);
+  const integration = integrations.find((candidate) => String(candidate.slug) === slug);
+  const identityEchoes = [slug, ...(integration ? [integration.name] : [])];
+  return {
+    prefix: connectionPath(connection),
+    description:
+      inventoryNote(connection.description, identityEchoes) ??
+      inventoryNote(integration?.description, identityEchoes),
+  };
+};
+
+const formatDescription = (connectionEntries: readonly ConnectionInventoryEntry[]): string => {
   const lines: string[] = [
     "Execute TypeScript in a sandboxed runtime with access to configured API tools.",
     "",
@@ -84,17 +126,23 @@ const formatDescription = (connectionPrefixes: readonly string[]): string => {
     "- TypeScript type syntax (`: T`, `as T`, generics, interfaces, type aliases) is stripped before execution — feel free to write idiomatic TypeScript using the shapes from `tools.describe.tool()`. Decorators and `enum` are not supported.",
   ];
 
-  if (connectionPrefixes.length > 0) {
+  if (connectionEntries.length > 0) {
     lines.push("");
     lines.push("## Available connection prefixes");
     lines.push("");
     lines.push("These are paths under `tools.`; append the final tool segment.");
-    const sorted = [...connectionPrefixes].sort((a, b) => a.localeCompare(b)).slice(0, 50);
-    for (const prefix of sorted) {
-      lines.push(`- \`${prefix}\``);
+    const sorted = [...connectionEntries]
+      .sort((a, b) => a.prefix.localeCompare(b.prefix))
+      .slice(0, 50);
+    for (const entry of sorted) {
+      lines.push(
+        entry.description
+          ? `- \`${entry.prefix}\` — ${entry.description}`
+          : `- \`${entry.prefix}\``,
+      );
     }
-    if (connectionPrefixes.length > sorted.length) {
-      lines.push(`- ... ${connectionPrefixes.length - sorted.length} more`);
+    if (connectionEntries.length > sorted.length) {
+      lines.push(`- ... ${connectionEntries.length - sorted.length} more`);
     }
   }
 

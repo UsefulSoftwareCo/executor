@@ -78,6 +78,7 @@ type ProbeResult = {
   slug: string;
   toolCount: number | null;
   serverName: string | null;
+  instructions: string | null;
 };
 
 type State =
@@ -234,6 +235,10 @@ export default function AddMcpSource(props: {
     fallbackName:
       integrationDisplayNameFromUrl(state.url, "MCP") ?? probe?.serverName ?? probe?.name ?? "",
   });
+  // Agent-visible description: prefilled from the server's `instructions`
+  // until the user types (null = untouched, keep deriving from the probe).
+  const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
+  const resolvedDescription = descriptionDraft ?? probe?.instructions ?? "";
   const isProbing = state.step === "probing";
   const isAdding = state.step === "adding";
 
@@ -298,6 +303,9 @@ export default function AddMcpSource(props: {
         payload: {
           transport: "remote" as const,
           name: displayName,
+          ...(resolvedDescription.trim().length > 0
+            ? { description: resolvedDescription.trim() }
+            : {}),
           endpoint: state.url.trim(),
           ...(slug ? { slug } : {}),
           authenticationTemplate,
@@ -313,7 +321,7 @@ export default function AddMcpSource(props: {
       }
       return exit.value.slug;
     },
-    [doAddServer, probe, remoteIdentity, state.url],
+    [doAddServer, probe, remoteIdentity, resolvedDescription, state.url],
   );
 
   const handleAddRemote = useCallback(async () => {
@@ -447,6 +455,8 @@ export default function AddMcpSource(props: {
             url={state.url}
             onUrlChange={(url) => dispatch({ type: "set-url", url })}
             identity={remoteIdentity}
+            description={resolvedDescription}
+            onDescriptionChange={setDescriptionDraft}
             preview={probe}
             probing={isProbing}
             error={probeError}

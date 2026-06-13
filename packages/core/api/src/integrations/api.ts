@@ -65,6 +65,8 @@ const AuthMethodDescriptorSchema = Schema.Struct({
 /** Public projection of an integration — mirrors the SDK's `Integration`. */
 const IntegrationResponse = Schema.Struct({
   slug: IntegrationSlug,
+  /** Display name. */
+  name: Schema.String,
   description: Schema.String,
   /** The plugin that owns this integration kind (e.g. "openapi", "mcp"). */
   kind: Schema.String,
@@ -78,6 +80,7 @@ const IntegrationResponse = Schema.Struct({
 });
 
 const UpdateIntegrationPayload = Schema.Struct({
+  name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
 });
 

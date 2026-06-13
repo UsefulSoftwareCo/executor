@@ -21,6 +21,7 @@ const toResponse = (c: Connection) => ({
   provider: c.provider,
   address: c.address,
   identityLabel: c.identityLabel ?? null,
+  description: c.description ?? null,
   expiresAt: c.expiresAt ?? null,
   oauthClient: c.oauthClient ?? null,
   oauthClientOwner: c.oauthClientOwner ?? null,
@@ -80,6 +81,27 @@ export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connection
             });
           }
           return toResponse(connection);
+        }),
+      ),
+    )
+    .handle("update", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const updated = yield* executor.connections.update(
+            {
+              owner: path.owner,
+              integration: path.integration,
+              name: path.name,
+            },
+            {
+              ...(payload.description !== undefined ? { description: payload.description } : {}),
+              ...(payload.identityLabel !== undefined
+                ? { identityLabel: payload.identityLabel }
+                : {}),
+            },
+          );
+          return toResponse(updated);
         }),
       ),
     )

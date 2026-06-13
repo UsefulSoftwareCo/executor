@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 
 import { IntegrationSlug } from "@executor-js/sdk/shared";
+import type { EditSheetApplyResult, EditSheetSectionProps } from "@executor-js/sdk/client";
 import { apiKeyMethodLabel, type AuthPlacement } from "@executor-js/sdk/http-auth";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
@@ -12,15 +13,6 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
-import { Button } from "@executor-js/react/components/button";
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntry,
-  CardStackEntryContent,
-  CardStackEntryDescription,
-  CardStackEntryTitle,
-} from "@executor-js/react/components/card-stack";
 import { Badge } from "@executor-js/react/components/badge";
 import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
@@ -77,12 +69,13 @@ const samePlacements = (
 // Remote edit — v2: the integration's endpoint is part of its identity
 // (opaque-to-core config); the editable surface is the declared auth-method
 // LIST, through the same shared editor as the add flow. Accounts (credentials)
-// are managed from the integration page's accounts hub.
+// are managed from the integration page's accounts hub. Rendered inside the
+// integration Edit sheet (plugin `editSheet` slot).
 // ---------------------------------------------------------------------------
 
 function RemoteEdit(props: {
   server: McpServer & { config: McpRemoteConfig };
-  onSave: () => void;
+  onPendingChange?: EditSheetSectionProps["onPendingChange"];
 }) {
   const { server } = props;
   const doConfigureAuth = useAtomSet(configureMcpAuth, { mode: "promiseExit" });
@@ -100,7 +93,6 @@ function RemoteEdit(props: {
   );
   const list = useAuthMethodList(seeds);
 
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The edited methods, slugs preserved for seeded rows so existing
@@ -130,8 +122,8 @@ function RemoteEdit(props: {
     });
   }, [editedMethods, server.config.authenticationTemplate]);
 
-  const handleSave = useCallback(async () => {
-    setSaving(true);
+  // Staged apply, run by the sheet's Save when the method list changed.
+  const applyStaged = useCallback(async (): Promise<EditSheetApplyResult> => {
     setError(null);
     const exit = await doConfigureAuth({
       params: { slug: server.slug },
@@ -146,59 +138,37 @@ function RemoteEdit(props: {
     });
     if (Exit.isFailure(exit)) {
       setError("Failed to update authentication methods");
-      setSaving(false);
-      return;
+      return { ok: false };
     }
-    setSaving(false);
+    return { ok: true, summary: "Authentication methods updated." };
   }, [doConfigureAuth, editedMethods, server.slug]);
 
+  const onPendingChangeRef = useRef(props.onPendingChange);
+  onPendingChangeRef.current = props.onPendingChange;
+  useEffect(() => {
+    onPendingChangeRef.current?.(methodsChanged ? applyStaged : null);
+    return () => onPendingChangeRef.current?.(null);
+  }, [methodsChanged, applyStaged]);
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Edit MCP Source</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Manage how this MCP server authenticates. The endpoint is part of the server's identity —
-          remove and re-add to change it. Accounts are added from the integration page.
+    <div className="space-y-4 border-t border-border/60 pt-5">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Authentication methods</p>
+        <p className="text-xs text-muted-foreground">
+          Changes apply when you save. The endpoint (
+          <span className="font-mono">{server.config.endpoint}</span>) is part of the server's
+          identity — remove and re-add to change it.
         </p>
       </div>
 
-      <CardStack>
-        <CardStackContent className="border-t-0">
-          <CardStackEntry>
-            <CardStackEntryContent>
-              <CardStackEntryTitle>{server.description || String(server.slug)}</CardStackEntryTitle>
-              <CardStackEntryDescription className="font-mono text-xs">
-                {server.config.endpoint}
-              </CardStackEntryDescription>
-            </CardStackEntryContent>
-            <Badge variant="secondary" className="text-xs">
-              remote
-            </Badge>
-          </CardStackEntry>
-        </CardStackContent>
-      </CardStack>
-
       <AuthMethodListEditor
         list={list}
-        title="How does this server authenticate?"
         oauthMetadata="discovered"
         emptyHint="No methods declared. Add one, or save to mark this server as open (no authentication)."
         footerHint="Connections pick one of these methods. Removing a method detaches connections created against it."
       />
 
-      {methodsChanged ? (
-        <div className="flex justify-end">
-          <Button type="button" size="sm" onClick={() => void handleSave()} disabled={saving}>
-            {saving ? "Saving…" : "Save authentication methods"}
-          </Button>
-        </div>
-      ) : null}
-
       {error && <FormErrorAlert message={error} />}
-
-      <div className="flex items-center justify-end border-t border-border pt-4">
-        <Button onClick={props.onSave}>Done</Button>
-      </div>
     </div>
   );
 }
@@ -209,65 +179,40 @@ function RemoteEdit(props: {
 
 function StdioReadOnly(props: {
   server: McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> };
-  onSave: () => void;
 }) {
   const { command, args } = props.server.config;
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Edit MCP Source</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Stdio MCP sources cannot be edited in the UI. Remove and recreate the source with the
-          updated command.
+    <div className="space-y-3 border-t border-border/60 pt-5">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Server command</p>
+        <p className="text-xs text-muted-foreground">
+          Stdio MCP sources cannot be edited. Remove and recreate the source with the updated
+          command.
         </p>
       </div>
-
-      <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-card-foreground">
-            {String(props.server.slug)}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground font-mono">
-            {command} {(args ?? []).join(" ")}
-          </p>
-        </div>
+      <div className="flex items-center gap-3 rounded-md border border-border/60 bg-muted/40 px-3 py-2">
+        <p className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+          {command} {(args ?? []).join(" ")}
+        </p>
         <Badge variant="secondary" className="text-xs">
           stdio
         </Badge>
-      </div>
-
-      <div className="flex items-center justify-end border-t border-border pt-4">
-        <Button onClick={props.onSave}>Done</Button>
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Main component — `sourceId` is the integration slug (v2).
+// Main component — the mcp plugin's section of the integration Edit sheet.
+// `sourceId` is the integration slug (v2).
 // ---------------------------------------------------------------------------
 
-export default function EditMcpSource({
-  sourceId,
-  onSave,
-}: {
-  readonly sourceId: string;
-  readonly onSave: () => void;
-}) {
+export default function EditMcpSource({ sourceId, onPendingChange }: EditSheetSectionProps) {
   const slug = IntegrationSlug.make(sourceId);
   const serverResult = useAtomValue(mcpServerAtom(slug));
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
 
-  if (!AsyncResult.isSuccess(serverResult) || server === null) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">Edit MCP Source</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Loading configuration…</p>
-        </div>
-      </div>
-    );
-  }
+  if (!AsyncResult.isSuccess(serverResult) || server === null) return null;
 
   if (server.config.transport === "stdio") {
     return (
@@ -275,10 +220,14 @@ export default function EditMcpSource({
         server={
           server as McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> }
         }
-        onSave={onSave}
       />
     );
   }
 
-  return <RemoteEdit server={server as McpServer & { config: McpRemoteConfig }} onSave={onSave} />;
+  return (
+    <RemoteEdit
+      server={server as McpServer & { config: McpRemoteConfig }}
+      {...(onPendingChange ? { onPendingChange } : {})}
+    />
+  );
 }

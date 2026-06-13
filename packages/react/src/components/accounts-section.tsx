@@ -25,6 +25,7 @@ import {
 } from "../plugins/oauth-reconnect";
 import { useOAuthPopupFlow } from "../plugins/oauth-sign-in";
 import { AddAccountModal } from "./add-account-modal";
+import { ConnectionEditSheet } from "./metadata-edit-sheet";
 import type { CreateCustomMethod } from "./add-custom-method-modal";
 import { Badge } from "./badge";
 import { Button } from "./button";
@@ -48,8 +49,9 @@ import {
 // ---------------------------------------------------------------------------
 // Accounts section — the integration's connections, grouped by owner.
 //
-// Accounts are IMMUTABLE: the per-row menu is Reconnect + Remove only (no
-// rename, no method switch). "+ Add connection" opens the create modal. When both
+// Credentials are IMMUTABLE (no method switch); the editable surface is the
+// user-curated metadata — description (agent-visible) and account label — via
+// the per-row Edit sheet. "+ Add connection" opens the create modal. When both
 // owners have zero accounts, the section collapses to a single empty CTA.
 // ---------------------------------------------------------------------------
 
@@ -61,6 +63,7 @@ function AccountRow(props: {
    *  reconnect to grant the newly-needed access (e.g. after a service was added). */
   readonly needsReconsent: boolean;
   readonly showOwnerLabel: boolean;
+  readonly onEdit: () => void;
   readonly onReconnect: () => void;
   readonly onRemove: () => void;
 }) {
@@ -84,6 +87,11 @@ function AccountRow(props: {
             </Badge>
           ) : null}
         </CardStackEntryTitle>
+        {connection.description && connection.description.length > 0 ? (
+          <CardStackEntryDescription className="mt-1 text-xs">
+            {connection.description}
+          </CardStackEntryDescription>
+        ) : null}
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             This integration now needs access this connection wasn't granted.
@@ -109,6 +117,9 @@ function AccountRow(props: {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
+              Edit
+            </DropdownMenuItem>
             <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
               Reconnect
             </DropdownMenuItem>
@@ -127,6 +138,7 @@ function OwnerAccounts(props: {
   readonly owner: Owner;
   readonly showOwnerLabels: boolean;
   readonly methods: readonly AuthMethod[];
+  readonly onEdit: (connection: Connection) => void;
   readonly onDcrReconnect: (connection: Connection) => void;
   /** The integration's declared oauth scopes — compared against each connection's
    *  granted `oauthScope` to flag connections that must reconnect for new access. */
@@ -274,6 +286,7 @@ function OwnerAccounts(props: {
             connection={connection}
             needsReconsent={connectionNeedsReconsent(connection, props.declaredScopes)}
             showOwnerLabel={props.showOwnerLabels}
+            onEdit={() => props.onEdit(connection)}
             onReconnect={() => void handleReconnect(connection)}
             onRemove={() => void handleRemove(connection)}
           />
@@ -302,6 +315,7 @@ export function AccountsSection(props: {
     removeCustomMethod,
   } = props;
   const [adding, setAdding] = useState(false);
+  const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [reconnectHandoff, setReconnectHandoff] = useState<IntegrationAccountHandoff | null>(null);
   const ownerDisplay = useOwnerDisplay();
   const canAddConnection = methods.length > 0 || createCustomMethod !== undefined;
@@ -419,6 +433,7 @@ export function AccountsSection(props: {
               owner={owner}
               showOwnerLabels={ownerDisplay.showOwnerLabels}
               methods={methods}
+              onEdit={setEditingConnection}
               onDcrReconnect={(connection: Connection) => {
                 setReconnectHandoff({
                   key: `reconnect:${connection.owner}:${String(connection.integration)}:${String(
@@ -436,6 +451,13 @@ export function AccountsSection(props: {
       )}
 
       {modal}
+
+      <ConnectionEditSheet
+        connection={editingConnection}
+        onOpenChange={(open: boolean) => {
+          if (!open) setEditingConnection(null);
+        }}
+      />
     </section>
   );
 }

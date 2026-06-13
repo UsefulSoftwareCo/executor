@@ -31,6 +31,8 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 const AddRemoteServerPayload = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Agent-visible catalog description. Defaults to the display name. */
+  description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
   slug: Schema.optional(Schema.String),
@@ -46,6 +48,7 @@ const AddRemoteServerPayload = Schema.Struct({
 const AddStdioServerPayload = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
   env: Schema.optional(StringMap),
@@ -70,6 +73,8 @@ const ProbeEndpointResponse = Schema.Struct({
   slug: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
   serverName: Schema.NullOr(Schema.String),
+  /** Server `instructions` from initialize — prefills the description field. */
+  instructions: Schema.NullOr(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

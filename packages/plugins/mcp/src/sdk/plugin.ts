@@ -145,6 +145,8 @@ const readStamp = (annotations: unknown): McpToolStamp | null =>
 const McpRemoteServerInputSchema = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Agent-visible catalog description. Defaults to the display name. */
+  description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(McpRemoteTransport),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -160,6 +162,7 @@ const McpRemoteServerInputSchema = Schema.Struct({
 const McpStdioServerInputSchema = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -200,6 +203,9 @@ const McpProbeEndpointOutputSchema = Schema.Struct({
   slug: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
   serverName: Schema.NullOr(Schema.String),
+  /** The server's `instructions` from initialize — prefill for the add form's
+   *  description. Only available when the probe connected unauthenticated. */
+  instructions: Schema.NullOr(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
@@ -626,6 +632,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               slug,
               toolCount: result.manifest.tools.length,
               serverName: result.manifest.server?.name ?? null,
+              instructions: result.manifest.server?.instructions ?? null,
             } satisfies McpProbeResult;
           }
 
@@ -660,6 +667,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               slug,
               toolCount: null,
               serverName: null,
+              instructions: null,
             } satisfies McpProbeResult;
           }
 
@@ -673,6 +681,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               slug,
               toolCount: null,
               serverName: null,
+              instructions: null,
             } satisfies McpProbeResult;
           }
 
@@ -705,7 +714,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           yield* ctx.core.integrations
             .register({
               slug: slugFrom(slug),
-              description: input.name,
+              name: input.name,
+              description: input.description?.trim() || input.name,
               config,
               canRemove: true,
               canRefresh: true,

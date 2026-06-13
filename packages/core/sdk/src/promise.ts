@@ -32,6 +32,7 @@ export type {
   Connection,
   ConnectionRef,
   CreateConnectionInput,
+  UpdateConnectionInput,
   ConnectionValueInput,
 } from "./connection";
 // Credential providers are Effect-native (their `get`/`set` return `Effect`s),

@@ -289,7 +289,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
         <div className="flex flex-col gap-px">
           {value.map((integration: Integration) => {
             const slug = String(integration.slug);
-            const name = integration.description || slug;
+            const name = integration.name || slug;
             const detailPath = `/integrations/${slug}`;
             const active =
               props.pathname === detailPath || props.pathname.startsWith(`${detailPath}/`);

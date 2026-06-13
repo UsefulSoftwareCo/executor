@@ -61,7 +61,8 @@ const slackPlugin = definePlugin(() => ({
     seed: () =>
       ctx.core.integrations.register({
         slug: SLACK,
-        description: "Slack Workspace",
+        name: "Slack",
+        description: "Send and read workspace messages.",
         config: {},
       }),
   }),
@@ -98,7 +99,7 @@ describe("buildExecuteDescription", () => {
       expect(description).toContain("- `github.org.prod`");
       expect(description).toContain("- `github.user.personal`");
       expect(description).not.toContain("## Available namespaces");
-      expect(description).not.toContain("Slack Workspace");
+      expect(description).not.toContain("workspace messages");
       expect(description).not.toContain("`github-plugin`");
       expect(description).not.toContain("`slack-plugin`");
       expect(description).not.toContain("- `github`");
@@ -108,6 +109,60 @@ describe("buildExecuteDescription", () => {
       expect(orgIdx).toBeGreaterThan(-1);
       expect(userIdx).toBeGreaterThan(-1);
       expect(orgIdx).toBeLessThan(userIdx);
+    }),
+  );
+
+  it.effect("annotates prefixes with connection or integration descriptions", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+        description: "Production org — issues and PRs only.",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      // The curated connection description rides its prefix line.
+      expect(description).toContain("- `github.org.prod` — Production org — issues and PRs only.");
+      // No connection description and the integration description ("GitHub")
+      // just restates the slug — the line stays bare.
+      expect(description).toContain("- `github.user.personal`");
+      expect(description).not.toContain("- `github.user.personal` —");
+    }),
+  );
+
+  it.effect("falls back to a meaningful integration description", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: SLACK,
+        template: TEMPLATE,
+        value: "slack-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(description).toContain("- `slack.org.main` — Send and read workspace messages.");
     }),
   );
 

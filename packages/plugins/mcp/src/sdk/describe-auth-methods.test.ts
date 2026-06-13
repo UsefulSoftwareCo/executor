@@ -14,6 +14,7 @@ import { describeMcpAuthMethods, describeMcpIntegrationDisplay } from "./plugin"
 
 const recordWith = (config: IntegrationConfig): IntegrationRecord => ({
   slug: IntegrationSlug.make("server"),
+  name: "Server",
   description: "Server",
   kind: "mcp",
   canRemove: true,

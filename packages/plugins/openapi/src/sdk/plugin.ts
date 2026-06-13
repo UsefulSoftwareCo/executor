@@ -5,6 +5,7 @@ import { HttpClient } from "effect/unstable/http";
 import {
   IntegrationAlreadyExistsError,
   IntegrationDetectionResult,
+  IntegrationNotFoundError,
   IntegrationSlug,
   ToolName,
   ToolResult,
@@ -149,7 +150,10 @@ export interface OpenApiSpecConfig {
   readonly spec: OpenApiSpecInput;
   /** The catalog slug for the new integration (the `<integration>` segment). */
   readonly slug: string;
-  /** Human description (defaults to the spec title). */
+  /** Display name (defaults to the spec title). */
+  readonly name?: string;
+  /** Agent-visible description (defaults to the spec's `info.description`,
+   *  then the title). */
   readonly description?: string;
   readonly baseUrl?: string;
   /** Static headers applied to every request (no secret material). */
@@ -176,6 +180,21 @@ export interface OpenApiConfigureInput {
   readonly mode?: "merge" | "replace";
 }
 
+/** What changed in the tool catalog when a spec was updated in place. Tool
+ *  names, not addresses — the same diff applies to every connection. */
+export interface UpdateSpecResult {
+  readonly slug: IntegrationSlug;
+  readonly toolCount: number;
+  readonly addedTools: readonly string[];
+  readonly removedTools: readonly string[];
+}
+
+export interface OpenApiUpdateSpecInput {
+  /** New spec source. Omit to re-fetch from the integration's stored
+   *  `sourceUrl` / Google Discovery bundle URLs. */
+  readonly spec?: OpenApiSpecInput;
+}
+
 export interface OpenApiPluginExtension {
   readonly previewSpec: (
     input: string | OpenApiPreviewInput,
@@ -191,6 +210,20 @@ export interface OpenApiPluginExtension {
     | OpenApiExtractionError
     | OpenApiOAuthError
     | IntegrationAlreadyExistsError
+    | StorageFailure
+  >;
+  /** Re-resolve the integration's spec (from its stored source URL, or the
+   *  provided input) and rebuild its tools IN PLACE — connections,
+   *  credentials, policies, and the curated description are untouched. */
+  readonly updateSpec: (
+    slug: string,
+    input?: OpenApiUpdateSpecInput,
+  ) => Effect.Effect<
+    UpdateSpecResult,
+    | OpenApiParseError
+    | OpenApiExtractionError
+    | OpenApiOAuthError
+    | IntegrationNotFoundError
     | StorageFailure
   >;
   readonly removeSpec: (slug: string) => Effect.Effect<void, StorageFailure>;
@@ -560,6 +593,8 @@ interface CompiledSpec {
   readonly definitions: readonly ToolDefinition[];
   readonly hoistedDefs: Record<string, unknown>;
   readonly title: string | undefined;
+  /** The spec's `info.description`. */
+  readonly description: string | undefined;
 }
 
 const compileSpec = (
@@ -578,6 +613,7 @@ const compileSpec = (
       definitions: compileToolDefinitions(result.operations),
       hoistedDefs,
       title: Option.getOrUndefined(result.title),
+      description: Option.getOrUndefined(result.description),
     };
   });
 
@@ -791,7 +827,9 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             Effect.gen(function* () {
               yield* ctx.core.integrations.register({
                 slug,
-                description: config.description ?? compiled.title ?? config.slug,
+                name: config.name?.trim() || compiled.title || config.slug,
+                description:
+                  config.description ?? compiled.description ?? compiled.title ?? config.slug,
                 config: integrationConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
                 canRemove: true,
                 canRefresh:
@@ -807,6 +845,112 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           return { slug, toolCount: compiled.definitions.length };
         });
+
+      // Update the spec IN PLACE: re-resolve (stored source URL / bundle, or a
+      // caller-supplied new input), recompile, swap the stored operations, and
+      // rebuild every connection's tools. Auth templates, base URL, headers,
+      // the curated description, connections, and policies are all untouched —
+      // this is the "spec changed upstream" path, not a re-add.
+      const updateSpec = (rawSlug: string, input?: OpenApiUpdateSpecInput) =>
+        Effect.gen(function* () {
+          const slug = IntegrationSlug.make(rawSlug);
+          const record = yield* ctx.core.integrations.get(slug);
+          const current = record ? decodeOpenApiIntegrationConfig(record.config) : null;
+          if (!record || !current) {
+            return yield* new IntegrationNotFoundError({ slug });
+          }
+
+          // The new spec source: explicit input wins; otherwise re-fetch from
+          // where the spec originally came from. A pasted-blob integration has
+          // no origin, so updating it requires a new input.
+          const specInput: OpenApiSpecInput | null =
+            input?.spec ??
+            (current.googleDiscoveryUrls
+              ? { kind: "googleDiscoveryBundle", urls: current.googleDiscoveryUrls }
+              : current.sourceUrl
+                ? isGoogleDiscoveryUrl(current.sourceUrl)
+                  ? { kind: "googleDiscovery", url: current.sourceUrl }
+                  : { kind: "url", url: current.sourceUrl }
+                : null);
+          if (specInput === null) {
+            return yield* new OpenApiParseError({
+              message:
+                "This integration's spec was pasted inline and has no source URL to re-fetch. Provide the updated spec content.",
+            });
+          }
+
+          // Resolve + compile BEFORE the transaction (same Hyperdrive-deadlock
+          // rule as addSpec: never hold BEGIN across a network fetch).
+          const resolved = yield* resolveSpecForInput(specInput, httpClientLayer);
+          const compiled = yield* compileSpec(resolved.specText);
+
+          const previousOperations = yield* ctx.storage.listOperations(rawSlug);
+          const previousNames = new Set(previousOperations.map((op) => op.toolName));
+          const nextNames = new Set(compiled.definitions.map((def) => def.toolPath));
+
+          // The resolved spec text lives in the plugin blob store keyed by its
+          // content hash (`spec/<hash>`); the config carries only the hash. Put
+          // the blob outside the transaction — re-puts are idempotent and an
+          // aborted config update just leaves an unreferenced blob.
+          const specHash = yield* sha256Hex(resolved.specText);
+          yield* ctx.storage.putSpec(specHash, resolved.specText);
+
+          const nextConfig: OpenApiIntegrationConfig = {
+            ...current,
+            specHash,
+            ...(specInputToSourceUrl(specInput) !== undefined
+              ? { sourceUrl: specInputToSourceUrl(specInput) }
+              : {}),
+            ...(specInputToGoogleBundle(specInput) !== undefined
+              ? { googleDiscoveryUrls: specInputToGoogleBundle(specInput) }
+              : {}),
+          };
+
+          yield* ctx.transaction(
+            Effect.gen(function* () {
+              yield* ctx.core.integrations.update(slug, {
+                config: nextConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
+              });
+              yield* ctx.storage.putOperations(
+                rawSlug,
+                storedOperationsFromCompiled(rawSlug, compiled),
+              );
+            }),
+          );
+
+          // Rebuild each connection's tool rows from the new spec. Outside the
+          // transaction: refresh opens its own, and a half-refreshed catalog
+          // self-heals on the next refresh anyway.
+          const connections = yield* ctx.connections.list({ integration: slug });
+          yield* Effect.forEach(
+            connections,
+            (connection) =>
+              ctx.connections
+                .refresh({
+                  owner: connection.owner,
+                  integration: connection.integration,
+                  name: connection.name,
+                })
+                .pipe(Effect.catchTag("ConnectionNotFoundError", () => Effect.succeed([]))),
+            { discard: true },
+          ).pipe(
+            Effect.catchTag("IntegrationNotFoundError", () => Effect.void),
+            Effect.withSpan("openapi.plugin.update_spec.refresh_connections", {
+              attributes: { "openapi.connection_count": connections.length },
+            }),
+          );
+
+          return {
+            slug,
+            toolCount: compiled.definitions.length,
+            addedTools: [...nextNames].filter((name) => !previousNames.has(name)).sort(),
+            removedTools: [...previousNames].filter((name) => !nextNames.has(name)).sort(),
+          } satisfies UpdateSpecResult;
+        }).pipe(
+          Effect.withSpan("openapi.plugin.update_spec", {
+            attributes: { "openapi.integration.slug": rawSlug },
+          }),
+        );
 
       return {
         previewSpec: (input: string | OpenApiPreviewInput) =>
@@ -828,6 +972,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           }),
 
         addSpec,
+
+        updateSpec,
 
         removeSpec: (slug: string) =>
           ctx.transaction(

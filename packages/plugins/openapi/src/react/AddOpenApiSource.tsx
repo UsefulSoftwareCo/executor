@@ -133,6 +133,9 @@ export default function AddOpenApiSource(props: {
   // After analysis
   const [preview, setPreview] = useState<SpecPreview | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
+  // Agent-visible description: prefilled from the spec's `info.description`
+  // until the user types (null = untouched, keep deriving from the preview).
+  const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
   const identityFallbackName = isGoogleBundlePreset
     ? "Google"
     : preview
@@ -220,6 +223,8 @@ export default function AddOpenApiSource(props: {
   const resolvedDisplayName =
     identity.name.trim() ||
     (preview ? Option.getOrElse(preview.title, () => resolvedSourceId) : resolvedSourceId);
+  const resolvedDescription =
+    descriptionDraft ?? (preview ? Option.getOrElse(preview.description, () => "") : "");
 
   // Register EVERY spec-detected auth method, not just a single selected one.
   // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
@@ -327,7 +332,10 @@ export default function AddOpenApiSource(props: {
       payload: {
         spec: specForAdd,
         slug: resolvedSourceId,
-        description: resolvedDisplayName,
+        name: resolvedDisplayName,
+        ...(resolvedDescription.trim().length > 0
+          ? { description: resolvedDescription.trim() }
+          : {}),
         baseUrl: resolvedBaseUrl,
         // Always send the edited method list (even empty) when the user has
         // inspected a preview: an explicit [] means "no auth methods", while
@@ -356,6 +364,7 @@ export default function AddOpenApiSource(props: {
     doAdd,
     resolvedSourceId,
     resolvedDisplayName,
+    resolvedDescription,
     resolvedBaseUrl,
     editedAuthenticationTemplate,
   ]);
@@ -428,10 +437,12 @@ export default function AddOpenApiSource(props: {
       {isGoogleBundlePreset ? (
         <OpenApiSourceDetailsFields
           title="Google"
-          description={`${bundleDiscoveryUrls.length} Google API${
+          subtitle={`${bundleDiscoveryUrls.length} Google API${
             bundleDiscoveryUrls.length !== 1 ? "s" : ""
           } · one shared OAuth consent`}
           identity={identity}
+          description={resolvedDescription}
+          onDescriptionChange={setDescriptionDraft}
           baseUrl={resolvedBaseUrl}
           onBaseUrlChange={setBaseUrl}
           baseUrlLabel="Base URL override (optional)"
@@ -441,7 +452,7 @@ export default function AddOpenApiSource(props: {
       ) : preview ? (
         <OpenApiSourceDetailsFields
           title={Option.getOrElse(preview.title, () => "API")}
-          description={`${Option.getOrElse(preview.version, () => "")}${
+          subtitle={`${Option.getOrElse(preview.version, () => "")}${
             Option.isSome(preview.version) ? " · " : ""
           }${preview.operationCount} operation${preview.operationCount !== 1 ? "s" : ""}${
             preview.tags.length > 0
@@ -449,6 +460,8 @@ export default function AddOpenApiSource(props: {
               : ""
           }`}
           identity={identity}
+          description={resolvedDescription}
+          onDescriptionChange={setDescriptionDraft}
           baseUrl={resolvedBaseUrl}
           onBaseUrlChange={setBaseUrl}
           baseUrlOptions={baseUrlOptions}

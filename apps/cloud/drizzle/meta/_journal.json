@@ -22,6 +22,13 @@
       "when": 1781220171898,
       "tag": "0002_unwrap_openapi_output_envelope",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1781369325918,
+      "tag": "0003_warm_jimmy_woo",
+      "breakpoints": true
     }
   ]
 }

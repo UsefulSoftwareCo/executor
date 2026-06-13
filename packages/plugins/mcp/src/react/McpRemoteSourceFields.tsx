@@ -12,6 +12,7 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { FieldError } from "@executor-js/react/components/field";
 import { Input } from "@executor-js/react/components/input";
+import { Textarea } from "@executor-js/react/components/textarea";
 import { Skeleton } from "@executor-js/react/components/skeleton";
 import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 import { IOSSpinner } from "@executor-js/react/components/spinner";
@@ -34,6 +35,10 @@ export function McpRemoteSourceFields(props: {
   readonly url: string;
   readonly onUrlChange: (url: string) => void;
   readonly identity: IntegrationIdentity;
+  /** The integration's agent-visible description (prefilled from the server's
+   *  `instructions` when the probe connected). */
+  readonly description?: string;
+  readonly onDescriptionChange?: (value: string) => void;
   readonly preview: McpRemoteSourcePreview | null;
   readonly probing?: boolean;
   readonly error?: string | null;
@@ -99,6 +104,23 @@ export function McpRemoteSourceFields(props: {
             namePlaceholder="e.g. Linear"
             namespaceReadOnly={props.namespaceReadOnly}
           />
+          {props.onDescriptionChange && (
+            <CardStackEntryField label="Description">
+              <Textarea
+                value={props.description ?? ""}
+                onChange={(e) =>
+                  props.onDescriptionChange?.((e.target as HTMLTextAreaElement).value)
+                }
+                placeholder="What this server offers and when to reach for it"
+                rows={2}
+                maxRows={6}
+                className="text-sm"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Agent-visible. Prefilled from the server's instructions when it sends any.
+              </p>
+            </CardStackEntryField>
+          )}
           <CardStackEntryField label="Server URL">
             <Input
               value={props.url}

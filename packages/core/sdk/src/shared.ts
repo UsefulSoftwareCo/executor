@@ -42,6 +42,7 @@ export type {
   ConnectionRef,
   ConnectionValueInput,
   CreateConnectionInput,
+  UpdateConnectionInput,
 } from "./connection";
 export type { CredentialProvider, ProviderEntry } from "./provider";
 export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";

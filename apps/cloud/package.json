@@ -73,6 +73,7 @@
     "sonner": "^2.0.7"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.15.0",
     "@cloudflare/workers-types": "^4.20250620.0",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",

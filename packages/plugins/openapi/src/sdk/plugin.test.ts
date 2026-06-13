@@ -25,8 +25,13 @@ import {
   IntegrationSlug,
   ToolAddress,
 } from "@executor-js/sdk";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   makeTestConfig,
+  makeTestWorkspaceHarness,
   memoryCredentialsPlugin,
   typeCheckOutputTypeScript,
 } from "@executor-js/sdk/testing";
@@ -36,6 +41,7 @@ import { type AuthenticationInput } from "./types";
 import {
   addOpenApiTestConnection,
   makeOpenApiHttpApiTestSourceConfig,
+  serveMutableOpenApiSpecTestServer,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
@@ -702,6 +708,212 @@ describe("OpenAPI Plugin", () => {
         expect(tools.length).toBe(first.toolCount);
       }),
     ),
+  );
+
+  it.effect("updateSpec re-fetches the source URL and rebuilds tools in place", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A spec server whose document can change between fetches — the
+        // "upstream API shipped a new version" scenario.
+        // The mutable spec server is a real 127.0.0.1 listener — reach it over
+        // the default fetch-based client, like production would.
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const added = yield* executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "evolving",
+          baseUrl: specServer.baseUrl,
+          description: "curated by hand",
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("evolving"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
+        });
+        const before = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.evolving."))
+          .map((t) => String(t.name));
+        expect(before).toContain("items.listItems");
+        expect(before).toContain("items.queryRows");
+
+        // Upstream evolves: queryRows is gone, a new widgets group appears.
+        const EvolvedItemsGroup = HttpApiGroup.make("items")
+          .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }))
+          .add(
+            HttpApiEndpoint.post("createItem", "/items", {
+              payload: Schema.Struct({ name: Schema.String }),
+              success: Item,
+            }),
+          )
+          .add(
+            HttpApiEndpoint.get("getItem", "/items/:itemId", {
+              params: Schema.Struct({ itemId: Schema.NumberFromString }),
+              success: Item,
+            }),
+          )
+          .add(HttpApiEndpoint.get("echoHeaders", "/echo-headers", { success: EchoHeaders }));
+        const WidgetsGroup = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
+        );
+        const EvolvedApi = HttpApi.make("testApi").add(EvolvedItemsGroup).add(WidgetsGroup);
+        yield* specServer.setApi(EvolvedApi);
+
+        const result = yield* executor.openapi.updateSpec("evolving");
+
+        expect(result.addedTools).toEqual(["widgets.listWidgets"]);
+        expect(result.removedTools).toEqual(["items.queryRows"]);
+        expect(result.toolCount).toBe(added.toolCount); // -1 +1
+
+        // The connection's tool catalog reflects the new spec without any
+        // remove/re-add: new tool present, removed tool gone.
+        const after = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.evolving."))
+          .map((t) => String(t.name));
+        expect(after).toContain("widgets.listWidgets");
+        expect(after).not.toContain("items.queryRows");
+
+        // Everything user-curated survives: description, auth template, and
+        // the connection itself.
+        const integration = yield* executor.openapi.getIntegration("evolving");
+        expect(integration?.description).toBe("curated by hand");
+        const config = yield* executor.openapi.getConfig("evolving");
+        expect(config?.authenticationTemplate?.map((a) => String(a.slug))).toEqual(["apiKey"]);
+        expect(config?.baseUrl).toBe(specServer.baseUrl);
+        const connections = yield* executor.connections.list({
+          integration: IntegrationSlug.make("evolving"),
+        });
+        expect(connections.map((c) => String(c.name))).toEqual(["main"]);
+      }),
+    ),
+  );
+
+  it.effect("updateSpec accepts new inline content for blob-sourced integrations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        yield* addOpenApiTestConnection(executor, server, { slug: "pasted" });
+
+        // A pasted-blob integration has no source URL — re-fetch must say so.
+        const refetchError = yield* executor.openapi.updateSpec("pasted").pipe(Effect.flip);
+        expect(Predicate.isTagged(refetchError, "OpenApiParseError")).toBe(true);
+
+        // But providing the updated content works, and the catalog follows.
+        const SpecJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+        const parsed = yield* Schema.decodeUnknownEffect(SpecJson)(server.specJson);
+        const evolved = {
+          ...parsed,
+          paths: {
+            ...(parsed.paths as Record<string, unknown>),
+            "/widgets": {
+              get: {
+                operationId: "widgets/list",
+                responses: { "200": { description: "ok" } },
+              },
+            },
+          },
+        };
+        const result = yield* executor.openapi.updateSpec("pasted", {
+          spec: {
+            kind: "blob",
+            value: yield* Schema.encodeUnknownEffect(SpecJson)(evolved),
+          },
+        });
+        expect(result.addedTools).toEqual(["widgets.list"]);
+        expect(result.removedTools).toEqual([]);
+
+        const after = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.pasted."))
+          .map((t) => String(t.name));
+        expect(after).toContain("widgets.list");
+      }),
+    ),
+  );
+
+  it.effect("updateSpec propagates to OTHER subjects' personal connections", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Two members of one workspace, each with a PERSONAL connection on
+        // the shared integration, against one on-disk database. The owner
+        // policy stops A's updateSpec from rewriting B's tool rows directly —
+        // B's catalog must converge lazily on B's own next read.
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const dataDir = mkdtempSync(join(tmpdir(), "openapi-update-spec-multiuser-"));
+        const tenant = "shared-tenant";
+        const plugins = testPlugins();
+
+        const alice = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "alice",
+          dataDir,
+        });
+        yield* alice.executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "shared",
+          baseUrl: specServer.baseUrl,
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* alice.executor.connections.create({
+          owner: "user",
+          name: ConnectionName.make("mine"),
+          integration: IntegrationSlug.make("shared"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "alice-key",
+        });
+
+        const bob = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "bob",
+          dataDir,
+        });
+        yield* bob.executor.connections.create({
+          owner: "user",
+          name: ConnectionName.make("mine"),
+          integration: IntegrationSlug.make("shared"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "bob-key",
+        });
+        const bobToolNames = () =>
+          Effect.map(bob.executor.tools.list(), (tools) =>
+            tools
+              .filter((t) => String(t.address).startsWith("tools.shared.user.mine."))
+              .map((t) => String(t.name))
+              .sort(),
+          );
+        expect(yield* bobToolNames()).toContain("items.queryRows");
+
+        // Alice updates the spec; queryRows disappears, widgets appears. Her
+        // update can only rebuild HER visible connections.
+        const EvolvedItems = HttpApiGroup.make("items").add(
+          HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }),
+        );
+        const Widgets = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
+        );
+        yield* specServer.setApi(HttpApi.make("testApi").add(EvolvedItems).add(Widgets));
+        yield* alice.executor.openapi.updateSpec("shared");
+
+        // Bob's next ordinary read converges his personal catalog — no
+        // remove/re-add, no action from Bob.
+        const bobAfter = yield* bobToolNames();
+        expect(bobAfter).toContain("widgets.listWidgets");
+        expect(bobAfter).not.toContain("items.queryRows");
+      }),
+    ),
+  );
+
+  it.effect("updateSpec on an unknown slug fails with IntegrationNotFoundError", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const error = yield* executor.openapi.updateSpec("missing").pipe(Effect.flip);
+      expect(Predicate.isTagged(error, "IntegrationNotFoundError")).toBe(true);
+    }),
   );
 
   // removed: the v1-only behaviours below have no v2 equivalent —

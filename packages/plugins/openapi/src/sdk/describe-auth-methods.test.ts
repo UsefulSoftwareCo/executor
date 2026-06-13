@@ -19,6 +19,7 @@ import { type Authentication } from "./types";
 
 const recordWith = (templates: readonly Authentication[]): IntegrationRecord => ({
   slug: IntegrationSlug.make("petstore"),
+  name: "Petstore",
   description: "Petstore",
   kind: "openapi",
   canRemove: true,
@@ -84,6 +85,7 @@ describe("describeOpenApiAuthMethods", () => {
     expect(
       describeOpenApiAuthMethods({
         slug: IntegrationSlug.make("x"),
+        name: "x",
         description: "x",
         kind: "openapi",
         canRemove: true,

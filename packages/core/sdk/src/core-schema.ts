@@ -120,8 +120,16 @@ export const coreTables = defineTables({
     {
       slug: keyColumn("slug"),
       plugin_id: textColumn("plugin_id"),
+      // Display name. Nullable for pre-split rows, where `description` held
+      // the name; readers fall back (see rowToIntegration).
+      name: nullableTextColumn("name"),
       description: textColumn("description"),
       config: nullableJsonColumn("config"),
+      // Epoch ms of the last tool-affecting config change (spec update, auth
+      // template edit). Compared against each connection's `tools_synced_at`
+      // so OTHER subjects' connections — whose tool rows the updater cannot
+      // write under the owner policy — lazily rebuild on their next read.
+      tools_revised_at: nullableBigintColumn("tools_revised_at"),
       can_remove: boolColumn("can_remove", true),
       can_refresh: boolColumn("can_refresh", false),
       created_at: dateColumn("created_at"),
@@ -144,6 +152,12 @@ export const coreTables = defineTables({
       provider: textColumn("provider"),
       item_ids: jsonColumn("item_ids"),
       identity_label: nullableTextColumn("identity_label"),
+      // User-curated, agent-visible "what is this connection for". Settable at
+      // create, editable after; never reset by OAuth re-mints.
+      description: nullableTextColumn("description"),
+      // Epoch ms of the last tool (re)production for this connection. Stale
+      // vs the integration's `tools_revised_at` → re-produced on next read.
+      tools_synced_at: nullableBigintColumn("tools_synced_at"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for

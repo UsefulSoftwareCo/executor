@@ -33,6 +33,7 @@ const toServerInput = (
     const p = payload as {
       transport: "stdio";
       name: string;
+      description?: string;
       command: string;
       args?: readonly string[];
       env?: Record<string, string>;
@@ -42,6 +43,7 @@ const toServerInput = (
     return {
       transport: "stdio",
       name: p.name,
+      description: p.description,
       command: p.command,
       args: p.args ? [...p.args] : undefined,
       env: p.env,
@@ -53,6 +55,7 @@ const toServerInput = (
   const p = payload as {
     transport?: "remote";
     name: string;
+    description?: string;
     endpoint: string;
     remoteTransport?: "streamable-http" | "sse" | "auto";
     queryParams?: Record<string, string>;
@@ -67,6 +70,7 @@ const toServerInput = (
   return {
     transport: "remote",
     name: p.name,
+    description: p.description,
     endpoint: p.endpoint,
     remoteTransport: p.remoteTransport,
     queryParams: p.queryParams,

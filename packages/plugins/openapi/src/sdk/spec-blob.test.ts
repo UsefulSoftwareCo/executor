@@ -144,6 +144,7 @@ describe("OpenAPI plugin — spec blob storage", () => {
         plugin.resolveTools!({
           integration: {
             slug: IntegrationSlug.make("pointer_api"),
+            name: "pointer",
             description: "pointer",
             kind: "openapi",
             canRemove: true,

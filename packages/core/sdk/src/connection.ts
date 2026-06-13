@@ -32,6 +32,11 @@ export interface Connection {
   readonly address: ConnectionAddress;
   /** Optional human label (which account). Not load-bearing. */
   readonly identityLabel?: string | null;
+  /** User-curated description of what this connection is for. Agent-visible:
+   *  surfaces next to the connection's prefix in the execute-tool inventory
+   *  and in `connections.list`, so it is the place to give agents context a
+   *  spec can't (e.g. "the staging CRM — reads only"). */
+  readonly description?: string | null;
   /** Epoch ms when an OAuth access token expires; null/absent for static creds. */
   readonly expiresAt?: number | null;
   /** The OAuth app (`oauth_client` slug) that minted this connection, when it
@@ -87,4 +92,13 @@ export type CreateConnectionInput = {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
+  readonly description?: string | null;
 } & ConnectionValueInput;
+
+/** Edit a connection's user-curated metadata. Only the provided fields change;
+ *  credentials and OAuth lifecycle are untouchable here (recreate or refresh
+ *  instead). */
+export interface UpdateConnectionInput {
+  readonly description?: string | null;
+  readonly identityLabel?: string | null;
+}

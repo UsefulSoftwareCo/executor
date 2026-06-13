@@ -21,6 +21,7 @@ const AddIntegrationPayload = Schema.Struct({
   endpoint: Schema.String,
   slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
   introspectionJson: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),

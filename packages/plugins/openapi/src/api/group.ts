@@ -4,6 +4,7 @@ import { ApiKeyAuthMethod, ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth
 import {
   InternalError,
   IntegrationAlreadyExistsError,
+  IntegrationNotFoundError,
   IntegrationSlug,
 } from "@executor-js/sdk/shared";
 
@@ -24,6 +25,16 @@ const DomainErrors = [
   OpenApiExtractionError,
   OpenApiOAuthError,
   IntegrationAlreadyExistsError,
+] as const;
+
+const IntegrationNotFound = IntegrationNotFoundError.annotate({ httpApiStatus: 404 });
+
+const UpdateSpecErrors = [
+  InternalError,
+  OpenApiParseError,
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  IntegrationNotFound,
 ] as const;
 
 const SlugParams = {
@@ -64,6 +75,7 @@ const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMet
 const AddSpecPayload = Schema.Struct({
   spec: OpenApiSpecInputPayload,
   slug: Schema.String,
+  name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -90,6 +102,21 @@ const ConfigurePayload = Schema.Struct({
 const AddSpecResponse = Schema.Struct({
   slug: IntegrationSlug,
   toolCount: Schema.Number,
+});
+
+// Update the spec in place. Body optional fields only: an empty payload means
+// "re-fetch from the stored source URL".
+const UpdateSpecPayload = Schema.Struct({
+  spec: Schema.optional(OpenApiSpecInputPayload),
+});
+
+const UpdateSpecResponse = Schema.Struct({
+  slug: IntegrationSlug,
+  toolCount: Schema.Number,
+  /** Tool names new in this spec version (same diff for every connection). */
+  addedTools: Schema.Array(Schema.String),
+  /** Tool names the new spec no longer defines. */
+  removedTools: Schema.Array(Schema.String),
 });
 
 const IntegrationView = Schema.Struct({
@@ -159,6 +186,14 @@ export const OpenApiGroup = HttpApiGroup.make("openapi")
       payload: ConfigurePayload,
       success: ConfigureResponse,
       error: DomainErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("updateSpec", "/openapi/integrations/:slug/spec", {
+      params: SlugParams,
+      payload: UpdateSpecPayload,
+      success: UpdateSpecResponse,
+      error: UpdateSpecErrors,
     }),
   )
   .add(

@@ -405,6 +405,7 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
 
   return ExtractionResult.make({
     title: Option.fromNullishOr(doc.info?.title),
+    description: Option.fromNullishOr(doc.info?.description),
     version: Option.fromNullishOr(doc.info?.version),
     servers: docServers,
     operations,
