@@ -36,6 +36,7 @@ import { makeDbLayer } from "../db/db";
 import { makeUserStoreLayer, UserStoreService } from "./context";
 import { parseCookie } from "./cookies";
 import { sealedSessionDisplayName } from "./middleware";
+import { browserOriginFromRequest } from "./request-origin";
 import { loginPath, safeReturnTo } from "./return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "./route-paths";
 import { WorkOSClient } from "./workos";
@@ -239,7 +240,9 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
     // `http://127.0.0.1:4000` default — which would otherwise flash until
     // hydration corrected it. Set-cookie writes ride on the rendered response.
     const { hint, mint } = await resolveAuthHint(session, cookieHeader);
-    const result = await next({ context: { authHint: hint, origin: url.origin } });
+    const result = await next({
+      context: { authHint: hint, origin: browserOriginFromRequest(request) },
+    });
     if (!mint && !session.refreshedSession) return result;
 
     const response = new Response(result.response.body, result.response);
