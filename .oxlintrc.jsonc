@@ -153,7 +153,6 @@
     "vendor/",
     "emulators/",
     "e2e/runs/",
-    "integrationsdotsh/",
     "node_modules/",
     "packages/core/fumadb/",
     "packages/core/sdk/src/vendor/json-schema-to-typescript/",

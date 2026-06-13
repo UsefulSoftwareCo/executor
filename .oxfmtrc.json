@@ -7,7 +7,6 @@
     "dist",
     "vendor",
     "e2e/runs",
-    "integrationsdotsh",
     "node_modules",
     "packages/core/fumadb",
     "bun.lock",
