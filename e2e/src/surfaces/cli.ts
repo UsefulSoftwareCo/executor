@@ -7,6 +7,8 @@ import { writeFileSync } from "node:fs";
 import { Effect } from "effect";
 import { TerminalControl, type Session } from "@kitlangton/terminal-control";
 
+import { beat } from "../timeline";
+
 export interface CliSurface {
   readonly session: <T>(
     command: readonly [string, ...string[]],
@@ -67,7 +69,15 @@ export const makeCliSurface = (): CliSurface => ({
         });
         return { tc, session };
       }),
-      ({ session }) => Effect.promise(() => drive(session)),
+      ({ session }) =>
+        Effect.promise(async () => {
+          const result = await drive(session);
+          // Hold the terminal's final frame (e.g. "connected") before the
+          // recording stops, so it isn't a single flash in the film. Filming
+          // only — fast runs return immediately.
+          await beat();
+          return result;
+        }),
       ({ tc, session }) =>
         Effect.promise(async () => {
           if (options?.record) {

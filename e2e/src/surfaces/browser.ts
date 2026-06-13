@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { Effect } from "effect";
 import { chromium, type Page } from "playwright";
 
-import { markFocus, markNavigation, markRecordingStart } from "../timeline";
+import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
 import type { Identity, Target } from "../target";
 
@@ -133,8 +133,10 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
       ({ page, context, shots }) =>
         Effect.promise(async () => {
           const step = async (label: string, action: (page: Page) => Promise<void>) => {
-            // Acting on the page IS focusing the browser window.
-            markFocus(dir, "browser");
+            // Acting on the page IS focusing the browser window — and when
+            // filming, enterFocus lingers a beat on whatever the developer was
+            // looking at before tabbing here.
+            await enterFocus(dir, "browser");
             await context.tracing.group(label);
             try {
               await action(page);
@@ -144,6 +146,9 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
             await page.screenshot({
               path: join(dir, `${String(shots.count++).padStart(2, "0")}-${slug(label)}.png`),
             });
+            // Hold this step's result on screen so the film is readable (the
+            // consent screen, the success page, …). No-op unless filming.
+            await beat();
           };
           try {
             await drive({ page, step });

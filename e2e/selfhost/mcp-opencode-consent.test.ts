@@ -20,7 +20,7 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
-import { markFocus, markRecordingStart } from "../src/timeline";
+import { enterFocus, markRecordingStart } from "../src/timeline";
 import { Browser, Cli, Mcp, OpenCode, RunDir, Target } from "../src/services";
 
 const SERVER_NAME = "executor";
@@ -66,7 +66,7 @@ scenario(
           ["bash", "--norc"],
           async (term) => {
             markRecordingStart(runDir, "terminal");
-            markFocus(runDir, "terminal");
+            await enterFocus(runDir, "terminal");
             await term.screen.waitForText("$", { timeoutMs: 10_000 });
 
             const outputAfter = (text: string, line: string): string | null => {
@@ -88,7 +88,9 @@ scenario(
             // Blocks until the browser fiber completes consent → OpenCode's
             // callback receives the code → OpenCode stores the grant.
             const auth = await sh(`opencode mcp auth ${SERVER_NAME}`, 120_000);
-            markFocus(runDir, "terminal");
+            // Tab back to the terminal (the framework lingers on the browser
+            // first when filming).
+            await enterFocus(runDir, "terminal");
             expect(auth, "opencode mcp auth completes").not.toContain("failed");
 
             const list = await sh("opencode mcp list", 60_000);
@@ -97,10 +99,6 @@ scenario(
             // The grant is real: OpenCode persisted an access token for the server.
             const tokens = home.storedTokens(SERVER_NAME);
             expect(tokens?.accessToken, "OpenCode stored an access token").toBeTruthy();
-
-            // Linger on "connected" so the closing terminal beat is readable in
-            // the spliced film, not a single frame.
-            await new Promise((tick) => setTimeout(tick, 2_000));
           },
           {
             cwd: home.projectDir,
@@ -113,27 +111,25 @@ scenario(
         // ── Browser: approve the connection on the real consent screen ───────
         browser.session(identity, async ({ page, step }) => {
           const authorizeUrl = await waitForAuthorizeUrl();
-          // Lead-in: focus stays on the terminal a beat so the spliced film
-          // shows OpenCode "Starting OAuth flow" before we tab to the browser.
-          await new Promise((tick) => setTimeout(tick, 2_000));
-          await step("Approve OpenCode's connection on the MCP consent screen", async () => {
+          const appHost = new URL(target.baseUrl).host;
+          // Two named steps: each is a thing the developer pauses to look at, so
+          // the framework's per-step beat holds the consent screen, then the
+          // result — no hand-rolled timeouts. (The first step's enterFocus also
+          // lingers on the terminal mid-OAuth before tabbing here.)
+          await step("OpenCode asks to connect — the approval screen", async () => {
             // Authenticated (owner cookies) → authorize forces prompt=consent →
-            // the approval screen. Approving redirects to OpenCode's localhost
-            // callback with the code.
+            // the approval screen.
             await page.goto(authorizeUrl, { waitUntil: "networkidle" });
             await page.locator("#mcp-consent-allow").waitFor({ timeout: 30_000 });
             expect(new URL(page.url()).pathname, "lands on the approval screen").toBe(
               "/mcp-consent",
             );
-            // Dwell so a viewer can read the consent screen before it's approved.
-            await page.waitForTimeout(2_500);
+          });
+          await step("Approve — back to OpenCode with a code", async () => {
             await page.locator("#mcp-consent-allow").click();
-            // The approval redirects out of the app to OpenCode's own callback
-            // (a different host/port) — that delivery is what unblocks the PTY.
-            const appHost = new URL(target.baseUrl).host;
+            // Approval redirects out of the app to OpenCode's own localhost
+            // callback (a different host) — that delivery unblocks the PTY.
             await page.waitForURL((url) => url.host !== appHost, { timeout: 30_000 });
-            // Linger on OpenCode's "Authorization Successful" page.
-            await page.waitForTimeout(1_500);
           });
         }),
       ],

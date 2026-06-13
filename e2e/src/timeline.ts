@@ -58,3 +58,44 @@ export const markNavigation = (runDir: string, url: string): void => {
 
 export const readTimeline = (runDir: string): Timeline | null =>
   existsSync(fileFor(runDir)) ? read(runDir) : null;
+
+// ---------------------------------------------------------------------------
+// Human dwells — pacing for a watchable recording, owned by the framework.
+//
+// A scenario should never hand-code `waitForTimeout` to make a film readable;
+// that's the recording's concern, not the scenario's. A dwell ("beat") is a
+// property of a focus transition: when a developer tabs from one tool to
+// another, they linger a moment to take in where they landed. So the surfaces
+// beat on focus changes (enterFocus) and at the end of a visible step, and the
+// splice reads like a person moving between apps.
+//
+// Beats apply ONLY when filming (E2E_FILM, also implied by the desk's E2E_DESK)
+// — fast verification/CI runs, where nobody is watching, pay nothing.
+// ---------------------------------------------------------------------------
+
+const FILM_BEAT_MS = 1500;
+
+/** True when this run is producing a recording meant to be watched. */
+export const isFilming = (): boolean =>
+  process.env.E2E_FILM === "1" || process.env.E2E_DESK === "1";
+
+/** Hold for the viewer — a no-op unless this run is being filmed. */
+export const beat = async (ms: number = FILM_BEAT_MS): Promise<void> => {
+  if (!isFilming()) return;
+  await new Promise((tick) => setTimeout(tick, ms));
+};
+
+/**
+ * Focus `window`, lingering a beat on the OUTGOING window first when this is a
+ * real focus change and we're filming — "look before you tab away". The first
+ * focus of a run never beats (nothing to linger on).
+ */
+export const enterFocus = async (
+  runDir: string,
+  window: TimelineWindow,
+  ms?: number,
+): Promise<void> => {
+  const previous = read(runDir).focus.at(-1)?.window;
+  if (previous !== undefined && previous !== window) await beat(ms);
+  markFocus(runDir, window);
+};
