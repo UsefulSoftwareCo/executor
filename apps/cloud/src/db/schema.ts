@@ -22,15 +22,17 @@ export const accounts = pgTable("accounts", {
 /**
  * Organization (billing entity, scoping root). The `id` is the WorkOS
  * organization ID. The `slug` is OURS, not WorkOS's (their org object has no
- * slug): minted at create time, lazily backfilled for orgs first seen via the
- * mirror's self-heal path, and stable across renames so org URLs don't break.
+ * slug): minted at the moment a row is inserted (the single mint point is
+ * `upsertOrganization`) and stable across renames so org URLs don't break.
+ * NOT NULL — there is no nullable window: legacy rows were backfilled once and
+ * every insert since carries a slug.
  */
 export const organizations = pgTable(
   "organizations",
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
-    slug: text("slug"),
+    slug: text("slug").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

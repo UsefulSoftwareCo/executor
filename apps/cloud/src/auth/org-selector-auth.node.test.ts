@@ -60,9 +60,10 @@ const stubUsers = Layer.succeed(UserStoreService)({
       fn({
         ensureAccount: async (id: string) => ({ id, createdAt }),
         getAccount: async (id: string) => ({ id, createdAt }),
+        // Slug is minted at insert now — the stub returns a slugged row.
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
-          slug: null,
+          slug: org.id,
           createdAt,
         }),
         getOrganization: async (id: string) => ({ id, name: `Org ${id}`, slug: id, createdAt }),
@@ -72,11 +73,6 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id: slug === URL_SLUG ? URL_ORG : "org_outsider",
           name: `Org ${slug}`,
           slug,
-          createdAt,
-        }),
-        ensureOrganizationSlug: async (org: { id: string; name: string; slug: string | null }) => ({
-          ...org,
-          slug: org.slug ?? org.id,
           createdAt,
         }),
       }),

@@ -22,6 +22,7 @@
 
 import { describe, it, expect } from "@effect/vitest";
 import { Effect, Layer } from "effect";
+import { isValidOrgSlug } from "@executor-js/api";
 
 import { DbService } from "./db";
 import { makeUserStore } from "../auth/user-store";
@@ -117,4 +118,38 @@ describe("DbService", () => {
     expect(result?.id).toBe(organizationId);
     expect(result?.name).toBe("Acme");
   }, 15_000);
+});
+
+describe("upsertOrganization · slug is minted at insert", () => {
+  const upsert = (org: { id: string; name: string }) =>
+    program(
+      Effect.gen(function* () {
+        const { db } = yield* DbService;
+        return yield* Effect.promise(() => makeUserStore(db).upsertOrganization(org));
+      }),
+    );
+
+  it("mints a valid slug on insert", async () => {
+    const org = await upsert({ id: `org_${crypto.randomUUID()}`, name: "Slug Mint Co" });
+    expect(org.slug, "a new org row is born with a slug").toBeTruthy();
+    expect(isValidOrgSlug(org.slug), "the minted slug fits the URL grammar").toBe(true);
+  });
+
+  it("keeps the slug stable across renames (conflict updates name only)", async () => {
+    const id = `org_${crypto.randomUUID()}`;
+    const created = await upsert({ id, name: "Original Name" });
+    const renamed = await upsert({ id, name: "Renamed Org" });
+    expect(renamed.slug, "the slug survives a rename").toBe(created.slug);
+    expect(renamed.name, "the name is refreshed on conflict").toBe("Renamed Org");
+  });
+
+  it("discriminates same-name collisions into distinct slugs", async () => {
+    // Same name → same slug base; the second insert collides on the unique
+    // index and gets a discriminated slug.
+    const name = `Collide ${crypto.randomUUID().slice(0, 8)}`;
+    const a = await upsert({ id: `org_${crypto.randomUUID()}`, name });
+    const b = await upsert({ id: `org_${crypto.randomUUID()}`, name });
+    expect(a.slug).not.toBe(b.slug);
+    expect(isValidOrgSlug(a.slug) && isValidOrgSlug(b.slug), "both slugs are valid").toBe(true);
+  });
 });

@@ -139,22 +139,18 @@ const resolveAuthHint = async (
 };
 
 // The sealed session carries the org ID but not its name/slug; the local
-// mirror has both (the slug minted lazily for orgs that predate slugs). Only
-// consulted when minting (absent/mismatched hint) — never on the steady-state
-// path — and over per-request layers, because a connection cached in the
-// shared runtime would be reused across requests, which Cloudflare forbids. A
-// miss or failure reads as empty strings — display-only, corrected by the
-// client's /account/me write.
+// mirror has both (every org row is born with a slug — see
+// `upsertOrganization`). Only consulted when minting the hint (absent/mismatched
+// cookie) — never on the steady-state path — and over per-request layers,
+// because a connection cached in the shared runtime would be reused across
+// requests, which Cloudflare forbids. A miss or failure reads as empty strings
+// — display-only, corrected by the client's /account/me write.
 const organizationDisplay = async (
   organizationId: string,
 ): Promise<{ name: string; slug: string }> => {
   const exit = await getRuntime().runPromiseExit(
     Effect.flatMap(UserStoreService.asEffect(), (users) =>
-      users.use(async (store) => {
-        const org = await store.getOrganization(organizationId);
-        if (!org) return null;
-        return store.ensureOrganizationSlug(org);
-      }),
+      users.use((store) => store.getOrganization(organizationId)),
     ).pipe(Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer()))),
   );
   return Exit.isSuccess(exit)

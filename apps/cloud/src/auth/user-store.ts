@@ -17,9 +17,6 @@ import type { DrizzleDb } from "../db/db";
 export type Account = typeof accounts.$inferSelect;
 export type Organization = typeof organizations.$inferSelect;
 
-/** An organization row whose slug has been minted (see `ensureOrganizationSlug`). */
-export type SluggedOrganization = Organization & { readonly slug: string };
-
 export const makeUserStore = (db: DrizzleDb) => {
   const getOrganization = async (id: string) => {
     const rows = await db.select().from(organizations).where(eq(organizations.id, id));
@@ -34,38 +31,45 @@ export const makeUserStore = (db: DrizzleDb) => {
     return rows.length > 0;
   };
 
-  // The unique index can reject a candidate when two requests race to mint
-  // slugs (for the same org or colliding candidates); surface that as null
-  // and let the caller re-read or retry.
-  const trySetSlug = async (organizationId: string, slug: string) => {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a unique-index violation from a concurrent mint is an expected race, not a failure
-    try {
-      const [updated] = await db
-        .update(organizations)
-        .set({ slug })
-        .where(eq(organizations.id, organizationId))
-        .returning();
-      return updated ?? null;
-    } catch {
-      return null;
-    }
+  // Insert a brand-new org row carrying a freshly-minted slug. `ON CONFLICT DO
+  // NOTHING` (no target) absorbs BOTH unique violations without throwing: an
+  // id collision (the org was mirrored concurrently) and a slug collision (the
+  // candidate was claimed by a different org). Returns the inserted row, or
+  // null when either conflict swallowed the insert — the caller decides whether
+  // to re-read (id race) or retry with a new candidate (slug race).
+  const tryInsertOrg = async (id: string, name: string, slug: string) => {
+    const [row] = await db
+      .insert(organizations)
+      .values({ id, name, slug })
+      .onConflictDoNothing()
+      .returning();
+    return row ?? null;
   };
 
-  // Mint and persist a slug for an org that predates slugs (or was mirrored
-  // before its name was known). Slugs are stable once set — renames do NOT
-  // regenerate them, so org URLs survive.
-  const ensureOrganizationSlug = async (org: Organization): Promise<SluggedOrganization> => {
-    if (org.slug) return org as SluggedOrganization;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const slug = await generateOrgSlug(org.name, slugTaken);
-      const updated = await trySetSlug(org.id, slug);
-      if (updated?.slug) return updated as SluggedOrganization;
-      // Lost a race: either another request minted this org's slug (re-read
-      // and return), or the candidate got claimed by a different org (retry).
-      const fresh = await getOrganization(org.id);
-      if (fresh?.slug) return fresh as SluggedOrganization;
+  // Every new org row is born with a slug — there is no nullable window and no
+  // self-healing. Existing rows keep their slug (stable across renames, so org
+  // URLs survive) and only refresh their name.
+  const upsertOrganization = async (org: { id: string; name: string }) => {
+    const existing = await getOrganization(org.id);
+    if (existing) {
+      const [updated] = await db
+        .update(organizations)
+        .set({ name: org.name })
+        .where(eq(organizations.id, org.id))
+        .returning();
+      return updated ?? existing;
     }
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: slug minting exhausted retries; surfacing loudly beats silently unslugged orgs
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const slug = await generateOrgSlug(org.name, slugTaken);
+      const inserted = await tryInsertOrg(org.id, org.name, slug);
+      if (inserted) return inserted;
+      // The insert was swallowed by a conflict. If the id now exists, a
+      // concurrent request mirrored it — return that row. Otherwise the slug
+      // candidate collided; loop and mint a fresh one.
+      const fresh = await getOrganization(org.id);
+      if (fresh) return fresh;
+    }
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: slug minting exhausted retries; surfacing loudly beats a silently unslugged org
     throw new Error(`unable to mint a slug for organization ${org.id}`);
   };
 
@@ -84,17 +88,7 @@ export const makeUserStore = (db: DrizzleDb) => {
 
     // --- Organizations ---
 
-    upsertOrganization: async (org: { id: string; name: string }) => {
-      const [result] = await db
-        .insert(organizations)
-        .values(org)
-        .onConflictDoUpdate({
-          target: organizations.id,
-          set: { name: org.name },
-        })
-        .returning();
-      return result!;
-    },
+    upsertOrganization,
 
     getOrganization,
 
@@ -102,7 +96,5 @@ export const makeUserStore = (db: DrizzleDb) => {
       const rows = await db.select().from(organizations).where(eq(organizations.slug, slug));
       return rows[0] ?? null;
     },
-
-    ensureOrganizationSlug,
   };
 };

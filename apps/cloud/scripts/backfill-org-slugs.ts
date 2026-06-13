@@ -1,16 +1,19 @@
 /* oxlint-disable executor/no-try-catch-or-throw -- boundary: out-of-band migration script over a raw postgres connection */
 // ---------------------------------------------------------------------------
 // One-off data backfill: mint URL slugs for organizations that predate the
-// slug column. Run OUT-OF-BAND against the database after applying the
-// schema migration that adds `organizations.slug` (0002):
+// slug column (added by migration 0003, nullable).
 //
 //   bun run db:backfill-org-slugs:prod   # op run --env-file=.env.production
 //   bun run db:backfill-org-slugs:dev    # against the local PGlite dev db
 //
-// Idempotent — already-slugged rows are skipped, so re-running is safe. The
-// runtime also lazily mints slugs on first resolution (see
-// auth/organization.ts), so this backfill is belt-and-braces for bulk
-// pre-warming rather than a deploy gate.
+// Idempotent — already-slugged rows are skipped, so re-running is safe.
+//
+// Ordering matters: the runtime now mints a slug at the moment a row is
+// inserted and NO LONGER self-heals null slugs, and migration 0004 makes the
+// column NOT NULL. So this backfill is the SOLE way pre-existing null-slug rows
+// get a slug, and it MUST run BEFORE 0004 is applied (a null row would fail the
+// NOT NULL alter). The correct sequence is: backfill (this script) → deploy the
+// mint-at-insert code → apply 0004.
 // Pass --dry-run to print the plan without writing.
 // ---------------------------------------------------------------------------
 
@@ -47,8 +50,8 @@ for (const row of rows) {
   planned.add(slug);
   console.log(`${row.id}  ${JSON.stringify(row.name)} -> ${slug}`);
   if (dryRun) continue;
-  // Guard WHERE slug IS NULL: a concurrently-deployed runtime may have lazily
-  // minted this org's slug between our read and this write.
+  // Guard WHERE slug IS NULL keeps re-runs idempotent (and tolerates a row that
+  // gained a slug between our read and this write).
   await sql`UPDATE organizations SET slug = ${slug} WHERE id = ${row.id} AND slug IS NULL`;
   updated += 1;
 }
