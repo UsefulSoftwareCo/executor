@@ -37,6 +37,23 @@ Example `mcp.json` for Claude Code / Cursor:
 }
 ```
 
+### Use with Pi
+
+[Pi](https://pi.dev) does not include a built-in MCP client. To use Executor from Pi, install the community bridge:
+
+```bash
+pi install git:github.com/gvkhosla/pi-executor-mcp@v0.2.0
+```
+
+Reload Pi, then verify the bridge:
+
+```text
+/reload
+/executor-status
+```
+
+After that, ask Pi to search, inspect, and call tools through Executor.
+
 ## Add a source
 
 If you can represent it with a JSON schema, it can be an integration. Executor has first-party support for OpenAPI, GraphQL, MCP, and Google Discovery — but the plugin system is open to any source type.
