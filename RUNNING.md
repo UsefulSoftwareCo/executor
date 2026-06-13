@@ -47,8 +47,14 @@ working instance of X" — read them before inventing a boot path.
   scenario source as `test.ts`.
 - `cd e2e && bun run serve` builds the viewer and serves the scenario ×
   target matrix over HTTP, bound to all interfaces (reachable over the
-  tailnet). Individual runs are at `#/<target>/<slug>` hash routes — when
-  handing results to the user, link those directly, not the bare matrix.
+  tailnet). It prefers port 8901 but walks forward to the next free port if
+  that's taken (so concurrent worktrees, or a leaked previous viewer, never
+  wedge each other) — read the printed `e2e viewer → …` URL for the actual
+  port. `PORT=…` pins a port explicitly and fails loudly if it's busy. The
+  built SPA is port- and mount-agnostic (relative assets + hash routing), so
+  whatever port it lands on just works. Individual runs are at
+  `#/<target>/<slug>` hash routes — when handing results to the user, link
+  those directly, not the bare matrix.
 - `bun e2e/scripts/pr-media.ts e2e/runs/<target>/<slug>` converts a run's
   recording to a gif, uploads it to the `e2e-media` branch, and prints
   PR-ready markdown.
