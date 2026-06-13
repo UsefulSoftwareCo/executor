@@ -1,5 +1,37 @@
 # executor
 
+## 1.5.11
+
+### Patch Changes
+
+- [#1002](https://github.com/RhysSullivan/executor/pull/1002) [`64b3544`](https://github.com/RhysSullivan/executor/commit/64b3544c297f122fb915ab281f2ac84c766ddcfd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the self-hosted "Connect an agent" MCP URL. The card printed an
+  organization-scoped path (`<origin>/<organizationId>/mcp`) that the
+  single-tenant self-host server didn't serve, so connecting an MCP client
+  authorized successfully but then failed to reach the tools with an HTTP 404.
+  The self-host server now accepts the organization-scoped path and routes it to
+  its MCP endpoint.
+
+- [#1002](https://github.com/RhysSullivan/executor/pull/1002) [`64b3544`](https://github.com/RhysSullivan/executor/commit/64b3544c297f122fb915ab281f2ac84c766ddcfd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Self-hosted MCP connections now require explicit approval. When an MCP client
+  connects, the browser stops on an approval screen showing the connecting
+  client's name, what it can access, and that the grant is limited to the MCP
+  server (not a web-app login, and it can't make other API calls on your behalf);
+  a token is granted only after you Approve. Previously a signed-in user's client
+  was authorized automatically with no prompt.
+
+- [#1008](https://github.com/RhysSullivan/executor/pull/1008) [`7237bf2`](https://github.com/RhysSullivan/executor/commit/7237bf2a82c2bd435a3a07f7f24338a325d578f0) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Self-hosted instances no longer lose data on restart. Better Auth now shares
+  the same libSQL connection as the rest of the instance instead of opening its
+  own. Previously the two connections each managed their own write-ahead log on
+  the shared database file, and the second one to open could orphan the first —
+  so integrations, connections, and tools written after startup landed in a
+  discarded log and disappeared on the next restart, while sign-in data survived.
+  This is the "reconnected my account but it has zero tools" failure; a single
+  shared connection removes the split entirely.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.11
+  - @executor-js/runtime-quickjs@1.5.11
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.31
+
 ## 1.5.10
 
 ### Patch Changes
