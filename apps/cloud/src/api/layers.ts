@@ -67,7 +67,7 @@ export const makeNonProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStor
 // `getDomainVerificationLink` handler also gates on billing, so
 // `AutumnService.Default` is provided HERE (not on the neutral boot core).
 // Unlike the member endpoints that used to live here, they need no per-request
-// DB scoping.
+// DB scoping (and `OrgAuthLive` stays session-scoped — see its note).
 export const OrgApiLive = HttpApiBuilder.layer(OrgHttpApi).pipe(
   Layer.provide(OrgHandlers),
   Layer.provideMerge(OrgAuthLive),

@@ -40,7 +40,11 @@ import type { FailureRenderingStrategy, IdentityFailure, Principal } from "@exec
 
 import { ApiKeyService } from "./api-keys";
 import { BEARER_PREFIX } from "./bearer";
-import { authorizeOrganization } from "./organization";
+import {
+  authorizeOrganization,
+  authorizeOrganizationSelector,
+  orgSelectorFromRequest,
+} from "./organization";
 import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
 import type { UserStoreError, WorkOSError } from "./errors";
@@ -108,10 +112,18 @@ export const resolveSessionPrincipal = (request: Request) =>
   Effect.gen(function* () {
     const workos = yield* WorkOSClient;
     const session = yield* workos.authenticateRequest(request);
-    if (!session || !session.organizationId) {
+    if (!session) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }
-    const org = yield* authorizeOrganization(session.userId, session.organizationId);
+    // The console URL's org is the scope authority (sent as a header); the
+    // session's own org is the fallback for non-console callers. Membership is
+    // re-checked live either way — the header is a selector, not a trust
+    // boundary (see organization.ts).
+    const selector = orgSelectorFromRequest(request) ?? session.organizationId;
+    if (!selector) {
+      return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
+    }
+    const org = yield* authorizeOrganizationSelector(session.userId, selector);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     return {
       accountId: session.userId,

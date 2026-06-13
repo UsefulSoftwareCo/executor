@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 
-import { AccountProvider } from "@executor-js/api/server";
+import { AccountProvider, type AccountHeaders } from "@executor-js/api/server";
 import {
   AccountError,
   AccountForbidden,
@@ -12,7 +12,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
-import { authorizeOrganization } from "../auth/organization";
+import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
 import { getMemberLimitForPlan, selectActiveMemberLimitPlan } from "../extensions/billing/plans";
 
@@ -87,16 +87,20 @@ export const workosAccountProvider: Layer.Layer<
         ? Effect.succeed(caller.session)
         : Effect.fail<AccountUnauthorized>(new AccountUnauthorized());
 
-    // Like cloud's `requireSessionOrganization`: an authenticated session that
-    // currently holds an active membership in its session org. Yields the
-    // session + resolved org, or AccountNoOrganization.
-    const requireOrganization = () =>
+    // The org scope for an org-scoped request: the console URL's org (sent in
+    // the selector header) when present, else the session's own org. Membership
+    // is re-checked live, so the header is a selector, not a trust boundary —
+    // and two browser tabs on different orgs each send their own header, so
+    // they stay independent (see organization.ts). Yields the session +
+    // resolved org, or AccountNoOrganization.
+    const requireOrganization = (headers: AccountHeaders) =>
       Effect.gen(function* () {
         const session = yield* requireSession();
-        if (!session.organizationId) {
+        const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+        if (!selector) {
           return yield* new AccountNoOrganization();
         }
-        const org = yield* authorizeOrganization(session.accountId, session.organizationId).pipe(
+        const org = yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
           Effect.provideContext(ctx),
           Effect.mapError(() => new AccountNoOrganization()),
         );
@@ -158,11 +162,15 @@ export const workosAccountProvider: Layer.Layer<
       });
 
     return AccountProvider.of({
-      me: () =>
+      me: (headers) =>
         Effect.gen(function* () {
           const session = yield* requireSession();
-          const org = session.organizationId
-            ? yield* authorizeOrganization(session.accountId, session.organizationId).pipe(
+          // Same selector precedence as requireOrganization: the URL's org
+          // (header) drives /account/me so the shell reflects the org the tab
+          // is viewing, not a session-global active org.
+          const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+          const org = selector
+            ? yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
                 Effect.provideContext(ctx),
                 Effect.orElseSucceed(() => null),
               )
@@ -178,18 +186,18 @@ export const workosAccountProvider: Layer.Layer<
           };
         }),
 
-      listApiKeys: () =>
+      listApiKeys: (headers) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           const keys = yield* apiKeys
             .listUserKeys({ accountId: session.accountId, organizationId: org.id })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
           return { apiKeys: keys };
         }),
 
-      createApiKey: (_headers, name) =>
+      createApiKey: (headers, name) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           const trimmed = name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
           if (!trimmed) {
             return yield* new AccountError({ message: "API key name is required" });
@@ -199,9 +207,9 @@ export const workosAccountProvider: Layer.Layer<
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
         }),
 
-      revokeApiKey: (_headers, apiKeyId) =>
+      revokeApiKey: (headers, apiKeyId) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           const ownedKeys = yield* apiKeys
             .listUserKeys({ accountId: session.accountId, organizationId: org.id })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
@@ -214,9 +222,9 @@ export const workosAccountProvider: Layer.Layer<
           return { success: true };
         }),
 
-      listMembers: () =>
+      listMembers: (headers) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
 
           // Seats fall back to safe display defaults on lookup error — never
           // blank the page over a transient Autumn/WorkOS hiccup. The real cap
@@ -252,9 +260,9 @@ export const workosAccountProvider: Layer.Layer<
           return { members, seats };
         }),
 
-      listRoles: () =>
+      listRoles: (headers) =>
         Effect.gen(function* () {
-          const { org } = yield* requireOrganization();
+          const { org } = yield* requireOrganization(headers);
           const result = yield* workos
             .listOrgRoles(org.id)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
@@ -263,9 +271,9 @@ export const workosAccountProvider: Layer.Layer<
           };
         }),
 
-      inviteMember: (_headers, body) =>
+      inviteMember: (headers, body) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           yield* requireAdmin(session.accountId, org.id);
           yield* reserveMemberSlot(org.id);
           const invitation = yield* workos
@@ -278,9 +286,9 @@ export const workosAccountProvider: Layer.Layer<
           return { id: invitation.id, email: invitation.email };
         }),
 
-      removeMember: (_headers, membershipId) =>
+      removeMember: (headers, membershipId) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           yield* requireAdmin(session.accountId, org.id);
           yield* assertMembershipInOrg(org.id, membershipId);
           yield* workos
@@ -289,9 +297,9 @@ export const workosAccountProvider: Layer.Layer<
           return { success: true };
         }),
 
-      updateMemberRole: (_headers, membershipId, roleSlug) =>
+      updateMemberRole: (headers, membershipId, roleSlug) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           yield* requireAdmin(session.accountId, org.id);
           yield* assertMembershipInOrg(org.id, membershipId);
           yield* workos
@@ -300,9 +308,9 @@ export const workosAccountProvider: Layer.Layer<
           return { success: true };
         }),
 
-      updateOrgName: (_headers, name) =>
+      updateOrgName: (headers, name) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization();
+          const { session, org } = yield* requireOrganization(headers);
           yield* requireAdmin(session.accountId, org.id);
           const updated = yield* workos
             .updateOrganization(org.id, name)
