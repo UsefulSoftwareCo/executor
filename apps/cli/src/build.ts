@@ -501,18 +501,24 @@ const buildPreviewTarballs = async (binaries: Record<string, string>) => {
   }
 };
 
+// Resolve a comma-separated list of target package names (e.g.
+// "executor-windows-x64") to Targets. Shared by `--target` and the
+// EXECUTOR_PREVIEW_TARGETS env used by the preview-wrapper CI job.
 const resolveTargetsFromEnv = (env: string | undefined): Target[] => {
-  if (!env) throw new Error("EXECUTOR_PREVIEW_TARGETS must be set (comma-separated package names)");
+  if (!env) throw new Error("No build targets given (comma-separated package names)");
   const names = env
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const resolved = names.map((name) => {
     const match = ALL_TARGETS.find((t) => targetPackageName(t) === name);
-    if (!match) throw new Error(`Unknown preview target: ${name}`);
+    if (!match) {
+      const valid = ALL_TARGETS.map(targetPackageName).join(", ");
+      throw new Error(`Unknown build target: ${name}. Expected one of: ${valid}`);
+    }
     return match;
   });
-  if (resolved.length === 0) throw new Error("EXECUTOR_PREVIEW_TARGETS resolved to an empty list");
+  if (resolved.length === 0) throw new Error("Build target list resolved to empty");
   return resolved;
 };
 
@@ -919,6 +925,11 @@ const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
   options: {
     single: { type: "boolean", default: false },
+    // Build a specific target (or comma-separated set) by package name, e.g.
+    // `--target executor-windows-x64`. Used by the e2e VM harness to compile
+    // the guest's binary; without it `binary` builds the current platform
+    // (`--single`) or all targets.
+    target: { type: "string" },
     mode: { type: "string", default: "production" },
   },
   allowPositionals: true,
@@ -932,7 +943,11 @@ if (mode !== "production" && mode !== "development") {
 }
 
 if (command === "binary") {
-  const targets = values.single ? ALL_TARGETS.filter(isCurrentPlatform) : ALL_TARGETS;
+  const targets = values.target
+    ? resolveTargetsFromEnv(values.target)
+    : values.single
+      ? ALL_TARGETS.filter(isCurrentPlatform)
+      : ALL_TARGETS;
   const binaries = await buildBinaries(targets, mode);
   await buildWrapperPackage(binaries);
 } else if (command === "preview") {
