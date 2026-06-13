@@ -26,6 +26,13 @@ export const openLocalLibsql = async (path: string): Promise<Client> => {
   // first enabling. Re-apply both since libSQL gives no shared handle.
   await client.execute("PRAGMA foreign_keys = ON");
   await client.execute("PRAGMA journal_mode = WAL");
+  // busy_timeout is per-connection (default 0 = fail immediately on a lock).
+  // Under the supervised-daemon model a single process owns this file, but a
+  // second OS process can still transiently hold the write lock (e.g. a CLI
+  // tool, the v1→v2 migration reader, or a launchd restart racing the old
+  // pid). Give writers a 5s retry window instead of an instant SQLITE_BUSY.
+  // Matches the self-host open path (self-host-db.ts).
+  await client.execute("PRAGMA busy_timeout = 5000");
   return client;
 };
 
