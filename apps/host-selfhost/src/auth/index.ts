@@ -36,7 +36,7 @@ export interface ResolvedAuthProviders {
 export const resolveAuthProviders = async (
   dbHandle: SelfHostDbHandle,
 ): Promise<ResolvedAuthProviders> => {
-  const betterAuth = await buildBetterAuth(dbHandle.url, dbHandle.client);
+  const betterAuth = await buildBetterAuth(dbHandle.client);
   const betterAuthLayer = Layer.succeed(BetterAuth)(betterAuth);
 
   // The consent redirect from Better Auth's authorize only carries the opaque
