@@ -275,6 +275,15 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // which is the same origin, so the key never changes and nothing remounts.
   const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
   const activeSlug = auth.organization.slug;
+  // The org context's slug feeds the connect card's `/<slug>/mcp` install URL.
+  // Prefer the URL's slug over the session's: on first paint `auth.organization`
+  // comes from the SSR auth-hint (the COOKIE's org), so a multi-org user viewing
+  // /<orgB> while their cookie still points at orgA would briefly render orgA's
+  // slug in the copyable URL before /account/me (URL-scoped) corrects it. The
+  // URL slug is the actual request scope and is correct on the very first paint,
+  // so sourcing it from there removes that flash. Falls back to the session slug
+  // on a bare URL (which OrgSlugGate is about to canonicalize onto it anyway).
+  const scopeSlug = urlOrgSlug ?? activeSlug;
 
   return (
     <AutumnProvider pathPrefix="/api/billing">
@@ -284,7 +293,7 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
             <ExecutorPluginsProvider plugins={clientPlugins}>
               <OrganizationProvider
                 organizationId={auth.organization.id}
-                organizationSlug={activeSlug}
+                organizationSlug={scopeSlug}
               >
                 {/* The org header scopes every request to the URL's org, so
                     reaching here means the caller is a member of `activeSlug`
