@@ -6,7 +6,6 @@ import * as Exit from "effect/Exit";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
-import { Skeleton } from "@executor-js/react/components/skeleton";
 
 import { AUTH_PATHS } from "../../auth/api";
 import { acceptInvitation, pendingInvitationsAtom, useAuth } from "../auth";
@@ -84,8 +83,11 @@ export const CreateOrgPage = () => {
     },
   });
 
-  const isLoading =
-    AsyncResult.isInitial(invitationsResult) || AsyncResult.isWaiting(invitationsResult);
+  // Almost no new user has a pending invitation, so we never show a loading
+  // placeholder for them — the create form renders immediately and stays put.
+  // Invitations (when they exist) just appear above it once the fetch resolves;
+  // a refetch (the create-org submit invalidates the auth-keyed atom) keeps the
+  // last value, so nothing flickers.
   const invitations = AsyncResult.match(invitationsResult, {
     onInitial: () => [] as readonly PendingInvitation[],
     onFailure: () => [] as readonly PendingInvitation[],
@@ -103,13 +105,9 @@ export const CreateOrgPage = () => {
             Step 1 of 2
           </p>
           <h1 className="font-serif text-3xl">
-            {isLoading
-              ? "Loading"
-              : count === 0
-                ? "Create your organization"
-                : "You've been invited"}
+            {count > 0 ? "You've been invited" : "Create your organization"}
           </h1>
-          {!isLoading && count === 0 && (
+          {count === 0 && (
             <p className="text-sm text-muted-foreground">
               Organizations group your sources, secrets, and teammates. You can invite others once
               it's set up.
@@ -117,9 +115,7 @@ export const CreateOrgPage = () => {
           )}
         </header>
 
-        {isLoading && <InvitationsSkeleton />}
-
-        {!isLoading && sole && (
+        {sole && (
           <SingleInvitationView
             invitation={sole}
             accepting={acceptingId === sole.id}
@@ -128,7 +124,7 @@ export const CreateOrgPage = () => {
           />
         )}
 
-        {!isLoading && count > 1 && (
+        {count > 1 && (
           <MultiInvitationsView
             invitations={invitations}
             acceptingId={acceptingId}
@@ -137,9 +133,7 @@ export const CreateOrgPage = () => {
           />
         )}
 
-        {!isLoading && (count === 0 || sole || count > 1) && (
-          <CreateOrgSection isPrimary={count === 0} form={form} />
-        )}
+        <CreateOrgSection isPrimary={count === 0} form={form} />
 
         <footer className="flex items-center justify-center">
           {/* oxlint-disable-next-line react/forbid-elements */}
@@ -158,25 +152,6 @@ export const CreateOrgPage = () => {
     </div>
   );
 };
-
-// ---------------------------------------------------------------------------
-
-const InvitationsSkeleton = () => (
-  <div className="flex flex-col gap-2.5">
-    <InvitationRowSkeleton />
-    <InvitationRowSkeleton />
-  </div>
-);
-
-const InvitationRowSkeleton = () => (
-  <div className="flex items-center gap-3 rounded-md border border-border px-3 py-2.5">
-    <div className="flex flex-1 flex-col gap-1.5">
-      <Skeleton className="h-3.5 w-2/5" />
-      <Skeleton className="h-3 w-3/5" />
-    </div>
-    <Skeleton className="h-8 w-16 rounded-md" />
-  </div>
-);
 
 // ---------------------------------------------------------------------------
 
