@@ -78,8 +78,19 @@ const closeWithVideo = async (app: ElectronApplication, runDir: string, home: st
   const recordedPath = await video?.path().catch(() => undefined);
   if (recordedPath && existsSync(recordedPath)) {
     await promisify(execFile)("ffmpeg", [
-      "-y", "-i", recordedPath, "-c:v", "libx264", "-preset", "veryfast",
-      "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+      "-y",
+      "-i",
+      recordedPath,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "26",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
       join(runDir, "session.mp4"),
     ]).catch(() => {});
   }
@@ -110,7 +121,10 @@ const runApproval = async (runDir: string) => {
       await body();
       stepIndex += 1;
       await page.screenshot({
-        path: join(runDir, `${String(stepIndex).padStart(2, "0")}-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`),
+        path: join(
+          runDir,
+          `${String(stepIndex).padStart(2, "0")}-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`,
+        ),
       });
     };
 
@@ -125,7 +139,11 @@ const runApproval = async (runDir: string) => {
     const policyRes = await fetch(`${origin}/api/policies`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ owner: "org", pattern: APPROVAL_TARGET_TOOL, action: "require_approval" }),
+      body: JSON.stringify({
+        owner: "org",
+        pattern: APPROVAL_TARGET_TOOL,
+        action: "require_approval",
+      }),
     });
     expect(policyRes.ok, `policy create ok (${policyRes.status})`).toBe(true);
 
@@ -200,7 +218,10 @@ const runBearerScoping = async (runDir: string) => {
 
     // The app's OWN window: the main process injects the bearer → not 401.
     const mainStatus = await page.evaluate(
-      (url) => fetch(url).then((r) => r.status).catch(() => -1),
+      (url) =>
+        fetch(url)
+          .then((r) => r.status)
+          .catch(() => -1),
       gatedUrl,
     );
     expect(mainStatus, "app window: injected bearer reaches the gated endpoint").not.toBe(401);
@@ -223,10 +244,9 @@ const runBearerScoping = async (runDir: string) => {
       },
       { origin, gatedUrl },
     );
-    expect(
-      popupStatus,
-      "popup webContents: no bearer injected → gated endpoint rejects it",
-    ).toBe(401);
+    expect(popupStatus, "popup webContents: no bearer injected → gated endpoint rejects it").toBe(
+      401,
+    );
 
     await page.screenshot({ path: join(runDir, "01-bearer-scoping.png") });
   } finally {

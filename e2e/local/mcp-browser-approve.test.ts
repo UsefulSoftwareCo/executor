@@ -62,7 +62,10 @@ scenario(
           // not OAuth — so the raw SDK transport with an Authorization header,
           // not mcporter's PKCE flow). elicitation_mode=browser makes the server
           // mint an approval URL instead of a model-side pause.
-          const mcp = new Client({ name: "e2e-local-approve", version: "1.0.0" }, { capabilities: {} });
+          const mcp = new Client(
+            { name: "e2e-local-approve", version: "1.0.0" },
+            { capabilities: {} },
+          );
           const transport = new StreamableHTTPClientTransport(
             new URL(`${server.origin}/mcp?elicitation_mode=browser`),
             { requestInit: { headers: { authorization: `Bearer ${server.token}` } } },
@@ -71,13 +74,18 @@ scenario(
 
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the test owns the MCP transport lifecycle
           try {
-            const executed = await mcp.callTool({ name: "execute", arguments: { code: EXECUTE_CODE } });
+            const executed = await mcp.callTool({
+              name: "execute",
+              arguments: { code: EXECUTE_CODE },
+            });
             const paused = executed.structuredContent as {
               status: string;
               executionId: string;
               approvalUrl: string;
             };
-            expect(paused.status, "execute paused for browser approval").toBe("user_approval_required");
+            expect(paused.status, "execute paused for browser approval").toBe(
+              "user_approval_required",
+            );
             expect(typeof paused.approvalUrl).toBe("string");
 
             // The real human flow: approve in the browser FIRST. The page POSTs
