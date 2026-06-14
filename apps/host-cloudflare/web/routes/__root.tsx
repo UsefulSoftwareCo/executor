@@ -20,8 +20,8 @@ import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 // resolves to authenticated; the unauthenticated branch can only happen when
 // Access isn't in front yet (or a JWT expired) — we bounce to the Access login.
 //
-// API keys + members are managed in Cloudflare Access, not in-app, so the
-// API-keys footer is hidden (`apiKeysTo={null}`) and the nav is the default set.
+// API keys + members are managed in Cloudflare Access, not in-app, so this host
+// omits the API-keys nav item and just uses the default set.
 // ---------------------------------------------------------------------------
 
 export const Route = createRootRoute({
@@ -66,7 +66,7 @@ function AuthenticatedApp() {
   // slug. There's only ever one org, so no other slug is reachable.
   const gated = (
     <>
-      <Shell onSignOut={signOut} navItems={defaultShellNavItems} apiKeysTo={null} />
+      <Shell onSignOut={signOut} navItems={defaultShellNavItems} />
       <Toaster />
     </>
   );

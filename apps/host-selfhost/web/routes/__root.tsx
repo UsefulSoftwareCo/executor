@@ -27,10 +27,14 @@ export const Route = createRootRoute({
   component: RootComponent,
 });
 
-// Self-host adds the instance Admin page (members + invite links) to the shared
-// nav. The page and its API gate to owner/admin, so a non-admin who opens it
-// just sees the access notice.
-const selfHostNavItems = [...defaultShellNavItems, { to: "/admin", label: "Admin" }];
+// Self-host adds the account's API keys and the instance Admin page (members +
+// invite links) to the shared nav. The Admin page and its API gate to
+// owner/admin, so a non-admin who opens it just sees the access notice.
+const selfHostNavItems = [
+  ...defaultShellNavItems,
+  { to: "/api-keys", label: "API keys" },
+  { to: "/admin", label: "Admin" },
+];
 
 const signOut = async () => {
   await authClient.signOut();

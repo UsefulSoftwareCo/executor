@@ -11,7 +11,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu";
 import {
@@ -41,7 +40,9 @@ import { useAuth } from "./auth-context";
 export type ShellNavItem = { readonly to: string; readonly label: string };
 
 /** Integrations lives at "/", plus the standard tool-management sections. Hosts
- *  spread this and append their own (e.g. Organization, Billing). */
+ *  spread this and append their own (e.g. API keys, Organization, Billing). A
+ *  host only adds API keys if it actually serves them in-app (Cloudflare manages
+ *  them in Access, so it omits the link). */
 export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
@@ -71,8 +72,6 @@ export interface ShellProps {
   readonly onSignOut: () => void | Promise<void>;
   /** Nav sections; defaults to {@link defaultShellNavItems}. */
   readonly navItems?: ReadonlyArray<ShellNavItem>;
-  /** Where the "API keys" footer link goes; null hides it. Default "/api-keys". */
-  readonly apiKeysTo?: string | null;
   /** Injected into the account dropdown — cloud's org switcher / create-org. */
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
@@ -207,11 +206,9 @@ function Avatar(props: { url: string | null; name: string | null; email: string 
 
 // ── UserFooter ──────────────────────────────────────────────────────────
 
-function UserFooter(props: Pick<ShellProps, "onSignOut" | "apiKeysTo" | "orgMenuSlot">) {
+function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
   const auth = useAuth();
   if (auth.status !== "authenticated") return null;
-  const apiKeysTo = props.apiKeysTo === undefined ? "/api-keys" : props.apiKeysTo;
-  const apiKeysScopedTo = apiKeysTo == null ? null : orgScopedTo(apiKeysTo);
 
   return (
     <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
@@ -248,14 +245,6 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "apiKeysTo" | "orgMenu
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="w-64">
           {props.orgMenuSlot}
-          {apiKeysScopedTo && (
-            <>
-              <DropdownMenuItem asChild className="text-xs">
-                <Link to={apiKeysScopedTo}>API keys</Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          )}
           <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
             Signed in as
           </DropdownMenuLabel>
@@ -316,11 +305,7 @@ function SidebarContent(
 
       {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
 
-      <UserFooter
-        onSignOut={props.onSignOut}
-        apiKeysTo={props.apiKeysTo}
-        orgMenuSlot={props.orgMenuSlot}
-      />
+      <UserFooter onSignOut={props.onSignOut} orgMenuSlot={props.orgMenuSlot} />
     </>
   );
 }

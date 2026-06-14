@@ -8,7 +8,9 @@ import {
   resolveLang,
   type ShikiThemeProp,
 } from "../lib/shiki";
+import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import { copyToClipboard } from "../lib/clipboard";
 import { Button } from "./button";
 
 // ---------------------------------------------------------------------------
@@ -102,7 +104,11 @@ export function CodeBlock(props: {
   const maxH = !expanded && isLong ? (props.maxHeight ?? "24rem") : undefined;
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(code).then(() => {
+    void copyToClipboard(code).then((ok) => {
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
       onCopy?.();
       setTimeout(() => setCopied(false), 1500);
