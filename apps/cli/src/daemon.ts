@@ -282,3 +282,37 @@ export const chooseDaemonPort = (input: {
     }
     return fallbackPort;
   });
+
+// ---------------------------------------------------------------------------
+// Service-install planning (pure)
+// ---------------------------------------------------------------------------
+
+/**
+ * What `service install` should do given the current service + daemon state.
+ * `service install` IS the upgrade path (the `service status` command points
+ * users at it on version drift), so it must take over a machine that already
+ * has a daemon running rather than refuse and make the user hunt for a pid.
+ */
+export type ServiceInstallPlan = "noop" | "reinstall" | "takeover-then-install";
+
+/**
+ * Decide the install action:
+ * - `noop`: the supervised service is already running THIS version.
+ * - `reinstall`: the supervised service is registered + running but drifted to
+ *   another version (or its manifest is unreachable) — bootout→bootstrap
+ *   repoints the unit at the current binary and restarts it.
+ * - `takeover-then-install`: no supervised service is up, so any local daemon
+ *   that holds the data dir (a foreground `web`, a manual `daemon run`, an old
+ *   desktop sidecar) must be stopped first, then the service installed.
+ */
+export const planServiceInstall = (input: {
+  readonly registered: boolean;
+  readonly running: boolean;
+  readonly activeVersion: string | null;
+  readonly currentVersion: string;
+}): ServiceInstallPlan => {
+  if (input.registered && input.running) {
+    return input.activeVersion === input.currentVersion ? "noop" : "reinstall";
+  }
+  return "takeover-then-install";
+};

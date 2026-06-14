@@ -7,6 +7,7 @@ import {
   canAutoStartLocalDaemonForHost,
   isDevCliEntrypoint,
   isExecutorServerReachable,
+  planServiceInstall,
 } from "./daemon";
 
 describe("isDevCliEntrypoint", () => {
@@ -92,4 +93,72 @@ describe("isExecutorServerReachable", () => {
       expect(reachable).toBe(true);
     }),
   );
+});
+
+describe("planServiceInstall", () => {
+  it("no-ops when the supervised service already runs THIS version", () => {
+    expect(
+      planServiceInstall({
+        registered: true,
+        running: true,
+        activeVersion: "1.5.11",
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("noop");
+  });
+
+  it("reinstalls when the supervised service runs an OLDER version (the upgrade)", () => {
+    expect(
+      planServiceInstall({
+        registered: true,
+        running: true,
+        activeVersion: "1.5.10",
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("reinstall");
+  });
+
+  it("reinstalls when the supervised service is up but its version is unknown/unreachable", () => {
+    expect(
+      planServiceInstall({
+        registered: true,
+        running: true,
+        activeVersion: null,
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("reinstall");
+  });
+
+  it("takes over when a daemon is running but NOT as the supervised service", () => {
+    // The upgrade case that used to wall the user off: a foreground `executor
+    // web` / manual `daemon run` / old desktop sidecar holds the data dir while
+    // the OS service isn't registered+running yet.
+    expect(
+      planServiceInstall({
+        registered: false,
+        running: false,
+        activeVersion: "1.5.10",
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("takeover-then-install");
+    expect(
+      planServiceInstall({
+        registered: true, // registered but not running (stopped/flapping) → still take over
+        running: false,
+        activeVersion: null,
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("takeover-then-install");
+  });
+
+  it("installs cleanly on a fresh machine (nothing running)", () => {
+    expect(
+      planServiceInstall({
+        registered: false,
+        running: false,
+        activeVersion: null,
+        currentVersion: "1.5.11",
+      }),
+    ).toBe("takeover-then-install");
+  });
 });

@@ -71,6 +71,7 @@ import {
   isExecutorServerReachable,
   isDevCliEntrypoint,
   parseDaemonBaseUrl,
+  planServiceInstall,
   spawnDetached,
   waitForReachable,
   waitForUnreachable,
@@ -100,7 +101,6 @@ import {
   acquireLocalServerStartLock,
   readLocalServerManifest,
   releaseLocalServerStartLock,
-  removeLocalServerManifest,
   removeLocalServerManifestIfOwnedBy,
   resolveExecutorDataDir,
   writeLocalServerManifest,
@@ -284,6 +284,52 @@ const assertNoOtherActiveLocalServer = (): Effect.Effect<
         ].join("\n"),
       ),
     );
+  });
+
+/**
+ * Take over the local server that currently owns this data directory, if any —
+ * the seam that makes `service install` (and a supervised daemon launching while
+ * a predecessor is still up) an UPGRADE rather than a wall. Whatever holds the
+ * data dir — a foreground `executor web`, a manually-started `daemon run`, an
+ * old desktop sidecar — writes the same server-control manifest, so reading it
+ * identifies the one process we are entitled to replace (same data dir = same
+ * logical singleton). SIGTERM it (graceful: it releases the port + removes its
+ * own records), wait until it stops serving, then clear any stale manifest. A
+ * dead/own-pid manifest is just cleaned. Returns the manifest we replaced (for
+ * messaging), or null when there was nothing live to take over.
+ */
+const takeOverActiveLocalServer = (): Effect.Effect<
+  ExecutorLocalServerManifest | null,
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    const manifest = yield* readLocalServerManifest();
+    if (!manifest) return null;
+    if (!isPidAlive(manifest.pid) || manifest.pid === process.pid) {
+      yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
+      return null;
+    }
+    // Graceful stop; ignore a kill error (pid may have just exited) — the
+    // unreachable wait is the real gate.
+    yield* terminatePid(manifest.pid).pipe(Effect.ignore);
+    const stopped = yield* waitForUnreachable({
+      check: isServerReachable(manifest.connection.origin),
+      timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+      intervalMs: DAEMON_BOOT_POLL_MS,
+    });
+    if (!stopped) {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `The existing Executor ${manifest.kind} at ${manifest.connection.origin} (pid ${manifest.pid}) did not stop within ${DAEMON_STOP_TIMEOUT_MS / 1000}s.`,
+            "Stop it manually and re-run.",
+          ].join("\n"),
+        ),
+      );
+    }
+    yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
+    return manifest;
   });
 
 const publishLocalServerManifest = (input: {
@@ -897,7 +943,13 @@ const runDaemonSession = (input: {
         // and crash-loop under KeepAlive. (Found by a real reboot test with
         // integration data in the DB.)
         if (process.env.EXECUTOR_SUPERVISED) {
-          yield* removeLocalServerManifest().pipe(Effect.ignore);
+          // launchd/systemd is the singleton — take over whatever held this data
+          // dir: a stale manifest from before a reboot, or a foreground/old
+          // predecessor that survived because it wasn't the unit the OS started
+          // (e.g. the desktop app installed the service while a CLI `web` ran).
+          // Best-effort: if the port is somehow still held, startServer fails and
+          // KeepAlive retries.
+          yield* takeOverActiveLocalServer().pipe(Effect.ignore);
         } else {
           yield* assertNoOtherActiveLocalServer();
         }
@@ -907,15 +959,26 @@ const runDaemonSession = (input: {
         if (existing) {
           const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
           if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-            return yield* Effect.fail(
-              new Error(
-                [
-                  `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-                  `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-                  `Stop it first: ${cliPrefix} daemon stop`,
-                ].join("\n"),
-              ),
-            );
+            if (process.env.EXECUTOR_SUPERVISED) {
+              // A live predecessor recorded in the pointer (a manual `daemon run`):
+              // stop it and claim the scope, rather than refusing and crash-looping.
+              yield* terminatePid(existing.pid).pipe(Effect.ignore);
+              yield* waitForUnreachable({
+                check: isServerReachable(existingUrl),
+                timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+                intervalMs: DAEMON_BOOT_POLL_MS,
+              });
+            } else {
+              return yield* Effect.fail(
+                new Error(
+                  [
+                    `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                    `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                    `Stop it first: ${cliPrefix} daemon stop`,
+                  ].join("\n"),
+                ),
+              );
+            }
           }
           yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
         }
@@ -2135,26 +2198,38 @@ const serviceInstallCommand = Command.make(
         return;
       }
 
-      // Don't fight an already-running local server against the same data dir
-      // (a desktop sidecar, a foreground `executor web`, or an existing daemon).
-      const active = yield* readActiveLocalServerManifest();
-      if (active) {
-        const status = yield* backend.status();
-        if (status.registered && status.running && active.kind === "cli-daemon") {
-          console.log(
-            `Executor service already running at ${active.connection.origin} (pid ${active.pid}).`,
-          );
-          return;
-        }
-        return yield* Effect.fail(
-          new Error(
-            [
-              `A local Executor ${active.kind} is already running at ${active.connection.origin} (pid ${active.pid}).`,
-              `Stop it first (quit the desktop app, or \`${cliPrefix} daemon stop\`), then re-run install.`,
-            ].join("\n"),
-          ),
-        );
+      // `service install` IS the upgrade path (see `service status` drift hint),
+      // so it must not wall off a machine that already has a daemon running —
+      // the user wouldn't know to kill it. Two cases:
+      //   1. The supervised service is already up → (re)install repoints the unit
+      //      at THIS binary and restarts it (bootout→bootstrap). Same version is
+      //      a friendly no-op; an older version is the actual upgrade.
+      //   2. Anything else holds the data dir (a foreground `executor web`, a
+      //      manual `daemon run`, an old desktop sidecar) → take it over (stop it)
+      //      before installing, so the supervised daemon can claim the port.
+      const status = yield* backend.status();
+      const active = yield* readActiveLocalServerManifest().pipe(Effect.orElseSucceed(() => null));
+      const plan = planServiceInstall({
+        registered: status.registered,
+        running: status.running,
+        activeVersion: active?.owner.version ?? null,
+        currentVersion: CLI_VERSION,
+      });
+      if (plan === "noop") {
+        const where = active ? ` at ${active.connection.origin} (pid ${active.pid})` : "";
+        console.log(`Executor service already running${where}.`);
+        return;
       }
+      if (plan === "takeover-then-install") {
+        const replaced = yield* takeOverActiveLocalServer();
+        if (replaced) {
+          console.log(
+            `Replaced the running Executor ${replaced.kind} (pid ${replaced.pid}) at ${replaced.connection.origin}.`,
+          );
+        }
+      }
+      // plan === "reinstall" falls through: backend.install's bootout→bootstrap
+      // repoints the unit at this binary and restarts it cleanly.
 
       // The unit carries no secret: the supervised daemon mints/loads its bearer
       // from auth.json (under EXECUTOR_DATA_DIR) on first boot, and clients read
