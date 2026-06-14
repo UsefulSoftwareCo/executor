@@ -24,12 +24,20 @@ import { SelfHostExecutionStackLayer } from "../execution";
 
 export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-store";
 
-/** Build the in-process session store (plus its `close()` hook) over the DB handle. */
-export const makeSelfHostMcpSessionStore = (db: SelfHostDbHandle): InMemoryMcpSessionStore =>
+/**
+ * Build the in-process session store (plus its `close()` hook) over the DB
+ * handle. `webBaseUrl` is the pinned public origin so browser-approval URLs use
+ * the reachable public address rather than the internal bind behind a proxy.
+ */
+export const makeSelfHostMcpSessionStore = (
+  db: SelfHostDbHandle,
+  webBaseUrl?: string,
+): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
     ),
+    { webBaseUrl },
   );
 
 /** The `McpSessionStore` envelope seam over a freshly built in-process store. */

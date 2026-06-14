@@ -24,7 +24,8 @@
     "./client": "./src/client.ts",
     "./testing": "./src/testing.ts",
     "./migration": "./src/migration-spec.ts",
-    "./http-auth": "./src/http-auth/index.ts"
+    "./http-auth": "./src/http-auth/index.ts",
+    "./public-origin": "./src/public-origin.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -75,6 +76,12 @@
         "import": {
           "types": "./dist/http-auth.d.ts",
           "default": "./dist/http-auth.js"
+        }
+      },
+      "./public-origin": {
+        "import": {
+          "types": "./dist/public-origin.d.ts",
+          "default": "./dist/public-origin.js"
         }
       }
     }

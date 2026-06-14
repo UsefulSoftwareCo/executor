@@ -5,7 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
 
 import {
-  approvalUrlForRequest,
+  buildResumeApprovalUrl,
   decodeResumeResponse,
   formatResumeAcknowledgement,
   readElicitationMode,
@@ -122,6 +122,12 @@ const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/res
  */
 export const makeInMemoryMcpSessionStore = (
   buildServer: McpBuildServer,
+  // The host's pinned public origin, used to build browser-approval URLs the
+  // human opens. When set (e.g. a public-internet self-host behind a reverse
+  // proxy) it is preferred over the request URL — whose host would be the
+  // internal bind address (127.0.0.1:PORT), unreachable for the user. Omit it on
+  // loopback hosts (local/desktop), where the request URL is already correct.
+  options: { readonly webBaseUrl?: string } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
@@ -192,7 +198,14 @@ export const makeInMemoryMcpSessionStore = (
     return {
       elicitationMode: {
         mode: "browser",
-        approvalUrl: (executionId) => approvalUrlForRequest(request, executionId, sessionId()),
+        // Prefer the pinned public origin; fall back to the request URL (correct
+        // for loopback hosts, the internal bind address behind a proxy).
+        approvalUrl: (executionId) =>
+          buildResumeApprovalUrl({
+            origin: options.webBaseUrl ?? request.url,
+            executionId,
+            sessionId: sessionId(),
+          }),
       },
       browserApprovalStore: approvals.store,
     };

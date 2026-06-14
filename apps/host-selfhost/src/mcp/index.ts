@@ -103,8 +103,9 @@ const makeApprovalHandler =
 export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
+  webBaseUrl?: string,
 ): SelfHostMcpSeams => {
-  const sessionStore = makeSelfHostMcpSessionStore(dbHandle);
+  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );
