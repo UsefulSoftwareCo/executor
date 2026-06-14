@@ -23,7 +23,7 @@ import {
   parseExecutorLocalServerManifest,
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
-import { loadOrMintLocalAuthToken } from "@executor-js/local";
+import { loadOrMintLocalAuthToken } from "@executor-js/local/auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";

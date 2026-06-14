@@ -1,5 +1,5 @@
 import Store from "electron-store";
-import { rotateLocalAuthToken } from "@executor-js/local";
+import { rotateLocalAuthToken } from "@executor-js/local/auth";
 import { DEFAULT_SERVER_SETTINGS, type DesktopServerSettings } from "../shared/server-settings";
 
 interface PersistedShape {
