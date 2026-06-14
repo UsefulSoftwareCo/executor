@@ -63,7 +63,7 @@ if (sentryDsn) {
   });
 }
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   normalizeExecutorServerConnection,
@@ -116,7 +116,9 @@ const writeSupervisedManifest = (port: number, token: string) => {
         executablePath: process.execPath || null,
       },
     }),
+    { mode: 0o600 },
   );
+  chmodSync(manifestPath, 0o600);
 };
 
 const removeOwnManifest = () => {

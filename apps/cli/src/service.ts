@@ -340,11 +340,24 @@ export interface SystemdUnitOptions {
   readonly stderrPath: string;
 }
 
+const SYSTEMD_BARE_VALUE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+const systemdQuote = (value: string): string => {
+  if (SYSTEMD_BARE_VALUE.test(value)) return value;
+  const escaped = value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t");
+  return `"${escaped}"`;
+};
+
 /** Render a systemd --user unit. Pure (snapshot-tested). */
 export const generateSystemdUnit = (options: SystemdUnitOptions): string => {
-  const execStart = options.execStart.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" ");
+  const execStart = options.execStart.map(systemdQuote).join(" ");
   const env = Object.entries(options.environment)
-    .map(([key, value]) => `Environment=${key}=${value}`)
+    .map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`)
     .join("\n");
   return `[Unit]
 Description=Executor supervised daemon
@@ -354,9 +367,9 @@ After=default.target
 Type=simple
 ExecStart=${execStart}
 ${env}
-WorkingDirectory=${options.workingDirectory}
-StandardOutput=append:${options.stdoutPath}
-StandardError=append:${options.stderrPath}
+WorkingDirectory=${systemdQuote(options.workingDirectory)}
+StandardOutput=${systemdQuote(`append:${options.stdoutPath}`)}
+StandardError=${systemdQuote(`append:${options.stderrPath}`)}
 Restart=on-failure
 RestartSec=5s
 

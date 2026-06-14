@@ -408,20 +408,18 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   });
 }
 
-/**
- * Probe whether an HTTP server is listening at `origin`. Any HTTP response —
- * even 401/404 — means a server is up; only a network error or timeout counts
- * as unreachable. Auth is attached so a 401 still confirms liveness cleanly.
- */
-const isDaemonReachable = async (origin: string, authToken: string): Promise<boolean> => {
+/** Probe the unauthenticated Executor health endpoint without disclosing the saved bearer. */
+const isDaemonReachable = async (origin: string): Promise<boolean> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch rejects on a down server; that's the "not reachable" signal
   try {
-    const headers: Record<string, string> = {};
-    if (authToken) headers.Authorization = `Bearer ${authToken}`;
-    await fetch(origin, { signal: controller.signal, headers, redirect: "manual" });
-    return true;
+    const response = await fetch(new URL("/api/health", origin), {
+      signal: controller.signal,
+      redirect: "manual",
+    });
+    const body = await response.text();
+    return response.ok && body.trim() === "ok";
   } catch {
     return false;
   } finally {
@@ -452,7 +450,7 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
   const origin = manifest.connection.origin;
   const auth = manifest.connection.auth;
   const authToken = auth && auth.kind === "bearer" ? auth.token : "";
-  if (!(await isDaemonReachable(origin, authToken))) return null;
+  if (!(await isDaemonReachable(origin))) return null;
 
   const url = new URL(origin);
   sidecarLog.info(`attaching to supervised daemon at ${origin} (pid ${manifest.pid})`);

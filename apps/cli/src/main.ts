@@ -2270,8 +2270,8 @@ const openInBrowser = (url: string): Effect.Effect<void> =>
  */
 const openCommand = Command.make("open", {}, () =>
   Effect.gen(function* () {
-    const manifest = yield* readLocalServerManifest();
-    if (!manifest || !isPidAlive(manifest.pid)) {
+    const manifest = yield* readActiveLocalServerManifest().pipe(Effect.orElseSucceed(() => null));
+    if (!manifest) {
       console.log("No local Executor server is running.");
       console.log(`Start one with:  ${cliPrefix} web`);
       return;

@@ -89,8 +89,8 @@ export const isExecutorServerReachable = (
     // misconfigured base URL can't leak the bearer token to a third-party host.
     const url = new URL("/api/health", input.baseUrl);
     const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
-    await response.body?.cancel();
-    return response.ok;
+    const body = await response.text();
+    return response.ok && body.trim() === "ok";
   }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 
 // ---------------------------------------------------------------------------

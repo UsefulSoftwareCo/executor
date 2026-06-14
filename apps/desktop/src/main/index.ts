@@ -415,12 +415,23 @@ const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => 
 };
 
 const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
-  // A supervised daemon isn't ours to restart — just reload the window against
-  // the same endpoint instead of tearing down a process we don't own.
+  // A supervised daemon owns its own process lifetime. Re-installing the unit
+  // rewrites settings such as the configured port, then launchd restarts it.
   if (connection?.supervisedDaemon) {
+    await installSupervisedService({
+      port: getServerSettings().port,
+      dataDir: DESKTOP_DATA_DIR,
+    });
+    const next = await waitForSupervisedAttach(30_000);
+    if (!next) {
+      // oxlint-disable-next-line executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: surfaces to renderer as a rejected IPC call
+      throw new Error("Supervised daemon failed to restart — see Settings");
+    }
+    connection = next;
+    installBearerAuthHeader(next.baseUrl, next.authToken);
     const window = liveMainWindow();
-    if (window) await window.loadURL(connection.baseUrl);
-    return toDesktopServerConnection(connection);
+    if (window) await window.loadURL(next.baseUrl);
+    return toDesktopServerConnection(next);
   }
   if (connection) {
     await stopConnection(connection);

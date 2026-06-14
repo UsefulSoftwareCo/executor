@@ -1,7 +1,12 @@
 import { Effect, Layer } from "effect";
 
 import { IdentityProvider } from "@executor-js/api/server";
-import type { McpAuthProvider, McpErrorReporter, McpSessionStore } from "@executor-js/host-mcp";
+import type {
+  McpAuthProvider,
+  McpErrorReporter,
+  McpSessionStore,
+  Principal,
+} from "@executor-js/host-mcp";
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import type { SelfHostDbHandle } from "../db/self-host-db";
@@ -64,12 +69,35 @@ export interface SelfHostMcpSeams {
 const jsonResponse = (value: unknown, status: number): Response =>
   new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
+const parseRoles = (role: string | null | undefined): ReadonlyArray<string> =>
+  (role ?? "user")
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+
+type BetterAuthSession = NonNullable<
+  Awaited<ReturnType<BetterAuthHandle["auth"]["api"]["getSession"]>>
+>;
+
+const principalFromSession = (
+  resolved: BetterAuthSession,
+  betterAuth: BetterAuthHandle,
+): Principal => ({
+  accountId: resolved.user.id,
+  organizationId: resolved.session.activeOrganizationId ?? betterAuth.organizationId,
+  organizationName: betterAuth.organizationName,
+  email: resolved.user.email,
+  name: resolved.user.name ?? null,
+  avatarUrl: resolved.user.image ?? null,
+  roles: parseRoles(resolved.user.role ?? null),
+});
+
 /**
  * Gate the browser-approval endpoints behind a valid Better Auth session (the
  * console page calls them with the user's cookie), then delegate to the
- * in-process store's paused/resume handlers. Single-tenant: any authenticated
- * user of the one org may act on a session it still holds — the store confirms
- * the execution belongs to the addressed session before recording.
+ * in-process store's paused/resume handlers with the resolved principal so the
+ * store can enforce MCP session ownership before exposing or recording a
+ * browser-approval decision.
  */
 const makeApprovalHandler =
   (
@@ -85,10 +113,11 @@ const makeApprovalHandler =
       }).pipe(Effect.orElseSucceed(() => null)),
     );
     if (!session) return jsonResponse({ error: "Unauthorized" }, 401);
+    const principal = principalFromSession(session, betterAuth);
 
     return (
-      (await store.handlePausedRequest(request)) ??
-      (await store.handleApprovalRequest(request)) ??
+      (await store.handlePausedRequest(request, principal)) ??
+      (await store.handleApprovalRequest(request, principal)) ??
       jsonResponse({ error: "Not found" }, 404)
     );
   };
