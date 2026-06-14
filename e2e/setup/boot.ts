@@ -100,3 +100,27 @@ export const waitForHttp = async (
   }
   throw new Error(`timed out waiting for ${url}: ${String(lastError)}`);
 };
+
+/**
+ * Reboot DOWN-GATE: wait until `url` stops answering (fetch rejects — connection
+ * refused/reset). An orderly OS shutdown keeps the daemon serving for several
+ * seconds, and a reconnecting tunnel re-establishes the forward, so polling for
+ * "up" right after a reboot command can false-pass a reboot that never happened.
+ * Gating on the server actually going DOWN first makes restart-persistence prove
+ * a real reboot. Throws if it never goes down within the deadline.
+ */
+export const waitForHttpDown = async (
+  url: string,
+  options: { readonly timeoutMs?: number } = {},
+): Promise<void> => {
+  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  while (Date.now() < deadline) {
+    try {
+      await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(2000) });
+    } catch {
+      return; // the server (or its tunnel) is gone — the reboot took
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`${url} never became unreachable — the reboot may not have taken`);
+};

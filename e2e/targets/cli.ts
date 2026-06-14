@@ -8,7 +8,8 @@
 // this target only reads what that published via env.
 import { Effect } from "effect";
 
-import { waitForHttp } from "../setup/boot";
+import { waitForHttp, waitForHttpDown } from "../setup/boot";
+import { ec2RebootGuest } from "../src/vm/ec2";
 import { sshRebootGuest } from "../src/vm/tart";
 import type { VmOs } from "../src/vm/types";
 import type { Capability, Identity, Target } from "../src/target";
@@ -22,25 +23,36 @@ const env = (key: string): string => {
 export const cliTarget = (): Target => {
   const baseUrl = env("E2E_CLI_BASE_URL");
   const os = (process.env.E2E_VM_OS ?? "macos") as VmOs;
-  const username = process.env.E2E_CLI_AUTH_USER ?? "executor";
 
   return {
     name: process.env.E2E_TARGET ?? "cli",
     baseUrl,
     mcpUrl: `${baseUrl}/mcp`,
     capabilities: new Set<Capability>(["api"]),
+    // The supervised daemon is bearer-gated (auth.json); globalsetup reads the
+    // token from the guest and publishes it. A wrong/absent token still gets a
+    // clean 401, which the api surface treats as "up".
     newIdentity: () =>
-      Effect.sync((): Identity => {
-        const basic = Buffer.from(`${username}:${env("E2E_CLI_AUTH_PASSWORD")}`).toString("base64");
-        return { label: "cli-daemon", headers: { Authorization: `Basic ${basic}` } };
-      }),
-    // A genuine machine reboot, not a service kick: reboot the guest OS and wait
-    // for the supervised daemon to auto-start and serve again (401 = up). The
-    // reconnecting tunnel re-establishes the forward, so the same baseUrl works.
+      Effect.sync(
+        (): Identity => ({
+          label: "cli-daemon",
+          headers: { Authorization: `Bearer ${env("E2E_CLI_AUTH_TOKEN")}` },
+        }),
+      ),
+    // A genuine machine reboot, not a service kick: reboot the guest OS, GATE on
+    // the daemon actually going down (an orderly shutdown serves for several
+    // seconds + the reconnecting tunnel re-forwards, so "reachable" right after
+    // the reboot command would false-pass), then wait for the supervised daemon
+    // to auto-start and serve again — proving the boot-time auto-start path.
     restart: () =>
       Effect.promise(async () => {
-        if (os === "windows") throw new Error("cli-windows restart pending the ec2 provider");
-        await sshRebootGuest(env("E2E_CLI_VM_HOST"));
+        const host = env("E2E_CLI_VM_HOST");
+        if (os === "windows") {
+          await ec2RebootGuest(host, env("E2E_CLI_SSH_KEY"), os);
+        } else {
+          await sshRebootGuest(host);
+        }
+        await waitForHttpDown(`${baseUrl}/`, { timeoutMs: 120_000 });
         await waitForHttp(`${baseUrl}/`, { timeoutMs: 240_000 });
       }),
   };

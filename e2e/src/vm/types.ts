@@ -24,6 +24,12 @@ export interface VmHandle {
   readonly arch: VmArch;
   /** Current reachable address of the guest (re-resolved across reboots). */
   readonly host: string;
+  /**
+   * Path to the SSH private key for key-based providers (EC2). Undefined for
+   * password-based providers (tart/sshpass). Published by globalsetup so the
+   * stateless worker-side `restart()` can reboot the guest.
+   */
+  readonly sshKeyPath?: string;
   /** Run a command in the guest over SSH (shell on Unix, PowerShell on Windows). */
   ssh(command: string): Promise<SshResult>;
   /** Copy a local file or directory into the guest (recursive for directories). */
