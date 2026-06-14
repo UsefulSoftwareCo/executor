@@ -2130,6 +2130,19 @@ const servicePortOption = () =>
     .pipe(Options.withDefault(DEFAULT_SERVICE_PORT))
     .pipe(Options.withDescription("Port the supervised daemon binds (loopback only)."));
 
+const serviceManagerName = (platform: ReturnType<typeof getServiceBackend>["platform"]): string => {
+  switch (platform) {
+    case "darwin":
+      return "launchd";
+    case "linux":
+      return "systemd --user";
+    case "win32":
+      return "Windows Task Scheduler";
+    case "unsupported":
+      return "manual setup";
+  }
+};
+
 const installService = (port: number, commandName: string) =>
   Effect.gen(function* () {
     const command = `${cliPrefix} ${commandName}`;
@@ -2158,8 +2171,9 @@ const installService = (port: number, commandName: string) =>
       const status = yield* backend.status();
       if (status.registered && status.running && active.kind === "cli-daemon") {
         console.log(
-          `Executor service already running at ${active.connection.origin} (pid ${active.pid}).`,
+          `Executor background service is already running at ${active.connection.origin} (pid ${active.pid}).`,
         );
+        console.log(`Open it in your browser, already signed in, with:  ${cliPrefix} web`);
         return;
       }
       return yield* Effect.fail(
@@ -2172,12 +2186,23 @@ const installService = (port: number, commandName: string) =>
       );
     }
 
+    const path = yield* PlatformPath.Path;
+    const dataDir = resolveExecutorDataDir(path);
+    const origin = supervisedServiceOrigin(port);
+    console.log("Installing Executor as a background service...");
+    console.log(`Service manager: ${serviceManagerName(backend.platform)}`);
+    console.log(`Web UI:          ${origin}`);
+    console.log(`Data directory:  ${dataDir}`);
+    console.log(`Logs:            ${path.join(dataDir, "logs")}`);
+    console.log("");
+    console.log("Writing the service definition and starting Executor...");
+
     // The unit carries no secret: the supervised daemon mints/loads its bearer
     // from auth.json (under EXECUTOR_DATA_DIR) on first boot, and clients read
     // the same file — so reachability is the credential-free /api/health probe.
     yield* backend.install({ executablePath: process.execPath, port, version: CLI_VERSION });
 
-    const origin = supervisedServiceOrigin(port);
+    console.log(`Waiting for Executor to become reachable at ${origin}...`);
     const reachable = yield* waitForReachable({
       check: isServerReachable(origin),
       timeoutMs: DAEMON_BOOT_TIMEOUT_MS,
