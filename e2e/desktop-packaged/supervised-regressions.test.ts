@@ -489,15 +489,6 @@ const closePackaged = async (app: PackagedApp | undefined): Promise<void> => {
   await stopProcess(app?.child);
 };
 
-const waitUntil = async (predicate: () => boolean, timeoutMs: number): Promise<boolean> => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (predicate()) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-};
-
 const waitForServerConnectionLabel = async (
   page: CdpPage,
   expectedText: string,
@@ -661,9 +652,12 @@ if (!guiAvailable() || !packagedSingleInstanceAvailable()) {
   it.skip("Desktop packaged supervised attach security (needs a GUI display and no already-running Executor.app)", () => {});
 } else {
   scenario(
-    "Desktop packaged supervised attach · stale manifest probe does not send the saved bearer",
+    "Desktop packaged supervised attach · a slow live daemon does not look crashed",
     { timeout: 240_000 },
-    Effect.promise(() => runStaleManifestProbe()),
+    Effect.gen(function* () {
+      const runDir = yield* RunDir;
+      yield* Effect.promise(() => runSlowLiveDaemonProbe(runDir));
+    }),
   );
 
   scenario(
@@ -685,81 +679,127 @@ if (!guiAvailable() || !packagedSingleInstanceAvailable()) {
   );
 }
 
-const runStaleManifestProbe = async () => {
-  const home = mkdtempSync(join(tmpdir(), "executor-pkg-stale-probe-"));
+const writeCliDaemonManifest = (input: {
+  readonly controlDir: string;
+  readonly dataDir: string;
+  readonly origin: string;
+  readonly displayName: string;
+  readonly token: string;
+}): void => {
+  mkdirSync(input.controlDir, { recursive: true });
+  writeFileSync(
+    join(input.controlDir, "server.json"),
+    serializeExecutorLocalServerManifest({
+      version: 1,
+      kind: "cli-daemon",
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      dataDir: input.dataDir,
+      scopeDir: input.dataDir,
+      connection: normalizeExecutorServerConnection({
+        origin: input.origin,
+        displayName: input.displayName,
+        auth: { kind: "bearer", token: input.token },
+      }),
+      owner: { client: "cli", version: null, executablePath: null },
+    }),
+    { mode: 0o600 },
+  );
+};
+
+const runSlowLiveDaemonProbe = async (runDir: string) => {
+  const home = mkdtempSync(join(tmpdir(), "executor-pkg-slow-live-daemon-"));
   const dataDir = join(home, ".executor");
   const controlDir = join(dataDir, "server-control");
   const manifestPath = join(controlDir, "server.json");
-  const token = "stale-manifest-leaked-token";
+  const token = "slow-live-daemon-token";
   const launchdSnapshot = captureLaunchdService();
   const requests: Array<{ readonly url: string; readonly authorization: string | null }> = [];
-  let resolveFirst!: () => void;
-  const firstRequest = new Promise<void>((resolve) => {
-    resolveFirst = resolve;
+  let healthMode: "ok" | "slow" = "ok";
+  let slowHealthResponses = 0;
+  let resolveThirdSlowHealthResponse!: () => void;
+  const thirdSlowHealthResponse = new Promise<void>((resolve) => {
+    resolveThirdSlowHealthResponse = resolve;
   });
   const server = createServer((req: IncomingMessage, res) => {
+    const url = req.url ?? "/";
     requests.push({
-      url: req.url ?? "/",
+      url,
       authorization: req.headers.authorization ?? null,
     });
-    resolveFirst();
+    if (url.startsWith("/api/health")) {
+      if (healthMode === "slow") {
+        setTimeout(() => {
+          slowHealthResponses += 1;
+          if (slowHealthResponses >= 3) resolveThirdSlowHealthResponse();
+          if (res.destroyed || res.writableEnded) return;
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end("ok");
+        }, 5_000);
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+      return;
+    }
     res.writeHead(200, { "content-type": "text/html" });
-    res.end("<!doctype html><title>stale daemon</title><body>stale daemon</body>");
+    res.end("<!doctype html><title>Executor</title><body><main>Fake Executor UI</main></body>");
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as net.AddressInfo).port;
-  let appProcess: ChildProcess | undefined;
-  let appOutput = "";
+  let app: PackagedApp | undefined;
 
   try {
-    mkdirSync(controlDir, { recursive: true });
-    writeFileSync(
-      join(controlDir, "server.json"),
-      serializeExecutorLocalServerManifest({
-        version: 1,
-        kind: "cli-daemon",
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        dataDir,
-        scopeDir: dataDir,
-        connection: normalizeExecutorServerConnection({
-          origin: `http://127.0.0.1:${port}`,
-          displayName: "Stale daemon",
-          auth: { kind: "bearer", token },
-        }),
-        owner: { client: "cli", version: null, executablePath: null },
-      }),
-      { mode: 0o600 },
-    );
-
-    appProcess = spawn(requireBundle().app, [], {
-      env: packagedAppEnv(home),
-      stdio: ["ignore", "pipe", "pipe"],
+    writeCliDaemonManifest({
+      controlDir,
+      dataDir,
+      origin: `http://127.0.0.1:${port}`,
+      displayName: "Slow live daemon",
+      token,
     });
-    const collectOutput = (chunk: Buffer) => {
-      appOutput = (appOutput + chunk.toString()).slice(-8_192);
-    };
-    appProcess.stdout?.on("data", collectOutput);
-    appProcess.stderr?.on("data", collectOutput);
 
-    const probed = await Promise.race([
-      firstRequest.then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 60_000)),
-    ]);
-    expect(probed, `packaged app probed the stale manifest endpoint\n${appOutput}`).toBe(true);
+    app = await launchPackaged(home);
+    const page = app.cdp;
+    await page.waitForText("Fake Executor UI", 120_000);
+    await page.screenshot(join(runDir, "01-attached-to-fake-daemon.png"));
 
+    const firstHealthProbe = requests.find((request) => request.url.startsWith("/api/health"));
     expect(
-      requests[0]?.authorization ?? null,
-      "the stale-manifest reachability probe must not disclose the saved bearer",
+      firstHealthProbe?.authorization ?? null,
+      "the supervised-daemon health probe must not disclose the saved bearer",
     ).toBeNull();
 
-    const manifestRemoved = await waitUntil(() => !existsSync(manifestPath), 15_000);
+    healthMode = "slow";
+    const sawSlowMonitorProbe = await Promise.race([
+      thirdSlowHealthResponse.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 60_000)),
+    ]);
     expect(
-      manifestRemoved,
-      "a live pid with a failed health probe must be removed before desktop falls back",
+      sawSlowMonitorProbe,
+      "the packaged app should continue probing the supervised daemon after initial attach",
     ).toBe(true);
+
+    expect(
+      requests
+        .filter((request) => request.url.startsWith("/api/health"))
+        .map((request) => request.authorization),
+      "supervised-daemon health probes must never carry the saved bearer",
+    ).not.toContain(`Bearer ${token}`);
+    expect(
+      existsSync(manifestPath),
+      "a live daemon's manifest must survive transient health probe failures",
+    ).toBe(true);
+    expect(
+      await page.textPresent("The local Executor server stopped unexpectedly"),
+      "one slow monitor probe should not show the crash screen",
+    ).toBe(false);
+    expect(
+      await page.textPresent("Fake Executor UI"),
+      "the original renderer should stay loaded",
+    ).toBe(true);
+    await page.screenshot(join(runDir, "02-still-rendering-after-slow-health.png"));
   } finally {
-    await stopProcess(appProcess);
+    await closePackaged(app);
     await restoreLaunchdService(launchdSnapshot);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(home, { recursive: true, force: true });

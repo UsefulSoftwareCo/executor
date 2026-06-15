@@ -468,7 +468,7 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
  * sidecar. Reads `server.json`, confirms the recorded process is alive and the
  * endpoint answers, and returns a child-less `SidecarConnection` flagged
  * `supervisedDaemon: true`. Returns null when no usable supervised daemon is
- * present (the caller then falls back to managed-spawn).
+ * present.
  *
  * Only a `cli-daemon` manifest is treated as supervised — a `desktop-sidecar`
  * manifest belongs to a managed sidecar (ours or another desktop instance) and
@@ -487,8 +487,9 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
   const auth = manifest.connection.auth;
   const authToken = auth && auth.kind === "bearer" ? auth.token : "";
   if (!(await isDaemonReachable(origin))) {
-    sidecarLog.info(`removing stale supervised daemon manifest for unreachable ${origin}`);
-    removeManifestIfOwnedBy(dataDir, manifest.pid);
+    sidecarLog.warn(
+      `supervised daemon at ${origin} (pid ${manifest.pid}) did not answer the health probe; keeping its manifest because the process is still alive`,
+    );
     return null;
   }
 
