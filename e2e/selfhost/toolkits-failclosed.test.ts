@@ -17,16 +17,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -34,12 +27,10 @@ import { Api, Mcp, Target } from "../src/services";
 const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays valid JS, and names survive create normalization.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   "Toolkits · a bogus toolkit selector fails closed — empty slice, never full access",
@@ -113,10 +104,7 @@ scenario(
       // inventory lists the connection's integration.
       const bare = mcp.session(identity);
       const bareDesc = describeExecute(yield* bare.describeTools());
-      expect(
-        bareDesc,
-        "bare inventory includes the seeded integration",
-      ).toContain(slug);
+      expect(bareDesc, "bare inventory includes the seeded integration").toContain(slug);
       const bareRun = yield* bare.call("execute", { code });
       expect(bareRun.ok, `bare tool executes; text=${bareRun.text}`).toBe(true);
 

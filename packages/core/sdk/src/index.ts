@@ -18,17 +18,8 @@ export {
 // FumaDB integration.
 export { fumadb } from "@executor-js/fumadb";
 export type { FumaDB } from "@executor-js/fumadb";
-export type {
-  AbstractQuery,
-  Condition,
-  ConditionBuilder,
-} from "@executor-js/fumadb/query";
-export {
-  column,
-  idColumn,
-  schema as fumaSchema,
-  table,
-} from "@executor-js/fumadb/schema";
+export type { AbstractQuery, Condition, ConditionBuilder } from "@executor-js/fumadb/query";
+export { column, idColumn, schema as fumaSchema, table } from "@executor-js/fumadb/schema";
 export type {
   AnyColumn,
   AnySchema,
@@ -45,11 +36,7 @@ export type {
   IFumaClient,
   StorageFailure,
 } from "./fuma-runtime";
-export {
-  StorageError,
-  UniqueViolationError,
-  isStorageFailure,
-} from "./fuma-runtime";
+export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
 
 // IDs (branded) — the v2 set.
 export {
@@ -69,10 +56,7 @@ export {
   Subject,
   Owner,
 } from "./ids";
-export {
-  connectionIdentifier,
-  isConnectionIdentifier,
-} from "./connection-name-identifier";
+export { connectionIdentifier, isConnectionIdentifier } from "./connection-name-identifier";
 
 // Errors (tagged) — the ExecuteError set + integration lifecycle.
 export {

@@ -13,12 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { Schema } from "effect";
-import {
-  Context,
-  definePlugin,
-  Effect,
-  HttpApiBuilder,
-} from "@executor-js/sdk/core";
+import { Context, definePlugin, Effect, HttpApiBuilder } from "@executor-js/sdk/core";
 import {
   definePluginStorageCollection,
   Owner,
@@ -77,20 +72,15 @@ const PolicyRow = Schema.Struct({
 const TOOLKITS = definePluginStorageCollection("toolkits", ToolkitRow, {
   indexes: ["slug"],
 });
-const CONNECTIONS = definePluginStorageCollection(
-  "connections",
-  ConnectionRow,
-  {
-    indexes: ["toolkitId"],
-  },
-);
+const CONNECTIONS = definePluginStorageCollection("connections", ConnectionRow, {
+  indexes: ["toolkitId"],
+});
 const POLICIES = definePluginStorageCollection("policies", PolicyRow, {
   indexes: ["toolkitId"],
 });
 
 const newId = Effect.sync(() => crypto.randomUUID());
-const scopeOfOwner = (owner: Owner): ToolkitScope =>
-  owner === ORG ? "workspace" : "personal";
+const scopeOfOwner = (owner: Owner): ToolkitScope => (owner === ORG ? "workspace" : "personal");
 
 // ---------------------------------------------------------------------------
 // Extension — the canonical implementation. Handlers (and later the MCP
@@ -135,14 +125,9 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
   // candidate connections honoring scope: a workspace toolkit may use only
   // org connections; a personal toolkit may use org + the caller's own.
   const candidateConnections = (scope: ToolkitScope) =>
-    scope === "workspace"
-      ? ctx.connections.list({ owner: ORG })
-      : ctx.connections.list();
+    scope === "workspace" ? ctx.connections.list({ owner: ORG }) : ctx.connections.list();
 
-  const validate = (
-    scope: ToolkitScope,
-    entries: ReadonlyArray<ToolkitConnectionEntryInput>,
-  ) =>
+  const validate = (scope: ToolkitScope, entries: ReadonlyArray<ToolkitConnectionEntryInput>) =>
     Effect.gen(function* () {
       const allowed = yield* candidateConnections(scope);
       const pairs = new Set(allowed.map((c) => `${c.integration}/${c.name}`));
@@ -231,9 +216,7 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
     });
 
   const list = () =>
-    toolkits
-      .list()
-      .pipe(Effect.flatMap((rows) => Effect.forEach(rows, viewFromRow)));
+    toolkits.list().pipe(Effect.flatMap((rows) => Effect.forEach(rows, viewFromRow)));
 
   const update = (id: string, patch: UpdateToolkitPayload) =>
     Effect.gen(function* () {
@@ -242,10 +225,8 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       const data = {
         slug: row.data.slug,
         name: patch.name ?? row.data.name,
-        inheritOrgPolicies:
-          patch.inheritOrgPolicies ?? row.data.inheritOrgPolicies,
-        briefing:
-          patch.briefing === undefined ? row.data.briefing : patch.briefing,
+        inheritOrgPolicies: patch.inheritOrgPolicies ?? row.data.inheritOrgPolicies,
+        briefing: patch.briefing === undefined ? row.data.briefing : patch.briefing,
       };
       yield* toolkits.put({ key: id, owner: row.owner, data });
       if (patch.connections !== undefined) {
@@ -258,9 +239,7 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       }
       if (patch.policies !== undefined) {
         const existing = yield* policies.query({ where: { toolkitId: id } });
-        yield* Effect.forEach(existing, (p) =>
-          policies.remove({ key: p.key, owner: row.owner }),
-        );
+        yield* Effect.forEach(existing, (p) => policies.remove({ key: p.key, owner: row.owner }));
         yield* putPolicies(id, row.owner, patch.policies);
       }
       return yield* viewFromRow({ key: id, owner: row.owner, data });
@@ -271,13 +250,9 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       const row = yield* toolkits.get({ key: id });
       if (row == null) return yield* new ToolkitNotFound({ id });
       const conns = yield* connections.query({ where: { toolkitId: id } });
-      yield* Effect.forEach(conns, (c) =>
-        connections.remove({ key: c.key, owner: row.owner }),
-      );
+      yield* Effect.forEach(conns, (c) => connections.remove({ key: c.key, owner: row.owner }));
       const pols = yield* policies.query({ where: { toolkitId: id } });
-      yield* Effect.forEach(pols, (p) =>
-        policies.remove({ key: p.key, owner: row.owner }),
-      );
+      yield* Effect.forEach(pols, (p) => policies.remove({ key: p.key, owner: row.owner }));
       yield* toolkits.remove({ key: id, owner: row.owner });
       return { removed: true };
     });
@@ -317,8 +292,7 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
 
 // Local aliases so the storage/extension layer stays decoupled from the wire
 // schema's branded types without re-importing them everywhere.
-type ToolkitConnectionIntegration =
-  ToolkitView["connections"][number]["integration"];
+type ToolkitConnectionIntegration = ToolkitView["connections"][number]["integration"];
 type ToolkitConnectionEntryInput = {
   readonly integration: ToolkitConnectionIntegration;
   readonly connection: string;
@@ -338,51 +312,48 @@ export class ToolkitsExtensionService extends Context.Service<
 // the host's composed API requires) — not a standalone single-group bundle.
 const ExecutorApiWithToolkits = addGroup(ToolkitsApi);
 
-const ToolkitsHandlers = HttpApiBuilder.group(
-  ExecutorApiWithToolkits,
-  "toolkits",
-  (h) =>
-    h
-      .handle("list", () =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* ToolkitsExtensionService;
-            return yield* ext.list();
-          }),
-        ),
-      )
-      .handle("create", ({ payload }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* ToolkitsExtensionService;
-            return yield* ext.create(payload);
-          }),
-        ),
-      )
-      .handle("get", ({ params }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* ToolkitsExtensionService;
-            return yield* ext.get(params.id);
-          }),
-        ),
-      )
-      .handle("update", ({ params, payload }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* ToolkitsExtensionService;
-            return yield* ext.update(params.id, payload);
-          }),
-        ),
-      )
-      .handle("remove", ({ params }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* ToolkitsExtensionService;
-            return yield* ext.remove(params.id);
-          }),
-        ),
+const ToolkitsHandlers = HttpApiBuilder.group(ExecutorApiWithToolkits, "toolkits", (h) =>
+  h
+    .handle("list", () =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return yield* ext.list();
+        }),
       ),
+    )
+    .handle("create", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return yield* ext.create(payload);
+        }),
+      ),
+    )
+    .handle("get", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return yield* ext.get(params.id);
+        }),
+      ),
+    )
+    .handle("update", ({ params, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return yield* ext.update(params.id, payload);
+        }),
+      ),
+    )
+    .handle("remove", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return yield* ext.remove(params.id);
+        }),
+      ),
+    ),
 );
 
 const resolveToolkitRequestScope = (
@@ -391,11 +362,7 @@ const resolveToolkitRequestScope = (
 ): Effect.Effect<RequestScope, StorageFailure> =>
   makeToolkitsExtension(ctx)
     .resolveScope(selector)
-    .pipe(
-      Effect.map((scope) =>
-        toolkitScopeToRequestScope(scope ?? EMPTY_TOOLKIT_SCOPE),
-      ),
-    );
+    .pipe(Effect.map((scope) => toolkitScopeToRequestScope(scope ?? EMPTY_TOOLKIT_SCOPE)));
 
 export const toolkitsPlugin = definePlugin(() => ({
   id: "toolkits" as const,

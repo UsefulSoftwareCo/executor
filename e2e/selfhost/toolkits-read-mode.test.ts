@@ -17,11 +17,7 @@
 // EXECUTOR_ALLOW_LOCAL_NETWORK=true, so the instance is allowed to dial the
 // loopback upstream. The spec itself is passed inline (blob) so the spec fetch
 // never hits the network — only the GET/POST invocations dial the socket.
-import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -30,30 +26,20 @@ import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
 
-const api = composePluginApi([
-  mcpHttpPlugin(),
-  openApiHttpPlugin(),
-  toolkitsPlugin(),
-] as const);
+const api = composePluginApi([mcpHttpPlugin(), openApiHttpPlugin(), toolkitsPlugin()] as const);
 
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays valid JS, and so the create-time name normalization (which
 // strips hyphens) round-trips unchanged.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 // A real OpenAPI upstream on a loopback socket. `GET /thing` is a read; `POST
 // /thing` is a write. Both return a recognizable JSON marker so a successful
@@ -65,61 +51,45 @@ interface Upstream {
 
 // Mirrors serveMcpServer: acquire a real listening socket carrying its own
 // `close`, release closes it, and we strip `close` from the value handed back.
-const serveUpstream = (
-  token: string,
-): Effect.Effect<Upstream, never, Scope.Scope> =>
+const serveUpstream = (token: string): Effect.Effect<Upstream, never, Scope.Scope> =>
   Effect.acquireRelease(
-    Effect.callback<Upstream & { readonly close: Effect.Effect<void> }, never>(
-      (resume) => {
-        const server = createServer(
-          (request: IncomingMessage, response: ServerResponse) => {
-            const url = new URL(request.url ?? "/", "http://127.0.0.1");
-            const auth = request.headers.authorization;
-            const send = (
-              status: number,
-              body: Record<string, unknown>,
-            ): void => {
-              response.writeHead(status, {
-                "content-type": "application/json",
-              });
-              response.end(JSON.stringify(body));
-            };
-            if (auth !== `Bearer ${token}`) {
-              send(401, { error: "unauthorized" });
-              return;
-            }
-            if (url.pathname === "/thing" && request.method === "GET") {
-              send(200, { marker: "read-ok", kind: "get" });
-              return;
-            }
-            if (url.pathname === "/thing" && request.method === "POST") {
-              // Drain the body so the socket closes cleanly, then ack.
-              request.resume();
-              request.on("end", () =>
-                send(201, { marker: "write-ok", kind: "post" }),
-              );
-              return;
-            }
-            send(404, { error: "not_found" });
-          },
-        );
-        const close = Effect.sync(() => {
-          server.close();
-          server.closeAllConnections?.();
-        });
-        server.once("error", () =>
-          resume(Effect.succeed({ baseUrl: "", close })),
-        );
-        server.listen(0, "127.0.0.1", () => {
-          const address = server.address();
-          const port =
-            typeof address === "object" && address ? address.port : 0;
-          resume(
-            Effect.succeed({ baseUrl: `http://127.0.0.1:${port}`, close }),
-          );
-        });
-      },
-    ),
+    Effect.callback<Upstream & { readonly close: Effect.Effect<void> }, never>((resume) => {
+      const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+        const url = new URL(request.url ?? "/", "http://127.0.0.1");
+        const auth = request.headers.authorization;
+        const send = (status: number, body: Record<string, unknown>): void => {
+          response.writeHead(status, {
+            "content-type": "application/json",
+          });
+          response.end(JSON.stringify(body));
+        };
+        if (auth !== `Bearer ${token}`) {
+          send(401, { error: "unauthorized" });
+          return;
+        }
+        if (url.pathname === "/thing" && request.method === "GET") {
+          send(200, { marker: "read-ok", kind: "get" });
+          return;
+        }
+        if (url.pathname === "/thing" && request.method === "POST") {
+          // Drain the body so the socket closes cleanly, then ack.
+          request.resume();
+          request.on("end", () => send(201, { marker: "write-ok", kind: "post" }));
+          return;
+        }
+        send(404, { error: "not_found" });
+      });
+      const close = Effect.sync(() => {
+        server.close();
+        server.closeAllConnections?.();
+      });
+      server.once("error", () => resume(Effect.succeed({ baseUrl: "", close })));
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        resume(Effect.succeed({ baseUrl: `http://127.0.0.1:${port}`, close }));
+      });
+    }),
     (acquired) => acquired.close,
   ).pipe(Effect.map(({ close: _close, ...rest }) => rest));
 
@@ -160,10 +130,7 @@ scenario(
 
       const token = `tok-${randomBytes(6).toString("hex")}`;
       const upstream = yield* serveUpstream(token);
-      expect(
-        upstream.baseUrl,
-        "the loopback OpenAPI upstream bound a port",
-      ).not.toBe("");
+      expect(upstream.baseUrl, "the loopback OpenAPI upstream bound a port").not.toBe("");
 
       const slug = ident("oapi");
       const conn = ident("conn");
@@ -259,10 +226,7 @@ scenario(
       // The scoped inventory still lists the integration (it is in the slice),
       // and the read tool's dotted name is reachable.
       const readDesc = describeExecute(yield* scopedRead.describeTools());
-      expect(
-        readDesc,
-        "read-toolkit inventory includes the in-slice integration",
-      ).toContain(slug);
+      expect(readDesc, "read-toolkit inventory includes the in-slice integration").toContain(slug);
 
       const readGet = yield* scopedRead.call("execute", {
         code: `return await tools.${slug}.org.${conn}.${readName}({});`,
@@ -291,10 +255,7 @@ scenario(
       const scopedFull = mcp.session(identity, { toolkit: kitFull.slug });
 
       const fullDesc = describeExecute(yield* scopedFull.describeTools());
-      expect(
-        fullDesc,
-        "full-toolkit inventory includes the integration",
-      ).toContain(slug);
+      expect(fullDesc, "full-toolkit inventory includes the integration").toContain(slug);
 
       const fullGet = yield* scopedFull.call("execute", {
         code: `return await tools.${slug}.org.${conn}.${readName}({});`,

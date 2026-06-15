@@ -6,12 +6,7 @@
 
 import { IntegrationSlug } from "@executor-js/sdk/shared";
 
-import type {
-  ToolkitAccess,
-  ToolkitConnectionEntry,
-  ToolkitScope,
-  ToolkitView,
-} from "../shared";
+import type { ToolkitAccess, ToolkitConnectionEntry, ToolkitScope, ToolkitView } from "../shared";
 
 /** A structural view of a core connection row — the fields the editor reads. */
 export interface FormConn {
@@ -41,10 +36,7 @@ export const slugify = (s: string): string =>
     .slice(0, 48);
 
 /** A slug not already in `taken`; appends `-2`, `-3`, … on collision. */
-export const uniqueSlug = (
-  base: string,
-  taken: ReadonlySet<string>,
-): string => {
+export const uniqueSlug = (base: string, taken: ReadonlySet<string>): string => {
   const root = base || "toolkit";
   if (!taken.has(root)) return root;
   let i = 2;
@@ -59,8 +51,7 @@ export const tiersForScope = (
   scope: ToolkitScope,
 ): ReadonlyArray<AccessTier> => {
   const org = connections.filter((c) => c.owner === "org");
-  if (scope === "workspace")
-    return [{ label: "Workspace connections", conns: org }];
+  if (scope === "workspace") return [{ label: "Workspace connections", conns: org }];
   const user = connections.filter((c) => c.owner === "user");
   return [
     { label: "Workspace connections", conns: org },

@@ -19,10 +19,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
-import {
-  useClientPlugins,
-  useIntegrationPlugins,
-} from "@executor-js/sdk/client";
+import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
 // ---------------------------------------------------------------------------
@@ -56,8 +53,7 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
 // ("/" -> "/{-$orgSlug}", "/policies" -> "/{-$orgSlug}/policies"). Loosely
 // typed on purpose: host-specific items ("/admin", "/billing") resolve against
 // the host's own route tree, which this package can't see.
-const orgScopedTo = (to: string): string =>
-  to === "/" ? "/{-$orgSlug}" : `/{-$orgSlug}${to}`;
+const orgScopedTo = (to: string): string => (to === "/" ? "/{-$orgSlug}" : `/{-$orgSlug}${to}`);
 
 /** The pathname with the active org-slug prefix stripped, for active-state
  *  comparisons against scope-relative paths. */
@@ -65,10 +61,7 @@ function useScopeRelativePathname(): string {
   const pathname = useLocation({ select: (location) => location.pathname });
   const params = useParams({ strict: false }) as { orgSlug?: string };
   const orgSlug = params.orgSlug;
-  if (
-    orgSlug &&
-    (pathname === `/${orgSlug}` || pathname.startsWith(`/${orgSlug}/`))
-  ) {
+  if (orgSlug && (pathname === `/${orgSlug}` || pathname.startsWith(`/${orgSlug}/`))) {
     return pathname.slice(orgSlug.length + 1) || "/";
   }
   return pathname;
@@ -91,14 +84,8 @@ export interface ShellProps {
 
 function Brand(props: { onNavigate?: () => void }) {
   return (
-    <Link
-      to="/{-$orgSlug}"
-      onClick={props.onNavigate}
-      className="flex items-center gap-1.5"
-    >
-      <span className="font-display text-base tracking-tight text-foreground">
-        executor
-      </span>
+    <Link to="/{-$orgSlug}" onClick={props.onNavigate} className="flex items-center gap-1.5">
+      <span className="font-display text-base tracking-tight text-foreground">executor</span>
       <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
         Beta
       </span>
@@ -108,12 +95,7 @@ function Brand(props: { onNavigate?: () => void }) {
 
 // ── NavItem ──────────────────────────────────────────────────────────────
 
-function NavItem(props: {
-  to: string;
-  label: string;
-  active: boolean;
-  onNavigate?: () => void;
-}) {
+function NavItem(props: { to: string; label: string; active: boolean; onNavigate?: () => void }) {
   return (
     <Link
       to={orgScopedTo(props.to)}
@@ -167,8 +149,7 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
           onClick={props.onNavigate}
           className={[
             "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
-            props.pathname === entry.base ||
-            props.pathname.startsWith(`${entry.base}/`)
+            props.pathname === entry.base || props.pathname.startsWith(`${entry.base}/`)
               ? "bg-sidebar-active text-foreground font-medium"
               : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
           ].join(" ")}
@@ -199,9 +180,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
       </div>
     ),
     onFailure: () => (
-      <div className="px-2.5 py-2 text-xs text-muted-foreground">
-        No integrations yet
-      </div>
+      <div className="px-2.5 py-2 text-xs text-muted-foreground">No integrations yet</div>
     ),
     onSuccess: ({ value }) =>
       value.length === 0 ? (
@@ -215,8 +194,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
             const name = integration.name || slug;
             const detailPath = `/integrations/${slug}`;
             const active =
-              props.pathname === detailPath ||
-              props.pathname.startsWith(`${detailPath}/`);
+              props.pathname === detailPath || props.pathname.startsWith(`${detailPath}/`);
             return (
               <Link
                 key={slug}
@@ -269,15 +247,9 @@ function initialsFor(name: string | null, email: string) {
   return email[0]!.toUpperCase();
 }
 
-function Avatar(props: {
-  url: string | null;
-  name: string | null;
-  email: string;
-}) {
+function Avatar(props: { url: string | null; name: string | null; email: string }) {
   if (props.url) {
-    return (
-      <img src={props.url} alt="" className="size-7 shrink-0 rounded-full" />
-    );
+    return <img src={props.url} alt="" className="size-7 shrink-0 rounded-full" />;
   }
   return (
     <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
@@ -301,19 +273,13 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
             variant="ghost"
             className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-1 py-1 text-left hover:bg-sidebar-active/60"
           >
-            <Avatar
-              url={auth.user.avatarUrl}
-              name={auth.user.name}
-              email={auth.user.email}
-            />
+            <Avatar url={auth.user.avatarUrl} name={auth.user.name} email={auth.user.email} />
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-medium text-foreground">
                 {auth.user.name ?? auth.user.email}
               </p>
               {auth.organization && (
-                <p className="truncate text-xs text-muted-foreground">
-                  {auth.organization.name}
-                </p>
+                <p className="truncate text-xs text-muted-foreground">{auth.organization.name}</p>
               )}
             </div>
             <svg
@@ -337,19 +303,13 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
             Signed in as
           </DropdownMenuLabel>
           <DropdownMenuItem disabled className="gap-2 text-xs opacity-100">
-            <Avatar
-              url={auth.user.avatarUrl}
-              name={auth.user.name}
-              email={auth.user.email}
-            />
+            <Avatar url={auth.user.avatarUrl} name={auth.user.name} email={auth.user.email} />
             <div className="min-w-0 flex-1">
               <p className="truncate font-medium text-foreground">
                 {auth.user.name ?? auth.user.email}
               </p>
               {auth.user.name && (
-                <p className="truncate text-muted-foreground">
-                  {auth.user.email}
-                </p>
+                <p className="truncate text-muted-foreground">{auth.user.email}</p>
               )}
             </div>
           </DropdownMenuItem>
@@ -389,11 +349,7 @@ function SidebarContent(
             key={item.to}
             to={item.to}
             label={item.label}
-            active={
-              item.to === "/"
-                ? props.pathname === "/"
-                : props.pathname.startsWith(item.to)
-            }
+            active={item.to === "/" ? props.pathname === "/" : props.pathname.startsWith(item.to)}
             onNavigate={props.onNavigate}
           />
         ))}
@@ -404,15 +360,10 @@ function SidebarContent(
           <span>Integrations</span>
         </div>
 
-        <IntegrationList
-          pathname={props.pathname}
-          onNavigate={props.onNavigate}
-        />
+        <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
 
-      {props.supportSlot && (
-        <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>
-      )}
+      {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
 
       <UserFooter onSignOut={props.onSignOut} orgMenuSlot={props.orgMenuSlot} />
     </>

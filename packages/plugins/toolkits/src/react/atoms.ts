@@ -6,10 +6,7 @@
 // the call site so the list refreshes after a create / update / remove.
 // ---------------------------------------------------------------------------
 
-import {
-  ReactivityKey,
-  toolkitWriteKeys,
-} from "@executor-js/react/api/reactivity-keys";
+import { ReactivityKey, toolkitWriteKeys } from "@executor-js/react/api/reactivity-keys";
 
 import { ToolkitsClient } from "./client";
 

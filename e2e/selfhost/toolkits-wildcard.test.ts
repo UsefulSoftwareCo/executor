@@ -12,16 +12,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -30,12 +23,10 @@ const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays valid JS, and single-word lowercase names survive the
 // connectionIdentifier normalization unchanged.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   'Toolkits · a wildcard ("*") entry tracks every account of an integration, including ones added after the toolkit',
@@ -71,10 +62,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -131,32 +119,19 @@ scenario(
       // Session #1: both pre-existing accounts are in the slice; Y is not.
       const session1 = mcp.session(identity, { toolkit: kit.slug });
       const desc1 = describeExecute(yield* session1.describeTools());
-      expect(desc1, "wildcard slice includes the primary account").toContain(
-        primary,
-      );
-      expect(desc1, "wildcard slice includes the secondary account").toContain(
-        secondary,
-      );
-      expect(
-        desc1,
-        "wildcard is scoped to X — Y's account is out of slice",
-      ).not.toContain(connY);
+      expect(desc1, "wildcard slice includes the primary account").toContain(primary);
+      expect(desc1, "wildcard slice includes the secondary account").toContain(secondary);
+      expect(desc1, "wildcard is scoped to X — Y's account is out of slice").not.toContain(connY);
 
       const primaryRun = yield* session1.call("execute", {
         code: `return await tools.${slugX}.org.${primary}.simple_echo({});`,
       });
-      expect(
-        primaryRun.ok,
-        `primary account runs; text=${primaryRun.text}`,
-      ).toBe(true);
+      expect(primaryRun.ok, `primary account runs; text=${primaryRun.text}`).toBe(true);
 
       const secondaryRun = yield* session1.call("execute", {
         code: `return await tools.${slugX}.org.${secondary}.simple_echo({});`,
       });
-      expect(
-        secondaryRun.ok,
-        `secondary account runs; text=${secondaryRun.text}`,
-      ).toBe(true);
+      expect(secondaryRun.ok, `secondary account runs; text=${secondaryRun.text}`).toBe(true);
 
       // Y is blocked at execute even though the agent guessed its address — a
       // blocked tool surfaces as an error envelope, never the greeting a
@@ -180,18 +155,11 @@ scenario(
       // we deliberately open a fresh session here.)
       const session2 = mcp.session(identity, { toolkit: kit.slug });
       const desc2 = describeExecute(yield* session2.describeTools());
-      expect(
-        desc2,
-        "a fresh session's wildcard still includes primary",
-      ).toContain(primary);
-      expect(
-        desc2,
-        "a fresh session's wildcard still includes secondary",
-      ).toContain(secondary);
-      expect(
-        desc2,
-        "the wildcard auto-includes the account added after the toolkit",
-      ).toContain(tertiary);
+      expect(desc2, "a fresh session's wildcard still includes primary").toContain(primary);
+      expect(desc2, "a fresh session's wildcard still includes secondary").toContain(secondary);
+      expect(desc2, "the wildcard auto-includes the account added after the toolkit").toContain(
+        tertiary,
+      );
 
       const tertiaryRun = yield* session2.call("execute", {
         code: `return await tools.${slugX}.org.${tertiary}.simple_echo({});`,

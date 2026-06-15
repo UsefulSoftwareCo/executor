@@ -9,11 +9,7 @@ import {
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 
 import { ErrorCapture } from "../observability";
-import {
-  CodeExecutorProvider,
-  EngineDecorator,
-  makeExecutionStack,
-} from "./execution-stack";
+import { CodeExecutorProvider, EngineDecorator, makeExecutionStack } from "./execution-stack";
 import { DbProvider } from "./executor-fuma-db";
 import { HostConfig, PluginsProvider } from "./scoped-executor";
 
@@ -32,11 +28,7 @@ import { HostConfig, PluginsProvider } from "./scoped-executor";
 
 /** The five execution-stack seams a host fully provides (no residual). */
 export type McpExecutionStackLayer = Layer.Layer<
-  | DbProvider
-  | PluginsProvider
-  | HostConfig
-  | CodeExecutorProvider
-  | EngineDecorator
+  DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator
 >;
 
 /**

@@ -23,16 +23,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -41,12 +34,10 @@ const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays valid JS, and so connection names survive the create-time
 // normalize (hyphens removed + camelCased) byte-for-byte.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   "Toolkits · workspace toolkits are visible to org members; personal toolkits stay subject-private and a non-resolving slug is fail-closed",
@@ -76,23 +67,15 @@ scenario(
       // Stand up two real greeting MCP servers and register each as an
       // integration + a connection at the requested owner. `text` is distinct
       // per connection so a successful execute is unambiguous.
-      const addConnection = (
-        slug: string,
-        conn: string,
-        owner: "org" | "user",
-        text: string,
-      ) =>
+      const addConnection = (slug: string, conn: string, owner: "org" | "user", text: string) =>
         Effect.gen(function* () {
           const token = `tok-${randomBytes(6).toString("hex")}`;
-          const server = yield* serveMcpServer(
-            () => makeGreetingMcpServer({ text }),
-            {
-              auth: {
-                validateAuthorization: (authorization) =>
-                  Effect.succeed(authorization === `Bearer ${token}`),
-              },
+          const server = yield* serveMcpServer(() => makeGreetingMcpServer({ text }), {
+            auth: {
+              validateAuthorization: (authorization) =>
+                Effect.succeed(authorization === `Bearer ${token}`),
             },
-          );
+          });
           yield* clientA.mcp.addServer({
             payload: {
               transport: "remote",
@@ -103,10 +86,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -172,9 +152,7 @@ scenario(
       // workspace-visible invariant unconditionally.
       const listB = yield* clientB.toolkits.list();
       expect(
-        listB.some(
-          (t) => t.id === workspaceKit.id && t.slug === workspaceKit.slug,
-        ),
+        listB.some((t) => t.id === workspaceKit.id && t.slug === workspaceKit.slug),
         "workspace toolkit is visible to org members",
       ).toBe(true);
       expect(
@@ -189,10 +167,7 @@ scenario(
       // its tool returns the org greeting (a success envelope, not an error).
       const wsSession = mcp.session(idB, { toolkit: workspaceKit.slug });
       const wsDesc = describeExecute(yield* wsSession.describeTools());
-      expect(
-        wsDesc,
-        "workspace-scoped inventory includes the org integration",
-      ).toContain(orgSlug);
+      expect(wsDesc, "workspace-scoped inventory includes the org integration").toContain(orgSlug);
 
       const wsCall = yield* wsSession.call("execute", {
         code: `return await tools.${orgSlug}.org.${orgConn}.simple_echo({});`,

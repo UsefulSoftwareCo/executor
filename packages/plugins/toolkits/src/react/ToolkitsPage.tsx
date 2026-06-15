@@ -18,10 +18,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { usePluginNavigate, usePluginRoute } from "@executor-js/sdk/client";
 
-import {
-  connectionsAllAtom,
-  integrationsAtom,
-} from "@executor-js/react/api/atoms";
+import { connectionsAllAtom, integrationsAtom } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Textarea } from "@executor-js/react/components/textarea";
@@ -89,10 +86,7 @@ const ACTION_LABEL: Record<ToolkitPolicyAction, string> = {
 // Access segmented control (off / read / full)
 // ---------------------------------------------------------------------------
 
-function AccessSeg(props: {
-  value: ToolkitAccess;
-  onChange: (v: ToolkitAccess) => void;
-}) {
+function AccessSeg(props: { value: ToolkitAccess; onChange: (v: ToolkitAccess) => void }) {
   return (
     <div className="inline-flex shrink-0 gap-0.5 rounded-md border border-input p-0.5">
       {ACCESS_OPTIONS.map((o) => (
@@ -130,18 +124,14 @@ function ToolkitCard(props: {
       className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-ring"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[15px] font-semibold text-foreground">
-          {props.toolkit.name}
-        </span>
+        <span className="text-[15px] font-semibold text-foreground">{props.toolkit.name}</span>
         <span className="text-[12px] text-muted-foreground">
           {active.length} {active.length === 1 ? "connection" : "connections"}
         </span>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {integrations.length === 0 ? (
-          <span className="text-[12px] text-muted-foreground">
-            Empty — nothing granted yet
-          </span>
+          <span className="text-[12px] text-muted-foreground">Empty — nothing granted yet</span>
         ) : (
           integrations.map((slug) => (
             <span
@@ -172,9 +162,7 @@ function ListSection(props: {
   return (
     <section className="mt-10">
       <div className="mb-3 flex items-center justify-between border-b border-border/50 pb-2">
-        <h2 className="font-display text-xl tracking-tight text-foreground">
-          {props.title}
-        </h2>
+        <h2 className="font-display text-xl tracking-tight text-foreground">{props.title}</h2>
         <Button type="button" size="sm" onClick={props.onCreate}>
           New toolkit
         </Button>
@@ -219,9 +207,7 @@ function ToolkitEditor(props: EditorProps) {
 
   const [name, setName] = useState(existing?.name ?? "Untitled");
   const [briefing, setBriefing] = useState(existing?.briefing ?? "");
-  const [inheritOrg, setInheritOrg] = useState(
-    existing?.inheritOrgPolicies ?? true,
-  );
+  const [inheritOrg, setInheritOrg] = useState(existing?.inheritOrgPolicies ?? true);
   const [access, setAccess] = useState<Record<string, ToolkitAccess>>(
     () => accessFromToolkit(existing).access,
   );
@@ -264,18 +250,12 @@ function ToolkitEditor(props: EditorProps) {
 
   // The connections this toolkit may draw on: workspace = org-owned only;
   // personal = org + the caller's own.
-  const tiers = useMemo(
-    () => tiersForScope(props.connections, scope),
-    [props.connections, scope],
-  );
+  const tiers = useMemo(() => tiersForScope(props.connections, scope), [props.connections, scope]);
 
-  const buildEntries = () =>
-    entriesFromAccess(props.connections, scope, access, notes);
+  const buildEntries = () => entriesFromAccess(props.connections, scope, access, notes);
 
   const cleanPolicies = (): ReadonlyArray<ToolkitPolicy> =>
-    policies
-      .filter((p) => p.pattern.trim())
-      .map((p) => ({ ...p, pattern: p.pattern.trim() }));
+    policies.filter((p) => p.pattern.trim()).map((p) => ({ ...p, pattern: p.pattern.trim() }));
 
   const handleSave = async () => {
     setSaving(true);
@@ -328,12 +308,7 @@ function ToolkitEditor(props: EditorProps) {
       return;
     }
     // oxlint-disable-next-line no-alert -- intentional destructive confirmation
-    if (
-      !window.confirm(
-        "Delete this toolkit? Connected agents lose access immediately.",
-      )
-    )
-      return;
+    if (!window.confirm("Delete this toolkit? Connected agents lose access immediately.")) return;
     const exit = await doRemove({
       params: { id: existing.id },
       reactivityKeys: toolkitWriteKeys,
@@ -347,10 +322,7 @@ function ToolkitEditor(props: EditorProps) {
 
   // Live "what the agent sees" — derived from the in-progress form.
   const previewGroups = useMemo(() => {
-    const byInt = new Map<
-      string,
-      Array<{ name: string; access: ToolkitAccess; note?: string }>
-    >();
+    const byInt = new Map<string, Array<{ name: string; access: ToolkitAccess; note?: string }>>();
     for (const tier of tiers) {
       for (const c of tier.conns) {
         const key = connKey(c.integration, c.name);
@@ -367,10 +339,7 @@ function ToolkitEditor(props: EditorProps) {
     }
     return [...byInt.entries()];
   }, [tiers, access, notes]);
-  const previewCount = previewGroups.reduce(
-    (n, [, conns]) => n + conns.length,
-    0,
-  );
+  const previewCount = previewGroups.reduce((n, [, conns]) => n + conns.length, 0);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -425,15 +394,10 @@ function ToolkitEditor(props: EditorProps) {
           {/* Main column */}
           <div>
             {/* Access */}
-            <h3 className="mb-2.5 text-[13.5px] font-semibold text-foreground">
-              Access
-            </h3>
+            <h3 className="mb-2.5 text-[13.5px] font-semibold text-foreground">Access</h3>
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               {tiers.map((tier, ti) => (
-                <div
-                  key={tier.label}
-                  className={cn(ti > 0 && "border-t border-border")}
-                >
+                <div key={tier.label} className={cn(ti > 0 && "border-t border-border")}>
                   <div className="flex items-center justify-between px-4 pb-1 pt-3">
                     <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                       {tier.label}
@@ -464,11 +428,7 @@ function ToolkitEditor(props: EditorProps) {
                           const key = connKey(c.integration, c.name);
                           const a = access[key] ?? "off";
                           return (
-                            <div
-                              key={key}
-                              data-testid={`tk-conn ${key}`}
-                              className="pl-7"
-                            >
+                            <div key={key} data-testid={`tk-conn ${key}`} className="pl-7">
                               <div className="flex items-center gap-3 py-1">
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-[13px] font-semibold text-foreground">
@@ -480,19 +440,13 @@ function ToolkitEditor(props: EditorProps) {
                                     </div>
                                   )}
                                 </div>
-                                <AccessSeg
-                                  value={a}
-                                  onChange={(v) => setMode(key, v)}
-                                />
+                                <AccessSeg value={a} onChange={(v) => setMode(key, v)} />
                               </div>
                               {a !== "off" && (
                                 <Input
                                   value={notes[key] ?? ""}
                                   onChange={(e) =>
-                                    setNote(
-                                      key,
-                                      (e.target as HTMLInputElement).value,
-                                    )
+                                    setNote(key, (e.target as HTMLInputElement).value)
                                   }
                                   placeholder={`Note to the agent about ${c.name} (optional)`}
                                   className="mb-1.5 h-7 border-transparent bg-transparent px-0 text-[12px] italic shadow-none focus-visible:border-input"
@@ -539,18 +493,13 @@ function ToolkitEditor(props: EditorProps) {
               </div>
               <div className="border-t border-border px-4 py-2.5">
                 <div className="flex items-center gap-2 pb-1">
-                  <span className="text-[12.5px] font-semibold text-foreground">
-                    Toolkit rules
-                  </span>
+                  <span className="text-[12.5px] font-semibold text-foreground">Toolkit rules</span>
                   <span className="ml-auto text-[11px] text-muted-foreground">
                     {policies.length} {policies.length === 1 ? "rule" : "rules"}
                   </span>
                 </div>
                 {policies.map((p, i) => (
-                  <div
-                    key={i}
-                    className="flex flex-wrap items-center gap-2 py-1.5"
-                  >
+                  <div key={i} className="flex flex-wrap items-center gap-2 py-1.5">
                     <Input
                       value={p.pattern}
                       onChange={(e) =>
@@ -563,23 +512,17 @@ function ToolkitEditor(props: EditorProps) {
                     />
                     <Select
                       value={p.action}
-                      onValueChange={(v) =>
-                        setPolicy(i, { action: v as ToolkitPolicyAction })
-                      }
+                      onValueChange={(v) => setPolicy(i, { action: v as ToolkitPolicyAction })}
                     >
                       <SelectTrigger className="h-8 w-[150px] text-[12px]">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="approve">
-                          {ACTION_LABEL.approve}
-                        </SelectItem>
+                        <SelectItem value="approve">{ACTION_LABEL.approve}</SelectItem>
                         <SelectItem value="require_approval">
                           {ACTION_LABEL.require_approval}
                         </SelectItem>
-                        <SelectItem value="block">
-                          {ACTION_LABEL.block}
-                        </SelectItem>
+                        <SelectItem value="block">{ACTION_LABEL.block}</SelectItem>
                       </SelectContent>
                     </Select>
                     <Button
@@ -602,27 +545,21 @@ function ToolkitEditor(props: EditorProps) {
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      setPolicies((ps) => [
-                        ...ps,
-                        { pattern: "", action: "approve" },
-                      ]);
+                      setPolicies((ps) => [...ps, { pattern: "", action: "approve" }]);
                       mark();
                     }}
                   >
                     + Add rule
                   </Button>
                   <span className="text-[11px] text-muted-foreground">
-                    Block hides matching tools entirely · approve /
-                    needs-approval set gating.
+                    Block hides matching tools entirely · approve / needs-approval set gating.
                   </span>
                 </div>
               </div>
             </div>
 
             {/* Connect */}
-            <h3 className="mb-2.5 mt-6 text-[13.5px] font-semibold text-foreground">
-              Connect
-            </h3>
+            <h3 className="mb-2.5 mt-6 text-[13.5px] font-semibold text-foreground">Connect</h3>
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                 MCP endpoint
@@ -638,16 +575,14 @@ function ToolkitEditor(props: EditorProps) {
                 }}
                 className="mt-2 flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-left"
               >
-                <span className="truncate font-mono text-[12px] text-foreground">
-                  {endpoint}
-                </span>
+                <span className="truncate font-mono text-[12px] text-foreground">{endpoint}</span>
                 <span className="shrink-0 text-[11px] text-muted-foreground">
                   {copied ? "copied" : "copy"}
                 </span>
               </button>
               <p className="mt-2.5 text-[11.5px] text-muted-foreground">
-                Point an agent at this URL with any of your account's API keys —
-                it sees only this toolkit's slice, never the management API.
+                Point an agent at this URL with any of your account's API keys — it sees only this
+                toolkit's slice, never the management API.
               </p>
             </div>
 
@@ -658,18 +593,12 @@ function ToolkitEditor(props: EditorProps) {
                 onClick={handleSave}
                 disabled={saving || (!!existing && !dirty)}
               >
-                {saving
-                  ? "Saving…"
-                  : existing
-                    ? "Save changes"
-                    : "Create toolkit"}
+                {saving ? "Saving…" : existing ? "Save changes" : "Create toolkit"}
               </Button>
               {error ? (
                 <span className="text-[12px] text-destructive">{error}</span>
               ) : existing && !dirty ? (
-                <span className="text-[12px] text-muted-foreground">
-                  All changes saved
-                </span>
+                <span className="text-[12px] text-muted-foreground">All changes saved</span>
               ) : null}
             </div>
           </div>
@@ -682,8 +611,7 @@ function ToolkitEditor(props: EditorProps) {
                   What the agent sees
                 </span>
                 <span className="text-[12px] text-muted-foreground">
-                  {previewCount}{" "}
-                  {previewCount === 1 ? "connection" : "connections"}
+                  {previewCount} {previewCount === 1 ? "connection" : "connections"}
                 </span>
               </div>
               {briefing.trim() && (
@@ -693,8 +621,8 @@ function ToolkitEditor(props: EditorProps) {
               )}
               {previewGroups.length === 0 ? (
                 <p className="mt-3 text-[12px] text-muted-foreground">
-                  Nothing granted yet — set a connection to Read or Full to give
-                  the agent something to work with.
+                  Nothing granted yet — set a connection to Read or Full to give the agent something
+                  to work with.
                 </p>
               ) : (
                 <div className="mt-3 flex flex-col gap-3">
@@ -709,22 +637,16 @@ function ToolkitEditor(props: EditorProps) {
                       {conns.map((c) => (
                         <div key={c.name} className="mt-1 pl-6">
                           <div className="flex items-center gap-2">
-                            <span className="text-[12px] text-foreground">
-                              {c.name}
-                            </span>
+                            <span className="text-[12px] text-foreground">{c.name}</span>
                             <Badge
-                              variant={
-                                c.access === "full" ? "default" : "secondary"
-                              }
+                              variant={c.access === "full" ? "default" : "secondary"}
                               className="px-1.5 py-0 text-[10px]"
                             >
                               {c.access === "full" ? "full" : "read-only"}
                             </Badge>
                           </div>
                           {c.note && (
-                            <p className="text-[11px] italic text-muted-foreground">
-                              {c.note}
-                            </p>
+                            <p className="text-[11px] italic text-muted-foreground">{c.note}</p>
                           )}
                         </div>
                       ))}
@@ -778,10 +700,7 @@ export function ToolkitsPage() {
   const integrationsResult = useAtomValue(integrationsAtom);
 
   const toolkits = AsyncResult.match(
-    toolkitsResult as AsyncResult.AsyncResult<
-      ReadonlyArray<ToolkitView>,
-      unknown
-    >,
+    toolkitsResult as AsyncResult.AsyncResult<ReadonlyArray<ToolkitView>, unknown>,
     {
       onInitial: () => null,
       onFailure: () => [] as ReadonlyArray<ToolkitView>,
@@ -797,10 +716,7 @@ export function ToolkitsPage() {
     },
   );
   const integrations = AsyncResult.match(
-    integrationsResult as AsyncResult.AsyncResult<
-      ReadonlyArray<Integ>,
-      unknown
-    >,
+    integrationsResult as AsyncResult.AsyncResult<ReadonlyArray<Integ>, unknown>,
     {
       onInitial: () => [] as ReadonlyArray<Integ>,
       onFailure: () => [] as ReadonlyArray<Integ>,
@@ -813,30 +729,19 @@ export function ToolkitsPage() {
     return (slug: string) => bySlug.get(slug) ?? slug;
   }, [integrations]);
 
-  const takenSlugs = useMemo(
-    () => new Set((toolkits ?? []).map((t) => t.slug)),
-    [toolkits],
-  );
+  const takenSlugs = useMemo(() => new Set((toolkits ?? []).map((t) => t.slug)), [toolkits]);
 
   if (toolkits === null) {
-    return (
-      <div className="px-1 py-8 text-[13px] text-muted-foreground">
-        Loading toolkits…
-      </div>
-    );
+    return <div className="px-1 py-8 text-[13px] text-muted-foreground">Loading toolkits…</div>;
   }
 
   if (view.kind === "edit" || view.kind === "new") {
-    const existing =
-      view.kind === "edit"
-        ? (toolkits.find((t) => t.id === view.id) ?? null)
-        : null;
+    const existing = view.kind === "edit" ? (toolkits.find((t) => t.id === view.id) ?? null) : null;
     // The toolkit was deleted out from under us (or never resolved) — fall back.
     if (view.kind === "edit" && !existing) {
       return <ToolkitEditorFallback onBack={() => navigate("")} />;
     }
-    const scope =
-      view.kind === "new" ? view.scope : (existing as ToolkitView).scope;
+    const scope = view.kind === "new" ? view.scope : (existing as ToolkitView).scope;
     return (
       <ToolkitEditor
         key={view.kind === "edit" ? view.id : `new-${view.scope}`}
@@ -863,8 +768,8 @@ export function ToolkitsPage() {
             Toolkits
           </h1>
           <p className="mt-1.5 max-w-[640px] text-sm text-muted-foreground">
-            A toolkit is a slice of your connections with its own MCP endpoint.
-            An agent connected to one can't see anything outside it.
+            A toolkit is a slice of your connections with its own MCP endpoint. An agent connected
+            to one can't see anything outside it.
           </p>
         </header>
         <ListSection
@@ -900,9 +805,7 @@ function ToolkitEditorFallback(props: { onBack: () => void }) {
         >
           ← Toolkits
         </button>
-        <p className="text-sm text-muted-foreground">
-          This toolkit no longer exists.
-        </p>
+        <p className="text-sm text-muted-foreground">This toolkit no longer exists.</p>
       </div>
     </div>
   );

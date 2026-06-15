@@ -11,16 +11,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -29,12 +22,10 @@ const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens, lowercase-alphanumeric) so the sandbox
 // `tools.<int>.<owner>.<conn>.<tool>` dotted path stays valid JS and the
 // connection name survives create-time normalization unchanged.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   "Toolkits · two toolkits over overlapping connections each see only their own slice; no cross-leak",
@@ -68,10 +59,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -158,14 +146,10 @@ scenario(
       // execute and surfaces as an error envelope (never the in-slice text).
       expect(s1a.text, `T1·A should run; text=${s1a.text}`).not.toBe("");
       expect(s1b.text, `T1·B should run; text=${s1b.text}`).not.toBe("");
-      expect(
-        s1c.text,
-        `T1·C must be blocked; a.text=${s1a.text} c.text=${s1c.text}`,
-      ).not.toBe(s1a.text);
-      expect(
-        s1c.text,
-        `T1·C blocked text differs from B; b.text=${s1b.text}`,
-      ).not.toBe(s1b.text);
+      expect(s1c.text, `T1·C must be blocked; a.text=${s1a.text} c.text=${s1c.text}`).not.toBe(
+        s1a.text,
+      );
+      expect(s1c.text, `T1·C blocked text differs from B; b.text=${s1b.text}`).not.toBe(s1b.text);
 
       // ---- Session scoped to T2 (sees B + C, never A) ----
       const s2 = mcp.session(identity, { toolkit: t2.slug });
@@ -180,37 +164,21 @@ scenario(
       // In-slice B and C run; out-of-slice A is blocked.
       expect(s2b.text, `T2·B should run; text=${s2b.text}`).not.toBe("");
       expect(s2c.text, `T2·C should run; text=${s2c.text}`).not.toBe("");
-      expect(
-        s2a.text,
-        `T2·A must be blocked; c.text=${s2c.text} a.text=${s2a.text}`,
-      ).not.toBe(s2c.text);
-      expect(
-        s2a.text,
-        `T2·A blocked text differs from B; b.text=${s2b.text}`,
-      ).not.toBe(s2b.text);
+      expect(s2a.text, `T2·A must be blocked; c.text=${s2c.text} a.text=${s2a.text}`).not.toBe(
+        s2c.text,
+      );
+      expect(s2a.text, `T2·A blocked text differs from B; b.text=${s2b.text}`).not.toBe(s2b.text);
 
       // ---- The cross term: shared B does not drag its other toolkit's members
       // across. C is reachable under T2 but blocked under T1; A is reachable
       // under T1 but blocked under T2. The two slices stay disjoint on their
       // non-shared members even though both contain B. ----
-      expect(
-        d1,
-        "C never appears in T1's inventory (only in T2's)",
-      ).not.toContain(slugC);
-      expect(
-        d2,
-        "A never appears in T2's inventory (only in T1's)",
-      ).not.toContain(slugA);
+      expect(d1, "C never appears in T1's inventory (only in T2's)").not.toContain(slugC);
+      expect(d2, "A never appears in T2's inventory (only in T1's)").not.toContain(slugA);
       // C's reachable text under T2 is exactly what's denied under T1.
-      expect(
-        s2c.text,
-        "C runs under T2 but its T1 attempt was blocked",
-      ).not.toBe(s1c.text);
+      expect(s2c.text, "C runs under T2 but its T1 attempt was blocked").not.toBe(s1c.text);
       // A's reachable text under T1 is exactly what's denied under T2.
-      expect(
-        s1a.text,
-        "A runs under T1 but its T2 attempt was blocked",
-      ).not.toBe(s2a.text);
+      expect(s1a.text, "A runs under T1 but its T2 attempt was blocked").not.toBe(s2a.text);
     }),
   ),
 );

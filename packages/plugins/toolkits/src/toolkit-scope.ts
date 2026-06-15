@@ -6,11 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Connection } from "@executor-js/sdk";
-import {
-  defaultDecideStaticTool,
-  type RequestScope,
-  type ScopeDecision,
-} from "@executor-js/sdk";
+import { defaultDecideStaticTool, type RequestScope, type ScopeDecision } from "@executor-js/sdk";
 
 import type { ToolkitAccess, ToolkitPolicyAction } from "./shared";
 
@@ -53,9 +49,7 @@ const matchPattern = (pattern: string, target: string): boolean => {
     if (p[i] === "*" && i === p.length - 1) return true;
     if (a[i] === undefined) return false;
     const re = new RegExp(
-      "^" +
-        p[i].replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") +
-        "$",
+      "^" + p[i].replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$",
     );
     if (!re.test(a[i])) return false;
   }
@@ -68,8 +62,7 @@ const accessFor = (
   connection: string,
 ): ToolkitAccess => {
   for (const e of scope.entries) {
-    if (e.integration === integration && e.connection === connection)
-      return e.access;
+    if (e.integration === integration && e.connection === connection) return e.access;
   }
   for (const e of scope.entries) {
     if (e.integration === integration && e.connection === "*") return e.access;
@@ -93,40 +86,27 @@ const policyDecisionForTool = (
 };
 
 /** Map a resolved toolkit slice to core's `RequestScope` overlay. */
-export const toolkitScopeToRequestScope = (
-  scope: ResolvedToolkitScope,
-): RequestScope => {
+export const toolkitScopeToRequestScope = (scope: ResolvedToolkitScope): RequestScope => {
   const allowedIntegrations = new Set(
     scope.entries.filter((e) => e.access !== "off").map((e) => e.integration),
   );
 
   return {
     inheritOrgPolicies: scope.inheritOrgPolicies,
-    allowsIntegration: (integration) =>
-      allowedIntegrations.has(String(integration.slug)),
+    allowsIntegration: (integration) => allowedIntegrations.has(String(integration.slug)),
     allowsConnection: (connection: Connection) =>
-      accessFor(
-        scope,
-        String(connection.integration),
-        String(connection.name),
-      ) !== "off",
+      accessFor(scope, String(connection.integration), String(connection.name)) !== "off",
     decideTool: (tool) => {
       const integration = String(tool.integration);
       const connection = String(tool.connection);
       const name = String(tool.name);
 
-      const fromPolicy = policyDecisionForTool(
-        scope,
-        integration,
-        connection,
-        name,
-      );
+      const fromPolicy = policyDecisionForTool(scope, integration, connection, name);
       if (fromPolicy === "block") return "block";
 
       const access = accessFor(scope, integration, connection);
       if (access === "off") return "block";
-      if (access === "read" && tool.annotations?.readOnly !== true)
-        return "block";
+      if (access === "read" && tool.annotations?.readOnly !== true) return "block";
 
       if (fromPolicy === "require_approval") return "require_approval";
       return "allow";

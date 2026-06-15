@@ -17,23 +17,15 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 
 const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
-const fresh = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const fresh = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
 scenario(
   "Toolkits · the console editor creates a toolkit and persists its access slice",
@@ -89,52 +81,35 @@ scenario(
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Toolkits page", async () => {
           await page.goto("/plugins/toolkits/", { waitUntil: "networkidle" });
-          await page
-            .getByRole("heading", { name: "Toolkits", exact: true })
-            .waitFor();
-          await page
-            .getByRole("heading", { name: "Workspace toolkits" })
-            .waitFor();
-          await page
-            .getByRole("heading", { name: "Personal toolkits" })
-            .waitFor();
+          await page.getByRole("heading", { name: "Toolkits", exact: true }).waitFor();
+          await page.getByRole("heading", { name: "Workspace toolkits" }).waitFor();
+          await page.getByRole("heading", { name: "Personal toolkits" }).waitFor();
         });
 
         await step("Start a new personal toolkit", async () => {
           // Two "New toolkit" buttons (workspace, personal); the second is the
           // personal section.
-          await page
-            .getByRole("button", { name: "New toolkit" })
-            .nth(1)
-            .click();
+          await page.getByRole("button", { name: "New toolkit" }).nth(1).click();
           await page.getByRole("heading", { name: "Access" }).waitFor();
           // The personal connection appears (proves the personal scope tier +
           // connection wiring).
           await page.getByText(connName).first().waitFor();
         });
 
-        await step(
-          "Name it, grant the connection full access, add a note",
-          async () => {
-            // The title is the first textbox in the editor (briefing is below it).
-            await page.getByRole("textbox").first().fill(toolkitName);
-            // Grant Full on this connection's row (testid keeps it unambiguous).
-            const row = page.getByTestId(connTestId);
-            await row
-              .getByRole("button", { name: "Full", exact: true })
-              .click();
-            // The note field appears once access != off; padded to prove trimming.
-            await row.getByRole("textbox").fill("  wiki only  ");
-          },
-        );
+        await step("Name it, grant the connection full access, add a note", async () => {
+          // The title is the first textbox in the editor (briefing is below it).
+          await page.getByRole("textbox").first().fill(toolkitName);
+          // Grant Full on this connection's row (testid keeps it unambiguous).
+          const row = page.getByTestId(connTestId);
+          await row.getByRole("button", { name: "Full", exact: true }).click();
+          // The note field appears once access != off; padded to prove trimming.
+          await row.getByRole("textbox").fill("  wiki only  ");
+        });
 
         await step("Create it", async () => {
           await page.getByRole("button", { name: "Create toolkit" }).click();
           // Back on the list, the New toolkit buttons return and the card shows.
-          await page
-            .getByRole("button", { name: "New toolkit" })
-            .first()
-            .waitFor();
+          await page.getByRole("button", { name: "New toolkit" }).first().waitFor();
           await page.getByText(toolkitName).first().waitFor();
         });
 

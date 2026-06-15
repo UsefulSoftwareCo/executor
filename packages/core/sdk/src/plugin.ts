@@ -2,10 +2,7 @@ import { Effect, type Schema as EffectSchema } from "effect";
 import type { Context, Layer } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import type { HttpApiGroup } from "effect/unstable/httpapi";
-import type {
-  StandardJSONSchemaV1,
-  StandardSchemaV1,
-} from "@standard-schema/spec";
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
 import type { StorageFailure } from "./fuma-runtime";
 
 import type { PluginBlobStore } from "./blob";
@@ -48,10 +45,7 @@ import type {
 } from "./errors";
 import type { OAuthService } from "./oauth-client";
 import type { CredentialProvider, ProviderEntry } from "./provider";
-import type {
-  PluginStorageConfig,
-  PluginStorageFacade,
-} from "./plugin-storage";
+import type { PluginStorageConfig, PluginStorageFacade } from "./plugin-storage";
 import type {
   CreateToolPolicyInput,
   RemoveToolPolicyInput,
@@ -120,9 +114,7 @@ export interface PluginCtx<TStore = unknown> {
   readonly core: {
     readonly integrations: {
       /** Register / replace this plugin's integration in the catalog. */
-      readonly register: (
-        input: RegisterIntegrationInput,
-      ) => Effect.Effect<void, StorageFailure>;
+      readonly register: (input: RegisterIntegrationInput) => Effect.Effect<void, StorageFailure>;
       readonly update: (
         slug: IntegrationSlug,
         patch: {
@@ -131,19 +123,13 @@ export interface PluginCtx<TStore = unknown> {
           readonly config?: IntegrationConfig;
         },
       ) => Effect.Effect<void, StorageFailure>;
-      readonly list: () => Effect.Effect<
-        readonly Integration[],
-        StorageFailure
-      >;
+      readonly list: () => Effect.Effect<readonly Integration[], StorageFailure>;
       readonly get: (
         slug: IntegrationSlug,
       ) => Effect.Effect<IntegrationRecord | null, StorageFailure>;
       readonly remove: (
         slug: IntegrationSlug,
-      ) => Effect.Effect<
-        void,
-        IntegrationRemovalNotAllowedError | StorageFailure
-      >;
+      ) => Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure>;
       readonly detect: (
         url: string,
       ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
@@ -152,15 +138,9 @@ export interface PluginCtx<TStore = unknown> {
     };
     readonly policies: {
       readonly list: () => Effect.Effect<readonly ToolPolicy[], StorageFailure>;
-      readonly create: (
-        input: CreateToolPolicyInput,
-      ) => Effect.Effect<ToolPolicy, StorageFailure>;
-      readonly update: (
-        input: UpdateToolPolicyInput,
-      ) => Effect.Effect<ToolPolicy, StorageFailure>;
-      readonly remove: (
-        input: RemoveToolPolicyInput,
-      ) => Effect.Effect<void, StorageFailure>;
+      readonly create: (input: CreateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
+      readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
+      readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
     };
   };
 
@@ -180,9 +160,7 @@ export interface PluginCtx<TStore = unknown> {
       readonly integration?: IntegrationSlug;
       readonly owner?: Owner;
     }) => Effect.Effect<readonly Connection[], StorageFailure>;
-    readonly get: (
-      ref: ConnectionRef,
-    ) => Effect.Effect<Connection | null, StorageFailure>;
+    readonly get: (ref: ConnectionRef) => Effect.Effect<Connection | null, StorageFailure>;
     /** Edit user-curated metadata (description, identityLabel). */
     readonly update: (
       ref: ConnectionRef,
@@ -199,9 +177,7 @@ export interface PluginCtx<TStore = unknown> {
     >;
     /** Resolve a connection's value through its provider (and OAuth refresh).
      *  null if the provider can't produce one. */
-    readonly resolveValue: (
-      ref: ConnectionRef,
-    ) => Effect.Effect<string | null, StorageFailure>;
+    readonly resolveValue: (ref: ConnectionRef) => Effect.Effect<string | null, StorageFailure>;
   };
 
   /** Registered credential backends — for discovery (browse a backend's items). */
@@ -217,9 +193,7 @@ export interface PluginCtx<TStore = unknown> {
 
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
-  readonly transaction: <A, E>(
-    effect: Effect.Effect<A, E>,
-  ) => Effect.Effect<A, E | StorageFailure>;
+  readonly transaction: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E | StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,10 +224,7 @@ export interface ResolveToolsInput<TStore = unknown> {
   /** Lazily resolve every credential input (`variable → value`) — the
    *  multi-input analog of `getValue`, for methods whose placements reference
    *  more than one variable. Empty map when the connection isn't persisted. */
-  readonly getValues: () => Effect.Effect<
-    Record<string, string | null>,
-    StorageFailure
-  >;
+  readonly getValues: () => Effect.Effect<Record<string, string | null>, StorageFailure>;
 }
 
 export interface ResolveToolsResult {
@@ -299,10 +270,8 @@ export interface StaticToolExecuteContext<TStore = unknown> {
   readonly elicit: Elicit;
 }
 
-export type StaticToolSchema<
-  Input = unknown,
-  Output = Input,
-> = StandardSchemaV1<Input, Output> & StandardJSONSchemaV1<Input, Output>;
+export type StaticToolSchema<Input = unknown, Output = Input> = StandardSchemaV1<Input, Output> &
+  StandardJSONSchemaV1<Input, Output>;
 
 export interface StaticToolDecl<TStore = unknown> {
   readonly name: string;
@@ -310,9 +279,7 @@ export interface StaticToolDecl<TStore = unknown> {
   readonly inputSchema?: StaticToolSchema;
   readonly outputSchema?: StaticToolSchema;
   readonly annotations?: ToolAnnotations;
-  readonly handler: (
-    input: StaticToolHandlerInput<TStore>,
-  ) => Effect.Effect<unknown, unknown>;
+  readonly handler: (input: StaticToolHandlerInput<TStore>) => Effect.Effect<unknown, unknown>;
 }
 
 const decodeStaticToolArgs = (
@@ -320,9 +287,7 @@ const decodeStaticToolArgs = (
   args: unknown,
 ): Effect.Effect<unknown, unknown> => {
   if (schema == null) return Effect.succeed(args);
-  return Effect.promise(() =>
-    Promise.resolve(schema["~standard"].validate(args)),
-  ).pipe(
+  return Effect.promise(() => Promise.resolve(schema["~standard"].validate(args))).pipe(
     Effect.flatMap((result) =>
       "value" in result ? Effect.succeed(result.value) : Effect.fail(result),
     ),
@@ -331,9 +296,7 @@ const decodeStaticToolArgs = (
 
 export interface StaticToolInput<
   TStore = unknown,
-  TInputSchema extends StaticToolSchema | undefined =
-    | StaticToolSchema
-    | undefined,
+  TInputSchema extends StaticToolSchema | undefined = StaticToolSchema | undefined,
 > {
   readonly name: string;
   readonly description: string;
@@ -350,9 +313,7 @@ export interface StaticToolInput<
 
 export const tool = <
   TStore = unknown,
-  TInputSchema extends StaticToolSchema | undefined =
-    | StaticToolSchema
-    | undefined,
+  TInputSchema extends StaticToolSchema | undefined = StaticToolSchema | undefined,
 >(
   input: StaticToolInput<TStore, TInputSchema>,
 ): StaticToolDecl<TStore> => ({
@@ -486,9 +447,7 @@ export interface PluginSpec<
   readonly extension?: (ctx: PluginCtx<TStore>) => TExtension;
 
   /** Static sources contributed by this plugin with inline tool handlers. */
-  readonly staticSources?: (
-    self: NoInfer<TExtension>,
-  ) => readonly StaticSourceDecl<TStore>[];
+  readonly staticSources?: (self: NoInfer<TExtension>) => readonly StaticSourceDecl<TStore>[];
 
   /** HttpApiGroup contributed by this plugin. */
   readonly routes?: () => TGroup;
@@ -509,9 +468,7 @@ export interface PluginSpec<
 
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the
    *  address. The plugin applies `input.credential` to the outbound request. */
-  readonly invokeTool?: (
-    input: InvokeToolInput<TStore>,
-  ) => Effect.Effect<unknown, unknown>;
+  readonly invokeTool?: (input: InvokeToolInput<TStore>) => Effect.Effect<unknown, unknown>;
 
   /** Bulk resolve annotations for a set of tool rows under one connection. */
   readonly resolveAnnotations?: (input: {
@@ -564,9 +521,7 @@ export interface PluginSpec<
   readonly credentialProviders?:
     | readonly CredentialProvider[]
     | ((ctx: PluginCtx<TStore>) => readonly CredentialProvider[])
-    | ((
-        ctx: PluginCtx<TStore>,
-      ) => Effect.Effect<readonly CredentialProvider[]>);
+    | ((ctx: PluginCtx<TStore>) => Effect.Effect<readonly CredentialProvider[]>);
 
   readonly close?: () => Effect.Effect<void, unknown>;
 }
@@ -582,14 +537,7 @@ export interface Plugin<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   THandlersLayer extends Layer.Layer<any, any, any> = any,
   TGroup extends HttpApiGroup.Any = HttpApiGroup.Any,
-> extends PluginSpec<
-  TId,
-  TExtension,
-  TStore,
-  TExtensionService,
-  THandlersLayer,
-  TGroup
-> {}
+> extends PluginSpec<TId, TExtension, TStore, TExtensionService, THandlersLayer, TGroup> {}
 
 // ---------------------------------------------------------------------------
 // definePlugin — factory-returning-spec.
@@ -603,11 +551,7 @@ export type ConfiguredPlugin<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   TExtensionService extends Context.Service<any, any> | undefined = undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  THandlersLayer extends Layer.Layer<any, any, any> = Layer.Layer<
-    unknown,
-    never,
-    never
-  >,
+  THandlersLayer extends Layer.Layer<any, any, any> = Layer.Layer<unknown, never, never>,
   TGroup extends HttpApiGroup.Any = HttpApiGroup.Any,
 > = (
   options?: TOptions & {
@@ -624,32 +568,13 @@ export function definePlugin<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   TExtensionService extends Context.Service<any, any> | undefined = undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  THandlersLayer extends Layer.Layer<any, any, any> = Layer.Layer<
-    unknown,
-    never,
-    never
-  >,
+  THandlersLayer extends Layer.Layer<any, any, any> = Layer.Layer<unknown, never, never>,
   TGroup extends HttpApiGroup.Any = HttpApiGroup.Any,
 >(
   authorFactory: (
     options?: TOptions,
-  ) => PluginSpec<
-    TId,
-    TExtension,
-    TStore,
-    TExtensionService,
-    THandlersLayer,
-    TGroup
-  >,
-): ConfiguredPlugin<
-  TId,
-  TExtension,
-  TStore,
-  TOptions,
-  TExtensionService,
-  THandlersLayer,
-  TGroup
-> {
+  ) => PluginSpec<TId, TExtension, TStore, TExtensionService, THandlersLayer, TGroup>,
+): ConfiguredPlugin<TId, TExtension, TStore, TOptions, TExtensionService, THandlersLayer, TGroup> {
   return (options) => {
     const {
       storage: storageOverride,
@@ -660,9 +585,7 @@ export function definePlugin<
     } = options ?? {};
 
     const hasAuthorOptions = Object.keys(rest).length > 0;
-    const spec = authorFactory(
-      hasAuthorOptions ? (rest as TOptions) : undefined,
-    );
+    const spec = authorFactory(hasAuthorOptions ? (rest as TOptions) : undefined);
 
     return {
       ...spec,
@@ -678,12 +601,7 @@ export function definePlugin<
 export type AnyPlugin = Plugin<string>;
 
 export type PluginExtensions<TPlugins extends readonly AnyPlugin[]> = {
-  readonly [P in TPlugins[number] as P["id"]]: P extends Plugin<
-    string,
-    infer TExt
-  >
-    ? TExt
-    : never;
+  readonly [P in TPlugins[number] as P["id"]]: P extends Plugin<string, infer TExt> ? TExt : never;
 };
 
 // Re-exported for consumers that check the elicitation handler type.

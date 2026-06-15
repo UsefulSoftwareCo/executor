@@ -12,16 +12,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -29,12 +22,10 @@ import { Api, Mcp, Target } from "../src/services";
 const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays valid JS; also satisfies the create-time name normalization.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   "Toolkits · updating a toolkit's connections re-narrows what a fresh MCP session sees",
@@ -68,10 +59,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -136,10 +124,9 @@ scenario(
 
       // Persisted set after create: exactly A.
       const view1 = yield* client.toolkits.get({ params: { id: kit.id } });
-      expect(
-        view1.connections.map((c) => c.integration).sort(),
-        "#1 persisted = [A]",
-      ).toEqual([slugA].sort());
+      expect(view1.connections.map((c) => c.integration).sort(), "#1 persisted = [A]").toEqual(
+        [slugA].sort(),
+      );
 
       // ---- Update -> [A full, B full]; Session #2 (fresh): BOTH present ----
       const upd2 = yield* client.toolkits.update({
@@ -159,16 +146,14 @@ scenario(
           ],
         },
       });
-      expect(
-        upd2.connections.map((c) => c.integration).sort(),
-        "update#2 echoes [A,B]",
-      ).toEqual([slugA, slugB].sort());
+      expect(upd2.connections.map((c) => c.integration).sort(), "update#2 echoes [A,B]").toEqual(
+        [slugA, slugB].sort(),
+      );
 
       const view2 = yield* client.toolkits.get({ params: { id: kit.id } });
-      expect(
-        view2.connections.map((c) => c.integration).sort(),
-        "#2 persisted = [A,B]",
-      ).toEqual([slugA, slugB].sort());
+      expect(view2.connections.map((c) => c.integration).sort(), "#2 persisted = [A,B]").toEqual(
+        [slugA, slugB].sort(),
+      );
 
       const s2 = mcp.session(identity, { toolkit: kit.slug });
       const desc2 = describeExecute(yield* s2.describeTools());
@@ -179,9 +164,7 @@ scenario(
       expect(s2A.ok, `#2 A still runnable; text=${s2A.text}`).toBe(true);
       const s2B = yield* s2.call("execute", { code: codeB });
       expect(s2B.ok, `#2 B now runnable; text=${s2B.text}`).toBe(true);
-      expect(s2B.text, "#2 B returns the greeting, not an error").toBe(
-        greeting,
-      );
+      expect(s2B.text, "#2 B returns the greeting, not an error").toBe(greeting);
 
       // ---- Update -> [B full] only (A dropped == off); Session #3 fresh ---
       const upd3 = yield* client.toolkits.update({

@@ -12,16 +12,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -29,12 +22,10 @@ import { Api, Mcp, Target } from "../src/services";
 const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path — and the description's connection-prefix inventory — stay valid.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 scenario(
   "Toolkits · the MCP execute tool's description lists exactly the toolkit's connection slice",
@@ -71,10 +62,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -148,18 +136,12 @@ scenario(
       ).not.toContain(prefixC);
       // Defense-in-depth: even the bare integration slug for C must not leak into
       // the scoped inventory (it never appears in any other prefix).
-      expect(
-        scopedDesc,
-        `scoped inventory omits C's integration entirely`,
-      ).not.toContain(slugC);
+      expect(scopedDesc, `scoped inventory omits C's integration entirely`).not.toContain(slugC);
 
       // The execute tool itself is still advertised on the scoped session — the
       // slice narrows its inventory, it does not remove the tool.
       const scopedToolNames = yield* scoped.listTools();
-      expect(
-        scopedToolNames,
-        "scoped session still advertises execute",
-      ).toContain("execute");
+      expect(scopedToolNames, "scoped session still advertises execute").toContain("execute");
 
       // Bare session (no selector): the description DOES name C — proving the
       // scoped omission above is genuine narrowing, not C being absent globally.

@@ -37,8 +37,7 @@ const ACTION_RESTRICTION_RANK: Record<ToolPolicyAction, number> = {
   require_approval: 2,
   approve: 1,
 };
-const actionRestrictionRank = (action: ToolPolicyAction): number =>
-  ACTION_RESTRICTION_RANK[action];
+const actionRestrictionRank = (action: ToolPolicyAction): number => ACTION_RESTRICTION_RANK[action];
 
 const DECISION_TO_POLICY_ACTION: Record<ScopeDecision, ToolPolicyAction> = {
   block: "block",
@@ -46,17 +45,14 @@ const DECISION_TO_POLICY_ACTION: Record<ScopeDecision, ToolPolicyAction> = {
   allow: "approve",
 };
 
-export const scopeDecisionToPolicyAction = (
-  decision: ScopeDecision,
-): ToolPolicyAction => DECISION_TO_POLICY_ACTION[decision];
+export const scopeDecisionToPolicyAction = (decision: ScopeDecision): ToolPolicyAction =>
+  DECISION_TO_POLICY_ACTION[decision];
 
 const moreRestrictiveAction = (
   current: ToolPolicyAction,
   candidate: ToolPolicyAction,
 ): ToolPolicyAction =>
-  actionRestrictionRank(candidate) > actionRestrictionRank(current)
-    ? candidate
-    : current;
+  actionRestrictionRank(candidate) > actionRestrictionRank(current) ? candidate : current;
 
 /** Catalog-reading static tools allowed under scope; mutations blocked by default. */
 const CATALOG_READ_STATIC_ADDRESSES = new Set([
@@ -67,10 +63,7 @@ const CATALOG_READ_STATIC_ADDRESSES = new Set([
 export const defaultDecideStaticTool = (tool: Tool): ScopeDecision =>
   CATALOG_READ_STATIC_ADDRESSES.has(String(tool.address)) ? "allow" : "block";
 
-export const decideStaticToolForScope = (
-  scope: RequestScope,
-  tool: Tool,
-): ScopeDecision =>
+export const decideStaticToolForScope = (scope: RequestScope, tool: Tool): ScopeDecision =>
   scope.decideStaticTool?.(tool) ?? defaultDecideStaticTool(tool);
 
 export const filterPolicyRowsForScope = (
@@ -80,10 +73,7 @@ export const filterPolicyRowsForScope = (
   scope.inheritOrgPolicies
     ? rows
     : rows.filter(
-        (row) =>
-          row.owner !== "org" ||
-          row.action === "block" ||
-          row.action === "require_approval",
+        (row) => row.owner !== "org" || row.action === "block" || row.action === "require_approval",
       );
 
 export const resolveScopedEffectivePolicy = (
@@ -95,12 +85,7 @@ export const resolveScopedEffectivePolicy = (
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
   const filtered = filterPolicyRowsForScope(policies, scope);
-  const base = resolveEffectivePolicy(
-    toolId,
-    filtered,
-    ownerRank,
-    defaultRequiresApproval,
-  );
+  const base = resolveEffectivePolicy(toolId, filtered, ownerRank, defaultRequiresApproval);
   const scopeDecision = tool.static
     ? decideStaticToolForScope(scope, tool)
     : scope.decideTool(tool);
@@ -117,13 +102,8 @@ export const resolveScopedEffectivePolicy = (
   };
 };
 
-export const toolVisibleUnderScope = (
-  tool: Tool,
-  scope: RequestScope,
-): boolean => {
-  const decision = tool.static
-    ? decideStaticToolForScope(scope, tool)
-    : scope.decideTool(tool);
+export const toolVisibleUnderScope = (tool: Tool, scope: RequestScope): boolean => {
+  const decision = tool.static ? decideStaticToolForScope(scope, tool) : scope.decideTool(tool);
   return decision !== "block";
 };
 
@@ -140,18 +120,12 @@ export const scopePluginCtx = <TStore>(
       list: () =>
         ctx.core.integrations
           .list()
-          .pipe(
-            Effect.map((items) =>
-              items.filter((i) => scope.allowsIntegration(i)),
-            ),
-          ),
+          .pipe(Effect.map((items) => items.filter((i) => scope.allowsIntegration(i)))),
       get: (slug) =>
         ctx.core.integrations
           .get(slug)
           .pipe(
-            Effect.map((record) =>
-              record && scope.allowsIntegration(record) ? record : null,
-            ),
+            Effect.map((record) => (record && scope.allowsIntegration(record) ? record : null)),
           ),
     },
   },
@@ -160,17 +134,13 @@ export const scopePluginCtx = <TStore>(
     list: (filter) =>
       ctx.connections
         .list(filter)
-        .pipe(
-          Effect.map((items) => items.filter((c) => scope.allowsConnection(c))),
-        ),
+        .pipe(Effect.map((items) => items.filter((c) => scope.allowsConnection(c)))),
     get: (ref) =>
       ctx.connections
         .get(ref)
         .pipe(
           Effect.map((connection) =>
-            connection && scope.allowsConnection(connection)
-              ? connection
-              : null,
+            connection && scope.allowsConnection(connection) ? connection : null,
           ),
         ),
   },

@@ -9,29 +9,20 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
 import type { McpSession } from "../src/surfaces/mcp";
 
 const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
 const isBlocked = (text: string): boolean => text.includes("tool_blocked");
 
-const isSuccessfulGreeting = (text: string): boolean =>
-  text.includes("Hello from greeting MCP");
+const isSuccessfulGreeting = (text: string): boolean => text.includes("Hello from greeting MCP");
 
 const listConnections = (session: McpSession) =>
   session.call("execute", {
@@ -79,10 +70,7 @@ scenario(
                 {
                   type: "apiKey",
                   headers: {
-                    Authorization: [
-                      "Bearer ",
-                      { type: "variable", name: "token" },
-                    ],
+                    Authorization: ["Bearer ", { type: "variable", name: "token" }],
                   },
                 },
               ],
@@ -145,12 +133,7 @@ scenario(
       expect(
         bareConns.connections.map((c) => `${c.integration}/${c.name}`),
         "bare connections.list still sees both connections",
-      ).toEqual(
-        expect.arrayContaining([
-          `${slugIn}/${connIn}`,
-          `${slugOut}/${connOut}`,
-        ]),
-      );
+      ).toEqual(expect.arrayContaining([`${slugIn}/${connIn}`, `${slugOut}/${connOut}`]));
 
       const scopedIntsResult = yield* listIntegrations(scoped);
       const bareIntsResult = yield* listIntegrations(bare);
@@ -167,20 +150,15 @@ scenario(
       };
 
       const scopedSlugs = scopedInts.integrations.map((i) => i.slug);
-      expect(
-        scopedSlugs,
-        "scoped integrations.list includes in-slice slug",
-      ).toContain(slugIn);
-      expect(
-        scopedSlugs,
-        "scoped integrations.list omits out-of-slice slug",
-      ).not.toContain(slugOut);
+      expect(scopedSlugs, "scoped integrations.list includes in-slice slug").toContain(slugIn);
+      expect(scopedSlugs, "scoped integrations.list omits out-of-slice slug").not.toContain(
+        slugOut,
+      );
 
       const bareSlugs = bareInts.integrations.map((i) => i.slug);
-      expect(
-        bareSlugs,
-        "bare integrations.list still sees both integrations",
-      ).toEqual(expect.arrayContaining([slugIn, slugOut]));
+      expect(bareSlugs, "bare integrations.list still sees both integrations").toEqual(
+        expect.arrayContaining([slugIn, slugOut]),
+      );
 
       const inSlice = yield* scoped.call("execute", {
         code: `return await tools.${slugIn}.org.${connIn}.simple_echo({});`,

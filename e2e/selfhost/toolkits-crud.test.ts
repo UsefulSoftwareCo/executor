@@ -14,8 +14,7 @@ import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 
 const api = composePluginApi([toolkitsPlugin()] as const);
-const fresh = (prefix: string): string =>
-  `${prefix}-${randomBytes(4).toString("hex")}`;
+const fresh = (prefix: string): string => `${prefix}-${randomBytes(4).toString("hex")}`;
 
 scenario(
   "Toolkits · CRUD round-trips through the selfhost API",
@@ -37,10 +36,7 @@ scenario(
     });
     expect(created.slug).toBe(slug);
     expect(created.scope).toBe("personal");
-    expect(
-      created.inheritOrgPolicies,
-      "defaults to inheriting org policies",
-    ).toBe(true);
+    expect(created.inheritOrgPolicies, "defaults to inheriting org policies").toBe(true);
     expect(created.briefing).toBe("general assistant");
     expect(created.connections.length).toBe(0);
 
@@ -70,13 +66,10 @@ scenario(
     });
     expect(removed.removed).toBe(true);
 
-    const afterDelete = yield* Effect.flip(
-      client.toolkits.get({ params: { id: created.id } }),
+    const afterDelete = yield* Effect.flip(client.toolkits.get({ params: { id: created.id } }));
+    expect((afterDelete as { _tag?: string })._tag, "GET after delete is ToolkitNotFound").toBe(
+      "ToolkitNotFound",
     );
-    expect(
-      (afterDelete as { _tag?: string })._tag,
-      "GET after delete is ToolkitNotFound",
-    ).toBe("ToolkitNotFound");
   }),
 );
 
@@ -105,9 +98,8 @@ scenario(
         },
       }),
     );
-    expect(
-      (result as { _tag?: string })._tag,
-      "rejected with ToolkitForbidden",
-    ).toBe("ToolkitForbidden");
+    expect((result as { _tag?: string })._tag, "rejected with ToolkitForbidden").toBe(
+      "ToolkitForbidden",
+    );
   }),
 );

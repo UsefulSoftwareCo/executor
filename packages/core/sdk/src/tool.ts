@@ -1,10 +1,4 @@
-import type {
-  ConnectionName,
-  IntegrationSlug,
-  Owner,
-  ToolAddress,
-  ToolName,
-} from "./ids";
+import type { ConnectionName, IntegrationSlug, Owner, ToolAddress, ToolName } from "./ids";
 
 /* Tools belong to a connection and are PERSISTED, like v1 — not resolved live on
  * every list. A plugin produces them at create/refresh (openapi from the

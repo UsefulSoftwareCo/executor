@@ -26,11 +26,7 @@
 import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
-import {
-  type AnyPlugin,
-  type Executor,
-  type StorageFailure,
-} from "@executor-js/sdk";
+import { type AnyPlugin, type Executor, type StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
   type ExecutionEngine,
@@ -38,11 +34,7 @@ import {
 } from "@executor-js/execution";
 
 import { DbProvider } from "./executor-fuma-db";
-import {
-  HostConfig,
-  PluginsProvider,
-  makeScopedExecutor,
-} from "./scoped-executor";
+import { HostConfig, PluginsProvider, makeScopedExecutor } from "./scoped-executor";
 
 // ---------------------------------------------------------------------------
 // CodeExecutorProvider seam — the host's code-execution substrate. Typed to the
@@ -51,13 +43,11 @@ import {
 // assigns structurally.
 // ---------------------------------------------------------------------------
 
-export type CodeExecutor =
-  ExecutionEngineConfig<Cause.YieldableError>["codeExecutor"];
+export type CodeExecutor = ExecutionEngineConfig<Cause.YieldableError>["codeExecutor"];
 
-export class CodeExecutorProvider extends Context.Service<
-  CodeExecutorProvider,
-  CodeExecutor
->()("@executor-js/api/CodeExecutorProvider") {}
+export class CodeExecutorProvider extends Context.Service<CodeExecutorProvider, CodeExecutor>()(
+  "@executor-js/api/CodeExecutorProvider",
+) {}
 
 // ---------------------------------------------------------------------------
 // EngineDecorator seam — wrap the freshly built engine (e.g. with usage
@@ -81,15 +71,12 @@ export interface EngineDecoratorShape {
   ) => ExecutionEngine<E>;
 }
 
-export class EngineDecorator extends Context.Service<
-  EngineDecorator,
-  EngineDecoratorShape
->()("@executor-js/api/EngineDecorator") {}
+export class EngineDecorator extends Context.Service<EngineDecorator, EngineDecoratorShape>()(
+  "@executor-js/api/EngineDecorator",
+) {}
 
 /** No-op decorator: the engine passes through unchanged. */
-export const EngineDecoratorNoop: Layer.Layer<EngineDecorator> = Layer.succeed(
-  EngineDecorator,
-)({
+export const EngineDecoratorNoop: Layer.Layer<EngineDecorator> = Layer.succeed(EngineDecorator)({
   decorate: (engine) => engine,
 });
 
@@ -118,18 +105,10 @@ export const makeExecutionStack = <
     readonly engine: ExecutionEngine<Cause.YieldableError>;
   },
   StorageFailure,
-  | DbProvider
-  | PluginsProvider
-  | HostConfig
-  | CodeExecutorProvider
-  | EngineDecorator
+  DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator
 > =>
   Effect.gen(function* () {
-    const base = yield* makeScopedExecutor<TPlugins>(
-      accountId,
-      organizationId,
-      organizationName,
-    );
+    const base = yield* makeScopedExecutor<TPlugins>(accountId, organizationId, organizationName);
     const executor = selector ? yield* base.applyRequestScope(selector) : base;
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;

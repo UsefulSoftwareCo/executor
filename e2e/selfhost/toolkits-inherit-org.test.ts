@@ -8,16 +8,9 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import {
-  makeGreetingMcpServer,
-  serveMcpServer,
-} from "@executor-js/plugin-mcp/testing";
+import { makeGreetingMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
-import {
-  AuthTemplateSlug,
-  ConnectionName,
-  IntegrationSlug,
-} from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
@@ -29,12 +22,10 @@ const api = composePluginApi([mcpHttpPlugin(), toolkitsPlugin()] as const);
 
 // Identifier-safe (no hyphens) so the sandbox `tools.<int>.<owner>.<conn>.<tool>`
 // dotted path stays a valid JS member expression and names normalize cleanly.
-const ident = (prefix: string): string =>
-  `${prefix}${randomBytes(4).toString("hex")}`;
+const ident = (prefix: string): string => `${prefix}${randomBytes(4).toString("hex")}`;
 
-const describeExecute = (
-  defs: ReadonlyArray<{ name: string; description?: string }>,
-): string => defs.find((d) => d.name === "execute")?.description ?? "";
+const describeExecute = (defs: ReadonlyArray<{ name: string; description?: string }>): string =>
+  defs.find((d) => d.name === "execute")?.description ?? "";
 
 // A `block` surfaces as an error envelope at execute: `.ok` true, the error
 // (tool_blocked) inside `.text`. A successful greeting never contains this.
@@ -92,9 +83,7 @@ scenario(
 
       // Without any org policy, a bare /mcp session runs the tool — the baseline
       // "this connection works" before the org guardrail is in place.
-      const beforePolicy = yield* mcp
-        .session(identity)
-        .call("execute", { code });
+      const beforePolicy = yield* mcp.session(identity).call("execute", { code });
       expect(
         beforePolicy.ok && !isBlocked(beforePolicy.text),
         `connection works before the org policy; text=${beforePolicy.text}`,
@@ -110,10 +99,7 @@ scenario(
       });
       expect(orgPolicy.owner, "the org policy is owned by the org").toBe("org");
       expect(orgPolicy.action, "the org policy blocks").toBe("block");
-      expect(
-        orgPolicy.pattern,
-        "the org policy targets the connection's tool",
-      ).toBe(orgPattern);
+      expect(orgPolicy.pattern, "the org policy targets the connection's tool").toBe(orgPattern);
 
       // The org block is real: the bare session (no toolkit) is now blocked.
       const bareCall = yield* mcp.session(identity).call("execute", { code });
@@ -139,10 +125,7 @@ scenario(
           ],
         },
       });
-      expect(
-        inherit.inheritOrgPolicies,
-        "T_inherit flag round-trips as true",
-      ).toBe(true);
+      expect(inherit.inheritOrgPolicies, "T_inherit flag round-trips as true").toBe(true);
 
       const isolated = yield* client.toolkits.create({
         payload: {
@@ -159,10 +142,7 @@ scenario(
           ],
         },
       });
-      expect(
-        isolated.inheritOrgPolicies,
-        "T_isolated flag round-trips as false",
-      ).toBe(false);
+      expect(isolated.inheritOrgPolicies, "T_isolated flag round-trips as false").toBe(false);
 
       // Both slices grant the connection at full, so neither hides it for lack of
       // access — any block is the org policy reaching the slice, not the grant.
@@ -170,18 +150,10 @@ scenario(
         yield* mcp.session(identity, { toolkit: inherit.slug }).describeTools(),
       );
       const isolatedDesc = describeExecute(
-        yield* mcp
-          .session(identity, { toolkit: isolated.slug })
-          .describeTools(),
+        yield* mcp.session(identity, { toolkit: isolated.slug }).describeTools(),
       );
-      expect(
-        inheritDesc,
-        "T_inherit slice scopes to the integration",
-      ).toContain(slug);
-      expect(
-        isolatedDesc,
-        "T_isolated slice scopes to the integration",
-      ).toContain(slug);
+      expect(inheritDesc, "T_inherit slice scopes to the integration").toContain(slug);
+      expect(isolatedDesc, "T_isolated slice scopes to the integration").toContain(slug);
 
       // Execute the SAME code in each scoped session.
       const inheritCall = yield* mcp
@@ -210,9 +182,7 @@ scenario(
         params: { id: isolated.id },
       });
       expect(inheritView.inheritOrgPolicies, "view preserves true").toBe(true);
-      expect(isolatedView.inheritOrgPolicies, "view preserves false").toBe(
-        false,
-      );
+      expect(isolatedView.inheritOrgPolicies, "view preserves false").toBe(false);
     }),
   ),
 );
