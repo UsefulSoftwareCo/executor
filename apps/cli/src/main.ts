@@ -36,6 +36,25 @@ if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
   setQuickJSModule(mod);
 }
 
+const sentryDsn = process.env.EXECUTOR_SENTRY_DSN;
+if (sentryDsn) {
+  const Sentry = await import("@sentry/bun");
+  Sentry.init({
+    dsn: sentryDsn,
+    release: process.env.EXECUTOR_SENTRY_RELEASE,
+    environment: process.env.EXECUTOR_SENTRY_ENVIRONMENT ?? "production",
+    tracesSampleRate: 0,
+    initialScope: {
+      tags: {
+        process: "daemon",
+        platform: process.platform,
+        arch: process.arch,
+        ...(process.env.EXECUTOR_RUN_ID ? { runId: process.env.EXECUTOR_RUN_ID } : {}),
+      },
+    },
+  });
+}
+
 import { Argument as Args, Command, Flag as Options } from "effect/unstable/cli";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { HttpApiClient } from "effect/unstable/httpapi";
@@ -71,6 +90,7 @@ import {
   isExecutorServerReachable,
   isDevCliEntrypoint,
   parseDaemonBaseUrl,
+  planServiceInstall,
   spawnDetached,
   waitForReachable,
   waitForUnreachable,
@@ -100,7 +120,6 @@ import {
   acquireLocalServerStartLock,
   readLocalServerManifest,
   releaseLocalServerStartLock,
-  removeLocalServerManifest,
   removeLocalServerManifestIfOwnedBy,
   resolveExecutorDataDir,
   writeLocalServerManifest,
@@ -260,7 +279,7 @@ const makeLocalServerManifest = (input: {
       scopeDir: currentScopeDirForManifest(),
       connection: input.connection,
       owner: {
-        client: "cli",
+        client: process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "cli",
         version: CLI_VERSION,
         executablePath: isDevMode ? (script ?? null) : process.execPath,
       },
@@ -284,6 +303,41 @@ const assertNoOtherActiveLocalServer = (): Effect.Effect<
         ].join("\n"),
       ),
     );
+  });
+
+const takeOverActiveLocalServer = (): Effect.Effect<
+  ExecutorLocalServerManifest | null,
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    const manifest = yield* readLocalServerManifest();
+    if (!manifest) return null;
+
+    if (!isPidAlive(manifest.pid) || manifest.pid === process.pid) {
+      yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
+      return null;
+    }
+
+    yield* terminatePid(manifest.pid).pipe(Effect.ignore);
+    const stopped = yield* waitForUnreachable({
+      check: isServerReachable(manifest.connection.origin),
+      timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+      intervalMs: DAEMON_BOOT_POLL_MS,
+    });
+    if (!stopped) {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `The existing Executor ${manifest.kind} at ${manifest.connection.origin} (pid ${manifest.pid}) did not stop within ${DAEMON_STOP_TIMEOUT_MS / 1000}s.`,
+            "Stop it manually and re-run.",
+          ].join("\n"),
+        ),
+      );
+    }
+
+    yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
+    return manifest;
   });
 
 const publishLocalServerManifest = (input: {
@@ -897,7 +951,7 @@ const runDaemonSession = (input: {
         // and crash-loop under KeepAlive. (Found by a real reboot test with
         // integration data in the DB.)
         if (process.env.EXECUTOR_SUPERVISED) {
-          yield* removeLocalServerManifest().pipe(Effect.ignore);
+          yield* takeOverActiveLocalServer().pipe(Effect.ignore);
         } else {
           yield* assertNoOtherActiveLocalServer();
         }
@@ -907,15 +961,34 @@ const runDaemonSession = (input: {
         if (existing) {
           const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
           if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-            return yield* Effect.fail(
-              new Error(
-                [
-                  `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-                  `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-                  `Stop it first: ${cliPrefix} daemon stop`,
-                ].join("\n"),
-              ),
-            );
+            if (process.env.EXECUTOR_SUPERVISED) {
+              yield* terminatePid(existing.pid).pipe(Effect.ignore);
+              const stopped = yield* waitForUnreachable({
+                check: isServerReachable(existingUrl),
+                timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+                intervalMs: DAEMON_BOOT_POLL_MS,
+              });
+              if (!stopped) {
+                return yield* Effect.fail(
+                  new Error(
+                    [
+                      `The existing daemon for scope ${scopeId} at ${existingUrl} (pid ${existing.pid}) did not stop within ${DAEMON_STOP_TIMEOUT_MS / 1000}s.`,
+                      "Stop it manually and re-run.",
+                    ].join("\n"),
+                  ),
+                );
+              }
+            } else {
+              return yield* Effect.fail(
+                new Error(
+                  [
+                    `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                    `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                    `Stop it first: ${cliPrefix} daemon stop`,
+                  ].join("\n"),
+                ),
+              );
+            }
           }
           yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
         }
@@ -2125,6 +2198,17 @@ const mcpCommand = Command.make(
 
 const supervisedServiceOrigin = (port: number): string => `http://127.0.0.1:${port}`;
 
+const portFromOrigin = (origin: string): number | null => {
+  try {
+    const url = new URL(origin);
+    if (!url.port) return url.protocol === "https:" ? 443 : 80;
+    const port = Number.parseInt(url.port, 10);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+};
+
 const servicePortOption = () =>
   Options.integer("port")
     .pipe(Options.withDefault(DEFAULT_SERVICE_PORT))
@@ -2164,26 +2248,36 @@ const installService = (port: number, commandName: string) =>
       return;
     }
 
-    // Don't fight an already-running local server against the same data dir
-    // (a desktop sidecar, a foreground `executor web`, or an existing daemon).
-    const active = yield* readActiveLocalServerManifest();
-    if (active) {
-      const status = yield* backend.status();
-      if (status.registered && status.running && active.kind === "cli-daemon") {
+    const status = yield* backend.status();
+    const active = yield* readActiveLocalServerManifest().pipe(Effect.orElseSucceed(() => null));
+    const plan = planServiceInstall({
+      registered: status.registered,
+      running: status.running,
+      activeKind: active?.kind ?? null,
+      activePid: active?.pid ?? null,
+      servicePid: status.pid,
+      activeVersion: active?.owner.version ?? null,
+      activeExecutablePath: active?.owner.executablePath ?? null,
+      activePort: active ? portFromOrigin(active.connection.origin) : null,
+      requestedPort: port,
+      currentVersion: CLI_VERSION,
+      currentExecutablePath: process.execPath,
+    });
+
+    if (plan === "noop") {
+      const where = active ? ` at ${active.connection.origin} (pid ${active.pid})` : "";
+      console.log(`Executor background service is already running${where}.`);
+      console.log(`Open it in your browser, already signed in, with:  ${cliPrefix} web`);
+      return;
+    }
+
+    if (plan === "takeover-then-install") {
+      const replaced = yield* takeOverActiveLocalServer();
+      if (replaced) {
         console.log(
-          `Executor background service is already running at ${active.connection.origin} (pid ${active.pid}).`,
+          `Replacing running Executor ${replaced.kind} at ${replaced.connection.origin} (pid ${replaced.pid})...`,
         );
-        console.log(`Open it in your browser, already signed in, with:  ${cliPrefix} web`);
-        return;
       }
-      return yield* Effect.fail(
-        new Error(
-          [
-            `A local Executor ${active.kind} is already running at ${active.connection.origin} (pid ${active.pid}).`,
-            `Stop it first (quit the desktop app, or \`${cliPrefix} daemon stop\`), then re-run \`${command}\`.`,
-          ].join("\n"),
-        ),
-      );
     }
 
     const path = yield* PlatformPath.Path;

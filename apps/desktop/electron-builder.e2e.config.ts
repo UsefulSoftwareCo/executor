@@ -1,5 +1,5 @@
 // Unsigned packaging config for e2e: produces the SAME app bundle as the
-// release config (same extraResources sidecar binary + web-ui, same main/
+// release config (same bundled executor extraResource, same main/
 // preload `out/`), but skips Apple signing/notarization so it builds with no
 // CSC_LINK / APPLE_API_KEY. The e2e drives the resulting bundle through
 // Playwright `_electron`; in a VM, Gatekeeper is bypassed (the app is

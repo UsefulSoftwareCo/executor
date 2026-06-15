@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ServerIcon } from "lucide-react";
 import {
   getExecutorServerAuthorizationHeader,
+  normalizeExecutorServerConnection,
   useExecutorServerConnection,
   useSetExecutorServerConnection,
   type ExecutorServerAuth,
@@ -74,6 +75,16 @@ const desktopProfileStorageBridge = (): DesktopProfileStorageBridge | null => {
   };
 };
 
+const hasDesktopServerConnectionBridge = (): boolean =>
+  Boolean(desktopProfileStorageBridge()) ||
+  typeof globalThis.window?.executor?.getServerConnection === "function";
+
+const readDesktopServerConnection = (): Promise<ExecutorServerConnectionInput | null> | null => {
+  const bridge = globalThis.window?.executor;
+  if (!bridge || typeof bridge.getServerConnection !== "function") return null;
+  return bridge.getServerConnection();
+};
+
 const readBrowserProfiles = (): ExecutorServerProfilesSnapshot =>
   readExecutorServerProfiles(browserStorage());
 
@@ -134,7 +145,7 @@ const serverDescription = (connection: ExecutorServerConnection): string =>
   connection.origin.replace(/^https?:\/\//, "");
 
 const serverKindLabel = (connection: ExecutorServerConnection): string => {
-  if (connection.kind === "desktop-sidecar") return "Desktop";
+  if (connection.kind === "desktop-sidecar") return "Local";
   const hostname = new URL(connection.origin).hostname;
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
     ? "Local"
@@ -149,12 +160,43 @@ const authLabel = (connection: ExecutorServerConnection): string => {
   return "Auth";
 };
 
+const isLoopbackHost = (host: string): boolean =>
+  host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+
+const isLoopbackConnection = (connection: ExecutorServerConnection): boolean => {
+  const url = new URL(connection.origin);
+  return isLoopbackHost(url.hostname);
+};
+
+const sameLoopbackServer = (a: ExecutorServerConnection, b: ExecutorServerConnection): boolean => {
+  const left = new URL(a.origin);
+  const right = new URL(b.origin);
+  return (
+    left.protocol === right.protocol &&
+    isLoopbackHost(left.hostname) &&
+    isLoopbackHost(right.hostname) &&
+    (left.port || (left.protocol === "https:" ? "443" : "80")) ===
+      (right.port || (right.protocol === "https:" ? "443" : "80"))
+  );
+};
+
+const hasBearerAuth = (connection: ExecutorServerConnection): boolean =>
+  connection.auth?.kind === "bearer" && connection.auth.token.length > 0;
+
 const snapshotWithCurrent = (
   snapshot: ExecutorServerProfilesSnapshot,
   connection: ExecutorServerConnection,
   makeActive: boolean,
 ): ExecutorServerProfilesSnapshot =>
   upsertExecutorServerProfile(snapshot, connection, { makeActive }) ?? snapshot;
+
+const withoutLoopbackProfiles = (
+  snapshot: ExecutorServerProfilesSnapshot,
+): ExecutorServerProfilesSnapshot =>
+  normalizeExecutorServerProfilesSnapshot({
+    activeKey: snapshot.activeKey,
+    profiles: snapshot.profiles.filter((profile) => !isLoopbackConnection(profile)),
+  });
 
 const draftAuth = (draft: DraftProfile): ExecutorServerAuth | undefined => {
   const secret = draft.secret.trim();
@@ -201,14 +243,34 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
 
     let cancelled = false;
     void readStoredProfiles().then((stored) => {
-      if (cancelled) return;
-      const storedActive = getActiveExecutorServerProfile(stored);
-      const next = snapshotWithCurrent(stored, connection, storedActive === null);
-      persistSnapshot(next);
-      if (storedActive && storedActive.key !== connection.key) {
-        setServerConnection(storedActive);
-      }
-      setHydrated(true);
+      void (async () => {
+        if (cancelled) return;
+        const desktopBridge = hasDesktopServerConnectionBridge();
+        const desktopConnection =
+          (await readDesktopServerConnection()?.then(
+            (value) => value,
+            () => null,
+          )) ?? null;
+        const storedActive = getActiveExecutorServerProfile(stored);
+        const current = desktopConnection
+          ? normalizeExecutorServerConnection(desktopConnection)
+          : connection;
+        const baseStored = desktopConnection ? withoutLoopbackProfiles(stored) : stored;
+        const shouldKeepCurrent =
+          desktopBridge ||
+          storedActive === null ||
+          (hasBearerAuth(current) &&
+            storedActive !== null &&
+            sameLoopbackServer(current, storedActive));
+        const next = snapshotWithCurrent(baseStored, current, shouldKeepCurrent);
+        persistSnapshot(next);
+        if (desktopConnection) {
+          setServerConnection(desktopConnection);
+        } else if (!shouldKeepCurrent && storedActive && storedActive.key !== connection.key) {
+          setServerConnection(storedActive);
+        }
+        setHydrated(true);
+      })();
     });
 
     return () => {
@@ -219,7 +281,10 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
   useEffect(() => {
     if (!hydrated) return;
     setSnapshot((previous) => {
-      const next = snapshotWithCurrent(previous, connection, true);
+      const base = hasDesktopServerConnectionBridge()
+        ? withoutLoopbackProfiles(previous)
+        : previous;
+      const next = snapshotWithCurrent(base, connection, true);
       writeStoredProfiles(next);
       return next;
     });

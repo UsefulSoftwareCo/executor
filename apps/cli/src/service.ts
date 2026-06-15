@@ -138,27 +138,48 @@ const serviceProgramArguments = (descriptor: ServiceDescriptor): ReadonlyArray<s
   "--foreground",
   "--port",
   String(descriptor.port),
+  "--hostname",
+  "127.0.0.1",
 ];
 
 const serviceEnvironment = (
   descriptor: ServiceDescriptor,
   dataDir: string,
-): Record<string, string> => ({
-  // Marks the process as OS-supervised so the daemon resolves its bearer token
-  // from the durable 0600 auth.json (the secret is never in the unit itself).
-  EXECUTOR_SUPERVISED: "1",
-  // Pin the data dir explicitly: launchd/systemd give a minimal environment and
-  // we never want the daemon to fall back to a different home than the user's.
-  EXECUTOR_DATA_DIR: dataDir,
-  // Stamp the installing version so `service status` can flag drift after an
-  // upgrade where the unit still points at an older binary path.
-  EXECUTOR_SERVICE_VERSION: descriptor.version,
-  // A launchd/systemd unit starts with a bare PATH — without the user's PATH
-  // the daemon can't find pyenv/nvm/volta/Homebrew tools that integrations may
-  // shell out to. `service install` runs from the user's shell, so its own
-  // PATH is the right one to bake in. (Reference: opencode shell-env capture.)
-  ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-});
+): Record<string, string> => {
+  const passThroughKeys = [
+    "EXECUTOR_CLIENT",
+    "EXECUTOR_SENTRY_DSN",
+    "EXECUTOR_SENTRY_RELEASE",
+    "EXECUTOR_SENTRY_ENVIRONMENT",
+    "EXECUTOR_RUN_ID",
+  ] as const;
+  const passThrough = Object.fromEntries(
+    passThroughKeys.flatMap((key) => {
+      const value = process.env[key];
+      return value ? [[key, value] as const] : [];
+    }),
+  );
+
+  return {
+    // Marks the process as OS-supervised so the daemon resolves its bearer token
+    // from the durable 0600 auth.json (the secret is never in the unit itself).
+    EXECUTOR_SUPERVISED: "1",
+    // Pin the data/scope dirs explicitly: launchd/systemd give a minimal
+    // environment and we never want the daemon to fall back to a different home
+    // or cwd than the user's singleton local service.
+    EXECUTOR_DATA_DIR: dataDir,
+    EXECUTOR_SCOPE_DIR: process.env.EXECUTOR_SCOPE_DIR ?? dataDir,
+    // Stamp the installing version so `service status` can flag drift after an
+    // upgrade where the unit still points at an older binary path.
+    EXECUTOR_SERVICE_VERSION: descriptor.version,
+    // A launchd/systemd unit starts with a bare PATH — without the user's PATH
+    // the daemon can't find pyenv/nvm/volta/Homebrew tools that integrations may
+    // shell out to. `service install` runs from the user's shell, so its own
+    // PATH is the right one to bake in. (Reference: opencode shell-env capture.)
+    ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+    ...passThrough,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // macOS — launchd LaunchAgent (fully built)

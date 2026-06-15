@@ -6,7 +6,7 @@
  * renderer (Settings UI + Connect-an-agent surface) need to agree on it.
  *
  * Auth is NOT a setting: the sidecar always enforces the locally-minted bearer
- * token (see `@executor-js/local` auth.json). The main process injects it into
+ * token (see `~/.executor/server-control/auth.json`). The main process injects it into
  * the webview transparently, so the renderer never sees the credential and
  * there is nothing to toggle or persist here.
  */

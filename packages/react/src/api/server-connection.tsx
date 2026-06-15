@@ -127,6 +127,9 @@ interface ExecutorServerConnectionContextValue {
 const ExecutorServerConnectionContext =
   React.createContext<ExecutorServerConnectionContextValue | null>(null);
 
+const hasDesktopServerConnectionBridge = (): boolean =>
+  typeof globalThis.window?.executor?.getServerConnection === "function";
+
 export function ExecutorServerConnectionProvider(
   props: React.PropsWithChildren<{
     readonly connection?: ExecutorServerConnectionInput;
@@ -142,6 +145,7 @@ export function ExecutorServerConnectionProvider(
   const [connection, setConnection] = React.useState(initialConnection);
   const setActiveConnection = React.useCallback((input: ExecutorServerConnectionInput): void => {
     const next = normalizeExecutorServerConnection(input);
+    if (hasDesktopServerConnectionBridge() && next.kind !== "desktop-sidecar") return;
     activeConnection = next;
     setConnection(next);
   }, []);
@@ -160,13 +164,13 @@ export function ExecutorServerConnectionProvider(
     if (typeof bridge?.getServerConnection !== "function") return;
 
     let cancelled = false;
-    const initialKey = activeConnection.key;
     void bridge.getServerConnection().then(
       (input) => {
         if (cancelled || !input) return;
         const next = normalizeExecutorServerConnection(input);
-        setConnection((current) => {
-          if (current.key !== initialKey) return current;
+        setConnection(() => {
+          // Electron loads the UI from a local URL before the async bridge
+          // answers. Once it does, the bridge is the authoritative app server.
           activeConnection = next;
           return next;
         });

@@ -30,6 +30,11 @@ import {
 
 type StaticHandler = () => Response | Promise<Response>;
 
+const htmlResponse = (file: Bun.BunFile): Response =>
+  new Response(file, {
+    headers: { "content-type": "text/html", "cache-control": "no-store" },
+  });
+
 function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHandler> {
   const routes: Record<string, StaticHandler> = {};
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: filesystem route discovery is best-effort for optional built assets
@@ -42,9 +47,11 @@ function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHan
       } else {
         const file = Bun.file(fullPath);
         routes[routePath] = () =>
-          new Response(file, {
-            headers: { "content-type": file.type || "application/octet-stream" },
-          });
+          routePath === "/index.html"
+            ? htmlResponse(file)
+            : new Response(file, {
+                headers: { "content-type": file.type || "application/octet-stream" },
+              });
       }
     }
   } catch {}
@@ -60,9 +67,11 @@ function embeddedToStaticRoutes(embedded: Record<string, string>): Record<string
   for (const [key, bunfsPath] of Object.entries(embedded)) {
     const file = Bun.file(bunfsPath);
     routes[`/${key}`] = () =>
-      new Response(file, {
-        headers: { "content-type": file.type || "application/octet-stream" },
-      });
+      key === "index.html"
+        ? htmlResponse(file)
+        : new Response(file, {
+            headers: { "content-type": file.type || "application/octet-stream" },
+          });
   }
   return routes;
 }
@@ -300,11 +309,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   } else if (opts.embeddedWebUI) {
     staticRoutes = embeddedToStaticRoutes(opts.embeddedWebUI);
     const indexFile = Bun.file(opts.embeddedWebUI["index.html"] ?? join(clientDir, "index.html"));
-    serveIndex = () => new Response(indexFile, { headers: { "content-type": "text/html" } });
+    serveIndex = () => htmlResponse(indexFile);
   } else {
     staticRoutes = collectStaticRoutes(clientDir);
     const indexFile = Bun.file(join(clientDir, "index.html"));
-    serveIndex = () => new Response(indexFile, { headers: { "content-type": "text/html" } });
+    serveIndex = () => htmlResponse(indexFile);
   }
 
   const server = Bun.serve({

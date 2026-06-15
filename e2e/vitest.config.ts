@@ -58,8 +58,8 @@ export default defineConfig({
       }),
       // The PACKAGED desktop app: the real electron-builder bundle, where
       // app.isPackaged is true — the ONLY target that exercises the supervised-
-      // daemon attach path (ensureSupervisedConnection) and the bundled compiled
-      // sidecar. Its globalsetup builds the bundle (slow), so it's separate from
+      // daemon attach path (ensureSupervisedConnection) and the bundled executor.
+      // Its globalsetup builds the bundle (slow), so it's separate from
       // `desktop` to keep the fast dev-electron suite off the package build.
       // Needs a display; not part of the default `npm run test` chain — run with
       // `vitest run --project desktop-packaged`.
