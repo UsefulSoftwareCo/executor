@@ -257,11 +257,14 @@ const ensureSupervisedConnection = async (): Promise<SidecarConnection | null> =
 // reconnecting overlay while it's down, and reload once it's back.
 let supervisedMonitorTimer: ReturnType<typeof setInterval> | null = null;
 let supervisedDaemonDown = false;
+let supervisedMonitorMisses = 0;
+const SUPERVISED_MONITOR_MISSES_BEFORE_DOWN = 3;
 
 const stopSupervisedMonitor = () => {
   if (supervisedMonitorTimer) clearInterval(supervisedMonitorTimer);
   supervisedMonitorTimer = null;
   supervisedDaemonDown = false;
+  supervisedMonitorMisses = 0;
 };
 
 const armSupervisedMonitor = () => {
@@ -271,6 +274,8 @@ const armSupervisedMonitor = () => {
       const live = await attachToSupervisedDaemon();
       const window = liveMainWindow();
       if (!live) {
+        supervisedMonitorMisses += 1;
+        if (supervisedMonitorMisses < SUPERVISED_MONITOR_MISSES_BEFORE_DOWN) return;
         if (!supervisedDaemonDown && window) {
           supervisedDaemonDown = true;
           const html = sidecarCrashHtml({ reported: errorReportingEnabled });
@@ -278,6 +283,7 @@ const armSupervisedMonitor = () => {
         }
         return;
       }
+      supervisedMonitorMisses = 0;
       if (supervisedDaemonDown) {
         supervisedDaemonDown = false;
         connection = live;
