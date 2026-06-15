@@ -31,6 +31,18 @@ export const ToolkitConnectionEntry = Schema.Struct({
 });
 export type ToolkitConnectionEntry = typeof ToolkitConnectionEntry.Type;
 
+// off/read/full is the per-connection access mode; policies are pattern rules
+// layered on top. v1 enforces `block` (the tool is excluded); `approve` /
+// `require_approval` are persisted + briefed (org approval policies still apply).
+export const ToolkitPolicyAction = Schema.Literals(["approve", "require_approval", "block"]);
+export type ToolkitPolicyAction = typeof ToolkitPolicyAction.Type;
+
+export const ToolkitPolicy = Schema.Struct({
+  pattern: Schema.String,
+  action: ToolkitPolicyAction,
+});
+export type ToolkitPolicy = typeof ToolkitPolicy.Type;
+
 export const ToolkitView = Schema.Struct({
   id: Schema.String,
   slug: Schema.String,
@@ -39,6 +51,7 @@ export const ToolkitView = Schema.Struct({
   inheritOrgPolicies: Schema.Boolean,
   briefing: Schema.NullOr(Schema.String),
   connections: Schema.Array(ToolkitConnectionEntry),
+  policies: Schema.Array(ToolkitPolicy),
 });
 export type ToolkitView = typeof ToolkitView.Type;
 
@@ -49,6 +62,7 @@ export const CreateToolkitPayload = Schema.Struct({
   inheritOrgPolicies: Schema.optional(Schema.Boolean),
   briefing: Schema.optional(Schema.String),
   connections: Schema.optional(Schema.Array(ToolkitConnectionEntry)),
+  policies: Schema.optional(Schema.Array(ToolkitPolicy)),
 });
 export type CreateToolkitPayload = typeof CreateToolkitPayload.Type;
 
@@ -57,6 +71,7 @@ export const UpdateToolkitPayload = Schema.Struct({
   briefing: Schema.optional(Schema.NullOr(Schema.String)),
   inheritOrgPolicies: Schema.optional(Schema.Boolean),
   connections: Schema.optional(Schema.Array(ToolkitConnectionEntry)),
+  policies: Schema.optional(Schema.Array(ToolkitPolicy)),
 });
 export type UpdateToolkitPayload = typeof UpdateToolkitPayload.Type;
 

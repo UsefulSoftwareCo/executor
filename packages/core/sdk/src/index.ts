@@ -358,6 +358,8 @@ export {
   EMPTY_TOOLKIT_SCOPE,
   type ResolvedToolkitScope,
   type ToolkitAccess,
+  type ToolkitPolicyAction,
+  type ToolkitPolicyRule,
   type ToolkitResolver,
   type ToolkitScopeEntry,
 } from "./toolkit-scope";

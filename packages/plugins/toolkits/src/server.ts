@@ -29,6 +29,7 @@ import {
   ToolkitsApi,
   type CreateToolkitPayload,
   type ToolkitAccess,
+  type ToolkitPolicyAction,
   type ToolkitScope,
   type ToolkitView,
   type UpdateToolkitPayload,
@@ -57,10 +58,17 @@ const ConnectionRow = Schema.Struct({
   note: Schema.NullOr(Schema.String),
 });
 
+const PolicyRow = Schema.Struct({
+  toolkitId: Schema.String,
+  pattern: Schema.String,
+  action: Schema.String,
+});
+
 const TOOLKITS = definePluginStorageCollection("toolkits", ToolkitRow, { indexes: ["slug"] });
 const CONNECTIONS = definePluginStorageCollection("connections", ConnectionRow, {
   indexes: ["toolkitId"],
 });
+const POLICIES = definePluginStorageCollection("policies", PolicyRow, { indexes: ["toolkitId"] });
 
 const newId = Effect.sync(() => crypto.randomUUID());
 const scopeOfOwner = (owner: Owner): ToolkitScope => (owner === ORG ? "workspace" : "personal");
@@ -79,26 +87,31 @@ type ToolkitRowEntry = {
 const makeToolkitsExtension = (ctx: PluginCtx) => {
   const toolkits = ctx.pluginStorage.collection(TOOLKITS);
   const connections = ctx.pluginStorage.collection(CONNECTIONS);
+  const policies = ctx.pluginStorage.collection(POLICIES);
 
   const viewFromRow = (row: ToolkitRowEntry) =>
-    connections.query({ where: { toolkitId: row.key } }).pipe(
-      Effect.map(
-        (rows): ToolkitView => ({
-          id: row.key,
-          slug: row.data.slug,
-          name: row.data.name,
-          scope: scopeOfOwner(row.owner),
-          inheritOrgPolicies: row.data.inheritOrgPolicies,
-          briefing: row.data.briefing,
-          connections: rows.map((c) => ({
-            integration: c.data.integration as ToolkitConnectionIntegration,
-            connection: c.data.connection,
-            access: c.data.access as ToolkitAccess,
-            ...(c.data.note == null ? {} : { note: c.data.note }),
-          })),
-        }),
-      ),
-    );
+    Effect.gen(function* () {
+      const conns = yield* connections.query({ where: { toolkitId: row.key } });
+      const pols = yield* policies.query({ where: { toolkitId: row.key } });
+      return {
+        id: row.key,
+        slug: row.data.slug,
+        name: row.data.name,
+        scope: scopeOfOwner(row.owner),
+        inheritOrgPolicies: row.data.inheritOrgPolicies,
+        briefing: row.data.briefing,
+        connections: conns.map((c) => ({
+          integration: c.data.integration as ToolkitConnectionIntegration,
+          connection: c.data.connection,
+          access: c.data.access as ToolkitAccess,
+          ...(c.data.note == null ? {} : { note: c.data.note }),
+        })),
+        policies: pols.map((p) => ({
+          pattern: p.data.pattern,
+          action: p.data.action as ToolkitPolicyAction,
+        })),
+      } satisfies ToolkitView;
+    });
 
   // candidate connections honoring scope: a workspace toolkit may use only
   // org connections; a personal toolkit may use org + the caller's own.
@@ -146,6 +159,23 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       ),
     );
 
+  const putPolicies = (
+    toolkitId: string,
+    owner: Owner,
+    rules: ReadonlyArray<{ readonly pattern: string; readonly action: string }>,
+  ) =>
+    Effect.forEach(rules, (r) =>
+      newId.pipe(
+        Effect.flatMap((pid) =>
+          policies.put({
+            key: pid,
+            owner,
+            data: { toolkitId, pattern: r.pattern, action: r.action },
+          }),
+        ),
+      ),
+    );
+
   const create = (input: CreateToolkitPayload) =>
     Effect.gen(function* () {
       if (input.scope === "personal" && ctx.owner.subject == null) {
@@ -165,6 +195,7 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       };
       yield* toolkits.put({ key: id, owner, data });
       yield* putConnections(id, owner, entries);
+      yield* putPolicies(id, owner, input.policies ?? []);
       return yield* viewFromRow({ key: id, owner, data });
     });
 
@@ -197,6 +228,11 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
         );
         yield* putConnections(id, row.owner, patch.connections);
       }
+      if (patch.policies !== undefined) {
+        const existing = yield* policies.query({ where: { toolkitId: id } });
+        yield* Effect.forEach(existing, (p) => policies.remove({ key: p.key, owner: row.owner }));
+        yield* putPolicies(id, row.owner, patch.policies);
+      }
       return yield* viewFromRow({ key: id, owner: row.owner, data });
     });
 
@@ -204,8 +240,10 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
     Effect.gen(function* () {
       const row = yield* toolkits.get({ key: id });
       if (row == null) return yield* new ToolkitNotFound({ id });
-      const existing = yield* connections.query({ where: { toolkitId: id } });
-      yield* Effect.forEach(existing, (c) => connections.remove({ key: c.key, owner: row.owner }));
+      const conns = yield* connections.query({ where: { toolkitId: id } });
+      yield* Effect.forEach(conns, (c) => connections.remove({ key: c.key, owner: row.owner }));
+      const pols = yield* policies.query({ where: { toolkitId: id } });
+      yield* Effect.forEach(pols, (p) => policies.remove({ key: p.key, owner: row.owner }));
       yield* toolkits.remove({ key: id, owner: row.owner });
       return { removed: true };
     });
@@ -222,11 +260,16 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       const row = bySlug[0] ?? (yield* toolkits.get({ key: selector }));
       if (row == null) return null;
       const conns = yield* connections.query({ where: { toolkitId: row.key } });
+      const pols = yield* policies.query({ where: { toolkitId: row.key } });
       return {
         entries: conns.map((c) => ({
           integration: c.data.integration,
           connection: c.data.connection,
           access: c.data.access as ToolkitAccess,
+        })),
+        policies: pols.map((p) => ({
+          pattern: p.data.pattern,
+          action: p.data.action as ToolkitPolicyAction,
         })),
         inheritOrgPolicies: row.data.inheritOrgPolicies,
       };
