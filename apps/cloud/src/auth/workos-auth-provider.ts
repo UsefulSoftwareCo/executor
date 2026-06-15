@@ -29,6 +29,7 @@
 
 import { Effect, Layer } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
+import type { JWTVerifyGetKey } from "jose";
 
 import {
   IdentityProvider,
@@ -39,6 +40,7 @@ import {
 import type { FailureRenderingStrategy, IdentityFailure, Principal } from "@executor-js/api/server";
 
 import { ApiKeyService } from "./api-keys";
+import { workosApiJwtBearerConfig } from "./api-jwt-bearer";
 import { BEARER_PREFIX } from "./bearer";
 import {
   authorizeOrganization,
@@ -49,6 +51,20 @@ import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
 import type { UserStoreError, WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
+import { verifyWorkOSMcpAccessToken } from "../mcp/jwt";
+
+/**
+ * The config the bearer-JWT branch needs to verify a WorkOS access token:
+ * the AuthKit JWKS resolver plus the issuer + audience to assert. Passed in
+ * as a plain value so this module stays `cloudflare:workers`-free and the
+ * node-pool resolver tests can inject a local JWKS. Production supplies
+ * {@link workosApiJwtBearerConfig} (built from `cloudflare:workers` env).
+ */
+export interface JwtBearerConfig {
+  readonly jwks: JWTVerifyGetKey;
+  readonly issuer: string;
+  readonly audience: string;
+}
 
 // The exact machine codes + messages each rejected path has always emitted.
 // Carried on the shared identity error so the failure strategy renders the
@@ -70,8 +86,75 @@ const NO_ORGANIZATION_IN_SESSION = {
   code: "no_organization",
   message: "No organization in session",
 };
+const INVALID_ACCESS_TOKEN = {
+  code: "invalid_access_token",
+  message: "Invalid or expired access token",
+};
+const ACCESS_TOKEN_VERIFICATION_UNAVAILABLE = {
+  code: "access_token_verification_unavailable",
+  message: "Access token verification is temporarily unavailable",
+};
+const NO_ORGANIZATION_IN_ACCESS_TOKEN = {
+  code: "no_organization",
+  message: "No organization in access token",
+};
 
-export const resolveApiKeyPrincipal = (request: Request) =>
+// A bearer value with three dot-separated segments is a JWT (a WorkOS access
+// token from the CLI device-login); anything else is treated as an API key.
+// Same discriminator the MCP plane uses (`mcp/auth.ts`).
+const looksLikeJwt = (token: string): boolean => token.split(".").length === 3;
+
+/**
+ * Resolve a WorkOS access-token JWT (CLI `executor login`) into a protected
+ * `Principal`. Verifies the token against AuthKit's JWKS (issuer + audience),
+ * then live-checks org membership — exactly like the api-key path. The
+ * `org_id` claim must be present (a token with no org context is rejected as
+ * `NoOrganization`). Mirrors the MCP plane's JWT verify, reusing the same
+ * `cloudflare:workers`-free verifier so a CLI holds ONE credential for both
+ * the `/api/*` and `/mcp` planes.
+ */
+const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
+  Effect.gen(function* () {
+    const verified = yield* verifyWorkOSMcpAccessToken(token, jwt.jwks, {
+      issuer: jwt.issuer,
+      audience: jwt.audience,
+    }).pipe(
+      Effect.catchTag("McpJwtVerificationError", (error) =>
+        Effect.fail(
+          error.reason === "system"
+            ? new Unavailable(ACCESS_TOKEN_VERIFICATION_UNAVAILABLE)
+            : new Unauthorized(INVALID_ACCESS_TOKEN),
+        ),
+      ),
+    );
+
+    if (!verified || !verified.accountId) return yield* new Unauthorized(INVALID_ACCESS_TOKEN);
+    if (!verified.organizationId) {
+      return yield* new NoOrganization(NO_ORGANIZATION_IN_ACCESS_TOKEN);
+    }
+
+    const org = yield* authorizeOrganization(verified.accountId, verified.organizationId);
+    if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_ACCESS_TOKEN);
+
+    return {
+      accountId: verified.accountId,
+      organizationId: org.id,
+      organizationName: org.name,
+      email: "",
+      name: null,
+      avatarUrl: null,
+      roles: [],
+    } satisfies Principal;
+  });
+
+/**
+ * Resolve a `Bearer` credential into a `Principal`: a WorkOS access-token JWT
+ * (when `jwt` config is supplied and the value looks like a JWT) or a WorkOS
+ * API key. Returns `null` when there is no `Authorization` header, so the
+ * caller falls through to the sealed-session path. (Kept the historical name —
+ * the re-export and resolver tests reference it.)
+ */
+export const resolveApiKeyPrincipal = (request: Request, jwt: JwtBearerConfig | null = null) =>
   Effect.gen(function* () {
     const authHeader = request.headers.get("authorization");
     if (!authHeader) return null;
@@ -82,6 +165,8 @@ export const resolveApiKeyPrincipal = (request: Request) =>
 
     const value = authHeader.slice(BEARER_PREFIX.length).trim();
     if (!value) return yield* new Unauthorized(INVALID_API_KEY);
+
+    if (jwt && looksLikeJwt(value)) return yield* resolveJwtPrincipal(value, jwt);
 
     const apiKeys = yield* ApiKeyService;
     const principal = yield* apiKeys
@@ -149,14 +234,15 @@ export const resolveSessionPrincipal = (request: Request) =>
  */
 export const resolveProtectedPrincipal = (
   request: Request,
+  jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
   Principal,
   Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
   WorkOSClient | ApiKeyService | UserStoreService
 > =>
   Effect.gen(function* () {
-    const apiKeyPrincipal = yield* resolveApiKeyPrincipal(request);
-    if (apiKeyPrincipal) return apiKeyPrincipal;
+    const bearerPrincipal = yield* resolveApiKeyPrincipal(request, jwt);
+    if (bearerPrincipal) return bearerPrincipal;
     return yield* resolveSessionPrincipal(request);
   });
 
@@ -180,7 +266,7 @@ export const workosIdentityLayer: Layer.Layer<
     const context = yield* Effect.context<WorkOSClient | ApiKeyService | UserStoreService>();
     return IdentityProvider.of({
       authenticate: (request) =>
-        resolveProtectedPrincipal(request).pipe(
+        resolveProtectedPrincipal(request, workosApiJwtBearerConfig).pipe(
           // `UserStoreError` / `WorkOSError` are org-resolution infra failures —
           // surface as a 500 defect, exactly as the old inline resolver let them
           // bubble. The narrow `die` here is the runtime edge for that infra

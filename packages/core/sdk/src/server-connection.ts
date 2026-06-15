@@ -15,6 +15,18 @@ export type ExecutorServerAuth =
   | {
       readonly kind: "bearer";
       readonly token: string;
+    }
+  | {
+      // OAuth 2.0 device-flow credential from `executor login` against a hosted
+      // server. The access token is sent as a Bearer; `refreshToken` +
+      // `expiresAt` (epoch seconds) + `tokenEndpoint` + `clientId` let the CLI
+      // refresh it before expiry without a fresh browser login.
+      readonly kind: "oauth";
+      readonly accessToken: string;
+      readonly refreshToken?: string;
+      readonly expiresAt?: number;
+      readonly tokenEndpoint?: string;
+      readonly clientId?: string;
     };
 
 export interface ExecutorServerConnection {
@@ -125,6 +137,7 @@ export const getExecutorServerAuthorizationHeader = (
   const auth = connection.auth;
   if (!auth) return null;
   if (auth.kind === "bearer") return `Bearer ${auth.token}`;
+  if (auth.kind === "oauth") return `Bearer ${auth.accessToken}`;
   const encoded = encodeBasicCredentials(
     `${auth.username ?? DEFAULT_EXECUTOR_SERVER_USERNAME}:${auth.password}`,
   );
@@ -140,6 +153,14 @@ const ExecutorServerAuthJson = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("bearer"),
     token: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("oauth"),
+    accessToken: Schema.String,
+    refreshToken: Schema.optional(Schema.String),
+    expiresAt: Schema.optional(Schema.Number),
+    tokenEndpoint: Schema.optional(Schema.String),
+    clientId: Schema.optional(Schema.String),
   }),
 ]);
 

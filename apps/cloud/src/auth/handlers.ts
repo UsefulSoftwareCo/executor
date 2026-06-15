@@ -236,6 +236,22 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             STATE_COOKIE,
           );
         }),
+      )
+      // CLI device-login discovery. The WorkOS device endpoints live on the
+      // WorkOS API host (`WORKOS_API_URL`, or api.workos.com in production —
+      // the SAME base the SDK uses, so e2e points the CLI at the emulator with
+      // zero extra wiring). The CLI runs RFC 8628 against them as a public
+      // client (no secret) and gets a WorkOS access-token JWT back.
+      .handle("cliLogin", () =>
+        Effect.sync(() => {
+          const base = (env.WORKOS_API_URL ?? "https://api.workos.com").replace(/\/+$/, "");
+          return {
+            provider: "workos" as const,
+            deviceAuthorizationEndpoint: `${base}/user_management/authorize/device`,
+            tokenEndpoint: `${base}/user_management/authenticate`,
+            clientId: env.WORKOS_CLIENT_ID,
+          };
+        }),
       ),
 );
 

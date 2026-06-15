@@ -52,6 +52,14 @@ const PersistedAuth = Schema.Union([
     kind: Schema.Literal("bearer"),
     token: Schema.String,
   }),
+  Schema.Struct({
+    kind: Schema.Literal("oauth"),
+    accessToken: Schema.String,
+    refreshToken: Schema.optional(Schema.String),
+    expiresAt: Schema.optional(Schema.Number),
+    tokenEndpoint: Schema.optional(Schema.String),
+    clientId: Schema.optional(Schema.String),
+  }),
 ]);
 
 const PersistedConnection = Schema.Struct({

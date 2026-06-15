@@ -69,11 +69,20 @@ import { ExecutorApi } from "@executor-js/api";
 import {
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
+  normalizeExecutorServerOrigin,
   type ExecutorLocalServerKind,
   type ExecutorLocalServerManifest,
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
 } from "@executor-js/sdk/shared";
+import {
+  decodeAccessTokenClaims,
+  discoverCliLogin,
+  openBrowser,
+  pollForDeviceTokens,
+  refreshDeviceTokens,
+  requestDeviceCode,
+} from "./device-login";
 import {
   startServer,
   runMcpStdioServer,
@@ -587,6 +596,59 @@ const resolveRequestedExecutorServerConnection = (
     };
   });
 
+// Refresh an `oauth` (device-login) credential a minute before it expires, so
+// `executor call` against a hosted server keeps working long after the browser
+// login. The refreshed tokens are written back to the originating profile.
+const OAUTH_REFRESH_SKEW_SECONDS = 60;
+
+const profileNameFromKey = (key: string): string | null =>
+  key.startsWith("profile:") ? key.slice("profile:".length) : null;
+
+const refreshOAuthConnection = (
+  connection: ExecutorServerConnection,
+): Effect.Effect<ExecutorServerConnection, never, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const auth = connection.auth;
+    if (!auth || auth.kind !== "oauth") return connection;
+    const now = Math.floor(Date.now() / 1000);
+    if (auth.expiresAt && auth.expiresAt - now > OAUTH_REFRESH_SKEW_SECONDS) return connection;
+    // Destructure so the narrowed string types survive into the deferred
+    // `tryPromise` callback (where TS would otherwise re-widen the fields).
+    const { refreshToken, tokenEndpoint, clientId } = auth;
+    if (!refreshToken || !tokenEndpoint || !clientId) return connection;
+
+    const refreshed = yield* Effect.tryPromise({
+      try: () => refreshDeviceTokens({ tokenEndpoint, clientId, refreshToken }),
+      catch: toError,
+      // On a failed refresh, keep the existing token and let the eventual 401
+      // surface — better than blocking the command on a transient hiccup.
+    }).pipe(Effect.option);
+    if (Option.isNone(refreshed)) return connection;
+
+    const next = refreshed.value;
+    const nextConnection = normalizeExecutorServerConnection({
+      ...connection,
+      auth: {
+        kind: "oauth",
+        accessToken: next.accessToken,
+        refreshToken: next.refreshToken ?? refreshToken,
+        ...(next.expiresAt ? { expiresAt: next.expiresAt } : {}),
+        tokenEndpoint,
+        clientId,
+      },
+    });
+
+    const profileName = profileNameFromKey(connection.key);
+    if (profileName) {
+      yield* upsertCliServerConnectionProfile({
+        name: profileName,
+        connection: nextConnection,
+        makeDefault: false,
+      }).pipe(Effect.ignore);
+    }
+    return nextConnection;
+  });
+
 const resolveExecutorServerConnection = (
   target: ServerTarget,
 ): Effect.Effect<ExecutorServerConnection, Error, FileSystem.FileSystem | PlatformPath.Path> =>
@@ -612,7 +674,7 @@ const resolveExecutorServerConnection = (
       );
     }
 
-    const requested = decision.connection;
+    const requested = yield* refreshOAuthConnection(decision.connection);
     if (decision.kind === "use-active") return requested;
 
     if (!canAutoStartCliServerConnection(requested)) {
@@ -1995,6 +2057,208 @@ const serverCommand = Command.make("server").pipe(
   Command.withDescription("Manage named Executor server profiles"),
 );
 
+const deriveLoginProfileName = (origin: string): string => {
+  try {
+    const host = new URL(origin).hostname;
+    const first = host.split(".")[0];
+    return validateCliServerConnectionProfileName(first && first.length > 0 ? first : host);
+  } catch {
+    return "server";
+  }
+};
+
+const resolveLoginTarget = (input: {
+  readonly baseUrl: Option.Option<string>;
+  readonly server: Option.Option<string>;
+  readonly name: Option.Option<string>;
+}): Effect.Effect<
+  { readonly origin: string; readonly profileName: string },
+  Error,
+  FileSystem.FileSystem | PlatformPath.Path
+> =>
+  Effect.gen(function* () {
+    const baseUrl = Option.getOrUndefined(input.baseUrl);
+    const serverName = Option.getOrUndefined(input.server);
+    const explicitName = Option.getOrUndefined(input.name);
+    if (baseUrl && serverName) {
+      return yield* Effect.fail(new Error("Use either --server or --base-url, not both."));
+    }
+    if (serverName) {
+      const store = yield* readCliServerConnectionStore();
+      const profile = findCliServerConnectionProfile(store, serverName);
+      if (!profile)
+        return yield* Effect.fail(new Error(`No server profile named "${serverName}".`));
+      return {
+        origin: profile.connection.origin,
+        profileName: explicitName
+          ? validateCliServerConnectionProfileName(explicitName)
+          : profile.name,
+      };
+    }
+    if (baseUrl) {
+      const origin = normalizeExecutorServerOrigin(baseUrl);
+      return {
+        origin,
+        profileName: explicitName
+          ? validateCliServerConnectionProfileName(explicitName)
+          : deriveLoginProfileName(origin),
+      };
+    }
+    const store = yield* readCliServerConnectionStore();
+    const profile = defaultCliServerConnectionProfile(store);
+    if (profile) {
+      return {
+        origin: profile.connection.origin,
+        profileName: explicitName
+          ? validateCliServerConnectionProfileName(explicitName)
+          : profile.name,
+      };
+    }
+    return yield* Effect.fail(
+      new Error(
+        "No server to log in to. Pass --base-url <https://your-host> or --server <profile>.",
+      ),
+    );
+  });
+
+const loginNameOption = Options.string("name").pipe(
+  Options.optional,
+  Options.withDescription("Profile name to save the login under."),
+);
+
+const noBrowserOption = Options.boolean("no-browser").pipe(
+  Options.withDefault(false),
+  Options.withDescription("Print the verification URL instead of opening a browser."),
+);
+
+const loginCommand = Command.make(
+  "login",
+  {
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    name: loginNameOption,
+    noBrowser: noBrowserOption,
+  },
+  ({ baseUrl, server, name, noBrowser }) =>
+    Effect.gen(function* () {
+      const selected = yield* resolveLoginTarget({ baseUrl, server, name });
+      const discovery = yield* Effect.tryPromise({
+        try: () => discoverCliLogin(selected.origin),
+        catch: toError,
+      });
+      const grant = yield* Effect.tryPromise({
+        try: () => requestDeviceCode(discovery),
+        catch: toError,
+      });
+      const verifyUrl = grant.verificationUriComplete ?? grant.verificationUri;
+      console.log("");
+      console.log(`To sign in, open:  ${verifyUrl}`);
+      console.log(`and confirm the code:  ${grant.userCode}`);
+      console.log("");
+      if (!noBrowser) openBrowser(verifyUrl);
+      console.log("Waiting for you to approve in the browser...");
+      const tokens = yield* Effect.tryPromise({
+        try: () => pollForDeviceTokens(discovery, grant),
+        catch: toError,
+      });
+      yield* upsertCliServerConnectionProfile({
+        name: selected.profileName,
+        connection: {
+          kind: "http",
+          origin: selected.origin,
+          auth: {
+            kind: "oauth",
+            accessToken: tokens.accessToken,
+            ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+            ...(tokens.expiresAt ? { expiresAt: tokens.expiresAt } : {}),
+            tokenEndpoint: discovery.tokenEndpoint,
+            clientId: discovery.clientId,
+          },
+        },
+        makeDefault: true,
+      });
+      const claims = decodeAccessTokenClaims(tokens.accessToken);
+      console.log("");
+      console.log(
+        `Logged in to ${selected.origin} (profile "${selected.profileName}", now the default).`,
+      );
+      const email = claims?.email;
+      const org = claims?.org_id;
+      const sub = claims?.sub;
+      if (typeof email === "string") console.log(`Email: ${email}`);
+      if (typeof org === "string") console.log(`Organization: ${org}`);
+      else if (typeof sub === "string") console.log(`User: ${sub}`);
+    }),
+).pipe(Command.withDescription("Sign in to a hosted Executor server in the browser (device flow)"));
+
+const logoutCommand = Command.make(
+  "logout",
+  { baseUrl: serverBaseUrl, server: serverProfile },
+  ({ baseUrl, server }) =>
+    Effect.gen(function* () {
+      const selected = yield* resolveLoginTarget({ baseUrl, server, name: Option.none() });
+      const store = yield* readCliServerConnectionStore();
+      const profile = findCliServerConnectionProfile(store, selected.profileName);
+      if (!profile) {
+        console.log(`No server profile named "${selected.profileName}".`);
+        return;
+      }
+      if (!profile.connection.auth) {
+        console.log(`Profile "${profile.name}" has no stored credentials.`);
+        return;
+      }
+      yield* upsertCliServerConnectionProfile({
+        name: profile.name,
+        connection: {
+          kind: profile.connection.kind,
+          origin: profile.connection.origin,
+          displayName: profile.connection.displayName,
+        },
+        makeDefault: store.defaultProfile === profile.name,
+      });
+      console.log(
+        `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`,
+      );
+    }),
+).pipe(Command.withDescription("Clear stored credentials for a server profile"));
+
+const whoamiCommand = Command.make(
+  "whoami",
+  { baseUrl: serverBaseUrl, server: serverProfile },
+  ({ baseUrl, server }) =>
+    Effect.gen(function* () {
+      const requested = yield* resolveRequestedExecutorServerConnection(
+        serverTargetFromOptions({ baseUrl, server }),
+      );
+      const connection = yield* refreshOAuthConnection(requested.connection);
+      const auth = connection.auth;
+      console.log(`Server: ${connection.origin}`);
+      if (!auth) {
+        console.log("Not logged in (no stored credentials).");
+        return;
+      }
+      if (auth.kind === "oauth") {
+        const claims = decodeAccessTokenClaims(auth.accessToken);
+        const email = claims?.email;
+        const sub = claims?.sub;
+        const org = claims?.org_id;
+        if (typeof email === "string") console.log(`Email: ${email}`);
+        if (typeof sub === "string") console.log(`User: ${sub}`);
+        if (typeof org === "string") console.log(`Organization: ${org}`);
+        if (auth.expiresAt) {
+          const remaining = auth.expiresAt - Math.floor(Date.now() / 1000);
+          console.log(
+            remaining > 0
+              ? `Token valid for ~${Math.round(remaining / 60)} min.`
+              : "Token expired (refreshes on next use).",
+          );
+        }
+        return;
+      }
+      console.log(`Authenticated via ${auth.kind}.`);
+    }),
+).pipe(Command.withDescription("Show who you're signed in as on a server"));
+
 const webCommand = Command.make(
   "web",
   {
@@ -2562,6 +2826,9 @@ const root = Command.make("executor").pipe(
     resumeCommand,
     toolsCommand,
     installCommand,
+    loginCommand,
+    logoutCommand,
+    whoamiCommand,
     serverCommand,
     webCommand,
     daemonCommand,

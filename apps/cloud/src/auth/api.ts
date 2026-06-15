@@ -44,6 +44,17 @@ const CreateOrganizationResponse = Schema.Struct({
   slug: Schema.String,
 });
 
+// CLI device-login discovery (`executor login`). Tells the CLI where to run
+// the OAuth 2.0 Device Authorization Grant (RFC 8628) and which public client
+// to use. The CLI hits these provider endpoints directly, gets a WorkOS access
+// token (a JWT), and sends it as a Bearer to the `/api/*` plane.
+const CliLoginResponse = Schema.Struct({
+  provider: Schema.Literal("workos"),
+  deviceAuthorizationEndpoint: Schema.String,
+  tokenEndpoint: Schema.String,
+  clientId: Schema.String,
+});
+
 // `state` is optional — some WorkOS-initiated redirects arrive at the
 // callback without the state we set on /auth/login. The CSRF check is
 // only enforced when state is present (see callback handler).
@@ -156,7 +167,8 @@ export class CloudAuthPublicApi extends HttpApiGroup.make("cloudAuthPublic")
       query: AuthCallbackSearch,
       error: AuthErrors,
     }),
-  ) {}
+  )
+  .add(HttpApiEndpoint.get("cliLogin", "/auth/cli-login", { success: CliLoginResponse })) {}
 
 /** Session auth endpoints — require a logged-in user, may not have an org */
 export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")

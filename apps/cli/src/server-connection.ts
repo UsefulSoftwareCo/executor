@@ -43,8 +43,10 @@ export const withCliServerAuthFallback = (
 
 export const canAutoStartCliServerConnection = (connection: ExecutorServerConnection): boolean => {
   if (connection.kind !== "http") return false;
-  // Explicit auth means the user is pointing at an existing server (e.g. a
-  // desktop sidecar or a remote), not asking us to spin up a local daemon.
+  // A stored credential (basic password, bearer key, or an oauth device-login
+  // token) means the user is targeting an EXISTING authenticated server — never
+  // spawn a local daemon for it, even when it happens to be on http://localhost
+  // (e.g. a hosted server reached over a tunnel, or a local e2e cloud server).
   if (connection.auth) return false;
   const url = new URL(connection.origin);
   return url.protocol === "http:" && canAutoStartLocalDaemonForHost(url.hostname);
