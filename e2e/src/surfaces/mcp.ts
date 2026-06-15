@@ -160,7 +160,7 @@ export interface McpSurface {
   readonly url: string;
   readonly session: (
     identity: Identity,
-    options?: { readonly elicitationMode?: McpElicitationMode },
+    options?: { readonly elicitationMode?: McpElicitationMode; readonly toolkit?: string },
   ) => McpSession;
   /**
    * Mint a real MCP bearer headlessly: protected-resource discovery →
@@ -271,9 +271,14 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     // `browser` mode is selected per the ecosystem convention — an
     // `?elicitation_mode=` query on the MCP endpoint — so a paused execution
     // yields an approvalUrl instead of letting the model resume inline.
-    const sessionUrl = options?.elicitationMode
-      ? `${target.mcpUrl}?elicitation_mode=${options.elicitationMode}`
-      : target.mcpUrl;
+    const sessionUrl = (() => {
+      const u = new URL(target.mcpUrl);
+      if (options?.elicitationMode) u.searchParams.set("elicitation_mode", options.elicitationMode);
+      // Toolkit selector — narrows the engine to that toolkit's slice (same path
+      // the host reads via `readToolkitSelector`).
+      if (options?.toolkit) u.searchParams.set("toolkit", options.toolkit);
+      return u.toString();
+    })();
     let runtimePromise: Promise<Runtime> | undefined;
     let connected = false;
 

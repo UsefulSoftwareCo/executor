@@ -26,6 +26,7 @@
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@kitlangton/terminal-control": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
