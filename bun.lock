@@ -1008,17 +1008,33 @@
       "name": "@executor-js/plugin-toolkits",
       "version": "1.5.12",
       "dependencies": {
+        "@effect/atom-react": "catalog:",
         "@executor-js/api": "workspace:*",
         "@executor-js/sdk": "workspace:*",
       },
       "devDependencies": {
         "@effect/vitest": "catalog:",
+        "@executor-js/react": "workspace:*",
         "@types/node": "catalog:",
+        "@types/react": "catalog:",
         "bun-types": "catalog:",
+        "effect": "catalog:",
+        "react": "catalog:",
         "tsup": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
       },
+      "peerDependencies": {
+        "@effect/atom-react": "catalog:",
+        "@executor-js/react": "workspace:*",
+        "effect": "catalog:",
+        "react": ">=18",
+      },
+      "optionalPeers": [
+        "@effect/atom-react",
+        "@executor-js/react",
+        "react",
+      ],
     },
     "packages/plugins/workos-vault": {
       "name": "@executor-js/plugin-workos-vault",

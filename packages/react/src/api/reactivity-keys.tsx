@@ -26,6 +26,8 @@ export const ReactivityKey = {
   /** Credential-provider discovery. */
   providers: "providers",
   policies: "policies",
+  /** Toolkits — named slices of connections, each with its own MCP endpoint. */
+  toolkits: "toolkits",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
   // cloud-only resources
@@ -37,20 +39,33 @@ export const ReactivityKey = {
 } as const;
 
 /** Mutations that add/remove/refresh an integration also affect tool listings. */
-export const integrationWriteKeys = [ReactivityKey.integrations, ReactivityKey.tools] as const;
+export const integrationWriteKeys = [
+  ReactivityKey.integrations,
+  ReactivityKey.tools,
+] as const;
 
 /** Mutations that create / remove / refresh a connection. Touches `tools`
  *  because a connection's tools are produced per-connection — creating or
  *  refreshing a connection changes the tool catalog. */
-export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.tools] as const;
+export const connectionWriteKeys = [
+  ReactivityKey.connections,
+  ReactivityKey.tools,
+] as const;
 
 /** Mutations that register / replace an OAuth client (app). */
 export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
 
+/** Mutations that create / update / remove a toolkit. Self-contained — a
+ *  toolkit is its own resource and does not change the core tool catalog. */
+export const toolkitWriteKeys = [ReactivityKey.toolkits] as const;
+
 /** Mutations that mutate tool policies. Also touches `tools` because
  *  `tools.list` filters blocked tools — adding/removing a `block`
  *  policy changes what the tools page shows. */
-export const policyWriteKeys = [ReactivityKey.policies, ReactivityKey.tools] as const;
+export const policyWriteKeys = [
+  ReactivityKey.policies,
+  ReactivityKey.tools,
+] as const;
 
 /** Cloud-only: org membership mutations. */
 export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
@@ -59,7 +74,10 @@ export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
 export const orgDomainWriteKeys = [ReactivityKey.orgDomains] as const;
 
 /** Cloud-only: org info mutations (name, etc.) — also touches auth. */
-export const orgInfoWriteKeys = [ReactivityKey.orgInfo, ReactivityKey.auth] as const;
+export const orgInfoWriteKeys = [
+  ReactivityKey.orgInfo,
+  ReactivityKey.auth,
+] as const;
 
 /** Cloud-only: user API key mutations. */
 export const apiKeyWriteKeys = [ReactivityKey.apiKeys] as const;

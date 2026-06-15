@@ -17,7 +17,9 @@
   "type": "module",
   "exports": {
     "./server": "./src/server.ts",
-    "./shared": "./src/shared.ts"
+    "./shared": "./src/shared.ts",
+    "./react": "./src/react/index.ts",
+    "./client": "./src/react/plugin-client.tsx"
   },
   "publishConfig": {
     "access": "public",
@@ -33,6 +35,18 @@
           "types": "./dist/shared.d.ts",
           "default": "./dist/shared.js"
         }
+      },
+      "./react": {
+        "import": {
+          "types": "./dist/react/index.d.ts",
+          "default": "./dist/react/index.js"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/react/plugin-client.d.ts",
+          "default": "./dist/react/plugin-client.js"
+        }
       }
     }
   },
@@ -43,15 +57,37 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
+    "@effect/atom-react": "catalog:",
     "@executor-js/api": "workspace:*",
     "@executor-js/sdk": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/react": "workspace:*",
     "@types/node": "catalog:",
+    "@types/react": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
+    "react": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@executor-js/react": "workspace:*",
+    "effect": "catalog:",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "@executor-js/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }
