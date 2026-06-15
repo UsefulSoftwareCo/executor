@@ -305,7 +305,9 @@ const assertNoOtherActiveLocalServer = (): Effect.Effect<
     );
   });
 
-const takeOverActiveLocalServer = (): Effect.Effect<
+const takeOverActiveLocalServer = (input?: {
+  readonly onlyKind?: ExecutorLocalServerKind;
+}): Effect.Effect<
   ExecutorLocalServerManifest | null,
   Error,
   FileSystem.FileSystem | PlatformPath.Path
@@ -313,6 +315,7 @@ const takeOverActiveLocalServer = (): Effect.Effect<
   Effect.gen(function* () {
     const manifest = yield* readLocalServerManifest();
     if (!manifest) return null;
+    if (input?.onlyKind && manifest.kind !== input.onlyKind) return null;
 
     if (!isPidAlive(manifest.pid) || manifest.pid === process.pid) {
       yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
@@ -2331,7 +2334,21 @@ const serviceInstallCommand = Command.make(
 const serviceUninstallCommand = Command.make("uninstall", {}, () =>
   Effect.gen(function* () {
     const backend = getServiceBackend();
+    const wasRunning = backend.automated
+      ? yield* backend.status().pipe(
+          Effect.map((status) => status.running),
+          Effect.catchCause(() => Effect.succeed(false)),
+        )
+      : false;
     yield* backend.uninstall();
+    if (wasRunning) {
+      const stopped = yield* takeOverActiveLocalServer({ onlyKind: "cli-daemon" });
+      if (stopped) {
+        console.log(
+          `Stopped running Executor daemon at ${stopped.connection.origin} (pid ${stopped.pid}).`,
+        );
+      }
+    }
     console.log("Executor background service uninstalled.");
   }),
 ).pipe(Command.withDescription("Stop and remove the OS-supervised background service"));
