@@ -243,11 +243,14 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
       .map((page) => {
         const splat = page.path.replace(/^\//, "");
         const href = `/plugins/${plugin.id}${splat ? `/${splat}` : "/"}`;
+        // Trailing slash stripped so the nav stays active on plugin subroutes
+        // (e.g. /plugins/toolkits/<id>), matching the multiplayer shell.
+        const base = href.replace(/\/$/, "");
         return {
           key: `${plugin.id}:${page.path}`,
           pluginId: plugin.id,
           splat,
-          href,
+          base,
           label: page.nav!.label,
         };
       }),
@@ -263,7 +266,7 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
           onClick={props.onNavigate}
           className={[
             "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
-            props.pathname === entry.href || props.pathname.startsWith(`${entry.href}/`)
+            props.pathname === entry.base || props.pathname.startsWith(`${entry.base}/`)
               ? "bg-sidebar-active text-foreground font-medium"
               : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
           ].join(" ")}

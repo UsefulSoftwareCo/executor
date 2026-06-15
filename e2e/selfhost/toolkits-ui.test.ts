@@ -137,6 +137,51 @@ scenario(
             .waitFor();
           await page.getByText(toolkitName).first().waitFor();
         });
+
+        let toolkitId = "";
+
+        await step("Opening a toolkit card updates the URL to its id", async () => {
+          await page.getByText(toolkitName).first().click();
+          await page.getByRole("heading", { name: "Access" }).waitFor();
+          await page.waitForURL((url) => {
+            const segments = url.pathname.split("/").filter(Boolean);
+            const last = segments[segments.length - 1];
+            return last !== undefined && last !== "toolkits";
+          });
+          toolkitId = new URL(page.url()).pathname.split("/").filter(Boolean).pop() ?? "";
+          expect(toolkitId.length, "card open exposes the toolkit id in the URL").toBeGreaterThan(
+            0,
+          );
+          await page.getByRole("button", { name: "← Toolkits" }).click();
+          await page.getByRole("heading", { name: "Workspace toolkits" }).waitFor();
+        });
+
+        await step("Deep-linking to a toolkit opens the editor with its name", async () => {
+          await page.goto(`/plugins/toolkits/${toolkitId}`, {
+            waitUntil: "networkidle",
+          });
+          await page.getByRole("heading", { name: "Access" }).waitFor();
+          expect(
+            await page.getByRole("textbox").first().inputValue(),
+            "deep link opens the editor with the toolkit name",
+          ).toBe(toolkitName);
+        });
+
+        await step("Browser back returns to the toolkit list", async () => {
+          await page.goBack({ waitUntil: "networkidle" });
+          await page.waitForURL(
+            (url) =>
+              url.pathname.endsWith("/plugins/toolkits/") ||
+              url.pathname.endsWith("/plugins/toolkits"),
+          );
+          await page.getByRole("heading", { name: "Workspace toolkits" }).waitFor();
+        });
+
+        await step("New toolkit navigates to /new/workspace", async () => {
+          await page.getByRole("button", { name: "New toolkit" }).first().click();
+          await page.waitForURL((url) => url.pathname.endsWith("/new/workspace"));
+          await page.getByRole("heading", { name: "Access" }).waitFor();
+        });
       });
 
       // Read the toolkit back through the typed API: the editor's write carried

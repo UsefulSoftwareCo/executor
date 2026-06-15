@@ -381,3 +381,51 @@ export const useIntegrationPlugins = (): readonly IntegrationPlugin[] =>
 /** Secret-provider plugins extracted from `clientPlugins[].secretProviderPlugin`. */
 export const useSecretProviderPlugins = (): readonly SecretProviderPlugin[] =>
   usePluginsCtx("useSecretProviderPlugins").secretProviderPlugins;
+
+// ---------------------------------------------------------------------------
+// PluginRouteProvider + hooks — per-plugin-page URL subpath + navigation.
+//
+// The host's catch-all plugin route matches a page by longest-prefix of the
+// URL splat, then exposes the remainder as `subpath` with a `navigate` helper
+// that updates only the splat (org slug is preserved by the injected impl).
+// Plugins import these hooks from `@executor-js/sdk/client`; the host injects
+// the navigate implementation — no router dependency in the SDK.
+// ---------------------------------------------------------------------------
+
+export interface PluginRouteValue {
+  readonly pluginId: string;
+  /** URL fragment after the matched page's own path; "" at the page root. */
+  readonly subpath: string;
+  /** Navigate within this plugin page (subpath relative to the page's path). */
+  readonly navigate: (subpath: string, opts?: { readonly replace?: boolean }) => void;
+}
+
+const PluginRouteContext = createContext<PluginRouteValue | null>(null);
+PluginRouteContext.displayName = "PluginRouteContext";
+
+export interface PluginRouteProviderProps {
+  readonly value: PluginRouteValue;
+  readonly children: ReactNode;
+}
+
+export function PluginRouteProvider(
+  props: PluginRouteProviderProps,
+): ReturnType<typeof createElement> {
+  return createElement(PluginRouteContext.Provider, { value: props.value }, props.children);
+}
+
+const usePluginRouteCtx = (hookName: string): PluginRouteValue => {
+  const ctx = useContext(PluginRouteContext);
+  if (!ctx) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: React hook invariant
+    throw new Error(`${hookName} must be called inside a <PluginRouteProvider>.`);
+  }
+  return ctx;
+};
+
+/** Current plugin page route: plugin id, URL subpath, and in-page navigate. */
+export const usePluginRoute = (): PluginRouteValue => usePluginRouteCtx("usePluginRoute");
+
+/** Navigate within the current plugin page (subpath relative to the page path). */
+export const usePluginNavigate = (): PluginRouteValue["navigate"] =>
+  usePluginRouteCtx("usePluginNavigate").navigate;

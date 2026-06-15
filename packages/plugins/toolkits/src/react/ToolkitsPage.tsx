@@ -3,9 +3,9 @@
 //
 // A toolkit is a named slice of the caller's connections (each off/read/full)
 // with its own MCP endpoint; an agent connected to one can't see anything
-// outside it. This is a SINGLE page (the plugin route matcher is exact-path,
-// no params) that switches between the list and a per-toolkit editor via local
-// state — the same shape as the design prototype.
+// outside it. List and editor views are URL-routed via `usePluginRoute` —
+// `/plugins/toolkits/`, `/plugins/toolkits/<id>`, `/plugins/toolkits/new/<scope>`.
+// The `new/` prefix is reserved for the create flow; toolkit ids are server UUIDs.
 //
 // Workspace toolkits draw on org-owned connections; personal toolkits can use
 // org + the caller's own. The list query returns every visible toolkit and we
@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
+import { usePluginNavigate, usePluginRoute } from "@executor-js/sdk/client";
 
 import {
   connectionsAllAtom,
@@ -760,11 +761,21 @@ type View =
   | { readonly kind: "edit"; readonly id: string }
   | { readonly kind: "new"; readonly scope: ToolkitScope };
 
+function viewFromSubpath(subpath: string): View {
+  const normalized = subpath === "/" ? "" : subpath;
+  if (normalized === "") return { kind: "list" };
+  if (normalized === "new/workspace") return { kind: "new", scope: "workspace" };
+  if (normalized === "new/personal") return { kind: "new", scope: "personal" };
+  return { kind: "edit", id: normalized };
+}
+
 export function ToolkitsPage() {
+  const { subpath } = usePluginRoute();
+  const navigate = usePluginNavigate();
+  const view = viewFromSubpath(subpath);
   const toolkitsResult = useAtomValue(toolkitsAtom);
   const connectionsResult = useAtomValue(connectionsAllAtom);
   const integrationsResult = useAtomValue(integrationsAtom);
-  const [view, setView] = useState<View>({ kind: "list" });
 
   const toolkits = AsyncResult.match(
     toolkitsResult as AsyncResult.AsyncResult<
@@ -822,7 +833,7 @@ export function ToolkitsPage() {
         : null;
     // The toolkit was deleted out from under us (or never resolved) — fall back.
     if (view.kind === "edit" && !existing) {
-      return <ToolkitEditorFallback onBack={() => setView({ kind: "list" })} />;
+      return <ToolkitEditorFallback onBack={() => navigate("")} />;
     }
     const scope =
       view.kind === "new" ? view.scope : (existing as ToolkitView).scope;
@@ -834,9 +845,9 @@ export function ToolkitsPage() {
         takenSlugs={takenSlugs}
         connections={connections}
         integrationName={integrationName}
-        onBack={() => setView({ kind: "list" })}
-        onCreated={() => setView({ kind: "list" })}
-        onRemoved={() => setView({ kind: "list" })}
+        onBack={() => navigate("")}
+        onCreated={() => navigate("")}
+        onRemoved={() => navigate("")}
       />
     );
   }
@@ -861,16 +872,16 @@ export function ToolkitsPage() {
           empty="No workspace toolkits yet — these draw on shared workspace connections."
           toolkits={workspace}
           integrationName={integrationName}
-          onOpen={(id) => setView({ kind: "edit", id })}
-          onCreate={() => setView({ kind: "new", scope: "workspace" })}
+          onOpen={(id) => navigate(id)}
+          onCreate={() => navigate("new/workspace")}
         />
         <ListSection
           title="Personal toolkits"
           empty="No personal toolkits yet — these can use workspace and personal connections."
           toolkits={personal}
           integrationName={integrationName}
-          onOpen={(id) => setView({ kind: "edit", id })}
-          onCreate={() => setView({ kind: "new", scope: "personal" })}
+          onOpen={(id) => navigate(id)}
+          onCreate={() => navigate("new/personal")}
         />
       </div>
     </div>
