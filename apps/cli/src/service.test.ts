@@ -13,12 +13,14 @@ describe("service unit generation", () => {
   const launchdInput = {
     label: "sh.executor.daemon",
     programArguments: [
-      "/Applications/Executor.app/Contents/Resources/sidecar/executor-sidecar",
+      "/Applications/Executor.app/Contents/Resources/executor/executor",
       "daemon",
       "run",
       "--foreground",
       "--port",
       "4789",
+      "--hostname",
+      "127.0.0.1",
     ],
     environment: {
       EXECUTOR_SUPERVISED: "1",
@@ -65,13 +67,24 @@ describe("service unit generation", () => {
 
   it("renders a systemd --user unit with crash-only restart", () => {
     const unit = generateSystemdUnit({
-      execStart: ["/usr/local/bin/executor", "daemon", "run", "--foreground", "--port", "4789"],
+      execStart: [
+        "/usr/local/bin/executor",
+        "daemon",
+        "run",
+        "--foreground",
+        "--port",
+        "4789",
+        "--hostname",
+        "127.0.0.1",
+      ],
       environment: { EXECUTOR_SUPERVISED: "1", EXECUTOR_DATA_DIR: "/home/x/.executor" },
       workingDirectory: "/home/x/.executor",
       stdoutPath: "/home/x/.executor/logs/daemon.log",
       stderrPath: "/home/x/.executor/logs/daemon.error.log",
     });
-    expect(unit).toContain("ExecStart=/usr/local/bin/executor daemon run --foreground --port 4789");
+    expect(unit).toContain(
+      "ExecStart=/usr/local/bin/executor daemon run --foreground --port 4789 --hostname 127.0.0.1",
+    );
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain("WantedBy=default.target");
     expect(unit).toContain("Environment=EXECUTOR_SUPERVISED=1");
@@ -92,7 +105,7 @@ describe("service unit generation", () => {
     expect(wrapper).toContain('set "EXECUTOR_SUPERVISED=1"');
     expect(wrapper).toContain('set "EXECUTOR_DATA_DIR=C:\\Users\\x\\.executor"');
     expect(wrapper).toContain(
-      '"C:\\Program Files\\Executor\\executor.exe" daemon run --foreground --port 4789',
+      '"C:\\Program Files\\Executor\\executor.exe" daemon run --foreground --port 4789 --hostname 127.0.0.1',
     );
     expect(wrapper).toContain('1>> "C:\\Users\\x\\.executor\\logs\\daemon.log"');
     // No secret in the wrapper — the daemon reads the bearer from auth.json at boot.

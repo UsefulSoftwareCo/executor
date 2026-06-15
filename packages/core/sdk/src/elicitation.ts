@@ -62,4 +62,10 @@ export class ElicitationDeclinedError extends Schema.TaggedErrorClass<Elicitatio
     address: ToolAddress,
     action: Schema.Literals(["decline", "cancel"]),
   },
-) {}
+) {
+  // Derived message so telemetry (span status, logs) labels the failure
+  // instead of rendering an Error with an empty message.
+  override get message(): string {
+    return `Tool approval ${this.action === "cancel" ? "cancelled" : "declined"}: ${this.address}`;
+  }
+}

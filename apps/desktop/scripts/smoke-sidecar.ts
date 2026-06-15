@@ -1,14 +1,14 @@
 /**
- * End-to-end smoke test for the compiled sidecar binary.
+ * End-to-end smoke test for the bundled executor binary.
  *
  * Catches "works in dev, breaks in --compile" regressions: bunfs asset
- * loading (QuickJS WASM, staged web UI), native
+ * loading (embedded web UI, QuickJS WASM), native
  * .node loaders (keychain), and the MCP → engine → QuickJS → tool path.
  *
  * Flow:
  *   1. Spin up a tiny local OpenAPI server (one operation, returns 42).
- *   2. Spawn the compiled `executor-sidecar` binary with EXECUTOR_PORT=0
- *      and parse the `EXECUTOR_READY:<port>` sentinel.
+ *   2. Spawn the compiled `executor daemon run --foreground --port 0`
+ *      and parse the ready URL.
  *   3. Connect via MCP streamable HTTP, call the `execute` tool with code
  *      that registers and invokes the OpenAPI tool, assert the answer
  *      round-trips as 42.
@@ -29,8 +29,8 @@ const ROOT = resolve(import.meta.dir, "..");
 const APPS_LOCAL_DRIZZLE = resolve(ROOT, "../local/drizzle-legacy-v1");
 const BINARY = resolve(
   ROOT,
-  "resources/sidecar",
-  process.platform === "win32" ? "executor-sidecar.exe" : "executor-sidecar",
+  "resources/executor",
+  process.platform === "win32" ? "executor.exe" : "executor",
 );
 
 const AUTH_TOKEN = "smoke-test-token";
@@ -38,7 +38,7 @@ const AUTH_HEADER = `Bearer ${AUTH_TOKEN}`;
 const READY_TIMEOUT_MS = 30_000;
 
 // Throw instead of process.exit so main()'s finally still tears down the
-// spawned sidecar + temp dirs — exiting here leaks a running sidecar process.
+// spawned daemon + temp dirs — exiting here leaks a running process.
 const fail = (msg: string): never => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: standalone smoke harness surfaces failures as a thrown error
   throw new Error(`[smoke-sidecar] FAIL: ${msg}`);
@@ -246,7 +246,7 @@ const waitForReadyPort = (proc: Subprocess<"ignore", "pipe", "pipe">): Promise<n
   new Promise((resolveReady, rejectReady) => {
     const deadline = setTimeout(() => {
       // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: standalone smoke harness reporting a build-time timeout
-      rejectReady(new Error(`sidecar did not announce ready within ${READY_TIMEOUT_MS}ms`));
+      rejectReady(new Error(`daemon did not announce ready within ${READY_TIMEOUT_MS}ms`));
     }, READY_TIMEOUT_MS);
 
     let stdoutBuf = "";
@@ -258,7 +258,7 @@ const waitForReadyPort = (proc: Subprocess<"ignore", "pipe", "pipe">): Promise<n
       while (true) {
         const { value, done } = await stderrReader.read();
         if (done) return;
-        process.stderr.write(`[sidecar-stderr] ${decoder.decode(value)}`);
+        process.stderr.write(`[executor-stderr] ${decoder.decode(value)}`);
       }
     })();
 
@@ -268,13 +268,13 @@ const waitForReadyPort = (proc: Subprocess<"ignore", "pipe", "pipe">): Promise<n
         if (done) {
           clearTimeout(deadline);
           // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: standalone smoke harness, stdout-closed surfaced as rejection
-          rejectReady(new Error("sidecar stdout closed before ready"));
+          rejectReady(new Error("daemon stdout closed before ready"));
           return;
         }
         const chunk = decoder.decode(value);
-        process.stdout.write(`[sidecar-stdout] ${chunk}`);
+        process.stdout.write(`[executor-stdout] ${chunk}`);
         stdoutBuf += chunk;
-        const match = /EXECUTOR_READY:(\d+)/.exec(stdoutBuf);
+        const match = /Daemon ready on http:\/\/(?:\[[^\]]+\]|[^:\s]+):(\d+)/.exec(stdoutBuf);
         if (match) {
           clearTimeout(deadline);
           resolveReady(parseInt(match[1]!, 10));
@@ -344,14 +344,23 @@ const main = async () => {
   console.log(`[smoke-sidecar] openapi: ${openapi.origin}`);
 
   const proc = spawn({
-    cmd: [BINARY],
+    cmd: [
+      BINARY,
+      "daemon",
+      "run",
+      "--foreground",
+      "--port",
+      "0",
+      "--hostname",
+      "127.0.0.1",
+      "--auth-token",
+      AUTH_TOKEN,
+    ],
     env: {
       ...process.env,
-      EXECUTOR_PORT: "0",
-      EXECUTOR_HOST: "127.0.0.1",
-      EXECUTOR_AUTH_TOKEN: AUTH_TOKEN,
       EXECUTOR_SCOPE_DIR: scopeDir,
       EXECUTOR_DATA_DIR: dataDir,
+      EXECUTOR_CLIENT: "desktop",
       XDG_DATA_HOME: xdgDir,
     },
     stdin: "ignore",

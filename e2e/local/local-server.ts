@@ -1,9 +1,9 @@
-// Shared helper for the `local` e2e project: boot a real `executor web` in a
-// recorded terminal, parse its printed one-time `?_token=` URL, and run a body
-// against it. Each scenario boots its OWN server (own throwaway data dir,
-// `--port 0`) so files can run in parallel without colliding. The terminal
-// stays up until the body settles, then Ctrl-C gives a graceful shutdown (so
-// the vite child dies and the PTY closes).
+// Shared helper for the `local` e2e project: boot a real temporary server with
+// `executor web --foreground` in a recorded terminal, parse its printed one-time
+// `?_token=` URL, and run a body against it. Each scenario boots its OWN server
+// (own throwaway data dir, `--port 0`) so files can run in parallel without
+// colliding. The terminal stays up until the body settles, then Ctrl-C gives a
+// graceful shutdown (so the vite child dies and the PTY closes).
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,10 +29,11 @@ export interface ServerHandle {
 }
 
 /**
- * Boot `executor web` and run `body` against the resulting {@link ServerHandle}.
- * Keeps the server up until the body settles, then Ctrl-C for a graceful
- * shutdown. Cleans up the throwaway data dir. The body may drive the browser,
- * a typed API client, an MCP client — anything that needs the live server.
+ * Boot `executor web --foreground` and run `body` against the resulting
+ * {@link ServerHandle}. Keeps the server up until the body settles, then Ctrl-C
+ * for a graceful shutdown. Cleans up the throwaway data dir. The body may drive
+ * the browser, a typed API client, an MCP client — anything that needs the live
+ * server.
  */
 export const withLocalServer = (
   cli: CliSurface,
@@ -54,7 +55,7 @@ export const withLocalServer = (
     yield* Effect.all(
       [
         cli.session(
-          ["bun", "run", "dev:cli", "web", "--port", "0"],
+          ["bun", "run", "dev:cli", "web", "--foreground", "--port", "0"],
           async (term) => {
             markRecordingStart(runDir, "terminal");
             markFocus(runDir, "terminal");
@@ -64,7 +65,9 @@ export const withLocalServer = (
             );
             const url = TOKEN_URL.exec(snapshot.text)?.[0];
             if (!url) {
-              throw new Error(`executor web printed no ?_token URL:\n${snapshot.text.slice(-600)}`);
+              throw new Error(
+                `executor web --foreground printed no ?_token URL:\n${snapshot.text.slice(-600)}`,
+              );
             }
             publishUrl(url);
             await bodyDone;

@@ -2,10 +2,12 @@ import { Layer } from "effect";
 
 import { IdentityProvider } from "@executor-js/api/server";
 
+import { loadConfig } from "../config";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import { BetterAuth, buildBetterAuth, type BetterAuthHandle } from "./better-auth";
 import { betterAuthIdentityLayer } from "./identity";
 import { consentRedirectClientId, withClientName, withForcedMcpConsent } from "./force-mcp-consent";
+import { rewriteInvalidOrigin } from "./invalid-origin-help";
 
 export { BetterAuth, buildBetterAuth, type BetterAuthHandle } from "./better-auth";
 export { betterAuthIdentityLayer } from "./identity";
@@ -56,8 +58,13 @@ export const resolveAuthProviders = async (
   // authorize so a connecting client is gated on /mcp-consent rather than
   // silently granted a token (see ./force-mcp-consent), and enrich the
   // resulting consent redirect with the registered client name.
+  const config = loadConfig();
   const authHandler = async (request: Request): Promise<Response> => {
     const response = await betterAuth.handler(withForcedMcpConsent(request));
+    // Turn Better Auth's bare 403 "Invalid origin" into a setup instruction —
+    // on a fresh deploy it almost always means the public URL needs configuring.
+    const friendlier = await rewriteInvalidOrigin(request, response, config.webBaseUrl);
+    if (friendlier) return friendlier;
     if (response.status !== 302) return response;
     const clientId = consentRedirectClientId(response.headers.get("location"));
     if (!clientId) return response;

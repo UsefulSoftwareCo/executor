@@ -2,13 +2,11 @@
  * Sidecar lifecycle manager run inside the Electron main process.
  *
  * In dev: spawns `bun run apps/desktop/src/sidecar/server.ts`.
- * In prod: spawns the Bun-compiled `executor-sidecar` binary shipped under
- *          `process.resourcesPath/sidecar/`.
+ * In prod: spawns the bundled CLI binary in foreground daemon mode.
  *
  * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_TOKEN
- * via env, calls `startServer()` from `@executor-js/local`, and announces a
- * single sentinel line on stdout (`EXECUTOR_READY:<port>`) so this controller
- * can resolve the connection promise.
+ * The dev sidecar announces `EXECUTOR_READY:<port>`. The packaged CLI daemon
+ * announces `Daemon ready on http://host:port`. This controller accepts both.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -23,7 +21,7 @@ import {
   parseExecutorLocalServerManifest,
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
-import { loadOrMintLocalAuthToken } from "@executor-js/local/auth";
+import { loadOrMintLocalAuthToken } from "./local-auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
@@ -79,6 +77,9 @@ export interface SidecarConnection {
    * leave MCP serving.
    */
   readonly supervisedDaemon: boolean;
+  readonly ownerVersion: string | null;
+  readonly ownerClient: "cli" | "desktop";
+  readonly ownerExecutablePath: string | null;
 }
 
 export class SidecarPortInUseError extends Error {
@@ -217,40 +218,48 @@ const writeSidecarManifest = (input: {
   sidecarManifestPathByPid.set(input.childPid, input.dataDir);
 };
 
-const resolveSidecarCommand = (): { command: string; args: string[]; cwd: string } => {
+const resolveSidecarCommand = (input: {
+  readonly port: number;
+  readonly hostname: string;
+  readonly authToken: string;
+}): { command: string; args: string[]; cwd: string; cliManagedManifest: boolean } => {
   if (app.isPackaged) {
-    const binaryName = process.platform === "win32" ? "executor-sidecar.exe" : "executor-sidecar";
-    const binaryPath = join(process.resourcesPath, "sidecar", binaryName);
-    return { command: binaryPath, args: [], cwd: process.resourcesPath };
+    const binaryName = process.platform === "win32" ? "executor.exe" : "executor";
+    const binaryPath = join(process.resourcesPath, "executor", binaryName);
+    return {
+      command: binaryPath,
+      args: [
+        "daemon",
+        "run",
+        "--foreground",
+        "--port",
+        String(input.port),
+        "--hostname",
+        input.hostname,
+        "--auth-token",
+        input.authToken,
+      ],
+      cwd: process.resourcesPath,
+      cliManagedManifest: true,
+    };
   }
   // Dev: run the TS source directly via bun on PATH.
   const repoRoot = resolve(import.meta.dirname, "..", "..", "..", "..");
   const sidecarSource = resolve(repoRoot, "apps/desktop/src/sidecar/server.ts");
-  return { command: "bun", args: ["run", sidecarSource], cwd: repoRoot };
+  return { command: "bun", args: ["run", sidecarSource], cwd: repoRoot, cliManagedManifest: false };
 };
 
 const resolveClientDir = (): string => {
-  if (app.isPackaged) {
-    return join(process.resourcesPath, "web-ui");
-  }
   const repoRoot = resolve(import.meta.dirname, "..", "..", "..", "..");
   return resolve(repoRoot, "apps/local/dist");
 };
 
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+
 export async function startSidecar(options: StartOptions = {}): Promise<SidecarConnection> {
   const hostname = options.hostname ?? "127.0.0.1";
   const settings = getServerSettings();
-  const clientDir = resolveClientDir();
-  const { command, args, cwd } = resolveSidecarCommand();
-
-  if (!existsSync(clientDir)) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: misconfiguration is fatal
-    // oxlint-disable-next-line executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: startup failure is surfaced in the Electron main process
-    throw new Error(
-      `Executor client bundle not found at ${clientDir}. Run \`bun run --filter @executor-js/local build\` before launching desktop.`,
-    );
-  }
-
   // data.db and the optional executor.jsonc plugin manifest live under
   // ~/.executor — the same path the CLI's `executor web` uses. Desktop and CLI
   // share state on the same machine so sources/secrets/policies set up in one
@@ -267,21 +276,37 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   // process holds it so it can inject the header into the webview; the child
   // validates against the same value. Always present — auth is unconditional.
   const authToken = loadOrMintLocalAuthToken(dataDir);
-  const releaseStartupLock = acquireLocalServerStartLock(dataDir);
+  const { command, args, cwd, cliManagedManifest } = resolveSidecarCommand({
+    port: settings.port,
+    hostname,
+    authToken,
+  });
+  const clientDir = cliManagedManifest ? null : resolveClientDir();
+
+  if (!cliManagedManifest && clientDir && !existsSync(clientDir)) {
+    // oxlint-disable-next-line executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: startup failure is surfaced in the Electron main process
+    throw new Error(
+      `Executor client bundle not found at ${clientDir}. Run \`bun run --filter @executor-js/local build\` before launching desktop.`,
+    );
+  }
+
+  const releaseStartupLock = cliManagedManifest ? null : acquireLocalServerStartLock(dataDir);
   let startupLockReleased = false;
   const releaseLock = () => {
     if (startupLockReleased) return;
     startupLockReleased = true;
-    releaseStartupLock();
+    releaseStartupLock?.();
   };
 
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: startup lock must be released before rethrowing Electron startup failures
-  try {
-    assertNoOtherLocalServerOwner(dataDir);
-  } catch (error) {
-    releaseLock();
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve Electron startup failure after releasing local startup lock
-    throw error;
+  if (!cliManagedManifest) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: startup lock must be released before rethrowing Electron startup failures
+    try {
+      assertNoOtherLocalServerOwner(dataDir);
+    } catch (error) {
+      releaseLock();
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve Electron startup failure after releasing local startup lock
+      throw error;
+    }
   }
 
   let child: ChildProcess;
@@ -300,7 +325,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         // The bearer token the child validates and the main process injects into
         // the webview. Always set — auth is unconditional.
         EXECUTOR_AUTH_TOKEN: authToken,
-        EXECUTOR_CLIENT_DIR: clientDir,
+        ...(clientDir ? { EXECUTOR_CLIENT_DIR: clientDir } : {}),
         EXECUTOR_SCOPE_DIR: scopeDir,
         EXECUTOR_DATA_DIR: dataDir,
         EXECUTOR_CLIENT: "desktop",
@@ -334,9 +359,11 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
     const onStdout = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
-      process.stdout.write(`[executor-sidecar] ${text}`);
+      process.stdout.write(`[executor-server] ${text}`);
       logStdoutLine(text);
-      const match = text.match(/EXECUTOR_READY:(\d+)/);
+      const match =
+        text.match(/EXECUTOR_READY:(\d+)/) ??
+        text.match(/Daemon ready on http:\/\/(?:\[[^\]]+\]|[^:\s]+):(\d+)/);
       if (match && !resolved) {
         if (!child.pid) {
           reject(
@@ -348,13 +375,15 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         resolved = true;
         const port = parseInt(match[1], 10);
         const baseUrl = `http://${hostname}:${port}`;
-        writeSidecarManifest({
-          dataDir,
-          scopeDir,
-          baseUrl,
-          authToken,
-          childPid: child.pid,
-        });
+        if (!cliManagedManifest) {
+          writeSidecarManifest({
+            dataDir,
+            scopeDir,
+            baseUrl,
+            authToken,
+            childPid: child.pid,
+          });
+        }
         releaseLock();
         resolveStart({
           baseUrl,
@@ -364,6 +393,9 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
           authToken,
           child,
           supervisedDaemon: false,
+          ownerVersion: app.getVersion() || null,
+          ownerClient: "desktop",
+          ownerExecutablePath: command,
         });
       }
     };
@@ -371,7 +403,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     const onStderr = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       stderrBuffer = (stderrBuffer + text).slice(-STDERR_TAIL_LIMIT);
-      process.stderr.write(`[executor-sidecar] ${text}`);
+      process.stderr.write(`[executor-server] ${text}`);
       logStderrLine(text);
     };
 
@@ -408,25 +440,27 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   });
 }
 
-/**
- * Probe whether an HTTP server is listening at `origin`. Any HTTP response —
- * even 401/404 — means a server is up; only a network error or timeout counts
- * as unreachable. Auth is attached so a 401 still confirms liveness cleanly.
- */
-const isDaemonReachable = async (origin: string, authToken: string): Promise<boolean> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch rejects on a down server; that's the "not reachable" signal
-  try {
-    const headers: Record<string, string> = {};
-    if (authToken) headers.Authorization = `Bearer ${authToken}`;
-    await fetch(origin, { signal: controller.signal, headers, redirect: "manual" });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
+/** Probe the unauthenticated Executor health endpoint without disclosing the saved bearer. */
+const isDaemonReachable = async (origin: string): Promise<boolean> => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1500);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch rejects on a down server; that's the "not reachable" signal
+    try {
+      const response = await fetch(new URL("/api/health", origin), {
+        signal: controller.signal,
+        redirect: "manual",
+      });
+      const body = await response.text();
+      if (response.ok && body.trim() === "ok") return true;
+    } catch {
+      // retry below
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < 2) await delay(150);
   }
+  return false;
 };
 
 /**
@@ -452,7 +486,11 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
   const origin = manifest.connection.origin;
   const auth = manifest.connection.auth;
   const authToken = auth && auth.kind === "bearer" ? auth.token : "";
-  if (!(await isDaemonReachable(origin, authToken))) return null;
+  if (!(await isDaemonReachable(origin))) {
+    sidecarLog.info(`removing stale supervised daemon manifest for unreachable ${origin}`);
+    removeManifestIfOwnedBy(dataDir, manifest.pid);
+    return null;
+  }
 
   const url = new URL(origin);
   sidecarLog.info(`attaching to supervised daemon at ${origin} (pid ${manifest.pid})`);
@@ -464,6 +502,9 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
     authToken,
     child: null,
     supervisedDaemon: true,
+    ownerVersion: manifest.owner.version,
+    ownerClient: manifest.owner.client,
+    ownerExecutablePath: manifest.owner.executablePath,
   };
 }
 

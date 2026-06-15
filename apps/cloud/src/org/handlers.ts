@@ -90,9 +90,12 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
         }
 
         const workos = yield* WorkOSClient;
+        // WorkOS requires an ABSOLUTE returnUrl — fall back to the pinned origin
+        // (matching every other VITE_PUBLIC_SITE_URL site in this host), not a
+        // bare relative path that WorkOS would reject.
         const { link } = yield* workos.generateDomainVerificationPortalLink(
           auth.organizationId,
-          env.VITE_PUBLIC_SITE_URL ? `${env.VITE_PUBLIC_SITE_URL}/org` : "/org",
+          `${env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh"}/org`,
         );
         return { link };
       }),

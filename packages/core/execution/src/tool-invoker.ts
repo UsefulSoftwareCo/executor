@@ -9,6 +9,7 @@ import type {
   ToolSchemaView,
 } from "@executor-js/sdk/core";
 import {
+  annotateToolResultOutcome,
   authToolFailure,
   isToolResult,
   ToolResult,
@@ -282,6 +283,10 @@ export const makeExecutorToolInvoker = (
     // raw success value and wrapped — keeps the sandbox-facing contract
     // uniform without forcing every tiny test plugin to import
     // `ToolResult.ok`.
+    // Expected failures resolve through the success channel, so without the
+    // outcome annotation the dispatch span reads as healthy even when the
+    // caller hit an upstream error or auth wall.
+    yield* annotateToolResultOutcome(result);
     if (isToolResult(result)) {
       return result;
     }

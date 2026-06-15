@@ -89,8 +89,8 @@ export const isExecutorServerReachable = (
     // misconfigured base URL can't leak the bearer token to a third-party host.
     const url = new URL("/api/health", input.baseUrl);
     const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
-    await response.body?.cancel();
-    return response.ok;
+    const body = await response.text();
+    return response.ok && body.trim() === "ok";
   }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 
 // ---------------------------------------------------------------------------
@@ -282,3 +282,52 @@ export const chooseDaemonPort = (input: {
     }
     return fallbackPort;
   });
+
+// ---------------------------------------------------------------------------
+// Service-install planning (pure)
+// ---------------------------------------------------------------------------
+
+export type ServiceInstallPlan = "noop" | "reinstall" | "takeover-then-install";
+
+export const planServiceInstall = (input: {
+  readonly registered: boolean;
+  readonly running: boolean;
+  readonly activeKind: "cli-daemon" | "desktop-sidecar" | "foreground" | null;
+  readonly activePid?: number | null;
+  readonly servicePid?: number | null;
+  readonly activeVersion: string | null;
+  readonly activeExecutablePath?: string | null;
+  readonly activePort: number | null;
+  readonly requestedPort: number;
+  readonly currentVersion: string;
+  readonly currentExecutablePath?: string | null;
+}): ServiceInstallPlan => {
+  if (input.activeKind !== null && input.activeKind !== "cli-daemon") {
+    return "takeover-then-install";
+  }
+
+  if (input.registered && input.running) {
+    if (
+      input.activeKind === "cli-daemon" &&
+      input.activePid !== undefined &&
+      input.activePid !== null &&
+      input.servicePid !== undefined &&
+      input.servicePid !== null &&
+      input.activePid !== input.servicePid
+    ) {
+      return "takeover-then-install";
+    }
+
+    const executableMatches =
+      !input.activeExecutablePath ||
+      !input.currentExecutablePath ||
+      input.activeExecutablePath === input.currentExecutablePath;
+    return input.activeVersion === input.currentVersion &&
+      input.activePort === input.requestedPort &&
+      executableMatches
+      ? "noop"
+      : "reinstall";
+  }
+
+  return "takeover-then-install";
+};

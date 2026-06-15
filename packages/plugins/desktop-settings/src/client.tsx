@@ -13,7 +13,7 @@
  * module-init time — so the web UI doesn't show a non-functional link.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +71,12 @@ const inDesktop = readBridge() !== null;
 // user, only "save failed" matters. The main process logs the full error.
 const describeIpcError = (_err: unknown): string =>
   "Save failed — check the desktop console for details.";
+
+const pageFrameStyle: CSSProperties = {
+  minHeight: 0,
+  height: "100%",
+  overflowY: "auto",
+};
 
 // ---------------------------------------------------------------------------
 // SettingsPage
@@ -168,17 +174,23 @@ function SettingsPage() {
 
   if (!bridge) {
     return (
-      <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>
-        <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Desktop server settings</h1>
-        <p style={{ color: "var(--muted-foreground, #888)" }}>
-          Open this page from Executor Desktop to inspect and change the active server connection.
-        </p>
+      <div style={pageFrameStyle}>
+        <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>
+          <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Desktop server settings</h1>
+          <p style={{ color: "var(--muted-foreground, #888)" }}>
+            Open this page from Executor Desktop to inspect and change the active server connection.
+          </p>
+        </div>
       </div>
     );
   }
 
   if (!settings || !draft || !connection) {
-    return <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>;
+    return (
+      <div style={pageFrameStyle}>
+        <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>
+      </div>
+    );
   }
 
   const dirty = draft.port !== settings.port;
@@ -190,172 +202,102 @@ function SettingsPage() {
     : "executor tools sources --server desktop";
 
   return (
-    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "1.5rem" }}>
-      <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.25rem" }}>
-        Desktop server connection
-      </h1>
-      <p
-        style={{
-          fontSize: "0.875rem",
-          color: "var(--muted-foreground, #888)",
-          marginBottom: "1.5rem",
-        }}
-      >
-        {connection.displayName}
-      </p>
+    <div style={pageFrameStyle}>
+      <div style={{ maxWidth: 760, margin: "2rem auto", padding: "1.5rem" }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+          Desktop server connection
+        </h1>
+        <p
+          style={{
+            fontSize: "0.875rem",
+            color: "var(--muted-foreground, #888)",
+            marginBottom: "1.5rem",
+          }}
+        >
+          {connection.displayName}
+        </p>
 
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))",
-          gap: "0.75rem",
-          marginBottom: "1.5rem",
-        }}
-      >
-        <ConnectionField label="Origin" value={connection.origin} />
-        <ConnectionField label="API" value={connection.apiBaseUrl} />
-        <ConnectionField label="Auth" value={authLabel} />
-        <ConnectionField label="Kind" value={connection.kind} />
-      </section>
+        <section
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))",
+            gap: "0.75rem",
+            marginBottom: "1.5rem",
+          }}
+        >
+          <ConnectionField label="Origin" value={connection.origin} />
+          <ConnectionField label="API" value={connection.apiBaseUrl} />
+          <ConnectionField label="Auth" value={authLabel} />
+          <ConnectionField label="Kind" value={connection.kind} />
+        </section>
 
-      <section
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "0.5rem",
-          marginBottom: "1.5rem",
-          padding: "0.85rem",
-          borderRadius: 6,
-          border: "1px solid var(--border, #ddd)",
-          background: "var(--muted, #f5f5f5)",
-        }}
-      >
-        <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>CLI profile</div>
-        <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
-          {cliProfileCommand}
-        </code>
-        <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
-          {cliUseCommand}
-        </code>
-      </section>
+        <section
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+            marginBottom: "1.5rem",
+            padding: "0.85rem",
+            borderRadius: 6,
+            border: "1px solid var(--border, #ddd)",
+            background: "var(--muted, #f5f5f5)",
+          }}
+        >
+          <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>CLI profile</div>
+          <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+            {cliProfileCommand}
+          </code>
+          <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+            {cliUseCommand}
+          </code>
+        </section>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-          <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Port</span>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <input
-            type="number"
-            min={1}
-            max={65535}
-            value={draft.port}
-            onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })}
-            style={{
-              padding: "0.5rem 0.7rem",
-              borderRadius: 6,
-              border: "1px solid var(--border, #ddd)",
-              fontFamily: "inherit",
-              fontSize: "0.95rem",
-              width: "8rem",
-            }}
-          />
-          <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-            Changes restart the connection at <code>http://127.0.0.1:{draft.port}</code>.
-          </span>
-        </label>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-          <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Bearer token</span>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <code
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Port</span>
+            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              value={draft.port}
+              onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })}
               style={{
-                flex: 1,
                 padding: "0.5rem 0.7rem",
                 borderRadius: 6,
                 border: "1px solid var(--border, #ddd)",
-                background: "var(--muted, #f5f5f5)",
-                fontSize: "0.85rem",
-                overflow: "auto",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {authToken ?? "—"}
-            </code>
-            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-            <button
-              type="button"
-              onClick={() => void rotate()}
-              disabled={status !== "idle"}
-              style={{
-                padding: "0.45rem 0.85rem",
-                borderRadius: 6,
-                border: "1px solid var(--border, #ddd)",
-                background: "var(--background, white)",
                 fontFamily: "inherit",
-                fontSize: "0.85rem",
-                cursor: status === "idle" ? "pointer" : "default",
+                fontSize: "0.95rem",
+                width: "8rem",
               }}
-            >
-              Rotate
-            </button>
-          </div>
-          <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-            The sidecar enforces this token on <code>/api</code> and <code>/mcp</code>. Rotating it
-            restarts the connection and invalidates existing MCP client configs — re-run your
-            connect command afterwards.
-          </span>
-        </div>
-
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <button
-            type="button"
-            disabled={!dirty || status !== "idle"}
-            onClick={() => void apply({ port: draft.port })}
-            style={{
-              padding: "0.55rem 1.1rem",
-              borderRadius: 6,
-              border: "1px solid transparent",
-              background: dirty ? "var(--primary, #0d0d10)" : "var(--muted, #eee)",
-              color: dirty ? "var(--primary-foreground, white)" : "var(--muted-foreground, #888)",
-              fontFamily: "inherit",
-              fontSize: "0.9rem",
-              cursor: dirty && status === "idle" ? "pointer" : "default",
-            }}
-          >
-            {status === "saving"
-              ? "Saving…"
-              : status === "restarting"
-                ? "Restarting server…"
-                : "Save"}
-          </button>
-          {error && (
-            <span style={{ fontSize: "0.8rem", color: "var(--destructive, #c00)" }}>{error}</span>
-          )}
-        </div>
-
-        {bridge.exportDiagnostics && (
-          <section
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.5rem",
-              padding: "0.85rem",
-              borderRadius: 6,
-              border: "1px solid var(--border, #ddd)",
-            }}
-          >
-            <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
+            />
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              Packs app and server logs, crash dumps, and version info into a zip in your Downloads
-              folder — attach it when reporting a bug. Your sources, secrets, and bearer token are
-              not included.
+              Changes restart the connection at <code>http://127.0.0.1:{draft.port}</code>.
             </span>
+          </label>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Bearer token</span>
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <code
+                style={{
+                  flex: 1,
+                  padding: "0.5rem 0.7rem",
+                  borderRadius: 6,
+                  border: "1px solid var(--border, #ddd)",
+                  background: "var(--muted, #f5f5f5)",
+                  fontSize: "0.85rem",
+                  overflow: "auto",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {authToken ?? "—"}
+              </code>
               {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
               <button
                 type="button"
-                onClick={() => void exportDiagnostics()}
-                disabled={diagnostics.state === "exporting"}
+                onClick={() => void rotate()}
+                disabled={status !== "idle"}
                 style={{
                   padding: "0.45rem 0.85rem",
                   borderRadius: 6,
@@ -363,20 +305,92 @@ function SettingsPage() {
                   background: "var(--background, white)",
                   fontFamily: "inherit",
                   fontSize: "0.85rem",
-                  cursor: diagnostics.state === "exporting" ? "default" : "pointer",
-                  width: "fit-content",
+                  cursor: status === "idle" ? "pointer" : "default",
                 }}
               >
-                {diagnostics.state === "exporting" ? "Exporting…" : "Export diagnostics"}
+                Rotate
               </button>
-              {diagnostics.state === "done" && (
-                <code style={{ fontSize: "0.75rem", overflow: "auto", whiteSpace: "nowrap" }}>
-                  {diagnostics.path}
-                </code>
-              )}
             </div>
-          </section>
-        )}
+            <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
+              The sidecar enforces this token on <code>/api</code> and <code>/mcp</code>. Rotating
+              it restarts the connection and invalidates existing MCP client configs — re-run your
+              connect command afterwards.
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+            <button
+              type="button"
+              disabled={!dirty || status !== "idle"}
+              onClick={() => void apply({ port: draft.port })}
+              style={{
+                padding: "0.55rem 1.1rem",
+                borderRadius: 6,
+                border: "1px solid transparent",
+                background: dirty ? "var(--primary, #0d0d10)" : "var(--muted, #eee)",
+                color: dirty ? "var(--primary-foreground, white)" : "var(--muted-foreground, #888)",
+                fontFamily: "inherit",
+                fontSize: "0.9rem",
+                cursor: dirty && status === "idle" ? "pointer" : "default",
+              }}
+            >
+              {status === "saving"
+                ? "Saving…"
+                : status === "restarting"
+                  ? "Restarting server…"
+                  : "Save"}
+            </button>
+            {error && (
+              <span style={{ fontSize: "0.8rem", color: "var(--destructive, #c00)" }}>{error}</span>
+            )}
+          </div>
+
+          {bridge.exportDiagnostics && (
+            <section
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.5rem",
+                padding: "0.85rem",
+                borderRadius: 6,
+                border: "1px solid var(--border, #ddd)",
+              }}
+            >
+              <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
+              <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
+                Packs app and server logs, crash dumps, and version info into a zip in your
+                Downloads folder — attach it when reporting a bug. Your sources, secrets, and bearer
+                token are not included.
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+                <button
+                  type="button"
+                  onClick={() => void exportDiagnostics()}
+                  disabled={diagnostics.state === "exporting"}
+                  style={{
+                    padding: "0.45rem 0.85rem",
+                    borderRadius: 6,
+                    border: "1px solid var(--border, #ddd)",
+                    background: "var(--background, white)",
+                    fontFamily: "inherit",
+                    fontSize: "0.85rem",
+                    cursor: diagnostics.state === "exporting" ? "default" : "pointer",
+                    width: "fit-content",
+                  }}
+                >
+                  {diagnostics.state === "exporting" ? "Exporting…" : "Export diagnostics"}
+                </button>
+                {diagnostics.state === "done" && (
+                  <code style={{ fontSize: "0.75rem", overflow: "auto", whiteSpace: "nowrap" }}>
+                    {diagnostics.path}
+                  </code>
+                )}
+              </div>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );

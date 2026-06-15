@@ -77,6 +77,31 @@ const r = yield * session.call("execute", { code: "return 1 + 1;" });
 // human-in-the-loop: session.approvePaused(r.text) resumes a paused execution
 ```
 
+## Telemetry scenarios (cloud)
+
+The suite boots a motel OTLP store and points the target's real exporter at
+it, so a scenario can assert on the spans the server ACTUALLY exported —
+the layer where "observability silently went dark" bugs live (an attribute
+stamped on a span the exporter never carries looks identical to health).
+
+```ts
+const telemetry = yield * Telemetry; // skips when motel didn't boot
+const span =
+  yield *
+  telemetry.expectSpan({
+    operation: "executor.tool.execute",
+    attributes: { "mcp.tool.name": failAddress }, // exact match, values stringified
+  });
+expect(span.span.tags["executor.tool.outcome"]).toBe("fail");
+```
+
+- `expectSpan` polls (~20s): exporters batch, so arrival is
+  eventually-consistent — "the span reaches the store, soon" IS the contract.
+- Spec gotcha for fixtures: give operations explicit `tags` — tool addresses
+  are `group.leaf`, and an untagged op derives its group from the URL path,
+  so `/fail` does NOT produce a `.fail`-suffixed address.
+- Prior art: `cloud/telemetry-contract.test.ts`.
+
 ## Running
 
 ```sh

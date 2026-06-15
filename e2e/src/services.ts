@@ -11,6 +11,7 @@ import type { ApiSurface } from "./surfaces/api";
 import type { BrowserSurface } from "./surfaces/browser";
 import type { CliSurface } from "./surfaces/cli";
 import type { McpSurface } from "./surfaces/mcp";
+import type { TelemetrySurface } from "./surfaces/telemetry";
 import type { completeOAuthConsent, makeOpenCodeHome, warmUp } from "./clients/opencode";
 
 /** The target under test (always provided). */
@@ -33,6 +34,10 @@ export class Mcp extends Context.Service<Mcp, McpSurface>()("e2e/mcp-oauth") {}
 
 /** Marker: billing limits are enforced on this target. */
 export class Billing extends Context.Service<Billing, true>()("e2e/billing") {}
+
+/** Query the suite's OTLP trace store for spans the target actually exported
+ *  (present when the suite booted motel — E2E_MOTEL_URL). */
+export class Telemetry extends Context.Service<Telemetry, TelemetrySurface>()("e2e/telemetry") {}
 
 /** The real OpenCode binary, hermetically driveable (present when installed on this host). */
 export interface OpenCodeClient {

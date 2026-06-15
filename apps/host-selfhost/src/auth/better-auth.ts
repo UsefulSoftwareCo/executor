@@ -88,9 +88,15 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       type: "sqlite" as const,
     },
     secret,
-    baseURL: config.webBaseUrl,
     // The browser Origin must match this exactly; CLI/MCP bearer requests carry
-    // no Origin and are unaffected.
+    // no Origin and are unaffected. `config.webBaseUrl` resolves from an explicit
+    // EXECUTOR_WEB_BASE_URL, else a platform-injected origin (Railway/Render/Fly/
+    // …), else localhost — so a PaaS deploy is zero-config and any other host
+    // sets the one variable (a loud warning fires on the localhost fallback).
+    // See config.ts. We deliberately do NOT derive this from the request `Host`:
+    // matching the ecosystem (Windmill `BASE_URL`, n8n `WEBHOOK_URL`), a pinned
+    // origin keeps host-header injection out of OAuth redirects and links.
+    baseURL: config.webBaseUrl,
     trustedOrigins: [config.webBaseUrl],
     emailAndPassword: { enabled: true },
     // `apiKey` issues long-lived personal keys (the API-keys page). With

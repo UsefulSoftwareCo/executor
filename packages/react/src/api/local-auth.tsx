@@ -22,6 +22,7 @@ import * as React from "react";
 import { getExecutorServerConnection, setExecutorServerConnection } from "./server-connection";
 
 const STORAGE_KEY = "executor.authToken";
+const DESKTOP_LAUNCH_CACHE_BUST_PARAM = "_executor_desktop_launch";
 
 const isDesktopBridge = (): boolean =>
   typeof globalThis.window?.executor?.getServerConnection === "function";
@@ -57,16 +58,33 @@ const applyBearer = (token: string): void => {
  * localStorage. Identical in dev and prod.
  */
 export const bootstrapLocalAuthToken = (): void => {
-  if (isDesktopBridge()) return;
-
   const url = globalThis.window ? new URL(window.location.href) : null;
   const fromUrl = url?.searchParams.get("_token") ?? null;
+  const stripCacheBust = url?.searchParams.has(DESKTOP_LAUNCH_CACHE_BUST_PARAM) ?? false;
+  if (stripCacheBust) {
+    url!.searchParams.delete(DESKTOP_LAUNCH_CACHE_BUST_PARAM);
+  }
+
+  if (isDesktopBridge()) {
+    if (fromUrl) {
+      url!.searchParams.delete("_token");
+    }
+    if (stripCacheBust || fromUrl) {
+      globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
+    }
+    return;
+  }
+
   if (fromUrl) {
     persistToken(fromUrl);
     url!.searchParams.delete("_token");
     globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
     applyBearer(fromUrl);
     return;
+  }
+
+  if (stripCacheBust) {
+    globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
   }
 
   const stored = readStoredToken();

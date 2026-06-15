@@ -9,7 +9,7 @@
   "scripts": {
     "predev": "bun run --filter @executor-js/local build",
     "dev": "electron-vite dev",
-    "prebuild": "bun run --filter @executor-js/local build && bun ./scripts/build-sidecar.ts",
+    "prebuild": "bun ./scripts/build-sidecar.ts",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --config electron-builder.config.ts",

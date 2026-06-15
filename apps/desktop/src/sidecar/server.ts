@@ -1,7 +1,7 @@
 /**
- * Bun-side sidecar entry. Spawned by the Electron main process as a child
- * process (either via `bun run ...` in dev or as a Bun-compiled binary in
- * production).
+ * Bun-side sidecar entry. Spawned by the Electron main process in dev via
+ * `bun run ...`. Packaged desktop uses the bundled `executor` CLI binary
+ * instead.
  *
  * Reads connection parameters from env, boots the executor server, then
  * announces readiness with the resolved port on stdout so the Electron
@@ -12,11 +12,9 @@
 import "./native-bindings";
 import { dirname, join } from "node:path";
 
-// Pre-load QuickJS WASM for compiled binaries. `bun build --compile` can't
-// embed the side-asset WASM that `quickjs-emscripten` ships with, so
-// build-sidecar.ts stages it next to this binary and we feed the bytes in
-// via `setQuickJSModule` before any server import touches QuickJS. Mirrors
-// the CLI's preload in apps/cli/src/main.ts.
+// Pre-load QuickJS WASM for manually compiled sidecar binaries. Packaged
+// desktop no longer ships this entrypoint, but keeping the preload here lets
+// direct sidecar smoke/debug runs behave like the CLI binary.
 const wasmOnDisk = join(dirname(process.execPath), "emscripten-module.wasm");
 if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
   const { setQuickJSModule } = await import("@executor-js/runtime-quickjs");
@@ -63,7 +61,7 @@ if (sentryDsn) {
   });
 }
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   normalizeExecutorServerConnection,
@@ -116,7 +114,9 @@ const writeSupervisedManifest = (port: number, token: string) => {
         executablePath: process.execPath || null,
       },
     }),
+    { mode: 0o600 },
   );
+  chmodSync(manifestPath, 0o600);
 };
 
 const removeOwnManifest = () => {

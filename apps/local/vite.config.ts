@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import appPlugin from "@executor-js/app/vite";
 import { loadOrMintLocalAuthToken } from "./src/auth";
+import { consumeOAuthResult } from "./src/oauth-result-store";
 import { isUnauthenticatedOAuthCallbackPath, makeIsAuthorized } from "./src/serve-shared";
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
@@ -114,20 +115,37 @@ function executorApiPlugin(): Plugin {
             if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
           }
 
-          // Strip /api prefix for Effect handlers
-          const url = isApi ? rawUrl.slice("/api".length) || "/" : rawUrl;
-
           const hasBody = req.method !== "GET" && req.method !== "HEAD";
-          const webRequest = new Request(new URL(url, origin), {
-            method: req.method,
-            headers,
-            body: hasBody ? Readable.toWeb(req) : undefined,
-            duplex: hasBody ? "half" : undefined,
-          } as RequestInit);
+          const webRequest = (url: string): Request =>
+            new Request(new URL(url, origin), {
+              method: req.method,
+              headers,
+              body: hasBody ? Readable.toWeb(req) : undefined,
+              duplex: hasBody ? "half" : undefined,
+            } as RequestInit);
 
-          const response = isMcp
-            ? await handlers.mcp.handleRequest(webRequest)
-            : await handlers.api.handler(webRequest);
+          let response: Response;
+          if (isMcp) {
+            response = await handlers.mcp.handleRequest(webRequest(rawUrl));
+          } else if (pathOnly === "/api/health" && req.method === "GET") {
+            response = new Response("ok", { headers: { "content-type": "text/plain" } });
+          } else if (pathOnly.startsWith("/api/mcp-sessions/")) {
+            const handler =
+              req.method === "GET"
+                ? handlers.mcp.handlePausedRequest
+                : handlers.mcp.handleApprovalRequest;
+            response = await handler(webRequest(rawUrl));
+          } else {
+            const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(pathOnly);
+            if (awaitMatch && req.method === "GET") {
+              response = new Response(JSON.stringify(consumeOAuthResult(awaitMatch[1]!)), {
+                headers: { "content-type": "application/json" },
+              });
+            } else {
+              // Strip /api prefix for Effect handlers.
+              response = await handlers.api.handler(webRequest(rawUrl.slice("/api".length) || "/"));
+            }
+          }
 
           res.statusCode = response.status;
           response.headers.forEach((v, k) => res.setHeader(k, v));

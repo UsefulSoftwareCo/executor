@@ -1,5 +1,5 @@
 import Store from "electron-store";
-import { rotateLocalAuthToken } from "@executor-js/local/auth";
+import { rotateLocalAuthToken } from "./local-auth";
 import { DEFAULT_SERVER_SETTINGS, type DesktopServerSettings } from "../shared/server-settings";
 
 interface PersistedShape {
@@ -9,6 +9,9 @@ interface PersistedShape {
 
 const store = new Store<PersistedShape>({
   name: "settings",
+  ...(process.env.EXECUTOR_DESKTOP_SETTINGS_DIR
+    ? { cwd: process.env.EXECUTOR_DESKTOP_SETTINGS_DIR }
+    : {}),
   defaults: { server: DEFAULT_SERVER_SETTINGS },
 });
 

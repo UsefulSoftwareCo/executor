@@ -5,7 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
 
 import {
-  approvalUrlForRequest,
+  buildResumeApprovalUrl,
   decodeResumeResponse,
   formatResumeAcknowledgement,
   readElicitationMode,
@@ -82,13 +82,19 @@ export interface InMemoryMcpSessionStore {
    * paused-execution detail the console approval page renders. Returns the
    * paused `{ text, structured }` or a 404. Null if the path does not match.
    */
-  readonly handlePausedRequest: (request: Request) => Promise<Response | null>;
+  readonly handlePausedRequest: (
+    request: Request,
+    principal?: Principal,
+  ) => Promise<Response | null>;
   /**
    * Serve `POST /api/mcp-sessions/:sessionId/executions/:executionId/resume` —
    * record the human's decision and wake the long-polling `resume` tool call.
    * Null if the path does not match.
    */
-  readonly handleApprovalRequest: (request: Request) => Promise<Response | null>;
+  readonly handleApprovalRequest: (
+    request: Request,
+    principal?: Principal,
+  ) => Promise<Response | null>;
   /** Dispose every live session — wire into the host's shutdown (not a seam). */
   readonly close: () => Promise<void>;
 }
@@ -122,6 +128,12 @@ const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/res
  */
 export const makeInMemoryMcpSessionStore = (
   buildServer: McpBuildServer,
+  // The host's pinned public origin, used to build browser-approval URLs the
+  // human opens. When set (e.g. a public-internet self-host behind a reverse
+  // proxy) it is preferred over the request URL — whose host would be the
+  // internal bind address (127.0.0.1:PORT), unreachable for the user. Omit it on
+  // loopback hosts (local/desktop), where the request URL is already correct.
+  options: { readonly webBaseUrl?: string } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
@@ -192,7 +204,14 @@ export const makeInMemoryMcpSessionStore = (
     return {
       elicitationMode: {
         mode: "browser",
-        approvalUrl: (executionId) => approvalUrlForRequest(request, executionId, sessionId()),
+        // Prefer the pinned public origin; fall back to the request URL (correct
+        // for loopback hosts, the internal bind address behind a proxy).
+        approvalUrl: (executionId) =>
+          buildResumeApprovalUrl({
+            origin: options.webBaseUrl ?? request.url,
+            executionId,
+            sessionId: sessionId(),
+          }),
       },
       browserApprovalStore: approvals.store,
     };
@@ -246,6 +265,16 @@ export const makeInMemoryMcpSessionStore = (
       Effect.promise(() => dispose(sessionId, { transport: true, server: true })),
   };
 
+  const ownerAccess = (
+    sessionId: string,
+    principal: Principal | undefined,
+  ): "allowed" | "not-found" | "forbidden" => {
+    const owner = owners.get(sessionId);
+    if (!owner) return "not-found";
+    if (principal && !principalOwns(owner, principal)) return "forbidden";
+    return "allowed";
+  };
+
   /** Resolve a paused execution from the session that owns it, for HTTP approval. */
   const pausedFromSession = (
     sessionId: string,
@@ -261,25 +290,35 @@ export const makeInMemoryMcpSessionStore = (
     );
   };
 
-  const handlePausedRequest = async (request: Request): Promise<Response | null> => {
+  const handlePausedRequest = async (
+    request: Request,
+    principal?: Principal,
+  ): Promise<Response | null> => {
     const match = PAUSED_PATH.exec(new URL(request.url).pathname);
     if (!match) return null;
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-    const paused = await pausedFromSession(
-      decodeURIComponent(match[1]!),
-      decodeURIComponent(match[2]!),
-    );
+    const sessionId = decodeURIComponent(match[1]!);
+    const access = ownerAccess(sessionId, principal);
+    if (access === "forbidden") return json({ error: "Forbidden" }, 403);
+    if (access === "not-found") return json({ error: "Paused execution not found" }, 404);
+    const paused = await pausedFromSession(sessionId, decodeURIComponent(match[2]!));
     if (!paused) return json({ error: "Paused execution not found" }, 404);
     return json({ text: paused.text, structured: paused.structured });
   };
 
-  const handleApprovalRequest = async (request: Request): Promise<Response | null> => {
+  const handleApprovalRequest = async (
+    request: Request,
+    principal?: Principal,
+  ): Promise<Response | null> => {
     const match = RESUME_PATH.exec(new URL(request.url).pathname);
     if (!match) return null;
     if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
     const sessionId = decodeURIComponent(match[1]!);
     const executionId = decodeURIComponent(match[2]!);
+    const access = ownerAccess(sessionId, principal);
+    if (access === "forbidden") return json({ error: "Forbidden" }, 403);
+    if (access === "not-found") return json({ error: "Paused execution not found" }, 404);
     // The session must still hold the paused execution — guards stale ids and
     // confirms the execution belongs to this session before recording.
     const paused = await pausedFromSession(sessionId, executionId);

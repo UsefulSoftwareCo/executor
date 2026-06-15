@@ -138,27 +138,48 @@ const serviceProgramArguments = (descriptor: ServiceDescriptor): ReadonlyArray<s
   "--foreground",
   "--port",
   String(descriptor.port),
+  "--hostname",
+  "127.0.0.1",
 ];
 
 const serviceEnvironment = (
   descriptor: ServiceDescriptor,
   dataDir: string,
-): Record<string, string> => ({
-  // Marks the process as OS-supervised so the daemon resolves its bearer token
-  // from the durable 0600 auth.json (the secret is never in the unit itself).
-  EXECUTOR_SUPERVISED: "1",
-  // Pin the data dir explicitly: launchd/systemd give a minimal environment and
-  // we never want the daemon to fall back to a different home than the user's.
-  EXECUTOR_DATA_DIR: dataDir,
-  // Stamp the installing version so `service status` can flag drift after an
-  // upgrade where the unit still points at an older binary path.
-  EXECUTOR_SERVICE_VERSION: descriptor.version,
-  // A launchd/systemd unit starts with a bare PATH — without the user's PATH
-  // the daemon can't find pyenv/nvm/volta/Homebrew tools that integrations may
-  // shell out to. `service install` runs from the user's shell, so its own
-  // PATH is the right one to bake in. (Reference: opencode shell-env capture.)
-  ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-});
+): Record<string, string> => {
+  const passThroughKeys = [
+    "EXECUTOR_CLIENT",
+    "EXECUTOR_SENTRY_DSN",
+    "EXECUTOR_SENTRY_RELEASE",
+    "EXECUTOR_SENTRY_ENVIRONMENT",
+    "EXECUTOR_RUN_ID",
+  ] as const;
+  const passThrough = Object.fromEntries(
+    passThroughKeys.flatMap((key) => {
+      const value = process.env[key];
+      return value ? [[key, value] as const] : [];
+    }),
+  );
+
+  return {
+    // Marks the process as OS-supervised so the daemon resolves its bearer token
+    // from the durable 0600 auth.json (the secret is never in the unit itself).
+    EXECUTOR_SUPERVISED: "1",
+    // Pin the data/scope dirs explicitly: launchd/systemd give a minimal
+    // environment and we never want the daemon to fall back to a different home
+    // or cwd than the user's singleton local service.
+    EXECUTOR_DATA_DIR: dataDir,
+    EXECUTOR_SCOPE_DIR: process.env.EXECUTOR_SCOPE_DIR ?? dataDir,
+    // Stamp the installing version so `service status` can flag drift after an
+    // upgrade where the unit still points at an older binary path.
+    EXECUTOR_SERVICE_VERSION: descriptor.version,
+    // A launchd/systemd unit starts with a bare PATH — without the user's PATH
+    // the daemon can't find pyenv/nvm/volta/Homebrew tools that integrations may
+    // shell out to. `service install` runs from the user's shell, so its own
+    // PATH is the right one to bake in. (Reference: opencode shell-env capture.)
+    ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+    ...passThrough,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // macOS — launchd LaunchAgent (fully built)
@@ -270,8 +291,12 @@ const makeLaunchdBackend = (): ServiceBackend => {
         yield* fs.writeFileString(plistFile, plist, { mode: 0o600 });
 
         // Re-bootstrap cleanly: a stale registration from a prior install would
-        // make `bootstrap` fail with "service already loaded".
+        // make `bootstrap` fail with "service already loaded". `service
+        // uninstall` also records the label as disabled in launchd's override
+        // database; clear that before bootstrapping or a reinstall can fail with
+        // launchctl's generic "Bootstrap failed: 5" error.
         yield* runCommand("launchctl", ["bootout", serviceTarget(uid)]).pipe(Effect.ignore);
+        yield* runCommand("launchctl", ["enable", serviceTarget(uid)]).pipe(Effect.ignore);
         const bootstrap = yield* runCommand("launchctl", ["bootstrap", `gui/${uid}`, plistFile]);
         if (bootstrap.code !== 0) {
           return yield* Effect.fail(
@@ -280,7 +305,6 @@ const makeLaunchdBackend = (): ServiceBackend => {
             ),
           );
         }
-        yield* runCommand("launchctl", ["enable", serviceTarget(uid)]).pipe(Effect.ignore);
       }),
     uninstall: () =>
       Effect.gen(function* () {
@@ -340,11 +364,24 @@ export interface SystemdUnitOptions {
   readonly stderrPath: string;
 }
 
+const SYSTEMD_BARE_VALUE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+const systemdQuote = (value: string): string => {
+  if (SYSTEMD_BARE_VALUE.test(value)) return value;
+  const escaped = value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t");
+  return `"${escaped}"`;
+};
+
 /** Render a systemd --user unit. Pure (snapshot-tested). */
 export const generateSystemdUnit = (options: SystemdUnitOptions): string => {
-  const execStart = options.execStart.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" ");
+  const execStart = options.execStart.map(systemdQuote).join(" ");
   const env = Object.entries(options.environment)
-    .map(([key, value]) => `Environment=${key}=${value}`)
+    .map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`)
     .join("\n");
   return `[Unit]
 Description=Executor supervised daemon
@@ -354,9 +391,9 @@ After=default.target
 Type=simple
 ExecStart=${execStart}
 ${env}
-WorkingDirectory=${options.workingDirectory}
-StandardOutput=append:${options.stdoutPath}
-StandardError=append:${options.stderrPath}
+WorkingDirectory=${systemdQuote(options.workingDirectory)}
+StandardOutput=${systemdQuote(`append:${options.stdoutPath}`)}
+StandardError=${systemdQuote(`append:${options.stderrPath}`)}
 Restart=on-failure
 RestartSec=5s
 

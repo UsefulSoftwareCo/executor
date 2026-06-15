@@ -89,7 +89,7 @@ jobs:
       - name: Build web app
         run: bun run --filter @executor-js/local build
 
-      - name: Build sidecar + stage web UI
+      - name: Build bundled executor
         env:
           BUN_TARGET: bun-linux-x64
         run: bun ./scripts/build-sidecar.ts

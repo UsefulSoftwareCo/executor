@@ -2,8 +2,8 @@ name: Publish Desktop App
 run-name: "${{ format('publish desktop {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}"
 
 # Triggered manually or by publish-executor-package.yml after a CLI release
-# lands. Builds Electron distributables for mac/win/linux with the Bun-compiled
-# sidecar bundled in `resources/sidecar/`, then attaches them to the GitHub
+# lands. Builds Electron distributables for mac/win/linux with the compiled
+# executor CLI bundled in `resources/executor/`, then attaches them to the GitHub
 # release matching the tag so electron-updater can pick them up.
 
 on:
@@ -97,17 +97,17 @@ jobs:
       - name: Build web app
         run: bun run --filter @executor-js/local build
 
-      - name: Build sidecar binary + stage web UI
+      - name: Build bundled executor
         env:
           BUN_TARGET: ${{ matrix.bun-target }}
         run: bun ./scripts/build-sidecar.ts
         working-directory: apps/desktop
 
       # Gate the release on the compiled binary actually booting. v1.5.0/.1
-      # shipped sidecars that died on launch (missing libsql native binding) —
-      # a regression dev mode can't catch because `bun run` resolves
+      # shipped local-server binaries that died on launch (missing libsql native
+      # binding) — a regression dev mode can't catch because `bun run` resolves
       # node_modules that `bun build --compile` does not bundle.
-      - name: Smoke test compiled sidecar
+      - name: Smoke test bundled executor
         if: matrix.smoke
         run: bun run test:smoke
         working-directory: apps/desktop

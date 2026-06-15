@@ -3,6 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isValidOrgSlug } from "@executor-js/api";
+import {
+  missingPublicOriginWarning,
+  resolvePublicOrigin,
+  shouldWarnMissingPublicOrigin,
+} from "@executor-js/sdk/public-origin";
 
 // ---------------------------------------------------------------------------
 // Self-host server config — a single typed surface parsed from the
@@ -103,6 +108,31 @@ export const resolveAuthSecret = (): string => {
   return generated;
 };
 
+let warnedNoPublicUrl = false;
+
+// The public origin used to build absolute links (OAuth redirects, MCP OAuth
+// metadata, the connect-card URL). Priority via the shared resolver: an explicit
+// EXECUTOR_WEB_BASE_URL, then a platform-injected origin (zero-config on
+// Railway/Render/Fly/…), then a localhost fallback for local dev. NEVER derived
+// from the request `Host` — that's spoofable and would let host-header injection
+// poison those links (the request origin is only trusted for the CSRF/
+// `trustedOrigins` check, which is same-origin-safe; see better-auth.ts).
+const resolveWebBaseUrl = (port: number): string => {
+  const resolved = resolvePublicOrigin({
+    explicit: process.env.EXECUTOR_WEB_BASE_URL,
+    env: process.env,
+  });
+  if (resolved) return resolved;
+  const fallback = `http://localhost:${port}`;
+  // A deployed instance with no detectable origin mints localhost links — warn
+  // once (unless local dev/test) so the operator sets the variable.
+  if (!warnedNoPublicUrl && shouldWarnMissingPublicOrigin(process.env.NODE_ENV)) {
+    warnedNoPublicUrl = true;
+    console.warn(missingPublicOriginWarning({ varName: "EXECUTOR_WEB_BASE_URL", fallback }));
+  }
+  return fallback;
+};
+
 export const loadConfig = (): SelfHostConfig => {
   const port = Number.parseInt(process.env.PORT ?? "4788", 10);
   const dataDir = resolveDataDir();
@@ -110,7 +140,7 @@ export const loadConfig = (): SelfHostConfig => {
     host: process.env.EXECUTOR_HOST ?? "127.0.0.1",
     port,
     dbPath: process.env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
-    webBaseUrl: process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${port}`,
+    webBaseUrl: resolveWebBaseUrl(port),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,

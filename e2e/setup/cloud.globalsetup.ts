@@ -28,6 +28,10 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
 
   // Suite-owned trace store — every run captures distributed traces.
   const motel = await bootMotel();
+  // Publish to the test workers (they inherit this process's env): scenarios
+  // that assert on exported spans yield the Telemetry service, which exists
+  // only when this is set. No motel → those scenarios skip, never fail.
+  if (motel) process.env.E2E_MOTEL_URL = motel.url;
 
   const publicUrl = `http://127.0.0.1:${ports.E2E_CLOUD_PORT!}`;
   let booted;

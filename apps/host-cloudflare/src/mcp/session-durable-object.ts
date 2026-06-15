@@ -91,12 +91,24 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
           elicitationMode === "browser"
             ? {
                 mode: "browser" as const,
-                approvalUrl: (executionId) =>
-                  buildResumeApprovalUrl({
-                    origin: sessionMeta.webOrigin ?? config.webBaseUrl ?? "http://localhost",
+                approvalUrl: (executionId) => {
+                  // webOrigin is captured per-request at session create; for a
+                  // legacy session cold-restored without it, fall back to the
+                  // pinned site URL. If neither exists, the link would be
+                  // unreachable — fail VISIBLY (a logged, obviously-invalid host)
+                  // instead of silently pointing the human at http://localhost.
+                  const origin = sessionMeta.webOrigin ?? config.webBaseUrl;
+                  if (!origin) {
+                    console.error(
+                      "[executor-cloudflare] cannot build MCP approval URL: no session web origin and VITE_PUBLIC_SITE_URL is unset. Set VITE_PUBLIC_SITE_URL so approval links are reachable.",
+                    );
+                  }
+                  return buildResumeApprovalUrl({
+                    origin: origin ?? "https://unconfigured-origin.invalid",
                     executionId,
                     sessionId: self.sessionId,
-                  }),
+                  });
+                },
               }
             : { mode: elicitationMode },
       });

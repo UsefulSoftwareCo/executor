@@ -1,10 +1,11 @@
 // ---------------------------------------------------------------------------
-// Native-binding bootstrap for the `bun build --compile` sidecar binary.
+// Native-binding bootstrap for manually compiled sidecar binaries.
 //
 // `bun --compile` bundles JS into bunfs but does NOT include `.node` native
 // addons, so a dynamic `require('@libsql/<platform>')` / keyring walk inside
-// the binary fails. build-sidecar.ts copies each platform's `.node` next to
-// the executable (`libsql.node`, `keyring.node`); here we publish their
+// the binary fails. If this dev sidecar is compiled directly, copy each
+// platform's `.node` next to the executable (`libsql.node`, `keyring.node`);
+// here we publish their
 // on-disk paths via env vars the loaders read. Mirrors apps/cli/src/native-bindings.ts.
 //
 // This MUST be the FIRST import in server.ts. ES modules evaluate every import

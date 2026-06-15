@@ -10,10 +10,11 @@ The integration layer for AI agents. One catalog for every tool, shared across e
 
 ```bash
 npm install -g executor
+executor install
 executor web
 ```
 
-This starts a local runtime with a web UI at `http://127.0.0.1:4788`. From there, add your first source and start using tools.
+This installs the local background service and opens the web UI. From there, add your first source and start using tools.
 
 ### Use as an MCP server
 
@@ -60,7 +61,7 @@ If you can represent it with a JSON schema, it can be an integration. Executor h
 
 ### Via the web UI
 
-Open `http://127.0.0.1:4788`, go to **Add Source**, paste a URL, and Executor will detect the type, index the tools, and handle auth.
+Run `executor web`, go to **Add Source**, paste a URL, and Executor will detect the type, index the tools, and handle auth.
 
 ### Via the CLI
 
@@ -119,7 +120,9 @@ executor resume --execution-id exec_123
 ## CLI reference
 
 ```bash
-executor web                        # start runtime + web UI
+executor install                    # install/start the durable background service
+executor web                        # open the running web UI
+executor web --foreground           # start a temporary foreground runtime + web UI
 executor daemon run                 # start persistent local daemon in background
 executor daemon status              # show daemon status
 executor daemon stop                # stop daemon

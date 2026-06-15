@@ -1,16 +1,18 @@
 // Local-only — the single-user bearer-auth flow as DEVELOPER SESSIONS, the way
-// a human tests it: run the dev CLI in a real terminal, watch `executor web`
-// print its one-time `?_token=` URL, then drive a browser against it. Two clean
-// stories, each its own film (terminal.cast + session.mp4 spliced by
-// scenario.ts), each booting its OWN `executor web` (own data dir, `--port 0`):
+// a human tests it: run the dev CLI in a real terminal, watch
+// `executor web --foreground` print its one-time `?_token=` URL, then drive a
+// browser against it. Two clean stories, each its own film (terminal.cast +
+// session.mp4 spliced by scenario.ts), each booting its OWN temporary server
+// (own data dir, `--port 0`):
 //
 //   1. The CLI's ?_token URL boots straight into an authenticated console.
 //   2. Opening the app WITHOUT the token shows the LocalAuthGate; pasting the
 //      token connects.
 //
-// `withLocalServer` (shared helper) runs `executor web` in a recorded terminal
-// and hands the printed URL to a body; the terminal stays up until the body is
-// done, then Ctrl-C shuts it (and its vite child) down so the PTY closes.
+// `withLocalServer` (shared helper) runs `executor web --foreground` in a
+// recorded terminal and hands the printed URL to a body; the terminal stays up
+// until the body is done, then Ctrl-C shuts it (and its vite child) down so the
+// PTY closes.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -30,7 +32,7 @@ scenario(
 
     yield* withLocalServer(cli, runDir, ({ url, token }) =>
       browser.session(identity, async ({ page, step }) => {
-        await step("Open the ?_token URL printed by executor web", async () => {
+        await step("Open the ?_token URL printed by executor web --foreground", async () => {
           await page.goto(url, { waitUntil: "domcontentloaded" });
           await page.getByRole("link", { name: "Secrets" }).first().waitFor({ timeout: 30_000 });
           // Integrations actually LOAD (the built-in Executor source) — proves

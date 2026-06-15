@@ -5,11 +5,12 @@
 // the MCP `resume` tool (auth on the API path), so it never drives the browser
 // page and could not catch this. This drives the real page in a real browser.
 //
-// Flow: boot `executor web` → create a require_approval policy on a built-in
-// tool → an MCP client (bearer) executes that tool with elicitation_mode=browser
-// → the server returns a paused `approvalUrl` → open it in the browser (with the
-// `?_token` bootstrap) → click Approve → the MCP `resume` call completes. Plus a
-// negative: the approval endpoint 401s without the bearer.
+// Flow: boot `executor web --foreground` → create a require_approval policy on a
+// built-in tool → an MCP client (bearer) executes that tool with
+// elicitation_mode=browser → the server returns a paused `approvalUrl` → open it
+// in the browser (with the `?_token` bootstrap) → click Approve → the MCP
+// `resume` call completes. Plus a negative: the approval endpoint 401s without
+// the bearer.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
