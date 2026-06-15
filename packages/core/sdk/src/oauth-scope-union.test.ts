@@ -448,6 +448,68 @@ describe("oauth.start integration-driven scopes", () => {
         }),
       ),
   );
+
+  it.effect("(j) caps server-advertised resource scopes so the authorize URL stays bounded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A hostile/buggy server advertises far more scopes than any real
+        // template. Discovery caps the request at 100 so the authorize URL
+        // cannot be blown up.
+        const manyScopes = Array.from({ length: 200 }, (_, i) => `scope:${i}`);
+        const server = yield* serveMetadataServer({ prm: { scopesSupported: manyScopes } });
+        const executor = yield* setupMcpScopeClient(server);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const requested = scopesFromAuthorizeUrl(started.authorizationUrl);
+        expect(requested.length).toBe(100);
+        expect(requested).toEqual(manyScopes.slice(0, 100));
+      }),
+    ),
+  );
+
+  it.effect(
+    "(k) caps the named authorization-server probe list at 3 (a 4th named AS is never reached)",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The resource's PRM is silent on scopes and names four authorization
+          // servers. The first three contribute nothing; only the fourth would
+          // advertise scopes. The 3-server cap stops before it, so discovery
+          // yields no scopes — without the cap "capped:out" would appear.
+          const as1 = yield* serveMetadataServer({});
+          const as2 = yield* serveMetadataServer({});
+          const as3 = yield* serveMetadataServer({});
+          const as4 = yield* serveMetadataServer({ authServerScopes: ["capped:out"] });
+          const resourceServer = yield* serveMetadataServer({
+            prm: { authorizationServers: [as1.baseUrl, as2.baseUrl, as3.baseUrl, as4.baseUrl] },
+          });
+          const executor = yield* setupMcpScopeClient(resourceServer);
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([]);
+        }),
+      ),
+  );
 });
 
 // -----------------------------------------------------------------------------
@@ -542,6 +604,59 @@ describe("oauth.start recorded scope fallback", () => {
             }),
           );
           expect(row?.oauth_scope).toBe("calendar gmail drive sheets");
+        }),
+      ),
+  );
+
+  it.effect(
+    "(l) client_credentials discovers scopes and records them when the token endpoint omits scope",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // Discover policy (MCP, no declared scopes) reached through the
+          // client_credentials grant: scopes come from the resource's PRM, and
+          // the scopeless token endpoint forces the recorded-scope fallback to
+          // the discovered set.
+          const metadataServer = yield* serveMetadataServer({
+            prm: { scopesSupported: ["mcp:read", "mcp:write"] },
+          });
+          const tokenServer = yield* serveScopelessTokenServer();
+          const plugins = [
+            memoryCredentialsPlugin(),
+            makeMcpScopePlugin({ scopes: null }),
+          ] as const;
+          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.mcp.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: "http://127.0.0.1/authorize",
+            tokenUrl: tokenServer.tokenEndpoint,
+            grant: "client_credentials",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: metadataServer.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("cc"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("connected");
+
+          // The discovered scopes are requested and (the token endpoint omitting
+          // `scope`) recorded on the connection.
+          const row = yield* Effect.promise(() =>
+            config.db.findFirst("connection", {
+              where: (b) => b("name", "=", "cc"),
+            }),
+          );
+          expect(row?.oauth_scope).toBe("mcp:read mcp:write");
         }),
       ),
   );

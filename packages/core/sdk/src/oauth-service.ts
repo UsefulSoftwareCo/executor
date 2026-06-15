@@ -14,7 +14,7 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import type { Connection } from "./connection";
@@ -332,6 +332,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // callback; redirect-requiring flows fail loudly via `requireRedirectUri`.
   const redirectUri = deps.redirectUri;
 
+  // Caps on server-controlled discovery input — a hostile or buggy server must
+  // not be able to hang `oauth.start` or overflow the authorize URL.
+  const MAX_DISCOVERY_AUTH_SERVERS = 3; // AS-failover lists are tiny in practice
+  const MAX_DISCOVERED_SCOPES = 100; // far beyond any realistic authorization template
+  const capScopes = (scopes: readonly string[]): readonly string[] =>
+    dedupeScopes(scopes).slice(0, MAX_DISCOVERED_SCOPES);
+
   // Discover the scopes to request when the integration declares none — only
   // reached for integrations that opt in (MCP-style). The resource's own RFC
   // 9728 `scopes_supported` is authoritative when present, even when empty (§2
@@ -356,7 +363,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         discoveryOptions,
       );
       const resourceScopes = protectedResource?.metadata.scopes_supported;
-      if (resourceScopes !== undefined) return dedupeScopes(resourceScopes);
+      if (resourceScopes !== undefined) return capScopes(resourceScopes);
 
       // The resource is silent on scopes — read them from the authorization
       // servers it names, in order. An advertised list is authoritative even
@@ -364,18 +371,36 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // unreachable, 404, malformed, or issuer-mismatched — contributes nothing
       // and we move on (mirroring the dynamic-registration discovery path); if
       // none advertise scopes we request none and let the AS apply its defaults
-      // (RFC 8414 metadata is optional, so its absence is not a failure).
-      for (const issuer of protectedResource?.metadata.authorization_servers ?? []) {
+      // (RFC 8414 metadata is optional, so its absence is not a failure). The
+      // list is server-controlled, so cap how many of its hosts we probe.
+      for (const issuer of (protectedResource?.metadata.authorization_servers ?? []).slice(
+        0,
+        MAX_DISCOVERY_AUTH_SERVERS,
+      )) {
         const authServer = yield* discoverAuthorizationServerMetadata(
           issuer,
           discoveryOptions,
         ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
         const scopes = authServer?.metadata.scopes_supported;
-        if (scopes !== undefined) return dedupeScopes(scopes);
+        if (scopes !== undefined) return capScopes(scopes);
       }
 
       return [];
-    });
+    }).pipe(
+      // Bound the whole sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
+      // fetches, each with its own request timeout). 30s is larger than a single
+      // request timeout so it bounds the sequence, not a slow-but-valid request.
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(30),
+        orElse: () =>
+          Effect.fail(
+            new OAuthDiscoveryError({
+              message: "OAuth scope discovery timed out",
+              cause: "timeout",
+            }),
+          ),
+      }),
+    );
 
   // -----------------------------------------------------------------------
   // createClient — write the oauth_client row.
