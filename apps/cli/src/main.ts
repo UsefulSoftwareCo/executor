@@ -64,6 +64,9 @@ import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { ExecutorApi } from "@executor-js/api";
 import {
@@ -1122,9 +1125,123 @@ const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A>
   }
 };
 
+const mcpUrlForActiveLocalServer = (
+  connection: ExecutorServerConnection,
+  elicitationMode: "browser" | "model",
+): URL => {
+  const url = new URL("/mcp", connection.origin);
+  if (elicitationMode === "browser") {
+    url.searchParams.set("elicitation_mode", "browser");
+  }
+  return url;
+};
+
+const closeMcpBridgeTransport = async (close: () => Promise<void>): Promise<void> => {
+  await close();
+};
+
+const isAbortDuringMcpBridgeClose = (error: Error): boolean =>
+  error.name === "AbortError" || error.message.toLowerCase().includes("aborted");
+
+const runMcpHttpBridge = async (input: {
+  readonly manifest: ExecutorLocalServerManifest;
+  readonly elicitationMode: "browser" | "model";
+}): Promise<void> => {
+  const stdio = new StdioServerTransport();
+  const authorization = getExecutorServerAuthorizationHeader(input.manifest.connection);
+  const http = new StreamableHTTPClientTransport(
+    mcpUrlForActiveLocalServer(input.manifest.connection, input.elicitationMode),
+    authorization ? { requestInit: { headers: { Authorization: authorization } } } : undefined,
+  );
+
+  let finished = false;
+  let closing = false;
+  let closePromise: Promise<void> | null = null;
+  let resolveExit: () => void = () => {};
+
+  const waitForExit = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    process.stdin.off("end", shutdown);
+    process.stdin.off("close", shutdown);
+    resolveExit();
+  };
+
+  const closeBoth = (): Promise<void> => {
+    if (!closePromise) {
+      closing = true;
+      closePromise = Promise.resolve()
+        .then(() =>
+          Promise.allSettled([
+            closeMcpBridgeTransport(() => stdio.close()),
+            closeMcpBridgeTransport(() => http.close()),
+          ]),
+        )
+        .then(() => undefined);
+    }
+    return closePromise;
+  };
+
+  function shutdown() {
+    finish();
+    void closeBoth();
+  }
+
+  const reportError = (context: string, cause: unknown) => {
+    const error = toError(cause);
+    if (closing && isAbortDuringMcpBridgeClose(error)) return;
+    console.error(`Executor MCP bridge ${context}: ${error.message}`);
+  };
+
+  const forwardMessage =
+    (send: (message: JSONRPCMessage) => Promise<void>, context: string) =>
+    (message: JSONRPCMessage) => {
+      void send(message).then(undefined, (cause: unknown) => {
+        reportError(context, cause);
+        shutdown();
+      });
+    };
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  process.stdin.once("end", shutdown);
+  process.stdin.once("close", shutdown);
+
+  stdio.onclose = shutdown;
+  http.onclose = shutdown;
+  stdio.onerror = (error) => reportError("stdio transport error", error);
+  http.onerror = (error) => reportError("daemon transport error", error);
+  stdio.onmessage = forwardMessage((message) => http.send(message), "failed to send to daemon");
+  http.onmessage = forwardMessage((message) => stdio.send(message), "failed to send to stdio");
+
+  try {
+    await http.start();
+    await stdio.start();
+    await waitForExit;
+  } finally {
+    finish();
+    await closeBoth();
+  }
+};
+
 const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
+    const active = yield* readActiveLocalServerManifest();
+    if (active) {
+      yield* Effect.promise(() =>
+        runMcpHttpBridge({ manifest: active, elicitationMode: input.elicitationMode }),
+      );
+      return;
+    }
+
     const startupLock = yield* acquireLocalServerStartLock();
+    let activeAfterLock: ExecutorLocalServerManifest | null = null;
     let web: Awaited<
       ReturnType<
         typeof withStdoutReroutedToStderr<{
@@ -1137,42 +1254,51 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
     > | null = null;
 
     try {
-      yield* assertNoOtherActiveLocalServer();
-      web = yield* Effect.promise(() =>
-        withStdoutReroutedToStderr(async () => {
-          const host = "127.0.0.1";
-          const port = await Effect.runPromise(
-            chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
-          );
-          const baseUrl = `http://localhost:${port}`;
-          const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
+      activeAfterLock = yield* readActiveLocalServerManifest();
+      if (!activeAfterLock) {
+        web = yield* Effect.promise(() =>
+          withStdoutReroutedToStderr(async () => {
+            const host = "127.0.0.1";
+            const port = await Effect.runPromise(
+              chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
+            );
+            const baseUrl = `http://localhost:${port}`;
+            const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
 
-          try {
-            const executor = await getExecutor();
-            const server = await startServer({
-              port,
-              hostname: host,
-              embeddedWebUI,
-            });
-            const serverBaseUrl = `http://localhost:${server.port}`;
-            return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
-          } catch (cause) {
-            restoreWebBaseUrl();
-            throw cause;
-          }
-        }),
-      );
-      yield* publishLocalServerManifest({
-        kind: "foreground",
-        connection: normalizeExecutorServerConnection({
-          kind: "http",
-          origin: web.baseUrl,
-          displayName: "CLI MCP",
-          auth: { kind: "bearer", token: web.server.authToken },
-        }),
-      });
+            try {
+              const executor = await getExecutor();
+              const server = await startServer({
+                port,
+                hostname: host,
+                embeddedWebUI,
+              });
+              const serverBaseUrl = `http://localhost:${server.port}`;
+              return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
+            } catch (cause) {
+              restoreWebBaseUrl();
+              throw cause;
+            }
+          }),
+        );
+        yield* publishLocalServerManifest({
+          kind: "foreground",
+          connection: normalizeExecutorServerConnection({
+            kind: "http",
+            origin: web.baseUrl,
+            displayName: "CLI MCP",
+            auth: { kind: "bearer", token: web.server.authToken },
+          }),
+        });
+      }
     } finally {
       yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
+    }
+
+    if (activeAfterLock) {
+      yield* Effect.promise(() =>
+        runMcpHttpBridge({ manifest: activeAfterLock, elicitationMode: input.elicitationMode }),
+      );
+      return;
     }
 
     if (!web) return yield* Effect.fail(new Error("Failed to start local Executor MCP server."));
