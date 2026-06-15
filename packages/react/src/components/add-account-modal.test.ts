@@ -280,6 +280,7 @@ describe("runDcrConnect", () => {
     );
     expect(outcome.kind).toBe("started");
     expect(registerArgs!.scopes).toEqual(["declared.scope"]);
+    expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
   });
 
   it("falls back to BYO when there is no registration endpoint (no register/start)", async () => {
@@ -310,9 +311,13 @@ describe("runDcrConnect", () => {
         integration: TEST_INTEGRATION,
       },
     );
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       kind: "fallback",
       reason: "no-registration-endpoint",
+      probe: {
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+      },
     });
     expect(calls).toEqual(["probe"]);
   });
@@ -371,7 +376,14 @@ describe("runDcrConnect", () => {
         integration: TEST_INTEGRATION,
       },
     );
-    expect(outcome.kind).toBe("fallback");
+    expect(outcome).toMatchObject({
+      kind: "fallback",
+      reason: "registration-failed",
+      probe: {
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+      },
+    });
     expect(calls).toEqual(["register"]);
   });
 });

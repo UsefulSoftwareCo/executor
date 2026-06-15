@@ -497,9 +497,10 @@ const buildConnectorInput = (
 //   stdio                → []          (no remote connection to configure)
 //   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
-//                          (`discoveryUrl`); endpoints are discovered live at
-//                          connect time, so they are NOT pre-resolved here. We
-//                          mark `supportsDynamicRegistration: true` because MCP
+//                          (`discoveryUrl`). Endpoints/scopes are discovered
+//                          live at connect time, so they are NOT pre-resolved
+//                          here. We mark
+//                          `supportsDynamicRegistration: true` because MCP
 //                          OAuth servers are expected to support RFC 7591 DCR;
 //                          the connect flow probes to confirm and falls back.
 // ---------------------------------------------------------------------------

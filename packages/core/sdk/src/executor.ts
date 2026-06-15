@@ -84,7 +84,11 @@ import type {
   IntegrationConfig,
   RegisterIntegrationInput,
 } from "./integration";
-import { makeOAuthService, type MintOAuthConnectionInput } from "./oauth-service";
+import {
+  makeOAuthService,
+  type MintOAuthConnectionInput,
+  type OAuthScopePolicy,
+} from "./oauth-service";
 import type { OAuthService } from "./oauth-client";
 import {
   comparePolicyRow,
@@ -2895,23 +2899,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
-      // Resolve the integration's DECLARED oauth scopes for a (integration,
-      // template): load the row, run the owning plugin's auth-method projector,
-      // and return the matching oauth method's declared `oauth.scopes`. Drives
-      // the union-with-client-scopes request in `oauth.start` so reusing a narrow
-      // client on a broad integration still requests the integration's full
-      // scope set. Empty (no row / no oauth method / no declared scopes) ⇒ the
-      // union collapses to the client's scopes (current behavior).
-      resolveDeclaredOAuthScopes: (integration: IntegrationSlug, template: AuthTemplateSlug) =>
+      // One integration-row read + one projector run. Resolve the method this
+      // template selects exactly as the runtime's `selectAuthMethod` does —
+      // exact slug match, else the sole declared method (single-method
+      // integrations accept any slug); an ambiguous miss selects nothing rather
+      // than guessing across methods. The discover-vs-scopes choice then reads
+      // off that method (MCP exposes `discoveryUrl`), so core needs no plugin-id
+      // knowledge.
+      resolveOAuthScopePolicy: (integration: IntegrationSlug, template: AuthTemplateSlug) =>
         findIntegrationRow(integration).pipe(
-          Effect.map((row): readonly string[] => {
-            if (!row) return [];
-            const methods = describeAuthMethodsForRow(row);
-            const match =
-              methods.find(
-                (m: AuthMethodDescriptor) => m.kind === "oauth" && m.template === String(template),
-              ) ?? methods.find((m: AuthMethodDescriptor) => m.kind === "oauth");
-            return match?.oauth?.scopes ?? [];
+          Effect.map((row): OAuthScopePolicy => {
+            const methods = row ? describeAuthMethodsForRow(row) : [];
+            const selected =
+              methods.find((m: AuthMethodDescriptor) => m.template === String(template)) ??
+              (methods.length === 1 ? methods[0] : undefined);
+            const oauth = selected?.kind === "oauth" ? selected.oauth : undefined;
+            // Declared scopes win. Discover only when the selected method
+            // declares none but names a source to discover them from (MCP).
+            if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
+              return { kind: "discover" };
+            }
+            return { kind: "scopes", scopes: oauth?.scopes ?? [] };
           }),
         ),
       httpClientLayer: config.httpClientLayer,

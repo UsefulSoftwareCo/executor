@@ -52,6 +52,7 @@ import type { CredentialProvider } from "./provider";
 import {
   discoverAuthorizationServerMetadata,
   discoverProtectedResourceMetadata,
+  OAuthDiscoveryError,
   registerDynamicClient as registerDynamicClientDcr,
 } from "./oauth-discovery";
 import {
@@ -89,6 +90,15 @@ export interface MintOAuthConnectionInput {
   readonly oauthScope: string | null;
 }
 
+/** The OAuth scope policy for a `(integration, template)`. Either the
+ *  integration declares the scopes to request (`scopes`, possibly empty — an
+ *  empty set requests no scopes), or it declares none and the request scopes
+ *  are discovered from the server's metadata at connect (`discover`, used by
+ *  MCP). The two are mutually exclusive by construction. */
+export type OAuthScopePolicy =
+  | { readonly kind: "scopes"; readonly scopes: readonly string[] }
+  | { readonly kind: "discover" };
+
 /** Everything the OAuth service needs from the executor: fuma access for the
  *  owned `oauth_client` / `oauth_session` tables, the default credential
  *  provider for minted tokens, a `mintOAuthConnection` callback (writes the
@@ -109,23 +119,20 @@ export interface OAuthServiceDeps {
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
   /**
-   * Resolve the integration's DECLARED OAuth scopes for a given
-   * `(integration, template)` — the scopes the integration's auth template
-   * advertises (e.g. an OpenAPI bundle's full authentication-template scope
-   * union), NOT the scopes frozen on a specific `oauth_client` row.
-   *
-   * At connect (`start`) the requested scope set is the UNION of these declared
-   * scopes and the client's configured scopes, so reusing a narrow client on a
-   * broad integration still requests the integration's full scope set. When the
-   * integration declares no OAuth scopes (MCP / DCR integrations discover scopes
-   * from the server; integrations with no declared template scopes) this returns
-   * `[]` and the union collapses to the client's scopes — current behavior,
-   * unchanged.
+   * Resolve the OAuth scope policy for a `(integration, template)`:
+   *  - `{ kind: "scopes", scopes }`: the scopes the integration's auth template
+   *    DECLARES (e.g. an OpenAPI bundle's authentication-template scope union),
+   *    NOT the scopes frozen on a specific `oauth_client` row. These are
+   *    requested verbatim at connect (`start`); an empty set requests none.
+   *  - `{ kind: "discover" }`: the integration declares no scopes, so `start`
+   *    discovers the request scopes from the server's RFC 9728 / RFC 8414
+   *    metadata. Used by server-targeting integrations (MCP) whose scopes live
+   *    on the server rather than in a template.
    */
-  readonly resolveDeclaredOAuthScopes: (
+  readonly resolveOAuthScopePolicy: (
     integration: IntegrationSlug,
     template: AuthTemplateSlug,
-  ) => Effect.Effect<readonly string[], StorageFailure>;
+  ) => Effect.Effect<OAuthScopePolicy, StorageFailure>;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
@@ -161,9 +168,7 @@ const accessItemId = (owner: Owner, integration: IntegrationSlug, name: Connecti
   `oauth:${owner}:${integration}:${name}`;
 const refreshItemIdFor = (accessId: string): string => `${accessId}:refresh`;
 
-/** Order-preserving de-duplication of a scope list. The requested scope set is
- *  the integration's DECLARED scopes — the integration is the sole source of what
- *  to request; the OAuth app no longer carries a scope set. */
+/** Order-preserving de-duplication of a scope list. */
 const dedupeScopes = (scopes: readonly string[]): readonly string[] => [...new Set(scopes)];
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
@@ -326,6 +331,51 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // EXPLICIT — no localhost default. `null` means this executor has no OAuth
   // callback; redirect-requiring flows fail loudly via `requireRedirectUri`.
   const redirectUri = deps.redirectUri;
+
+  // Discover the scopes to request when the integration declares none — only
+  // reached for integrations that opt in (MCP-style). The resource's own RFC
+  // 9728 `scopes_supported` is authoritative when present, even when empty (§2
+  // defines the field; §7.2 cautions against requesting more than it lists).
+  // Only when the resource is SILENT do we read the scopes advertised by the
+  // authorization servers it NAMES (RFC 8414) — we never probe arbitrary URLs.
+  const discoverScopesForResource = (
+    resource: string | null,
+  ): Effect.Effect<readonly string[], OAuthDiscoveryError> =>
+    Effect.gen(function* () {
+      if (resource == null) {
+        return yield* new OAuthDiscoveryError({
+          message: "Cannot discover OAuth scopes: the client has no resource configured",
+        });
+      }
+      // `httpClientLayer` flows through `options` so discovery uses the host's
+      // configured client (discovery self-provides from `options.httpClientLayer`).
+      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
+
+      const protectedResource = yield* discoverProtectedResourceMetadata(
+        resource,
+        discoveryOptions,
+      );
+      const resourceScopes = protectedResource?.metadata.scopes_supported;
+      if (resourceScopes !== undefined) return dedupeScopes(resourceScopes);
+
+      // The resource is silent on scopes — read them from the authorization
+      // servers it names, in order. An advertised list is authoritative even
+      // when empty. Any AS we cannot read clean RFC 8414 metadata from —
+      // unreachable, 404, malformed, or issuer-mismatched — contributes nothing
+      // and we move on (mirroring the dynamic-registration discovery path); if
+      // none advertise scopes we request none and let the AS apply its defaults
+      // (RFC 8414 metadata is optional, so its absence is not a failure).
+      for (const issuer of protectedResource?.metadata.authorization_servers ?? []) {
+        const authServer = yield* discoverAuthorizationServerMetadata(
+          issuer,
+          discoveryOptions,
+        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
+        const scopes = authServer?.metadata.scopes_supported;
+        if (scopes !== undefined) return dedupeScopes(scopes);
+      }
+
+      return [];
+    });
 
   // -----------------------------------------------------------------------
   // createClient — write the oauth_client row.
@@ -634,22 +684,32 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
 
-      // The INTEGRATION is the sole source of what to request — its declared auth
-      // scopes (driven by the integration's tools, surfaced via the declared auth
-      // method). The OAuth app no longer carries a scope set, so there is no union
-      // to compute and no way to over-request from a stale client copy.
-      const declaredScopes = yield* deps
-        .resolveDeclaredOAuthScopes(input.integration, input.template)
+      // Declared scopes win (driven by the selected auth template). MCP-style
+      // integrations declare none and discover them from the client's protected
+      // resource / authorization server metadata at connect.
+      const scopePolicy = yield* deps
+        .resolveOAuthScopePolicy(input.integration, input.template)
         .pipe(
           Effect.mapError(
             (cause) =>
               new OAuthStartError({
                 // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
-                message: `Failed to resolve declared OAuth scopes: ${cause.message}`,
+                message: `Failed to resolve OAuth scope policy: ${cause.message}`,
               }),
           ),
         );
-      const requestedScopes = dedupeScopes(declaredScopes);
+      const requestedScopes =
+        scopePolicy.kind === "discover"
+          ? yield* discoverScopesForResource(client.resource).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OAuthStartError({
+                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuthDiscoveryError carries a typed `message` field
+                    message: `Failed to discover OAuth scopes: ${cause.message}`,
+                  }),
+              ),
+            )
+          : dedupeScopes(scopePolicy.scopes);
 
       // client_credentials: exchange immediately and mint the connection.
       if (client.grant === "client_credentials") {
@@ -717,10 +777,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           redirect_url: flowRedirectUri,
           pkce_verifier: verifier,
           identity_label: input.identityLabel ?? null,
-          // Persist the requested scope set (declared ∪ client) so `complete`'s
-          // recorded-scope fallback reflects exactly what was requested when the
-          // AS omits `scope`, without re-resolving the integration's declared
-          // scopes at completion.
+          // Persist the requested scope set (the integration's declared or
+          // discovered scopes) so `complete`'s recorded-scope fallback reflects
+          // exactly what was requested when the AS omits `scope`, without
+          // re-resolving it at completion.
           payload: { owner: input.owner, clientOwner: input.clientOwner, requestedScopes },
           expires_at: expiresAt,
           created_at: now,
@@ -778,9 +838,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         pkceVerifier: sessionRow.pkce_verifier == null ? null : String(sessionRow.pkce_verifier),
         identityLabel: sessionRow.identity_label == null ? null : String(sessionRow.identity_label),
         expiresAt: Number(sessionRow.expires_at),
-        // The scope set `start` requested (declared ∪ client), persisted on the
-        // session payload. Drives the recorded-scope fallback when the AS omits
-        // `scope`. Missing/legacy payloads fall back to the client's scopes below.
+        // The scope set `start` requested (the integration's declared or
+        // discovered scopes), persisted on the session payload. Drives the
+        // recorded-scope fallback when the AS omits `scope`. Missing/legacy
+        // payloads fall back to the client's scopes below.
         requestedScopes: requestedScopesFromPayload(sessionRow.payload),
         // The app's owner, recorded by `start` — reload the SAME app at
         // completion by explicit owner (no derivation). Defaults to the session
@@ -879,8 +940,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     },
     client: LoadedOAuthClient,
     token: OAuth2TokenResponse,
-    /** The scope set requested at /authorize + /token (declared ∪ client) —
-     *  the recorded-scope fallback when the AS omits `scope`. */
+    /** The scope set requested at /authorize + /token (the integration's
+     *  declared or discovered scopes) — the recorded-scope fallback when the AS
+     *  omits `scope`. */
     requestedScopes: readonly string[],
     /** The owner of `client` — persisted so refresh loads it by explicit owner. */
     clientOwner: Owner,
@@ -917,9 +979,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         expiresAt: expiresAtFrom(token),
         // Benign fallback (kept by design): record the granted scope the AS
         // echoed back; when it omits `scope` (some servers do), fall back to the
-        // scopes we requested (declared ∪ client). This only affects the recorded
-        // scope label, not what the token can do, so a guess here masks no
-        // misconfiguration.
+        // scopes we requested (the integration's declared or discovered scopes).
+        // This only affects the recorded scope label, not what the token can do,
+        // so a guess here masks no misconfiguration.
         oauthScope: token.scope ?? (requestedScopes.join(" ") || null),
       });
     });
@@ -973,7 +1035,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         authorizationUrl: as.metadata.authorization_endpoint,
         tokenUrl: as.metadata.token_endpoint,
         resource: resource?.metadata.resource ?? null,
-        scopesSupported: as.metadata.scopes_supported,
+        // Prefer the resource's own RFC 9728 scopes (authoritative, even when
+        // empty); fall back to the authorization server's list only when PRM is
+        // silent. For a spec-compliant MCP server (one that publishes PRM) this
+        // matches what `oauth.start` discovers. The AS fallback is a best-effort
+        // hint for the registration form on servers that omit PRM — where
+        // `oauth.start` requests none — so the two can differ for those.
+        scopesSupported: resource?.metadata.scopes_supported ?? as.metadata.scopes_supported,
         registrationEndpoint: as.metadata.registration_endpoint ?? null,
         tokenEndpointAuthMethodsSupported: as.metadata.token_endpoint_auth_methods_supported,
       } satisfies OAuthProbeResult;

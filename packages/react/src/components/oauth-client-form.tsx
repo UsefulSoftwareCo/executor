@@ -39,7 +39,14 @@ export interface OAuthClientFormPrefill {
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
   readonly resource?: string | null;
+  /** Template-DECLARED scopes (e.g. an OpenAPI bundle's scope union). Immutable
+   *  in the form and authoritative — always sent at registration, surviving
+   *  Discover. */
   readonly scopes?: readonly string[];
+  /** Scopes already DISCOVERED from a prior server probe (e.g. a DCR fallback).
+   *  Seed the form's discovered state; a later in-form Discover replaces them,
+   *  and they are only sent when no declared scopes exist. */
+  readonly discoveredScopes?: readonly string[];
   readonly grant?: OAuthGrant;
   /** Client id to seed (e.g. when editing an existing app). NOT a secret — the
    *  secret is never returned, so it is always re-entered. */
@@ -48,7 +55,20 @@ export interface OAuthClientFormPrefill {
    *  method or surfaced by Discover), the form offers a one-click "Register
    *  automatically" path that needs no pasted client id/secret. */
   readonly registrationEndpoint?: string;
+  /** Token-endpoint auth methods the server advertises (RFC 8414), so a
+   *  prefilled "Register automatically" picks the right client-auth method
+   *  instead of defaulting to public ("none"). */
+  readonly tokenEndpointAuthMethodsSupported?: readonly string[];
 }
+
+/** The scopes to register via DCR. The integration's DECLARED (template) scopes
+ *  are authoritative and immutable, so they win. Otherwise the DISCOVERED set is
+ *  used — seeded from a prior server probe and replaced by any in-form Discover —
+ *  so re-discovering a different issuer can't register a stale set. */
+export const registrationScopes = (
+  declaredScopes: readonly string[],
+  discoveredScopes: readonly string[],
+): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
 
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
@@ -108,6 +128,15 @@ export function OAuthClientForm(props: {
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
   const [resource, setResource] = useState(prefill?.resource ?? null);
+  // Scopes to register with DCR. The form has no scopes input (DCR sends them
+  // verbatim). Declared scopes are the integration's TEMPLATE scopes — immutable
+  // and authoritative, so they survive Discover. Discovered scopes are seeded
+  // from a prior probe (e.g. a DCR fallback) and replaced by any in-form
+  // Discover; they are only sent when nothing is declared.
+  const declaredScopes = prefill?.scopes ?? [];
+  const [discoveredScopes, setDiscoveredScopes] = useState<readonly string[]>(
+    prefill?.discoveredScopes ?? [],
+  );
   const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // DCR (RFC 7591): the registration endpoint + advertised auth methods. Seeded
@@ -116,7 +145,9 @@ export function OAuthClientForm(props: {
   const [registrationEndpoint, setRegistrationEndpoint] = useState(
     prefill?.registrationEndpoint ?? "",
   );
-  const [authMethods, setAuthMethods] = useState<readonly string[] | undefined>(undefined);
+  const [authMethods, setAuthMethods] = useState<readonly string[] | undefined>(
+    prefill?.tokenEndpointAuthMethodsSupported,
+  );
   const [registering, setRegistering] = useState(false);
 
   // Endpoints/scopes usually come prefilled from the integration's declared
@@ -166,6 +197,10 @@ export function OAuthClientForm(props: {
     setAuthorizationUrl(result.authorizationUrl);
     setTokenUrl(result.tokenUrl);
     setResource(result.resource ?? null);
+    // Record the discovered scopes. Declared scopes (if any) still take
+    // precedence at registration, so a re-Discover reflects the latest server
+    // without clobbering a declared set.
+    setDiscoveredScopes(result.scopesSupported ?? []);
     // Capture DCR availability so the "Register automatically" path shows for a
     // pasted MCP/issuer URL without any client id/secret.
     setRegistrationEndpoint(result.registrationEndpoint ?? "");
@@ -189,9 +224,9 @@ export function OAuthClientForm(props: {
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
         resource,
-        // DCR sends the integration's declared scopes to the AS at registration
-        // (the app itself stores none).
-        scopes: [...(prefill?.scopes ?? [])],
+        // DCR sends the integration's declared scopes, or the discovered set when
+        // none are declared, to the AS at registration (the app stores none).
+        scopes: [...registrationScopes(declaredScopes, discoveredScopes)],
         tokenEndpointAuthMethodsSupported: authMethods,
         clientName: name.trim(),
         redirectUri: oauthCallbackUrl(),

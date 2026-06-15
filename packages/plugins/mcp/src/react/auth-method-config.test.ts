@@ -13,7 +13,7 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     expect(mcpAuthMethodInputFromEditorValue({ kind: "none" })).toEqual({ kind: "none" });
   });
 
-  it("maps 'oauth' → { kind: 'oauth2' } (endpoints are resolved at connect time)", () => {
+  it("maps 'oauth' → { kind: 'oauth2' } (endpoints/scopes are resolved at connect time)", () => {
     const value: AuthTemplateEditorValue = {
       kind: "oauth",
       authorizationUrl: "https://a.example.com/auth",
@@ -108,8 +108,13 @@ describe("editorValueFromMcpAuthMethod", () => {
     });
   });
 
-  it("maps oauth2 to an oauth editor value with no endpoints (discovered at connect)", () => {
-    expect(editorValueFromMcpAuthMethod({ slug: "oauth2", kind: "oauth2" })).toEqual({
+  it("maps oauth2 to an oauth editor value with no endpoints or scopes (discovered at connect)", () => {
+    expect(
+      editorValueFromMcpAuthMethod({
+        slug: "oauth2",
+        kind: "oauth2",
+      }),
+    ).toEqual({
       kind: "oauth",
       authorizationUrl: "",
       tokenUrl: "",
@@ -146,6 +151,7 @@ describe("authMethodsFromConfig", () => {
       { id: "none", kind: "none", source: "spec", template: "none" },
     ]);
     expect(methods[0]?.oauth?.discoveryUrl).toBe("https://mcp.example.com/mcp");
+    expect(methods[0]?.oauth?.scopes).toBeUndefined();
   });
 
   it("carries multi-placement methods through to the hub", () => {

@@ -97,7 +97,15 @@ const sortUserFirst = (apps: readonly OAuthClientOption[]): readonly OAuthClient
  */
 export function selectClientsForEndpoints(
   all: readonly OAuthClientOption[],
-  endpoints: { readonly tokenUrl?: string; readonly authorizationUrl?: string },
+  endpoints: {
+    readonly tokenUrl?: string;
+    readonly authorizationUrl?: string;
+    /** When set, an integration that targets a SPECIFIC server (MCP, whose
+     *  endpoints are discovered at connect) must match by endpoint — absent
+     *  endpoints mean NO match (show the register CTA), never "every app
+     *  matches". Prevents auto-selecting an unrelated provider's app. */
+    readonly requireEndpointMatch?: boolean;
+  },
 ): {
   readonly matched: readonly OAuthClientOption[];
   readonly unmatched: readonly OAuthClientOption[];
@@ -107,8 +115,13 @@ export function selectClientsForEndpoints(
   const wantedAuthorizationRoot = endpoints.authorizationUrl
     ? getRootDomain(endpoints.authorizationUrl)
     : undefined;
-  // No declared endpoints → no filter; every app is usable.
+  // No declared endpoints. A server-targeting integration must NOT match every
+  // app (it would auto-select an unrelated provider); surface the register CTA
+  // instead. Otherwise (no endpoint filter at all) every app is usable.
   if (!wantedTokenRoot && !wantedAuthorizationRoot) {
+    if (endpoints.requireEndpointMatch) {
+      return { matched: [], unmatched: sortUserFirst(all), endpointMatched: false };
+    }
     return { matched: sortUserFirst(all), unmatched: [], endpointMatched: true };
   }
   const matched: OAuthClientOption[] = [];
@@ -133,6 +146,7 @@ export function selectClientsForEndpoints(
 export function useOAuthClientsForIntegration(opts: {
   readonly tokenUrl?: string;
   readonly authorizationUrl?: string;
+  readonly requireEndpointMatch?: boolean;
 }): UseOAuthClientsResult {
   // Read the optimistic list so a just-registered/edited/removed app paints
   // immediately, instead of flashing the stale server list until the refetch
@@ -153,6 +167,7 @@ export function useOAuthClientsForIntegration(opts: {
   const { matched, unmatched, endpointMatched } = selectClientsForEndpoints(all, {
     tokenUrl: opts.tokenUrl,
     authorizationUrl: opts.authorizationUrl,
+    requireEndpointMatch: opts.requireEndpointMatch,
   });
   // EXPLICIT outcome: when at least one app matched (or no endpoint was
   // declared) we present the matched subset. When an endpoint was declared but
