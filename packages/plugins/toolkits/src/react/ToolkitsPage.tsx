@@ -80,6 +80,12 @@ type ToolRow = {
   readonly requiresApproval?: boolean;
 };
 
+/** Connection's human display name — its "which account" label, falling back to
+ *  the (slug-like) connection name. Matches how the rest of the console renders
+ *  a connection (see accounts-section). */
+const connLabel = (c: { readonly name: string; readonly identityLabel?: string | null }): string =>
+  c.identityLabel && c.identityLabel.length > 0 ? c.identityLabel : c.name;
+
 const ACCESS_OPTIONS: ReadonlyArray<{ value: ToolkitAccess; label: string }> = [
   { value: "off", label: "Off" },
   { value: "read", label: "Read" },
@@ -455,7 +461,15 @@ function ToolkitEditor(props: EditorProps) {
 
   // Live "what the agent sees" — derived from the in-progress form.
   const previewGroups = useMemo(() => {
-    const byInt = new Map<string, Array<{ name: string; access: ToolkitAccess; note?: string }>>();
+    const byInt = new Map<
+      string,
+      Array<{
+        name: string;
+        identityLabel?: string | null;
+        access: ToolkitAccess;
+        note?: string;
+      }>
+    >();
     for (const tier of tiers) {
       for (const c of tier.conns) {
         const key = connKey(c.integration, c.name);
@@ -464,6 +478,7 @@ function ToolkitEditor(props: EditorProps) {
         const list = byInt.get(c.integration) ?? [];
         list.push({
           name: c.name,
+          identityLabel: c.identityLabel,
           access: a,
           note: notes[key]?.trim() || undefined,
         });
@@ -570,11 +585,11 @@ function ToolkitEditor(props: EditorProps) {
                               <div className="flex items-center gap-3 py-1">
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-[13px] font-semibold text-foreground">
-                                    {c.name}
+                                    {connLabel(c)}
                                   </div>
-                                  {(c.identityLabel || c.description) && (
+                                  {c.description && (
                                     <div className="truncate text-[11.5px] text-muted-foreground">
-                                      {c.identityLabel || c.description}
+                                      {c.description}
                                     </div>
                                   )}
                                 </div>
@@ -586,7 +601,7 @@ function ToolkitEditor(props: EditorProps) {
                                   onChange={(e) =>
                                     setNote(key, (e.target as HTMLInputElement).value)
                                   }
-                                  placeholder={`Note to the agent about ${c.name} (optional)`}
+                                  placeholder={`Note to the agent about ${connLabel(c)} (optional)`}
                                   className="mb-1.5 h-7 border-transparent bg-transparent px-0 text-[12px] italic shadow-none focus-visible:border-input"
                                 />
                               )}
@@ -743,7 +758,7 @@ function ToolkitEditor(props: EditorProps) {
                       {conns.map((c) => (
                         <div key={c.name} className="mt-1 pl-6">
                           <div className="flex items-center gap-2">
-                            <span className="text-[12px] text-foreground">{c.name}</span>
+                            <span className="text-[12px] text-foreground">{connLabel(c)}</span>
                             <Badge
                               variant={c.access === "full" ? "default" : "secondary"}
                               className="px-1.5 py-0 text-[10px]"
