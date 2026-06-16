@@ -17,6 +17,10 @@ export interface DaemonSpawnSpec {
   readonly args: ReadonlyArray<string>;
 }
 
+export interface SpawnedDetachedProcess {
+  readonly pid: number;
+}
+
 export interface ExecutorServerReachabilityInput {
   readonly baseUrl: string;
 }
@@ -140,7 +144,7 @@ export const spawnDetached = (input: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
-}): Effect.Effect<void, Error> =>
+}): Effect.Effect<SpawnedDetachedProcess, Error> =>
   Effect.try({
     try: () => {
       const child = spawn(input.command, [...input.args], {
@@ -149,12 +153,35 @@ export const spawnDetached = (input: {
         env: input.env,
       });
       child.unref();
+      if (typeof child.pid !== "number") {
+        child.kill();
+        throw new Error("Failed to spawn daemon process: child pid was not assigned");
+      }
+      return { pid: child.pid };
     },
     catch: (cause) =>
       cause instanceof Error
         ? cause
         : new Error(`Failed to spawn daemon process: ${String(cause)}`),
   });
+
+const signalPid = (pid: number): Effect.Effect<void, Error> =>
+  Effect.try({
+    try: () => {
+      process.kill(pid, "SIGTERM");
+    },
+    catch: (cause) =>
+      cause instanceof Error
+        ? cause
+        : new Error(`Failed to terminate daemon process ${pid}: ${String(cause)}`),
+  });
+
+export const terminateSpawnedDetachedProcess = (
+  child: SpawnedDetachedProcess,
+): Effect.Effect<void, Error> =>
+  process.platform === "win32"
+    ? signalPid(child.pid)
+    : signalPid(-child.pid).pipe(Effect.catch(() => signalPid(child.pid)));
 
 const waitForCondition = <E, R>(input: {
   readonly check: Effect.Effect<boolean, E, R>;

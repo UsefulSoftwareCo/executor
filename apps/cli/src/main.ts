@@ -100,6 +100,7 @@ import {
   parseDaemonBaseUrl,
   planServiceInstall,
   spawnDetached,
+  terminateSpawnedDetachedProcess,
   waitForReachable,
   waitForUnreachable,
 } from "./daemon";
@@ -469,7 +470,7 @@ const spawnAndWaitForDaemon = (input: {
 
       const startBaseUrl = daemonBaseUrl(input.host, selectedPort);
       console.error(`Starting daemon on ${input.host}:${selectedPort}...`);
-      yield* spawnDetached({
+      const child = yield* spawnDetached({
         command: spec.command,
         args: spec.args,
         env: process.env,
@@ -482,6 +483,7 @@ const spawnAndWaitForDaemon = (input: {
       });
 
       if (!ready) {
+        yield* terminateSpawnedDetachedProcess(child).pipe(Effect.ignore);
         return yield* Effect.fail(
           new Error(
             [

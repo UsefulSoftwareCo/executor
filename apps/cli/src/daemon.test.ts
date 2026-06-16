@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as Effect from "effect/Effect";
 
 import {
@@ -8,6 +11,8 @@ import {
   isDevCliEntrypoint,
   isExecutorServerReachable,
   planServiceInstall,
+  spawnDetached,
+  terminateSpawnedDetachedProcess,
 } from "./daemon";
 
 describe("isDevCliEntrypoint", () => {
@@ -48,6 +53,48 @@ describe("canAutoStartLocalDaemonForHost", () => {
     expect(canAutoStartLocalDaemonForHost("0.0.0.0")).toBe(false);
     expect(canAutoStartLocalDaemonForHost("::")).toBe(false);
   });
+});
+
+const waitForFile = (path: string): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (existsSync(path)) return true;
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    }
+    return false;
+  });
+
+describe("spawnDetached", () => {
+  it.effect("can terminate the spawned detached process", () =>
+    Effect.gen(function* () {
+      const workDir = mkdtempSync(join(tmpdir(), "executor-daemon-spawn-"));
+      const readyMarker = join(workDir, "ready");
+      const terminatedMarker = join(workDir, "terminated");
+
+      try {
+        const child = yield* Effect.acquireRelease(
+          spawnDetached({
+            command: process.execPath,
+            args: [
+              "-e",
+              "const fs = require('node:fs'); fs.writeFileSync(process.env.READY_FILE, 'ok'); process.on('SIGTERM', () => { fs.writeFileSync(process.env.TERMINATED_FILE, 'ok'); process.exit(0); }); setInterval(() => {}, 1000)",
+            ],
+            env: { ...process.env, READY_FILE: readyMarker, TERMINATED_FILE: terminatedMarker },
+          }),
+          (child) => terminateSpawnedDetachedProcess(child).pipe(Effect.ignore),
+        );
+
+        expect(child.pid).toBeGreaterThan(0);
+        const ready = yield* waitForFile(readyMarker);
+        expect(ready).toBe(true);
+        yield* terminateSpawnedDetachedProcess(child);
+        const terminated = yield* waitForFile(terminatedMarker);
+        expect(terminated).toBe(true);
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    }),
+  );
 });
 
 describe("isExecutorServerReachable", () => {
