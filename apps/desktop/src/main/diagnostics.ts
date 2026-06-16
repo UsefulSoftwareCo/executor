@@ -25,7 +25,13 @@ import log from "electron-log/main.js";
 import * as Sentry from "@sentry/electron/main";
 import { getServerSettings } from "./settings";
 
-const sentryDsn = __EXECUTOR_SENTRY_DSN__;
+// Packaged builds always use the DSN baked in at build time. The non-packaged
+// override is a test seam: the desktop e2e points crash reporting at a local
+// sink so it can assert what is (and isn't) reported. It can never redirect a
+// real user's reports — production is always packaged, where the override is
+// dead and the baked DSN wins.
+const sentryDsn =
+  (app.isPackaged ? undefined : process.env.EXECUTOR_DESKTOP_SENTRY_DSN) || __EXECUTOR_SENTRY_DSN__;
 
 // The informal cross-tool opt-out (consoledonottrack.com). Checked before
 // any SDK initializes, and it covers all three processes because the

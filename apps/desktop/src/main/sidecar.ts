@@ -24,6 +24,7 @@ import {
 import { loadOrMintLocalAuthToken } from "./local-auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
+import { classifyPostBootSidecarExit } from "./sidecar-exit";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
 
 // Sidecar output is echoed to the terminal (visible when Electron is run
@@ -38,6 +39,15 @@ const STDERR_TAIL_LIMIT = 8 * 1024;
 // Children deliberately stopped via stopSidecar (quit, restart, update) —
 // their exits are expected and must not be reported as crashes.
 const expectedExits = new WeakSet<ChildProcess>();
+
+// Flipped by main/index.ts the moment the app begins quitting. A sidecar exit
+// during teardown is part of shutdown even when a process-group signal (SIGINT)
+// races ahead of stopSidecar's SIGTERM — so once this is set, no post-boot exit
+// is reported as a crash. One-way latch: the process is on its way out.
+let appQuitting = false;
+export const markAppQuitting = (): void => {
+  appQuitting = true;
+};
 
 // Main/index.ts subscribes to swap the dead web UI for the in-window crash
 // screen. A callback (not an import) keeps this module free of window
@@ -409,11 +419,27 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       if (resolved) {
-        // Post-boot exit: expected when we stopped it ourselves (quit,
-        // restart, update); anything else is a sidecar crash under a live
-        // window — log it and report upstream with the stderr tail.
-        if (expectedExits.has(child)) {
+        // Post-boot exit. Expected when we stopped it ourselves (quit, restart,
+        // update) or the app is mid-quit; a clean signal-driven exit that raced
+        // past stopSidecar still needs the recovery screen but isn't a crash;
+        // anything else is a real fault — report it with the stderr tail.
+        const decision = classifyPostBootSidecarExit({
+          expected: expectedExits.has(child),
+          appQuitting,
+          code,
+          signal,
+        });
+        if (decision.kind === "expected") {
           sidecarLog.info(`exited (code=${code} signal=${signal})`);
+          return;
+        }
+        if (decision.kind === "recover") {
+          // A clean exit (code 0/130/143 or a raw SIGINT/SIGTERM) that bypassed
+          // stopSidecar — e.g. a process-group signal during teardown. The web
+          // UI is dead, so surface the recovery screen, but don't file a healthy
+          // shutdown as a crash.
+          sidecarLog.warn(`exited via clean shutdown (code=${code} signal=${signal})`);
+          unexpectedExitListener?.();
           return;
         }
         const message = `Sidecar exited unexpectedly (code=${code} signal=${signal})`;

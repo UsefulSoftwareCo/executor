@@ -23,6 +23,7 @@ import {
   startSidecar,
   stopSidecar,
   onUnexpectedSidecarExit,
+  markAppQuitting,
   SidecarPortInUseError,
   type SidecarConnection,
 } from "./sidecar";
@@ -894,6 +895,11 @@ if (ensureSingleInstance()) {
   });
 
   app.on("before-quit", async (event) => {
+    // Latch the quit intent first, synchronously: from here on, a sidecar exit
+    // is part of shutdown. A process-group SIGINT can race ahead of the SIGTERM
+    // stopConnection sends below, and without this it would be misreported as a
+    // crash (the Sentry "Sidecar exited unexpectedly (code=130)" false positive).
+    markAppQuitting();
     if (!connection) return;
     // A supervised daemon must keep serving after the app quits — don't stop it,
     // and don't block the quit on teardown we don't need to do.
