@@ -95,5 +95,7 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     HttpRouter.add("GET", "/api/openapi.json", Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
   );
 
-  return [SessionRoutes, OrgRoutes, DocsRoutes, AutumnRoutesLive, ApiErrorLoggingLive] as const;
+  const BillingRoutes = AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer));
+
+  return [SessionRoutes, OrgRoutes, DocsRoutes, BillingRoutes, ApiErrorLoggingLive] as const;
 };

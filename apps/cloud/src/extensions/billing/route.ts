@@ -4,7 +4,35 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { autumnHandler } from "autumn-js/backend";
 
 import { WorkOSClient } from "../../auth/workos";
+import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../../auth/organization";
 import { HttpResponseError, isServerError, toErrorServerResponse } from "../../api/error-response";
+
+type BillingSession = {
+  readonly userId: string;
+  readonly organizationId?: string | null;
+};
+
+export const resolveBillingOrganization = (request: Request, session: BillingSession) =>
+  Effect.gen(function* () {
+    const selector = request.headers.get(ORG_SELECTOR_HEADER) ?? session.organizationId;
+    if (!selector) {
+      return yield* new HttpResponseError({
+        status: 401,
+        code: "unauthorized",
+        message: "Unauthorized",
+      });
+    }
+
+    const org = yield* authorizeOrganizationSelector(session.userId, selector);
+    if (!org) {
+      return yield* new HttpResponseError({
+        status: 403,
+        code: "forbidden",
+        message: "Forbidden",
+      });
+    }
+    return org;
+  });
 
 const handler = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -21,13 +49,14 @@ const handler = Effect.gen(function* () {
   const workos = yield* WorkOSClient;
   const session = yield* workos.authenticateRequest(webRequest);
 
-  if (!session || !session.organizationId) {
+  if (!session) {
     return yield* new HttpResponseError({
       status: 401,
       code: "unauthorized",
       message: "Unauthorized",
     });
   }
+  const org = yield* resolveBillingOrganization(webRequest, session);
 
   const url = new URL(webRequest.url);
   const body =
@@ -50,7 +79,7 @@ const handler = Effect.gen(function* () {
         method: request.method,
         body,
       },
-      customerId: session.organizationId,
+      customerId: org.id,
       customerData: {
         name: session.email,
         email: session.email,

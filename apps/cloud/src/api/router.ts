@@ -1,7 +1,7 @@
 import { Layer } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
-import { RouterConfigLive } from "@executor-js/api/server";
+import { RouterConfigLive, requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import { DbService } from "../db/db";
@@ -29,16 +29,20 @@ import { makeProtectedApiLive } from "./protected";
 // so tests can substitute a counting fake for `DbService.Live` and
 // assert per-request semantics — see
 // `apps/cloud/src/api.request-scope.node.test.ts`.
-export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) =>
-  Layer.mergeAll(
+export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) => {
+  const BillingRoutesLive = AutumnRoutesLive.pipe(
+    Layer.provide(requestScopedMiddleware(requestScopedLive).layer),
+  );
+  return Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
     OrgApiLive,
     makeAccountApiLive(requestScopedLive),
     CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),
-    AutumnRoutesLive,
+    BillingRoutesLive,
     ApiErrorLoggingLive,
   ).pipe(Layer.provideMerge(RouterConfigLive), Layer.provideMerge(BootSharedServices));
+};
 
 export const ApiLive = makeApiLive(RequestScopedServicesLive);
 
