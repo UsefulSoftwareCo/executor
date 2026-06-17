@@ -121,6 +121,9 @@ interface MigrationJournal {
   readonly normalizedSource: string;
   readonly staging: string;
   readonly backup: string;
+  readonly authPath: string;
+  readonly authBackup: string | null;
+  readonly authExisted: boolean;
   readonly nonce: string;
   readonly phase: MigrationJournalPhase;
 }
@@ -647,9 +650,6 @@ const flatAuthEntries = (auth: AuthFile): Record<string, string> => {
 
 const writeFlatAuthFile = (path: string, values: Record<string, string>): void => {
   if (Object.keys(values).length === 0) return;
-  if (fs.existsSync(path)) {
-    fs.copyFileSync(path, `${path}.v1-v2-${Date.now()}-${randomBytes(4).toString("hex")}`);
-  }
   fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(values, null, 2)}\n`, { mode: 0o600 });
@@ -1047,9 +1047,6 @@ const fsyncSqliteFileSet = (path: string): void => {
   for (const suffix of fileSetSuffixes) fsyncFileIfExists(`${path}${suffix}`);
 };
 
-const fileSetAnyExists = (path: string): boolean =>
-  fileSetSuffixes.some((suffix) => fs.existsSync(`${path}${suffix}`));
-
 const moveSqliteFileSet = async (source: string, target: string): Promise<void> => {
   await renameWithRetry(source, target);
   fsyncDirectory(dirname(target));
@@ -1107,12 +1104,12 @@ const normalizedSourcePathFor = (sqlitePath: string, nonce: string): string =>
 
 const migrationJournalPath = (sqlitePath: string): string => `${sqlitePath}.v1-v2-migration.json`;
 
-const writeMigrationJournal = (path: string, journal: MigrationJournal): void => {
+const writeMigrationJournal = async (path: string, journal: MigrationJournal): Promise<void> => {
   fs.mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${journal.nonce}`;
   fs.writeFileSync(tmp, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
   fsyncFileIfExists(tmp);
-  fs.renameSync(tmp, path);
+  await renameWithRetry(tmp, path);
   fsyncDirectory(dirname(path));
 };
 
@@ -1126,6 +1123,59 @@ const readMigrationJournal = (path: string): MigrationJournal | null => {
   const parsed = JSON.parse(fs.readFileSync(path, "utf-8")) as MigrationJournal;
   if (parsed.version !== 1) return null;
   return parsed;
+};
+
+const authBackupInfoForMigration = (
+  nonce: string,
+): {
+  readonly path: string;
+  readonly backup: string | null;
+  readonly existed: boolean;
+} => {
+  const path = resolveFileAuthPath();
+  const existed = fs.existsSync(path);
+  return { path, backup: existed ? `${path}.v1-v2-${nonce}` : null, existed };
+};
+
+const writeAuthBackupForMigration = (input: {
+  readonly path: string;
+  readonly backup: string | null;
+  readonly existed: boolean;
+}): void => {
+  if (!input.existed || !input.backup) return;
+  fs.copyFileSync(input.path, input.backup);
+  fsyncFileIfExists(input.backup);
+  fsyncDirectory(dirname(input.backup));
+};
+
+const restoreAuthFromJournal = async (journal: MigrationJournal): Promise<void> => {
+  if (journal.authBackup && fs.existsSync(journal.authBackup)) {
+    fs.mkdirSync(dirname(journal.authPath), { recursive: true, mode: 0o700 });
+    const tmp = `${journal.authPath}.restore-${journal.nonce}.tmp`;
+    fs.copyFileSync(journal.authBackup, tmp);
+    fsyncFileIfExists(tmp);
+    await renameWithRetry(tmp, journal.authPath);
+  } else if (!journal.authExisted) {
+    fs.rmSync(journal.authPath, { force: true });
+  }
+  fsyncDirectory(dirname(journal.authPath));
+};
+
+const cleanupAuthBackup = (journal: MigrationJournal): void => {
+  if (journal.authBackup) {
+    fs.rmSync(journal.authBackup, { force: true });
+    fsyncDirectory(dirname(journal.authBackup));
+  }
+};
+
+const pauseMigrationForTest = async (point: string): Promise<void> => {
+  if (process.env.EXECUTOR_V1_V2_MIGRATION_PAUSE_AT !== point) return;
+  const marker = process.env.EXECUTOR_V1_V2_MIGRATION_PAUSE_FILE;
+  if (!marker) return;
+  fs.mkdirSync(dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, `${point}\n`, { mode: 0o600 });
+  fsyncFileIfExists(marker);
+  await new Promise<void>(() => {});
 };
 
 const writeMigratedSecrets = async (input: {
@@ -1143,40 +1193,34 @@ interface MigrationExpectedCounts {
   readonly integrations: number;
   readonly connections: number;
   readonly oauthClients: number;
-  readonly tools: number;
-  readonly definitions: number;
   readonly policies: number;
 }
 
-const expectedCountsFor = (
-  snapshot: LocalV1Snapshot,
-  plan: MigrationPlan,
-): MigrationExpectedCounts => {
-  const connectionTargets = plan.connections.map((connection) => ({
-    sourceScopeId: connection.sourceScopeId,
-    sourceId: connection.sourceId,
-  }));
-  const targetCountFor = (scopeId: string, sourceId: string): number =>
-    connectionTargets.filter(
-      (target) => target.sourceScopeId === scopeId && target.sourceId === sourceId,
-    ).length;
-  return {
-    integrations: plan.integrations.length,
-    connections: plan.connections.length,
-    oauthClients: plan.oauthClients.length,
-    tools: snapshot.tools.reduce((sum, row) => sum + targetCountFor(row.scopeId, row.sourceId), 0),
-    definitions: snapshot.definitions.reduce(
-      (sum, row) => sum + targetCountFor(row.scopeId, row.sourceId),
-      0,
-    ),
-    policies: plan.policies.length,
-  };
-};
+const expectedCountsFor = (plan: MigrationPlan): MigrationExpectedCounts => ({
+  integrations: plan.integrations.length,
+  connections: plan.connections.length,
+  oauthClients: plan.oauthClients.length,
+  policies: plan.policies.length,
+});
 
 const scalarNumber = async (client: Client, sql: string): Promise<number> => {
   const result = await client.execute(sql);
   const value = result.rows[0]?.["n"];
   return typeof value === "number" ? value : Number(value ?? 0);
+};
+
+const checkpointTruncate = async (client: Client, path: string): Promise<void> => {
+  const result = await client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+  const row = result.rows[0] ?? {};
+  const busy = Number(row["busy"] ?? 0);
+  const log = Number(row["log"] ?? 0);
+  const checkpointed = Number(row["checkpointed"] ?? 0);
+  if (busy !== 0 || log !== checkpointed) {
+    throw new LocalV1V2MigrationError({
+      message: `Could not fully checkpoint staged SQLite WAL before installing ${path}`,
+      cause: row,
+    });
+  }
 };
 
 const verifyStagingDatabase = async (
@@ -1207,8 +1251,6 @@ const verifyStagingDatabase = async (
       integrations: await scalarNumber(client, "SELECT COUNT(*) AS n FROM integration"),
       connections: await scalarNumber(client, "SELECT COUNT(*) AS n FROM connection"),
       oauthClients: await scalarNumber(client, "SELECT COUNT(*) AS n FROM oauth_client"),
-      tools: await scalarNumber(client, "SELECT COUNT(*) AS n FROM tool"),
-      definitions: await scalarNumber(client, "SELECT COUNT(*) AS n FROM definition"),
       policies: await scalarNumber(client, "SELECT COUNT(*) AS n FROM tool_policy"),
     };
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -1217,7 +1259,7 @@ const verifyStagingDatabase = async (
         cause: { expected, actual },
       });
     }
-    await client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+    await checkpointTruncate(client, path);
   } finally {
     client.close();
   }
@@ -1228,17 +1270,23 @@ const completeJournaledFlip = async (
   journalPath: string,
   journal: MigrationJournal,
 ): Promise<void> => {
-  if (fileSetAnyExists(journal.source)) {
-    writeMigrationJournal(journalPath, { ...journal, phase: "canonical-moved" });
+  // The staging base file is the monotonic recovery marker. While it exists,
+  // the staged v2 DB has not been installed yet, so it is safe to keep moving
+  // any remaining canonical v1 file-set members to the backup and then consume
+  // staging. Once the staging base is gone, the install rename already happened
+  // and `source` may hold the v2 DB; recovery must never move/delete it again.
+  if (fs.existsSync(journal.staging)) {
+    await writeMigrationJournal(journalPath, { ...journal, phase: "canonical-moved" });
     await moveExistingSqliteFileSet(journal.source, journal.backup);
-  }
-  if (!fs.existsSync(journal.source) && fs.existsSync(journal.staging)) {
+    await pauseMigrationForTest("canonical-moved");
     await moveSqliteFileSet(journal.staging, journal.source);
+    await pauseMigrationForTest("staging-consumed");
   }
-  writeMigrationJournal(journalPath, { ...journal, phase: "committed" });
+  await writeMigrationJournal(journalPath, { ...journal, phase: "committed" });
   removeSqliteFileSet(journal.normalizedSource);
   removeSqliteFileSet(journal.staging);
   removeMigrationJournal(journalPath);
+  cleanupAuthBackup(journal);
 };
 
 const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
@@ -1249,7 +1297,9 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
   if (journal.phase === "building") {
     removeSqliteFileSet(journal.normalizedSource);
     removeSqliteFileSet(journal.staging);
+    await restoreAuthFromJournal(journal);
     removeMigrationJournal(journalPath);
+    cleanupAuthBackup(journal);
     return;
   }
 
@@ -1261,6 +1311,7 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
   removeSqliteFileSet(journal.normalizedSource);
   removeSqliteFileSet(journal.staging);
   removeMigrationJournal(journalPath);
+  cleanupAuthBackup(journal);
 };
 
 const isPidAlive = (pid: number): boolean => {
@@ -1277,26 +1328,41 @@ interface MigrationLock {
   readonly path: string;
 }
 
-const acquireMigrationLock = (sqlitePath: string): MigrationLock => {
-  const lockPath = `${sqlitePath}.v1-v2.lock`;
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const MIGRATION_LOCK_WAIT_TIMEOUT_MS = 5 * 60_000;
+
+const migrationLockPath = (sqlitePath: string): string => `${sqlitePath}.v1-v2.lock`;
+
+const acquireMigrationLock = async (sqlitePath: string): Promise<MigrationLock> => {
+  const lockPath = migrationLockPath(sqlitePath);
   fs.mkdirSync(dirname(lockPath), { recursive: true });
-  const payload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`;
-  try {
-    fs.writeFileSync(lockPath, payload, { flag: "wx", mode: 0o600 });
-    return { path: lockPath };
-  } catch (cause) {
-    if (!fs.existsSync(lockPath)) throw cause;
+  const startedAt = Date.now();
+
+  while (true) {
+    const payload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`;
     try {
-      const existing = JSON.parse(fs.readFileSync(lockPath, "utf-8")) as { pid?: unknown };
-      if (typeof existing.pid === "number" && !isPidAlive(existing.pid)) {
+      fs.writeFileSync(lockPath, payload, { flag: "wx", mode: 0o600 });
+      return { path: lockPath };
+    } catch (cause) {
+      if (!fs.existsSync(lockPath)) throw cause;
+      try {
+        const existing = JSON.parse(fs.readFileSync(lockPath, "utf-8")) as { pid?: unknown };
+        if (typeof existing.pid !== "number" || !isPidAlive(existing.pid)) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
         fs.rmSync(lockPath, { force: true });
-        fs.writeFileSync(lockPath, payload, { flag: "wx", mode: 0o600 });
-        return { path: lockPath };
+        continue;
       }
-    } catch {}
-    throw new LocalV1V2MigrationError({
-      message: "Another local v1→v2 SQLite migration is already in progress.",
-    });
+      if (Date.now() - startedAt >= MIGRATION_LOCK_WAIT_TIMEOUT_MS) {
+        throw new LocalV1V2MigrationError({
+          message: `Timed out waiting for local v1→v2 SQLite migration lock after ${MIGRATION_LOCK_WAIT_TIMEOUT_MS}ms.`,
+        });
+      }
+      await sleep(100);
+    }
   }
 };
 
@@ -1307,54 +1373,80 @@ const releaseMigrationLock = (lock: MigrationLock): void => {
 export const migrateLocalV1ToV2IfNeeded = async (
   options: LocalV1V2MigrationOptions,
 ): Promise<LocalV1V2MigrationResult> => {
-  const lock = acquireMigrationLock(options.sqlitePath);
+  const journalPath = migrationJournalPath(options.sqlitePath);
+
+  if (fs.existsSync(journalPath)) {
+    const recoveryLock = await acquireMigrationLock(options.sqlitePath);
+    try {
+      await recoverV1V2Migration(options.sqlitePath);
+    } finally {
+      releaseMigrationLock(recoveryLock);
+    }
+  }
+
+  if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
+
+  // Fast steady-state probe: migrated v2 databases should not pay the cost of
+  // locking or copying the whole DB just to discover their ledger stamp. Keep
+  // this unlocked probe to the positive-stamp short-circuit only; any ambiguous
+  // shape decision happens below while holding the migration lock.
+  let probe: Client | null = null;
+  if (!fs.existsSync(migrationLockPath(options.sqlitePath))) {
+    probe = await openLocalLibsql(options.sqlitePath);
+    try {
+      if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
+    } finally {
+      probe.close();
+      probe = null;
+    }
+  }
+
+  const lock = await acquireMigrationLock(options.sqlitePath);
   let normalizedSourcePath: string | null = null;
   let stagingPath: string | null = null;
   let target: Awaited<ReturnType<typeof createSqliteFumaDb>> | null = null;
   let reader: Client | null = null;
+  let journal: MigrationJournal | null = null;
+  let authBackup: ReturnType<typeof authBackupInfoForMigration> | null = null;
   let flipStarted = false;
 
   try {
     await recoverV1V2Migration(options.sqlitePath);
     if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
 
+    probe = await openLocalLibsql(options.sqlitePath);
+    try {
+      if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
+      if (!(await isLocalV1Database(probe))) return { migrated: false, warnings: [] };
+    } finally {
+      probe.close();
+      probe = null;
+    }
+
     const nonce = randomBytes(4).toString("hex");
     normalizedSourcePath = normalizedSourcePathFor(options.sqlitePath, nonce);
     stagingPath = stagingPathFor(options.sqlitePath, nonce);
     const backupPath = backupPathFor(options.sqlitePath, nonce);
-    const journalPath = migrationJournalPath(options.sqlitePath);
+    authBackup = authBackupInfoForMigration(nonce);
 
-    copySqliteFileSet(options.sqlitePath, normalizedSourcePath);
-    reader = await openLocalLibsql(normalizedSourcePath);
-    // Ledger short-circuit: once a database has been through this gate the
-    // boot data-migration registry stamps it, and the stamp — not schema
-    // shape — decides. Probing by shape on every boot is what made a v2
-    // database with residual v1-looking state re-enter the migration.
-    if (await hasV1GateStamp(reader)) {
-      reader.close();
-      reader = null;
-      removeSqliteFileSet(normalizedSourcePath);
-      normalizedSourcePath = null;
-      return { migrated: false, warnings: [] };
-    }
-    if (!(await isLocalV1Database(reader))) {
-      reader.close();
-      reader = null;
-      removeSqliteFileSet(normalizedSourcePath);
-      normalizedSourcePath = null;
-      return { migrated: false, warnings: [] };
-    }
-
-    const journal: MigrationJournal = {
+    journal = {
       version: 1,
       source: options.sqlitePath,
       normalizedSource: normalizedSourcePath,
       staging: stagingPath,
       backup: backupPath,
+      authPath: authBackup.path,
+      authBackup: authBackup.backup,
+      authExisted: authBackup.existed,
       nonce,
       phase: "building",
     };
-    writeMigrationJournal(journalPath, journal);
+    await writeMigrationJournal(journalPath, journal);
+    writeAuthBackupForMigration(authBackup);
+    await pauseMigrationForTest("building");
+
+    copySqliteFileSet(options.sqlitePath, normalizedSourcePath);
+    reader = await openLocalLibsql(normalizedSourcePath);
 
     const replayWarnings: string[] = [];
     // Legacy replay is intentionally confined to the normalized source copy;
@@ -1387,17 +1479,28 @@ export const migrateLocalV1ToV2IfNeeded = async (
       options.tenantId,
       secretValues,
     );
-    await target.client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+    await checkpointTruncate(target.client, stagingPath);
     await target.close();
     target = null;
+    await pauseMigrationForTest("staging-built");
 
-    await verifyStagingDatabase(stagingPath, expectedCountsFor(snapshot, plan));
-    writeMigrationJournal(journalPath, { ...journal, phase: "built" });
+    await verifyStagingDatabase(stagingPath, expectedCountsFor(plan));
+    // The flip is a single base-file rename from staging to canonical. The
+    // checkpoint above put all staged data in the base DB, so discard volatile
+    // WAL/SHM sidecars before journaling the staged DB as complete; otherwise a
+    // crash mid-sidecar move would make staging appear present after the base DB
+    // had already been installed.
+    for (const suffix of ["-wal", "-shm"] as const)
+      fs.rmSync(`${stagingPath}${suffix}`, { force: true });
+    fsyncDirectory(dirname(stagingPath));
+    await writeMigrationJournal(journalPath, { ...journal, phase: "built" });
+    await pauseMigrationForTest("built");
     flipStarted = true;
     await completeJournaledFlip(journalPath, { ...journal, phase: "built" });
 
     normalizedSourcePath = null;
     stagingPath = null;
+    journal = null;
     return {
       migrated: true,
       backupPath,
@@ -1408,9 +1511,13 @@ export const migrateLocalV1ToV2IfNeeded = async (
     if (target) await target.close();
     if (reader) reader.close();
     if (!flipStarted) {
+      if (journal) {
+        await restoreAuthFromJournal(journal);
+        cleanupAuthBackup(journal);
+      }
       if (normalizedSourcePath) removeSqliteFileSet(normalizedSourcePath);
       if (stagingPath) removeSqliteFileSet(stagingPath);
-      removeMigrationJournal(migrationJournalPath(options.sqlitePath));
+      removeMigrationJournal(journalPath);
     }
     throw cause;
   } finally {
