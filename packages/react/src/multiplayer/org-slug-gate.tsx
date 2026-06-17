@@ -10,10 +10,10 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 //   - bare URL            → replace with `/<active-slug>/…` (canonicalize)
 //   - slug already in URL → render
 //
-// The URL slug is the request SCOPE, not just a label: every API call carries
-// it (the `x-executor-organization` header), and the server re-checks live
-// membership and resolves data for that org — same as the MCP URL-pinned org.
-// So a foreign slug never reaches this gate as "active": the server returns no
+// The URL slug is the request SCOPE, not just a label: product API calls use
+// `/<slug>/api/...`, and the server re-checks live membership and resolves data
+// for that org — same as the MCP URL-pinned org. So a foreign slug never reaches
+// this gate as "active": the server returns no
 // organization for an org the caller can't see, and the shell 404s upstream.
 // That makes two browser tabs on different orgs fully independent — no shared
 // "active org" to steal.

@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
+import { isValidOrgSlug } from "@executor-js/api";
 
 import { routes } from "./tsr.routes";
 import { stripMcpOrgSegment } from "./src/mcp/org-path";
@@ -17,6 +18,11 @@ import { stripMcpOrgSegment } from "./src/mcp/org-path";
 // from our executor.config.ts into `virtual:executor/plugins-client`.
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
 const DEV_PORT = 5173;
+
+const isTenantApiPath = (path: string): boolean => {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  return segments.length >= 2 && segments[1] === "api" && isValidOrgSlug(segments[0]);
+};
 
 // Dev defaults so `bun run dev` boots the full stack with zero manual env.
 // Set at module load (before any plugin/executor.config reads them). Override
@@ -72,6 +78,7 @@ function executorApiPlugin(): Plugin {
         const handled =
           path === "/api" ||
           path.startsWith("/api/") ||
+          isTenantApiPath(path) ||
           path === "/mcp" ||
           path.startsWith("/mcp/") ||
           path === "/docs" ||

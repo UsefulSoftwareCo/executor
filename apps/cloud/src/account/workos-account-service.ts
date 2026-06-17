@@ -1,6 +1,10 @@
 import { Context, Effect, Layer } from "effect";
 
-import { AccountProvider, type AccountHeaders } from "@executor-js/api/server";
+import {
+  AccountProvider,
+  currentTenantSelector,
+  type AccountHeaders,
+} from "@executor-js/api/server";
 import {
   AccountError,
   AccountForbidden,
@@ -12,7 +16,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
-import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
+import { authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
 import { getMemberLimitForPlan, selectActiveMemberLimitPlan } from "../extensions/billing/plans";
 
@@ -87,16 +91,15 @@ export const workosAccountProvider: Layer.Layer<
         ? Effect.succeed(caller.session)
         : Effect.fail<AccountUnauthorized>(new AccountUnauthorized());
 
-    // The org scope for an org-scoped request: the console URL's org (sent in
-    // the selector header) when present, else the session's own org. Membership
-    // is re-checked live, so the header is a selector, not a trust boundary —
-    // and two browser tabs on different orgs each send their own header, so
-    // they stay independent (see organization.ts). Yields the session +
-    // resolved org, or AccountNoOrganization.
-    const requireOrganization = (headers: AccountHeaders) =>
+    // The org scope for an org-scoped request: the console URL's tenant path
+    // when present, else the session's own org. Membership is re-checked live,
+    // so two browser tabs on different orgs stay independent without mutating a
+    // browser-global session org. Yields the session + resolved org, or
+    // AccountNoOrganization.
+    const requireOrganization = (_headers: AccountHeaders) =>
       Effect.gen(function* () {
         const session = yield* requireSession();
-        const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+        const selector = (yield* currentTenantSelector) ?? session.organizationId;
         if (!selector) {
           return yield* new AccountNoOrganization();
         }
@@ -162,13 +165,13 @@ export const workosAccountProvider: Layer.Layer<
       });
 
     return AccountProvider.of({
-      me: (headers) =>
+      me: (_headers) =>
         Effect.gen(function* () {
           const session = yield* requireSession();
-          // Same selector precedence as requireOrganization: the URL's org
-          // (header) drives /account/me so the shell reflects the org the tab
-          // is viewing, not a session-global active org.
-          const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+          // Same selector precedence as requireOrganization: the URL tenant
+          // drives /account/me so the shell reflects the org the tab is viewing,
+          // not a session-global active org.
+          const selector = (yield* currentTenantSelector) ?? session.organizationId;
           const org = selector
             ? yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
                 Effect.provideContext(ctx),

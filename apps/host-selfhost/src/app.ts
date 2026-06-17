@@ -2,7 +2,12 @@ import { HttpApiSwagger } from "effect/unstable/httpapi";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
-import { composePluginApi, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
+import {
+  composePluginApi,
+  ExecutorApp,
+  tenantApiMountPrefix,
+  textFailureStrategy,
+} from "@executor-js/api/server";
 
 import { runSqliteDataMigrations } from "@executor-js/sdk";
 
@@ -99,7 +104,11 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
       ],
     },
-    config: { mountPrefix: "/api", failure: textFailureStrategy },
+    config: {
+      mountPrefix: "/api",
+      tenantMountPrefix: tenantApiMountPrefix,
+      failure: textFailureStrategy,
+    },
     // The boot-scoped context provideMerge'd under everything: the long-lived DB
     // handle (read by the DbProvider seam, Better Auth, and the MCP store) + the
     // resolved identity (captured once by the execution middleware + MCP auth).

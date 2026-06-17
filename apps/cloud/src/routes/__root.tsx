@@ -16,7 +16,6 @@ import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporti
 import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
-import { EXECUTOR_ORG_HEADER } from "@executor-js/react/api/server-connection";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
@@ -285,10 +284,10 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // so sourcing it from there removes that flash. Falls back to the session slug
   // on a bare URL (which OrgSlugGate is about to canonicalize onto it anyway).
   const scopeSlug = urlOrgSlug ?? activeSlug;
-  const billingHeaders = scopeSlug ? { [EXECUTOR_ORG_HEADER]: scopeSlug } : undefined;
+  const billingPathPrefix = scopeSlug ? `/${scopeSlug}/api/billing` : "/api/billing";
 
   return (
-    <AutumnProvider pathPrefix="/api/billing" headers={billingHeaders}>
+    <AutumnProvider pathPrefix={billingPathPrefix}>
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
         <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
@@ -297,7 +296,7 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
                 organizationId={auth.organization.id}
                 organizationSlug={scopeSlug}
               >
-                {/* The org header scopes every request to the URL's org, so
+                {/* The tenant path scopes every request to the URL's org, so
                     reaching here means the caller is a member of `activeSlug`
                     (a foreign slug already 404'd above). The gate only keeps
                     the URL canonical — bare → /<slug>. */}

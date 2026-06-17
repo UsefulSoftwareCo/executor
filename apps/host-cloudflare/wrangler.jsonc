@@ -8,11 +8,20 @@
   // The web UI (Workers Static Assets) — the shared multiplayer SPA built by
   // `vite build` into ./dist. `single-page-application` serves index.html for
   // client routes (e.g. /policies); `run_worker_first` forces the API + MCP
-  // paths to the Worker instead of the SPA fallback.
+  // paths, including slugged tenant paths, to the Worker instead of the SPA
+  // fallback.
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/mcp", "/mcp/*"],
+    "run_worker_first": [
+      "/api/*",
+      "/*/api/*",
+      "/mcp",
+      "/mcp/*",
+      "/*/mcp",
+      "/*/mcp/*",
+      "/.well-known/*",
+    ],
   },
   // D1 is the app's SQLite store (the DbProvider seam). `wrangler deploy`
   // auto-provisions it on first deploy; replace database_id after that, or run

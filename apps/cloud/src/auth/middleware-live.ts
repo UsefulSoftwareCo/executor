@@ -6,7 +6,12 @@
 import { Effect, Layer, Redacted } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
-import { AuthContext, NoOrganization, Unauthorized } from "@executor-js/api/server";
+import {
+  AuthContext,
+  NoOrganization,
+  Unauthorized,
+  currentTenantSelector,
+} from "@executor-js/api/server";
 
 import {
   OrgAuth,
@@ -17,6 +22,7 @@ import {
   type SessionCookieOptions,
   type SessionCookieSetter,
 } from "./middleware";
+import { authorizeOrganizationSelector } from "./organization";
 import { WorkOSClient } from "./workos";
 
 export const SessionAuthLive = Layer.effect(
@@ -81,21 +87,21 @@ export const OrgAuthLive = Layer.effect(
             return yield* Effect.fail(new Unauthorized());
           }
 
-          if (!result.organizationId) {
+          const tenantSelector = yield* currentTenantSelector;
+          const selector = tenantSelector ?? result.organizationId;
+          if (!selector) {
             return yield* Effect.fail(new NoOrganization());
           }
-
-          // NOTE: the domains plane stays scoped to the SESSION org, not the URL
-          // org. Unlike the data + account planes (which resolve the selector
-          // header), this `HttpApiMiddleware` security handler may carry no
-          // residual requirement, so it can't reach the per-request
-          // `UserStoreService` a slug→id resolution needs. The domains surface
-          // (org-settings → domain verification) is niche; URL-scoping it would
-          // mean converting this to an HttpRouter middleware — deferred.
+          const org = yield* authorizeOrganizationSelector(result.userId, selector).pipe(
+            Effect.mapError(() => new NoOrganization()),
+          );
+          if (!org) {
+            return yield* Effect.fail(new NoOrganization());
+          }
           const session = sessionFromSealed(result, Redacted.value(credential));
           const auth = {
             accountId: session.accountId,
-            organizationId: result.organizationId,
+            organizationId: org.id,
             email: session.email,
             name: session.name,
             avatarUrl: session.avatarUrl,

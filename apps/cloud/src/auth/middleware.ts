@@ -15,6 +15,8 @@ import { HttpApiMiddleware, HttpApiSecurity } from "effect/unstable/httpapi";
 // These are the canonical tags; consumers import them from `@executor-js/api/server`
 // directly. This module reads them to declare `SessionAuth` / `OrgAuth`.
 import { AuthContext, NoOrganization, Unauthorized } from "@executor-js/api/server";
+import type { UserStoreService } from "./context";
+import type { WorkOSClient } from "./workos";
 
 // ---------------------------------------------------------------------------
 // Session — what every authenticated request gets
@@ -124,12 +126,12 @@ export class SessionAuth extends HttpApiMiddleware.Service<
 // Provides the shared `AuthContext` (re-exported above).
 // ---------------------------------------------------------------------------
 
-export class OrgAuth extends HttpApiMiddleware.Service<OrgAuth, { provides: AuthContext }>()(
-  "OrgAuth",
-  {
-    error: [Unauthorized, NoOrganization],
-    security: {
-      cookie: HttpApiSecurity.apiKey({ in: "cookie", key: "wos-session" }),
-    },
+export class OrgAuth extends HttpApiMiddleware.Service<
+  OrgAuth,
+  { requires: UserStoreService | WorkOSClient; provides: AuthContext }
+>()("OrgAuth", {
+  error: [Unauthorized, NoOrganization],
+  security: {
+    cookie: HttpApiSecurity.apiKey({ in: "cookie", key: "wos-session" }),
   },
-) {}
+}) {}

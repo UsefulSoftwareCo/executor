@@ -12,8 +12,8 @@ import { CloudDocsLive } from "../extensions/docs";
 import { ApiErrorLoggingLive } from "../observability/error-logging";
 import {
   BootSharedServices,
-  OrgApiLive,
   RequestScopedServicesLive,
+  makeOrgApiLive,
   makeNonProtectedApiLive,
 } from "./layers";
 import { makeProtectedApiLive } from "./protected";
@@ -35,7 +35,7 @@ export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStore
   );
   return Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
-    OrgApiLive,
+    makeOrgApiLive(requestScopedLive),
     makeAccountApiLive(requestScopedLive),
     CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),

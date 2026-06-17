@@ -5,12 +5,12 @@ import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
 import { resolveSessionPrincipal } from "./workos-auth-provider";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
+import { TenantScope } from "@executor-js/api/server";
 
-// The org a console request resolves to is the URL's org (sent in the
-// `x-executor-organization` selector header), not the session's stored org —
-// with the session org as the fallback for non-console callers, and live
-// membership re-checked either way. This is what makes two browser tabs on
-// different orgs independent.
+// The org a console request resolves to is the URL tenant, not the session's
+// stored org — with the session org as the fallback for non-console callers,
+// and live membership re-checked either way. This is what makes two browser tabs
+// on different orgs independent.
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -79,35 +79,35 @@ const stubUsers = Layer.succeed(UserStoreService)({
     ),
 });
 
-const run = (headers: Record<string, string>) =>
-  resolveSessionPrincipal(new Request("https://executor.test/api/tools", { headers })).pipe(
-    Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers)),
+const run = (tenantSelector?: string) => {
+  const effect = resolveSessionPrincipal(
+    new Request("https://executor.test/api/tools", { headers: { cookie: "wos-session=x" } }),
   );
+  return (
+    tenantSelector
+      ? effect.pipe(Effect.provideService(TenantScope, { selector: tenantSelector }))
+      : effect
+  ).pipe(Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers)));
+};
 
-describe("resolveSessionPrincipal · URL org selector", () => {
-  it.effect("falls back to the session org when no selector header is sent", () =>
+describe("resolveSessionPrincipal · URL tenant selector", () => {
+  it.effect("falls back to the session org when no tenant selector is present", () =>
     Effect.gen(function* () {
-      const principal = yield* run({ cookie: "wos-session=x" });
+      const principal = yield* run();
       expect(principal.organizationId, "scopes to the session org").toBe(SESSION_ORG);
     }),
   );
 
   it.effect("scopes to the URL org (by slug) over the session org", () =>
     Effect.gen(function* () {
-      const principal = yield* run({
-        cookie: "wos-session=x",
-        "x-executor-organization": URL_SLUG,
-      });
-      expect(principal.organizationId, "the slug header wins over the session org").toBe(URL_ORG);
+      const principal = yield* run(URL_SLUG);
+      expect(principal.organizationId, "the URL tenant wins over the session org").toBe(URL_ORG);
     }),
   );
 
   it.effect("accepts a WorkOS org id as the selector too", () =>
     Effect.gen(function* () {
-      const principal = yield* run({
-        cookie: "wos-session=x",
-        "x-executor-organization": URL_ORG,
-      });
+      const principal = yield* run(URL_ORG);
       expect(principal.organizationId).toBe(URL_ORG);
     }),
   );
@@ -116,9 +116,7 @@ describe("resolveSessionPrincipal · URL org selector", () => {
     Effect.gen(function* () {
       // The slug resolves to a real org id, but membership is re-checked — a
       // slug is a selector, not a trust boundary, so a non-member is rejected.
-      const error = yield* Effect.flip(
-        run({ cookie: "wos-session=x", "x-executor-organization": "outsider-slug" }),
-      );
+      const error = yield* Effect.flip(run("outsider-slug"));
       expect(error).toMatchObject({ _tag: "NoOrganization" });
     }),
   );

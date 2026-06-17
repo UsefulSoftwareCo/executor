@@ -1,7 +1,10 @@
 import * as AtomHttpApi from "effect/unstable/reactivity/AtomHttpApi";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { addGroup } from "@executor-js/api";
-import { getBaseUrl } from "@executor-js/react/api/base-url";
+import {
+  getExecutorApiBaseUrl,
+  getExecutorTenantApiBaseUrl,
+} from "@executor-js/react/api/server-connection";
 import { CloudAuthApi } from "../auth/api";
 import { OrgApi } from "../org/api";
 
@@ -10,10 +13,23 @@ import { OrgApi } from "../org/api";
 // ---------------------------------------------------------------------------
 
 const CloudApi = addGroup(CloudAuthApi).add(OrgApi);
+
+const requestPathname = (url: string): string => new URL(url, "http://executor.internal").pathname;
+
+const shouldUseTenantApi = (request: HttpClientRequest.HttpClientRequest): boolean => {
+  const pathname = requestPathname(request.url);
+  return pathname.startsWith("/org/") || pathname.startsWith("/mcp-sessions/");
+};
+
 const CloudApiClient = AtomHttpApi.Service<"CloudApiClient">()("CloudApiClient", {
   api: CloudApi,
   httpClient: FetchHttpClient.layer,
-  baseUrl: getBaseUrl(),
+  transformClient: HttpClient.mapRequest((request) =>
+    HttpClientRequest.prependUrl(
+      request,
+      shouldUseTenantApi(request) ? getExecutorTenantApiBaseUrl() : getExecutorApiBaseUrl(),
+    ),
+  ),
 });
 
 export { CloudApiClient };

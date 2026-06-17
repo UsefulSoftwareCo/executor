@@ -7,10 +7,10 @@
 // silently re-scoped the other tab out from under it.
 //
 // The stateless URL model removes that hazard. The slug in the path is the
-// request scope: every API call carries it (the `x-executor-organization`
-// header), the server re-checks live membership and resolves data for THAT
-// org, and the session merely authenticates the user to all their orgs at
-// once. Nothing writes the cookie on a switch. So this scenario — once the
+// request scope: product API calls go through `/<slug>/api/...`, the server
+// re-checks live membership and resolves data for THAT org, and the session
+// merely authenticates the user to all their orgs at once. Nothing writes the
+// cookie on a switch. So this scenario — once the
 // reproduction of the corruption — now asserts the opposite: each tab's
 // requests stay scoped to its own URL org, no matter what the other tab does.
 //
@@ -33,20 +33,19 @@ scenario(
     yield* browser.session(identity, async ({ page: tab1, step }) => {
       const slugOf = (page: typeof tab1) => new URL(page.url()).pathname.replace(/^\/|\/.*$/g, "");
 
-      // The org slug a page's REAL app requests carry — read straight off the
-      // outgoing `x-executor-organization` header, the actual request scope.
-      // This is what makes the two tabs independent; the shared session cookie
-      // is irrelevant to it.
+      // The tenant slug a page's REAL app requests carry — read straight off
+      // the outgoing `/<slug>/api/...` path, the actual request scope. This is
+      // what makes the two tabs independent; the shared session cookie is
+      // irrelevant to it.
       const requestOrgSlugOf = async (page: typeof tab1): Promise<string> => {
+        const expectedSlug = slugOf(page);
         const matching = page.waitForRequest(
-          (request) =>
-            request.url().includes("/api/") &&
-            request.headers()["x-executor-organization"] !== undefined,
+          (request) => new URL(request.url()).pathname.startsWith(`/${expectedSlug}/api/`),
           { timeout: 15_000 },
         );
         // Nudge the app to refetch so a fresh scoped request goes out.
         void page.reload({ waitUntil: "commit" });
-        return (await matching).headers()["x-executor-organization"]!;
+        return new URL((await matching).url()).pathname.split("/")[1]!;
       };
 
       let slugA = "";
@@ -100,7 +99,7 @@ scenario(
           "tab 1's sidebar still shows org B",
         ).toBe(true);
         // The crux: tab 2 opening org A did NOT re-scope tab 1. Tab 1's own
-        // requests still carry org B's slug — the URL is the scope, not a
+        // requests still use org B's URL path — the URL is the scope, not a
         // shared cookie a sibling tab can steal.
         expect(await requestOrgSlugOf(tab1), "tab 1's API requests stay scoped to org B").toBe(
           slugB,
@@ -111,7 +110,7 @@ scenario(
 );
 
 scenario(
-  "Org scope · plugin API requests carry the URL organization selector",
+  "Org scope · plugin API requests use the URL tenant path",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -143,16 +142,17 @@ scenario(
 
       await step("Paste an inline spec", async () => {
         const previewRequest = page.waitForRequest(
-          (request) => request.url().includes("/api/openapi/preview"),
+          (request) => new URL(request.url()).pathname.endsWith("/api/openapi/preview"),
           { timeout: 15_000 },
         );
 
         await page.getByPlaceholder("https://api.example.com/openapi.json").fill(spec);
 
+        const request = await previewRequest;
         expect(
-          (await previewRequest).headers()["x-executor-organization"],
-          "plugin-owned preview requests use the URL's org selector",
-        ).toBe(orgSlug);
+          new URL(request.url()).pathname,
+          "plugin-owned preview requests use the URL tenant path",
+        ).toBe(`/${orgSlug}/api/openapi/preview`);
       });
     });
   }),

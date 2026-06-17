@@ -52,9 +52,9 @@ function OrganizationSwitcherItems(props: { activeOrganizationId: string | null 
   const organizations = useAtomValue(organizationsAtom);
 
   // Switching orgs is now a pure URL navigation: the session authenticates the
-  // user to ALL their orgs, and the slug in the path scopes every request (the
-  // `x-executor-organization` header). No cookie to rewrite, no server switch
-  // call — just land on the other org's URL root and the whole app re-scopes.
+  // user to ALL their orgs, and the slug in the path scopes product API
+  // requests. No cookie to rewrite, no server switch call — just land on the
+  // other org's URL root and the whole app re-scopes.
   const handleSwitch = (organization: { id: string; slug: string }) => {
     if (organization.id === props.activeOrganizationId) return;
     trackEvent("org_switched", { success: true });

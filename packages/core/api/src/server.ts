@@ -19,6 +19,15 @@ export {
 export { AccountProvider, type AccountProviderShape, type AccountHeaders } from "./account/service";
 export { AccountHandlers } from "./account/handlers";
 export { requestScopedMiddleware } from "./server/request-scoped";
+export {
+  TenantScope,
+  TenantScopeMiddleware,
+  currentTenantSelector,
+  isTenantApiPath,
+  tenantApiMountPrefix,
+  tenantApiPath,
+  tenantFromApiPath,
+} from "./server/tenant-scope";
 export { RouterConfigLive } from "./server/router-config";
 export { consoleErrorCapture } from "./server/console-error-capture";
 export {

@@ -87,10 +87,10 @@ function AuthenticatedApp() {
   return (
     <ExecutorProvider>
       <ExecutorPluginsProvider plugins={clientPlugins}>
-        {/* No organizationSlug: the self-host MCP endpoint is the bare /mcp —
-            a slug-pinned URL would 404, and a single-org instance has nothing
-            to select anyway. */}
-        <OrganizationProvider organizationId={organization?.id ?? null}>
+        <OrganizationProvider
+          organizationId={organization?.id ?? null}
+          organizationSlug={organization?.slug ?? null}
+        >
           {organization ? <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate> : gated}
         </OrganizationProvider>
       </ExecutorPluginsProvider>

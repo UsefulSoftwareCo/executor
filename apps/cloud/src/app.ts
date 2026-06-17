@@ -1,7 +1,7 @@
 import { Layer } from "effect";
 import { HttpServer } from "effect/unstable/http";
 
-import { DbProvider, ExecutorApp } from "@executor-js/api/server";
+import { DbProvider, ExecutorApp, tenantApiMountPrefix } from "@executor-js/api/server";
 
 import { cloudPlugins } from "./plugins";
 import { CoreSharedServices } from "./auth/workos";
@@ -104,6 +104,7 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
   },
   config: {
     mountPrefix: CLOUD_MOUNT_PREFIX,
+    tenantMountPrefix: tenantApiMountPrefix,
     // Cloud renders the shared identity errors as its exact `{ error, code }`
     // JSON at 401/403/503 (byte-identical to the old `HttpResponseError` bodies).
     failure: cloudIdentityFailureStrategy,

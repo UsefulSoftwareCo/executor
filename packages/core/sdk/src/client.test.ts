@@ -82,12 +82,12 @@ describe("createPluginAtomClient", () => {
     const request = HttpClientRequest.get("/openapi/integrations/acme");
     const transformed = applyPluginAtomClientRequestTransform(request, {
       headers: () => ({
-        "x-executor-organization": "newvale",
+        "x-plugin-test": "newvale",
         "x-empty": null,
       }),
     });
 
-    expect(transformed.headers["x-executor-organization"]).toBe("newvale");
+    expect(transformed.headers["x-plugin-test"]).toBe("newvale");
     expect(transformed.headers["x-empty"]).toBeUndefined();
   });
 });

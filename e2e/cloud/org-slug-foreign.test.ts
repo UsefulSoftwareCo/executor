@@ -1,8 +1,8 @@
 // Cloud-only (browser): opening another of YOUR orgs by its slug URL just
 // works — no switch, no cookie rewrite. The slug in the path is the request
-// scope (the `x-executor-organization` header), and the session authenticates
-// the user to ALL their orgs at once, so a bookmark or a teammate's link into a
-// shared org lands you there regardless of which org the cookie happens to pin.
+// scope for product API calls, and the session authenticates the user to ALL
+// their orgs at once, so a bookmark or a teammate's link into a shared org lands
+// you there regardless of which org the cookie happens to pin.
 //
 // org-switcher.test.ts covers the account-menu navigation; this covers the URL
 // path. (Unknown/unauthorized slugs → 404 is covered by

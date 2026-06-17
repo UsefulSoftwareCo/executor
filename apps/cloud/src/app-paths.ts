@@ -1,4 +1,5 @@
 import { classifyMcpPath } from "./mcp/mount";
+import { isValidOrgSlug } from "@executor-js/api";
 
 // ---------------------------------------------------------------------------
 // Single source of truth for "does the unified app handler own this path?" —
@@ -15,5 +16,10 @@ import { classifyMcpPath } from "./mcp/mount";
 
 export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
 
+export const isTenantApiPath = (pathname: string): boolean => {
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+  return segments.length >= 2 && segments[1] === "api" && isValidOrgSlug(segments[0]);
+};
+
 export const isAppOwnedPath = (pathname: string) =>
-  isApiPath(pathname) || classifyMcpPath(pathname) !== null;
+  isApiPath(pathname) || isTenantApiPath(pathname) || classifyMcpPath(pathname) !== null;

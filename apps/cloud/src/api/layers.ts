@@ -62,22 +62,24 @@ export const makeNonProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStor
   );
 
 // Cloud-only WorkOS domain-verification routes. Auth is enforced by `OrgAuth`
-// middleware declared on `OrgHttpApi`. The domain handlers read the boot
-// `WorkOSClient` plus the `AuthContext` from `OrgAuthLive`; the
-// `getDomainVerificationLink` handler also gates on billing, so
-// `AutumnService.Default` is provided HERE (not on the neutral boot core).
-// Unlike the member endpoints that used to live here, they need no per-request
-// DB scoping (and `OrgAuthLive` stays session-scoped — see its note).
-export const OrgApiLive = HttpApiBuilder.layer(OrgHttpApi).pipe(
-  Layer.provide(OrgHandlers),
-  Layer.provideMerge(OrgAuthLive),
-  Layer.provideMerge(AutumnService.Default),
-);
+// middleware declared on `OrgHttpApi`. The auth layer resolves URL tenant
+// selectors through the local org mirror, so it needs the same per-request user
+// store as the session routes. The domain handlers read the boot `WorkOSClient`
+// plus the `AuthContext` from `OrgAuthLive`; `getDomainVerificationLink` also
+// gates on billing, so `AutumnService.Default` is provided HERE.
+export const makeOrgApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
+  HttpApiBuilder.layer(OrgHttpApi).pipe(
+    Layer.provide(OrgHandlers),
+    Layer.provide(requestScopedMiddleware(rsLive).layer),
+    Layer.provideMerge(OrgAuthLive),
+    Layer.provideMerge(AutumnService.Default),
+  );
 
 // Default export uses the production per-request layer. Existing callers that
 // import `NonProtectedApiLive` continue to work; the `make*` factory exists for
 // tests that need to swap in a fake.
 export const NonProtectedApiLive = makeNonProtectedApiLive(RequestScopedServicesLive);
+export const OrgApiLive = makeOrgApiLive(RequestScopedServicesLive);
 
 // ---------------------------------------------------------------------------
 // Protected API

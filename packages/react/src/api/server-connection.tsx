@@ -71,34 +71,20 @@ const resolveInitialExecutorServerConnection = (): ExecutorServerConnection => {
 let activeConnection = resolveInitialExecutorServerConnection();
 
 // ---------------------------------------------------------------------------
-// Active org selector — the org the console URL is scoped to.
+// Active tenant selector — the tenant the console URL is scoped to.
 // ---------------------------------------------------------------------------
 //
-// Org-scoped hosts (cloud) send this on every API request so the server scopes
-// to the URL's org, not the session's stored one — which is what lets two
-// browser tabs sit in two different orgs at once (each tab's window.location is
-// its own).
-//
-// Read straight from `window.location` at REQUEST time, not from a
-// React-synced mirror: the API clients' `transformClient` runs only in the
-// browser, so this never touches SSR/hydration, and it's always exactly the
-// current URL with no effect-timing to get wrong. The org is the first path
-// segment when it's a valid slug; reserved console roots (`/policies`,
-// `/login`, …) are NOT valid slugs, so a bare path sends no header and the
-// server falls back to the session org. Hosts without slugs (self-host,
-// cloudflare) never produce one either.
-export const EXECUTOR_ORG_HEADER = "x-executor-organization";
-
-export const getActiveOrgSlug = (): string | null => {
+// Product API calls carry tenant scope in the path: `/<tenant>/api/...`.
+// Read straight from `window.location` at REQUEST time, not from a React-synced
+// mirror: the API clients' `transformClient` runs only in the browser, so this
+// never touches SSR/hydration, and it is exactly the current tab's URL. Reserved
+// console roots (`/policies`, `/login`, ...) are not valid slugs, so global pages
+// and hosts without slugged routes keep using the bare `/api` mount.
+export const getActiveTenantSlug = (): string | null => {
   const pathname = globalThis.window?.location?.pathname;
   if (!pathname) return null;
   const first = pathname.split("/")[1];
   return first && isValidOrgSlug(first) ? first : null;
-};
-
-export const getExecutorOrganizationHeaders = (): Readonly<Record<string, string>> => {
-  const orgSlug = getActiveOrgSlug();
-  return orgSlug ? { [EXECUTOR_ORG_HEADER]: orgSlug } : {};
 };
 
 export const getExecutorServerConnection = (): ExecutorServerConnection => activeConnection;
@@ -116,6 +102,11 @@ export const setExecutorServerApiBaseUrl = (apiBaseUrl: string): void => {
 };
 
 export const getExecutorApiBaseUrl = (): string => activeConnection.apiBaseUrl;
+
+export const getExecutorTenantApiBaseUrl = (): string => {
+  const tenant = getActiveTenantSlug();
+  return tenant ? `${activeConnection.origin}/${tenant}/api` : activeConnection.apiBaseUrl;
+};
 
 export const getExecutorServerAuthPassword = (): string | null =>
   activeConnection.auth?.kind === "basic" ? activeConnection.auth.password : null;

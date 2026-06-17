@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { autumnHandler } from "autumn-js/backend";
 
+import { currentTenantSelector, TenantScopeMiddleware } from "@executor-js/api/server";
+
 import { WorkOSClient } from "../../auth/workos";
-import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../../auth/organization";
+import { authorizeOrganizationSelector } from "../../auth/organization";
 import { HttpResponseError, isServerError, toErrorServerResponse } from "../../api/error-response";
 
 type BillingSession = {
@@ -12,9 +14,9 @@ type BillingSession = {
   readonly organizationId?: string | null;
 };
 
-export const resolveBillingOrganization = (request: Request, session: BillingSession) =>
+export const resolveBillingOrganization = (session: BillingSession) =>
   Effect.gen(function* () {
-    const selector = request.headers.get(ORG_SELECTOR_HEADER) ?? session.organizationId;
+    const selector = (yield* currentTenantSelector) ?? session.organizationId;
     if (!selector) {
       return yield* new HttpResponseError({
         status: 401,
@@ -56,7 +58,8 @@ const handler = Effect.gen(function* () {
       message: "Unauthorized",
     });
   }
-  const org = yield* resolveBillingOrganization(webRequest, session);
+  const org = yield* resolveBillingOrganization(session);
+  const tenant = yield* currentTenantSelector;
 
   const url = new URL(webRequest.url);
   const body =
@@ -88,7 +91,7 @@ const handler = Effect.gen(function* () {
         secretKey: env.AUTUMN_SECRET_KEY ?? "",
         ...(env.AUTUMN_API_URL ? { serverURL: env.AUTUMN_API_URL } : {}),
       },
-      pathPrefix: "/api/billing",
+      pathPrefix: tenant ? `/${tenant}/api/billing` : "/api/billing",
     }),
   );
 
@@ -111,4 +114,13 @@ const handler = Effect.gen(function* () {
   }),
 );
 
-export const AutumnRoutesLive = HttpRouter.add("*", "/api/billing/*", handler);
+const BareAutumnRoutesLive = HttpRouter.add("*", "/api/billing/*", handler);
+
+const TenantAutumnRoutesLive = HttpRouter.add("*", "/:tenant/api/billing/*", handler).pipe(
+  Layer.provide(TenantScopeMiddleware.layer),
+);
+
+export const AutumnRoutesLive = Layer.merge(
+  BareAutumnRoutesLive,
+  TenantAutumnRoutesLive,
+) as Layer.Layer<never, never, any>;

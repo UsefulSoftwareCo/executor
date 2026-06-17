@@ -16,6 +16,10 @@ describe("isAppOwnedPath", () => {
     "/api/billing/customer", // AutumnProvider pathPrefix — the billing UI
     "/api/billing/attach",
     "/api/docs", // Swagger UI
+    "/acme-corp/api/tools",
+    "/acme-corp/api/account/me",
+    "/acme-corp/api/org/domains",
+    "/acme-corp/api/billing/customer",
     "/mcp",
     "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-authorization-server",
@@ -46,6 +50,7 @@ describe("isAppOwnedPath", () => {
     "/assets/app.js",
     "/settings/mcp",
     "/integrations/mcp",
+    "/mcp/api/tools",
   ];
   for (const pathname of startOwned) {
     it(`leaves ${pathname} to the Start router`, () => {

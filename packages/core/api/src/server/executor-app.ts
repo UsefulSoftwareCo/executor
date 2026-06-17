@@ -74,6 +74,7 @@ import {
   toApiHandler,
   type ApiHandler,
 } from "./host-foundation";
+import { TenantScopeMiddleware } from "./tenant-scope";
 
 // A fully-resolved route/app Layer with its channels erased. Used at the
 // assembly boundaries (mirrors `toApiHandler`'s loose typing): each host's
@@ -267,6 +268,12 @@ export interface AppConfig<RStrategy, McpExport> {
    */
   readonly mountPrefix?: `/${string}`;
   /**
+   * Optional browser/product API mount that carries the active tenant in the
+   * path (`/:tenant/api/...`). Credential-scoped callers can continue to use
+   * `mountPrefix`; browser clients use this mount so the URL is the scope.
+   */
+  readonly tenantMountPrefix?: `/:${string}/api`;
+  /**
    * How identity-resolution failures render. The facade builds `authenticate`
    * from the `IdentityProvider` tag, so the failure channel is always the shared
    * `IdentityFailure`: cloud renders its `{ error, code }` JSON, self-host 401/403
@@ -386,6 +393,13 @@ export const make = <
         Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(prefix)),
       )
     : undefined;
+  const tenantPrefix = config.tenantMountPrefix;
+  const tenantPrefixedRouter = tenantPrefix
+    ? Layer.effect(HttpRouter.HttpRouter)(
+        Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(tenantPrefix)),
+      )
+    : undefined;
+  const tenantRouteMiddleware = tenantPrefixedRouter ? TenantScopeMiddleware.layer : undefined;
 
   // ---- the OAuth callback path, derived from the SAME `mountPrefix` ------
   // The redirect URI the host serves and registers with providers is
@@ -518,20 +532,37 @@ export const make = <
       : executionMiddleware
   ).layer as AppRouteLayer;
   const pluginApiLive = protectedApi.layer.pipe(Layer.provide(middlewareLayer)) as AppRouteLayer;
+  const tenantPluginApiLive = tenantPrefixedRouter
+    ? (makeProtectedApiLayer(plugins, {
+        errorCapture: providers.errorCapture,
+        router: tenantPrefixedRouter,
+        routeMiddleware: tenantRouteMiddleware,
+      }).layer.pipe(Layer.provide(middlewareLayer)) as AppRouteLayer)
+    : undefined;
 
   // ---- (5) the account API (optional) -----------------------------------
   // The account middleware provides `AccountProvider` per request; its residual
   // `RAcct` (cloud's control-plane services; `never` for self-host) flows through
   // to `boot`. Omit `providers.account` -> no account API (the test-stub path).
-  const apiLive: AppRouteLayer = providers.account
-    ? Layer.merge(
-        pluginApiLive,
-        makeAccountApiLayer(
-          providers.account as Layer.Layer<unknown, never, RAcct>,
-          prefixedRouter ? { router: prefixedRouter } : {},
-        ) as AppRouteLayer,
-      )
-    : pluginApiLive;
+  const accountApiLive = providers.account
+    ? (makeAccountApiLayer(
+        providers.account as Layer.Layer<unknown, never, RAcct>,
+        prefixedRouter ? { router: prefixedRouter } : {},
+      ) as AppRouteLayer)
+    : undefined;
+  const tenantAccountApiLive =
+    providers.account && tenantPrefixedRouter
+      ? (makeAccountApiLayer(providers.account as Layer.Layer<unknown, never, RAcct>, {
+          router: tenantPrefixedRouter,
+          routeMiddleware: tenantRouteMiddleware,
+        }) as AppRouteLayer)
+      : undefined;
+  const apiLive: AppRouteLayer = Layer.mergeAll(
+    pluginApiLive,
+    ...(tenantPluginApiLive ? [tenantPluginApiLive] : []),
+    ...(accountApiLive ? [accountApiLive] : []),
+    ...(tenantAccountApiLive ? [tenantAccountApiLive] : []),
+  ) as AppRouteLayer;
 
   // ---- (4) the MCP serving envelope (optional) --------------------------
   // The two providers, by design (mirrors makeSelfHostMcp):

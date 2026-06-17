@@ -9,7 +9,7 @@ import {
   McpExecutionNotFoundError,
   McpSessionForbiddenError,
 } from "./api";
-import { NoOrganization } from "@executor-js/api/server";
+import { currentTenantSelector, NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
 import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
 import { SessionContext, SessionCookies } from "./middleware";
@@ -25,7 +25,11 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
-import { authorizeOrganization, resolveOrganization } from "./organization";
+import {
+  authorizeOrganization,
+  authorizeOrganizationSelector,
+  resolveOrganization,
+} from "./organization";
 import type {
   McpSessionApprovalResult,
   McpSessionResumeApprovalResult,
@@ -84,12 +88,19 @@ const timingSafeEqual = (a: string, b: string): boolean => {
 
 const requireSessionOrganizationId = Effect.gen(function* () {
   const session = yield* SessionContext;
-  if (!session.organizationId) {
+  const selector = (yield* currentTenantSelector) ?? session.organizationId;
+  if (!selector) {
+    return yield* new NoOrganization();
+  }
+  const org = yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
+    Effect.mapError(() => new NoOrganization()),
+  );
+  if (!org) {
     return yield* new NoOrganization();
   }
   return {
     ...session,
-    organizationId: session.organizationId,
+    organizationId: org.id,
   };
 });
 

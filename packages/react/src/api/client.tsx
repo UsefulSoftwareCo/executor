@@ -13,10 +13,8 @@ import * as Schema from "effect/Schema";
 import { reportHandledFrontendError } from "./error-reporting";
 import { notifyLocalAuthRequired } from "./local-auth";
 import {
-  EXECUTOR_ORG_HEADER,
-  getActiveOrgSlug,
-  getExecutorApiBaseUrl,
   getExecutorServerAuthorizationHeader,
+  getExecutorTenantApiBaseUrl,
 } from "./server-connection";
 
 const isApiClientInfrastructureCause = (cause: Cause.Cause<unknown>): boolean =>
@@ -119,15 +117,10 @@ const ExecutorApiClient = AtomHttpApi.Service<"ExecutorApiClient">()("ExecutorAp
   api: ExecutorApi,
   httpClient: FetchHttpClient.layer,
   transformClient: HttpClient.mapRequest((request) => {
-    let next = HttpClientRequest.prependUrl(request, getExecutorApiBaseUrl());
+    let next = HttpClientRequest.prependUrl(request, getExecutorTenantApiBaseUrl());
     const authorization = getExecutorServerAuthorizationHeader();
     if (authorization) {
       next = HttpClientRequest.setHeader(next, "authorization", authorization);
-    }
-    // Scope the request to the org the console URL is on (see server-connection).
-    const orgSlug = getActiveOrgSlug();
-    if (orgSlug) {
-      next = HttpClientRequest.setHeader(next, EXECUTOR_ORG_HEADER, orgSlug);
     }
     return next;
   }),

@@ -1,7 +1,12 @@
 import { Effect } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
-import { dbProviderLayer, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
+import {
+  dbProviderLayer,
+  ExecutorApp,
+  tenantApiMountPrefix,
+  textFailureStrategy,
+} from "@executor-js/api/server";
 
 import { loadConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins } from "./plugins";
@@ -75,7 +80,11 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(mcp.approvalHandler)),
       ],
     },
-    config: { mountPrefix: "/api", failure: textFailureStrategy },
+    config: {
+      mountPrefix: "/api",
+      tenantMountPrefix: tenantApiMountPrefix,
+      failure: textFailureStrategy,
+    },
     boot: identityLayer,
   });
 

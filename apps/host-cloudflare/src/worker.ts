@@ -1,5 +1,6 @@
 import { makeCloudflareApp } from "./app";
 import type { CloudflareEnv } from "./config";
+import { stripMcpOrgSegment } from "./mcp/org-path";
 
 // The MCP session Durable Object class, bound as `MCP_SESSION` in wrangler.jsonc.
 // Must be exported at the Worker entry module scope for the runtime to find it.
@@ -22,9 +23,17 @@ const resolveHandler = (env: CloudflareEnv): Promise<(request: Request) => Promi
   return handlerPromise;
 };
 
+const prepareRequest = (request: Request): Request => {
+  const url = new URL(request.url);
+  const rewritten = stripMcpOrgSegment(url.pathname);
+  if (rewritten === null) return request;
+  url.pathname = rewritten;
+  return new Request(url, request);
+};
+
 export default {
   fetch: async (request: Request, env: CloudflareEnv): Promise<Response> => {
     const serve = await resolveHandler(env);
-    return serve(request);
+    return serve(prepareRequest(request));
   },
 };

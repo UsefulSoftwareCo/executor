@@ -35,16 +35,13 @@ import {
   NoOrganization,
   Unauthorized,
   Unavailable,
+  currentTenantSelector,
 } from "@executor-js/api/server";
 import type { FailureRenderingStrategy, IdentityFailure, Principal } from "@executor-js/api/server";
 
 import { ApiKeyService } from "./api-keys";
 import { BEARER_PREFIX } from "./bearer";
-import {
-  authorizeOrganization,
-  authorizeOrganizationSelector,
-  orgSelectorFromRequest,
-} from "./organization";
+import { authorizeOrganization, authorizeOrganizationSelector } from "./organization";
 import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
 import type { UserStoreError, WorkOSError } from "./errors";
@@ -115,11 +112,9 @@ export const resolveSessionPrincipal = (request: Request) =>
     if (!session) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }
-    // The console URL's org is the scope authority (sent as a header); the
-    // session's own org is the fallback for non-console callers. Membership is
-    // re-checked live either way — the header is a selector, not a trust
-    // boundary (see organization.ts).
-    const selector = orgSelectorFromRequest(request) ?? session.organizationId;
+    // The console URL's tenant is the scope authority. The session's own org is
+    // only the fallback for bare /api callers (legacy/global surfaces).
+    const selector = (yield* currentTenantSelector) ?? session.organizationId;
     if (!selector) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }

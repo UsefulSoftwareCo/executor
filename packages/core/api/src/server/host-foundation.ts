@@ -53,6 +53,7 @@ import { RouterConfigLive } from "./router-config";
 // (self-host's `PrefixedRouterLive`). Keeping the requirement channel precise
 // (not `any`) avoids leaking `any` into every assembled host layer.
 type RouterLayer = Layer.Layer<HttpRouter.HttpRouter, never, HttpRouter.HttpRouter>;
+type RouteMiddlewareLayer = Layer.Layer<any, any, any>;
 
 // ---------------------------------------------------------------------------
 // Protected (plugin) API
@@ -71,6 +72,11 @@ export interface MakeProtectedApiLayerOptions {
    * present every API route serves under that prefix. Omit to serve at root.
    */
   readonly router?: RouterLayer;
+  /**
+   * Optional route-scoped middleware for this mount. Hosts use this to provide
+   * route-derived context such as a tenant selector from a dynamic path prefix.
+   */
+  readonly routeMiddleware?: RouteMiddlewareLayer;
 }
 
 /**
@@ -105,9 +111,14 @@ export const makeProtectedApiLayer = <TPlugins extends readonly AnyPlugin[]>(
   // `maxParamLength` without re-wiring it; the optional prefixed router is
   // merged alongside it so `HttpApiBuilder.layer`'s `HttpRouter` requirement is
   // satisfied by the prefixed view when the host wants a path namespace.
-  const routerSupport = options.router
-    ? Layer.merge(RouterConfigLive, options.router)
-    : RouterConfigLive;
+  const routerSupport =
+    options.router && options.routeMiddleware
+      ? Layer.mergeAll(RouterConfigLive, options.router, options.routeMiddleware)
+      : options.router
+        ? Layer.merge(RouterConfigLive, options.router)
+        : options.routeMiddleware
+          ? Layer.merge(RouterConfigLive, options.routeMiddleware)
+          : RouterConfigLive;
 
   const layer = HttpApiBuilder.layer(api).pipe(
     Layer.provide(Layer.mergeAll(handlers, observabilityMiddleware(api))),
@@ -128,6 +139,8 @@ export interface MakeAccountApiLayerOptions {
    * the account routes register on the same `/api`-prefixed router.
    */
   readonly router?: RouterLayer;
+  /** Optional route-scoped middleware for this mount. */
+  readonly routeMiddleware?: RouteMiddlewareLayer;
 }
 
 /**
@@ -166,7 +179,13 @@ export const makeAccountApiLayer = <MOut, ME, MR>(
     Layer.provide(AccountHandlers),
     Layer.provide(accountProviderMiddleware),
   );
-  return options.router ? base.pipe(Layer.provide(options.router)) : base;
+  const routeSupport =
+    options.router && options.routeMiddleware
+      ? Layer.merge(options.router, options.routeMiddleware)
+      : options.router
+        ? options.router
+        : options.routeMiddleware;
+  return routeSupport ? base.pipe(Layer.provide(routeSupport)) : base;
 };
 
 /**

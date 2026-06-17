@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
+import { TenantScope } from "@executor-js/api/server";
 
 import { UserStoreService } from "../../auth/context";
 import { WorkOSClient, type WorkOSClientService } from "../../auth/workos";
@@ -55,37 +56,40 @@ const stubUsers = Layer.succeed(UserStoreService)({
     ),
 });
 
-const run = (headers: Record<string, string>, organizationId: string | null = SESSION_ORG) =>
-  resolveBillingOrganization(
-    new Request("https://executor.test/api/billing/customer", { headers }),
-    { userId: MEMBER, organizationId },
+const run = (tenantSelector?: string, organizationId: string | null = SESSION_ORG) => {
+  const effect = resolveBillingOrganization({ userId: MEMBER, organizationId });
+  return (
+    tenantSelector
+      ? effect.pipe(Effect.provideService(TenantScope, { selector: tenantSelector }))
+      : effect
   ).pipe(Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers)));
+};
 
-describe("billing route org selector", () => {
-  it.effect("falls back to the session org when no selector header is sent", () =>
+describe("billing route tenant selector", () => {
+  it.effect("falls back to the session org when no tenant selector is present", () =>
     Effect.gen(function* () {
-      const org = yield* run({});
+      const org = yield* run();
       expect(org.id).toBe(SESSION_ORG);
     }),
   );
 
-  it.effect("scopes billing to the URL org selector over the session org", () =>
+  it.effect("scopes billing to the URL tenant selector over the session org", () =>
     Effect.gen(function* () {
-      const org = yield* run({ "x-executor-organization": URL_SLUG });
+      const org = yield* run(URL_SLUG);
       expect(org.id).toBe(URL_ORG);
     }),
   );
 
   it.effect("rejects a selector for an org the caller is not a member of", () =>
     Effect.gen(function* () {
-      const error = yield* Effect.flip(run({ "x-executor-organization": "outsider-slug" }));
+      const error = yield* Effect.flip(run("outsider-slug"));
       expect(error).toMatchObject({ _tag: "HttpResponseError", status: 403 });
     }),
   );
 
-  it.effect("requires either a selector header or a session org", () =>
+  it.effect("requires either a tenant selector or a session org", () =>
     Effect.gen(function* () {
-      const error = yield* Effect.flip(run({}, null));
+      const error = yield* Effect.flip(run(undefined, null));
       expect(error).toMatchObject({ _tag: "HttpResponseError", status: 401 });
     }),
   );

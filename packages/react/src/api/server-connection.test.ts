@@ -2,12 +2,31 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   apiBaseUrlForServerOrigin,
+  getActiveTenantSlug,
+  getExecutorApiBaseUrl,
   getExecutorServerAuthorizationHeader,
+  getExecutorTenantApiBaseUrl,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
   originFromApiBaseUrl,
   resolveBrowserExecutorServerConnection,
+  setExecutorServerConnection,
 } from "./server-connection";
+
+const withWindowPath = <A>(pathname: string, run: () => A): A => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { pathname } },
+  });
+  const result = run();
+  if (descriptor) {
+    Object.defineProperty(globalThis, "window", descriptor);
+  } else {
+    Reflect.deleteProperty(globalThis, "window");
+  }
+  return result;
+};
 
 describe("Executor server connection", () => {
   it("normalizes server origins and API base URLs", () => {
@@ -62,5 +81,19 @@ describe("Executor server connection", () => {
     expect(connection.kind).toBe("http");
     expect(connection.origin).toBe("http://localhost:4788");
     expect(getExecutorServerAuthorizationHeader(connection)).toBeNull();
+  });
+
+  it("derives tenant-scoped API base URLs from the current path", () => {
+    setExecutorServerConnection({ origin: "https://executor.example" });
+
+    withWindowPath("/acme/policies", () => {
+      expect(getActiveTenantSlug()).toBe("acme");
+      expect(getExecutorTenantApiBaseUrl()).toBe("https://executor.example/acme/api");
+    });
+
+    withWindowPath("/login", () => {
+      expect(getActiveTenantSlug()).toBeNull();
+      expect(getExecutorTenantApiBaseUrl()).toBe(getExecutorApiBaseUrl());
+    });
   });
 });

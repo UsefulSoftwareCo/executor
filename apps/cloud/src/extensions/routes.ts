@@ -24,7 +24,11 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
-import { requestScopedMiddleware } from "@executor-js/api/server";
+import {
+  requestScopedMiddleware,
+  tenantApiMountPrefix,
+  TenantScopeMiddleware,
+} from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import {
@@ -48,6 +52,10 @@ import { ApiErrorLoggingLive } from "../observability/error-logging";
 // its own internal prefixed view for the protected API.
 const apiPrefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
   Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed("/api")),
+);
+
+const tenantApiPrefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
+  Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(tenantApiMountPrefix)),
 );
 
 // The full cloud OpenAPI spec, prefixed so the served paths match `/api/*`.
@@ -79,13 +87,31 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     Layer.provide(apiPrefixedRouter),
   );
 
+  const TenantSessionRoutes = HttpApiBuilder.layer(NonProtectedApi).pipe(
+    Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
+    Layer.provide(requestScopedMiddleware(rsLive).layer),
+    Layer.provideMerge(SessionAuthLive),
+    Layer.provideMerge(AutumnService.Default),
+    Layer.provide(Layer.merge(tenantApiPrefixedRouter, TenantScopeMiddleware.layer)),
+  );
+
   // Cloud-only WorkOS domain-verification routes; `OrgAuth` enforces an
-  // authenticated org session. No per-request DB scoping needed.
+  // authenticated org session. The auth layer resolves URL tenant selectors, so
+  // it needs the same request-scoped user store as the protected product API.
   const OrgRoutes = HttpApiBuilder.layer(OrgHttpApi).pipe(
     Layer.provide(OrgHandlers),
+    Layer.provide(requestScopedMiddleware(rsLive).layer),
     Layer.provideMerge(OrgAuthLive),
     Layer.provideMerge(AutumnService.Default),
     Layer.provide(apiPrefixedRouter),
+  );
+
+  const TenantOrgRoutes = HttpApiBuilder.layer(OrgHttpApi).pipe(
+    Layer.provide(OrgHandlers),
+    Layer.provide(requestScopedMiddleware(rsLive).layer),
+    Layer.provideMerge(OrgAuthLive),
+    Layer.provideMerge(AutumnService.Default),
+    Layer.provide(Layer.merge(tenantApiPrefixedRouter, TenantScopeMiddleware.layer)),
   );
 
   // Swagger UI at /api/docs + the OpenAPI JSON at /api/openapi.json, over the
@@ -97,5 +123,13 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
 
   const BillingRoutes = AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer));
 
-  return [SessionRoutes, OrgRoutes, DocsRoutes, BillingRoutes, ApiErrorLoggingLive] as const;
+  return [
+    SessionRoutes,
+    TenantSessionRoutes,
+    OrgRoutes,
+    TenantOrgRoutes,
+    DocsRoutes,
+    BillingRoutes,
+    ApiErrorLoggingLive,
+  ] as const;
 };
