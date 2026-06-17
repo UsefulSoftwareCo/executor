@@ -1169,6 +1169,7 @@ const cleanupAuthBackup = (journal: MigrationJournal): void => {
 };
 
 const pauseMigrationForTest = async (point: string): Promise<void> => {
+  if (process.env.NODE_ENV !== "test") return;
   if (process.env.EXECUTOR_V1_V2_MIGRATION_PAUSE_AT !== point) return;
   const marker = process.env.EXECUTOR_V1_V2_MIGRATION_PAUSE_FILE;
   if (!marker) return;
@@ -1217,10 +1218,21 @@ const checkpointTruncate = async (client: Client, path: string): Promise<void> =
   const checkpointed = Number(row["checkpointed"] ?? 0);
   if (busy !== 0 || log !== checkpointed) {
     throw new LocalV1V2MigrationError({
-      message: `Could not fully checkpoint staged SQLite WAL before installing ${path}`,
+      message: `Could not fully checkpoint SQLite WAL for ${path}`,
       cause: row,
     });
   }
+};
+
+const checkpointSqliteFileSetIfBaseExists = async (path: string): Promise<void> => {
+  if (!fs.existsSync(path)) return;
+  const client = await openLocalLibsql(path);
+  try {
+    await checkpointTruncate(client, path);
+  } finally {
+    client.close();
+  }
+  fsyncSqliteFileSet(path);
 };
 
 const verifyStagingDatabase = async (
@@ -1276,6 +1288,7 @@ const completeJournaledFlip = async (
   // staging. Once the staging base is gone, the install rename already happened
   // and `source` may hold the v2 DB; recovery must never move/delete it again.
   if (fs.existsSync(journal.staging)) {
+    await checkpointSqliteFileSetIfBaseExists(journal.source);
     await writeMigrationJournal(journalPath, { ...journal, phase: "canonical-moved" });
     await moveExistingSqliteFileSet(journal.source, journal.backup);
     await pauseMigrationForTest("canonical-moved");

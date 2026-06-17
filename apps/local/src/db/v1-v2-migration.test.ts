@@ -2,17 +2,20 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Buffer } from "node:buffer";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Schema } from "effect";
 
 import { collectTables } from "@executor-js/api/server";
@@ -23,6 +26,21 @@ import { migrateLocalV1ToV2IfNeeded } from "./v1-v2-migration";
 
 const AuthFile = Schema.Record(Schema.String, Schema.String);
 const decodeAuthFile = Schema.decodeUnknownSync(Schema.fromJsonString(AuthFile));
+const MigrationJournalForTest = Schema.Struct({
+  version: Schema.Literal(1),
+  source: Schema.String,
+  normalizedSource: Schema.String,
+  staging: Schema.String,
+  backup: Schema.String,
+  authPath: Schema.String,
+  authBackup: Schema.Union([Schema.String, Schema.Null]),
+  authExisted: Schema.Boolean,
+  nonce: Schema.String,
+  phase: Schema.Literals(["building", "built", "canonical-moved", "committed"]),
+});
+const decodeMigrationJournalForTest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(MigrationJournalForTest),
+);
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 // Preserves every journal field (`when`, `breakpoints`, …) — drizzle's
 // migrator needs them, so only `entries` is typed for the truncation filter.
@@ -821,8 +839,296 @@ const seedDuplicateStripeScope = async (dbPath: string, scopeId: string) => {
 
 const copySqliteFileSetForTest = (source: string, target: string) => {
   for (const suffix of ["", "-wal", "-shm"] as const) {
+    rmSync(`${target}${suffix}`, { force: true });
     if (existsSync(`${source}${suffix}`)) copyFileSync(`${source}${suffix}`, `${target}${suffix}`);
   }
+};
+
+const waitForChildExit = (child: ChildProcessWithoutNullStreams): Promise<void> =>
+  new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", () => resolve());
+  });
+
+const killRestartPausePhases = [
+  "building",
+  "staging-built",
+  "built",
+  "canonical-moved",
+  "staging-consumed",
+] as const;
+
+type KillRestartPausePhase = (typeof killRestartPausePhases)[number];
+
+interface ChildOutput {
+  stdout: string;
+  stderr: string;
+}
+
+const waitForPauseMarker = async (
+  marker: string,
+  child: ChildProcessWithoutNullStreams,
+  output: ChildOutput,
+): Promise<{
+  readonly markerFound: boolean;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (existsSync(marker)) {
+      return {
+        markerFound: true,
+        exitCode: child.exitCode,
+        signalCode: child.signalCode,
+        stdout: output.stdout,
+        stderr: output.stderr,
+      };
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return {
+        markerFound: false,
+        exitCode: child.exitCode,
+        signalCode: child.signalCode,
+        stdout: output.stdout,
+        stderr: output.stderr,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return {
+    markerFound: false,
+    exitCode: child.exitCode,
+    signalCode: child.signalCode,
+    stdout: output.stdout,
+    stderr: output.stderr,
+  };
+};
+
+const killMigrationAtPause = async (input: {
+  readonly dbPath: string;
+  readonly tenantId: string;
+  readonly pauseAt: KillRestartPausePhase;
+}): Promise<void> => {
+  const marker = join(workDir, `pause-${input.pauseAt}`);
+  const code = `
+    import { collectTables } from "@executor-js/api/server";
+    import { migrateLocalV1ToV2IfNeeded } from "./src/db/v1-v2-migration.ts";
+    await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: ${JSON.stringify(input.dbPath)},
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: ${JSON.stringify(input.tenantId)},
+    });
+  `;
+  const child = spawn(process.execPath, ["-e", code], {
+    cwd: join(import.meta.dirname, "../.."),
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      EXECUTOR_V1_V2_MIGRATION_PAUSE_AT: input.pauseAt,
+      EXECUTOR_V1_V2_MIGRATION_PAUSE_FILE: marker,
+    },
+    stdio: "pipe",
+  });
+  child.unref();
+  const output: ChildOutput = { stdout: "", stderr: "" };
+  child.stdout.setEncoding("utf-8");
+  child.stderr.setEncoding("utf-8");
+  child.stdout.on("data", (chunk) => {
+    output.stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    output.stderr += chunk;
+  });
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: subprocess kill harness must clean up marker/child even when assertions fail
+  try {
+    const paused = await waitForPauseMarker(marker, child, output);
+    if (!paused.markerFound) {
+      child.kill("SIGKILL");
+      await waitForChildExit(child);
+    }
+    expect(paused).toMatchObject({ markerFound: true, exitCode: null, signalCode: null });
+    child.kill("SIGKILL");
+    await waitForChildExit(child);
+    expect(child.signalCode).toBe("SIGKILL");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await waitForChildExit(child);
+    }
+    child.stdout.destroy();
+    child.stderr.destroy();
+    rmSync(marker, { force: true });
+  }
+};
+
+const readMigrationJournalForTest = (dbPath: string) => {
+  const journalPath = `${dbPath}.v1-v2-migration.json`;
+  expect(existsSync(journalPath)).toBe(true);
+  return decodeMigrationJournalForTest(readFileSync(journalPath, "utf-8"));
+};
+
+const assertV1SourceRows = async (input: { readonly path: string; readonly scopeId: string }) => {
+  expect(existsSync(input.path)).toBe(true);
+  const client = await openLocalLibsql(input.path);
+  const sources = await client.execute("SELECT scope_id, id FROM source");
+  client.close();
+  expect(sources.rows).toEqual([{ scope_id: input.scopeId, id: "stripe_api" }]);
+};
+
+const assertV2IntegrationRows = async (input: {
+  readonly path: string;
+  readonly tenantId: string;
+}) => {
+  expect(existsSync(input.path)).toBe(true);
+  const client = await openLocalLibsql(input.path);
+  const integrations = await client.execute("SELECT tenant, slug FROM integration");
+  client.close();
+  expect(integrations.rows).toEqual([{ tenant: input.tenantId, slug: "stripe_api" }]);
+};
+
+const sqliteWalSize = (path: string): number =>
+  existsSync(`${path}-wal`) ? statSync(`${path}-wal`).size : 0;
+
+const assertSqliteWalEmptyOrAbsent = (path: string): void => {
+  expect(sqliteWalSize(path)).toBe(0);
+};
+
+const writeLiveWalMarker = async (path: string, marker: string): Promise<void> => {
+  const client = await openLocalLibsql(path);
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test DB adapter boundary: close the SQLite client even when marker setup fails
+  try {
+    await client.execute("PRAGMA journal_mode=WAL");
+    await client.execute("PRAGMA wal_autocheckpoint=0");
+    await client.execute("CREATE TABLE IF NOT EXISTS wal_marker (id text PRIMARY KEY, value text)");
+    await client.execute({
+      sql: "INSERT INTO wal_marker (id, value) VALUES (?, ?)",
+      args: [marker, "x".repeat(4096)],
+    });
+  } finally {
+    client.close();
+  }
+  expect(sqliteWalSize(path)).toBeGreaterThan(0);
+};
+
+const assertWalMarkerRows = async (input: { readonly path: string; readonly marker: string }) => {
+  expect(existsSync(input.path)).toBe(true);
+  const client = await openLocalLibsql(input.path);
+  const markers = await client.execute("SELECT id FROM wal_marker");
+  client.close();
+  expect(markers.rows).toEqual([{ id: input.marker }]);
+};
+
+type MigrationJournalForTestValue = ReturnType<typeof readMigrationJournalForTest>;
+
+interface KilledMigrationAssertionInput {
+  readonly journal: MigrationJournalForTestValue;
+  readonly scopeId: string;
+  readonly walMarker: string;
+}
+
+const killedMigrationStateAssertions = {
+  building: async ({ journal, scopeId, walMarker }: KilledMigrationAssertionInput) => {
+    expect(journal.phase).toBe("building");
+    expect(existsSync(journal.normalizedSource)).toBe(false);
+    expect(existsSync(journal.staging)).toBe(false);
+    await assertV1SourceRows({ path: journal.source, scopeId });
+    await assertWalMarkerRows({ path: journal.source, marker: walMarker });
+  },
+  "staging-built": async ({ journal, scopeId, walMarker }: KilledMigrationAssertionInput) => {
+    expect(journal.phase).toBe("building");
+    await assertV1SourceRows({ path: journal.source, scopeId });
+    await assertWalMarkerRows({ path: journal.source, marker: walMarker });
+    await assertV2IntegrationRows({ path: journal.staging, tenantId: scopeId });
+  },
+  built: async ({ journal, scopeId, walMarker }: KilledMigrationAssertionInput) => {
+    expect(journal.phase).toBe("built");
+    await assertV1SourceRows({ path: journal.source, scopeId });
+    await assertWalMarkerRows({ path: journal.source, marker: walMarker });
+    await assertV2IntegrationRows({ path: journal.staging, tenantId: scopeId });
+  },
+  "canonical-moved": async ({ journal, scopeId, walMarker }: KilledMigrationAssertionInput) => {
+    expect(journal.phase).toBe("canonical-moved");
+    expect(existsSync(journal.source)).toBe(false);
+    assertSqliteWalEmptyOrAbsent(journal.backup);
+    await assertV1SourceRows({ path: journal.backup, scopeId });
+    await assertWalMarkerRows({ path: journal.backup, marker: walMarker });
+    await assertV2IntegrationRows({ path: journal.staging, tenantId: scopeId });
+  },
+  "staging-consumed": async ({ journal, scopeId, walMarker }: KilledMigrationAssertionInput) => {
+    expect(journal.phase).toBe("canonical-moved");
+    expect(existsSync(journal.staging)).toBe(false);
+    assertSqliteWalEmptyOrAbsent(journal.backup);
+    await assertV1SourceRows({ path: journal.backup, scopeId });
+    await assertWalMarkerRows({ path: journal.backup, marker: walMarker });
+    await assertV2IntegrationRows({ path: journal.source, tenantId: scopeId });
+  },
+} satisfies Record<KillRestartPausePhase, (input: KilledMigrationAssertionInput) => Promise<void>>;
+
+const assertKilledMigrationState = async (input: {
+  readonly dbPath: string;
+  readonly scopeId: string;
+  readonly pauseAt: KillRestartPausePhase;
+  readonly walMarker: string;
+}) => {
+  const journal = readMigrationJournalForTest(input.dbPath);
+  const authBackup = journal.authBackup ?? "";
+  expect(journal.source).toBe(input.dbPath);
+  expect(journal.authExisted).toBe(true);
+  expect(authBackup).not.toBe("");
+  expect(existsSync(authBackup)).toBe(true);
+  expect(existsSync(`${input.dbPath}.v1-v2.lock`)).toBe(true);
+  await killedMigrationStateAssertions[input.pauseAt]({
+    journal,
+    scopeId: input.scopeId,
+    walMarker: input.walMarker,
+  });
+};
+
+const sqliteBackupPathsForTest = (dbPath: string): readonly string[] => {
+  const prefix = `${basename(dbPath)}.v1-v2-`;
+  return readdirSync(dirname(dbPath))
+    .filter(
+      (entry) =>
+        entry.startsWith(prefix) &&
+        !entry.endsWith(".json") &&
+        !entry.endsWith(".lock") &&
+        !entry.endsWith("-wal") &&
+        !entry.endsWith("-shm"),
+    )
+    .map((entry) => join(dirname(dbPath), entry));
+};
+
+const assertMigratedStripeDbAndSecret = async (input: {
+  readonly dbPath: string;
+  readonly scopeId: string;
+  readonly secret: string;
+  readonly walMarker: string;
+}) => {
+  const migrated = await openLocalLibsql(input.dbPath);
+  const integrations = await migrated.execute("SELECT tenant, slug FROM integration");
+  migrated.close();
+  expect(integrations.rows).toEqual([{ tenant: input.scopeId, slug: "stripe_api" }]);
+
+  const backupPaths = sqliteBackupPathsForTest(input.dbPath);
+  expect(backupPaths.length).toBe(1);
+  assertSqliteWalEmptyOrAbsent(backupPaths[0]!);
+  const backup = await openLocalLibsql(backupPaths[0]!);
+  const legacySources = await backup.execute("SELECT scope_id, id FROM source");
+  const walMarkers = await backup.execute("SELECT id FROM wal_marker");
+  backup.close();
+  expect(legacySources.rows).toEqual([{ scope_id: input.scopeId, id: "stripe_api" }]);
+  expect(walMarkers.rows).toEqual([{ id: input.walMarker }]);
+
+  const auth = decodeAuthFile(
+    readFileSync(join(process.env.XDG_DATA_HOME!, "executor", "auth.json"), "utf-8"),
+  );
+  expect(auth[migratedItemId(input.scopeId, "stripe-key")]).toBe(input.secret);
 };
 
 describe("local v1 -> v2 migration", () => {
@@ -940,6 +1246,93 @@ describe("local v1 -> v2 migration", () => {
     expect(auth[itemId]).toBe("sk_test_123");
   });
 
+  it("restores auth.json from the journal when recovering an incomplete build", async () => {
+    const scopeId = "executor-workspace-abcd1234";
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+    const authPath = join(authDir, "auth.json");
+    const authBackup = `${authPath}.v1-v2-recovery`;
+    const journalPath = `${dbPath}.v1-v2-migration.json`;
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(authDir, { recursive: true });
+
+    await seedV1Db(dbPath, scopeId);
+    writeFileSync(
+      authPath,
+      JSON.stringify({ [scopeId]: { "stripe-key": "sk_test_recovered" } }, null, 2),
+    );
+    copyFileSync(authPath, authBackup);
+    writeFileSync(authPath, "{}\n");
+
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          source: dbPath,
+          normalizedSource: `${dbPath}.source-auth-recovery`,
+          staging: `${dbPath}.building-auth-recovery`,
+          backup: `${dbPath}.v1-v2-auth-recovery`,
+          authPath,
+          authBackup,
+          authExisted: true,
+          nonce: "auth-recovery",
+          phase: "building",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(true);
+    expect(existsSync(journalPath)).toBe(false);
+    expect(existsSync(authBackup)).toBe(false);
+
+    const auth = decodeAuthFile(readFileSync(authPath, "utf-8"));
+    expect(auth[migratedItemId(scopeId, "stripe-key")]).toBe("sk_test_recovered");
+  });
+
+  it("recovers after SIGKILL at every migration journal boundary", async () => {
+    // Each iteration rewrites the process-global XDG auth.json; keep this sweep
+    // sequential so phase secrets cannot bleed across concurrent migrations.
+    for (const phase of killRestartPausePhases) {
+      const scopeId = `executor-${phase}`;
+      const secret = `sk_test_${phase}`;
+      const walMarker = `wal-${phase}`;
+      const dbPath = join(workDir, "kill-restart", `${phase}.db`);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      await seedV1Db(dbPath, scopeId);
+      await writeLiveWalMarker(dbPath, walMarker);
+
+      const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+      mkdirSync(authDir, { recursive: true });
+      writeFileSync(
+        join(authDir, "auth.json"),
+        JSON.stringify({ [scopeId]: { "stripe-key": secret } }, null, 2),
+      );
+
+      await killMigrationAtPause({ dbPath, tenantId: scopeId, pauseAt: phase });
+      await assertKilledMigrationState({ dbPath, scopeId, pauseAt: phase, walMarker });
+      await migrateLocalV1ToV2IfNeeded({
+        sqlitePath: dbPath,
+        tables: collectTables(),
+        namespace: "executor_local",
+        tenantId: scopeId,
+      });
+      await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
+      expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
+      expect(existsSync(`${dbPath}.v1-v2.lock`)).toBe(false);
+    }
+  });
+
   it("completes a built journal recovery before opening the canonical DB", async () => {
     const scopeId = "executor-workspace-abcd1234";
     const dataDir = join(workDir, "data");
@@ -969,6 +1362,9 @@ describe("local v1 -> v2 migration", () => {
           normalizedSource: `${dbPath}.source-recovery`,
           staging: stagingPath,
           backup: backupPath,
+          authPath: join(workDir, "unused-auth.json"),
+          authBackup: null,
+          authExisted: false,
           nonce: "recovery",
           phase: "built",
         },
@@ -986,6 +1382,72 @@ describe("local v1 -> v2 migration", () => {
 
     expect(result.migrated).toBe(false);
     expect(existsSync(journalPath)).toBe(false);
+    expect(existsSync(backupPath)).toBe(true);
+
+    const migrated = await openLocalLibsql(dbPath);
+    const integrations = await migrated.execute("SELECT tenant, slug FROM integration");
+    migrated.close();
+    expect(integrations.rows).toEqual([{ tenant: scopeId, slug: "stripe_api" }]);
+
+    const backup = await openLocalLibsql(backupPath);
+    const legacySources = await backup.execute("SELECT scope_id, id FROM source");
+    backup.close();
+    expect(legacySources.rows).toEqual([{ scope_id: scopeId, id: "stripe_api" }]);
+  });
+
+  it("does not delete installed v2 when recovering after staging was consumed", async () => {
+    const scopeId = "executor-workspace-abcd1234";
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    const stagingSourcePath = join(workDir, "staging-source-consumed.db");
+    const stagingPath = `${dbPath}.building-consumed`;
+    const backupPath = `${dbPath}.v1-v2-consumed`;
+    const journalPath = `${dbPath}.v1-v2-migration.json`;
+    mkdirSync(dataDir, { recursive: true });
+
+    await seedV1Db(dbPath, scopeId);
+    copySqliteFileSetForTest(dbPath, backupPath);
+
+    await seedV1Db(stagingSourcePath, scopeId);
+    await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: stagingSourcePath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+    copySqliteFileSetForTest(stagingSourcePath, dbPath);
+    rmSync(stagingPath, { force: true });
+
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          source: dbPath,
+          normalizedSource: `${dbPath}.source-consumed`,
+          staging: stagingPath,
+          backup: backupPath,
+          authPath: join(workDir, "unused-auth-consumed.json"),
+          authBackup: null,
+          authExisted: false,
+          nonce: "consumed",
+          phase: "canonical-moved",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(false);
+    expect(existsSync(journalPath)).toBe(false);
+    expect(existsSync(dbPath)).toBe(true);
     expect(existsSync(backupPath)).toBe(true);
 
     const migrated = await openLocalLibsql(dbPath);
