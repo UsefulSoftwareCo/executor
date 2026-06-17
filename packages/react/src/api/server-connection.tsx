@@ -96,6 +96,11 @@ export const getActiveOrgSlug = (): string | null => {
   return first && isValidOrgSlug(first) ? first : null;
 };
 
+export const getExecutorOrganizationHeaders = (): Readonly<Record<string, string>> => {
+  const orgSlug = getActiveOrgSlug();
+  return orgSlug ? { [EXECUTOR_ORG_HEADER]: orgSlug } : {};
+};
+
 export const getExecutorServerConnection = (): ExecutorServerConnection => activeConnection;
 
 export const setExecutorServerConnection = (input: ExecutorServerConnectionInput): void => {

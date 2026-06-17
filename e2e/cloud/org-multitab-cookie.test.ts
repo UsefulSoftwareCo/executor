@@ -109,3 +109,51 @@ scenario(
     });
   }),
 );
+
+scenario(
+  "Org scope · plugin API requests carry the URL organization selector",
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const browser = yield* Browser;
+    const identity = yield* target.newIdentity();
+
+    const spec = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Header Probe", version: "1.0.0" },
+      servers: [{ url: "https://api.example.com" }],
+      paths: {
+        "/ping": {
+          get: {
+            operationId: "ping",
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    });
+
+    yield* browser.session(identity, async ({ page, step }) => {
+      await step("Open the OpenAPI add form", async () => {
+        await page.goto("/integrations/add/openapi", { waitUntil: "networkidle" });
+        await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
+      });
+
+      const orgSlug = new URL(page.url()).pathname.split("/")[1];
+      expect(orgSlug, "the add form landed on an org-scoped URL").toBeTruthy();
+
+      await step("Paste an inline spec", async () => {
+        const previewRequest = page.waitForRequest(
+          (request) => request.url().includes("/api/openapi/preview"),
+          { timeout: 15_000 },
+        );
+
+        await page.getByPlaceholder("https://api.example.com/openapi.json").fill(spec);
+
+        expect(
+          (await previewRequest).headers()["x-executor-organization"],
+          "plugin-owned preview requests use the URL's org selector",
+        ).toBe(orgSlug);
+      });
+    });
+  }),
+);

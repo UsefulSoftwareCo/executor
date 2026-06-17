@@ -238,11 +238,18 @@ export interface CreatePluginAtomClientOptions {
   /** Optional dynamic Authorization header for hosts whose active
    *  Executor Server Connection requires Basic or Bearer auth. */
   readonly authorizationHeader?: string | null | (() => string | null);
+  /** Optional dynamic request headers supplied by the host shell. */
+  readonly headers?:
+    | Readonly<Record<string, string | null | undefined>>
+    | (() => Readonly<Record<string, string | null | undefined>>);
 }
 
 export interface PluginAtomClientRequestTransformOptions {
   readonly baseUrl?: () => string;
   readonly authorizationHeader?: string | null | (() => string | null);
+  readonly headers?:
+    | Readonly<Record<string, string | null | undefined>>
+    | (() => Readonly<Record<string, string | null | undefined>>);
 }
 
 /** @internal */
@@ -257,6 +264,14 @@ export const applyPluginAtomClientRequestTransform = (
       : options.authorizationHeader;
   if (authorization) {
     next = HttpClientRequest.setHeader(next, "authorization", authorization);
+  }
+  const headers = typeof options.headers === "function" ? options.headers() : options.headers;
+  if (headers) {
+    for (const [name, value] of Object.entries(headers)) {
+      if (value !== undefined && value !== null) {
+        next = HttpClientRequest.setHeader(next, name, value);
+      }
+    }
   }
   return next;
 };
@@ -278,7 +293,7 @@ export const createPluginAtomClient = <
   group: G,
   options: CreatePluginAtomClientOptions = {},
 ) => {
-  const { baseUrl = "/api", authorizationHeader } = options;
+  const { baseUrl = "/api", authorizationHeader, headers } = options;
   const pluginId = group.identifier;
   const bundle = HttpApi.make(`plugin-${pluginId}`).add(group);
   const getBaseUrl = typeof baseUrl === "function" ? baseUrl : null;
@@ -286,8 +301,9 @@ export const createPluginAtomClient = <
   const getAuthorizationHeader =
     typeof authorizationHeader === "function" ? authorizationHeader : null;
   const hasAuthorization = authorizationHeader !== undefined && authorizationHeader !== null;
+  const hasHeaders = headers !== undefined;
   const transformClient =
-    getBaseUrl || hasAuthorization
+    getBaseUrl || hasAuthorization || hasHeaders
       ? HttpClient.mapRequest((request) =>
           applyPluginAtomClientRequestTransform(request, {
             ...(getBaseUrl ? { baseUrl: getBaseUrl } : {}),
@@ -296,6 +312,7 @@ export const createPluginAtomClient = <
               : authorizationHeader !== undefined
                 ? { authorizationHeader }
                 : {}),
+            ...(headers !== undefined ? { headers } : {}),
           }),
         )
       : undefined;

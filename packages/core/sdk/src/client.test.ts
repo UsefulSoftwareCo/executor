@@ -77,4 +77,17 @@ describe("createPluginAtomClient", () => {
     expect(transformed.url).toBe("https://executor.example/api/graphql/sources");
     expect(transformed.headers.authorization).toBe("Bearer key_123");
   });
+
+  it("can apply host-supplied dynamic request headers to plugin requests", () => {
+    const request = HttpClientRequest.get("/openapi/integrations/acme");
+    const transformed = applyPluginAtomClientRequestTransform(request, {
+      headers: () => ({
+        "x-executor-organization": "newvale",
+        "x-empty": null,
+      }),
+    });
+
+    expect(transformed.headers["x-executor-organization"]).toBe("newvale");
+    expect(transformed.headers["x-empty"]).toBeUndefined();
+  });
 });
