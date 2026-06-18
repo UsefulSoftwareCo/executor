@@ -134,6 +134,7 @@
         "electron-window-state": "^5.0.3",
       },
       "devDependencies": {
+        "@effect/vitest": "catalog:",
         "@executor-js/app": "workspace:*",
         "@executor-js/local": "workspace:*",
         "@executor-js/plugin-desktop-settings": "workspace:*",
@@ -156,6 +157,7 @@
         "quickjs-emscripten": "catalog:",
         "typescript": "catalog:",
         "vite": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "apps/host-cloudflare": {

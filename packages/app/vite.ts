@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
 
-import { routes } from "./tsr.routes";
+import { routes } from "./tsr.routes.ts";
 
 const APP_ROOT = fileURLToPath(new URL("./", import.meta.url));
 

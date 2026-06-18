@@ -6,6 +6,7 @@ import {
   generateSystemdUnit,
   generateWindowsDaemonWrapper,
   generateWindowsRegisterScript,
+  generateWindowsStopExecutorListenersScript,
   getServiceBackend,
 } from "./service";
 
@@ -135,6 +136,16 @@ describe("service unit generation", () => {
     expect(script).toContain("-RestartCount 3");
     expect(script).toContain("Register-ScheduledTask -TaskName 'ExecutorDaemon'");
     expect(script).toContain("Start-ScheduledTask -TaskName 'ExecutorDaemon'");
+  });
+
+  it("stops orphaned executor.exe listeners without shadowing PowerShell's $PID", () => {
+    const script = generateWindowsStopExecutorListenersScript(4789);
+
+    expect(script).toContain("Get-NetTCPConnection -LocalPort 4789 -State Listen");
+    expect(script).toContain("$listenerPid");
+    expect(script).not.toContain("foreach ($pid");
+    expect(script).toContain("[string]$process.Name -ieq 'executor.exe'");
+    expect(script).toContain('Write-Output ("STOPPED=" + $listenerPid)');
   });
 });
 

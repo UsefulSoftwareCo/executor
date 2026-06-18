@@ -16,6 +16,7 @@
     "package:mac": "electron-builder --mac --config electron-builder.config.ts",
     "package:win": "electron-builder --win --config electron-builder.config.ts",
     "package:linux": "electron-builder --linux --config electron-builder.config.ts",
+    "test": "bun --bun vitest run",
     "test:smoke": "bun ./scripts/smoke-sidecar.ts",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit"
@@ -29,6 +30,7 @@
     "electron-window-state": "^5.0.3"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@executor-js/app": "workspace:*",
     "@executor-js/local": "workspace:*",
     "@executor-js/plugin-desktop-settings": "workspace:*",
@@ -50,6 +52,7 @@
     "electron-vite": "^5",
     "quickjs-emscripten": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

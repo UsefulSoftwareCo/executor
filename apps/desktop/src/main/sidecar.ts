@@ -24,6 +24,7 @@ import {
 import { loadOrMintLocalAuthToken } from "./local-auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
+import { resolveSupervisedDaemonAttach } from "./supervised-daemon";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
 
 // Sidecar output is echoed to the terminal (visible when Electron is run
@@ -465,10 +466,9 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
 
 /**
  * Attach to an already-running OS-supervised daemon instead of spawning our own
- * sidecar. Reads `server.json`, confirms the recorded process is alive and the
- * endpoint answers, and returns a child-less `SidecarConnection` flagged
- * `supervisedDaemon: true`. Returns null when no usable supervised daemon is
- * present.
+ * sidecar. Reads `server.json`, confirms the endpoint answers, and returns a
+ * child-less `SidecarConnection` flagged `supervisedDaemon: true`. Returns null
+ * when no usable supervised daemon is present.
  *
  * Only a `cli-daemon` manifest is treated as supervised — a `desktop-sidecar`
  * manifest belongs to a managed sidecar (ours or another desktop instance) and
@@ -477,36 +477,40 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
 export async function attachToSupervisedDaemon(): Promise<SidecarConnection | null> {
   const dataDir = join(homedir(), ".executor");
   const manifest = readManifest(dataDir);
+  const decision = await resolveSupervisedDaemonAttach(manifest, {
+    isReachable: isDaemonReachable,
+    isPidAlive,
+  });
+  if (decision._tag === "Attach") {
+    const { manifest, authToken } = decision;
+    const origin = manifest.connection.origin;
+    const url = new URL(origin);
+    sidecarLog.info(`attaching to supervised daemon at ${origin} (pid ${manifest.pid})`);
+    return {
+      baseUrl: origin,
+      hostname: url.hostname,
+      port: Number.parseInt(url.port, 10) || (url.protocol === "https:" ? 443 : 80),
+      username: SERVER_SETTINGS_USERNAME,
+      authToken,
+      child: null,
+      supervisedDaemon: true,
+      ownerVersion: manifest.owner.version,
+      ownerClient: manifest.owner.client,
+      ownerExecutablePath: manifest.owner.executablePath,
+    };
+  }
+
+  if (decision._tag === "RemoveStaleManifest") {
+    removeManifestIfOwnedBy(dataDir, decision.pid);
+    return null;
+  }
+
   if (!manifest || manifest.kind !== "cli-daemon") return null;
-  if (!isPidAlive(manifest.pid)) {
-    removeManifestIfOwnedBy(dataDir, manifest.pid);
-    return null;
-  }
 
-  const origin = manifest.connection.origin;
-  const auth = manifest.connection.auth;
-  const authToken = auth && auth.kind === "bearer" ? auth.token : "";
-  if (!(await isDaemonReachable(origin))) {
-    sidecarLog.warn(
-      `supervised daemon at ${origin} (pid ${manifest.pid}) did not answer the health probe; keeping its manifest because the process is still alive`,
-    );
-    return null;
-  }
-
-  const url = new URL(origin);
-  sidecarLog.info(`attaching to supervised daemon at ${origin} (pid ${manifest.pid})`);
-  return {
-    baseUrl: origin,
-    hostname: url.hostname,
-    port: Number.parseInt(url.port, 10) || (url.protocol === "https:" ? 443 : 80),
-    username: SERVER_SETTINGS_USERNAME,
-    authToken,
-    child: null,
-    supervisedDaemon: true,
-    ownerVersion: manifest.owner.version,
-    ownerClient: manifest.owner.client,
-    ownerExecutablePath: manifest.owner.executablePath,
-  };
+  sidecarLog.warn(
+    `supervised daemon at ${manifest.connection.origin} (pid ${manifest.pid}) did not answer the health probe; keeping its manifest because the process is still alive`,
+  );
+  return null;
 }
 
 export async function stopSidecar(child: ChildProcess): Promise<void> {
