@@ -37,6 +37,8 @@ const sidecarLog = log.scope("sidecar");
 const STDERR_TAIL_LIMIT = 8 * 1024;
 const READY_SENTINEL = "EXECUTOR_READY";
 const ATTACHED_SENTINEL = "EXECUTOR_ATTACHED";
+const ATTACH_OWNER_TIMEOUT_MS = 15_000;
+const ATTACH_OWNER_POLL_MS = 150;
 
 // Children deliberately stopped via stopSidecar (quit, restart, update) —
 // their exits are expected and must not be reported as crashes.
@@ -277,6 +279,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     let stdoutControlBuffer = "";
     let resolved = false;
     let rejected = false;
+    let attachedOwnerResolution: Promise<boolean> | null = null;
 
     const logStdoutLine = makeLineSplitter((line) => sidecarLog.info(line));
     const logStderrLine = makeLineSplitter((line) => sidecarLog.error(line));
@@ -290,12 +293,21 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
     const resolveAttachedOwner = async (): Promise<boolean> => {
       if (resolved || rejected) return true;
-      const attached = await attachToReachableLocalServer(dataDir);
-      if (!attached) return false;
-      resolved = true;
-      expectedExits.add(child);
-      resolveStart(attached);
-      return true;
+      if (!attachedOwnerResolution) {
+        attachedOwnerResolution = waitForReachableLocalServer(dataDir)
+          .then((attached) => {
+            if (resolved || rejected) return true;
+            if (!attached) return false;
+            resolved = true;
+            expectedExits.add(child);
+            resolveStart(attached);
+            return true;
+          })
+          .finally(() => {
+            attachedOwnerResolution = null;
+          });
+      }
+      return attachedOwnerResolution;
     };
 
     const onStdout = (chunk: Buffer) => {
@@ -412,6 +424,21 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
     if (attempt < 2) await delay(150);
   }
   return false;
+};
+
+const waitForReachableLocalServer = async (
+  dataDir: string,
+  options: { readonly requireCliDaemon?: boolean } = {},
+): Promise<SidecarConnection | null> => {
+  const deadline = Date.now() + ATTACH_OWNER_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    const attached = await attachToReachableLocalServer(dataDir, options);
+    if (attached) return attached;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    await delay(Math.min(ATTACH_OWNER_POLL_MS, remaining));
+  }
+  return null;
 };
 
 const attachToReachableLocalServer = async (

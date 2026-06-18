@@ -65,12 +65,20 @@ const configureOwnershipLockClient = async (client: Client): Promise<void> => {
 };
 
 export const findDataDirOwnershipHeld = (cause: unknown): DataDirOwnershipHeld | null => {
-  if (cause instanceof DataDirOwnershipHeld) return cause;
-  if (!isRecord(cause)) return null;
+  const visited = new WeakSet<object>();
+  let current = cause;
 
-  const nestedCause = cause.cause;
-  if (nestedCause === undefined || nestedCause === cause) return null;
-  return findDataDirOwnershipHeld(nestedCause);
+  while (true) {
+    if (current instanceof DataDirOwnershipHeld) return current;
+    if (!isRecord(current)) return null;
+    if (visited.has(current)) return null;
+
+    visited.add(current);
+
+    const nestedCause = current.cause;
+    if (nestedCause === undefined) return null;
+    current = nestedCause;
+  }
 };
 
 export const acquireDataDirOwnership = async (dataDir: string): Promise<DataDirOwnership> => {
