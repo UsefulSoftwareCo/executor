@@ -32,7 +32,7 @@ describe("resolveSupervisedDaemonAttach", () => {
       },
     });
 
-    expect(decision._tag).toBe("Attach");
+    expect(decision.kind).toBe("attach");
     expect(pidProbeCount).toBe(0);
   });
 
@@ -42,6 +42,6 @@ describe("resolveSupervisedDaemonAttach", () => {
       isPidAlive: () => false,
     });
 
-    expect(decision).toEqual({ _tag: "RemoveStaleManifest", pid: 1234 });
+    expect(decision).toEqual({ kind: "remove-stale-manifest", pid: 1234 });
   });
 });

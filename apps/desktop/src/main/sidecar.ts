@@ -481,7 +481,7 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
     isReachable: isDaemonReachable,
     isPidAlive,
   });
-  if (decision._tag === "Attach") {
+  if (decision.kind === "attach") {
     const { manifest, authToken } = decision;
     const origin = manifest.connection.origin;
     const url = new URL(origin);
@@ -500,7 +500,7 @@ export async function attachToSupervisedDaemon(): Promise<SidecarConnection | nu
     };
   }
 
-  if (decision._tag === "RemoveStaleManifest") {
+  if (decision.kind === "remove-stale-manifest") {
     removeManifestIfOwnedBy(dataDir, decision.pid);
     return null;
   }
