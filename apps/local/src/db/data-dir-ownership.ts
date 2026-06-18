@@ -3,6 +3,7 @@ import { createClient, type Client } from "@libsql/client";
 import { Data } from "effect";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export class DataDirOwnershipHeld extends Data.TaggedError("DataDirOwnershipHeld")<{
   readonly message: string;
@@ -17,7 +18,7 @@ export interface DataDirOwnership {
 
 const LOCK_DATABASE_FILENAME = "data.db.owner-lock";
 
-const toLibsqlFileUrl = (path: string): string => `file:${resolve(path)}`;
+const toLibsqlFileUrl = (path: string): string => pathToFileURL(resolve(path)).href;
 
 const ownerLockPath = (dataDir: string): string => {
   mkdirSync(dataDir, { recursive: true });
@@ -63,9 +64,7 @@ const configureOwnershipLockClient = async (client: Client): Promise<void> => {
   await client.execute("PRAGMA journal_mode = DELETE");
 };
 
-export const acquireDataDirOwnership = async (
-  dataDir: string,
-): Promise<DataDirOwnership> => {
+export const acquireDataDirOwnership = async (dataDir: string): Promise<DataDirOwnership> => {
   const lockPath = ownerLockPath(dataDir);
   const client = openOwnershipLockClient(lockPath);
 
