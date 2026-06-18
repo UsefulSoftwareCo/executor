@@ -124,7 +124,12 @@ import {
   resolveExecutorDataDir,
   writeLocalServerManifest,
 } from "./local-server-manifest";
-import { DEFAULT_SERVICE_PORT, getServiceBackend, SERVICE_LABEL } from "./service";
+import {
+  DEFAULT_SERVICE_PORT,
+  getServiceBackend,
+  SERVICE_LABEL,
+  stopWindowsExecutorListenersOnPort,
+} from "./service";
 import {
   defaultCliServerConnectionProfile,
   findCliServerConnectionProfile,
@@ -165,6 +170,7 @@ const DEFAULT_BASE_URL = `http://localhost:${DEFAULT_PORT}`;
 const DAEMON_BOOT_TIMEOUT_MS = 15_000;
 const DAEMON_BOOT_POLL_MS = 150;
 const DAEMON_STOP_TIMEOUT_MS = 10_000;
+const SERVICE_BOOT_TIMEOUT_MS = 45_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -197,13 +203,13 @@ const readActiveLocalServerManifest = (): Effect.Effect<
     const manifest = yield* readLocalServerManifest();
     if (!manifest) return null;
 
+    if (yield* isServerReachable(manifest.connection.origin)) {
+      return manifest;
+    }
+
     if (!isPidAlive(manifest.pid)) {
       yield* removeLocalServerManifestIfOwnedBy({ pid: manifest.pid }).pipe(Effect.ignore);
       return null;
-    }
-
-    if (yield* isServerReachable(manifest.connection.origin)) {
-      return manifest;
     }
 
     return yield* Effect.fail(
@@ -2201,6 +2207,68 @@ const mcpCommand = Command.make(
 
 const supervisedServiceOrigin = (port: number): string => `http://127.0.0.1:${port}`;
 
+const LOCAL_SERVICE_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+const originPort = (url: URL): string => url.port || (url.protocol === "https:" ? "443" : "80");
+
+const sameServerOrigin = (left: string, right: string): boolean => {
+  const leftUrl = new URL(normalizeExecutorServerConnection({ origin: left }).origin);
+  const rightUrl = new URL(normalizeExecutorServerConnection({ origin: right }).origin);
+  if (leftUrl.toString() === rightUrl.toString()) return true;
+  return (
+    leftUrl.protocol === rightUrl.protocol &&
+    originPort(leftUrl) === originPort(rightUrl) &&
+    LOCAL_SERVICE_HOSTS.has(leftUrl.hostname.toLowerCase()) &&
+    LOCAL_SERVICE_HOSTS.has(rightUrl.hostname.toLowerCase())
+  );
+};
+
+const hasReachableCliDaemonManifest = (input: {
+  readonly origin: string;
+  readonly version: string;
+}): Effect.Effect<boolean, never, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const manifest = yield* readActiveLocalServerManifest().pipe(
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+    if (!manifest || manifest.kind !== "cli-daemon") return false;
+    if (!sameServerOrigin(manifest.connection.origin, input.origin)) return false;
+    if (manifest.owner.version !== input.version) return false;
+    return yield* isServerReachable(manifest.connection.origin);
+  });
+
+const clearUnmanifestedWindowsExecutorListener = (input: {
+  readonly port: number;
+  readonly origin: string;
+}): Effect.Effect<void, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const active = yield* readActiveLocalServerManifest().pipe(
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+    if (active && sameServerOrigin(active.connection.origin, input.origin)) return;
+    if (!(yield* isServerReachable(input.origin))) return;
+
+    const stoppedPids = yield* stopWindowsExecutorListenersOnPort(input.port);
+    const stopped = yield* waitForUnreachable({
+      check: isServerReachable(input.origin),
+      timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+      intervalMs: DAEMON_BOOT_POLL_MS,
+    });
+    if (stopped) return;
+
+    return yield* Effect.fail(
+      new Error(
+        [
+          `Executor is already reachable at ${input.origin}, but no live server manifest exists for it.`,
+          stoppedPids.length > 0
+            ? `Tried to stop orphaned Executor pid(s): ${stoppedPids.join(", ")}.`
+            : `No orphaned executor.exe listener could be stopped on port ${input.port}.`,
+          "Stop the process using that port and re-run the install.",
+        ].join("\n"),
+      ),
+    );
+  });
+
 const portFromOrigin = (origin: string): number | null => {
   try {
     const url = new URL(origin);
@@ -2274,7 +2342,10 @@ const installService = (port: number, commandName: string) =>
       return;
     }
 
-    if (plan === "takeover-then-install") {
+    if (
+      plan === "takeover-then-install" ||
+      (backend.platform === "win32" && plan === "reinstall")
+    ) {
       const replaced = yield* takeOverActiveLocalServer();
       if (replaced) {
         console.log(
@@ -2294,22 +2365,29 @@ const installService = (port: number, commandName: string) =>
     console.log("");
     console.log("Writing the service definition and starting Executor...");
 
+    if (backend.platform === "win32") {
+      yield* clearUnmanifestedWindowsExecutorListener({ port, origin });
+    }
+
     // The unit carries no secret: the supervised daemon mints/loads its bearer
     // from auth.json (under EXECUTOR_DATA_DIR) on first boot, and clients read
     // the same file — so reachability is the credential-free /api/health probe.
     yield* backend.install({ executablePath: process.execPath, port, version: CLI_VERSION });
 
-    console.log(`Waiting for Executor to become reachable at ${origin}...`);
+    console.log(`Waiting for Executor to publish its service manifest at ${origin}...`);
     const reachable = yield* waitForReachable({
-      check: isServerReachable(origin),
-      timeoutMs: DAEMON_BOOT_TIMEOUT_MS,
+      check: hasReachableCliDaemonManifest({
+        origin,
+        version: CLI_VERSION,
+      }),
+      timeoutMs: SERVICE_BOOT_TIMEOUT_MS,
       intervalMs: DAEMON_BOOT_POLL_MS,
     });
     if (!reachable) {
       return yield* Effect.fail(
         new Error(
           [
-            `Installed ${SERVICE_LABEL} but it did not become reachable at ${origin} within ${DAEMON_BOOT_TIMEOUT_MS / 1000}s.`,
+            `Installed ${SERVICE_LABEL} but it did not publish a reachable server manifest for ${origin} within ${SERVICE_BOOT_TIMEOUT_MS / 1000}s.`,
             `Check ~/.executor/logs/daemon.error.log and \`${cliPrefix} service status\`.`,
           ].join("\n"),
         ),
@@ -2334,19 +2412,25 @@ const serviceInstallCommand = Command.make(
 const serviceUninstallCommand = Command.make("uninstall", {}, () =>
   Effect.gen(function* () {
     const backend = getServiceBackend();
-    const wasRunning = backend.automated
-      ? yield* backend.status().pipe(
-          Effect.map((status) => status.running),
-          Effect.catchCause(() => Effect.succeed(false)),
-        )
-      : false;
+    const activeBefore = yield* readActiveLocalServerManifest().pipe(
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+    const servicePort = activeBefore
+      ? (portFromOrigin(activeBefore.connection.origin) ?? DEFAULT_SERVICE_PORT)
+      : DEFAULT_SERVICE_PORT;
+    const status = backend.automated
+      ? yield* backend.status().pipe(Effect.catchCause(() => Effect.succeed(null)))
+      : null;
     yield* backend.uninstall();
-    if (wasRunning) {
-      const stopped = yield* takeOverActiveLocalServer({ onlyKind: "cli-daemon" });
-      if (stopped) {
-        console.log(
-          `Stopped running Executor daemon at ${stopped.connection.origin} (pid ${stopped.pid}).`,
-        );
+    const stopped = yield* takeOverActiveLocalServer({ onlyKind: "cli-daemon" });
+    if (stopped) {
+      console.log(
+        `Stopped running Executor daemon at ${stopped.connection.origin} (pid ${stopped.pid}).`,
+      );
+    } else if (backend.platform === "win32" && status?.registered) {
+      const stoppedPids = yield* stopWindowsExecutorListenersOnPort(servicePort);
+      if (stoppedPids.length > 0) {
+        console.log(`Stopped orphaned Executor daemon pid(s): ${stoppedPids.join(", ")}.`);
       }
     }
     console.log("Executor background service uninstalled.");

@@ -579,6 +579,28 @@ export const generateWindowsRegisterScript = (options: {
     `Start-ScheduledTask -TaskName ${psSingleQuote(options.taskName)}`,
   ].join("\n");
 
+/**
+ * Stop orphaned Windows `executor.exe` listeners on the service port. Task
+ * Scheduler can report the task as stopped after terminating the `.cmd` action
+ * while leaving the child `executor.exe` process bound to 4789. That process is
+ * healthy enough to satisfy `/api/health`, but `executor web` cannot discover it
+ * once its `server.json` is gone.
+ */
+export const generateWindowsStopExecutorListenersScript = (port: number): string =>
+  [
+    `$connections = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue)`,
+    `$listenerPids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique)`,
+    `foreach ($listenerPid in $listenerPids) {`,
+    `  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid" -ErrorAction SilentlyContinue`,
+    `  if ($null -eq $process) { continue }`,
+    `  $pathName = if ($process.ExecutablePath) { [System.IO.Path]::GetFileName([string]$process.ExecutablePath) } else { '' }`,
+    `  if ([string]$process.Name -ieq 'executor.exe' -or $pathName -ieq 'executor.exe') {`,
+    `    Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue`,
+    `    Write-Output ("STOPPED=" + $listenerPid)`,
+    `  }`,
+    `}`,
+  ].join("\n");
+
 /** Run a PowerShell script via -EncodedCommand (sidesteps all shell quoting). */
 const runPowerShell = (script: string): Effect.Effect<CommandResult, Error> =>
   runCommand("powershell.exe", [
@@ -589,6 +611,25 @@ const runPowerShell = (script: string): Effect.Effect<CommandResult, Error> =>
     "-EncodedCommand",
     Buffer.from(script, "utf16le").toString("base64"),
   ]);
+
+export const stopWindowsExecutorListenersOnPort = (
+  port: number,
+): Effect.Effect<ReadonlyArray<number>, Error> =>
+  Effect.gen(function* () {
+    const result = yield* runPowerShell(generateWindowsStopExecutorListenersScript(port));
+    if (result.code !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim();
+      return yield* Effect.fail(
+        new Error(`Failed to inspect Executor listeners on port ${port}: ${detail}`),
+      );
+    }
+    return result.stdout.split(/\r?\n/).flatMap((line) => {
+      const match = /^STOPPED=(\d+)\s*$/.exec(line.trim());
+      if (!match) return [];
+      const pid = Number.parseInt(match[1], 10);
+      return Number.isInteger(pid) && pid > 0 ? [pid] : [];
+    });
+  });
 
 const makeWindowsBackend = (): ServiceBackend => ({
   platform: "win32",
