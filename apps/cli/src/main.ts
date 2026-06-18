@@ -129,9 +129,7 @@ import {
   withCliServerAuthFallback,
 } from "./server-connection";
 import {
-  acquireLocalServerStartLock,
   readLocalServerManifest,
-  releaseLocalServerStartLock,
   removeLocalServerManifestIfOwnedBy,
   resolveExecutorDataDir,
   writeLocalServerManifest,
@@ -1015,41 +1013,33 @@ const runForegroundSession = (input: {
     );
 
     try {
-      const startupLock = yield* acquireLocalServerStartLock();
-      let server: Awaited<ReturnType<typeof startServer>> | null = null;
-      let baseUrl: string | null = null;
-
-      try {
-        yield* assertNoOtherActiveLocalServer();
-        const startResult = yield* startServerOrAttachOwnedDataDir({
-          port: input.port,
-          hostname: input.hostname,
-          allowedHosts: input.allowedHosts,
-          authToken: input.authToken,
-          embeddedWebUI,
-        });
-        if (startResult.kind === "attached") {
-          console.log(`Executor is already running at ${startResult.manifest.connection.origin}.`);
-          return;
-        }
-        server = startResult.server;
-        baseUrl = `http://${displayHost}:${server.port}`;
-        yield* publishLocalServerManifest({
-          kind: "foreground",
-          connection: normalizeExecutorServerConnection({
-            kind: "http",
-            origin: baseUrl,
-            displayName: "CLI web",
-            auth: { kind: "bearer", token: server.authToken },
-          }),
-        });
-      } finally {
-        yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
+      // No process-level startup lock: the DB ownership lock acquired inside
+      // startServer (openOwnedLocalDatabase) is the real gate. server.json is
+      // only an attach hint, and assertNoOtherActiveLocalServer is a friendly
+      // fast-path that may race without being unsafe.
+      yield* assertNoOtherActiveLocalServer();
+      const startResult = yield* startServerOrAttachOwnedDataDir({
+        port: input.port,
+        hostname: input.hostname,
+        allowedHosts: input.allowedHosts,
+        authToken: input.authToken,
+        embeddedWebUI,
+      });
+      if (startResult.kind === "attached") {
+        console.log(`Executor is already running at ${startResult.manifest.connection.origin}.`);
+        return;
       }
-
-      if (!server || !baseUrl) {
-        return yield* Effect.fail(new Error("Failed to start local Executor server."));
-      }
+      const server = startResult.server;
+      const baseUrl = `http://${displayHost}:${server.port}`;
+      yield* publishLocalServerManifest({
+        kind: "foreground",
+        connection: normalizeExecutorServerConnection({
+          kind: "http",
+          origin: baseUrl,
+          displayName: "CLI web",
+          auth: { kind: "bearer", token: server.authToken },
+        }),
+      });
 
       try {
         console.log(`Executor is ready.`);
@@ -1091,98 +1081,89 @@ const runDaemonSession = (input: {
     const scopeId = currentDaemonScopeId();
 
     try {
-      const startupLock = yield* acquireLocalServerStartLock();
-      let server: Awaited<ReturnType<typeof startServer>> | null = null;
-      let daemonPort: number | null = null;
-      let token: string | null = null;
+      // No process-level startup lock: the DB ownership lock acquired inside
+      // startServer (openOwnedLocalDatabase) is the real gate. server.json and
+      // the daemon pointer are attach/dedup hints, and the checks below are
+      // friendly fast-paths that may race without being unsafe.
 
-      try {
-        // A supervised daemon (launchd/systemd) is the OS-guaranteed singleton
-        // — kickstart -k kills the old instance before starting the new — so any
-        // server.json from a previous boot is stale. Reclaim it rather than
-        // refusing: across a reboot the recorded pid may have been recycled by
-        // an unrelated process, which would otherwise make the "is one already
-        // running?" check treat it as alive-but-unreachable, refuse to start,
-        // and crash-loop under KeepAlive. (Found by a real reboot test with
-        // integration data in the DB.)
-        if (process.env.EXECUTOR_SUPERVISED) {
-          yield* takeOverActiveLocalServer().pipe(Effect.ignore);
-        } else {
-          yield* assertNoOtherActiveLocalServer();
-        }
+      // A supervised daemon (launchd/systemd) is the OS-guaranteed singleton
+      // — kickstart -k kills the old instance before starting the new — so any
+      // server.json from a previous boot is stale. Reclaim it rather than
+      // refusing: across a reboot the recorded pid may have been recycled by
+      // an unrelated process, which would otherwise make the "is one already
+      // running?" check treat it as alive-but-unreachable, refuse to start,
+      // and crash-loop under KeepAlive. (Found by a real reboot test with
+      // integration data in the DB.)
+      if (process.env.EXECUTOR_SUPERVISED) {
+        yield* takeOverActiveLocalServer().pipe(Effect.ignore);
+      } else {
+        yield* assertNoOtherActiveLocalServer();
+      }
 
-        const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
+      const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
 
-        if (existing) {
-          const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
-          if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-            if (process.env.EXECUTOR_SUPERVISED) {
-              yield* terminatePid(existing.pid).pipe(Effect.ignore);
-              const stopped = yield* waitForUnreachable({
-                check: isServerReachable(existingUrl),
-                timeoutMs: DAEMON_STOP_TIMEOUT_MS,
-                intervalMs: DAEMON_BOOT_POLL_MS,
-              });
-              if (!stopped) {
-                return yield* Effect.fail(
-                  new Error(
-                    [
-                      `The existing daemon for scope ${scopeId} at ${existingUrl} (pid ${existing.pid}) did not stop within ${DAEMON_STOP_TIMEOUT_MS / 1000}s.`,
-                      "Stop it manually and re-run.",
-                    ].join("\n"),
-                  ),
-                );
-              }
-            } else {
+      if (existing) {
+        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+        if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
+          if (process.env.EXECUTOR_SUPERVISED) {
+            yield* terminatePid(existing.pid).pipe(Effect.ignore);
+            const stopped = yield* waitForUnreachable({
+              check: isServerReachable(existingUrl),
+              timeoutMs: DAEMON_STOP_TIMEOUT_MS,
+              intervalMs: DAEMON_BOOT_POLL_MS,
+            });
+            if (!stopped) {
               return yield* Effect.fail(
                 new Error(
                   [
-                    `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-                    `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-                    `Stop it first: ${cliPrefix} daemon stop`,
+                    `The existing daemon for scope ${scopeId} at ${existingUrl} (pid ${existing.pid}) did not stop within ${DAEMON_STOP_TIMEOUT_MS / 1000}s.`,
+                    "Stop it manually and re-run.",
                   ].join("\n"),
                 ),
               );
             }
+          } else {
+            return yield* Effect.fail(
+              new Error(
+                [
+                  `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                  `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                  `Stop it first: ${cliPrefix} daemon stop`,
+                ].join("\n"),
+              ),
+            );
           }
-          yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
         }
-
-        const startResult = yield* startServerOrAttachOwnedDataDir({
-          port: input.port,
-          hostname: input.hostname,
-          allowedHosts: input.allowedHosts,
-          authToken: input.authToken,
-          embeddedWebUI,
-        });
-        if (startResult.kind === "attached") {
-          if (shouldEmitDesktopSidecarSentinels()) {
-            console.log(DESKTOP_SIDECAR_ATTACHED_SENTINEL);
-          }
-          console.log(`Daemon already running at ${startResult.manifest.connection.origin}.`);
-          return;
-        }
-        server = startResult.server;
-
-        daemonPort = server.port;
-        token = randomUUID();
-        const daemonUrl = daemonBaseUrl(daemonHost, daemonPort);
-        yield* publishLocalServerManifest({
-          kind: "cli-daemon",
-          connection: normalizeExecutorServerConnection({
-            kind: "http",
-            origin: daemonUrl,
-            displayName: "CLI daemon",
-            auth: { kind: "bearer", token: server.authToken },
-          }),
-        });
-      } finally {
-        yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
+        yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
       }
 
-      if (!server || daemonPort === null || token === null) {
-        return yield* Effect.fail(new Error("Failed to start local Executor daemon."));
+      const startResult = yield* startServerOrAttachOwnedDataDir({
+        port: input.port,
+        hostname: input.hostname,
+        allowedHosts: input.allowedHosts,
+        authToken: input.authToken,
+        embeddedWebUI,
+      });
+      if (startResult.kind === "attached") {
+        if (shouldEmitDesktopSidecarSentinels()) {
+          console.log(DESKTOP_SIDECAR_ATTACHED_SENTINEL);
+        }
+        console.log(`Daemon already running at ${startResult.manifest.connection.origin}.`);
+        return;
       }
+      const server = startResult.server;
+      const daemonPort = server.port;
+      const token = randomUUID();
+      const daemonUrl = daemonBaseUrl(daemonHost, daemonPort);
+      yield* publishLocalServerManifest({
+        kind: "cli-daemon",
+        connection: normalizeExecutorServerConnection({
+          kind: "http",
+          origin: daemonUrl,
+          displayName: "CLI daemon",
+          auth: { kind: "bearer", token: server.authToken },
+        }),
+      });
 
       try {
         yield* writeDaemonRecord({
@@ -1285,91 +1266,76 @@ const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A>
 
 const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
-    const startupLock = yield* acquireLocalServerStartLock();
-    let web: Awaited<
-      ReturnType<
-        typeof withStdoutReroutedToStderr<{
-          readonly executor: Awaited<ReturnType<typeof getExecutor>>;
-          readonly server: Awaited<ReturnType<typeof startServer>>;
-          readonly baseUrl: string;
-          readonly restoreWebBaseUrl: () => void;
-        }>
-      >
-    > | null = null;
+    // No process-level startup lock: the DB ownership lock inside startServer
+    // (openOwnedLocalDatabase) is the real gate. assertNoOtherActiveLocalServer
+    // is a friendly fast-path that may race without being unsafe.
+    yield* assertNoOtherActiveLocalServer();
+    const web = yield* Effect.tryPromise({
+      try: () =>
+        withStdoutReroutedToStderr(async () => {
+          const host = "127.0.0.1";
+          const port = await Effect.runPromise(
+            chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
+          );
+          const baseUrl = `http://localhost:${port}`;
+          const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
 
-    try {
-      yield* assertNoOtherActiveLocalServer();
-      web = yield* Effect.tryPromise({
-        try: () =>
-          withStdoutReroutedToStderr(async () => {
-            const host = "127.0.0.1";
-            const port = await Effect.runPromise(
-              chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
-            );
-            const baseUrl = `http://localhost:${port}`;
-            const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
-
-            try {
-              const executor = await getExecutor();
-              const server = await startServer({
-                port,
-                hostname: host,
-                embeddedWebUI,
-              });
-              const serverBaseUrl = `http://localhost:${server.port}`;
-              return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
-            } catch (cause) {
-              restoreWebBaseUrl();
-              throw cause;
-            }
-          }),
-        catch: (cause) => cause,
-      }).pipe(
-        Effect.catch((cause) => {
-          const ownership = findDataDirOwnershipHeld(cause);
-          if (!ownership) return Effect.fail(toError(cause));
-          return Effect.gen(function* () {
-            const manifest = yield* readReachableLocalServerHint();
-            const path = yield* PlatformPath.Path;
-            const dataDir = resolveExecutorDataDir(path);
-            if (manifest) {
-              return yield* Effect.fail(
-                new Error(
-                  [
-                    `A local Executor server already owns ${dataDir} at ${manifest.connection.origin}.`,
-                    "The stdio MCP server needs exclusive access to the local database.",
-                    `Use the running HTTP MCP endpoint instead: ${manifest.connection.origin}/mcp`,
-                  ].join("\n"),
-                ),
-              );
-            }
+          try {
+            const executor = await getExecutor();
+            const server = await startServer({
+              port,
+              hostname: host,
+              embeddedWebUI,
+            });
+            const serverBaseUrl = `http://localhost:${server.port}`;
+            return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
+          } catch (cause) {
+            restoreWebBaseUrl();
+            throw cause;
+          }
+        }),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.catch((cause) => {
+        const ownership = findDataDirOwnershipHeld(cause);
+        if (!ownership) return Effect.fail(toError(cause));
+        return Effect.gen(function* () {
+          const manifest = yield* readReachableLocalServerHint();
+          const path = yield* PlatformPath.Path;
+          const dataDir = resolveExecutorDataDir(path);
+          if (manifest) {
             return yield* Effect.fail(
               new Error(
                 [
-                  "Executor data directory is owned by another live process, but no reachable local server was advertised.",
-                  `Data directory: ${dataDir}`,
-                  `Ownership lock: ${ownership.lockPath}`,
-                  "Wait for the existing process to finish starting, or stop it and retry.",
+                  `A local Executor server already owns ${dataDir} at ${manifest.connection.origin}.`,
+                  "The stdio MCP server needs exclusive access to the local database.",
+                  `Use the running HTTP MCP endpoint instead: ${manifest.connection.origin}/mcp`,
                 ].join("\n"),
               ),
             );
-          });
-        }),
-      );
-      yield* publishLocalServerManifest({
-        kind: "foreground",
-        connection: normalizeExecutorServerConnection({
-          kind: "http",
-          origin: web.baseUrl,
-          displayName: "CLI MCP",
-          auth: { kind: "bearer", token: web.server.authToken },
-        }),
-      });
-    } finally {
-      yield* releaseLocalServerStartLock(startupLock).pipe(Effect.ignore);
-    }
-
-    if (!web) return yield* Effect.fail(new Error("Failed to start local Executor MCP server."));
+          }
+          return yield* Effect.fail(
+            new Error(
+              [
+                "Executor data directory is owned by another live process, but no reachable local server was advertised.",
+                `Data directory: ${dataDir}`,
+                `Ownership lock: ${ownership.lockPath}`,
+                "Wait for the existing process to finish starting, or stop it and retry.",
+              ].join("\n"),
+            ),
+          );
+        });
+      }),
+    );
+    yield* publishLocalServerManifest({
+      kind: "foreground",
+      connection: normalizeExecutorServerConnection({
+        kind: "http",
+        origin: web.baseUrl,
+        displayName: "CLI MCP",
+        auth: { kind: "bearer", token: web.server.authToken },
+      }),
+    });
 
     try {
       yield* Effect.promise(() =>

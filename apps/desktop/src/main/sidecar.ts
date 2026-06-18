@@ -16,7 +16,6 @@ import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { app } from "electron";
 import log from "electron-log/main.js";
-import { Option, Schema } from "effect";
 import {
   normalizeExecutorServerConnection,
   parseExecutorLocalServerManifest,
@@ -104,15 +103,6 @@ const sidecarManifestPathByPid = new Map<number, string>();
 const serverControlDir = (dataDir: string): string => join(dataDir, "server-control");
 const localServerManifestPath = (dataDir: string): string =>
   join(serverControlDir(dataDir), "server.json");
-const localServerStartLockPath = (dataDir: string): string =>
-  join(serverControlDir(dataDir), "startup.lock");
-
-const LocalServerStartLockFile = Schema.Struct({
-  pid: Schema.Number,
-  startedAt: Schema.String,
-});
-const decodeUnknownJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
-const decodeLocalServerStartLockFile = Schema.decodeUnknownOption(LocalServerStartLockFile);
 
 const isPidAlive = (pid: number): boolean => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -135,35 +125,6 @@ const removeManifestIfOwnedBy = (dataDir: string, pid: number) => {
   const manifest = readManifest(dataDir);
   if (manifest?.pid !== pid) return;
   rmSync(localServerManifestPath(dataDir), { force: true });
-};
-
-const readLockPid = (dataDir: string): number | null => {
-  const path = localServerStartLockPath(dataDir);
-  if (!existsSync(path)) return null;
-  const json = decodeUnknownJsonOption(readFileSync(path, "utf8"));
-  if (Option.isNone(json)) return null;
-  const decoded = decodeLocalServerStartLockFile(json.value);
-  return Option.isSome(decoded) ? decoded.value.pid : null;
-};
-
-const acquireLocalServerStartLock = (dataDir: string): (() => void) => {
-  mkdirSync(serverControlDir(dataDir), { recursive: true });
-  const lockPath = localServerStartLockPath(dataDir);
-  const payload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: lock acquisition uses atomic Node fs flags and maps contention to startup failure
-  try {
-    writeFileSync(lockPath, payload, { flag: "wx" });
-  } catch {
-    const existingPid = readLockPid(dataDir);
-    if (existingPid !== null && !isPidAlive(existingPid)) {
-      rmSync(lockPath, { force: true });
-      writeFileSync(lockPath, payload, { flag: "wx" });
-    } else {
-      // oxlint-disable-next-line executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: startup failure is surfaced in the Electron main process
-      throw new Error("Another local Executor server startup is already in progress.");
-    }
-  }
-  return () => rmSync(lockPath, { force: true });
 };
 
 const writeSidecarManifest = (input: {
@@ -287,53 +248,33 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     );
   }
 
-  const releaseStartupLock = cliManagedManifest ? null : acquireLocalServerStartLock(dataDir);
-  let startupLockReleased = false;
-  const releaseLock = () => {
-    if (startupLockReleased) return;
-    startupLockReleased = true;
-    releaseStartupLock?.();
-  };
-
-  if (!cliManagedManifest) {
-    const attachedAfterLock = await attachToReachableLocalServer(dataDir);
-    if (attachedAfterLock) {
-      releaseLock();
-      return attachedAfterLock;
-    }
-  }
-
-  let child: ChildProcess;
+  // No process-level startup lock: the dev sidecar child opens the DB through
+  // openOwnedLocalDatabase, whose ownership lock is the real gate. If the child
+  // loses the race it exits and onExit attaches to the winner. server.json is an
+  // attach hint only.
   const webBaseUrl = `http://${hostname}:${settings.port}`;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: spawn can throw synchronously and the local startup lock must be released
-  try {
-    child = spawn(command, args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        EXECUTOR_PORT: String(settings.port),
-        EXECUTOR_HOST: hostname,
-        EXECUTOR_WEB_BASE_URL: webBaseUrl,
-        PORT: String(settings.port),
-        // The bearer token the child validates and the main process injects into
-        // the webview. Always set — auth is unconditional.
-        EXECUTOR_AUTH_TOKEN: authToken,
-        ...(clientDir ? { EXECUTOR_CLIENT_DIR: clientDir } : {}),
-        EXECUTOR_SCOPE_DIR: scopeDir,
-        EXECUTOR_DATA_DIR: dataDir,
-        EXECUTOR_CLIENT: "desktop",
-        // Crash reporting (desktop builds with a baked-in DSN only). The
-        // CLI's `executor web` never sets these, so the shared server code
-        // stays telemetry-free outside the desktop app.
-        ...sidecarCrashReportingEnv(),
-      },
-    });
-  } catch (error) {
-    releaseLock();
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve spawn failure after releasing local startup lock
-    throw error;
-  }
+  const child = spawn(command, args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      EXECUTOR_PORT: String(settings.port),
+      EXECUTOR_HOST: hostname,
+      EXECUTOR_WEB_BASE_URL: webBaseUrl,
+      PORT: String(settings.port),
+      // The bearer token the child validates and the main process injects into
+      // the webview. Always set — auth is unconditional.
+      EXECUTOR_AUTH_TOKEN: authToken,
+      ...(clientDir ? { EXECUTOR_CLIENT_DIR: clientDir } : {}),
+      EXECUTOR_SCOPE_DIR: scopeDir,
+      EXECUTOR_DATA_DIR: dataDir,
+      EXECUTOR_CLIENT: "desktop",
+      // Crash reporting (desktop builds with a baked-in DSN only). The
+      // CLI's `executor web` never sets these, so the shared server code
+      // stays telemetry-free outside the desktop app.
+      ...sidecarCrashReportingEnv(),
+    },
+  });
 
   return new Promise<SidecarConnection>((resolveStart, rejectStart) => {
     let stderrBuffer = "";
@@ -347,7 +288,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     const reject = (err: Error) => {
       if (resolved || rejected) return;
       rejected = true;
-      releaseLock();
       // oxlint-disable-next-line executor/no-promise-reject -- boundary: sidecar startup surfaces as a rejected promise
       rejectStart(err);
     };
@@ -358,7 +298,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
       if (!attached) return false;
       resolved = true;
       expectedExits.add(child);
-      releaseLock();
       resolveStart(attached);
       return true;
     };
@@ -398,7 +337,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
             childPid: child.pid,
           });
         }
-        releaseLock();
         resolveStart({
           baseUrl,
           hostname,

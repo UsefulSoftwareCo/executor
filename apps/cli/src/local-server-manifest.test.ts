@@ -5,13 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Path } from "effect";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 
 import { normalizeExecutorServerConnection } from "@executor-js/sdk/shared";
 import {
-  acquireLocalServerStartLock,
   readLocalServerManifest,
-  releaseLocalServerStartLock,
   removeLocalServerManifestIfOwnedBy,
   resolveExecutorDataDir,
   writeLocalServerManifest,
@@ -59,25 +56,6 @@ describe("local server manifest", () => {
 
         yield* removeLocalServerManifestIfOwnedBy({ pid: process.pid });
         expect(yield* readLocalServerManifest()).toBeNull();
-      } finally {
-        rmSync(dataDir, { recursive: true, force: true });
-      }
-    }).pipe(Effect.provide(BunServices.layer)),
-  );
-
-  it.effect("serializes local startup with a stale-aware lock", () =>
-    Effect.gen(function* () {
-      const dataDir = mkdtempSync(join(tmpdir(), "executor-local-server-lock-"));
-      process.env.EXECUTOR_DATA_DIR = dataDir;
-
-      try {
-        const first = yield* acquireLocalServerStartLock();
-        const second = yield* Effect.exit(acquireLocalServerStartLock());
-
-        expect(Exit.isFailure(second)).toBe(true);
-        yield* releaseLocalServerStartLock(first);
-        const third = yield* acquireLocalServerStartLock();
-        yield* releaseLocalServerStartLock(third);
       } finally {
         rmSync(dataDir, { recursive: true, force: true });
       }

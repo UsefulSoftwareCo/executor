@@ -1082,7 +1082,6 @@ const assertKilledMigrationState = async (input: {
   expect(journal.authExisted).toBe(true);
   expect(authBackup).not.toBe("");
   expect(existsSync(authBackup)).toBe(true);
-  expect(existsSync(`${input.dbPath}.v1-v2.lock`)).toBe(true);
   await killedMigrationStateAssertions[input.pauseAt]({
     journal,
     scopeId: input.scopeId,
@@ -1097,7 +1096,6 @@ const sqliteBackupPathsForTest = (dbPath: string): readonly string[] => {
       (entry) =>
         entry.startsWith(prefix) &&
         !entry.endsWith(".json") &&
-        !entry.endsWith(".lock") &&
         !entry.endsWith("-wal") &&
         !entry.endsWith("-shm"),
     )
@@ -1329,7 +1327,6 @@ describe("local v1 -> v2 migration", () => {
       });
       await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
       expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
-      expect(existsSync(`${dbPath}.v1-v2.lock`)).toBe(false);
     }
   });
 

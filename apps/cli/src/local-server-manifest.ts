@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { FileSystem, Option, Path, Schema } from "effect";
+import { FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 
@@ -9,11 +9,6 @@ import {
   serializeExecutorLocalServerManifest,
   type ExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
-import { isPidAlive } from "./daemon-state";
-
-export interface LocalServerStartLock {
-  readonly path: string;
-}
 
 export const resolveExecutorDataDir = (path: Path.Path): string =>
   resolve(process.env.EXECUTOR_DATA_DIR ?? path.join(homedir(), ".executor"));
@@ -23,9 +18,6 @@ const serverControlDir = (path: Path.Path): string =>
 
 const localServerManifestPath = (path: Path.Path): string =>
   path.join(serverControlDir(path), "server.json");
-
-const localServerStartLockPath = (path: Path.Path): string =>
-  path.join(serverControlDir(path), "startup.lock");
 
 export const readLocalServerManifest = (): Effect.Effect<
   ExecutorLocalServerManifest | null,
@@ -93,62 +85,4 @@ export const removeLocalServerManifest = (): Effect.Effect<
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fs.remove(localServerManifestPath(path), { force: true });
-  });
-
-const StartupLockPayload = Schema.Struct({
-  pid: Schema.Number,
-});
-
-const decodeStartupLockPayload = Schema.decodeUnknownOption(
-  Schema.fromJsonString(StartupLockPayload),
-);
-
-const parseLockPid = (raw: string): number | null => {
-  const decoded = decodeStartupLockPayload(raw);
-  return Option.isSome(decoded) ? decoded.value.pid : null;
-};
-
-export const acquireLocalServerStartLock = (): Effect.Effect<
-  LocalServerStartLock,
-  Error,
-  FileSystem.FileSystem | Path.Path
-> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    yield* fs.makeDirectory(serverControlDir(path), { recursive: true });
-
-    const lockPath = localServerStartLockPath(path);
-    const lockPayload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`;
-
-    const tryAcquire = () =>
-      fs.writeFileString(lockPath, lockPayload, { flag: "wx" }).pipe(
-        Effect.as(true),
-        Effect.catchCause(() => Effect.succeed(false)),
-      );
-
-    if (yield* tryAcquire()) return { path: lockPath };
-
-    const existingRaw = yield* fs
-      .readFileString(lockPath)
-      .pipe(Effect.catchCause(() => Effect.succeed(null)));
-    if (existingRaw !== null) {
-      const existingPid = parseLockPid(existingRaw);
-      if (existingPid !== null && !isPidAlive(existingPid)) {
-        yield* fs.remove(lockPath, { force: true });
-        if (yield* tryAcquire()) return { path: lockPath };
-      }
-    }
-
-    return yield* Effect.fail(
-      new Error("Another local Executor server startup is already in progress."),
-    );
-  });
-
-export const releaseLocalServerStartLock = (
-  lock: LocalServerStartLock,
-): Effect.Effect<void, PlatformError, FileSystem.FileSystem | Path.Path> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.remove(lock.path, { force: true });
   });

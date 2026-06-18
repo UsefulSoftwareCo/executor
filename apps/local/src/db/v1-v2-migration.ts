@@ -1327,94 +1327,34 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
   cleanupAuthBackup(journal);
 };
 
-const isPidAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-interface MigrationLock {
-  readonly path: string;
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-const MIGRATION_LOCK_WAIT_TIMEOUT_MS = 5 * 60_000;
-
-const migrationLockPath = (sqlitePath: string): string => `${sqlitePath}.v1-v2.lock`;
-
-const acquireMigrationLock = async (sqlitePath: string): Promise<MigrationLock> => {
-  const lockPath = migrationLockPath(sqlitePath);
-  fs.mkdirSync(dirname(lockPath), { recursive: true });
-  const startedAt = Date.now();
-
-  while (true) {
-    const payload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`;
-    try {
-      fs.writeFileSync(lockPath, payload, { flag: "wx", mode: 0o600 });
-      return { path: lockPath };
-    } catch (cause) {
-      if (!fs.existsSync(lockPath)) throw cause;
-      try {
-        const existing = JSON.parse(fs.readFileSync(lockPath, "utf-8")) as { pid?: unknown };
-        if (typeof existing.pid !== "number" || !isPidAlive(existing.pid)) {
-          fs.rmSync(lockPath, { force: true });
-          continue;
-        }
-      } catch {
-        fs.rmSync(lockPath, { force: true });
-        continue;
-      }
-      if (Date.now() - startedAt >= MIGRATION_LOCK_WAIT_TIMEOUT_MS) {
-        throw new LocalV1V2MigrationError({
-          message: `Timed out waiting for local v1→v2 SQLite migration lock after ${MIGRATION_LOCK_WAIT_TIMEOUT_MS}ms.`,
-        });
-      }
-      await sleep(100);
-    }
-  }
-};
-
-const releaseMigrationLock = (lock: MigrationLock): void => {
-  fs.rmSync(lock.path, { force: true });
-};
-
+// No migration-internal process lock: this runs only inside
+// openOwnedLocalDatabase, after the data-dir ownership lock is acquired, so the
+// caller guarantees this process is the sole writer of the data dir. The
+// journal + recoverV1V2Migration still cover the orthogonal failure where this
+// sole owner dies mid-migration and the next sole owner resumes.
 export const migrateLocalV1ToV2IfNeeded = async (
   options: LocalV1V2MigrationOptions,
 ): Promise<LocalV1V2MigrationResult> => {
   const journalPath = migrationJournalPath(options.sqlitePath);
 
   if (fs.existsSync(journalPath)) {
-    const recoveryLock = await acquireMigrationLock(options.sqlitePath);
-    try {
-      await recoverV1V2Migration(options.sqlitePath);
-    } finally {
-      releaseMigrationLock(recoveryLock);
-    }
+    await recoverV1V2Migration(options.sqlitePath);
   }
 
   if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
 
-  // Fast steady-state probe: migrated v2 databases should not pay the cost of
-  // locking or copying the whole DB just to discover their ledger stamp. Keep
-  // this unlocked probe to the positive-stamp short-circuit only; any ambiguous
-  // shape decision happens below while holding the migration lock.
-  let probe: Client | null = null;
-  if (!fs.existsSync(migrationLockPath(options.sqlitePath))) {
-    probe = await openLocalLibsql(options.sqlitePath);
-    try {
-      if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
-    } finally {
-      probe.close();
-      probe = null;
-    }
+  // Fast steady-state probe: migrated v2 databases short-circuit on their ledger
+  // stamp without copying the whole DB. The caller holds the data-dir ownership
+  // lock, so this process is the sole writer; any ambiguous shape decision
+  // happens below.
+  let probe: Client | null = await openLocalLibsql(options.sqlitePath);
+  try {
+    if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
+  } finally {
+    probe.close();
+    probe = null;
   }
 
-  const lock = await acquireMigrationLock(options.sqlitePath);
   let normalizedSourcePath: string | null = null;
   let stagingPath: string | null = null;
   let target: Awaited<ReturnType<typeof createSqliteFumaDb>> | null = null;
@@ -1533,7 +1473,5 @@ export const migrateLocalV1ToV2IfNeeded = async (
       removeMigrationJournal(journalPath);
     }
     throw cause;
-  } finally {
-    releaseMigrationLock(lock);
   }
 };
