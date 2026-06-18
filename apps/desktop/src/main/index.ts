@@ -398,6 +398,9 @@ const createWindow = async (conn: SidecarConnection) => {
     show: false,
     backgroundColor: "#0a0a0a",
     autoHideMenuBar: true,
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 17 } }
+      : {}),
     ...(linuxIcon ? { icon: linuxIcon } : {}),
     webPreferences: {
       preload: PRELOAD_PATH,

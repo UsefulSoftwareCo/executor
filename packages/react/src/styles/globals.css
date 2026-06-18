@@ -149,6 +149,15 @@
   }
 }
 
+.executor-desktop-macos .desktop-macos-sidebar-header {
+  -webkit-app-region: drag;
+  padding-left: 88px;
+}
+
+.executor-desktop-macos .desktop-macos-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 .dark {
   --sidebar: hsl(240 5.9% 10%);
   --sidebar-foreground: hsl(240 4.8% 95.9%);

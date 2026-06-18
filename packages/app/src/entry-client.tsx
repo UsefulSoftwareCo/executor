@@ -8,6 +8,10 @@ import "@executor-js/react/globals.css";
 
 initDesktopCrashReporting();
 
+if ("executor" in window && navigator.platform.includes("Mac")) {
+  document.documentElement.classList.add("executor-desktop-macos");
+}
+
 // Resolve the local bearer token (?_token → localStorage → dev global) and set
 // the connection's auth BEFORE the router mounts, so the first API atom carries
 // it. No-op on desktop (the main process injects the header).

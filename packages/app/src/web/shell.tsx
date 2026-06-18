@@ -349,14 +349,17 @@ function SidebarContent(props: {
   return (
     <>
       {props.showBrand !== false && (
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
-          <Link to="/{-$orgSlug}" className="flex shrink-0 items-center gap-1.5">
+        <div className="desktop-macos-sidebar-header flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+          <Link
+            to="/{-$orgSlug}"
+            className="desktop-macos-no-drag flex shrink-0 items-center gap-1.5"
+          >
             <span className="font-display text-base tracking-tight text-foreground">executor</span>
             <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
               Beta
             </span>
           </Link>
-          <div className="ml-auto flex min-w-0 flex-1 justify-end">
+          <div className="desktop-macos-no-drag ml-auto flex min-w-0 flex-1 justify-end pl-3">
             <ServerConnectionMenu variant="header" />
           </div>
         </div>
