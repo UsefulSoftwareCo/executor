@@ -171,7 +171,7 @@ const runAcquireAttempt = async (dataDir: string): Promise<ChildCloseResult> => 
 describe("data-dir ownership", () => {
   it("blocks a second process and releases ownership when the holder is SIGKILLed", async () => {
     const workDir = mkdtempSync(join(tmpdir(), "executor-data-dir-ownership-"));
-    const dataDir = join(workDir, "data");
+    const dataDir = join(workDir, "data # owned %3F");
     const marker = join(workDir, "owner-ready");
     const holder = spawnScript(holderScript, {
       EXECUTOR_TEST_DATA_DIR: dataDir,
