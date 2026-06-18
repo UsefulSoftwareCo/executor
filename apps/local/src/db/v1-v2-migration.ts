@@ -443,14 +443,11 @@ const discoverMcpOAuthResourceOverrides = async (
 };
 
 const localOwnerForScope =
-  (_tenantId: string) =>
+  (tenantId: string) =>
   (scopeId: string): OwnerKeys | null => {
     const cloud = parseScope(scopeId);
     if (cloud) return cloud;
-    // Local v1 scope ids are already workspace/tenant partitions. Preserve
-    // that boundary instead of collapsing every historical local workspace into
-    // the tenant for whichever cwd happens to boot the v2 migration first.
-    return { owner: "org", subject: "", tenant: scopeId };
+    return { owner: "org", subject: "", tenant: tenantId };
   };
 
 const readV1Snapshot = async (client: Client, tenantId: string): Promise<LocalV1Snapshot> => {
