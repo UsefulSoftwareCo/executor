@@ -1343,16 +1343,16 @@ export const migrateLocalV1ToV2IfNeeded = async (
 
   if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
 
-  // Fast steady-state probe: migrated v2 databases short-circuit on their ledger
-  // stamp without copying the whole DB. The caller holds the data-dir ownership
-  // lock, so this process is the sole writer; any ambiguous shape decision
-  // happens below.
-  let probe: Client | null = await openLocalLibsql(options.sqlitePath);
+  // The caller holds the data-dir ownership lock, so this process is the sole
+  // writer and recovery already ran above. A single probe decides the outcome:
+  // already-migrated databases short-circuit on their ledger stamp, and only an
+  // actual v1 database falls through to the heavy copy/stage/flip path below.
+  const probe: Client = await openLocalLibsql(options.sqlitePath);
   try {
     if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
+    if (!(await isLocalV1Database(probe))) return { migrated: false, warnings: [] };
   } finally {
     probe.close();
-    probe = null;
   }
 
   let normalizedSourcePath: string | null = null;
@@ -1364,18 +1364,6 @@ export const migrateLocalV1ToV2IfNeeded = async (
   let flipStarted = false;
 
   try {
-    await recoverV1V2Migration(options.sqlitePath);
-    if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
-
-    probe = await openLocalLibsql(options.sqlitePath);
-    try {
-      if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
-      if (!(await isLocalV1Database(probe))) return { migrated: false, warnings: [] };
-    } finally {
-      probe.close();
-      probe = null;
-    }
-
     const nonce = randomBytes(4).toString("hex");
     normalizedSourcePath = normalizedSourcePathFor(options.sqlitePath, nonce);
     stagingPath = stagingPathFor(options.sqlitePath, nonce);
