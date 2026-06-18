@@ -115,6 +115,12 @@ const fileSetSuffixes = ["", "-wal", "-shm"] as const;
 
 type MigrationJournalPhase = "building" | "built" | "canonical-moved" | "committed";
 
+interface KeychainSecretBackup {
+  readonly id: string;
+  readonly backupId: string | null;
+  readonly existed: boolean;
+}
+
 interface MigrationJournal {
   readonly version: 1;
   readonly source: string;
@@ -124,6 +130,7 @@ interface MigrationJournal {
   readonly authPath: string;
   readonly authBackup: string | null;
   readonly authExisted: boolean;
+  readonly keychainBackups?: readonly KeychainSecretBackup[];
   readonly nonce: string;
   readonly phase: MigrationJournalPhase;
 }
@@ -1145,7 +1152,59 @@ const writeAuthBackupForMigration = (input: {
   fsyncDirectory(dirname(input.backup));
 };
 
+const keychainMigrationBackupId = (nonce: string, id: string): string =>
+  `v1-v2-migration-backup:${nonce}:${createHash("sha256").update(id).digest("hex")}`;
+
+const backupKeychainSecretsForMigration = async (input: {
+  readonly nonce: string;
+  readonly keychainValues: ReadonlyArray<{ readonly id: string; readonly value: string }>;
+}): Promise<readonly KeychainSecretBackup[]> => {
+  const ids = [...new Set(input.keychainValues.map((entry) => entry.id))].sort();
+  if (ids.length === 0) return [];
+
+  const keychain = makeKeychainProvider(keychainBaseServiceName());
+  const backups: KeychainSecretBackup[] = [];
+  for (const id of ids) {
+    const existing = await Effect.runPromise(keychain.get(id as never));
+    if (existing === null) {
+      backups.push({ id, backupId: null, existed: false });
+      continue;
+    }
+
+    const backupId = keychainMigrationBackupId(input.nonce, id);
+    await Effect.runPromise(keychain.set!(backupId as never, existing));
+    backups.push({ id, backupId, existed: true });
+  }
+  return backups;
+};
+
+const restoreKeychainBackupsFromJournal = async (journal: MigrationJournal): Promise<void> => {
+  const backups = journal.keychainBackups ?? [];
+  if (backups.length === 0) return;
+
+  const keychain = makeKeychainProvider(keychainBaseServiceName());
+  for (const backup of backups) {
+    if (!backup.existed) {
+      await Effect.runPromise(keychain.delete!(backup.id as never));
+      continue;
+    }
+    if (!backup.backupId) {
+      throw new LocalV1V2MigrationError({
+        message: `Migration journal is missing keychain backup id for ${backup.id}`,
+      });
+    }
+    const value = await Effect.runPromise(keychain.get(backup.backupId as never));
+    if (value === null) {
+      throw new LocalV1V2MigrationError({
+        message: `Migration keychain backup ${backup.backupId} is missing`,
+      });
+    }
+    await Effect.runPromise(keychain.set!(backup.id as never, value));
+  }
+};
+
 const restoreAuthFromJournal = async (journal: MigrationJournal): Promise<void> => {
+  await restoreKeychainBackupsFromJournal(journal);
   if (journal.authBackup && fs.existsSync(journal.authBackup)) {
     fs.mkdirSync(dirname(journal.authPath), { recursive: true, mode: 0o700 });
     const tmp = `${journal.authPath}.restore-${journal.nonce}.tmp`;
@@ -1158,7 +1217,16 @@ const restoreAuthFromJournal = async (journal: MigrationJournal): Promise<void> 
   fsyncDirectory(dirname(journal.authPath));
 };
 
-const cleanupAuthBackup = (journal: MigrationJournal): void => {
+const cleanupKeychainBackups = async (journal: MigrationJournal): Promise<void> => {
+  const keychain = makeKeychainProvider(keychainBaseServiceName());
+  for (const backup of journal.keychainBackups ?? []) {
+    if (!backup.backupId) continue;
+    await Effect.runPromise(keychain.delete!(backup.backupId as never));
+  }
+};
+
+const cleanupSecretBackups = async (journal: MigrationJournal): Promise<void> => {
+  await cleanupKeychainBackups(journal);
   if (journal.authBackup) {
     fs.rmSync(journal.authBackup, { force: true });
     fsyncDirectory(dirname(journal.authBackup));
@@ -1295,8 +1363,8 @@ const completeJournaledFlip = async (
   await writeMigrationJournal(journalPath, { ...journal, phase: "committed" });
   removeSqliteFileSet(journal.normalizedSource);
   removeSqliteFileSet(journal.staging);
+  await cleanupSecretBackups(journal);
   removeMigrationJournal(journalPath);
-  cleanupAuthBackup(journal);
 };
 
 const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
@@ -1308,8 +1376,8 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
     removeSqliteFileSet(journal.normalizedSource);
     removeSqliteFileSet(journal.staging);
     await restoreAuthFromJournal(journal);
+    await cleanupSecretBackups(journal);
     removeMigrationJournal(journalPath);
-    cleanupAuthBackup(journal);
     return;
   }
 
@@ -1320,8 +1388,8 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
 
   removeSqliteFileSet(journal.normalizedSource);
   removeSqliteFileSet(journal.staging);
+  await cleanupSecretBackups(journal);
   removeMigrationJournal(journalPath);
-  cleanupAuthBackup(journal);
 };
 
 // No migration-internal process lock: this runs only inside
@@ -1376,6 +1444,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
       authPath: authBackup.path,
       authBackup: authBackup.backup,
       authExisted: authBackup.existed,
+      keychainBackups: [],
       nonce,
       phase: "building",
     };
@@ -1397,6 +1466,14 @@ export const migrateLocalV1ToV2IfNeeded = async (
 
     const plan = planMigration(snapshot.input);
     const secretValues = await collectSecretValues(plan);
+    journal = {
+      ...journal,
+      keychainBackups: await backupKeychainSecretsForMigration({
+        nonce,
+        keychainValues: secretValues.keychainValues,
+      }),
+    };
+    await writeMigrationJournal(journalPath, journal);
     const oauthAuthorizationUrls = await resolveMigrationOAuthAuthorizationUrls(plan, {
       fetch: options.oauthMetadataFetch ?? fetch,
       timeoutMs: options.oauthMetadataTimeoutMs,
@@ -1451,7 +1528,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
     if (!flipStarted) {
       if (journal) {
         await restoreAuthFromJournal(journal);
-        cleanupAuthBackup(journal);
+        await cleanupSecretBackups(journal);
       }
       if (normalizedSourcePath) removeSqliteFileSet(normalizedSourcePath);
       if (stagingPath) removeSqliteFileSet(stagingPath);

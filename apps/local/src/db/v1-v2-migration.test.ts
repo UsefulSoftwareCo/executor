@@ -26,6 +26,11 @@ import { migrateLocalV1ToV2IfNeeded } from "./v1-v2-migration";
 
 const AuthFile = Schema.Record(Schema.String, Schema.String);
 const decodeAuthFile = Schema.decodeUnknownSync(Schema.fromJsonString(AuthFile));
+const KeychainBackupForTest = Schema.Struct({
+  id: Schema.String,
+  backupId: Schema.Union([Schema.String, Schema.Null]),
+  existed: Schema.Boolean,
+});
 const MigrationJournalForTest = Schema.Struct({
   version: Schema.Literal(1),
   source: Schema.String,
@@ -35,6 +40,7 @@ const MigrationJournalForTest = Schema.Struct({
   authPath: Schema.String,
   authBackup: Schema.Union([Schema.String, Schema.Null]),
   authExisted: Schema.Boolean,
+  keychainBackups: Schema.optional(Schema.Array(KeychainBackupForTest)),
   nonce: Schema.String,
   phase: Schema.Literals(["building", "built", "canonical-moved", "committed"]),
 });
