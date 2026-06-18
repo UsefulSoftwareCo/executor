@@ -10,6 +10,19 @@ import {
   type ExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
 
+// ---------------------------------------------------------------------------
+// server-control/server.json — a discovery/attach HINT, not an ownership proof.
+//
+// It records where a live local server is listening (origin + bearer) so other
+// CLI invocations and the desktop app can attach instead of spawning a
+// duplicate. The actual "only one process may open data.db" guarantee lives at
+// the DB layer: the data-dir ownership lock in @executor-js/local
+// (apps/local/src/db/data-dir-ownership.ts), acquired before any serving DB
+// handle exists. If this manifest is missing, stale, or malformed, the worst
+// outcome is a lost friendly attach — the kernel lock still refuses a second
+// owner, so the database stays safe.
+// ---------------------------------------------------------------------------
+
 export const resolveExecutorDataDir = (path: Path.Path): string =>
   resolve(process.env.EXECUTOR_DATA_DIR ?? path.join(homedir(), ".executor"));
 

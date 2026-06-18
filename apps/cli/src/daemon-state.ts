@@ -6,6 +6,20 @@ import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 
 // ---------------------------------------------------------------------------
+// Daemon discovery + spawn-dedup state — hints, not DB safety.
+//
+// DaemonRecord (daemon-<host>-<port>.json) and DaemonPointer
+// (daemon-active-<host>-<scope>.json) tell a CLI invocation which port/PID to
+// attach to, and DaemonStartLock (daemon-active-<host>-<scope>.json.lock)
+// avoids spawning daemons that would only lose the ownership race and die.
+// None of them gate access to data.db: that is the data-dir ownership lock in
+// @executor-js/local (apps/local/src/db/data-dir-ownership.ts), held for the
+// life of the serving process. These files are pure optimization — if they are
+// missing or stale, a redundant daemon may spawn, fail to acquire ownership,
+// and exit; correctness is never at risk.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 

@@ -343,6 +343,11 @@ const makeLocalServerManifest = (input: {
     };
   });
 
+// Friendly, intentionally racy fast-path: it reads the server.json hint to fail
+// early with a helpful message when another local server is already up. It is
+// NOT the ownership gate — the DB ownership lock inside startServer
+// (openOwnedLocalDatabase) is. A stale/missing manifest only costs the nice
+// message; the kernel lock still refuses a second owner.
 const assertNoOtherActiveLocalServer = (): Effect.Effect<
   void,
   Error,
