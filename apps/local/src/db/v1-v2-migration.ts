@@ -1124,9 +1124,13 @@ const removeMigrationJournal = (path: string): void => {
 
 const readMigrationJournal = (path: string): MigrationJournal | null => {
   if (!fs.existsSync(path)) return null;
-  const parsed = JSON.parse(fs.readFileSync(path, "utf-8")) as MigrationJournal;
-  if (parsed.version !== 1) return null;
-  return parsed;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf-8")) as MigrationJournal;
+    if (parsed.version !== 1) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 };
 
 const authBackupInfoForMigration = (
