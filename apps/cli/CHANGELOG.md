@@ -1,5 +1,19 @@
 # executor
 
+## 1.5.14
+
+### Patch Changes
+
+- [#1051](https://github.com/RhysSullivan/executor/pull/1051) [`cfda0ac`](https://github.com/RhysSullivan/executor/commit/cfda0ac91248041ca178d77ea9bd7a698d9dd98e) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix desktop startup so a failed supervised-daemon replacement no longer leaves
+  the app on a black window. The desktop now re-checks the daemon after install
+  failures, falls back to a managed sidecar when the stale daemon disappears, and
+  surfaces startup recovery instead of leaving a failed renderer visible.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.14
+  - @executor-js/runtime-quickjs@1.5.14
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.34
+
 ## 1.5.13
 
 ### Patch Changes
