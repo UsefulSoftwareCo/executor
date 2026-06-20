@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -18,6 +18,7 @@ import {
 } from "@executor-js/sdk/testing";
 
 import { mcpPlugin, userFacingProbeMessage } from "./plugin";
+import { McpInvocationError } from "./errors";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
 import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 
@@ -30,6 +31,122 @@ import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 // elicitation.test.ts + owner-isolation.test.ts.
 
 const TEMPLATE = AuthTemplateSlug.make("none");
+
+const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
+const JsonRpcRequest = Schema.Struct({
+  id: Schema.optional(JsonRpcId),
+  method: Schema.String,
+});
+type JsonRpcRequest = typeof JsonRpcRequest.Type;
+
+const decodeJsonRpcRequest = Schema.decodeUnknownOption(Schema.fromJsonString(JsonRpcRequest));
+
+const jsonRpcResult = (request: JsonRpcRequest, result: unknown) =>
+  HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: request.id ?? null,
+    result,
+  });
+
+// The call-tool fixtures share one JSON-RPC scaffold (handshake, tool listing,
+// unknown-method rejection); only the `tools/call` response varies. Each
+// scenario supplies that branch via a `CallToolResponder`.
+type CallToolResponder = (rpc: JsonRpcRequest) => ReturnType<typeof HttpServerResponse.text>;
+
+const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponder) => {
+  if (rpc.method === "initialize") {
+    return jsonRpcResult(rpc, {
+      protocolVersion: "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "call-tool-fixture", version: "1.0.0" },
+    });
+  }
+  if (rpc.method === "notifications/initialized") {
+    return HttpServerResponse.text("", { status: 202 });
+  }
+  if (rpc.method === "tools/list") {
+    return jsonRpcResult(rpc, {
+      tools: [
+        {
+          name: "explode",
+          description: "Returns a failure from tools/call",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+    });
+  }
+  if (rpc.method === "tools/call") {
+    return callTool(rpc);
+  }
+  return HttpServerResponse.text("Unexpected JSON-RPC method", { status: 400 });
+};
+
+const serveCallToolServer = (callTool: CallToolResponder) =>
+  serveTestHttpApp((request) =>
+    Effect.gen(function* () {
+      if (request.method === "GET") {
+        return HttpServerResponse.text("SSE disabled", { status: 405 });
+      }
+
+      const body = yield* request.text.pipe(Effect.orDie);
+      return Option.match(decodeJsonRpcRequest(body), {
+        onNone: () => HttpServerResponse.text("Invalid JSON-RPC fixture request", { status: 400 }),
+        onSome: (rpc) => callToolFixtureResponse(rpc, callTool),
+      });
+    }),
+  );
+
+// `tools/call` responders. Both embed a "do-not-leak" sentinel the assertions
+// confirm never reaches the caller-facing failure.
+const httpStatusCallTool =
+  (status: number): CallToolResponder =>
+  () =>
+    HttpServerResponse.text("do-not-leak: upstream auth challenge", { status });
+
+const jsonRpcErrorCallTool =
+  (code: number): CallToolResponder =>
+  (rpc) =>
+    HttpServerResponse.jsonUnsafe({
+      jsonrpc: "2.0",
+      id: rpc.id ?? null,
+      error: { code, message: "application-level do-not-leak" },
+    });
+
+const seedCallToolExecutor = (input: { slug: string; callTool: CallToolResponder }) =>
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      const server = yield* serveCallToolServer(input.callTool);
+      const config = makeTestConfig({
+        plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+      });
+      const executor = yield* createExecutor(config);
+
+      yield* executor.mcp.addServer({
+        name: "Call tool fixture",
+        endpoint: server.url("/mcp"),
+        slug: input.slug,
+        remoteTransport: "streamable-http",
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make(input.slug),
+        template: TEMPLATE,
+        value: "",
+      });
+
+      return {
+        config,
+        executor,
+        toolAddress: ToolAddress.make(`tools.${input.slug}.org.main.explode`),
+      } as const;
+    }),
+    ({ config, executor }) =>
+      Effect.gen(function* () {
+        yield* executor.close().pipe(Effect.ignore);
+        yield* Effect.promise(() => config.testDb.close()).pipe(Effect.ignore);
+      }),
+  );
 
 // ---------------------------------------------------------------------------
 // Manifest extraction
@@ -410,6 +527,93 @@ describe("mcpPlugin", () => {
     }),
   );
 
+  for (const status of [401, 403] as const) {
+    it.effect(`returns an auth tool failure when tools/call responds HTTP ${status}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = `call_status_${status}`;
+          const { executor, toolAddress } = yield* seedCallToolExecutor({
+            slug,
+            callTool: httpStatusCallTool(status),
+          });
+
+          const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+          expect(result).toMatchObject({
+            ok: false,
+            error: {
+              code: "connection_rejected",
+              status,
+              retryable: false,
+              details: {
+                category: "authentication",
+                source: { id: slug },
+                credential: { kind: "upstream", label: "main" },
+                upstream: { status },
+              },
+            },
+          });
+
+          const failure = result as {
+            readonly ok: false;
+            readonly error: { readonly message: string };
+          };
+          expect(failure.error).toMatchObject({
+            message: expect.not.stringContaining("do-not-leak"),
+          });
+        }),
+      ),
+    );
+  }
+
+  it.effect("does not classify non-auth tools/call HTTP failures as auth failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_status_500",
+          callTool: httpStatusCallTool(500),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBe(500);
+        expect(cause).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect("cause" in cause).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("does not classify JSON-RPC error codes as auth failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_jsonrpc_401",
+          callTool: jsonRpcErrorCallTool(401),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBeUndefined();
+      }),
+    ),
+  );
+
   it.effect("probeEndpoint returns manual auth when MCP requires auth without OAuth metadata", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -426,6 +630,84 @@ describe("mcpPlugin", () => {
                   { status: 401, headers: { "www-authenticate": "Bearer" } },
                 ),
           ),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+        expect(result).toMatchObject({
+          connected: false,
+          requiresAuthentication: true,
+          requiresOAuth: false,
+          supportsDynamicRegistration: false,
+          toolCount: null,
+        });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+
+  it.effect(
+    "probeEndpoint treats a non-spec-compliant 401 as requires-auth instead of dead-ending",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // Auth-gated shape: a 401 with no Bearer WWW-Authenticate, no
+          // RFC 9728 protected-resource metadata, and a non-JSON-RPC body.
+          // probeMcpEndpointShape classifies this `not-mcp`/auth-required, but
+          // the user should still get the auth editor (not a dead-end error)
+          // so they can declare a method and connect an account afterward.
+          const server = yield* serveTestHttpApp((request) =>
+            Effect.succeed(
+              (request.url ?? "").includes("/.well-known/")
+                ? HttpServerResponse.text("missing", { status: 404 })
+                : HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 }),
+            ),
+          );
+          const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+          const executor = yield* createExecutor(config);
+
+          const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
+
+          expect(result).toMatchObject({
+            connected: false,
+            requiresAuthentication: true,
+            requiresOAuth: false,
+            toolCount: null,
+          });
+
+          yield* executor.close();
+          yield* Effect.promise(() => config.testDb.close());
+        }),
+      ),
+  );
+
+  it.effect("probeEndpoint keeps auth-gated non-MCP OAuth services on manual auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.sync(() => {
+            const origin = `http://${request.headers.host ?? "127.0.0.1"}`;
+            const requestUrl = new URL(request.url, origin);
+
+            if (
+              requestUrl.pathname === "/.well-known/oauth-authorization-server" ||
+              requestUrl.pathname === "/.well-known/openid-configuration"
+            ) {
+              return HttpServerResponse.jsonUnsafe({
+                issuer: origin,
+                authorization_endpoint: `${origin}/authorize`,
+                token_endpoint: `${origin}/token`,
+                response_types_supported: ["code"],
+                grant_types_supported: ["authorization_code"],
+              });
+            }
+
+            return HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 });
+          }),
         );
         const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
         const executor = yield* createExecutor(config);
@@ -508,16 +790,6 @@ describe("MCP destructiveHint → requiresApproval", () => {
 });
 
 describe("userFacingProbeMessage", () => {
-  it("turns auth-required into a credentials-asking message", () => {
-    const message = userFacingProbeMessage({
-      kind: "not-mcp",
-      category: "auth-required",
-      reason: "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
-    });
-    expect(message).toMatch(/requires authentication/i);
-    expect(message).toMatch(/credentials/i);
-  });
-
   it("turns wrong-shape into a 'not an MCP server' message", () => {
     const message = userFacingProbeMessage({
       kind: "not-mcp",
@@ -536,18 +808,9 @@ describe("userFacingProbeMessage", () => {
   });
 
   it("never surfaces the raw probe reason verbatim", () => {
-    const reasons = [
-      "401 without Bearer WWW-Authenticate — not an MCP auth challenge",
-      "2xx POST body is not a JSON-RPC envelope",
-      "GET response is not an SSE stream",
-      "unexpected status 418 for initialize",
-    ] as const;
-    for (const reason of reasons) {
-      const auth = userFacingProbeMessage({ kind: "not-mcp", category: "auth-required", reason });
-      const wrong = userFacingProbeMessage({ kind: "not-mcp", category: "wrong-shape", reason });
-      expect(auth).not.toContain(reason);
-      expect(wrong).not.toContain(reason);
-    }
+    const reason = "2xx POST body is not a JSON-RPC envelope";
+    const message = userFacingProbeMessage({ kind: "not-mcp", category: "wrong-shape", reason });
+    expect(message).not.toContain(reason);
   });
 });
 

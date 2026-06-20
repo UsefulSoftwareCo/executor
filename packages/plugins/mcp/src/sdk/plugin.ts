@@ -1,4 +1,4 @@
-import { Effect, Layer, Match, Option, Result, Schema } from "effect";
+import { Effect, Layer, Option, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -38,7 +38,11 @@ import {
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { discoverTools } from "./discover";
-import { McpConnectionError, McpToolDiscoveryError } from "./errors";
+import {
+  McpConnectionError,
+  McpOAuthReauthorizationRequired,
+  McpToolDiscoveryError,
+} from "./errors";
 import { invokeMcpTool } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
@@ -249,6 +253,34 @@ const mcpToolFailure = (code: string, message: string, details?: unknown) =>
     ...(details === undefined ? {} : { details }),
   });
 
+const mcpInvocationAuthFailure = (input: {
+  readonly status: 401 | 403;
+  readonly integration: string;
+  readonly connection: string;
+}) =>
+  authToolFailure({
+    code: "connection_rejected",
+    message:
+      input.status === 403
+        ? `MCP server rejected connection "${input.connection}" with HTTP 403. The credential may lack access or required scope; re-authenticate or update the connection before retrying this tool.`
+        : `MCP server rejected connection "${input.connection}" with HTTP 401. Re-authenticate or update the connection before retrying this tool.`,
+    source: { id: input.integration },
+    credential: { kind: "upstream", label: input.connection },
+    status: input.status,
+    upstream: { status: input.status },
+  });
+
+const mcpInvocationOAuthReauthFailure = (input: {
+  readonly integration: string;
+  readonly connection: string;
+}) =>
+  authToolFailure({
+    code: "oauth_reauth_required",
+    message: `OAuth connection "${input.connection}" requires reauthorization before retrying this MCP tool.`,
+    source: { id: input.integration },
+    credential: { kind: "oauth", label: input.connection },
+  });
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -359,28 +391,16 @@ const urlMatchesToken = (url: URL, token: string): boolean => {
   return re.test(url.hostname) || re.test(url.pathname);
 };
 
-/** Translate a non-MCP probe outcome into a message a user can act on.
+/** Translate a hard-stop probe outcome into a message a user can act on.
+ *  Auth-required shapes are routed to the auth editor upstream, so they never
+ *  reach here; the only outcomes are an unreachable endpoint or a non-MCP one.
  *  Exported for tests. */
 export const userFacingProbeMessage = (
-  shape: Extract<McpShapeProbeResult, { kind: "not-mcp" } | { kind: "unreachable" }>,
-): string => {
-  if (shape.kind === "unreachable") {
-    return "Couldn't reach this URL. Check the address, your network, and that the server is running.";
-  }
-  return Match.value(shape.category).pipe(
-    Match.when(
-      "auth-required",
-      () =>
-        "This server requires authentication. Add credentials (Authorization header, query parameter, or API key) below and retry.",
-    ),
-    Match.when(
-      "wrong-shape",
-      () =>
-        "This URL doesn't appear to host an MCP server. Double-check the address, including the path.",
-    ),
-    Match.exhaustive,
-  );
-};
+  shape: Extract<McpShapeProbeResult, { readonly kind: "unreachable" | "not-mcp" }>,
+): string =>
+  shape.kind === "unreachable"
+    ? "Couldn't reach this URL. Check the address, your network, and that the server is running."
+    : "This URL doesn't appear to host an MCP server. Double-check the address, including the path.";
 
 // ---------------------------------------------------------------------------
 // MCP-SDK OAuth provider adapter — wraps a pre-resolved access token so the
@@ -407,8 +427,10 @@ const makeOAuthProvider = (accessToken: string): OAuthClientProvider => ({
   tokens: () => ({ access_token: accessToken, token_type: "Bearer" }),
   saveTokens: () => undefined,
   redirectToAuthorization: async () => {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: MCP SDK OAuthClientProvider callback can only signal reauthorization by throwing
-    throw new Error("MCP OAuth re-authorization required");
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK OAuthClientProvider callback can only signal reauthorization by throwing
+    throw new McpOAuthReauthorizationRequired({
+      message: "MCP OAuth re-authorization required",
+    });
   },
   saveCodeVerifier: () => undefined,
   codeVerifier: () => {
@@ -644,11 +666,38 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             headers: probeHeaders,
             queryParams: probeQueryParams,
           });
-          if (shape.kind !== "mcp") {
+
+          // A `not-mcp`/auth-required shape only proves the endpoint returned
+          // 401, but the add-flow recovery is the same as a spec-compliant MCP
+          // auth challenge: declare auth and connect an account afterward.
+          // Only an unreachable endpoint or a confirmed wrong-shape is a hard
+          // stop.
+          if (shape.kind === "unreachable") {
             return yield* new McpConnectionError({
               transport: "remote",
               message: userFacingProbeMessage(shape),
             });
+          }
+
+          if (shape.kind === "not-mcp") {
+            if (shape.category === "wrong-shape") {
+              return yield* new McpConnectionError({
+                transport: "remote",
+                message: userFacingProbeMessage(shape),
+              });
+            }
+
+            return {
+              connected: false,
+              requiresAuthentication: true,
+              requiresOAuth: false,
+              supportsDynamicRegistration: false,
+              name,
+              slug,
+              toolCount: null,
+              serverName: null,
+              instructions: null,
+            } satisfies McpProbeResult;
           }
 
           const probeResult = yield* ctx.oauth.probe({ url: trimmed }).pipe(
@@ -985,16 +1034,36 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }
         return ToolResult.ok(raw);
       }).pipe(
-        Effect.catchTag("McpConnectionError", ({ message }) =>
+        Effect.catchTag("McpOAuthReauthorizationRequired", () =>
           Effect.succeed(
-            authToolFailure({
-              code: "connection_rejected",
-              message,
-              source: { id: String(credential.integration) },
-              credential: { kind: "upstream", label: String(credential.connection) },
+            mcpInvocationOAuthReauthFailure({
+              integration: String(credential.integration),
+              connection: String(credential.connection),
             }),
           ),
         ),
+        Effect.catchTag("McpConnectionError", (error) => {
+          return Effect.succeed(
+            authToolFailure({
+              code: "connection_rejected",
+              message: error.message,
+              source: { id: String(credential.integration) },
+              credential: { kind: "upstream", label: String(credential.connection) },
+            }),
+          );
+        }),
+        Effect.catchTag("McpInvocationError", (error) => {
+          if (error.status === 401 || error.status === 403) {
+            return Effect.succeed(
+              mcpInvocationAuthFailure({
+                status: error.status,
+                integration: String(credential.integration),
+                connection: String(credential.connection),
+              }),
+            );
+          }
+          return Effect.fail(error);
+        }),
         Effect.withSpan("mcp.plugin.invoke_tool", {
           attributes: {
             "mcp.tool.name": String(toolRow.name),

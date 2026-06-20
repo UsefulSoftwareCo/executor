@@ -13,6 +13,7 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import {
@@ -23,7 +24,7 @@ import {
   type ElicitationRequest,
 } from "@executor-js/sdk";
 
-import { McpConnectionError, McpInvocationError } from "./errors";
+import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,29 @@ const decodeArgsRecord = Schema.decodeUnknownOption(ArgsRecord);
 
 const argsRecord = (value: unknown): Record<string, unknown> =>
   Option.getOrElse(decodeArgsRecord(value), () => ({}));
+
+const SsePostErrorCause = Schema.Struct({ message: Schema.String });
+const decodeSsePostErrorCause = Schema.decodeUnknownOption(SsePostErrorCause);
+
+const statusFromSsePostError = (cause: unknown): number | undefined =>
+  Option.match(decodeSsePostErrorCause(cause), {
+    onNone: () => undefined,
+    onSome: ({ message }) => {
+      const match = /^Error POSTing to endpoint \(HTTP ([1-5][0-9]{2})\):/.exec(message);
+      if (!match) return undefined;
+      return Number(match[1]);
+    },
+  });
+
+const statusFromStreamableHttpError = (cause: unknown): number | undefined => {
+  // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK exposes transport HTTP failures as this Error subclass; protocol errors can carry the same numeric code
+  if (!(cause instanceof StreamableHTTPError)) return undefined;
+  const code = cause.code;
+  return code !== undefined && code >= 100 && code <= 599 ? code : undefined;
+};
+
+const httpStatusFromCause = (cause: unknown): number | undefined =>
+  statusFromStreamableHttpError(cause) ?? statusFromSsePostError(cause);
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge — decode incoming MCP ElicitRequest, route through
@@ -110,16 +134,24 @@ const useConnection = (
   toolName: string,
   args: Record<string, unknown>,
   elicit: Elicit,
-): Effect.Effect<unknown, McpInvocationError> =>
+): Effect.Effect<unknown, McpInvocationError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
     installElicitationHandler(connection.client, elicit);
     return yield* Effect.tryPromise({
       try: () => connection.client.callTool({ name: toolName, arguments: args }),
-      catch: () =>
-        new McpInvocationError({
+      catch: (cause) => {
+        if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
+          return new McpOAuthReauthorizationRequired({
+            message: "MCP OAuth re-authorization required",
+          });
+        }
+        const status = httpStatusFromCause(cause);
+        return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,
-        }),
+          ...(status === undefined ? {} : { status }),
+        });
+      },
     }).pipe(
       Effect.withSpan("plugin.mcp.client.call_tool", {
         attributes: { "mcp.tool.name": toolName },
@@ -144,7 +176,10 @@ export interface InvokeMcpToolInput {
 
 export const invokeMcpTool = (
   input: InvokeMcpToolInput,
-): Effect.Effect<unknown, McpConnectionError | McpInvocationError> =>
+): Effect.Effect<
+  unknown,
+  McpConnectionError | McpInvocationError | McpOAuthReauthorizationRequired
+> =>
   Effect.gen(function* () {
     const args = argsRecord(input.args);
 
