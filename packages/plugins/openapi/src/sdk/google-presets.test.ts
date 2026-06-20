@@ -11,6 +11,8 @@ it("keeps Select all limited to Google services that can use normal user OAuth",
   expect(standardIds).toContain("google-people");
   expect(standardIds).toContain("google-search-console");
 
+  expect(standardIds).not.toContain("google-photos-library");
+  expect(standardIds).not.toContain("google-photos-picker");
   expect(standardIds).not.toContain("google-youtube-data");
   expect(standardIds).not.toContain("google-cloud-resource-manager");
   expect(standardIds).not.toContain("google-chat");
