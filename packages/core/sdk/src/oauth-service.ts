@@ -166,6 +166,19 @@ const refreshItemIdFor = (accessId: string): string => `${accessId}:refresh`;
  *  to request; the OAuth app no longer carries a scope set. */
 const dedupeScopes = (scopes: readonly string[]): readonly string[] => [...new Set(scopes)];
 
+const recordedOAuthScope = (
+  token: OAuth2TokenResponse,
+  requestedScopes: readonly string[],
+): string | null => {
+  if (token.scope == null) return requestedScopes.join(" ") || null;
+
+  const granted = token.scope.split(/\s+/).filter(Boolean);
+  const coveredByRefreshToken =
+    token.refresh_token && requestedScopes.includes("offline_access") ? ["offline_access"] : [];
+  const recorded = dedupeScopes([...granted, ...coveredByRefreshToken]);
+  return recorded.join(" ") || null;
+};
+
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 
 /** Extract the persisted `requestedScopes` from an `oauth_session.payload`. The
@@ -915,12 +928,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         oauthClientOwner: clientOwner,
         refreshItemId,
         expiresAt: expiresAtFrom(token),
-        // Benign fallback (kept by design): record the granted scope the AS
-        // echoed back; when it omits `scope` (some servers do), fall back to the
-        // scopes we requested (declared ∪ client). This only affects the recorded
-        // scope label, not what the token can do, so a guess here masks no
-        // misconfiguration.
-        oauthScope: token.scope ?? (requestedScopes.join(" ") || null),
+        // Record the granted scope the AS echoed back. Some providers, including
+        // Microsoft, issue a refresh token for `offline_access` but omit that
+        // non-resource scope from the token `scope` string, so preserve it when
+        // the refresh token proves it was granted.
+        oauthScope: recordedOAuthScope(token, requestedScopes),
       });
     });
 

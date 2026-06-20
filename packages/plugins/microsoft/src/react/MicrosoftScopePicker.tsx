@@ -1,10 +1,5 @@
 import { useMemo, useState } from "react";
-import {
-  ChevronDownIcon,
-  PlusIcon,
-  ShieldAlertIcon,
-  XIcon,
-} from "lucide-react";
+import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 
 import { cn } from "@executor-js/react/lib/utils";
 import { Badge } from "@executor-js/react/components/badge";

@@ -30,14 +30,26 @@ const oauthPlugin = definePlugin(() => ({
     Effect.succeed({
       tools: [{ name: ToolName.make("whoami"), description: "whoami" }],
     }),
+  describeAuthMethods: (record) => {
+    const config = record.config as { readonly scopes?: readonly string[] } | null;
+    return [
+      {
+        id: "oauth",
+        label: "OAuth2",
+        kind: "oauth" as const,
+        template: String(TEMPLATE),
+        oauth: { scopes: config?.scopes ?? [] },
+      },
+    ];
+  },
   // Echo the resolved credential value (the OAuth access token) back out.
   invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
   extension: (ctx) => ({
-    seed: () =>
+    seed: (scopes: readonly string[] = []) =>
       ctx.core.integrations.register({
         slug: INTEG,
         description: "Acme",
-        config: {},
+        config: { scopes },
       }),
   }),
 }))();
@@ -116,6 +128,50 @@ describe("oauth.start / oauth.complete", () => {
           expect(yield* server.acceptsAccessToken(out.token)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("records offline_access when a refresh token proves it was granted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["offline_access", "read"],
+          omitTokenResponseScopes: ["offline_access"],
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["offline_access", "read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main-account"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.oauthScope?.split(/\s+/)).toEqual(["read", "offline_access"]);
+      }),
+    ),
   );
 
   it.effect("start (authorization_code) fails loudly when the executor has no redirectUri", () =>
