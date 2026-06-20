@@ -29,4 +29,10 @@ describe("Microsoft Graph scope presets", () => {
     expect(microsoftGraphExactPathsForPresetIds(["profile"])).toContain("/me");
     expect(microsoftGraphPathPrefixesForPresetIds(["mail"])).toContain("/me/messages");
   });
+
+  it("declares product icons for each workload", () => {
+    for (const preset of microsoftGraphScopePresets) {
+      expect(preset.icon).toMatch(/^https:\/\/svgl\.app\/library\/.+\.svg$/);
+    }
+  });
 });

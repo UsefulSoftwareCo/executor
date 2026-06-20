@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
-import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  PlusIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from "lucide-react";
 
 import { cn } from "@executor-js/react/lib/utils";
 import { Badge } from "@executor-js/react/components/badge";
@@ -12,6 +17,7 @@ import {
 } from "@executor-js/react/components/collapsible";
 import { FieldLabel } from "@executor-js/react/components/field";
 import { Input } from "@executor-js/react/components/input";
+import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 
 import {
   microsoftGraphScopePresets,
@@ -56,6 +62,9 @@ const ScopeRow = ({
     )}
   >
     <Checkbox checked={checked} onCheckedChange={(next) => onToggle(next === true)} />
+    <div className="shrink-0">
+      <IntegrationFavicon icon={preset.icon} size={16} />
+    </div>
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-sm font-medium text-foreground">{preset.name}</span>

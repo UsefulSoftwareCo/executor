@@ -51,6 +51,8 @@ scenario(
         await page.getByText("Customize Microsoft Graph").waitFor();
         await page.getByText("Outlook Mail").waitFor();
         await page.getByText("OneDrive Files").waitFor();
+        await page.locator('img[src*="svgl.app/library/microsoft-outlook.svg"]').first().waitFor();
+        await page.locator('img[src*="svgl.app/library/microsoft-onedrive.svg"]').waitFor();
         await page.getByRole("button", { name: /View scopes/ }).click();
         await page.getByText("offline_access").waitFor();
         await page.getByText("Mail.ReadWrite").waitFor();

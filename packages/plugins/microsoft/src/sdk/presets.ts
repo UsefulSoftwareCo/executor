@@ -12,6 +12,7 @@ export interface MicrosoftGraphScopePreset {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
+  readonly icon?: string;
   readonly scopes: readonly string[];
   readonly exactPaths?: readonly string[];
   readonly pathPrefixes?: readonly string[];
@@ -20,6 +21,7 @@ export interface MicrosoftGraphScopePreset {
 }
 
 const MICROSOFT_ICON = "https://www.microsoft.com/favicon.ico";
+const svglIcon = (name: string) => `https://svgl.app/library/${name}.svg`;
 
 export const MICROSOFT_GRAPH_OPENAPI_URL =
   "https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml";
@@ -46,6 +48,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "profile",
     name: "Profile",
     summary: "Signed-in user profile and photo.",
+    icon: svglIcon("microsoft"),
     scopes: ["User.Read"],
     exactPaths: ["/me", "/me/photo", "/me/photo/$value"],
     featured: true,
@@ -55,6 +58,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "mail",
     name: "Outlook Mail",
     summary: "Messages, folders, attachments, and send mail.",
+    icon: svglIcon("microsoft-outlook"),
     scopes: ["Mail.ReadWrite", "Mail.Send"],
     pathPrefixes: [
       "/me/messages",
@@ -71,6 +75,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "calendar",
     name: "Outlook Calendar",
     summary: "Calendars, events, and scheduling.",
+    icon: svglIcon("microsoft-outlook"),
     scopes: ["Calendars.ReadWrite"],
     pathPrefixes: [
       "/me/calendar",
@@ -89,6 +94,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "files",
     name: "OneDrive Files",
     summary: "Drives, files, folders, sharing links, and permissions.",
+    icon: svglIcon("microsoft-onedrive"),
     scopes: ["Files.ReadWrite.All"],
     pathPrefixes: ["/me/drive", "/users/{user-id}/drive", "/drives", "/shares"],
     featured: true,
@@ -98,6 +104,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "excel",
     name: "Excel Workbooks",
     summary: "Workbook tables, worksheets, ranges, charts, and sessions.",
+    icon: svglIcon("microsoft-excel"),
     scopes: ["Files.ReadWrite.All"],
     pathPrefixes: [
       "/me/drive/items/{driveItem-id}/workbook",
@@ -110,6 +117,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "contacts",
     name: "Outlook Contacts",
     summary: "Contacts and contact folders.",
+    icon: svglIcon("microsoft-outlook"),
     scopes: ["Contacts.ReadWrite"],
     pathPrefixes: [
       "/me/contacts",
@@ -123,6 +131,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "tasks",
     name: "To Do Tasks",
     summary: "Task lists, tasks, and checklist items.",
+    icon: svglIcon("microsoft-todo"),
     scopes: ["Tasks.ReadWrite"],
     pathPrefixes: ["/me/todo", "/users/{user-id}/todo"],
     audience: "standard-user",
@@ -131,6 +140,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "teams-chat",
     name: "Teams Chats",
     summary: "Chats, chat messages, installed apps, and members.",
+    icon: svglIcon("microsoft-teams"),
     scopes: ["Chat.ReadWrite"],
     pathPrefixes: ["/me/chats", "/chats"],
     audience: "standard-user",
@@ -139,6 +149,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "sites",
     name: "SharePoint Sites",
     summary: "Sites, lists, pages, and columns.",
+    icon: svglIcon("microsoft-sharepoint"),
     scopes: ["Sites.ReadWrite.All"],
     pathPrefixes: ["/sites"],
     audience: "admin",
@@ -147,6 +158,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     id: "users",
     name: "Directory Users",
     summary: "Users, managers, app role assignments, and directory metadata.",
+    icon: svglIcon("microsoft"),
     scopes: ["User.ReadWrite.All", "Directory.Read.All"],
     pathPrefixes: ["/users"],
     audience: "admin",
