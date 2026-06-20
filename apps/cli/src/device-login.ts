@@ -38,6 +38,10 @@ export interface DeviceTokens {
   readonly refreshToken?: string;
   /** Epoch seconds the access token expires, when known. */
   readonly expiresAt?: number;
+  /** The signed-in account's email, if the token response carries a user. */
+  readonly email?: string;
+  /** The bound organization id, from the response or the token's org_id claim. */
+  readonly organizationId?: string;
 }
 
 const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
@@ -57,6 +61,15 @@ const asString = (value: unknown): string | undefined =>
 
 const asNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** Pull `user.email` out of a token response (WorkOS returns the user inline). */
+const readUserEmail = (body: Record<string, unknown>): string | undefined => {
+  const user = body.user;
+  if (user && typeof user === "object" && "email" in user) {
+    return asString((user as { email?: unknown }).email);
+  }
+  return undefined;
+};
 
 /**
  * Decode a JWT access token's claims WITHOUT verifying it. The CLI only uses
@@ -213,10 +226,16 @@ export const pollForDeviceTokens = async (
       if (!accessToken) {
         throw new DeviceLoginError("Token response was missing an access token.");
       }
+      const claims = decodeAccessTokenClaims(accessToken);
       return {
         accessToken,
         refreshToken: asString(body.refresh_token),
         expiresAt: deriveExpiresAt({ accessToken, expiresIn: asNumber(body.expires_in) }),
+        email:
+          readUserEmail(body) ?? (typeof claims?.email === "string" ? claims.email : undefined),
+        organizationId:
+          asString(body.organization_id) ??
+          (typeof claims?.org_id === "string" ? claims.org_id : undefined),
       };
     }
 

@@ -147,6 +147,7 @@ import {
   setDefaultCliServerConnectionProfile,
   upsertCliServerConnectionProfile,
   validateCliServerConnectionProfileName,
+  type CliServerConnectionStore,
 } from "./server-profile";
 import {
   buildResumeContentTemplate,
@@ -2057,29 +2058,77 @@ const serverCommand = Command.make("server").pipe(
   Command.withDescription("Manage named Executor server profiles"),
 );
 
-const deriveLoginProfileName = (origin: string): string => {
+const loginHostLabel = (origin: string): string => {
   try {
     const host = new URL(origin).hostname;
     const first = host.split(".")[0];
-    return validateCliServerConnectionProfileName(first && first.length > 0 ? first : host);
+    return first && first.length > 0 ? first : host;
   } catch {
     return "server";
   }
 };
 
-const resolveLoginTarget = (input: {
+const sanitizeProfileName = (raw: string): string => {
+  const cleaned = raw
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned.length > 0 ? cleaned : "server";
+};
+
+// The (origin, user, org) a stored oauth profile authenticates as — lets us
+// recognize a re-login to the SAME account (update in place) versus a
+// different account on the same host (needs its own profile).
+const oauthAccountIdentity = (connection: ExecutorServerConnection): string | null => {
+  const auth = connection.auth;
+  if (!auth || auth.kind !== "oauth") return null;
+  const claims = decodeAccessTokenClaims(auth.accessToken);
+  const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
+  const org = typeof claims?.org_id === "string" ? claims.org_id : undefined;
+  return sub && org ? `${connection.origin}|${sub}|${org}` : null;
+};
+
+// Name a login's profile by the ACCOUNT it authenticates (email, falling back
+// to user id), not the hostname — so two accounts on the same server get
+// distinct profiles instead of clobbering each other (the way opencode keys
+// accounts by email/url). A re-login to the same account reuses its profile.
+const chooseLoginProfileName = (
+  store: CliServerConnectionStore,
+  account: {
+    readonly origin: string;
+    readonly sub?: string;
+    readonly org?: string;
+    readonly email?: string;
+  },
+): string => {
+  const identity =
+    account.sub && account.org ? `${account.origin}|${account.sub}|${account.org}` : null;
+  if (identity) {
+    const existing = store.profiles.find((p) => oauthAccountIdentity(p.connection) === identity);
+    if (existing) return existing.name;
+  }
+  const base = sanitizeProfileName(account.email ?? account.sub ?? loginHostLabel(account.origin));
+  if (!store.profiles.some((p) => p.name === base)) return base;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!store.profiles.some((p) => p.name === candidate)) return candidate;
+  }
+};
+
+// Resolve which server a login/logout targets: an existing profile (--server
+// or the default) or a bare origin (--base-url). The profile name is decided
+// later, from the authenticated account.
+const resolveLoginOrigin = (input: {
   readonly baseUrl: Option.Option<string>;
   readonly server: Option.Option<string>;
-  readonly name: Option.Option<string>;
 }): Effect.Effect<
-  { readonly origin: string; readonly profileName: string },
+  { readonly origin: string; readonly profile: ReturnType<typeof findCliServerConnectionProfile> },
   Error,
   FileSystem.FileSystem | PlatformPath.Path
 > =>
   Effect.gen(function* () {
     const baseUrl = Option.getOrUndefined(input.baseUrl);
     const serverName = Option.getOrUndefined(input.server);
-    const explicitName = Option.getOrUndefined(input.name);
     if (baseUrl && serverName) {
       return yield* Effect.fail(new Error("Use either --server or --base-url, not both."));
     }
@@ -2088,32 +2137,14 @@ const resolveLoginTarget = (input: {
       const profile = findCliServerConnectionProfile(store, serverName);
       if (!profile)
         return yield* Effect.fail(new Error(`No server profile named "${serverName}".`));
-      return {
-        origin: profile.connection.origin,
-        profileName: explicitName
-          ? validateCliServerConnectionProfileName(explicitName)
-          : profile.name,
-      };
+      return { origin: profile.connection.origin, profile };
     }
     if (baseUrl) {
-      const origin = normalizeExecutorServerOrigin(baseUrl);
-      return {
-        origin,
-        profileName: explicitName
-          ? validateCliServerConnectionProfileName(explicitName)
-          : deriveLoginProfileName(origin),
-      };
+      return { origin: normalizeExecutorServerOrigin(baseUrl), profile: null };
     }
     const store = yield* readCliServerConnectionStore();
     const profile = defaultCliServerConnectionProfile(store);
-    if (profile) {
-      return {
-        origin: profile.connection.origin,
-        profileName: explicitName
-          ? validateCliServerConnectionProfileName(explicitName)
-          : profile.name,
-      };
-    }
+    if (profile) return { origin: profile.connection.origin, profile };
     return yield* Effect.fail(
       new Error(
         "No server to log in to. Pass --base-url <https://your-host> or --server <profile>.",
@@ -2123,7 +2154,7 @@ const resolveLoginTarget = (input: {
 
 const loginNameOption = Options.string("name").pipe(
   Options.optional,
-  Options.withDescription("Profile name to save the login under."),
+  Options.withDescription("Profile name to save the login under (defaults to your account)."),
 );
 
 const noBrowserOption = Options.boolean("no-browser").pipe(
@@ -2141,9 +2172,10 @@ const loginCommand = Command.make(
   },
   ({ baseUrl, server, name, noBrowser }) =>
     Effect.gen(function* () {
-      const selected = yield* resolveLoginTarget({ baseUrl, server, name });
+      const target = yield* resolveLoginOrigin({ baseUrl, server });
+      const explicitName = Option.getOrUndefined(name);
       const discovery = yield* Effect.tryPromise({
-        try: () => discoverCliLogin(selected.origin),
+        try: () => discoverCliLogin(target.origin),
         catch: toError,
       });
       const grant = yield* Effect.tryPromise({
@@ -2161,11 +2193,28 @@ const loginCommand = Command.make(
         try: () => pollForDeviceTokens(discovery, grant),
         catch: toError,
       });
+
+      const claims = decodeAccessTokenClaims(tokens.accessToken);
+      const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
+      const org =
+        tokens.organizationId ?? (typeof claims?.org_id === "string" ? claims.org_id : undefined);
+      const email = tokens.email;
+
+      // Name by account so a different account on the same host doesn't clobber
+      // an existing login; --server / the default profile / --name pin it.
+      const store = yield* readCliServerConnectionStore();
+      const profileName = explicitName
+        ? validateCliServerConnectionProfileName(explicitName)
+        : target.profile
+          ? target.profile.name
+          : chooseLoginProfileName(store, { origin: target.origin, sub, org, email });
+
       yield* upsertCliServerConnectionProfile({
-        name: selected.profileName,
+        name: profileName,
         connection: {
           kind: "http",
-          origin: selected.origin,
+          origin: target.origin,
+          ...(email ? { displayName: email } : {}),
           auth: {
             kind: "oauth",
             accessToken: tokens.accessToken,
@@ -2177,17 +2226,12 @@ const loginCommand = Command.make(
         },
         makeDefault: true,
       });
-      const claims = decodeAccessTokenClaims(tokens.accessToken);
+
       console.log("");
-      console.log(
-        `Logged in to ${selected.origin} (profile "${selected.profileName}", now the default).`,
-      );
-      const email = claims?.email;
-      const org = claims?.org_id;
-      const sub = claims?.sub;
-      if (typeof email === "string") console.log(`Email: ${email}`);
-      if (typeof org === "string") console.log(`Organization: ${org}`);
-      else if (typeof sub === "string") console.log(`User: ${sub}`);
+      console.log(`Logged in to ${target.origin} (profile "${profileName}", now the default).`);
+      if (email) console.log(`Account: ${email}`);
+      if (org) console.log(`Organization: ${org}`);
+      else if (sub) console.log(`User: ${sub}`);
     }),
 ).pipe(Command.withDescription("Sign in to a hosted Executor server in the browser (device flow)"));
 
@@ -2196,11 +2240,13 @@ const logoutCommand = Command.make(
   { baseUrl: serverBaseUrl, server: serverProfile },
   ({ baseUrl, server }) =>
     Effect.gen(function* () {
-      const selected = yield* resolveLoginTarget({ baseUrl, server, name: Option.none() });
+      const target = yield* resolveLoginOrigin({ baseUrl, server });
       const store = yield* readCliServerConnectionStore();
-      const profile = findCliServerConnectionProfile(store, selected.profileName);
+      // --server / default give the profile directly; --base-url matches by origin.
+      const profile =
+        target.profile ?? store.profiles.find((p) => p.connection.origin === target.origin) ?? null;
       if (!profile) {
-        console.log(`No server profile named "${selected.profileName}".`);
+        console.log(`No stored login for ${target.origin}.`);
         return;
       }
       if (!profile.connection.auth) {
@@ -2239,10 +2285,11 @@ const whoamiCommand = Command.make(
       }
       if (auth.kind === "oauth") {
         const claims = decodeAccessTokenClaims(auth.accessToken);
-        const email = claims?.email;
         const sub = claims?.sub;
         const org = claims?.org_id;
-        if (typeof email === "string") console.log(`Email: ${email}`);
+        // The email lives on the profile's displayName (WorkOS access tokens
+        // don't carry an email claim); the token carries sub + org_id.
+        if (connection.displayName.includes("@")) console.log(`Account: ${connection.displayName}`);
         if (typeof sub === "string") console.log(`User: ${sub}`);
         if (typeof org === "string") console.log(`Organization: ${org}`);
         if (auth.expiresAt) {

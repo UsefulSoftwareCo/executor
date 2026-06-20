@@ -9,6 +9,7 @@
 // mcpConsent. The session then runs `whoami` and `tools sources`; a clean exit
 // of that chain proves the resulting WorkOS access token (a JWT) is accepted by
 // the protected `/api/*` plane.
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,7 +92,10 @@ scenario(
     // The stored profile carries an oauth device-login credential, not a key.
     const store = JSON.parse(readFileSync(join(dataDir, "server-connections.json"), "utf8")) as {
       defaultProfile: string | null;
-      profiles: Array<{ name: string; connection: { auth?: { kind: string; accessToken?: string } } }>;
+      profiles: Array<{
+        name: string;
+        connection: { auth?: { kind: string; accessToken?: string } };
+      }>;
     };
     expect(store.defaultProfile, "the login became the default profile").toBe("cloud");
     const cloudProfile = store.profiles.find((p) => p.name === "cloud");
@@ -101,5 +105,77 @@ scenario(
     expect(typeof cloudProfile?.connection.auth?.accessToken, "an access token is stored").toBe(
       "string",
     );
+  }),
+);
+
+// Run `executor login` as a subprocess, approving the device for `approveEmail`
+// the moment the verification URL is printed (raw stdout, no PTY).
+const runCliLogin = (
+  args: readonly string[],
+  dataDir: string,
+  approveEmail: string,
+): Promise<{ code: number | null; stdout: string }> =>
+  new Promise((res, rej) => {
+    const env = { ...process.env, EXECUTOR_DATA_DIR: dataDir };
+    for (const k of ["EXECUTOR_API_KEY", "EXECUTOR_AUTH_TOKEN", "EXECUTOR_AUTH_PASSWORD"]) {
+      delete (env as Record<string, string | undefined>)[k];
+    }
+    const child = spawn("bun", ["run", CLI_ENTRY, ...args], { cwd: REPO_ROOT, env });
+    let stdout = "";
+    let approved = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (approved) return;
+      const match = stdout.match(/(https?:\/\/\S*user_code=\S+)/);
+      if (!match) return;
+      approved = true;
+      const url = new URL(match[1]);
+      url.searchParams.set("login_hint", approveEmail);
+      void fetch(url, { redirect: "manual" });
+    });
+    child.stderr.on("data", () => {});
+    child.on("error", rej);
+    child.on("close", (code) => res({ code, stdout }));
+  });
+
+scenario(
+  "CLI · two accounts on the same host get separate profiles",
+  { timeout: 120_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    if (target.name !== "cloud") return;
+
+    const runDir = yield* RunDir;
+    const dataDir = join(runDir, "multi-home");
+
+    // Two distinct hosted accounts (different user + org) on the SAME server.
+    const a = yield* target.newIdentity();
+    const b = yield* target.newIdentity();
+    const emailA = a.credentials?.email ?? a.label;
+    const emailB = b.credentials?.email ?? b.label;
+
+    // Log in as each with NO --name, so naming is driven by the account.
+    const loginA = yield* Effect.promise(() =>
+      runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailA),
+    );
+    expect(loginA.code, "first login exited cleanly").toBe(0);
+    const loginB = yield* Effect.promise(() =>
+      runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailB),
+    );
+    expect(loginB.code, "second login exited cleanly").toBe(0);
+
+    const store = JSON.parse(readFileSync(join(dataDir, "server-connections.json"), "utf8")) as {
+      defaultProfile: string | null;
+      profiles: Array<{
+        name: string;
+        connection: { origin: string; displayName?: string; auth?: { kind: string } };
+      }>;
+    };
+    const oauthProfiles = store.profiles.filter((p) => p.connection.auth?.kind === "oauth");
+    // The second login must NOT clobber the first — both accounts kept.
+    expect(oauthProfiles.length, "both accounts retained as separate profiles").toBe(2);
+    expect(new Set(oauthProfiles.map((p) => p.name)).size, "profile names are distinct").toBe(2);
+    const emails = new Set(oauthProfiles.map((p) => p.connection.displayName));
+    expect(emails.has(emailA) && emails.has(emailB), "both account emails present").toBe(true);
   }),
 );
