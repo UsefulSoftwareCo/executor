@@ -29,6 +29,9 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
               description: payload.description,
               baseUrl: payload.baseUrl,
               specUrl: payload.specUrl,
+              authorizationUrl: payload.authorizationUrl,
+              tokenUrl: payload.tokenUrl,
+              clientCredentialsTokenUrl: payload.clientCredentialsTokenUrl,
             });
           }),
         ),
@@ -73,6 +76,10 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
                   microsoftGraphPathPrefixes: config.microsoftGraphPathPrefixes
                     ? [...config.microsoftGraphPathPrefixes]
                     : undefined,
+                  microsoftGraphAuthorizationUrl: config.microsoftGraphAuthorizationUrl,
+                  microsoftGraphTokenUrl: config.microsoftGraphTokenUrl,
+                  microsoftGraphClientCredentialsTokenUrl:
+                    config.microsoftGraphClientCredentialsTokenUrl,
                   baseUrl: config.baseUrl,
                   headers: config.headers ? { ...config.headers } : undefined,
                   queryParams: config.queryParams ? { ...config.queryParams } : undefined,
@@ -103,7 +110,15 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
             const result = yield* ext.updateGraph(params.slug, {
               ...(payload.presetIds !== undefined ? { presetIds: payload.presetIds } : {}),
               ...(payload.customScopes !== undefined ? { customScopes: payload.customScopes } : {}),
+              ...(payload.baseUrl !== undefined ? { baseUrl: payload.baseUrl } : {}),
               ...(payload.specUrl !== undefined ? { specUrl: payload.specUrl } : {}),
+              ...(payload.authorizationUrl !== undefined
+                ? { authorizationUrl: payload.authorizationUrl }
+                : {}),
+              ...(payload.tokenUrl !== undefined ? { tokenUrl: payload.tokenUrl } : {}),
+              ...(payload.clientCredentialsTokenUrl !== undefined
+                ? { clientCredentialsTokenUrl: payload.clientCredentialsTokenUrl }
+                : {}),
             });
             return {
               slug: result.slug,

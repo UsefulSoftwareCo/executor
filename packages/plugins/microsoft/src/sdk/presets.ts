@@ -30,6 +30,10 @@ export const MICROSOFT_AUTHORIZATION_URL =
   "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
 export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 export const MICROSOFT_AUTH_TEMPLATE_SLUG = "azureAdDelegated";
+export const MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG = "azureAdClientCredentials";
+export const MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES: readonly string[] = [
+  "https://graph.microsoft.com/.default",
+];
 
 export const MICROSOFT_GRAPH_PRESET_ID = "microsoft";
 

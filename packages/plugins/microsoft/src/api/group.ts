@@ -54,6 +54,9 @@ const AddGraphPayload = Schema.Struct({
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   specUrl: Schema.optional(Schema.String),
+  authorizationUrl: Schema.optional(Schema.String),
+  tokenUrl: Schema.optional(Schema.String),
+  clientCredentialsTokenUrl: Schema.optional(Schema.String),
 });
 
 const AddGraphResponse = Schema.Struct({
@@ -64,7 +67,11 @@ const AddGraphResponse = Schema.Struct({
 const UpdateGraphPayload = Schema.Struct({
   presetIds: Schema.optional(Schema.Array(Schema.String)),
   customScopes: Schema.optional(Schema.Array(Schema.String)),
+  baseUrl: Schema.optional(Schema.String),
   specUrl: Schema.optional(Schema.String),
+  authorizationUrl: Schema.optional(Schema.String),
+  tokenUrl: Schema.optional(Schema.String),
+  clientCredentialsTokenUrl: Schema.optional(Schema.String),
 });
 
 const UpdateGraphResponse = Schema.Struct({
@@ -89,6 +96,9 @@ const MicrosoftConfigView = Schema.Struct({
   microsoftGraphScopes: Schema.optional(Schema.Array(Schema.String)),
   microsoftGraphExactPaths: Schema.optional(Schema.Array(Schema.String)),
   microsoftGraphPathPrefixes: Schema.optional(Schema.Array(Schema.String)),
+  microsoftGraphAuthorizationUrl: Schema.optional(Schema.String),
+  microsoftGraphTokenUrl: Schema.optional(Schema.String),
+  microsoftGraphClientCredentialsTokenUrl: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),

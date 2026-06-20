@@ -11,7 +11,12 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { microsoftPlugin } from "./plugin";
-import { MICROSOFT_AUTH_TEMPLATE_SLUG, MICROSOFT_GRAPH_OPENAPI_URL } from "./presets";
+import {
+  MICROSOFT_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
+  MICROSOFT_GRAPH_OPENAPI_URL,
+} from "./presets";
 
 const graphFixture = `
 openapi: 3.0.4
@@ -51,17 +56,64 @@ components:
       type: object
 `;
 
+const EMULATOR_SPEC_URL = "https://microsoft.emulators.dev/_emulate/openapi";
+const EMULATOR_BASE_URL = "https://microsoft.emulators.dev";
+const emulatorGraphFixture = `
+openapi: 3.0.3
+info:
+  title: Microsoft Graph Emulator
+  version: 1.0.0
+servers:
+  - url: ${EMULATOR_BASE_URL}
+paths:
+  /v1.0/users:
+    get:
+      operationId: graphUser_List
+      responses:
+        "200":
+          description: OK
+  /v1.0/me:
+    get:
+      operationId: graphUser_GetMyProfile
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    azureAdDelegated:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: ${EMULATOR_BASE_URL}/oauth2/v2.0/authorize
+          tokenUrl: ${EMULATOR_BASE_URL}/oauth2/v2.0/token
+          scopes:
+            User.Read: User.Read
+            User.Read.All: User.Read.All
+        clientCredentials:
+          tokenUrl: ${EMULATOR_BASE_URL}/oauth2/v2.0/token
+          scopes:
+            https://graph.microsoft.com/.default: https://graph.microsoft.com/.default
+`;
+
 const graphHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
   HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
     Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        request.url === MICROSOFT_GRAPH_OPENAPI_URL
-          ? new Response(graphFixture, {
-              status: 200,
-              headers: { "content-type": "application/yaml" },
-            })
-          : new Response("not found", { status: 404 }),
+        new Response(
+          request.url === MICROSOFT_GRAPH_OPENAPI_URL
+            ? graphFixture
+            : request.url === EMULATOR_SPEC_URL
+              ? emulatorGraphFixture
+              : "not found",
+          {
+            status:
+              request.url === MICROSOFT_GRAPH_OPENAPI_URL || request.url === EMULATOR_SPEC_URL
+                ? 200
+                : 404,
+            headers: { "content-type": "application/yaml" },
+          },
+        ),
       ),
     ),
   ),
@@ -93,9 +145,29 @@ describe("Microsoft Graph provider", () => {
           "Mail.Send",
         ]);
 
-        const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
-        expect(oauth?.kind === "oauth2" ? oauth.slug : undefined).toBe(
+        const oauthTemplates = config?.authenticationTemplate?.filter(
+          (entry) => entry.kind === "oauth2",
+        );
+        const delegated = oauthTemplates?.find(
+          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+        );
+        const clientCredentials = oauthTemplates?.find(
+          (entry) => String(entry.slug) === MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+        );
+        expect(delegated?.kind === "oauth2" ? delegated.slug : undefined).toBe(
           AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+        );
+        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
+          "offline_access",
+          "User.Read",
+          "Mail.ReadWrite",
+          "Mail.Send",
+        ]);
+        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.slug : undefined).toBe(
+          AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
+        );
+        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.scopes : undefined).toEqual(
+          [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
         );
 
         yield* executor.connections.create({
@@ -110,6 +182,58 @@ describe("Microsoft Graph provider", () => {
         expect(toolNames).toContain("me.getUser");
         expect(toolNames).toContain("me.messagesListMessages");
         expect(toolNames).not.toContain("sites.listSites");
+      }),
+    ),
+  );
+
+  it.effect("adds Microsoft Graph from the emulator spec with app-only OAuth endpoints", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addGraph({
+          presetIds: ["users"],
+          slug: "microsoft_graph_emulated",
+          baseUrl: EMULATOR_BASE_URL,
+          specUrl: EMULATOR_SPEC_URL,
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_emulated");
+        expect(config?.sourceUrl).toBe(EMULATOR_SPEC_URL);
+        expect(config?.baseUrl).toBe(EMULATOR_BASE_URL);
+        expect(config?.microsoftGraphAuthorizationUrl).toBe(
+          `${EMULATOR_BASE_URL}/oauth2/v2.0/authorize`,
+        );
+        expect(config?.microsoftGraphTokenUrl).toBe(`${EMULATOR_BASE_URL}/oauth2/v2.0/token`);
+        expect(config?.microsoftGraphClientCredentialsTokenUrl).toBe(
+          `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
+        );
+
+        const delegated = config?.authenticationTemplate?.find(
+          (entry) => entry.kind === "oauth2" && String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+        );
+        const clientCredentials = config?.authenticationTemplate?.find(
+          (entry) =>
+            entry.kind === "oauth2" &&
+            String(entry.slug) === MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+        );
+        expect(delegated?.kind === "oauth2" ? delegated.tokenUrl : undefined).toBe(
+          `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
+        );
+        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.scopes : undefined).toEqual(
+          [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
+        );
+
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("machine"),
+          integration: IntegrationSlug.make("microsoft_graph_emulated"),
+          template: AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
+          value: "token-xyz",
+        });
+
+        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+        expect(toolNames).toContain("users.graphUserList");
       }),
     ),
   );

@@ -340,10 +340,11 @@
       "version": "0.0.12",
       "dependencies": {
         "@executor-js/api": "workspace:*",
-        "@executor-js/emulate": "^0.7.0",
+        "@executor-js/emulate": "^0.7.5",
         "@executor-js/mcporter": "^0.11.4",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
+        "@executor-js/plugin-microsoft": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@kitlangton/terminal-control": "^0.3.0",
@@ -1630,7 +1631,7 @@
 
     "@executor-js/e2e": ["@executor-js/e2e@workspace:e2e"],
 
-    "@executor-js/emulate": ["@executor-js/emulate@0.7.0", "", { "dependencies": { "commander": "^14", "graphql": "^16.9.0", "jose": "^6", "picocolors": "^1.1.1", "yaml": "^2" }, "bin": { "emulate": "dist/index.js" } }, "sha512-wm+0O8Fd8X6HZpfZhDTcyQel9SEWBA/5aLwU2uEwjzEbhELRqI+sAVNZ7B2XafnvHRkuGF21ZmbAFfXg16IfCg=="],
+    "@executor-js/emulate": ["@executor-js/emulate@0.7.5", "", { "dependencies": { "commander": "^14", "graphql": "^16.9.0", "jose": "^6", "picocolors": "^1.1.1", "yaml": "^2" }, "bin": { "emulate": "dist/index.js" } }, "sha512-tPq+XYyohEa4HjFFZpMK3hsKZEozXpudsWQCQfj1pwmLdiouz5a1cmH9RC1X9nYvx76sHPyR6GVIpAw+rFT3Sg=="],
 
     "@executor-js/example-all-plugins": ["@executor-js/example-all-plugins@workspace:examples/all-plugins"],
 
