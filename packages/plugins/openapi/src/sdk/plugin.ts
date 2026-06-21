@@ -8,6 +8,7 @@ import {
   IntegrationNotFoundError,
   IntegrationSlug,
   ToolName,
+  ToolFileJsonSchema,
   ToolResult,
   authToolFailure,
   definePlugin,
@@ -518,6 +519,7 @@ const toBinding = (def: ToolDefinition): OperationBinding =>
     pathTemplate: def.operation.pathTemplate,
     parameters: [...def.operation.parameters],
     requestBody: def.operation.requestBody,
+    responseBody: def.operation.responseBody,
   });
 
 const descriptionFor = (def: ToolDefinition): string => {
@@ -634,7 +636,13 @@ const toolDefsFromCompiled = (compiled: CompiledSpec): readonly ToolDef[] =>
       // The output schema is the upstream response body only — transport
       // status/headers live in the ToolResult `http` side channel, not the
       // payload (see the invoke handler).
-      outputSchema: normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+      outputSchema: Option.match(def.operation.responseBody, {
+        onNone: () => normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+        onSome: (responseBody) =>
+          Option.isSome(responseBody.fileHint)
+            ? ToolFileJsonSchema
+            : normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+      }),
       annotations: annotationsForOperation(def.operation.method, def.operation.pathTemplate),
     }),
   );
@@ -1168,20 +1176,26 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         // re-deriving it from the spec blob when the store has no row (e.g. an
         // integration registered without going through addSpec). The fallback
         // is the ONLY invoke-path spec read — the hot path never loads it.
+        const bindingFromSpec = config
+          ? Effect.gen(function* () {
+              const specText = yield* loadSpecText(invokeCtx.storage, config).pipe(
+                Effect.catch(() => Effect.succeed(null)),
+              );
+              const compiled =
+                specText == null
+                  ? null
+                  : yield* compileSpec(specText).pipe(Effect.catch(() => Effect.succeed(null)));
+              return compiled
+                ? storedOperationsFromCompiled(integration, compiled).find(
+                    (op) => op.toolName === toolRow.name,
+                  )?.binding
+                : undefined;
+            })
+          : Effect.succeed(undefined);
+
         let binding = (yield* invokeCtx.storage.getOperation(integration, toolRow.name))?.binding;
-        if (!binding && config) {
-          const specText = yield* loadSpecText(invokeCtx.storage, config).pipe(
-            Effect.catch(() => Effect.succeed(null)),
-          );
-          const compiled =
-            specText == null
-              ? null
-              : yield* compileSpec(specText).pipe(Effect.catch(() => Effect.succeed(null)));
-          binding = compiled
-            ? storedOperationsFromCompiled(integration, compiled).find(
-                (op) => op.toolName === toolRow.name,
-              )?.binding
-            : undefined;
+        if ((!binding || Option.isNone(binding.responseBody)) && config) {
+          binding = (yield* bindingFromSpec) ?? binding;
         }
         if (!binding) {
           return yield* new OpenApiExtractionError({

@@ -102,6 +102,20 @@ const contentFor = (contentType: string) => ({
   },
 });
 
+const replaceResponseContent =
+  (path: string, operation: string, content: Record<string, unknown>) =>
+  (spec: Record<string, unknown>): Record<string, unknown> => {
+    const paths = { ...(spec.paths as Record<string, unknown>) };
+    const pathItem = { ...(paths[path] as Record<string, unknown>) };
+    const operationSpec = { ...(pathItem[operation] as Record<string, unknown>) };
+    const responses = { ...(operationSpec.responses as Record<string, unknown>) };
+    const ok = { ...(responses["200"] as Record<string, unknown>) };
+    responses["200"] = { ...ok, content };
+    pathItem[operation] = { ...operationSpec, responses };
+    paths[path] = pathItem;
+    return { ...spec, paths };
+  };
+
 const replaceRequestBodyContent =
   (
     path: string,
@@ -231,6 +245,185 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       expect(captured.contentType).toBe("application/octet-stream");
       expect(captured.body.length).toBe(payload.length);
       expect(Array.from(captured.body)).toEqual(Array.from(payload));
+    }),
+  );
+
+  it.effect(
+    "format: byte response: Gmail-style image attachment data is exposed as a file artifact",
+    () =>
+      Effect.gen(function* () {
+        const attachmentBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+        const attachmentBase64Url = "_9j_4AAQ";
+        const MessagePartBody = Schema.Struct({
+          data: Schema.String,
+          size: Schema.Number,
+        });
+        const group = HttpApiGroup.make("gmail").add(
+          HttpApiEndpoint.get("getAttachment", "/attachments/:id", {
+            success: MessagePartBody,
+          }),
+        );
+        const api = HttpApi.make("gmailAttachmentTest").add(group);
+        const handlersLayer = HttpApiBuilder.group(api, "gmail", (handlers) =>
+          handlers.handleRaw("getAttachment", () =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe({
+                data: attachmentBase64Url,
+                size: attachmentBytes.byteLength,
+              }),
+            ),
+          ),
+        );
+        const server = yield* serveOpenApiHttpApiTestServer({
+          api,
+          handlersLayer,
+          transformSpec: replaceResponseContent("/attachments/{id}", "get", {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  data: {
+                    type: "string",
+                    format: "byte",
+                    description: "The body data as a base64url encoded string.",
+                  },
+                  size: {
+                    type: "integer",
+                    format: "int32",
+                    description: "Number of bytes for the message part data.",
+                  },
+                },
+                required: ["data", "size"],
+              },
+            },
+          }),
+        });
+
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail" });
+
+        const schema = yield* executor.tools.schema(conn.address("gmail.getAttachment"));
+        expect(schema?.outputSchema).toMatchObject({
+          properties: {
+            _tag: { const: "ToolFile" },
+            data: { contentEncoding: "base64" },
+          },
+        });
+
+        const result = yield* executor.execute(conn.address("gmail.getAttachment"), {
+          id: "att_1",
+        });
+
+        expect(result).toMatchObject({
+          ok: true,
+          data: {
+            _tag: "ToolFile",
+            encoding: "base64",
+            mimeType: "image/jpeg",
+            data: "/9j/4AAQ",
+            byteLength: attachmentBytes.byteLength,
+          },
+        });
+      }),
+  );
+
+  it.effect("format: binary response: raw file bodies are exposed as file artifacts", () =>
+    Effect.gen(function* () {
+      const group = HttpApiGroup.make("files").add(
+        HttpApiEndpoint.get("download", "/files/:id", {
+          success: Schema.String,
+        }),
+      );
+      const api = HttpApi.make("binaryDownloadTest").add(group);
+      const handlersLayer = HttpApiBuilder.group(api, "files", (handlers) =>
+        handlers.handleRaw("download", () =>
+          Effect.succeed(HttpServerResponse.text("%PDF-", { contentType: "application/pdf" })),
+        ),
+      );
+      const server = yield* serveOpenApiHttpApiTestServer({
+        api,
+        handlersLayer,
+        transformSpec: replaceResponseContent("/files/{id}", "get", {
+          "application/pdf": {
+            schema: {
+              type: "string",
+              format: "binary",
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "files" });
+
+      const schema = yield* executor.tools.schema(conn.address("files.download"));
+      expect(schema?.outputSchema).toMatchObject({
+        properties: {
+          _tag: { const: "ToolFile" },
+          data: { contentEncoding: "base64" },
+        },
+      });
+
+      const result = yield* executor.execute(conn.address("files.download"), {
+        id: "report",
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          _tag: "ToolFile",
+          encoding: "base64",
+          mimeType: "application/pdf",
+          data: "JVBERi0=",
+          byteLength: 5,
+        },
+      });
+    }),
+  );
+
+  it.effect("format: binary response: non-2xx responses keep their error body", () =>
+    Effect.gen(function* () {
+      const group = HttpApiGroup.make("files").add(
+        HttpApiEndpoint.get("download", "/files/:id", {
+          success: Schema.String,
+        }),
+      );
+      const api = HttpApi.make("binaryDownloadErrorTest").add(group);
+      const handlersLayer = HttpApiBuilder.group(api, "files", (handlers) =>
+        handlers.handleRaw("download", () =>
+          Effect.succeed(HttpServerResponse.jsonUnsafe({ error: "missing" }, { status: 404 })),
+        ),
+      );
+      const server = yield* serveOpenApiHttpApiTestServer({
+        api,
+        handlersLayer,
+        transformSpec: replaceResponseContent("/files/{id}", "get", {
+          "application/pdf": {
+            schema: {
+              type: "string",
+              format: "binary",
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "files" });
+
+      const result = yield* executor.execute(conn.address("files.download"), {
+        id: "missing",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 404,
+          details: {
+            error: "missing",
+          },
+        },
+      });
     }),
   );
 

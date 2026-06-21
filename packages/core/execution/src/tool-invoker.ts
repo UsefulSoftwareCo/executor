@@ -27,6 +27,8 @@ const TOOL_ERROR_TYPESCRIPT =
 // so callers can read pagination/rate-limit headers without the payload
 // being wrapped in an envelope.
 const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: string; } }";
+const TOOL_FILE_TYPESCRIPT =
+  '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
 
 const wrapOutputTypeScript = (outputTypeScript?: string): string =>
   `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
@@ -37,6 +39,7 @@ const withToolResultDefinitions = (
   ...(definitions ?? {}),
   ToolError: TOOL_ERROR_TYPESCRIPT,
   ToolHttpMeta: TOOL_HTTP_META_TYPESCRIPT,
+  ToolFile: TOOL_FILE_TYPESCRIPT,
 });
 
 const ADDRESS_PREFIX = "tools.";

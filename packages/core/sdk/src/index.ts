@@ -326,9 +326,13 @@ export { InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
 export {
+  ToolFile,
+  ToolFileJsonSchema,
   ToolResult,
   annotateToolResultOutcome,
+  isToolFile,
   isToolResult,
+  type ToolFile as ToolFileValue,
   type ToolError,
   type ToolHttpMeta,
 } from "./tool-result";

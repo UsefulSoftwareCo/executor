@@ -1,6 +1,7 @@
 import { Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 import type {
   jsonSchemaValidator,
   JsonSchemaType,
@@ -9,11 +10,13 @@ import type {
 import { Validator } from "@cfworker/json-schema";
 import * as z from "zod/v4";
 
+import { isToolFile, isToolResult } from "@executor-js/sdk";
 import type {
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
   ElicitationRequest,
+  ToolFileValue,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
 import {
@@ -263,16 +266,203 @@ const formatBoundaryError = (err: unknown): { name?: string; message: string; st
 // ---------------------------------------------------------------------------
 
 type McpToolResult = {
-  content: Array<{ type: "text"; text: string }>;
+  content: ContentBlock[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
-const toMcpResult = (formatted: ReturnType<typeof formatExecuteResult>): McpToolResult => ({
-  content: [{ type: "text", text: formatted.text }],
-  structuredContent: formatted.structured,
-  isError: formatted.isError || undefined,
+type FormattedExecuteInput = Parameters<typeof formatExecuteResult>[0];
+
+const TEXT_FILE_CONTENT_MAX_CHARS = 64_000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const toolFileMetadata = (file: ToolFileValue): Record<string, unknown> => ({
+  _tag: file._tag,
+  ...(file.name ? { name: file.name } : {}),
+  mimeType: file.mimeType,
+  encoding: file.encoding,
+  byteLength: file.byteLength,
 });
+
+type SanitizedToolFiles = {
+  readonly value: unknown;
+  readonly files: readonly ToolFileValue[];
+};
+
+const sanitizeToolFiles = (
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): SanitizedToolFiles => {
+  if (isToolFile(value)) {
+    return { value: toolFileMetadata(value), files: [value] };
+  }
+
+  if (isToolResult(value) && value.ok) {
+    const data = sanitizeToolFiles(value.data, seen);
+    if (data.files.length === 0) return { value, files: [] };
+    return {
+      value: {
+        ...value,
+        data: data.value,
+      },
+      files: data.files,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    const files: ToolFileValue[] = [];
+    const items = value.map((item) => {
+      const sanitized = sanitizeToolFiles(item, seen);
+      files.push(...sanitized.files);
+      return sanitized.value;
+    });
+    return { value: files.length > 0 ? items : value, files };
+  }
+
+  if (!isRecord(value)) return { value, files: [] };
+  if (seen.has(value)) return { value: "[Circular]", files: [] };
+  seen.add(value);
+
+  const files: ToolFileValue[] = [];
+  const entries = Object.entries(value).map(([key, item]) => {
+    const sanitized = sanitizeToolFiles(item, seen);
+    files.push(...sanitized.files);
+    return [key, sanitized.value] as const;
+  });
+  seen.delete(value);
+
+  return { value: files.length > 0 ? Object.fromEntries(entries) : value, files };
+};
+
+const extractToolFile = (value: unknown): ToolFileValue | null => {
+  if (isToolFile(value)) return value;
+  if (isToolResult(value) && value.ok && isToolFile(value.data)) return value.data;
+  return null;
+};
+
+const fileResourceUri = (file: ToolFileValue): string =>
+  `executor-file:///${encodeURIComponent(file.name ?? "tool-output")}`;
+
+const isImageFile = (file: ToolFileValue): boolean =>
+  file.mimeType.toLowerCase().startsWith("image/");
+
+const normalizedMimeType = (file: ToolFileValue): string =>
+  file.mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+
+const isTextLikeFile = (file: ToolFileValue): boolean => {
+  const mimeType = normalizedMimeType(file);
+  return (
+    mimeType.startsWith("text/") ||
+    mimeType === "application/json" ||
+    mimeType.endsWith("+json") ||
+    mimeType === "application/xml" ||
+    mimeType.endsWith("+xml") ||
+    mimeType === "application/javascript" ||
+    mimeType === "application/x-javascript" ||
+    mimeType === "application/yaml" ||
+    mimeType === "application/x-yaml"
+  );
+};
+
+const bytesFromBase64 = (base64: string): Uint8Array => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const decodeTextFile = (file: ToolFileValue): string => {
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytesFromBase64(file.data));
+  if (text.length <= TEXT_FILE_CONTENT_MAX_CHARS) return text;
+  return `${text.slice(0, TEXT_FILE_CONTENT_MAX_CHARS)}\n\n[truncated ${
+    text.length - TEXT_FILE_CONTENT_MAX_CHARS
+  } characters]`;
+};
+
+const fileContentBlock = (file: ToolFileValue): ContentBlock =>
+  isImageFile(file)
+    ? {
+        type: "image",
+        data: file.data,
+        mimeType: file.mimeType,
+      }
+    : {
+        type: "resource",
+        resource: {
+          uri: fileResourceUri(file),
+          mimeType: file.mimeType,
+          blob: file.data,
+        },
+      };
+
+const fileContentBlocks = (file: ToolFileValue): ContentBlock[] => {
+  if (isImageFile(file)) return [fileContentBlock(file)];
+  if (isTextLikeFile(file)) return [{ type: "text", text: decodeTextFile(file) }];
+  return [fileContentBlock(file)];
+};
+
+const toMcpFileResult = (
+  result: FormattedExecuteInput,
+  sanitized: SanitizedToolFiles,
+): McpToolResult => {
+  const files = sanitized.files;
+  const hasModelNativeFile = files.some((file) => isImageFile(file) || isTextLikeFile(file));
+  const sanitizedResult = { ...result, result: sanitized.value };
+  const formatted = formatExecuteResult(sanitizedResult);
+  const directFile = extractToolFile(result.result);
+  const logText =
+    result.logs && result.logs.length > 0 ? `\n\nLogs:\n${result.logs.join("\n")}` : "";
+  const summary =
+    directFile && files.length === 1
+      ? `File output: ${directFile.name ?? "tool-output"}\n${directFile.mimeType}, ${
+          directFile.byteLength
+        } bytes${logText}`
+      : [
+          "File outputs:",
+          ...files.map(
+            (file, index) =>
+              `${index + 1}. ${file.name ?? "tool-output"} (${file.mimeType}, ${
+                file.byteLength
+              } bytes)`,
+          ),
+          "",
+          "Result metadata:",
+          formatted.text,
+        ].join("\n");
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: summary,
+      },
+      ...files.flatMap(fileContentBlocks),
+    ],
+    ...(hasModelNativeFile
+      ? {}
+      : {
+          structuredContent: formatted.structured,
+        }),
+    isError: formatted.isError || undefined,
+  };
+};
+
+const toMcpResult = (result: FormattedExecuteInput): McpToolResult => {
+  const sanitized = result.error
+    ? { value: result.result, files: [] }
+    : sanitizeToolFiles(result.result);
+  if (sanitized.files.length > 0) return toMcpFileResult(result, sanitized);
+  const formatted = formatExecuteResult(result);
+  return {
+    content: [{ type: "text", text: formatted.text }],
+    structuredContent: formatted.structured,
+    isError: formatted.isError || undefined,
+  };
+};
 
 const toMcpPausedResult = (formatted: ReturnType<typeof formatPausedExecution>): McpToolResult => ({
   content: [{ type: "text", text: formatted.text }],
@@ -443,7 +633,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           const result = yield* engine.execute(code, {
             onElicitation: makeMcpElicitationHandler(server, debugLog),
           });
-          return toMcpResult(formatExecuteResult(result));
+          return toMcpResult(result);
         }
         const outcome = yield* engine.executeWithPause(code);
         debugLog("execute.paused_flow_result", {
@@ -455,7 +645,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         return outcome.status === "completed"
-          ? toMcpResult(formatExecuteResult(outcome.result))
+          ? toMcpResult(outcome.result)
           : elicitationMode.mode === "browser"
             ? yield* requireUserResumeApproval(outcome.execution.id)
             : toMcpPausedResult(formatPausedExecution(outcome.execution));
@@ -495,7 +685,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         return outcome.status === "completed"
-          ? toMcpResult(formatExecuteResult(outcome.result))
+          ? toMcpResult(outcome.result)
           : toMcpPausedResult(formatPausedExecution(outcome.execution));
       }).pipe(
         Effect.withSpan("mcp.host.tool.resume", {
@@ -558,7 +748,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           return missingExecutionResult(executionId);
         }
         return outcome.status === "completed"
-          ? toMcpResult(formatExecuteResult(outcome.result))
+          ? toMcpResult(outcome.result)
           : yield* requireUserResumeApproval(outcome.execution.id);
       }).pipe(
         Effect.withSpan("mcp.host.tool.resume.browser_approval", {

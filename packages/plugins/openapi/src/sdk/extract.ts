@@ -19,9 +19,11 @@ import {
   ExtractionResult,
   type HttpMethod,
   MediaBinding,
+  OperationFileHint,
   OperationId,
   OperationParameter,
   OperationRequestBody,
+  OperationResponseBody,
   type ParameterLocation,
   ServerInfo,
   ServerVariable,
@@ -145,7 +147,80 @@ const extractRequestBody = (
 // Response schema extraction
 // ---------------------------------------------------------------------------
 
-const extractOutputSchema = (operation: OperationObject, r: DocResolver): unknown | undefined => {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const stringType = (schema: Record<string, unknown>): boolean =>
+  schema.type === "string" || (Array.isArray(schema.type) && schema.type.includes("string"));
+
+const numericType = (schema: Record<string, unknown>): boolean =>
+  schema.type === "integer" ||
+  schema.type === "number" ||
+  (Array.isArray(schema.type) &&
+    (schema.type.includes("integer") || schema.type.includes("number")));
+
+const normalizedMediaType = (mediaType: string): string =>
+  mediaType.split(";")[0]?.trim().toLowerCase() ?? "";
+
+const isJsonMediaType = (mediaType: string): boolean => {
+  const normalized = normalizedMediaType(mediaType);
+  return (
+    normalized === "application/json" || normalized.includes("+json") || normalized.includes("json")
+  );
+};
+
+const binaryStringSchema = (schema: Record<string, unknown>): boolean =>
+  stringType(schema) && (schema.format === "binary" || schema.format === "byte");
+
+const base64EncodingFromDescription = (schema: Record<string, unknown>): "base64" | "base64url" =>
+  typeof schema.description === "string" &&
+  /base64url|base64-url|url[- ]safe/i.test(schema.description)
+    ? "base64url"
+    : "base64";
+
+const detectFileHint = (
+  schema: unknown,
+  mediaType: string,
+  r: DocResolver,
+): OperationFileHint | undefined => {
+  const resolved = isRecord(schema) ? r.resolve<Record<string, unknown>>(schema) : null;
+  if (!resolved) return undefined;
+
+  if (!isJsonMediaType(mediaType) && binaryStringSchema(resolved)) {
+    return OperationFileHint.make({
+      kind: "binaryResponse",
+      mimeType: Option.some(mediaType),
+      dataField: Option.none(),
+      sizeField: Option.none(),
+      encoding: Option.none(),
+    });
+  }
+
+  if (!isJsonMediaType(mediaType)) return undefined;
+
+  const properties = resolved.properties;
+  if (!isRecord(properties)) return undefined;
+  const data = properties.data;
+  const dataSchema = isRecord(data) ? r.resolve<Record<string, unknown>>(data) : null;
+  if (!dataSchema || !binaryStringSchema(dataSchema)) return undefined;
+
+  const size = properties.size;
+  const sizeSchema = isRecord(size) ? r.resolve<Record<string, unknown>>(size) : null;
+  const sizeField = sizeSchema && numericType(sizeSchema) ? "size" : undefined;
+
+  return OperationFileHint.make({
+    kind: "byteField",
+    mimeType: Option.some("application/octet-stream"),
+    dataField: Option.some("data"),
+    sizeField: sizeField ? Option.some(sizeField) : Option.none(),
+    encoding: Option.some(base64EncodingFromDescription(dataSchema)),
+  });
+};
+
+const extractResponseBody = (
+  operation: OperationObject,
+  r: DocResolver,
+): OperationResponseBody | undefined => {
   if (!operation.responses) return undefined;
 
   const entries = Object.entries(operation.responses);
@@ -158,7 +233,13 @@ const extractOutputSchema = (operation: OperationObject, r: DocResolver): unknow
     const resp = r.resolve<ResponseObject>(ref);
     if (!resp) continue;
     const content = preferredResponseContent(resp.content);
-    if (content?.media.schema) return content.media.schema;
+    if (content?.media.schema) {
+      return OperationResponseBody.make({
+        contentType: content.mediaType,
+        schema: Option.some(content.media.schema),
+        fileHint: Option.fromNullishOr(detectFileHint(content.media.schema, content.mediaType, r)),
+      });
+    }
   }
 
   return undefined;
@@ -377,9 +458,10 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
 
       const parameters = extractParameters(pathItem, operation, r);
       const requestBody = extractRequestBody(operation, r);
+      const responseBody = extractResponseBody(operation, r);
       const servers = operationServers(pathItem, operation, docServers);
       const inputSchema = buildInputSchema(parameters, requestBody, servers);
-      const outputSchema = extractOutputSchema(operation, r);
+      const outputSchema = responseBody ? Option.getOrUndefined(responseBody.schema) : undefined;
       const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
       const operationPathTemplate = explicitPathTemplate(operation) ?? pathTemplate;
 
@@ -395,6 +477,7 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
           tags,
           parameters,
           requestBody: Option.fromNullishOr(requestBody),
+          responseBody: Option.fromNullishOr(responseBody),
           inputSchema: Option.fromNullishOr(inputSchema),
           outputSchema: Option.fromNullishOr(outputSchema),
           deprecated: operation.deprecated === true,

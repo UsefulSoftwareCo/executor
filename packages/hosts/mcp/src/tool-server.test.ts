@@ -6,7 +6,14 @@ import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import type * as Cause from "effect/Cause";
 
-import { ElicitationId, FormElicitation, ToolAddress, UrlElicitation } from "@executor-js/sdk";
+import {
+  ElicitationId,
+  FormElicitation,
+  ToolAddress,
+  ToolFile,
+  ToolResult,
+  UrlElicitation,
+} from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
@@ -120,6 +127,169 @@ describe("MCP host server — native elicitation mode", () => {
         arguments: { code: "1+1" },
       });
       expect(result.content).toEqual([{ type: "text", text: "ran: 1+1" }]);
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders image ToolFile results as MCP images", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: ToolResult.ok(
+            ToolFile.make({
+              name: "photo.png",
+              mimeType: "image/png",
+              data: "iVBORw0KGgo=",
+              byteLength: 8,
+            }),
+          ),
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "return await tools.gmail.org.main.getAttachment({});" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[0]).toMatchObject({
+        type: "text",
+        text: "File output: photo.png\nimage/png, 8 bytes",
+      });
+      expect(content[1]).toMatchObject({
+        type: "image",
+        data: "iVBORw0KGgo=",
+        mimeType: "image/png",
+      });
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool strips nested ToolFile bytes while preserving result metadata", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: {
+            subject: "Flight receipt",
+            attachment: ToolResult.ok(
+              ToolFile.make({
+                name: "boarding-pass.png",
+                mimeType: "image/png",
+                data: "iVBORw0KGgo=",
+                byteLength: 8,
+              }),
+            ),
+          },
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "return { subject, attachment };" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      const text = String(content[0]?.text ?? "");
+      expect(text).toContain("File outputs:\n1. boarding-pass.png (image/png, 8 bytes)");
+      expect(text).toContain("Result metadata:");
+      expect(text).toContain("Flight receipt");
+      expect(text).not.toContain("iVBORw0KGgo=");
+      expect(content[1]).toMatchObject({
+        type: "image",
+        data: "iVBORw0KGgo=",
+        mimeType: "image/png",
+      });
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders text-like ToolFile results as MCP text without structured content", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: ToolResult.ok(
+            ToolFile.make({
+              name: "rows.csv",
+              mimeType: "text/csv",
+              data: "YSxiCjEsMgo=",
+              byteLength: 8,
+            }),
+          ),
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "return await tools.files.org.main.getCsv({});" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[0]).toMatchObject({
+        type: "text",
+        text: "File output: rows.csv\ntext/csv, 8 bytes",
+      });
+      expect(content[1]).toMatchObject({
+        type: "text",
+        text: "a,b\n1,2\n",
+      });
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders opaque binary ToolFile results as embedded MCP resources", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: ToolResult.ok(
+            ToolFile.make({
+              name: "report.pdf",
+              mimeType: "application/pdf",
+              data: "JVBERg==",
+              byteLength: 4,
+            }),
+          ),
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "return await tools.gmail.org.main.getAttachment({});" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[0]).toMatchObject({
+        type: "text",
+        text: "File output: report.pdf\napplication/pdf, 4 bytes",
+      });
+      expect(content[1]).toMatchObject({
+        type: "resource",
+        resource: {
+          uri: "executor-file:///report.pdf",
+          mimeType: "application/pdf",
+          blob: "JVBERg==",
+        },
+      });
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: {
+          ok: true,
+          data: {
+            _tag: "ToolFile",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            encoding: "base64",
+            byteLength: 4,
+          },
+        },
+      });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("JVBERg==");
       expect(result.isError).toBeFalsy();
     });
   });

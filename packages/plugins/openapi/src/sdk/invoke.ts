@@ -1,10 +1,12 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
 import { resolveServerUrl } from "./openapi-utils";
 import {
   type EncodingObject,
+  type OperationFileHint,
   type OperationBinding,
   InvocationResult,
   type MediaBinding,
@@ -170,6 +172,72 @@ const isTextContentType = (ct: string | null | undefined): boolean =>
 const isOctetStream = (ct: string | null | undefined): boolean =>
   normalizeContentType(ct) === "application/octet-stream";
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+};
+
+const normalizeBase64 = (value: string, encoding: "base64" | "base64url"): string => {
+  const compact = value.replace(/\s/g, "");
+  const alphabet =
+    encoding === "base64url" ? compact.replace(/-/g, "+").replace(/_/g, "/") : compact;
+  const remainder = alphabet.length % 4;
+  return remainder === 0 ? alphabet : `${alphabet}${"=".repeat(4 - remainder)}`;
+};
+
+const byteLengthFromBase64 = (base64: string): number => {
+  const compact = base64.replace(/\s/g, "");
+  const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+};
+
+const isGenericMimeType = (mimeType: string): boolean =>
+  normalizeContentType(mimeType) === "application/octet-stream";
+
+const startsWithBytes = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
+  prefix.every((byte, index) => bytes[index] === byte);
+
+const sniffMimeType = (bytes: Uint8Array): string | null => {
+  if (startsWithBytes(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  if (
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
+  ) {
+    return "image/gif";
+  }
+  if (
+    startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (startsWithBytes(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf";
+  return null;
+};
+
+const bytesFromBase64Prefix = (base64: string): Uint8Array => {
+  const prefix = base64.slice(0, Math.min(base64.length, 64));
+  const binary = atob(prefix);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const sniffMimeTypeFromBase64 = (base64: string): string | null =>
+  sniffMimeType(bytesFromBase64Prefix(base64));
+
 const toUint8Array = (value: unknown): Uint8Array | null => {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -181,6 +249,54 @@ const toUint8Array = (value: unknown): Uint8Array | null => {
     return new Uint8Array(value as readonly number[]);
   }
   return null;
+};
+
+const readHintString = (option: OperationFileHint["dataField"], fallback: string): string =>
+  Option.getOrElse(option, () => fallback);
+
+const readHintMimeType = (hint: OperationFileHint, fallback: string): string =>
+  Option.getOrElse(hint.mimeType, () => fallback);
+
+const readHintEncoding = (hint: OperationFileHint): "base64" | "base64url" =>
+  Option.getOrElse(hint.encoding, () => "base64");
+
+const fileFromByteField = (body: unknown, hint: OperationFileHint): ToolFileValue | null => {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const dataField = readHintString(hint.dataField, "data");
+  const rawData = record[dataField];
+  if (typeof rawData !== "string") return null;
+
+  const data = normalizeBase64(rawData, readHintEncoding(hint));
+  const sizeField = Option.getOrUndefined(hint.sizeField);
+  const byteLength =
+    sizeField && typeof record[sizeField] === "number"
+      ? record[sizeField]
+      : byteLengthFromBase64(data);
+  const hintedMimeType = readHintMimeType(hint, "application/octet-stream");
+
+  return ToolFile.make({
+    mimeType: isGenericMimeType(hintedMimeType)
+      ? (sniffMimeTypeFromBase64(data) ?? hintedMimeType)
+      : hintedMimeType,
+    data,
+    byteLength,
+  });
+};
+
+const fileFromBinaryBytes = (
+  bytes: Uint8Array,
+  hint: OperationFileHint,
+  contentType: string | null | undefined,
+): ToolFileValue => {
+  const hintedMimeType = contentType ?? readHintMimeType(hint, "application/octet-stream");
+  return ToolFile.make({
+    mimeType: isGenericMimeType(hintedMimeType)
+      ? (sniffMimeType(bytes) ?? hintedMimeType)
+      : hintedMimeType,
+    data: bytesToBase64(bytes),
+    byteLength: bytes.byteLength,
+  });
 };
 
 type FormDataRecord = Parameters<typeof HttpClientRequest.bodyFormDataRecord>[1];
@@ -554,22 +670,36 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         cause: err,
       }),
   );
+  const responseBodyBinding = Option.getOrUndefined(operation.responseBody);
+  const fileHint = responseBodyBinding
+    ? Option.getOrUndefined(responseBodyBinding.fileHint)
+    : undefined;
+  const ok = status >= 200 && status < 300;
   const responseBody: unknown =
     status === 204
       ? null
-      : isJsonContentType(contentType)
-        ? yield* response.json.pipe(
-            Effect.catch(() => response.text),
-            mapBodyError,
+      : ok && fileHint?.kind === "binaryResponse"
+        ? fileFromBinaryBytes(
+            new Uint8Array(yield* response.arrayBuffer.pipe(mapBodyError)),
+            fileHint,
+            contentType,
           )
-        : yield* response.text.pipe(mapBodyError);
+        : isJsonContentType(contentType)
+          ? yield* response.json.pipe(
+              Effect.catch(() => response.text),
+              mapBodyError,
+            )
+          : yield* response.text.pipe(mapBodyError);
 
-  const ok = status >= 200 && status < 300;
+  const dataBody =
+    ok && fileHint?.kind === "byteField"
+      ? (fileFromByteField(responseBody, fileHint) ?? responseBody)
+      : responseBody;
 
   return InvocationResult.make({
     status,
     headers: responseHeaders,
-    data: ok ? responseBody : null,
+    data: ok ? dataBody : null,
     error: ok ? null : responseBody,
   });
 });

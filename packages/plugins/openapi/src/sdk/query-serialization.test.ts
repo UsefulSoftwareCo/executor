@@ -40,6 +40,7 @@ it.effect("serializes form-exploded query arrays as repeated parameters", () =>
         servers: [],
         pathTemplate: "/messages/{id}",
         requestBody: Option.none(),
+        responseBody: Option.none(),
         parameters: [
           OperationParameter.make({
             name: "id",
@@ -107,6 +108,7 @@ it.effect("uses operation base URL and preserves reserved path expansion when al
         ],
         pathTemplate: "/v1/{+name}",
         requestBody: Option.none(),
+        responseBody: Option.none(),
         parameters: [
           OperationParameter.make({
             name: "name",
@@ -157,6 +159,7 @@ it.effect("targets the server chosen by the call's `server.url`", () =>
         ],
         pathTemplate: "/ping",
         requestBody: Option.none(),
+        responseBody: Option.none(),
         parameters: [],
       });
 
@@ -184,6 +187,7 @@ it.effect("a connection base URL overrides the operation's servers", () =>
         ],
         pathTemplate: "/ping",
         requestBody: Option.none(),
+        responseBody: Option.none(),
         parameters: [],
       });
 
@@ -205,6 +209,7 @@ it.effect("falls back to the base URL for bindings persisted without servers", (
         method: "get",
         pathTemplate: "/ping",
         requestBody: Option.none(),
+        responseBody: Option.none(),
         parameters: [],
       });
 
