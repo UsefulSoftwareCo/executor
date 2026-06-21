@@ -1,6 +1,6 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { ToolFile, isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
+import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
 import { resolveServerUrl } from "./openapi-utils";
@@ -297,13 +297,15 @@ const fileFromByteField = (body: unknown, hint: OperationFileHint): ToolFileValu
       : byteLengthFromBase64(data);
   const hintedMimeType = readHintMimeType(hint, "application/octet-stream");
 
-  return ToolFile.make({
+  return {
+    _tag: "ToolFile",
     mimeType: isGenericMimeType(hintedMimeType)
       ? (sniffMimeTypeFromBase64(data) ?? hintedMimeType)
       : hintedMimeType,
+    encoding: "base64",
     data,
     byteLength,
-  });
+  };
 };
 
 const fileFromBinaryBytes = (
@@ -312,13 +314,15 @@ const fileFromBinaryBytes = (
   contentType: string | null | undefined,
 ): ToolFileValue => {
   const hintedMimeType = contentType ?? readHintMimeType(hint, "application/octet-stream");
-  return ToolFile.make({
+  return {
+    _tag: "ToolFile",
     mimeType: isGenericMimeType(hintedMimeType)
       ? (sniffMimeType(bytes) ?? hintedMimeType)
       : hintedMimeType,
+    encoding: "base64",
     data: bytesToBase64(bytes),
     byteLength: bytes.byteLength,
-  });
+  };
 };
 
 type GmailAttachmentPath = {
@@ -467,12 +471,15 @@ const withGmailAttachmentMetadata = (
       sourceQueryParams,
     );
     if (!metadata) return file;
-    return ToolFile.make({
-      name: metadata.name ?? file.name,
+    const name = metadata.name ?? file.name;
+    return {
+      _tag: "ToolFile",
+      ...(name ? { name } : {}),
       mimeType: metadata.mimeType ?? file.mimeType,
+      encoding: "base64",
       data: file.data,
       byteLength: metadata.byteLength ?? file.byteLength,
-    });
+    };
   });
 
 type FormDataRecord = Parameters<typeof HttpClientRequest.bodyFormDataRecord>[1];

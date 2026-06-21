@@ -316,7 +316,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         const schema = yield* executor.tools.schema(conn.address("gmail.getAttachment"));
         expect(schema?.outputSchema).toMatchObject({
           properties: {
-            _tag: { const: "ToolFile" },
+            _tag: { enum: ["ToolFile"] },
             data: { contentEncoding: "base64" },
           },
         });
@@ -580,7 +580,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       const schema = yield* executor.tools.schema(conn.address("files.download"));
       expect(schema?.outputSchema).toMatchObject({
         properties: {
-          _tag: { const: "ToolFile" },
+          _tag: { enum: ["ToolFile"] },
           data: { contentEncoding: "base64" },
         },
       });

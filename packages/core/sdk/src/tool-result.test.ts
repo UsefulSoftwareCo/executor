@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ToolFile, ToolResult, isToolFile, isToolResult } from "./tool-result";
+import { ToolResult, isToolFile, isToolResult } from "./tool-result";
 
 describe("ToolResult", () => {
   it("ok wraps a value", () => {
@@ -50,13 +50,15 @@ describe("ToolResult", () => {
 });
 
 describe("ToolFile", () => {
-  it("makes a base64 file value", () => {
-    const file = ToolFile.make({
+  it("accepts a base64 file value", () => {
+    const file = {
+      _tag: "ToolFile",
       name: "photo.png",
       mimeType: "image/png",
+      encoding: "base64",
       data: "iVBORw0KGgo=",
       byteLength: 8,
-    });
+    };
 
     expect(file).toEqual({
       _tag: "ToolFile",

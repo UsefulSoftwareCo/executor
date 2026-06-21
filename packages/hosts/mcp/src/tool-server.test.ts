@@ -10,10 +10,10 @@ import {
   ElicitationId,
   FormElicitation,
   ToolAddress,
-  ToolFile,
   ToolResult,
   UrlElicitation,
 } from "@executor-js/sdk";
+import type { ToolFileValue } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
@@ -92,6 +92,20 @@ const makePausedResult = (
   },
 });
 
+const toolFile = (input: {
+  readonly name?: string;
+  readonly mimeType: string;
+  readonly data: string;
+  readonly byteLength: number;
+}): ToolFileValue => ({
+  _tag: "ToolFile",
+  ...(input.name ? { name: input.name } : {}),
+  mimeType: input.mimeType,
+  encoding: "base64",
+  data: input.data,
+  byteLength: input.byteLength,
+});
+
 /** Build an engine whose execute triggers one elicitation and returns the handler's result. */
 const makeElicitingEngine = (
   request: FormElicitation | UrlElicitation,
@@ -136,7 +150,7 @@ describe("MCP host server — native elicitation mode", () => {
       execute: () =>
         Effect.succeed({
           result: ToolResult.ok(
-            ToolFile.make({
+            toolFile({
               name: "photo.png",
               mimeType: "image/png",
               data: "iVBORw0KGgo=",
@@ -174,7 +188,7 @@ describe("MCP host server — native elicitation mode", () => {
           result: {
             subject: "Flight receipt",
             attachment: ToolResult.ok(
-              ToolFile.make({
+              toolFile({
                 name: "boarding-pass.png",
                 mimeType: "image/png",
                 data: "iVBORw0KGgo=",
@@ -212,7 +226,7 @@ describe("MCP host server — native elicitation mode", () => {
       execute: () =>
         Effect.succeed({
           result: ToolResult.ok(
-            ToolFile.make({
+            toolFile({
               name: "rows.csv",
               mimeType: "text/csv",
               data: "YSxiCjEsMgo=",
@@ -247,7 +261,7 @@ describe("MCP host server — native elicitation mode", () => {
       execute: () =>
         Effect.succeed({
           result: ToolResult.ok(
-            ToolFile.make({
+            toolFile({
               name: "report.pdf",
               mimeType: "application/pdf",
               data: "JVBERg==",

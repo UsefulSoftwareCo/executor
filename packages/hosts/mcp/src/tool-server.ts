@@ -278,7 +278,7 @@ const TEXT_FILE_CONTENT_MAX_CHARS = 64_000;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const toolFileMetadata = (file: ToolFileValue): Record<string, unknown> => ({
+const redactToolFileBytes = (file: ToolFileValue): Record<string, unknown> => ({
   _tag: file._tag,
   ...(file.name ? { name: file.name } : {}),
   mimeType: file.mimeType,
@@ -286,21 +286,21 @@ const toolFileMetadata = (file: ToolFileValue): Record<string, unknown> => ({
   byteLength: file.byteLength,
 });
 
-type SanitizedToolFiles = {
+type ToolFileExtraction = {
   readonly value: unknown;
   readonly files: readonly ToolFileValue[];
 };
 
-const sanitizeToolFiles = (
+const extractToolFiles = (
   value: unknown,
   seen: WeakSet<object> = new WeakSet(),
-): SanitizedToolFiles => {
+): ToolFileExtraction => {
   if (isToolFile(value)) {
-    return { value: toolFileMetadata(value), files: [value] };
+    return { value: redactToolFileBytes(value), files: [value] };
   }
 
   if (isToolResult(value) && value.ok) {
-    const data = sanitizeToolFiles(value.data, seen);
+    const data = extractToolFiles(value.data, seen);
     if (data.files.length === 0) return { value, files: [] };
     return {
       value: {
@@ -314,9 +314,9 @@ const sanitizeToolFiles = (
   if (Array.isArray(value)) {
     const files: ToolFileValue[] = [];
     const items = value.map((item) => {
-      const sanitized = sanitizeToolFiles(item, seen);
-      files.push(...sanitized.files);
-      return sanitized.value;
+      const extracted = extractToolFiles(item, seen);
+      files.push(...extracted.files);
+      return extracted.value;
     });
     return { value: files.length > 0 ? items : value, files };
   }
@@ -327,33 +327,33 @@ const sanitizeToolFiles = (
 
   const files: ToolFileValue[] = [];
   const entries = Object.entries(value).map(([key, item]) => {
-    const sanitized = sanitizeToolFiles(item, seen);
-    files.push(...sanitized.files);
-    return [key, sanitized.value] as const;
+    const extracted = extractToolFiles(item, seen);
+    files.push(...extracted.files);
+    return [key, extracted.value] as const;
   });
   seen.delete(value);
 
   return { value: files.length > 0 ? Object.fromEntries(entries) : value, files };
 };
 
-const extractToolFile = (value: unknown): ToolFileValue | null => {
+const directToolFile = (value: unknown): ToolFileValue | null => {
   if (isToolFile(value)) return value;
   if (isToolResult(value) && value.ok && isToolFile(value.data)) return value.data;
   return null;
 };
 
-const fileResourceUri = (file: ToolFileValue): string =>
-  `executor-file:///${encodeURIComponent(file.name ?? "tool-output")}`;
+const toolFileName = (file: ToolFileValue): string => file.name ?? "tool-output";
 
-const isImageFile = (file: ToolFileValue): boolean =>
-  file.mimeType.toLowerCase().startsWith("image/");
+const fileResourceUri = (file: ToolFileValue): string =>
+  `executor-file:///${encodeURIComponent(toolFileName(file))}`;
 
 const normalizedMimeType = (file: ToolFileValue): string =>
   file.mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
 
-const isTextLikeFile = (file: ToolFileValue): boolean => {
+const toolFileKind = (file: ToolFileValue): "image" | "text" | "resource" => {
   const mimeType = normalizedMimeType(file);
-  return (
+  if (mimeType.startsWith("image/")) return "image";
+  if (
     mimeType.startsWith("text/") ||
     mimeType === "application/json" ||
     mimeType.endsWith("+json") ||
@@ -363,7 +363,10 @@ const isTextLikeFile = (file: ToolFileValue): boolean => {
     mimeType === "application/x-javascript" ||
     mimeType === "application/yaml" ||
     mimeType === "application/x-yaml"
-  );
+  ) {
+    return "text";
+  }
+  return "resource";
 };
 
 const bytesFromBase64 = (base64: string): Uint8Array => {
@@ -383,52 +386,50 @@ const decodeTextFile = (file: ToolFileValue): string => {
   } characters]`;
 };
 
-const fileContentBlock = (file: ToolFileValue): ContentBlock =>
-  isImageFile(file)
-    ? {
-        type: "image",
-        data: file.data,
+const toolFileContent = (file: ToolFileValue): ContentBlock[] => {
+  const kind = toolFileKind(file);
+  if (kind === "image") {
+    return [{ type: "image", data: file.data, mimeType: file.mimeType }];
+  }
+  if (kind === "text") {
+    return [{ type: "text", text: decodeTextFile(file) }];
+  }
+  return [
+    {
+      type: "resource",
+      resource: {
+        uri: fileResourceUri(file),
         mimeType: file.mimeType,
-      }
-    : {
-        type: "resource",
-        resource: {
-          uri: fileResourceUri(file),
-          mimeType: file.mimeType,
-          blob: file.data,
-        },
-      };
+        blob: file.data,
+      },
+    },
+  ];
+};
 
-const fileContentBlocks = (file: ToolFileValue): ContentBlock[] => {
-  if (isImageFile(file)) return [fileContentBlock(file)];
-  if (isTextLikeFile(file)) return [{ type: "text", text: decodeTextFile(file) }];
-  return [fileContentBlock(file)];
+const toolFileSummaryLine = (file: ToolFileValue, index?: number): string => {
+  const prefix = index === undefined ? "" : `${index + 1}. `;
+  return `${prefix}${toolFileName(file)} (${file.mimeType}, ${file.byteLength} bytes)`;
 };
 
 const toMcpFileResult = (
   result: FormattedExecuteInput,
-  sanitized: SanitizedToolFiles,
+  extracted: ToolFileExtraction,
 ): McpToolResult => {
-  const files = sanitized.files;
-  const hasModelNativeFile = files.some((file) => isImageFile(file) || isTextLikeFile(file));
-  const sanitizedResult = { ...result, result: sanitized.value };
-  const formatted = formatExecuteResult(sanitizedResult);
-  const directFile = extractToolFile(result.result);
+  const files = extracted.files;
+  const hasModelNativeFile = files.some((file) => toolFileKind(file) !== "resource");
+  const redactedResult = { ...result, result: extracted.value };
+  const formatted = formatExecuteResult(redactedResult);
+  const directFile = directToolFile(result.result);
   const logText =
     result.logs && result.logs.length > 0 ? `\n\nLogs:\n${result.logs.join("\n")}` : "";
   const summary =
     directFile && files.length === 1
-      ? `File output: ${directFile.name ?? "tool-output"}\n${directFile.mimeType}, ${
+      ? `File output: ${toolFileName(directFile)}\n${directFile.mimeType}, ${
           directFile.byteLength
         } bytes${logText}`
       : [
           "File outputs:",
-          ...files.map(
-            (file, index) =>
-              `${index + 1}. ${file.name ?? "tool-output"} (${file.mimeType}, ${
-                file.byteLength
-              } bytes)`,
-          ),
+          ...files.map((file, index) => toolFileSummaryLine(file, index)),
           "",
           "Result metadata:",
           formatted.text,
@@ -440,7 +441,7 @@ const toMcpFileResult = (
         type: "text",
         text: summary,
       },
-      ...files.flatMap(fileContentBlocks),
+      ...files.flatMap(toolFileContent),
     ],
     ...(hasModelNativeFile
       ? {}
@@ -452,10 +453,10 @@ const toMcpFileResult = (
 };
 
 const toMcpResult = (result: FormattedExecuteInput): McpToolResult => {
-  const sanitized = result.error
+  const extracted = result.error
     ? { value: result.result, files: [] }
-    : sanitizeToolFiles(result.result);
-  if (sanitized.files.length > 0) return toMcpFileResult(result, sanitized);
+    : extractToolFiles(result.result);
+  if (extracted.files.length > 0) return toMcpFileResult(result, extracted);
   const formatted = formatExecuteResult(result);
   return {
     content: [{ type: "text", text: formatted.text }],
