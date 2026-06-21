@@ -116,6 +116,17 @@ const replaceResponseContent =
     return { ...spec, paths };
   };
 
+const replaceOperationServers =
+  (path: string, operation: string, servers: readonly Record<string, unknown>[]) =>
+  (spec: Record<string, unknown>): Record<string, unknown> => {
+    const paths = { ...(spec.paths as Record<string, unknown>) };
+    const pathItem = { ...(paths[path] as Record<string, unknown>) };
+    const operationSpec = { ...(pathItem[operation] as Record<string, unknown>) };
+    pathItem[operation] = { ...operationSpec, servers };
+    paths[path] = pathItem;
+    return { ...spec, paths };
+  };
+
 const replaceRequestBodyContent =
   (
     path: string,
@@ -325,6 +336,216 @@ describe("OpenAPI non-JSON request body dispatch", () => {
           },
         });
       }),
+  );
+
+  it.effect("format: byte response: UTF-8 attachment data falls back to text/plain", () =>
+    Effect.gen(function* () {
+      const attachmentText = [
+        "id,name,status,amount",
+        "1,Ada,confirmed,42.50",
+        "2,Grace,pending,13.75",
+        "3,Linus,cancelled,0.00",
+        "",
+      ].join("\n");
+      const attachmentBase64Url =
+        "aWQsbmFtZSxzdGF0dXMsYW1vdW50CjEsQWRhLGNvbmZpcm1lZCw0Mi41MAoyLEdyYWNlLHBlbmRpbmcsMTMuNzUKMyxMaW51cyxjYW5jZWxsZWQsMC4wMAo";
+      const MessagePartBody = Schema.Struct({
+        data: Schema.String,
+        size: Schema.Number,
+      });
+      const group = HttpApiGroup.make("gmailText").add(
+        HttpApiEndpoint.get("getAttachment", "/attachments/:id", {
+          success: MessagePartBody,
+        }),
+      );
+      const api = HttpApi.make("gmailTextAttachmentTest").add(group);
+      const handlersLayer = HttpApiBuilder.group(api, "gmailText", (handlers) =>
+        handlers.handleRaw("getAttachment", () =>
+          Effect.succeed(
+            HttpServerResponse.jsonUnsafe({
+              data: attachmentBase64Url,
+              size: new TextEncoder().encode(attachmentText).byteLength,
+            }),
+          ),
+        ),
+      );
+      const server = yield* serveOpenApiHttpApiTestServer({
+        api,
+        handlersLayer,
+        transformSpec: replaceResponseContent("/attachments/{id}", "get", {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                data: {
+                  type: "string",
+                  format: "byte",
+                  description: "The body data as a base64url encoded string.",
+                },
+                size: {
+                  type: "integer",
+                  format: "int32",
+                  description: "Number of bytes for the message part data.",
+                },
+              },
+              required: ["data", "size"],
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail_text" });
+
+      const result = yield* executor.execute(conn.address("gmailText.getAttachment"), {
+        id: "att_1",
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          _tag: "ToolFile",
+          encoding: "base64",
+          mimeType: "text/plain",
+          data: `${attachmentBase64Url}=`,
+          byteLength: 89,
+        },
+      });
+    }),
+  );
+
+  it.effect("Gmail attachment bytes inherit filename and MIME from the parent message part", () =>
+    Effect.gen(function* () {
+      const attachmentText = [
+        "id,name,status,amount",
+        "1,Ada,confirmed,42.50",
+        "2,Grace,pending,13.75",
+        "3,Linus,cancelled,0.00",
+        "",
+      ].join("\n");
+      const attachmentBase64Url =
+        "aWQsbmFtZSxzdGF0dXMsYW1vdW50CjEsQWRhLGNvbmZpcm1lZCw0Mi41MAoyLEdyYWNlLHBlbmRpbmcsMTMuNzUKMyxMaW51cyxjYW5jZWxsZWQsMC4wMAo";
+      const attachmentBytes = new TextEncoder().encode(attachmentText);
+      const MessagePartBody = Schema.Struct({
+        data: Schema.String,
+        size: Schema.Number,
+      });
+      const Message = Schema.Struct({
+        payload: Schema.Unknown,
+      });
+      let parentRequestUrl = "";
+      const group = HttpApiGroup.make("gmailMeta")
+        .add(
+          HttpApiEndpoint.get(
+            "getAttachment",
+            "/users/:userId/messages/:messageId/attachments/:id",
+            {
+              success: MessagePartBody,
+            },
+          ),
+        )
+        .add(
+          HttpApiEndpoint.get("getMessage", "/users/:userId/messages/:messageId", {
+            success: Message,
+          }),
+        );
+      const api = HttpApi.make("gmailMetadataAttachmentTest").add(group);
+      const handlersLayer = HttpApiBuilder.group(api, "gmailMeta", (handlers) =>
+        handlers
+          .handleRaw("getAttachment", () =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe({
+                data: attachmentBase64Url,
+                size: attachmentBytes.byteLength,
+              }),
+            ),
+          )
+          .handleRaw("getMessage", () =>
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              parentRequestUrl = request.url;
+              return HttpServerResponse.jsonUnsafe({
+                payload: {
+                  mimeType: "multipart/mixed",
+                  parts: [
+                    {
+                      filename: "",
+                      mimeType: "text/plain",
+                      body: { data: "SGVsbG8=", size: 5 },
+                    },
+                    {
+                      filename: "",
+                      mimeType: "multipart/mixed",
+                      body: { size: 0 },
+                      parts: [
+                        {
+                          filename: "executor-test.csv",
+                          mimeType: "text/csv",
+                          body: {
+                            attachmentId: "fresh_att_1",
+                            size: attachmentBytes.byteLength,
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              });
+            }),
+          ),
+      );
+      const server = yield* serveOpenApiHttpApiTestServer({
+        api,
+        handlersLayer,
+        transformSpec: (spec) =>
+          replaceOperationServers("/users/{userId}/messages/{messageId}/attachments/{id}", "get", [
+            { url: "https://gmail.googleapis.com/gmail/v1" },
+          ])(
+            replaceResponseContent("/users/{userId}/messages/{messageId}/attachments/{id}", "get", {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "string",
+                      format: "byte",
+                      description: "The body data as a base64url encoded string.",
+                    },
+                    size: {
+                      type: "integer",
+                      format: "int32",
+                      description: "Number of bytes for the message part data.",
+                    },
+                  },
+                  required: ["data", "size"],
+                },
+              },
+            })(spec),
+          ),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail_meta" });
+
+      const result = yield* executor.execute(conn.address("gmailMeta.getAttachment"), {
+        userId: "me",
+        messageId: "msg_1",
+        id: "att_1",
+      });
+
+      expect(parentRequestUrl).toContain("format=full");
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          _tag: "ToolFile",
+          name: "executor-test.csv",
+          encoding: "base64",
+          mimeType: "text/csv",
+          data: `${attachmentBase64Url}=`,
+          byteLength: attachmentBytes.byteLength,
+        },
+      });
+    }),
   );
 
   it.effect("format: binary response: raw file bodies are exposed as file artifacts", () =>

@@ -1,6 +1,6 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { ToolFile, type ToolFileValue } from "@executor-js/sdk/core";
+import { ToolFile, isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
 import { resolveServerUrl } from "./openapi-utils";
@@ -198,8 +198,29 @@ const byteLengthFromBase64 = (base64: string): number => {
 const isGenericMimeType = (mimeType: string): boolean =>
   normalizeContentType(mimeType) === "application/octet-stream";
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 const startsWithBytes = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
   prefix.every((byte, index) => bytes[index] === byte);
+
+const isLikelyUtf8Text = (bytes: Uint8Array): boolean => {
+  if (bytes.length === 0) return false;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  let suspicious = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    const allowedControl = code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
+    if (code === 0x00) return false;
+    if (code < 0x20 && !allowedControl) suspicious += 1;
+  }
+  return suspicious / Math.max(1, text.length) <= 0.02;
+};
 
 const sniffMimeType = (bytes: Uint8Array): string | null => {
   if (startsWithBytes(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
@@ -222,6 +243,7 @@ const sniffMimeType = (bytes: Uint8Array): string | null => {
     return "image/webp";
   }
   if (startsWithBytes(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf";
+  if (isLikelyUtf8Text(bytes)) return "text/plain";
   return null;
 };
 
@@ -298,6 +320,160 @@ const fileFromBinaryBytes = (
     byteLength: bytes.byteLength,
   });
 };
+
+type GmailAttachmentPath = {
+  readonly messagePath: string;
+  readonly attachmentId: string;
+};
+
+type GmailAttachmentMetadata = {
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly byteLength?: number;
+};
+
+const decodePathSegment = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const readGmailAttachmentPath = (
+  operation: OperationBinding,
+  resolvedPath: string,
+): GmailAttachmentPath | null => {
+  if (operation.method !== "get") return null;
+  const template = operation.pathTemplate.startsWith("/")
+    ? operation.pathTemplate
+    : `/${operation.pathTemplate}`;
+  const hasGmailResourcePath =
+    /\/users\/\{[^{}]+\}\/messages\/\{[^{}]+\}\/attachments\/\{[^{}]+\}$/.test(template);
+  if (!hasGmailResourcePath) return null;
+
+  const hasGmailPathPrefix = template.startsWith("/gmail/v1/");
+  const hasGmailServer =
+    operation.servers?.some((server) => server.url.includes("gmail.googleapis.com")) ?? false;
+  if (!hasGmailPathPrefix && !hasGmailServer) {
+    return null;
+  }
+
+  const path = resolvedPath.startsWith("/") ? resolvedPath : `/${resolvedPath}`;
+  const match = path.match(/^(.*\/users\/[^/]+\/messages\/[^/]+)\/attachments\/([^/]+)$/);
+  if (!match?.[1] || !match[2]) return null;
+  return {
+    messagePath: match[1],
+    attachmentId: decodePathSegment(match[2]),
+  };
+};
+
+const findGmailMessagePart = (
+  value: unknown,
+  attachmentId: string,
+): Record<string, unknown> | null => {
+  if (!isRecord(value)) return null;
+  const body = isRecord(value.body) ? value.body : null;
+  if (body?.attachmentId === attachmentId) return value;
+
+  const parts = value.parts;
+  if (!Array.isArray(parts)) return null;
+  for (const part of parts) {
+    const found = findGmailMessagePart(part, attachmentId);
+    if (found) return found;
+  }
+  return null;
+};
+
+const collectGmailAttachmentParts = (
+  value: unknown,
+  out: Record<string, unknown>[] = [],
+): Record<string, unknown>[] => {
+  if (!isRecord(value)) return out;
+  const body = isRecord(value.body) ? value.body : null;
+  if (typeof body?.attachmentId === "string") out.push(value);
+
+  const parts = value.parts;
+  if (!Array.isArray(parts)) return out;
+  for (const part of parts) collectGmailAttachmentParts(part, out);
+  return out;
+};
+
+const gmailAttachmentMetadataFromMessage = (
+  message: unknown,
+  attachmentId: string,
+  byteLength: number,
+): GmailAttachmentMetadata | null => {
+  if (!isRecord(message)) return null;
+  const payload = isRecord(message.payload) ? message.payload : message;
+  const exactPart = findGmailMessagePart(payload, attachmentId);
+  const sizeMatches =
+    exactPart === null
+      ? collectGmailAttachmentParts(payload).filter((candidate) => {
+          const body = isRecord(candidate.body) ? candidate.body : null;
+          return body?.size === byteLength;
+        })
+      : [];
+  const part = exactPart ?? (sizeMatches.length === 1 ? sizeMatches[0] : null);
+  if (!part) return null;
+
+  const body = isRecord(part.body) ? part.body : null;
+  const name =
+    typeof part.filename === "string" && part.filename.length > 0 ? part.filename : undefined;
+  const mimeType =
+    typeof part.mimeType === "string" && part.mimeType.length > 0 ? part.mimeType : undefined;
+  const metadataByteLength = typeof body?.size === "number" ? body.size : undefined;
+  if (name === undefined && mimeType === undefined && metadataByteLength === undefined) return null;
+  return { name, mimeType, byteLength: metadataByteLength };
+};
+
+const fetchGmailAttachmentMetadata = (
+  client: HttpClient.HttpClient,
+  path: GmailAttachmentPath,
+  file: ToolFileValue,
+  resolvedHeaders: Record<string, string>,
+  sourceQueryParams: Record<string, string>,
+): Effect.Effect<GmailAttachmentMetadata | null> =>
+  Effect.gen(function* () {
+    let request = HttpClientRequest.make("GET")(path.messagePath);
+    for (const [name, value] of Object.entries(sourceQueryParams)) {
+      request = HttpClientRequest.setUrlParam(request, name, value);
+    }
+    request = HttpClientRequest.setUrlParam(request, "format", "full");
+    request = applyHeaders(request, resolvedHeaders);
+
+    const response = yield* client.execute(request);
+    if (response.status < 200 || response.status >= 300) return null;
+    const body = yield* response.json.pipe(Effect.catch(() => Effect.succeed(null)));
+    return gmailAttachmentMetadataFromMessage(body, path.attachmentId, file.byteLength);
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
+
+const withGmailAttachmentMetadata = (
+  client: HttpClient.HttpClient,
+  operation: OperationBinding,
+  resolvedPath: string,
+  file: ToolFileValue,
+  resolvedHeaders: Record<string, string>,
+  sourceQueryParams: Record<string, string>,
+): Effect.Effect<ToolFileValue> =>
+  Effect.gen(function* () {
+    const path = readGmailAttachmentPath(operation, resolvedPath);
+    if (!path) return file;
+    const metadata = yield* fetchGmailAttachmentMetadata(
+      client,
+      path,
+      file,
+      resolvedHeaders,
+      sourceQueryParams,
+    );
+    if (!metadata) return file;
+    return ToolFile.make({
+      name: metadata.name ?? file.name,
+      mimeType: metadata.mimeType ?? file.mimeType,
+      data: file.data,
+      byteLength: metadata.byteLength ?? file.byteLength,
+    });
+  });
 
 type FormDataRecord = Parameters<typeof HttpClientRequest.bodyFormDataRecord>[1];
 type FormDataCoercible = FormDataRecord[string];
@@ -695,11 +871,22 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
     ok && fileHint?.kind === "byteField"
       ? (fileFromByteField(responseBody, fileHint) ?? responseBody)
       : responseBody;
+  const enrichedDataBody =
+    ok && fileHint?.kind === "byteField" && isToolFile(dataBody)
+      ? yield* withGmailAttachmentMetadata(
+          client,
+          operation,
+          resolvedPath,
+          dataBody,
+          resolvedHeaders,
+          sourceQueryParams,
+        )
+      : dataBody;
 
   return InvocationResult.make({
     status,
     headers: responseHeaders,
-    data: ok ? dataBody : null,
+    data: ok ? enrichedDataBody : null,
     error: ok ? null : responseBody,
   });
 });
