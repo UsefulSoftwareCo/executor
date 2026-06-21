@@ -15,7 +15,6 @@ import { Input } from "@executor-js/react/components/input";
 import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 
 import {
-  microsoftGraphPresetIdsIncludeAllGraph,
   microsoftGraphScopePresets,
   microsoftGraphScopesForPresetIds,
   type MicrosoftGraphScopeAudience,
@@ -31,21 +30,30 @@ type MicrosoftScopePickerProps = {
 };
 
 const AUDIENCE_ORDER: readonly MicrosoftGraphScopeAudience[] = [
-  "full-graph",
-  "standard-user",
-  "admin",
+  "productivity",
+  "files-content",
+  "collaboration",
+  "directory-identity",
+  "admin-security",
+  "platform-business",
 ];
 
 const AUDIENCE_LABEL: Readonly<Record<MicrosoftGraphScopeAudience, string>> = {
-  "full-graph": "Full Graph",
-  "standard-user": "User-delegated workloads",
-  admin: "Admin consent workloads",
+  productivity: "Productivity",
+  "files-content": "Files and content",
+  collaboration: "Collaboration",
+  "directory-identity": "Directory and identity",
+  "admin-security": "Admin and security",
+  "platform-business": "Platform and business",
 };
 
 const AUDIENCE_DESCRIPTION: Readonly<Record<MicrosoftGraphScopeAudience, string>> = {
-  "full-graph": "Expose every operation from Microsoft Graph v1.0.",
-  "standard-user": "A signed-in Microsoft account can grant these delegated scopes.",
-  admin: "These Graph scopes commonly require tenant admin consent.",
+  productivity: "User-facing Microsoft 365 operations for the connected account.",
+  "files-content": "Drive, SharePoint, OneNote, workbook, and content APIs.",
+  collaboration: "Teams, chats, online meetings, calls, and teamwork APIs.",
+  "directory-identity": "Tenant directory, app, identity, policy, and governance APIs.",
+  "admin-security": "Admin, audit, security, compliance, device, and education APIs.",
+  "platform-business": "Search, connectors, extensions, print, places, and business services.",
 };
 
 const ScopeRow = ({
@@ -70,7 +78,7 @@ const ScopeRow = ({
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-sm font-medium text-foreground">{preset.name}</span>
-        {preset.audience === "admin" ? (
+        {preset.audience === "admin-security" || preset.audience === "directory-identity" ? (
           <Badge
             variant="outline"
             className="shrink-0 border-amber-500/40 text-amber-700 dark:text-amber-400"
@@ -187,18 +195,14 @@ export function MicrosoftScopePicker({
     () => microsoftGraphScopesForPresetIds([...selectedPresetIds], customScopes),
     [selectedPresetIds, customScopes],
   );
-  const includesAllGraph = useMemo(
-    () => microsoftGraphPresetIdsIncludeAllGraph(selectedPresetIds),
-    [selectedPresetIds],
-  );
 
   return (
     <section className="space-y-4">
       <div className="space-y-1">
         <FieldLabel>Customize Microsoft Graph</FieldLabel>
         <p className="text-[11px] text-muted-foreground">
-          Pick the workloads to expose as tools. They share one Microsoft OAuth consent and one
-          account connection.
+          Pick the operation groups to expose as tools. They share one Microsoft OAuth consent and
+          one account connection.
         </p>
       </div>
 
@@ -259,21 +263,12 @@ export function MicrosoftScopePicker({
 
       <Collapsible open={scopesOpen} onOpenChange={setScopesOpen}>
         <CollapsibleTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={scopes.length === 0 && !includesAllGraph}
-          >
+          <Button type="button" variant="outline" size="sm" disabled={scopes.length === 0}>
             <ChevronDownIcon
               className={cn("size-3.5 transition-transform", scopesOpen ? "rotate-180" : "")}
             />
             View scopes
-            {includesAllGraph ? (
-              <Badge variant="secondary" className="ml-1">
-                All
-              </Badge>
-            ) : scopes.length > 0 ? (
+            {scopes.length > 0 ? (
               <Badge variant="secondary" className="ml-1">
                 {scopes.length}
               </Badge>
@@ -282,11 +277,6 @@ export function MicrosoftScopePicker({
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3">
           <ul className="space-y-1">
-            {includesAllGraph ? (
-              <li className="rounded-md border border-border bg-muted/20 px-2.5 py-1 font-mono text-[11px] break-all text-muted-foreground">
-                All delegated Microsoft Graph scopes from the generated permissions reference
-              </li>
-            ) : null}
             {scopes.map((scope: string) => (
               <li
                 key={scope}

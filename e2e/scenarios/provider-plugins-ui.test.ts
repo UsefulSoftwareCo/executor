@@ -57,20 +57,18 @@ scenario(
         });
         await page.getByRole("heading", { name: "Add Microsoft Graph" }).waitFor();
         await page.getByText("Customize Microsoft Graph").waitFor();
-        await page.getByText("All Microsoft Graph", { exact: true }).waitFor();
+        expect(await page.getByText("All Microsoft Graph", { exact: true }).count()).toBe(0);
+        await page.getByText("Productivity").waitFor();
+        await page.getByText("Directory and identity").waitFor();
         await page.getByText("Outlook Mail").waitFor();
         await page.getByText("OneDrive Files").waitFor();
-        await page.getByText("OneNote").waitFor();
+        await page.getByText("OneNote", { exact: true }).waitFor();
         await page.getByText("Teams Channels").waitFor();
         await page.locator('img[src*="svgl.app/library/microsoft-outlook.svg"]').first().waitFor();
         await page.locator('img[src*="svgl.app/library/microsoft-onedrive.svg"]').waitFor();
         await page.getByRole("button", { name: /View scopes/ }).click();
-        await page
-          .getByText(
-            "All delegated Microsoft Graph scopes from the generated permissions reference",
-          )
-          .waitFor();
         await page.getByText("offline_access").waitFor();
+        await page.getByText("Mail.ReadWrite").waitFor();
       });
     });
   }),

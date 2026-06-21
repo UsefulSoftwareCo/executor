@@ -6,7 +6,13 @@ export interface MicrosoftGraphPreset {
   readonly featured?: boolean;
 }
 
-export type MicrosoftGraphScopeAudience = "full-graph" | "standard-user" | "admin";
+export type MicrosoftGraphScopeAudience =
+  | "productivity"
+  | "files-content"
+  | "collaboration"
+  | "directory-identity"
+  | "admin-security"
+  | "platform-business";
 
 export interface MicrosoftGraphScopePreset {
   readonly id: string;
@@ -16,7 +22,7 @@ export interface MicrosoftGraphScopePreset {
   readonly scopes: readonly string[];
   readonly exactPaths?: readonly string[];
   readonly pathPrefixes?: readonly string[];
-  readonly includeAllGraph?: boolean;
+  readonly tagPrefixes?: readonly string[];
   readonly featured?: boolean;
   readonly audience: MicrosoftGraphScopeAudience;
 }
@@ -39,7 +45,6 @@ export const MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES: readonly string[] = [
 ];
 
 export const MICROSOFT_GRAPH_PRESET_ID = "microsoft";
-export const MICROSOFT_GRAPH_ALL_PRESET_ID = "all";
 
 export const microsoftGraphPreset: MicrosoftGraphPreset = {
   id: MICROSOFT_GRAPH_PRESET_ID,
@@ -53,16 +58,6 @@ export const MICROSOFT_GRAPH_BASE_SCOPES: readonly string[] = ["offline_access"]
 
 export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = [
   {
-    id: MICROSOFT_GRAPH_ALL_PRESET_ID,
-    name: "All Microsoft Graph",
-    summary: "Every operation in the official Microsoft Graph v1.0 metadata.",
-    icon: svglIcon("microsoft"),
-    scopes: [],
-    includeAllGraph: true,
-    featured: true,
-    audience: "full-graph",
-  },
-  {
     id: "profile",
     name: "Profile",
     summary: "Signed-in user profile and photo.",
@@ -70,7 +65,16 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     scopes: ["User.Read"],
     exactPaths: ["/me", "/me/photo", "/me/photo/$value"],
     featured: true,
-    audience: "standard-user",
+    audience: "productivity",
+  },
+  {
+    id: "me-surface",
+    name: "My Graph Operations",
+    summary: "All operation groups rooted under /me.",
+    icon: svglIcon("microsoft"),
+    scopes: ["User.Read"],
+    pathPrefixes: ["/me"],
+    audience: "productivity",
   },
   {
     id: "mail",
@@ -92,7 +96,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
       "/users/{user-id}/outlook",
     ],
     featured: true,
-    audience: "standard-user",
+    audience: "productivity",
   },
   {
     id: "calendar",
@@ -117,38 +121,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
       "/users/{user-id}/reminderView",
     ],
     featured: true,
-    audience: "standard-user",
-  },
-  {
-    id: "files",
-    name: "OneDrive Files",
-    summary: "Drives, files, folders, sharing links, and permissions.",
-    icon: svglIcon("microsoft-onedrive"),
-    scopes: ["Files.ReadWrite.All", "Sites.ReadWrite.All"],
-    pathPrefixes: [
-      "/me/drive",
-      "/me/drives",
-      "/me/followedSites",
-      "/users/{user-id}/drive",
-      "/users/{user-id}/drives",
-      "/drives",
-      "/shares",
-    ],
-    featured: true,
-    audience: "standard-user",
-  },
-  {
-    id: "excel",
-    name: "Excel Workbooks",
-    summary: "Workbook tables, worksheets, ranges, charts, and sessions.",
-    icon: svglIcon("microsoft-excel"),
-    scopes: ["Files.ReadWrite.All"],
-    pathPrefixes: [
-      "/me/drive/items/{driveItem-id}/workbook",
-      "/users/{user-id}/drive/items/{driveItem-id}/workbook",
-      "/drives/{drive-id}/items/{driveItem-id}/workbook",
-    ],
-    audience: "standard-user",
+    audience: "productivity",
   },
   {
     id: "contacts",
@@ -164,7 +137,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
       "/users/{user-id}/contactFolders",
       "/users/{user-id}/people",
     ],
-    audience: "standard-user",
+    audience: "productivity",
   },
   {
     id: "tasks",
@@ -173,7 +146,79 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     icon: svglIcon("microsoft-todo"),
     scopes: ["Tasks.ReadWrite"],
     pathPrefixes: ["/me/todo", "/users/{user-id}/todo"],
-    audience: "standard-user",
+    audience: "productivity",
+  },
+  {
+    id: "planner",
+    name: "Planner",
+    summary: "Plans, buckets, tasks, assignments, and Planner user data.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Tasks.ReadWrite"],
+    pathPrefixes: [
+      "/planner",
+      "/me/planner",
+      "/users/{user-id}/planner",
+      "/groups/{group-id}/planner",
+    ],
+    audience: "productivity",
+  },
+  {
+    id: "files",
+    name: "OneDrive Files",
+    summary: "Drives, files, folders, sharing links, and permissions.",
+    icon: svglIcon("microsoft-onedrive"),
+    scopes: ["Files.ReadWrite.All", "Sites.ReadWrite.All"],
+    pathPrefixes: [
+      "/me/drive",
+      "/me/drives",
+      "/me/followedSites",
+      "/users/{user-id}/drive",
+      "/users/{user-id}/drives",
+      "/groups/{group-id}/drive",
+      "/groups/{group-id}/drives",
+      "/drives",
+      "/shares",
+    ],
+    featured: true,
+    audience: "files-content",
+  },
+  {
+    id: "excel",
+    name: "Excel Workbooks",
+    summary: "Workbook tables, worksheets, ranges, charts, and sessions.",
+    icon: svglIcon("microsoft-excel"),
+    scopes: ["Files.ReadWrite.All"],
+    pathPrefixes: [
+      "/me/drive/items/{driveItem-id}/workbook",
+      "/users/{user-id}/drive/items/{driveItem-id}/workbook",
+      "/groups/{group-id}/drive/items/{driveItem-id}/workbook",
+      "/drives/{drive-id}/items/{driveItem-id}/workbook",
+    ],
+    audience: "files-content",
+  },
+  {
+    id: "sites",
+    name: "SharePoint Sites",
+    summary: "Sites, lists, pages, columns, content types, and stores.",
+    icon: svglIcon("microsoft-sharepoint"),
+    scopes: ["Sites.ReadWrite.All"],
+    pathPrefixes: ["/sites"],
+    featured: true,
+    audience: "files-content",
+  },
+  {
+    id: "onenote",
+    name: "OneNote",
+    summary: "Notebooks, sections, pages, and page content.",
+    icon: svglIcon("microsoft-onenote"),
+    scopes: ["Notes.ReadWrite"],
+    pathPrefixes: [
+      "/me/onenote",
+      "/users/{user-id}/onenote",
+      "/groups/{group-id}/onenote",
+      "/sites/{site-id}/onenote",
+    ],
+    audience: "files-content",
   },
   {
     id: "teams-chat",
@@ -182,7 +227,7 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     icon: svglIcon("microsoft-teams"),
     scopes: ["Chat.ReadWrite"],
     pathPrefixes: ["/me/chats", "/chats"],
-    audience: "standard-user",
+    audience: "collaboration",
   },
   {
     id: "teams-channels",
@@ -195,17 +240,163 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
       "ChannelMessage.Read.All",
       "ChannelMessage.Send",
     ],
-    pathPrefixes: ["/me/joinedTeams", "/teams"],
-    audience: "standard-user",
+    pathPrefixes: [
+      "/me/joinedTeams",
+      "/groups/{group-id}/team",
+      "/teams",
+      "/teamwork",
+      "/teamsTemplates",
+    ],
+    audience: "collaboration",
   },
   {
-    id: "onenote",
-    name: "OneNote",
-    summary: "Notebooks, sections, pages, and page content.",
-    icon: svglIcon("microsoft-onenote"),
-    scopes: ["Notes.ReadWrite"],
-    pathPrefixes: ["/me/onenote", "/users/{user-id}/onenote", "/sites/{site-id}/onenote"],
-    audience: "standard-user",
+    id: "meetings-calls",
+    name: "Meetings and Calls",
+    summary: "Online meetings, calls, call records, and communications APIs.",
+    icon: svglIcon("microsoft-teams"),
+    scopes: ["OnlineMeetings.ReadWrite"],
+    pathPrefixes: ["/communications", "/me/onlineMeetings", "/users/{user-id}/onlineMeetings"],
+    audience: "collaboration",
+  },
+  {
+    id: "users",
+    name: "Users",
+    summary: "User objects plus user-scoped Graph operations.",
+    icon: svglIcon("microsoft"),
+    scopes: ["User.ReadWrite.All", "Directory.Read.All"],
+    pathPrefixes: ["/users", "/users(userPrincipalName='{userPrincipalName}')"],
+    featured: true,
+    audience: "directory-identity",
+  },
+  {
+    id: "groups",
+    name: "Groups",
+    summary: "Groups, settings, lifecycle policies, and group-scoped operations.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Group.ReadWrite.All", "Directory.Read.All"],
+    pathPrefixes: [
+      "/groups",
+      "/groups(uniqueName='{uniqueName}')",
+      "/groupSettings",
+      "/groupSettingTemplates",
+      "/groupLifecyclePolicies",
+    ],
+    audience: "directory-identity",
+  },
+  {
+    id: "directory",
+    name: "Directory",
+    summary: "Directory roles, objects, contacts, contracts, and invitations.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Directory.Read.All"],
+    pathPrefixes: [
+      "/contacts",
+      "/contracts",
+      "/directory",
+      "/directoryObjects",
+      "/directoryRoles",
+      "/directoryRoles(roleTemplateId='{roleTemplateId}')",
+      "/directoryRoleTemplates",
+      "/invitations",
+      "/scopedRoleMemberships",
+    ],
+    audience: "directory-identity",
+  },
+  {
+    id: "applications",
+    name: "Applications",
+    summary: "Applications, service principals, app templates, catalogs, and grants.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All"],
+    pathPrefixes: [
+      "/applications",
+      "/applications(appId='{appId}')",
+      "/applications(uniqueName='{uniqueName}')",
+      "/applicationTemplates",
+      "/appCatalogs",
+      "/oauth2PermissionGrants",
+      "/permissionGrants",
+      "/servicePrincipals",
+      "/servicePrincipals(appId='{appId}')",
+    ],
+    audience: "directory-identity",
+  },
+  {
+    id: "identity",
+    name: "Identity and Governance",
+    summary: "Identity, governance, policies, access reviews, roles, and providers.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Policy.ReadWrite.ConditionalAccess", "RoleManagement.Read.Directory"],
+    pathPrefixes: [
+      "/agreementAcceptances",
+      "/agreements",
+      "/authenticationMethodConfigurations",
+      "/authenticationMethodsPolicy",
+      "/certificateBasedAuthConfiguration",
+      "/identity",
+      "/identityGovernance",
+      "/identityProviders",
+      "/identityProtection",
+      "/policies",
+      "/roleManagement",
+    ],
+    audience: "directory-identity",
+  },
+  {
+    id: "admin-reports",
+    name: "Admin and Reports",
+    summary: "Admin centers, audit logs, domains, reports, organization, and tenants.",
+    icon: svglIcon("microsoft"),
+    scopes: ["AuditLog.Read.All", "Reports.Read.All"],
+    pathPrefixes: [
+      "/admin",
+      "/auditLogs",
+      "/domains",
+      "/domainDnsRecords",
+      "/organization",
+      "/reports",
+      "/subscribedSkus",
+      "/tenantRelationships",
+    ],
+    audience: "admin-security",
+  },
+  {
+    id: "security-compliance",
+    name: "Security and Compliance",
+    summary: "Security, compliance, privacy, information protection, and data policy.",
+    icon: svglIcon("microsoft"),
+    scopes: ["SecurityEvents.Read.All"],
+    pathPrefixes: [
+      "/compliance",
+      "/dataPolicyOperations",
+      "/informationProtection",
+      "/privacy",
+      "/security",
+    ],
+    audience: "admin-security",
+  },
+  {
+    id: "devices",
+    name: "Devices and Intune",
+    summary: "Devices, device management, Intune apps, managed devices, and policies.",
+    icon: svglIcon("microsoft"),
+    scopes: ["DeviceManagementApps.ReadWrite.All", "DeviceManagementManagedDevices.ReadWrite.All"],
+    pathPrefixes: [
+      "/devices",
+      "/devices(deviceId='{deviceId}')",
+      "/deviceAppManagement",
+      "/deviceManagement",
+    ],
+    audience: "admin-security",
+  },
+  {
+    id: "education",
+    name: "Education",
+    summary: "Classes, schools, education users, assignments, and reports.",
+    icon: svglIcon("microsoft"),
+    scopes: [],
+    pathPrefixes: ["/education"],
+    audience: "admin-security",
   },
   {
     id: "search",
@@ -214,31 +405,48 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
     icon: svglIcon("microsoft"),
     scopes: ["ExternalItem.Read.All", "Acronym.Read.All", "Bookmark.Read.All", "QnA.Read.All"],
     pathPrefixes: ["/search"],
-    audience: "admin",
+    audience: "platform-business",
   },
   {
-    id: "sites",
-    name: "SharePoint Sites",
-    summary: "Sites, lists, pages, and columns.",
-    icon: svglIcon("microsoft-sharepoint"),
-    scopes: ["Sites.ReadWrite.All"],
-    pathPrefixes: ["/sites"],
-    audience: "admin",
-  },
-  {
-    id: "users",
-    name: "Directory Users",
-    summary: "Users, managers, app role assignments, and directory metadata.",
+    id: "external-connections",
+    name: "External Connections",
+    summary: "External connections, schemas, items, and content connectors.",
     icon: svglIcon("microsoft"),
-    scopes: ["User.ReadWrite.All", "Directory.Read.All"],
-    pathPrefixes: ["/users"],
-    audience: "admin",
+    scopes: ["ExternalConnection.ReadWrite.OwnedBy", "ExternalItem.ReadWrite.OwnedBy"],
+    pathPrefixes: ["/connections", "/external"],
+    audience: "platform-business",
+  },
+  {
+    id: "solutions",
+    name: "Solutions and Employee Experience",
+    summary: "Bookings, virtual events, backup, employee experience, and Copilot.",
+    icon: svglIcon("microsoft"),
+    scopes: [],
+    pathPrefixes: ["/copilot", "/employeeExperience", "/solutions"],
+    audience: "platform-business",
+  },
+  {
+    id: "platform-services",
+    name: "Platform Services",
+    summary: "Places, print, storage, subscriptions, functions, filters, and extensions.",
+    icon: svglIcon("microsoft"),
+    scopes: ["Place.Read.All", "Printer.ReadWrite.All"],
+    pathPrefixes: [
+      "/filterOperators",
+      "/functions",
+      "/places",
+      "/print",
+      "/schemaExtensions",
+      "/storage",
+      "/subscriptions",
+    ],
+    audience: "platform-business",
   },
 ];
 
-export const MICROSOFT_GRAPH_DEFAULT_PRESET_IDS: readonly string[] = [
-  MICROSOFT_GRAPH_ALL_PRESET_ID,
-];
+export const MICROSOFT_GRAPH_DEFAULT_PRESET_IDS: readonly string[] = microsoftGraphScopePresets.map(
+  (preset) => preset.id,
+);
 
 const orderedUnique = (values: Iterable<string>): readonly string[] => {
   const seen = new Set<string>();
@@ -257,8 +465,10 @@ export const microsoftGraphPresetForId = (
 ): MicrosoftGraphScopePreset | undefined =>
   microsoftGraphScopePresets.find((preset) => preset.id === presetId);
 
-export const microsoftGraphPresetIdsIncludeAllGraph = (presetIds: Iterable<string>): boolean =>
-  [...presetIds].some((presetId) => microsoftGraphPresetForId(presetId)?.includeAllGraph === true);
+export const microsoftGraphPresetIdsCoverFullGraph = (presetIds: Iterable<string>): boolean => {
+  const selected = new Set([...presetIds]);
+  return microsoftGraphScopePresets.every((preset) => selected.has(preset.id));
+};
 
 export const microsoftGraphScopesForPresetIds = (
   presetIds: Iterable<string>,
@@ -282,4 +492,11 @@ export const microsoftGraphPathPrefixesForPresetIds = (
 ): readonly string[] =>
   orderedUnique(
     [...presetIds].flatMap((presetId) => microsoftGraphPresetForId(presetId)?.pathPrefixes ?? []),
+  );
+
+export const microsoftGraphTagPrefixesForPresetIds = (
+  presetIds: Iterable<string>,
+): readonly string[] =>
+  orderedUnique(
+    [...presetIds].flatMap((presetId) => microsoftGraphPresetForId(presetId)?.tagPrefixes ?? []),
   );

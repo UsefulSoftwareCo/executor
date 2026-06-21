@@ -76,6 +76,10 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
                   microsoftGraphPathPrefixes: config.microsoftGraphPathPrefixes
                     ? [...config.microsoftGraphPathPrefixes]
                     : undefined,
+                  microsoftGraphTagPrefixes: config.microsoftGraphTagPrefixes
+                    ? [...config.microsoftGraphTagPrefixes]
+                    : undefined,
+                  microsoftGraphCoversFullGraph: config.microsoftGraphCoversFullGraph,
                   microsoftGraphAuthorizationUrl: config.microsoftGraphAuthorizationUrl,
                   microsoftGraphTokenUrl: config.microsoftGraphTokenUrl,
                   microsoftGraphClientCredentialsTokenUrl:

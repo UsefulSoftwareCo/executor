@@ -20,12 +20,16 @@ paths:
   /me:
     get:
       operationId: me.GetUser
+      tags:
+        - me.user
       responses:
         "200":
           description: OK
   /me/messages:
     get:
       operationId: me.messages.ListMessages
+      tags:
+        - me.message
       security:
         - azureAdDelegated:
             - Mail.ReadWrite
@@ -35,6 +39,8 @@ paths:
   /me/onenote/pages:
     get:
       operationId: me.onenote.pages.ListPages
+      tags:
+        - me.onenote
       security:
         - azureAdDelegated:
             - Notes.ReadWrite
@@ -44,6 +50,8 @@ paths:
   /teams/{team-id}/channels/{channel-id}/messages:
     post:
       operationId: teams.channels.messages.CreateMessage
+      tags:
+        - teams.channel
       x-ms-permissions:
         delegated:
           - ChannelMessage.Send
@@ -53,6 +61,8 @@ paths:
   /sites:
     get:
       operationId: sites.ListSites
+      tags:
+        - sites.site
       responses:
         "200":
           description: OK
@@ -97,6 +107,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         scopes: ["offline_access", "User.Read", "Mail.ReadWrite"],
         exactPaths: ["/me"],
         pathPrefixes: ["/me/messages"],
+        tagPrefixes: [],
       });
       const doc = YAML.parse(filtered) as {
         readonly paths: Record<string, unknown>;
@@ -122,6 +133,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         scopes: ["offline_access", "Notes.ReadWrite", "ChannelMessage.Send"],
         exactPaths: [],
         pathPrefixes: [],
+        tagPrefixes: [],
       });
       const doc = YAML.parse(filtered) as {
         readonly paths: Record<string, unknown>;
@@ -134,13 +146,29 @@ describe("Microsoft Graph OpenAPI filtering", () => {
     }),
   );
 
-  it.effect("keeps full Graph selections and derives delegated scopes from the spec", () =>
+  it.effect("keeps operations matched by selected Graph tags", () =>
+    Effect.gen(function* () {
+      const filtered = yield* filterMicrosoftGraphOpenApiSpec(graphFixture, {
+        scopes: ["offline_access"],
+        exactPaths: [],
+        pathPrefixes: [],
+        tagPrefixes: ["teams."],
+      });
+      const doc = YAML.parse(filtered) as {
+        readonly paths: Record<string, unknown>;
+      };
+
+      expect(Object.keys(doc.paths)).toEqual(["/teams/{team-id}/channels/{channel-id}/messages"]);
+    }),
+  );
+
+  it.effect("keeps categorized Graph selections and derives delegated scopes from the spec", () =>
     Effect.gen(function* () {
       const filtered = yield* buildFilteredMicrosoftGraphOpenApiSpec(graphFixture, {
         scopes: ["offline_access"],
         exactPaths: [],
-        pathPrefixes: [],
-        includeAllGraph: true,
+        pathPrefixes: ["/me", "/sites", "/teams"],
+        tagPrefixes: [],
         fullGraphScopes: ["User.Read", "Mail.ReadWrite", "Notes.ReadWrite"],
       });
       const doc = YAML.parse(filtered.specText) as {
@@ -208,6 +236,7 @@ components:
           scopes: ["offline_access", "User.Read", "User.Read.All"],
           exactPaths: ["/me"],
           pathPrefixes: ["/users"],
+          tagPrefixes: [],
         },
       );
       const doc = YAML.parse(filtered) as {

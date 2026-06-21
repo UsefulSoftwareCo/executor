@@ -15,6 +15,7 @@ import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
+  MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
 } from "./presets";
@@ -206,7 +207,7 @@ describe("Microsoft Graph provider", () => {
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph");
         expect(config?.microsoftGraphPresetIds).toEqual(["profile", "mail"]);
-        expect(config?.microsoftGraphIncludeAllGraph).toBe(false);
+        expect(config?.microsoftGraphCoversFullGraph).toBe(false);
         expect(config?.microsoftGraphScopes).toEqual([
           "offline_access",
           "User.Read",
@@ -268,7 +269,8 @@ describe("Microsoft Graph provider", () => {
         });
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph_all");
-        expect(config?.microsoftGraphIncludeAllGraph).toBe(true);
+        expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
+        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
         expect(config?.microsoftGraphScopes).toEqual([
           "offline_access",
           "User.Read",

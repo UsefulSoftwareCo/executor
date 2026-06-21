@@ -24,8 +24,9 @@ import {
   MICROSOFT_TOKEN_URL,
   microsoftGraphExactPathsForPresetIds,
   microsoftGraphPathPrefixesForPresetIds,
-  microsoftGraphPresetIdsIncludeAllGraph,
+  microsoftGraphPresetIdsCoverFullGraph,
   microsoftGraphScopesForPresetIds,
+  microsoftGraphTagPrefixesForPresetIds,
 } from "./presets";
 
 export interface MicrosoftGraphSelectionInput {
@@ -50,7 +51,8 @@ export interface MicrosoftGraphSpecBuild {
   readonly scopes: readonly string[];
   readonly exactPaths: readonly string[];
   readonly pathPrefixes: readonly string[];
-  readonly includeAllGraph: boolean;
+  readonly tagPrefixes: readonly string[];
+  readonly coversFullGraph: boolean;
   readonly authenticationTemplate: readonly Authentication[];
 }
 
@@ -60,7 +62,8 @@ export type MicrosoftGraphIntegrationConfig = OpenApiIntegrationConfig & {
   readonly microsoftGraphScopes?: readonly string[];
   readonly microsoftGraphExactPaths?: readonly string[];
   readonly microsoftGraphPathPrefixes?: readonly string[];
-  readonly microsoftGraphIncludeAllGraph?: boolean;
+  readonly microsoftGraphTagPrefixes?: readonly string[];
+  readonly microsoftGraphCoversFullGraph?: boolean;
   readonly microsoftGraphAuthorizationUrl?: string;
   readonly microsoftGraphTokenUrl?: string;
   readonly microsoftGraphClientCredentialsTokenUrl?: string;
@@ -78,7 +81,8 @@ const MicrosoftGraphIntegrationConfigSchema = Schema.Struct({
   microsoftGraphScopes: Schema.optional(Schema.Array(Schema.String)),
   microsoftGraphExactPaths: Schema.optional(Schema.Array(Schema.String)),
   microsoftGraphPathPrefixes: Schema.optional(Schema.Array(Schema.String)),
-  microsoftGraphIncludeAllGraph: Schema.optional(Schema.Boolean),
+  microsoftGraphTagPrefixes: Schema.optional(Schema.Array(Schema.String)),
+  microsoftGraphCoversFullGraph: Schema.optional(Schema.Boolean),
   microsoftGraphAuthorizationUrl: Schema.optional(Schema.String),
   microsoftGraphTokenUrl: Schema.optional(Schema.String),
   microsoftGraphClientCredentialsTokenUrl: Schema.optional(Schema.String),
@@ -113,7 +117,8 @@ const normalizeSelection = (input: MicrosoftGraphSelectionInput) => {
   const scopes = microsoftGraphScopesForPresetIds(presetIds, customScopes);
   const exactPaths = microsoftGraphExactPathsForPresetIds(presetIds);
   const pathPrefixes = microsoftGraphPathPrefixesForPresetIds(presetIds);
-  const includeAllGraph = microsoftGraphPresetIdsIncludeAllGraph(presetIds);
+  const tagPrefixes = microsoftGraphTagPrefixesForPresetIds(presetIds);
+  const coversFullGraph = microsoftGraphPresetIdsCoverFullGraph(presetIds);
   const specUrl = input.specUrl?.trim() || MICROSOFT_GRAPH_OPENAPI_URL;
   const baseUrl = input.baseUrl?.trim() || undefined;
   const authorizationUrl = input.authorizationUrl?.trim() || undefined;
@@ -125,7 +130,8 @@ const normalizeSelection = (input: MicrosoftGraphSelectionInput) => {
     scopes,
     exactPaths,
     pathPrefixes,
-    includeAllGraph,
+    tagPrefixes,
+    coversFullGraph,
     specUrl,
     baseUrl,
     authorizationUrl,
@@ -234,9 +240,26 @@ const matchesGraphPath = (
   const variants = graphPathMatchVariants(path);
   if (variants.some((variant) => exactPaths.has(variant))) return true;
   return variants.some((variant) =>
-    pathPrefixes.some((prefix) => variant === prefix || variant.startsWith(`${prefix}/`)),
+    pathPrefixes.some(
+      (prefix) =>
+        variant === prefix || variant.startsWith(`${prefix}/`) || variant.startsWith(`${prefix}(`),
+    ),
   );
 };
+
+const operationTags = (operation: Record<string, unknown>): readonly string[] =>
+  Array.isArray(operation.tags)
+    ? operation.tags.filter((tag): tag is string => typeof tag === "string")
+    : [];
+
+const operationMatchesTagPrefix = (
+  operation: Record<string, unknown>,
+  tagPrefixes: readonly string[],
+): boolean =>
+  tagPrefixes.length > 0 &&
+  operationTags(operation).some((tag) =>
+    tagPrefixes.some((prefix) => tag === prefix || tag.startsWith(prefix)),
+  );
 
 const isGraphPermissionScope = (value: string): boolean =>
   value.startsWith("https://graph.microsoft.com/") ||
@@ -312,6 +335,7 @@ const selectedOAuthScopesForPaths = (
   uniqueStrings([
     ...MICROSOFT_GRAPH_BASE_SCOPES,
     ...fullGraphScopes,
+    ...requestedScopes.filter((scope) => !BASE_OAUTH_SCOPES.has(scope)),
     ...Object.values(paths).flatMap((pathItem) => {
       if (!isRecord(pathItem)) return [];
       return Object.entries(pathItem).flatMap(([method, operation]) =>
@@ -320,7 +344,6 @@ const selectedOAuthScopesForPaths = (
           : [],
       );
     }),
-    ...requestedScopes.filter((scope) => !BASE_OAUTH_SCOPES.has(scope)),
   ]);
 
 const filterPathItem = (
@@ -329,6 +352,7 @@ const filterPathItem = (
   options: {
     readonly exactPaths: ReadonlySet<string>;
     readonly pathPrefixes: readonly string[];
+    readonly tagPrefixes: readonly string[];
     readonly selectedScopes: ReadonlySet<string>;
   },
 ): Record<string, unknown> | null => {
@@ -340,7 +364,11 @@ const filterPathItem = (
     const lowerKey = key.toLowerCase();
     if (!HTTP_METHODS.has(lowerKey)) continue;
     if (!isRecord(value)) continue;
-    if (pathMatches || operationMatchesScope(value, options.selectedScopes)) {
+    if (
+      pathMatches ||
+      operationMatchesTagPrefix(value, options.tagPrefixes) ||
+      operationMatchesScope(value, options.selectedScopes)
+    ) {
       kept[key] = value;
       hasOperation = true;
     }
@@ -359,11 +387,9 @@ const selectMicrosoftGraphPaths = (
     readonly scopes: readonly string[];
     readonly exactPaths: readonly string[];
     readonly pathPrefixes: readonly string[];
-    readonly includeAllGraph?: boolean;
+    readonly tagPrefixes: readonly string[];
   },
 ): Record<string, unknown> => {
-  if (options.includeAllGraph === true) return paths;
-
   const exactPaths = new Set(options.exactPaths);
   const selectedScopes = new Set(options.scopes);
   const entries = Object.entries(paths).flatMap(([path, pathItem]) => {
@@ -371,6 +397,7 @@ const selectMicrosoftGraphPaths = (
     const filtered = filterPathItem(path, pathItem, {
       exactPaths,
       pathPrefixes: options.pathPrefixes,
+      tagPrefixes: options.tagPrefixes,
       selectedScopes,
     });
     return filtered ? ([[path, filtered]] as const) : [];
@@ -474,7 +501,7 @@ export const buildFilteredMicrosoftGraphOpenApiSpec = (
     readonly scopes: readonly string[];
     readonly exactPaths: readonly string[];
     readonly pathPrefixes: readonly string[];
-    readonly includeAllGraph?: boolean;
+    readonly tagPrefixes: readonly string[];
     readonly baseUrl?: string;
     readonly authorizationUrl?: string;
     readonly tokenUrl?: string;
@@ -498,10 +525,11 @@ export const buildFilteredMicrosoftGraphOpenApiSpec = (
       });
     }
 
-    const scopes =
-      options.includeAllGraph === true
-        ? selectedOAuthScopesForPaths(filteredPaths, options.scopes, options.fullGraphScopes ?? [])
-        : options.scopes;
+    const scopes = selectedOAuthScopesForPaths(
+      filteredPaths,
+      options.scopes,
+      options.fullGraphScopes ?? [],
+    );
     const serverUrl = options.baseUrl ?? firstServerUrl(parsed) ?? MICROSOFT_GRAPH_BASE_URL;
     const endpoints = resolveOAuthEndpoints(parsed, options);
     const components = isRecord(parsed.components) ? parsed.components : {};
@@ -568,7 +596,7 @@ export const buildMicrosoftGraphOpenApiSpec = (
       Effect.provide(httpClientLayer),
     );
     const permissionsReference =
-      selection.includeAllGraph === true
+      selection.coversFullGraph === true
         ? yield* fetchMicrosoftGraphPermissionsReference().pipe(Effect.provide(httpClientLayer))
         : undefined;
     const fullGraphScopes = permissionsReference
@@ -578,6 +606,10 @@ export const buildMicrosoftGraphOpenApiSpec = (
     const endpoints = resolveOAuthEndpoints(parsed, selection);
     const filtered = yield* buildFilteredMicrosoftGraphOpenApiSpec(sourceText, {
       ...selection,
+      scopes:
+        selection.coversFullGraph === true
+          ? uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes])
+          : selection.scopes,
       fullGraphScopes,
     });
     return {
