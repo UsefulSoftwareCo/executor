@@ -9,7 +9,7 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { OpenApiParseError, OpenApiExtractionError, OpenApiOAuthError } from "../sdk/errors";
-import { SpecPreview } from "../sdk/preview";
+import { SpecPreviewSummary } from "../sdk/preview";
 
 // ---------------------------------------------------------------------------
 // Errors — the plugin-domain tagged errors flow directly to clients
@@ -155,7 +155,7 @@ export const OpenApiGroup = HttpApiGroup.make("openapi")
   .add(
     HttpApiEndpoint.post("previewSpec", "/openapi/preview", {
       payload: PreviewSpecPayload,
-      success: SpecPreview,
+      success: SpecPreviewSummary,
       error: DomainErrors,
     }),
   )

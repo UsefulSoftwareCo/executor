@@ -44,7 +44,7 @@ import {
   googleOpenApiPresets,
   type GoogleOpenApiPreset,
 } from "../sdk/google-presets";
-import type { SpecPreview } from "../sdk/preview";
+import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
 import { detectedAuthenticationTemplates } from "../sdk/derive-auth";
@@ -131,7 +131,7 @@ export default function AddOpenApiSource(props: {
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   // After analysis
-  const [preview, setPreview] = useState<SpecPreview | null>(null);
+  const [preview, setPreview] = useState<SpecPreviewSummary | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   // Agent-visible description: prefilled from the spec's `info.description`
   // until the user types (null = untouched, keep deriving from the preview).

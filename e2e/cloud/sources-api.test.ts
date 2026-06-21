@@ -117,7 +117,7 @@ scenario(
 );
 
 scenario(
-  "Integrations · previewSpec reports a spec's operations before anything is stored",
+  "Integrations · previewSpec reports summary metadata before anything is stored",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -127,9 +127,9 @@ scenario(
 
     const preview = yield* client.openapi.previewSpec({ payload: { spec: pingSpec } });
     expect(preview.operationCount, "the preview counts the spec's operations").toBe(1);
-    expect(preview.operations, "the preview lists each operation's identity").toEqual([
-      expect.objectContaining({ operationId: "ping", method: "get", path: "/ping" }),
-    ]);
+    expect(Object.hasOwn(preview, "operations"), "the HTTP preview omits per-operation rows").toBe(
+      false,
+    );
   }),
 );
 

@@ -9,9 +9,11 @@ import * as Option from "effect/Option";
 
 import { AuthTemplateSlug, type OAuthAuthentication } from "@executor-js/sdk/shared";
 
-import type { HeaderPreset, OAuth2Preset, SpecPreview } from "./preview";
+import type { HeaderPreset, OAuth2Preset, SpecPreview, SpecPreviewSummary } from "./preview";
 import type { APIKeyAuthentication, Authentication } from "./types";
 import { resolveServerUrl } from "./openapi-utils";
+
+type PreviewAuthMetadata = SpecPreview | SpecPreviewSummary;
 
 // ---------------------------------------------------------------------------
 // OpenAPI url helpers — specs sometimes ship relative OAuth endpoints; resolve
@@ -132,7 +134,7 @@ export const detectedAuthenticationTemplates = (
   return templates;
 };
 
-export const firstBaseUrlForPreview = (preview: SpecPreview): string => {
+export const firstBaseUrlForPreview = (preview: PreviewAuthMetadata): string => {
   const firstServer = preview.servers[0];
   return firstServer
     ? resolveServerUrl(firstServer.url, Option.getOrUndefined(firstServer.variables), {})
@@ -142,7 +144,7 @@ export const firstBaseUrlForPreview = (preview: SpecPreview): string => {
 /** The fallback `addSpec` uses when no explicit template was passed: every
  *  spec-detected method, resolved against the integration's base URL. */
 export const deriveAuthenticationTemplateFromPreview = (
-  preview: SpecPreview,
+  preview: PreviewAuthMetadata,
   baseUrl: string | undefined,
 ): readonly Authentication[] =>
   detectedAuthenticationTemplates(
