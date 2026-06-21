@@ -1,5 +1,18 @@
 # executor
 
+## 1.5.16
+
+### Patch Changes
+
+- [#1066](https://github.com/RhysSullivan/executor/pull/1066) [`0961773`](https://github.com/RhysSullivan/executor/commit/09617733310152bfa5ae9439b17bd6903cac611e) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Replace the code-mode output helpers with a single `emit(value)` primitive.
+  `emit(...)` accepts plain values, `ToolFile` attachments, and MCP content blocks,
+  while `return` remains reserved for ordinary structured data.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.16
+  - @executor-js/runtime-quickjs@1.5.16
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.36
+
 ## 1.5.15
 
 ### Patch Changes
