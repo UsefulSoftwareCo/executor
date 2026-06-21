@@ -72,13 +72,12 @@ export interface HostConfigShape {
    * (packages/core/api/src/oauth/api.ts). The redirect URI sent to providers is
    * `${webBaseUrl}${oauthCallbackPath}`.
    *
-   * Hosts do NOT set this: `ExecutorApp.make` derives it from the same
-   * `config.mountPrefix` that prefixes the API router and injects it here, so the
-   * callback can't drift from the route that serves it. It stays optional only
-   * for the low-level `makeScopedExecutor` test seam (constructed without
-   * `make`), where it defaults to `/oauth/callback` (the root-mount path).
+   * Every host must set this explicitly. `ExecutorApp.make` derives it from the
+   * same `config.mountPrefix` that prefixes the API router and injects it here
+   * for protected HTTP requests. Direct MCP session stacks also read HostConfig,
+   * so the host-provided value is the only valid source of truth.
    */
-  readonly oauthCallbackPath?: string;
+  readonly oauthCallbackPath: string;
   /**
    * Whether Executor's built-in agent tools should expose credential provider
    * discovery. Local/self-host can use this for 1Password/keychain style
@@ -129,6 +128,12 @@ export const resolveScopedWebBaseUrl = (input: {
   if (input.requestOrigin && isLoopbackOrigin(input.requestOrigin)) return input.requestOrigin;
   return input.configuredWebBaseUrl ?? input.requestOrigin;
 };
+
+export const buildOAuthRedirectUri = (input: {
+  readonly webBaseUrl: string | undefined;
+  readonly oauthCallbackPath: string;
+}): string | undefined =>
+  input.webBaseUrl ? new URL(input.oauthCallbackPath, input.webBaseUrl).toString() : undefined;
 
 // ---------------------------------------------------------------------------
 // PluginsProvider seam — the per-host (and possibly per-request) plugin array.
@@ -199,13 +204,15 @@ export const makeScopedExecutor = <
     // prefix joined with the global `/oauth/callback` route
     // (packages/core/api/src/oauth/api.ts). The base is derived from the SAME
     // source as `webBaseUrl` (an explicit `HostConfig.webBaseUrl`, else the
-    // in-flight request origin). The PATH defaults to root (`/oauth/callback`,
-    // correct for a root-mounted host like local); a prefix-mounted host (cloud:
-    // `/api`) sets `oauthCallbackPath` so the prefix is not dropped. When no base
-    // is known (a non-HTTP caller), `redirectUri` stays `undefined` and the OAuth
-    // service fails loudly on redirect flows rather than silently using localhost.
-    const oauthCallbackPath = config.oauthCallbackPath ?? "/oauth/callback";
-    const redirectUri = webBaseUrl ? new URL(oauthCallbackPath, webBaseUrl).toString() : undefined;
+    // in-flight request origin). The PATH is required in HostConfig so direct MCP
+    // session stacks cannot silently fall back to an unmounted callback. When no
+    // base is known (a non-HTTP caller), `redirectUri` stays `undefined` and the
+    // OAuth service fails loudly on redirect flows rather than silently using
+    // localhost.
+    const redirectUri = buildOAuthRedirectUri({
+      webBaseUrl,
+      oauthCallbackPath: config.oauthCallbackPath,
+    });
 
     const plugins = pluginsFactory();
     const httpClientLayer = makeHostedHttpClientLayer({

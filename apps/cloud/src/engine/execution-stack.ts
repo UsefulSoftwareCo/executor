@@ -83,9 +83,7 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // servers on localhost are reachable. See `hosted-http-client.ts`.
   allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
   webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
-  // `oauthCallbackPath` is NOT set here — `ExecutorApp.make` derives it from the
-  // `mountPrefix` cloud passes (`CLOUD_MOUNT_PREFIX`), so the callback can't drift
-  // from the route that serves it.
+  oauthCallbackPath: `${CLOUD_MOUNT_PREFIX}/oauth/callback`,
   // WorkOS Vault is cloud's credential storage implementation detail, not a
   // user-selectable provider surface.
   exposeCredentialProviders: false,
