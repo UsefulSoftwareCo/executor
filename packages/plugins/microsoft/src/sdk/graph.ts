@@ -19,6 +19,7 @@ import {
   MICROSOFT_GRAPH_BASE_URL,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
+  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
@@ -628,11 +629,14 @@ export const buildMicrosoftGraphOpenApiSpec = (
       });
     }
     if (selection.coversFullGraph === true) {
-      const scopes = selectedOAuthScopesForPaths(
-        graphPaths,
-        uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes]),
-        fullGraphScopes,
-      );
+      const scopes =
+        selection.customScopes.length === 0
+          ? MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES
+          : selectedOAuthScopesForPaths(
+              graphPaths,
+              uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes]),
+              fullGraphScopes,
+            );
       return {
         ...selection,
         specText: sourceText,

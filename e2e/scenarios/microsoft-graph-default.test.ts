@@ -5,10 +5,18 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_AUTHORIZATION_URL,
+  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
+  MICROSOFT_TOKEN_URL,
 } from "@executor-js/plugin-microsoft";
 import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
-import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  OAuthClientSlug,
+} from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
@@ -32,6 +40,7 @@ scenario(
 
     const integration = unique("msgraph_full");
     const connection = ConnectionName.make("main");
+    const oauthClient = OAuthClientSlug.make(unique("msgraph_app"));
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
@@ -58,6 +67,46 @@ scenario(
         expect(config?.microsoftGraphCoversFullGraph, "the default selection is full Graph").toBe(
           true,
         );
+        expect(
+          config?.microsoftGraphScopes,
+          "full Graph delegated OAuth uses the app registration default scope",
+        ).toEqual([...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES]);
+
+        yield* client.oauth.createClient({
+          payload: {
+            owner: "org",
+            slug: oauthClient,
+            authorizationUrl: MICROSOFT_AUTHORIZATION_URL,
+            tokenUrl: MICROSOFT_TOKEN_URL,
+            grant: "authorization_code",
+            clientId: "client-id",
+            clientSecret: "client-secret",
+          },
+        });
+
+        const started = yield* client.oauth.start({
+          payload: {
+            client: oauthClient,
+            clientOwner: "org",
+            owner: "org",
+            name: ConnectionName.make("oauth"),
+            integration: IntegrationSlug.make(integration),
+            template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+          },
+        });
+        expect(started.status, "authorization-code OAuth returns a browser redirect").toBe(
+          "redirect",
+        );
+        const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
+        const authorizeUrl = new URL(authorizationUrl || "https://invalid.example");
+        expect(
+          authorizeUrl.toString().length,
+          "full Graph OAuth authorize URLs stay under ordinary proxy limits",
+        ).toBeLessThan(2_000);
+        expect(
+          authorizeUrl.searchParams.get("scope"),
+          "full Graph OAuth asks Microsoft for the app registration default scope",
+        ).toBe(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES.join(" "));
 
         yield* client.connections.create({
           payload: {
@@ -96,6 +145,12 @@ scenario(
           .pipe(Effect.ignore);
         yield* client.microsoft
           .removeGraph({ params: { slug: IntegrationSlug.make(integration) } })
+          .pipe(Effect.ignore);
+        yield* client.oauth
+          .removeClient({
+            params: { slug: oauthClient },
+            payload: { owner: "org" },
+          })
           .pipe(Effect.ignore);
       }),
     );

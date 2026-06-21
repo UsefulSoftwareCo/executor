@@ -15,6 +15,7 @@ import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
+  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
@@ -271,12 +272,13 @@ describe("Microsoft Graph provider", () => {
         const config = yield* executor.microsoft.getConfig("microsoft_graph_all");
         expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
         expect(config?.microsoftGraphCoversFullGraph).toBe(true);
-        expect(config?.microsoftGraphScopes).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Calendars.ReadWrite",
-          "Notes.ReadWrite",
+        expect(config?.microsoftGraphScopes).toEqual(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES);
+
+        const delegated = config?.authenticationTemplate?.find(
+          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+        );
+        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
+          ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
         ]);
 
         yield* executor.connections.create({
@@ -293,6 +295,30 @@ describe("Microsoft Graph provider", () => {
         expect(toolNames).toContain("me.eventsListEvents");
         expect(toolNames).toContain("me.onenotePagesListPages");
         expect(toolNames).toContain("sites.listSites");
+      }),
+    ),
+  );
+
+  it.effect("uses explicit full Graph scopes when custom dynamic scopes are added", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addGraph({
+          slug: "microsoft_graph_all_custom",
+          customScopes: ["Custom.Scope"],
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_all_custom");
+        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
+        expect(config?.microsoftGraphScopes).toEqual([
+          "offline_access",
+          "User.Read",
+          "Mail.ReadWrite",
+          "Calendars.ReadWrite",
+          "Notes.ReadWrite",
+          "Custom.Scope",
+        ]);
       }),
     ),
   );

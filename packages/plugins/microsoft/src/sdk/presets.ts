@@ -40,8 +40,14 @@ export const MICROSOFT_AUTHORIZATION_URL =
 export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 export const MICROSOFT_AUTH_TEMPLATE_SLUG = "azureAdDelegated";
 export const MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG = "azureAdClientCredentials";
+export const MICROSOFT_GRAPH_BASE_SCOPES: readonly string[] = ["offline_access"];
+export const MICROSOFT_GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
+export const MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES: readonly string[] = [
+  ...MICROSOFT_GRAPH_BASE_SCOPES,
+  MICROSOFT_GRAPH_DEFAULT_SCOPE,
+];
 export const MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES: readonly string[] = [
-  "https://graph.microsoft.com/.default",
+  MICROSOFT_GRAPH_DEFAULT_SCOPE,
 ];
 
 export const MICROSOFT_GRAPH_PRESET_ID = "microsoft";
@@ -53,8 +59,6 @@ export const microsoftGraphPreset: MicrosoftGraphPreset = {
   icon: MICROSOFT_ICON,
   featured: true,
 };
-
-export const MICROSOFT_GRAPH_BASE_SCOPES: readonly string[] = ["offline_access"];
 
 export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = [
   {
