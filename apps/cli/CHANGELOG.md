@@ -1,5 +1,15 @@
 # executor
 
+## 1.5.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.15
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.35
+  - @executor-js/runtime-quickjs@1.5.15
+
 ## 1.5.14
 
 ### Patch Changes

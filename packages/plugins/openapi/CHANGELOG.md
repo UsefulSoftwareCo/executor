@@ -1,5 +1,17 @@
 # @executor-js/plugin-openapi
 
+## 1.5.15
+
+### Patch Changes
+
+- Surface binary tool results as model-native file outputs across OpenAPI and upstream MCP integrations.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.15
+  - @executor-js/api@1.4.35
+  - @executor-js/config@1.5.15
+  - @executor-js/react@1.4.35
+
 ## 1.5.14
 
 ### Patch Changes
