@@ -49,6 +49,7 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
   return {
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
+    oauthCallbackPath: "/api/oauth/callback",
   };
 });
 

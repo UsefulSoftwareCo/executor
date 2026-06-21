@@ -3,6 +3,8 @@ import { createMiddleware, createStart } from "@tanstack/react-start";
 import { cloudApiHandler } from "./app";
 import { isAppOwnedPath } from "./app-paths";
 import { authGateMiddleware } from "./auth/ssr-gate";
+import { parseCookie } from "./auth/cookies";
+import { loginPath } from "./auth/return-to";
 import { prepareMcpOrgScope } from "./mcp/mount";
 import {
   docsProxyMiddleware,
@@ -34,6 +36,28 @@ import {
 let app: ReturnType<typeof cloudApiHandler> | undefined;
 const getApp = () => (app ??= cloudApiHandler());
 
+const SESSION_COOKIE = "wos-session";
+const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
+
+const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).server(
+  ({ pathname, request, next }) => {
+    if (
+      pathname !== OAUTH_CALLBACK_PATH ||
+      (request.method !== "GET" && request.method !== "HEAD")
+    ) {
+      return next();
+    }
+    const sealed = parseCookie(request.headers.get("cookie"), SESSION_COOKIE);
+    if (sealed) return next();
+
+    const url = new URL(request.url);
+    return new Response(null, {
+      status: 302,
+      headers: { location: loginPath(`${url.pathname}${url.search}`) },
+    });
+  },
+);
+
 // app-owned = anything under `/api/*` (incl. the cloud extension routes) OR an
 // MCP/OAuth-discovery path (see `./app-paths`). The app handler serves these at
 // their real paths, so we forward unmodified — except `prepareMcpOrgScope`
@@ -63,6 +87,7 @@ export const startInstance = createStart(() => ({
     docsProxyMiddleware,
     sentryTunnelMiddleware,
     posthogProxyMiddleware,
+    oauthCallbackSignInMiddleware,
     appRequestMiddleware,
     authGateMiddleware,
   ],

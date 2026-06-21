@@ -11,8 +11,14 @@
 // Pure string code — imported by server handlers and the login page alike.
 // ---------------------------------------------------------------------------
 
+const pathPart = (path: string): string => path.split(/[?#]/, 1)[0] ?? "";
+
+const isOAuthCallbackReturnTo = (path: string): boolean => pathPart(path) === "/api/oauth/callback";
+
 export const isSafeReturnTo = (path: string): boolean =>
-  path.startsWith("/") && !path.startsWith("//") && !/^\/api(\/|$)/.test(path);
+  path.startsWith("/") &&
+  !path.startsWith("//") &&
+  (!/^\/api(\/|$)/.test(path) || isOAuthCallbackReturnTo(path));
 
 /** The validated returnTo, or null when absent/unsafe. */
 export const safeReturnTo = (path: string | null | undefined): string | null =>
