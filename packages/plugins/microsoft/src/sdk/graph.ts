@@ -410,6 +410,60 @@ const selectMicrosoftGraphPaths = (
   return Object.fromEntries(entries);
 };
 
+const decodeJsonPointerSegment = (segment: string): string =>
+  decodeURIComponent(segment).replace(/~1/g, "/").replace(/~0/g, "~");
+
+const componentRefFromString = (
+  value: string,
+): { readonly section: string; readonly name: string } | null => {
+  if (!value.startsWith("#/components/")) return null;
+  const [, section, ...nameSegments] = value.slice(2).split("/");
+  if (!section || nameSegments.length === 0) return null;
+  return {
+    section: decodeJsonPointerSegment(section),
+    name: nameSegments.map(decodeJsonPointerSegment).join("/"),
+  };
+};
+
+const collectComponentRefs = (
+  value: unknown,
+): readonly { readonly section: string; readonly name: string }[] => {
+  if (typeof value === "string") {
+    const ref = componentRefFromString(value);
+    return ref ? [ref] : [];
+  }
+  if (Array.isArray(value)) return value.flatMap(collectComponentRefs);
+  if (!isRecord(value)) return [];
+  return Object.values(value).flatMap(collectComponentRefs);
+};
+
+const prunedComponentsForPaths = (
+  components: Record<string, unknown>,
+  paths: Record<string, unknown>,
+): Record<string, unknown> => {
+  const pruned: Record<string, Record<string, unknown>> = {};
+  const queue = [...collectComponentRefs(paths)];
+  const seen = new Set<string>();
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const ref = queue[index];
+    const key = `${ref.section}/${ref.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const section = components[ref.section];
+    if (!isRecord(section)) continue;
+    const component = section[ref.name];
+    if (component === undefined) continue;
+
+    pruned[ref.section] ??= {};
+    pruned[ref.section][ref.name] = component;
+    queue.push(...collectComponentRefs(component));
+  }
+
+  return pruned;
+};
+
 interface MicrosoftGraphFilterResult {
   readonly specText: string;
   readonly scopes: readonly string[];
@@ -543,6 +597,7 @@ export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
     const endpoints = resolveOAuthEndpoints(parsed, options);
     const components = isRecord(parsed.components) ? parsed.components : {};
     const securitySchemes = isRecord(components.securitySchemes) ? components.securitySchemes : {};
+    const filteredComponents = prunedComponentsForPaths(components, filteredPaths);
     const next = {
       ...parsed,
       info: {
@@ -553,7 +608,7 @@ export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
       servers: [{ url: serverUrl }],
       paths: filteredPaths,
       components: {
-        ...components,
+        ...filteredComponents,
         securitySchemes: {
           ...securitySchemes,
           [MICROSOFT_AUTH_TEMPLATE_SLUG]: {

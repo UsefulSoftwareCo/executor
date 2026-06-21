@@ -36,6 +36,10 @@ paths:
       responses:
         "200":
           description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/messageCollection"
   /me/onenote/pages:
     get:
       operationId: me.onenote.pages.ListPages
@@ -69,6 +73,20 @@ paths:
 components:
   schemas:
     user:
+      type: object
+    messageCollection:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            $ref: "#/components/schemas/message"
+    message:
+      type: object
+      properties:
+        id:
+          type: string
+    unusedDirectoryObject:
       type: object
 `;
 
@@ -124,6 +142,30 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         "User.Read",
         "Mail.ReadWrite",
       ]);
+    }),
+  );
+
+  it.effect("prunes unreferenced components from filtered specs", () =>
+    Effect.gen(function* () {
+      const filtered = yield* filterMicrosoftGraphOpenApiSpec(graphFixture, {
+        scopes: ["offline_access", "Mail.ReadWrite"],
+        exactPaths: [],
+        pathPrefixes: ["/me/messages"],
+        tagPrefixes: [],
+      });
+      const doc = YAML.parse(filtered) as {
+        readonly components: {
+          readonly schemas?: Record<string, unknown>;
+          readonly securitySchemes: Record<string, unknown>;
+        };
+      };
+
+      expect(Object.keys(doc.components.schemas ?? {}).sort()).toEqual([
+        "message",
+        "messageCollection",
+      ]);
+      expect(doc.components.schemas?.unusedDirectoryObject).toBeUndefined();
+      expect(doc.components.securitySchemes[MICROSOFT_AUTH_TEMPLATE_SLUG]).toBeDefined();
     }),
   );
 

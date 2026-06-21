@@ -242,7 +242,7 @@ const run = async (target: "selfhost" | "cloud", flags: ReadonlySet<string>) => 
       // Sharing cloud needs HTTPS on BOTH the app and the WorkOS emulator —
       // the app's auth cookies are Secure, and the browser walks the login
       // redirect across both origins (see RUNNING.md).
-      let publicUrl = `http://127.0.0.1:${cloudPort}`;
+      let publicUrl = `http://localhost:${cloudPort}`;
       let workosPublicUrl: string | undefined;
       let servePorts: number[] | undefined;
       let host: string | undefined;

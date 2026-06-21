@@ -6,7 +6,6 @@ import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_AUTHORIZATION_URL,
-  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_TOKEN_URL,
 } from "@executor-js/plugin-microsoft";
@@ -30,7 +29,7 @@ type ToolView = {
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
 scenario(
-  "Microsoft Graph: default add stores the full Graph operation catalog",
+  "Microsoft Graph: default add stores common Microsoft 365 workloads",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -38,7 +37,7 @@ scenario(
     const identity = yield* target.newIdentity();
     const client = yield* makeApiClient(api, identity);
 
-    const integration = unique("msgraph_full");
+    const integration = unique("msgraph_default");
     const connection = ConnectionName.make("main");
     const oauthClient = OAuthClientSlug.make(unique("msgraph_app"));
 
@@ -49,14 +48,14 @@ scenario(
             presetIds: [...MICROSOFT_GRAPH_DEFAULT_PRESET_IDS],
             customScopes: [],
             slug: integration,
-            name: "Microsoft Graph Full Catalog",
+            name: "Microsoft Graph Defaults",
           },
         });
-        expect(added.slug, "the full Graph source keeps the requested slug").toBe(integration);
+        expect(added.slug, "the Microsoft Graph source keeps the requested slug").toBe(integration);
         expect(
           added.toolCount,
-          "the default Microsoft Graph add extracts a large operation catalog",
-        ).toBeGreaterThan(1_000);
+          "the default Microsoft Graph add extracts common user-facing operations",
+        ).toBeGreaterThan(100);
 
         const config = yield* client.microsoft.getConfig({
           params: { slug: integration },
@@ -64,13 +63,32 @@ scenario(
         expect(config?.microsoftGraphPresetIds, "all default Graph groups are persisted").toEqual([
           ...MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
         ]);
-        expect(config?.microsoftGraphCoversFullGraph, "the default selection is full Graph").toBe(
-          true,
+        expect(config?.microsoftGraphCoversFullGraph, "the default selection is not full Graph").toBe(
+          false,
         );
         expect(
           config?.microsoftGraphScopes,
-          "full Graph delegated OAuth uses the app registration default scope",
-        ).toEqual([...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES]);
+          "default delegated OAuth requests the selected common workload scopes",
+        ).toEqual([
+          "offline_access",
+          "User.Read",
+          "Mail.ReadWrite",
+          "Mail.Send",
+          "MailboxSettings.ReadWrite",
+          "Calendars.ReadWrite",
+          "Contacts.ReadWrite",
+          "People.Read.All",
+          "Tasks.ReadWrite",
+          "Files.ReadWrite.All",
+          "Sites.ReadWrite.All",
+          "Notes.ReadWrite",
+          "Chat.ReadWrite",
+          "Team.ReadBasic.All",
+          "Channel.ReadBasic.All",
+          "ChannelMessage.Read.All",
+          "ChannelMessage.Send",
+          "OnlineMeetings.ReadWrite",
+        ]);
 
         yield* client.oauth.createClient({
           payload: {
@@ -101,12 +119,12 @@ scenario(
         const authorizeUrl = new URL(authorizationUrl || "https://invalid.example");
         expect(
           authorizeUrl.toString().length,
-          "full Graph OAuth authorize URLs stay under ordinary proxy limits",
+          "default Microsoft Graph OAuth authorize URLs stay under ordinary proxy limits",
         ).toBeLessThan(2_000);
         expect(
           authorizeUrl.searchParams.get("scope"),
-          "full Graph OAuth asks Microsoft for the app registration default scope",
-        ).toBe(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES.join(" "));
+          "default Microsoft Graph OAuth asks for common workload scopes",
+        ).toBe(config?.microsoftGraphScopes?.join(" "));
 
         yield* client.connections.create({
           payload: {
@@ -126,11 +144,11 @@ scenario(
         const siteTools = names.filter((name) => name.toLowerCase().includes("site"));
         expect(
           messageTools,
-          "the retrieved full catalog includes Microsoft message operations",
+          "the retrieved catalog includes Microsoft message operations",
         ).not.toEqual([]);
         expect(
           siteTools,
-          "the retrieved full catalog includes SharePoint site operations",
+          "the retrieved catalog includes SharePoint site operations",
         ).not.toEqual([]);
       }),
       Effect.gen(function* () {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDownIcon, PlusIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon, XIcon } from "lucide-react";
 
 import { cn } from "@executor-js/react/lib/utils";
 import { Badge } from "@executor-js/react/components/badge";
@@ -78,15 +78,6 @@ const ScopeRow = ({
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-sm font-medium text-foreground">{preset.name}</span>
-        {preset.audience === "admin-security" || preset.audience === "directory-identity" ? (
-          <Badge
-            variant="outline"
-            className="shrink-0 border-amber-500/40 text-amber-700 dark:text-amber-400"
-          >
-            <ShieldAlertIcon className="size-3" />
-            Admin
-          </Badge>
-        ) : null}
       </div>
       <p className="truncate text-[11px] text-muted-foreground">{preset.summary}</p>
     </div>

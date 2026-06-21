@@ -14,6 +14,7 @@ import { microsoftPlugin } from "./plugin";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+  MICROSOFT_GRAPH_ALL_PRESET_IDS,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
@@ -259,7 +260,7 @@ describe("Microsoft Graph provider", () => {
     ),
   );
 
-  it.effect("adds full Microsoft Graph by default", () =>
+  it.effect("adds common Microsoft Graph workloads by default", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
@@ -271,15 +272,34 @@ describe("Microsoft Graph provider", () => {
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph_all");
         expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
-        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
-        expect(config?.microsoftGraphScopes).toEqual(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES);
+        expect(config?.microsoftGraphCoversFullGraph).toBe(false);
+        expect(config?.microsoftGraphScopes).toEqual([
+          "offline_access",
+          "User.Read",
+          "Mail.ReadWrite",
+          "Mail.Send",
+          "MailboxSettings.ReadWrite",
+          "Calendars.ReadWrite",
+          "Contacts.ReadWrite",
+          "People.Read.All",
+          "Tasks.ReadWrite",
+          "Files.ReadWrite.All",
+          "Sites.ReadWrite.All",
+          "Notes.ReadWrite",
+          "Chat.ReadWrite",
+          "Team.ReadBasic.All",
+          "Channel.ReadBasic.All",
+          "ChannelMessage.Read.All",
+          "ChannelMessage.Send",
+          "OnlineMeetings.ReadWrite",
+        ]);
 
         const delegated = config?.authenticationTemplate?.find(
           (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
         );
-        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
-          ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
-        ]);
+        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual(
+          config?.microsoftGraphScopes,
+        );
 
         yield* executor.connections.create({
           owner: "org",
@@ -299,6 +319,32 @@ describe("Microsoft Graph provider", () => {
     ),
   );
 
+  it.effect("uses the app registration default scope when every Graph workload is selected", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addGraph({
+          presetIds: [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
+          slug: "microsoft_graph_full",
+          description: "Microsoft Graph",
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_full");
+        expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_ALL_PRESET_IDS);
+        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
+        expect(config?.microsoftGraphScopes).toEqual(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES);
+
+        const delegated = config?.authenticationTemplate?.find(
+          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+        );
+        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
+          ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
+        ]);
+      }),
+    ),
+  );
+
   it.effect("uses explicit full Graph scopes when custom dynamic scopes are added", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -306,6 +352,7 @@ describe("Microsoft Graph provider", () => {
 
         yield* executor.microsoft.addGraph({
           slug: "microsoft_graph_all_custom",
+          presetIds: [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
           customScopes: ["Custom.Scope"],
         });
 

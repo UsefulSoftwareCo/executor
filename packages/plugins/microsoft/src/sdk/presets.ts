@@ -448,7 +448,22 @@ export const microsoftGraphScopePresets: readonly MicrosoftGraphScopePreset[] = 
   },
 ];
 
-export const MICROSOFT_GRAPH_DEFAULT_PRESET_IDS: readonly string[] = microsoftGraphScopePresets.map(
+export const MICROSOFT_GRAPH_DEFAULT_PRESET_IDS: readonly string[] = [
+  "profile",
+  "mail",
+  "calendar",
+  "contacts",
+  "tasks",
+  "files",
+  "excel",
+  "sites",
+  "onenote",
+  "teams-chat",
+  "teams-channels",
+  "meetings-calls",
+];
+
+export const MICROSOFT_GRAPH_ALL_PRESET_IDS: readonly string[] = microsoftGraphScopePresets.map(
   (preset) => preset.id,
 );
 

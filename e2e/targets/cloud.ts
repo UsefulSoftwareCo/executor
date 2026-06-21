@@ -15,7 +15,7 @@ import type { Identity, Target } from "../src/target";
 
 export const CLOUD_PORT = e2ePort("E2E_CLOUD_PORT", 0);
 export const CLOUD_DB_PORT = e2ePort("E2E_CLOUD_DB_PORT", 1);
-export const CLOUD_BASE_URL = process.env.E2E_CLOUD_URL ?? `http://127.0.0.1:${CLOUD_PORT}`;
+export const CLOUD_BASE_URL = process.env.E2E_CLOUD_URL ?? `http://localhost:${CLOUD_PORT}`;
 export const WORKOS_EMULATOR_PORT = e2ePort("E2E_WORKOS_EMULATOR_PORT", 2);
 export const AUTUMN_EMULATOR_PORT = e2ePort("E2E_AUTUMN_EMULATOR_PORT", 3);
 export const E2E_WORKOS_CLIENT_ID = "client_e2e_emulate";
