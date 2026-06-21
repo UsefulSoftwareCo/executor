@@ -1,5 +1,6 @@
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { googleHttpPlugin } from "@executor-js/plugin-google/api";
+import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
@@ -19,6 +20,7 @@ export const makeCloudflarePlugins = (secretKey: string) =>
   [
     openApiHttpPlugin(),
     googleHttpPlugin(),
+    microsoftHttpPlugin(),
     mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
     graphqlHttpPlugin(),
     encryptedSecretsPlugin({ key: secretKey }),

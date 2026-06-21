@@ -144,6 +144,15 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(integration?.slug).toBe(slug);
   }, 60_000);
 
+  it("registers the Microsoft Graph API route in the runtime plugin set", async () => {
+    const res = await worker.fetch("/api/microsoft/graph", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("gates the API when dev-auth is on but treats the request as the dev admin", async () => {
     // dev-auth means the request is the fixed dev admin; a gated route resolves
     // to the principal. There is no scope stack in v2 — account/me is the
