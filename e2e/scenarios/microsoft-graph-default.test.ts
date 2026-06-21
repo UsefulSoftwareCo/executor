@@ -63,9 +63,10 @@ scenario(
         expect(config?.microsoftGraphPresetIds, "all default Graph groups are persisted").toEqual([
           ...MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
         ]);
-        expect(config?.microsoftGraphCoversFullGraph, "the default selection is not full Graph").toBe(
-          false,
-        );
+        expect(
+          config?.microsoftGraphCoversFullGraph,
+          "the default selection is not full Graph",
+        ).toBe(false);
         expect(
           config?.microsoftGraphScopes,
           "default delegated OAuth requests the selected common workload scopes",
@@ -146,10 +147,9 @@ scenario(
           messageTools,
           "the retrieved catalog includes Microsoft message operations",
         ).not.toEqual([]);
-        expect(
-          siteTools,
-          "the retrieved catalog includes SharePoint site operations",
-        ).not.toEqual([]);
+        expect(siteTools, "the retrieved catalog includes SharePoint site operations").not.toEqual(
+          [],
+        );
       }),
       Effect.gen(function* () {
         yield* client.connections
