@@ -21,6 +21,7 @@ import {
 import { makeSelfHostMcpSeams } from "./mcp";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
+import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
 
 // ===========================================================================
 // The self-hosted Executor app, as ONE `ExecutorApp.make` call.
@@ -113,6 +114,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     // (it can't prove each host's resolution); self-host narrows it here.
     AppLayer: appLayer as Layer.Layer<never>,
     toWebHandler,
+    betterAuth,
     closeDb: async () => {
       await mcp.close();
       await dbHandle.close();
@@ -132,10 +134,14 @@ export interface SelfHostApiHandler {
 export const makeSelfHostApiHandler = async (
   options: MakeSelfHostAppOptions = {},
 ): Promise<SelfHostApiHandler> => {
-  const { toWebHandler, closeDb } = await makeSelfHostApp(options);
+  const { toWebHandler, betterAuth, closeDb } = await makeSelfHostApp(options);
   const web = toWebHandler();
   return {
-    handler: web.handler,
+    handler: async (request) => {
+      const location = await oauthCallbackSignInRedirectLocation(request, betterAuth.auth);
+      if (location) return new Response(null, { status: 302, headers: { location } });
+      return web.handler(request);
+    },
     dispose: async () => {
       await web.dispose();
       await closeDb();

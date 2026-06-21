@@ -19,6 +19,7 @@ import {
   HttpMiddleware,
   HttpRouter,
   HttpServerRequest,
+  HttpServerResponse,
   HttpStaticServer,
 } from "effect/unstable/http";
 import { BunFileSystem, BunHttpServer, BunPath, BunRuntime } from "@effect/platform-bun";
@@ -26,6 +27,11 @@ import { Effect, Layer } from "effect";
 
 import { makeSelfHostApp } from "./app";
 import { loadConfig } from "./config";
+import type { BetterAuthHandle } from "./auth";
+import {
+  OAUTH_CALLBACK_PATH,
+  oauthCallbackSignInRedirectLocation,
+} from "./auth/oauth-callback-login";
 import { stripMcpOrgSegment } from "./mcp/org-path";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
@@ -33,24 +39,37 @@ const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 // Rewrite `/<org>/mcp` (and its OAuth discovery path) to the bare path before
 // routing, so the "Connect an agent" card's org-pinned URL reaches the real
 // `/mcp` route — see ./mcp/org-path. A no-op for every other request.
-const mcpOrgPathRewrite = HttpMiddleware.make((httpApp) =>
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const url = new URL(request.url, "http://host.internal");
-    const rewritten = stripMcpOrgSegment(url.pathname);
-    if (rewritten === null) return yield* httpApp;
-    return yield* httpApp.pipe(
-      Effect.provideService(
-        HttpServerRequest.HttpServerRequest,
-        request.modify({ url: `${rewritten}${url.search}` }),
-      ),
-    );
-  }),
-);
+const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
+  HttpMiddleware.make((httpApp) =>
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const url = new URL(request.url, "http://host.internal");
+      if (
+        url.pathname === OAUTH_CALLBACK_PATH &&
+        (request.method === "GET" || request.method === "HEAD")
+      ) {
+        const headers = new Headers(request.headers as Record<string, string>);
+        const webRequest = new Request(url, { method: request.method, headers });
+        const location = yield* Effect.promise(() =>
+          oauthCallbackSignInRedirectLocation(webRequest, betterAuth.auth),
+        );
+        if (location) return HttpServerResponse.redirect(location, { status: 302 });
+      }
+
+      const rewritten = stripMcpOrgSegment(url.pathname);
+      if (rewritten === null) return yield* httpApp;
+      return yield* httpApp.pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          request.modify({ url: `${rewritten}${url.search}` }),
+        ),
+      );
+    }),
+  );
 
 export const startServer = async (): Promise<void> => {
   const config = loadConfig();
-  const { AppLayer } = await makeSelfHostApp();
+  const { AppLayer, betterAuth } = await makeSelfHostApp();
 
   // Serve the built SPA. Specific API/docs/auth/mcp routes take precedence;
   // `spa: true` falls back to index.html for any other path (client routing).
@@ -60,7 +79,7 @@ export const startServer = async (): Promise<void> => {
   );
 
   const ServerLive = HttpRouter.serve(Layer.mergeAll(AppLayer, StaticLive), {
-    middleware: mcpOrgPathRewrite,
+    middleware: selfHostHttpMiddleware(betterAuth),
   }).pipe(
     Layer.provide(
       BunHttpServer.layer({ hostname: config.host, port: config.port, idleTimeout: 0 }),
