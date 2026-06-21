@@ -279,7 +279,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const redactToolFileBytes = (file: ToolFileValue): Record<string, unknown> => ({
-  _tag: file._tag,
+  _tag: "ToolFile",
   ...(file.name ? { name: file.name } : {}),
   mimeType: file.mimeType,
   encoding: file.encoding,

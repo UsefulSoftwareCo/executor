@@ -710,6 +710,8 @@ describe("tool discovery", () => {
       expect(described.typeScriptDefinitions).toEqual({
         ToolError:
           "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+        ToolFile:
+          '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }',
         ToolHttpMeta: "{ status: number; headers: { [k: string]: string; } }",
       });
     }),
@@ -799,6 +801,8 @@ describe("tool discovery", () => {
       expect(described.typeScriptDefinitions).toEqual({
         ToolError:
           "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+        ToolFile:
+          '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }',
         ToolHttpMeta: "{ status: number; headers: { [k: string]: string; } }",
       });
     }),

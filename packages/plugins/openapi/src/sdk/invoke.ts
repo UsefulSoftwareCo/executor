@@ -207,6 +207,7 @@ const startsWithBytes = (bytes: Uint8Array, prefix: readonly number[]): boolean 
 const isLikelyUtf8Text = (bytes: Uint8Array): boolean => {
   if (bytes.length === 0) return false;
   let text: string;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: TextDecoder throws while probing arbitrary binary content
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -337,6 +338,7 @@ type GmailAttachmentMetadata = {
 };
 
 const decodePathSegment = (value: string): string => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: decodeURIComponent throws on malformed upstream URL segments
   try {
     return decodeURIComponent(value);
   } catch {
