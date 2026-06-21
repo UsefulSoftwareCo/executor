@@ -278,6 +278,39 @@ const TEXT_FILE_CONTENT_MAX_CHARS = 64_000;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const isTextContentBlock = (value: unknown): value is Extract<ContentBlock, { type: "text" }> =>
+  isRecord(value) && value.type === "text" && typeof value.text === "string";
+
+const isImageContentBlock = (value: unknown): value is Extract<ContentBlock, { type: "image" }> =>
+  isRecord(value) &&
+  value.type === "image" &&
+  typeof value.data === "string" &&
+  typeof value.mimeType === "string";
+
+const isResourceContentBlock = (
+  value: unknown,
+): value is Extract<ContentBlock, { type: "resource" }> =>
+  isRecord(value) && value.type === "resource" && isRecord(value.resource);
+
+const isNativeMcpContentBlock = (value: unknown): value is ContentBlock =>
+  isTextContentBlock(value) || isImageContentBlock(value) || isResourceContentBlock(value);
+
+const nativeMcpContentResult = (value: unknown): McpToolResult | null => {
+  if (!isToolResult(value) || !value.ok || !isRecord(value.data)) return null;
+  const content = value.data.content;
+  if (!Array.isArray(content) || content.length === 0 || !content.every(isNativeMcpContentBlock)) {
+    return null;
+  }
+  if (!content.some((block) => block.type !== "text")) return null;
+  return {
+    content,
+    ...(isRecord(value.data.structuredContent)
+      ? { structuredContent: value.data.structuredContent }
+      : {}),
+    isError: value.data.isError === true || undefined,
+  };
+};
+
 const redactToolFileBytes = (file: ToolFileValue): Record<string, unknown> => ({
   _tag: "ToolFile",
   ...(file.name ? { name: file.name } : {}),
@@ -453,6 +486,8 @@ const toMcpFileResult = (
 };
 
 const toMcpResult = (result: FormattedExecuteInput): McpToolResult => {
+  const nativeMcpResult = result.error ? null : nativeMcpContentResult(result.result);
+  if (nativeMcpResult) return nativeMcpResult;
   const extracted = result.error
     ? { value: result.result, files: [] }
     : extractToolFiles(result.result);

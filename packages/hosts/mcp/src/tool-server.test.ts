@@ -79,6 +79,9 @@ const textOf = (result: Awaited<ReturnType<Client["callTool"]>>): string =>
   (result.content as Array<{ type: string; text: string }>)[0].text;
 
 const STUB_TOOL_ADDRESS = ToolAddress.make("tools.test.org.main.t");
+const TEST_IMAGE_MIME_TYPE = "image/png";
+const TEST_IMAGE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l8N1wwAAAABJRU5ErkJggg==";
 
 /** Build a stub paused ExecutionResult with the given id and elicitation request. */
 const makePausedResult = (
@@ -177,6 +180,59 @@ describe("MCP host server — native elicitation mode", () => {
         mimeType: "image/png",
       });
       expect(result.structuredContent).toBeUndefined();
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool preserves upstream MCP image content as native content", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: ToolResult.ok({
+            content: [
+              {
+                type: "text",
+                text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
+              },
+              {
+                type: "image",
+                data: TEST_IMAGE_PNG_BASE64,
+                mimeType: TEST_IMAGE_MIME_TYPE,
+              },
+            ],
+            structuredContent: {
+              name: "mcp-image-fixture.png",
+              mimeType: TEST_IMAGE_MIME_TYPE,
+              byteLength: 70,
+            },
+          }),
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: {
+          code: "return await tools.image_mcp.org.main.image_fixture_with_metadata({});",
+        },
+      });
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
+        },
+        {
+          type: "image",
+          data: TEST_IMAGE_PNG_BASE64,
+          mimeType: TEST_IMAGE_MIME_TYPE,
+        },
+      ]);
+      expect(result.structuredContent).toEqual({
+        name: "mcp-image-fixture.png",
+        mimeType: TEST_IMAGE_MIME_TYPE,
+        byteLength: 70,
+      });
       expect(result.isError).toBeFalsy();
     });
   });

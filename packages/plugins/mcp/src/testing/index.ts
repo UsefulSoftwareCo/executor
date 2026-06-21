@@ -1,10 +1,13 @@
 export {
   McpTestServerError,
   McpTestServerLayer,
+  TEST_IMAGE_MIME_TYPE,
+  TEST_IMAGE_PNG_BASE64,
   makeAnnotationsMcpServer,
   makeEchoMcpServer,
   makeElicitationMcpServer,
   makeGreetingMcpServer,
+  makeImageMcpServer,
   serveMcpServer,
   serveMcpServerWithOAuth,
   type McpTestRequest,
