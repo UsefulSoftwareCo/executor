@@ -1,0 +1,1 @@
+ALTER TABLE `connection` ADD `oauth_token_url` text;

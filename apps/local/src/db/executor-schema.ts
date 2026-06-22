@@ -43,6 +43,7 @@ export const connection = sqliteTable(
     refresh_item_id: text("refresh_item_id"),
     expires_at: blob("expires_at"),
     oauth_scope: text("oauth_scope"),
+    oauth_token_url: text("oauth_token_url"),
     provider_state: text("provider_state"),
     created_at: integer("created_at").notNull(),
     updated_at: integer("updated_at").notNull(),
