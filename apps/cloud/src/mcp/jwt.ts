@@ -123,3 +123,25 @@ export const verifyWorkOSMcpAccessToken = (
     });
     return verified;
   });
+
+// Verify a WorkOS user_management access token (the CLI `executor login` device
+// flow). Unlike the MCP /oauth2 tokens, these are signed by the SSO keyset
+// (`/sso/jwks/<clientId>`), carry NO audience, and their issuer is the
+// AuthKit user_management URL (which varies by app), so we don't pin issuer or
+// audience: the client-scoped JWKS already binds the token to this application,
+// and live org-membership is re-checked downstream. Signature + expiry are
+// enforced by jose.
+export const verifyWorkosUserManagementToken = (token: string, jwks: JWTVerifyGetKey) =>
+  Effect.gen(function* () {
+    const { payload } = yield* Effect.tryPromise({
+      try: () => jwtVerify(token, jwks),
+      catch: classifyJwtVerificationError,
+    }).pipe(withJwtVerificationSpan);
+
+    if (!payload.sub) return null;
+
+    return {
+      accountId: payload.sub,
+      organizationId: (payload.org_id as string | undefined) ?? null,
+    } satisfies VerifiedToken;
+  });

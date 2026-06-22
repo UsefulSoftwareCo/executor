@@ -19,7 +19,9 @@ const makeJwt = async () => {
   const { publicKey, privateKey } = await generateKeyPair("RS256");
   const jwk = await exportJWK(publicKey);
   const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid: "test-key" }] });
-  const config: JwtBearerConfig = { jwks, issuer, audience };
+  // Device-login tokens are verified by signature alone (client-scoped SSO
+  // JWKS); issuer/audience are not pinned.
+  const config: JwtBearerConfig = { jwks };
   const sign = (claims: Record<string, unknown>, expiration: string | number = "5m") =>
     new SignJWT(claims)
       .setProtectedHeader({ alg: "RS256", kid: "test-key" })

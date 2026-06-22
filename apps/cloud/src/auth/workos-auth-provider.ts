@@ -51,19 +51,19 @@ import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
 import type { UserStoreError, WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
-import { verifyWorkOSMcpAccessToken } from "../mcp/jwt";
+import { verifyWorkosUserManagementToken } from "../mcp/jwt";
 
 /**
- * The config the bearer-JWT branch needs to verify a WorkOS access token:
- * the AuthKit JWKS resolver plus the issuer + audience to assert. Passed in
- * as a plain value so this module stays `cloudflare:workers`-free and the
- * node-pool resolver tests can inject a local JWKS. Production supplies
- * {@link workosApiJwtBearerConfig} (built from `cloudflare:workers` env).
+ * The config the bearer-JWT branch needs to verify a WorkOS device-login
+ * (user_management) access token: the client-scoped SSO JWKS resolver. Issuer
+ * and audience are NOT pinned (the client-scoped JWKS binds the token to this
+ * app; user_management tokens carry no audience and an app-specific issuer) and
+ * org membership is re-checked live downstream. Passed in as a plain value so
+ * this module stays `cloudflare:workers`-free and the node-pool resolver tests
+ * can inject a local JWKS. Production supplies {@link workosApiJwtBearerConfig}.
  */
 export interface JwtBearerConfig {
   readonly jwks: JWTVerifyGetKey;
-  readonly issuer: string;
-  readonly audience: string;
 }
 
 // The exact machine codes + messages each rejected path has always emitted.
@@ -105,20 +105,17 @@ const NO_ORGANIZATION_IN_ACCESS_TOKEN = {
 const looksLikeJwt = (token: string): boolean => token.split(".").length === 3;
 
 /**
- * Resolve a WorkOS access-token JWT (CLI `executor login`) into a protected
- * `Principal`. Verifies the token against AuthKit's JWKS (issuer + audience),
- * then live-checks org membership, exactly like the api-key path. The
+ * Resolve a WorkOS device-login (user_management) access token into a protected
+ * `Principal`. Verifies the token's signature + expiry against the client-scoped
+ * SSO JWKS, then live-checks org membership, exactly like the api-key path. The
  * `org_id` claim must be present (a token with no org context is rejected as
- * `NoOrganization`). Mirrors the MCP plane's JWT verify, reusing the same
- * `cloudflare:workers`-free verifier so a CLI holds ONE credential for both
- * the `/api/*` and `/mcp` planes.
+ * `NoOrganization`). NOTE: this is a different WorkOS token domain than the MCP
+ * `/oauth2` tokens (different keyset, no audience), so it does NOT reuse the MCP
+ * verifier or its JWKS, audience, and issuer.
  */
 const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
   Effect.gen(function* () {
-    const verified = yield* verifyWorkOSMcpAccessToken(token, jwt.jwks, {
-      issuer: jwt.issuer,
-      audience: jwt.audience,
-    }).pipe(
+    const verified = yield* verifyWorkosUserManagementToken(token, jwt.jwks).pipe(
       Effect.catchTag("McpJwtVerificationError", (error) =>
         Effect.fail(
           error.reason === "system"
