@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import * as YAML from "yaml";
+import { Effect, Schema } from "effect";
 
 import { MICROSOFT_AUTH_TEMPLATE_SLUG, MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES } from "./presets";
 import {
@@ -8,6 +7,10 @@ import {
   filterMicrosoftGraphOpenApiSpec,
   parseMicrosoftGraphDelegatedScopes,
 } from "./graph";
+
+// The filtered preset spec is emitted as JSON, so re-read it with Effect Schema
+// rather than a YAML parser.
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const graphFixture = `
 openapi: 3.0.4
@@ -127,7 +130,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         pathPrefixes: ["/me/messages"],
         tagPrefixes: [],
       });
-      const doc = YAML.parse(filtered) as {
+      const doc = decodeJson(filtered) as {
         readonly paths: Record<string, unknown>;
         readonly components: {
           readonly securitySchemes: Record<string, unknown>;
@@ -153,7 +156,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         pathPrefixes: ["/me/messages"],
         tagPrefixes: [],
       });
-      const doc = YAML.parse(filtered) as {
+      const doc = decodeJson(filtered) as {
         readonly components: {
           readonly schemas?: Record<string, unknown>;
           readonly securitySchemes: Record<string, unknown>;
@@ -177,7 +180,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         pathPrefixes: [],
         tagPrefixes: [],
       });
-      const doc = YAML.parse(filtered) as {
+      const doc = decodeJson(filtered) as {
         readonly paths: Record<string, unknown>;
       };
 
@@ -196,7 +199,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         pathPrefixes: [],
         tagPrefixes: ["teams."],
       });
-      const doc = YAML.parse(filtered) as {
+      const doc = decodeJson(filtered) as {
         readonly paths: Record<string, unknown>;
       };
 
@@ -213,7 +216,7 @@ describe("Microsoft Graph OpenAPI filtering", () => {
         tagPrefixes: [],
         fullGraphScopes: ["User.Read", "Mail.ReadWrite", "Notes.ReadWrite"],
       });
-      const doc = YAML.parse(filtered.specText) as {
+      const doc = decodeJson(filtered.specText) as {
         readonly paths: Record<string, unknown>;
         readonly security: readonly Record<string, readonly string[]>[];
       };
@@ -281,7 +284,7 @@ components:
           tagPrefixes: [],
         },
       );
-      const doc = YAML.parse(filtered) as {
+      const doc = decodeJson(filtered) as {
         readonly servers: readonly { readonly url: string }[];
         readonly paths: Record<string, unknown>;
         readonly components: {

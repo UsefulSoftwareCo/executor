@@ -1,12 +1,12 @@
 import { Effect, Option, Schema } from "effect";
 import type { Layer } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import * as YAML from "yaml";
 
 import { AuthTemplateSlug } from "@executor-js/sdk/core";
 import {
   AuthenticationSchema,
   OpenApiParseError,
+  parse as parseOpenApiDocument,
   type Authentication,
   type OpenApiIntegrationConfig,
   type ParsedDocument,
@@ -173,6 +173,10 @@ const microsoftOAuthTemplate = (
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+// Hoisted so the compiled encoder is built once, not per call. Emits the small
+// filtered preset spec as JSON, which the OpenAPI SDK's `parse` reads back.
+const encodeOpenApiDocumentToJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const HTTP_METHODS = new Set(["delete", "get", "patch", "post", "put"]);
 const BASE_OAUTH_SCOPES = new Set(["offline_access", "openid", "profile", "email"]);
@@ -538,26 +542,21 @@ export const fetchMicrosoftGraphPermissionsReference = Effect.fn(
 const parseMicrosoftGraphOpenApiDocument = (
   specText: string,
 ): Effect.Effect<MicrosoftGraphOpenApiDocument, OpenApiParseError> =>
-  Effect.gen(function* () {
-    const parsed = yield* Effect.try({
-      try: () => YAML.parse(specText) as unknown,
-      catch: () =>
+  // Delegate to the OpenAPI SDK's lean js-yaml parser. The bespoke eemeli/yaml
+  // parser this replaced built a full CST that peaks ~720MB heap on the 37MB
+  // Graph spec and OOMs the 128MB Cloudflare Workers isolate (measured: HTTP
+  // 503, outcome=exceededMemory). The SDK parser peaks ~315MB and runs in-band
+  // on Workers. `parse` already validates an OpenAPI 3.x object and does not
+  // inline `$ref`s, so peak memory stays bounded for big specs.
+  parseOpenApiDocument(specText).pipe(
+    Effect.mapError(
+      () =>
         new OpenApiParseError({
           message: "Failed to parse Microsoft Graph OpenAPI document",
         }),
-    });
-    if (!isRecord(parsed)) {
-      return yield* new OpenApiParseError({
-        message: "Microsoft Graph OpenAPI document must be an object",
-      });
-    }
-    if (typeof parsed.openapi !== "string" || !parsed.openapi.startsWith("3.")) {
-      return yield* new OpenApiParseError({
-        message: "Microsoft Graph OpenAPI document must be OpenAPI 3.x",
-      });
-    }
-    return parsed as MicrosoftGraphOpenApiDocument;
-  });
+    ),
+    Effect.map((doc) => doc as MicrosoftGraphOpenApiDocument),
+  );
 
 export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
   parsed: MicrosoftGraphOpenApiDocument,
@@ -632,8 +631,12 @@ export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
       security: [{ [MICROSOFT_AUTH_TEMPLATE_SLUG]: [...scopes] }],
     };
 
+    // Serialize as JSON, not YAML. The OpenAPI SDK's `parse` reads JSON (a YAML
+    // subset) on the way back in, so the filtered preset spec round-trips without
+    // pulling in a second YAML library. This is the small filtered spec, never
+    // the 37MB source document.
     const filteredSpecText = yield* Effect.try({
-      try: () => YAML.stringify(next),
+      try: () => encodeOpenApiDocumentToJson(next),
       catch: () =>
         new OpenApiParseError({
           message: "Failed to serialize Microsoft Graph OpenAPI document",

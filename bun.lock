@@ -983,7 +983,6 @@
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "lucide-react": "^1.7.0",
-        "yaml": "^2.7.1",
       },
       "devDependencies": {
         "@effect/atom-react": "catalog:",
