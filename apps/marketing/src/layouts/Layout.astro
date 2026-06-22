@@ -45,5 +45,31 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
   </head>
   <body class="antialiased">
     <slot />
+    <script>
+      // Gated PostHog init. Runs only when PUBLIC_POSTHOG_KEY is set in the
+      // deploy env, so it's a no-op in dev / unconfigured builds (and the SDK
+      // isn't even shipped, thanks to the dynamic import). Events are proxied
+      // first-party through src/middleware.ts to survive adblockers.
+      // autocapture and pageviews are off on purpose: we only send the explicit
+      // events the page fires (e.g. the "Set up with your agent" copy). Flip
+      // capture_pageview on if you want a denominator for conversion.
+      const phKey = import.meta.env.PUBLIC_POSTHOG_KEY;
+      if (phKey) {
+        const phPath = (import.meta.env.PUBLIC_ANALYTICS_PATH ?? "a").replace(
+          /^\/+|\/+$/g,
+          "",
+        );
+        void import("posthog-js").then(({ default: posthog }) => {
+          posthog.init(phKey, {
+            api_host: `${window.location.origin}/api/${phPath}`,
+            ui_host: import.meta.env.PUBLIC_POSTHOG_HOST ?? "https://us.posthog.com",
+            autocapture: false,
+            capture_pageview: false,
+            persistence: "localStorage",
+          });
+          Object.assign(window, { posthog });
+        });
+      }
+    </script>
   </body>
 </html>
