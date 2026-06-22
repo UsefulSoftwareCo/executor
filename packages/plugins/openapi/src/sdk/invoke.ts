@@ -126,6 +126,13 @@ const resolvePath = Effect.fn("OpenApi.resolvePath")(function* (
   return resolved;
 });
 
+// GitHub (and some other upstreams) reject requests that lack a User-Agent
+// header with a 403 ("Request forbidden by administrative rules"), which is
+// indistinguishable from a credential rejection downstream. Send a default so
+// those calls succeed. It is applied before operation header params and
+// resolved auth headers, so a spec- or connection-provided User-Agent wins.
+const DEFAULT_USER_AGENT = "executor";
+
 const applyHeaders = (
   request: HttpClientRequest.HttpClientRequest,
   headers: Record<string, string>,
@@ -630,6 +637,10 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   const path = resolvedPath.startsWith("/") ? resolvedPath : `/${resolvedPath}`;
 
   let request = HttpClientRequest.make(operation.method.toUpperCase() as "GET")(path);
+
+  // Default first so operation header params and resolved auth headers below
+  // can override it; the upstream still gets a User-Agent if nothing else sets one.
+  request = HttpClientRequest.setHeader(request, "User-Agent", DEFAULT_USER_AGENT);
 
   for (const [name, value] of Object.entries(sourceQueryParams)) {
     request = HttpClientRequest.setUrlParam(request, name, value);
