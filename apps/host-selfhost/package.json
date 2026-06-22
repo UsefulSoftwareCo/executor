@@ -40,9 +40,13 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
+    "@executor-js/app": "workspace:*",
+    "@executor-js/react": "workspace:*",
     "@executor-js/vite-plugin": "workspace:*",
     "@tailwindcss/vite": "catalog:",
+    "@tanstack/react-router": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",
     "@tanstack/virtual-file-routes": "^1.162.0",
     "@types/node": "catalog:",
@@ -50,14 +54,10 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "bun-types": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vitest": "catalog:",
-    "@effect/atom-react": "catalog:",
-    "@executor-js/app": "workspace:*",
-    "@executor-js/react": "workspace:*",
-    "@tanstack/react-router": "catalog:",
-    "react": "catalog:",
-    "react-dom": "catalog:"
+    "vitest": "catalog:"
   }
 }
