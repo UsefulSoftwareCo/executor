@@ -171,6 +171,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
           const connection = yield* executor.oauth.complete({
             state: payload.state,
             code: payload.code,
+            callbackDomain: payload.callbackDomain ?? null,
           });
           return connectionToResponse(connection);
         }),
@@ -200,13 +201,14 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const html = yield* runOAuthCallback({
-            complete: ({ state, code }) =>
+            complete: ({ state, code, callbackDomain }) =>
               executor.oauth
                 .complete({
                   // `runOAuthCallback`'s `state` is a raw string from the URL;
                   // the SDK speaks the branded `OAuthState` (nominal brand).
                   state: OAuthState.make(state),
                   code: code ?? "",
+                  callbackDomain,
                 })
                 .pipe(
                   Effect.tapError((cause: unknown) =>

@@ -129,6 +129,10 @@ export type OAuthCallbackUrlParams = {
   readonly code?: string | null;
   readonly error?: string | null;
   readonly error_description?: string | null;
+  /** Non-standard regional host hints (Datadog: `domain` bare host, `site`
+   *  full origin) used to redeem the code at the org's region. */
+  readonly domain?: string | null;
+  readonly site?: string | null;
 };
 
 /** Short summary + optional full technical detail. */
@@ -143,6 +147,7 @@ export type RunOAuthCallbackInput<TAuth, E, R> = {
     readonly state: string;
     readonly code: string | null;
     readonly error: string | null;
+    readonly callbackDomain: string | null;
   }) => Effect.Effect<TAuth, E, R>;
   readonly urlParams: OAuthCallbackUrlParams;
   /** Map a plugin-specific error into a short summary and optional details. */
@@ -166,6 +171,7 @@ export const runOAuthCallback = <TAuth, E, R>(
       state: input.urlParams.state,
       code: input.urlParams.code ?? null,
       error: input.urlParams.error ?? input.urlParams.error_description ?? null,
+      callbackDomain: input.urlParams.domain ?? input.urlParams.site ?? null,
     })
     .pipe(
       Effect.map(

@@ -56,6 +56,62 @@ const oauthPlugin = definePlugin(() => ({
 
 const plugins = [memoryCredentialsPlugin(), oauthPlugin] as const;
 
+interface TokenEndpointCall {
+  readonly host: string;
+  readonly grantType: string | null;
+}
+
+// Route token-endpoint requests aimed at a *non-loopback* host (the
+// regional/attacker hosts a multi-site rebind test exercises) back to the
+// loopback test AS, recording the host + grant each one was sent to. The token
+// exchange/refresh runs through `oauth4webapi`, which calls the global `fetch`
+// at request time, so swapping `globalThis.fetch` lets the real
+// `oauth.complete` / refresh path drive the rebind decision while still hitting
+// a live authorization server. Loopback traffic (the authorize/login hops)
+// passes straight through untouched. Returns a restore function.
+const routeTokenEndpointToLoopback = (
+  server: { readonly issuerUrl: string },
+  record: TokenEndpointCall[],
+): (() => void) => {
+  // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: oauth4webapi reads the global `fetch` at call time, so doubling it is the only seam to observe the token exchange/refresh host.
+  const originalFetch = globalThis.fetch;
+  const loopback = new URL(server.issuerUrl);
+  const patched: typeof fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const target = new URL(requestUrl);
+    if (target.hostname === loopback.hostname) {
+      return originalFetch(input as Parameters<typeof fetch>[0], init);
+    }
+    if (target.pathname === "/token") {
+      const bodyText =
+        init?.body instanceof URLSearchParams
+          ? init.body.toString()
+          : typeof init?.body === "string"
+            ? init.body
+            : input instanceof Request
+              ? await input.clone().text()
+              : "";
+      record.push({
+        host: target.hostname,
+        grantType: new URLSearchParams(bodyText).get("grant_type"),
+      });
+    }
+    const rerouted = new URL(loopback.origin);
+    rerouted.pathname = target.pathname;
+    rerouted.search = target.search;
+    return input instanceof Request
+      ? originalFetch(new Request(rerouted.href, input))
+      : originalFetch(rerouted.href, init);
+  };
+  // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: install the doubled fetch (see above).
+  globalThis.fetch = patched;
+  return () => {
+    // oxlint-disable-next-line executor/no-raw-fetch -- test boundary: restore the original fetch.
+    globalThis.fetch = originalFetch;
+  };
+};
+
 describe("oauth.start / oauth.complete", () => {
   it.effect(
     "createClient → start (redirect) → complete mints a connection + tools, executable",
@@ -505,5 +561,168 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           expect(yield* server.acceptsAccessToken(refreshedToken.token)).toBe(true);
         }),
       ),
+  );
+});
+
+// Multi-site providers (Datadog) statically advertise one region's token
+// endpoint but issue authorization codes redeemable only at the *regional* host
+// the org lives on, signalled by the callback's non-standard `domain`/`site`
+// param. The token endpoint host must rebind to that region for both the
+// initial exchange and later refreshes — but only when the callback host is a
+// trusted sibling subdomain, never an attacker-influenced arbitrary origin.
+describe("oauth.complete regional token-endpoint rebind (Datadog multi-site)", () => {
+  // Configured (statically advertised) host: the leftmost label differs from
+  // the org's region, but they share the `datadoghq.test` parent.
+  const ADVERTISED_TOKEN_URL = "https://app.datadoghq.test/token";
+
+  it.effect(
+    "redeems + refreshes at the callback's sibling-subdomain region, never the advertised host",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+
+          // Reroute the https regional/advertised hosts back to the loopback test
+          // AS so the real exchange/refresh path drives the rebind decision while
+          // hitting a live server. Restored when the test scope closes.
+          const tokenCalls: TokenEndpointCall[] = [];
+          yield* Effect.acquireRelease(
+            Effect.sync(() => routeTokenEndpointToLoopback(server, tokenCalls)),
+            (restore) => Effect.sync(restore),
+          );
+
+          // Authorize on the loopback AS (passthrough), but advertise the US1-style
+          // token host the way Datadog's AS metadata does.
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: ADVERTISED_TOKEN_URL,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+
+          // The callback carries the org's actual region as a sibling subdomain.
+          yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+            callbackDomain: "us5.datadoghq.test",
+          });
+
+          // The code was redeemed at the regional host, not the advertised one.
+          const exchangeCall = tokenCalls.find((c) => c.grantType === "authorization_code");
+          expect(exchangeCall?.host).toBe("us5.datadoghq.test");
+
+          // The regional token endpoint is persisted on the connection so later
+          // refreshes target the same region (the AS metadata still says US1).
+          const row = yield* Effect.promise(() =>
+            config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+          );
+          expect(row?.oauth_token_url).toBe("https://us5.datadoghq.test/token");
+
+          // Mint, then expire so the next resolve must refresh.
+          const firstToken = (yield* executor.execute(
+            ToolAddress.make("tools.acme.org.main.whoami"),
+            {},
+          )) as { token: string };
+          expect(firstToken.token).toMatch(/^at_/);
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b("name", "=", "main"),
+              set: { expires_at: Date.now() - 60_000 },
+            }),
+          );
+          const refreshedToken = (yield* executor.execute(
+            ToolAddress.make("tools.acme.org.main.whoami"),
+            {},
+          )) as { token: string };
+          expect(refreshedToken.token).toMatch(/^at_/);
+          expect(refreshedToken.token).not.toBe(firstToken.token);
+
+          // The refresh hit the persisted region too …
+          const refreshCall = tokenCalls.find((c) => c.grantType === "refresh_token");
+          expect(refreshCall?.host).toBe("us5.datadoghq.test");
+          // … and the statically advertised host was never contacted.
+          expect(tokenCalls.some((c) => c.host === "app.datadoghq.test")).toBe(false);
+        }),
+      ),
+  );
+
+  it.effect("ignores a non-sibling callback domain — exchange stays on the advertised host", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        const tokenCalls: TokenEndpointCall[] = [];
+        yield* Effect.acquireRelease(
+          Effect.sync(() => routeTokenEndpointToLoopback(server, tokenCalls)),
+          (restore) => Effect.sync(restore),
+        );
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: ADVERTISED_TOKEN_URL,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+
+        // An attacker-influenced callback host that is NOT a sibling subdomain of
+        // the configured token host (`evil.example.test` vs `app.datadoghq.test`).
+        // The token request carries the client secret + code + PKCE verifier, so
+        // the rebind must refuse and fall back to the advertised host.
+        yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+          callbackDomain: "evil.example.test",
+        });
+
+        const exchangeCall = tokenCalls.find((c) => c.grantType === "authorization_code");
+        expect(exchangeCall?.host).toBe("app.datadoghq.test");
+        expect(tokenCalls.some((c) => c.host === "evil.example.test")).toBe(false);
+
+        // Nothing regional was persisted: refresh keeps using the configured host.
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+        );
+        expect(row?.oauth_token_url ?? null).toBeNull();
+      }),
+    ),
   );
 });

@@ -177,6 +177,9 @@ const StartResponse = Schema.Union([
 const CompletePayload = Schema.Struct({
   state: OAuthState,
   code: Schema.String,
+  /** Regional host echoed back by the authorization server (Datadog's
+   *  `domain`/`site`); forwarded so the code is redeemed at the org's region. */
+  callbackDomain: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 // ---------------------------------------------------------------------------
@@ -219,6 +222,10 @@ const CallbackUrlParams = Schema.Struct({
   code: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
   error_description: Schema.optional(Schema.String),
+  // Non-standard region hints (Datadog: `domain` is a bare host, `site` a full
+  // origin). Captured so the token exchange can target the org's region.
+  domain: Schema.optional(Schema.String),
+  site: Schema.optional(Schema.String),
 });
 
 const HtmlResponse = Schema.String.pipe(HttpApiSchema.asText());

@@ -112,6 +112,11 @@ export interface OAuthStartInput {
 export interface OAuthCompleteInput {
   readonly state: OAuthState;
   readonly code: string;
+  /** Non-standard regional host the authorization server returns on the
+   *  callback (Datadog's `domain`/`site` params) so the code is redeemed at the
+   *  org's actual region rather than the statically advertised one. Used only
+   *  when it is a sibling subdomain of the client's configured token host. */
+  readonly callbackDomain?: string | null;
 }
 
 /** Probe a base/issuer URL for OAuth 2.1 authorization-server metadata so the

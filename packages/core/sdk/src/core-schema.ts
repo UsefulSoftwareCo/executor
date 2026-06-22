@@ -174,6 +174,11 @@ export const coreTables = defineTables({
       refresh_item_id: nullableTextColumn("refresh_item_id"),
       expires_at: nullableBigintColumn("expires_at"),
       oauth_scope: nullableTextColumn("oauth_scope"),
+      // Per-connection token endpoint override. Set only when the code was
+      // redeemed at a region other than the oauth_client's configured token host
+      // (multi-site providers like Datadog signal the org's region on the
+      // callback). Null means refresh uses the oauth_client's `token_url`.
+      oauth_token_url: nullableTextColumn("oauth_token_url"),
       provider_state: nullableJsonColumn("provider_state"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),

@@ -194,6 +194,76 @@ export const providerAuthorizeExtras = (
 };
 
 // ---------------------------------------------------------------------------
+// Regional token-endpoint rebind
+//
+// Some authorization servers publish a single static metadata document that
+// advertises one region's token endpoint, but issue authorization codes that
+// are only redeemable at the *regional* host the user's org actually lives on.
+// The region comes back on the callback as a non-standard `domain` (or `site`)
+// query param: Datadog returns `domain=us5.datadoghq.com` while its metadata
+// statically advertises `app.datadoghq.com`. Redeeming the code at the
+// advertised host then fails with `invalid_grant`.
+//
+// `rebindTokenEndpointHostToCallbackDomain` swaps ONLY the hostname of the
+// configured token URL to the callback-supplied host, and ONLY when that host
+// is a sibling subdomain of the configured one (same parent after stripping the
+// leftmost DNS label, e.g. `app.datadoghq.com` and `us5.datadoghq.com` both
+// reduce to `datadoghq.com`). The token request carries the client secret, the
+// code, and the PKCE verifier, so an attacker-influenced `domain` must never be
+// able to point it at an arbitrary origin. Anything that fails the sibling
+// check, fails to parse, or isn't https falls back to the configured URL
+// unchanged.
+// ---------------------------------------------------------------------------
+
+const hostnameFromCallbackDomain = (callbackDomain: string): string | undefined => {
+  const trimmed = callbackDomain.trim();
+  if (trimmed.length === 0) return undefined;
+  // Datadog sends `domain` as a bare host and `site` as a full origin; accept
+  // either by tolerating an optional scheme, then taking only the hostname.
+  const candidate = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  if (!URL.canParse(candidate)) return undefined;
+  const url = new URL(candidate);
+  // A legitimate regional host carries no port, credentials, or path.
+  if (url.port !== "" || url.username !== "" || url.password !== "") return undefined;
+  if (url.pathname !== "/" && url.pathname !== "") return undefined;
+  return url.hostname.toLowerCase();
+};
+
+/** Parent domain after stripping the leftmost DNS label, or `undefined` when
+ *  the host has no sibling space (a single label, or a parent that is a bare
+ *  TLD). `app.datadoghq.com` -> `datadoghq.com`; `foo.com` -> undefined. */
+const siblingParentDomainOf = (hostname: string): string | undefined => {
+  const labels = hostname.split(".");
+  if (labels.length < 3) return undefined;
+  const parent = labels.slice(1).join(".");
+  // Require the parent to itself be multi-label so a 2-label configured host
+  // can never rebind across an entire TLD (e.g. foo.com -> bar.com).
+  return parent.includes(".") ? parent : undefined;
+};
+
+export const rebindTokenEndpointHostToCallbackDomain = (
+  configuredTokenUrl: string,
+  callbackDomain: string | null | undefined,
+): string => {
+  if (!callbackDomain) return configuredTokenUrl;
+  if (!URL.canParse(configuredTokenUrl)) return configuredTokenUrl;
+  const configured = new URL(configuredTokenUrl);
+  if (configured.protocol !== "https:") return configuredTokenUrl;
+  const targetHost = hostnameFromCallbackDomain(callbackDomain);
+  if (!targetHost) return configuredTokenUrl;
+  const configuredHost = configured.hostname.toLowerCase();
+  if (targetHost === configuredHost) return configuredTokenUrl;
+  const configuredParent = siblingParentDomainOf(configuredHost);
+  const targetParent = siblingParentDomainOf(targetHost);
+  if (!configuredParent || !targetParent || configuredParent !== targetParent) {
+    return configuredTokenUrl;
+  }
+  const rebound = new URL(configuredTokenUrl);
+  rebound.hostname = targetHost;
+  return rebound.toString();
+};
+
+// ---------------------------------------------------------------------------
 // Error mapping — `oauth4webapi`'s `process*Response` failure shapes are
 // either a WWW-Authenticate challenge or an RFC 6749 §5.2 error body,
 // both exposed via `.error` / `.error_description`. Probing the envelope

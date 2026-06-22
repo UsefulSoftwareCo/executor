@@ -48,6 +48,7 @@ export const connection = pgTable(
     refresh_item_id: text("refresh_item_id"),
     expires_at: bigint("expires_at", { mode: "bigint" }),
     oauth_scope: text("oauth_scope"),
+    oauth_token_url: text("oauth_token_url"),
     provider_state: json("provider_state"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),

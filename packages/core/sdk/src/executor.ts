@@ -1432,6 +1432,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ? String(row.oauth_scope).split(/\s+/).filter(Boolean)
           : [];
 
+        // Refresh against the region the code was redeemed at when one was
+        // recorded at connect time (multi-site providers like Datadog), else
+        // the oauth_client's configured token endpoint.
+        const tokenUrl = row.oauth_token_url
+          ? String(row.oauth_token_url)
+          : String(clientRow.token_url);
+
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
         // path below needs a stored refresh token. Branching on grant here is
@@ -1440,7 +1447,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const token =
           String(clientRow.grant) === "client_credentials"
             ? yield* exchangeClientCredentials({
-                tokenUrl: String(clientRow.token_url),
+                tokenUrl,
                 clientId: String(clientRow.client_id),
                 clientSecret,
                 scopes: grantedScopes,
@@ -1469,7 +1476,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   return yield* reauth("Stored refresh token could not be resolved.");
                 }
                 return yield* refreshAccessToken({
-                  tokenUrl: String(clientRow.token_url),
+                  tokenUrl,
                   clientId: String(clientRow.client_id),
                   clientSecret,
                   refreshToken,
@@ -2205,6 +2212,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               refresh_item_id: input.refreshItemId,
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
+              oauth_token_url: input.oauthTokenUrl ?? null,
               updated_at: now,
             };
             if (existing) {
@@ -2236,6 +2244,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 refresh_item_id: input.refreshItemId,
                 expires_at: input.expiresAt,
                 oauth_scope: input.oauthScope,
+                oauth_token_url: input.oauthTokenUrl ?? null,
                 provider_state: null,
                 created_at: now,
                 updated_at: now,
@@ -2269,6 +2278,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               refresh_item_id: input.refreshItemId,
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
+              oauth_token_url: input.oauthTokenUrl ?? null,
               provider_state: null,
               created_at: now,
               updated_at: now,
