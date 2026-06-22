@@ -17,6 +17,7 @@ import {
   recoverExecutionBody,
   stripTypeScript,
   type CodeExecutor,
+  type CodeExecutionOptions,
   type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
@@ -368,11 +369,29 @@ export type RunPromise = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
 export class ToolDispatcher extends RpcTarget {
   readonly #invoker: SandboxToolInvoker;
   readonly #runPromise: RunPromise;
+  readonly #executionOptions: CodeExecutionOptions | undefined;
 
-  constructor(invoker: SandboxToolInvoker, runPromise: RunPromise) {
+  constructor(
+    invoker: SandboxToolInvoker,
+    runPromise: RunPromise,
+    executionOptions?: CodeExecutionOptions,
+  ) {
     super();
     this.#invoker = invoker;
     this.#runPromise = runPromise;
+    this.#executionOptions = executionOptions;
+  }
+
+  async output(item: ExecuteOutputItem): Promise<void> {
+    const onOutput = this.#executionOptions?.onOutput;
+    if (!onOutput) return;
+    await onOutput(item);
+  }
+
+  async yieldControl(): Promise<void> {
+    const onYield = this.#executionOptions?.onYield;
+    if (!onYield) return;
+    await onYield();
   }
 
   async call(path: string, args: unknown): Promise<WorkerRpcResponse> {
@@ -478,12 +497,17 @@ const evaluate = (
   options: DynamicWorkerExecutorOptions,
   code: string,
   toolInvoker: SandboxToolInvoker,
+  executionOptions?: CodeExecutionOptions,
 ): Effect.Effect<ExecuteResult, DynamicWorkerExecutionError> => {
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
   return Effect.gen(function* () {
     const context = yield* Effect.context<never>();
-    const dispatcher = new ToolDispatcher(toolInvoker, Effect.runPromiseWith(context));
+    const dispatcher = new ToolDispatcher(
+      toolInvoker,
+      Effect.runPromiseWith(context),
+      executionOptions,
+    );
     const entrypoint = yield* startDynamicWorker(options, code, timeoutMs);
     const response = yield* Effect.tryPromise({
       try: () => entrypoint.evaluate(dispatcher),
@@ -515,8 +539,9 @@ const runInDynamicWorker = (
   options: DynamicWorkerExecutorOptions,
   code: string,
   toolInvoker: SandboxToolInvoker,
+  executionOptions?: CodeExecutionOptions,
 ): Effect.Effect<ExecuteResult, DynamicWorkerExecutionError> =>
-  evaluate(options, code, toolInvoker).pipe(
+  evaluate(options, code, toolInvoker, executionOptions).pipe(
     Effect.withSpan("executor.code.exec.dynamic_worker", {
       attributes: { "executor.runtime": "dynamic-worker" },
     }),
@@ -529,6 +554,9 @@ const runInDynamicWorker = (
 export const makeDynamicWorkerExecutor = (
   options: DynamicWorkerExecutorOptions,
 ): CodeExecutor<DynamicWorkerExecutionError> => ({
-  execute: (code: string, toolInvoker: SandboxToolInvoker) =>
-    runInDynamicWorker(options, code, toolInvoker),
+  execute: (
+    code: string,
+    toolInvoker: SandboxToolInvoker,
+    executionOptions?: CodeExecutionOptions,
+  ) => runInDynamicWorker(options, code, toolInvoker, executionOptions),
 });

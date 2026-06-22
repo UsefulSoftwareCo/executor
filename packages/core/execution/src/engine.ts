@@ -10,7 +10,12 @@ import type {
   ElicitationContext,
 } from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
-import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
+import type {
+  CodeExecutor,
+  ExecuteNotification,
+  ExecuteResult,
+  SandboxToolInvoker,
+} from "@executor-js/codemode-core";
 
 import {
   defaultToolDiscoveryProvider,
@@ -79,6 +84,16 @@ export const formatExecuteResult = (
       : null;
 
   const logText = result.logs && result.logs.length > 0 ? result.logs.join("\n") : null;
+  const notifications =
+    result.output
+      ?.filter(
+        (
+          item,
+        ): item is { readonly type: "notification"; readonly notification: ExecuteNotification } =>
+          item.type === "notification",
+      )
+      .map((item) => item.notification) ?? [];
+  const notificationField = notifications.length > 0 ? { notifications } : {};
 
   // `emit()` output is shown to the user, not returned to the model, so a
   // script that only emits comes back with a null result. Acknowledge the
@@ -97,6 +112,7 @@ export const formatExecuteResult = (
         status: "error",
         error: result.error,
         ...emittedField,
+        ...notificationField,
         logs: result.logs ?? [],
       },
       isError: true,
@@ -115,6 +131,7 @@ export const formatExecuteResult = (
       status: "completed",
       result: result.result ?? null,
       ...emittedField,
+      ...notificationField,
       logs: result.logs ?? [],
     },
     isError: false,

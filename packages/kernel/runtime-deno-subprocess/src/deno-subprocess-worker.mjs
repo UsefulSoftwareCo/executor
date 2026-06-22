@@ -6,6 +6,7 @@ const encoder = new TextEncoder();
 const IPC_PREFIX = "@@executor-ipc@@";
 
 const pendingToolCalls = new Map();
+const pendingYieldCalls = new Map();
 let started = false;
 let ipcNonce = "";
 
@@ -17,6 +18,13 @@ let outputs = [];
 const writeIpcMessage = (message) => {
   const payload = `${IPC_PREFIX}${JSON.stringify(message)}\n`;
   Deno.stdout.writeSync(encoder.encode(payload));
+};
+
+const recordOutput = (item) => {
+  outputs.push(item);
+  if (ipcNonce) {
+    writeIpcMessage({ type: "output", nonce: ipcNonce, item });
+  }
 };
 
 const toErrorMessage = (error) => {
@@ -41,6 +49,15 @@ const createToolCaller = (toolPath) => (args) =>
     });
   });
 
+const builtinToolKeys = {
+  "": ["search", "describe", "executor"],
+  describe: ["tool"],
+  executor: ["sources"],
+  "executor.sources": ["list"],
+};
+
+const toolKeysForPath = (path) => builtinToolKeys[path.join(".")] ?? [];
+
 const createToolsProxy = (path = []) => {
   const callable = () => undefined;
 
@@ -49,6 +66,14 @@ const createToolsProxy = (path = []) => {
       if (prop === "then") return undefined;
       if (typeof prop !== "string") return undefined;
       return createToolsProxy([...path, prop]);
+    },
+    ownKeys() {
+      return toolKeysForPath(path);
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      return typeof prop === "string" && toolKeysForPath(path).includes(prop)
+        ? { enumerable: true, configurable: true }
+        : undefined;
     },
     apply(_target, _thisArg, args) {
       const toolPath = path.join(".");
@@ -93,6 +118,24 @@ const formatOutputText = (value) => {
   }
 };
 
+const IMAGE_DETAIL_META_KEY = "codex/imageDetail";
+const DEFAULT_IMAGE_DETAIL = "high";
+const validImageDetails = new Set(["auto", "low", "high", "original"]);
+
+const normalizeImageDetail = (detail) => {
+  if (detail === null || typeof detail === "undefined") {
+    return undefined;
+  }
+  if (typeof detail !== "string") {
+    throw new TypeError("image detail must be a string when provided");
+  }
+  const normalized = detail.toLowerCase();
+  if (!validImageDetails.has(normalized)) {
+    throw new TypeError("image detail must be one of: auto, low, high, original");
+  }
+  return normalized;
+};
+
 const isToolFile = (value) =>
   value &&
   typeof value === "object" &&
@@ -111,7 +154,9 @@ const isMcpImageContentBlock = (value) =>
   typeof value === "object" &&
   value.type === "image" &&
   typeof value.data === "string" &&
-  typeof value.mimeType === "string";
+  (typeof value.mimeType === "string" ||
+    typeof value.mime_type === "string" ||
+    value.data.toLowerCase().startsWith("data:"));
 
 const isMcpAudioContentBlock = (value) =>
   value &&
@@ -143,16 +188,136 @@ const isMcpContentBlock = (value) =>
   isMcpResourceContentBlock(value) ||
   isMcpResourceLinkContentBlock(value);
 
+const parseDataImageUrl = (imageUrl) => {
+  if (typeof imageUrl !== "string" || imageUrl.length === 0) {
+    throw new TypeError(
+      "image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block",
+    );
+  }
+  const lower = imageUrl.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("https://")) {
+    throw new TypeError(
+      "remote image URLs are not supported in code output; pass a base64 data URI or MCP image block",
+    );
+  }
+  const match = /^data:([^;,]+);base64,(.*)$/i.exec(imageUrl);
+  if (!match) {
+    throw new TypeError("image expects a base64 data URI or MCP image block");
+  }
+  return { mimeType: match[1], data: match[2] };
+};
+
+const imageDetailFromMeta = (value) => {
+  const meta = value && typeof value === "object" ? value._meta : undefined;
+  const detail = meta && typeof meta === "object" ? meta[IMAGE_DETAIL_META_KEY] : undefined;
+  return typeof detail === "string" && validImageDetails.has(detail) ? detail : undefined;
+};
+
+const imageWithDetail = (block, detail) => ({
+  ...block,
+  _meta: {
+    ...(block._meta && typeof block._meta === "object" ? block._meta : {}),
+    [IMAGE_DETAIL_META_KEY]: detail ?? DEFAULT_IMAGE_DETAIL,
+  },
+});
+
+const normalizeImageBlock = (value, detailOverride) => {
+  const override = normalizeImageDetail(detailOverride);
+  if (typeof value === "string") {
+    return imageWithDetail({ type: "image", ...parseDataImageUrl(value) }, override);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(
+      "image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block",
+    );
+  }
+  if (typeof value.image_url === "string") {
+    return imageWithDetail(
+      { type: "image", ...parseDataImageUrl(value.image_url) },
+      override ?? normalizeImageDetail(value.detail),
+    );
+  }
+  if (value.type === "image" && typeof value.data === "string") {
+    const parsed = value.data.toLowerCase().startsWith("data:")
+      ? parseDataImageUrl(value.data)
+      : {
+          data: value.data,
+          mimeType:
+            typeof value.mimeType === "string"
+              ? value.mimeType
+              : typeof value.mime_type === "string"
+                ? value.mime_type
+                : "application/octet-stream",
+        };
+    return imageWithDetail(
+      { ...value, type: "image", data: parsed.data, mimeType: parsed.mimeType },
+      override ?? imageDetailFromMeta(value),
+    );
+  }
+  throw new TypeError(
+    "image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block",
+  );
+};
+
+const text = (value) => {
+  recordOutput({ type: "content", content: { type: "text", text: formatOutputText(value) } });
+};
+
+const image = (value, detail) => {
+  recordOutput({ type: "content", content: normalizeImageBlock(value, detail) });
+};
+
+const audio = (value) => {
+  if (!isMcpAudioContentBlock(value)) {
+    throw new TypeError("audio expects an MCP audio content block");
+  }
+  recordOutput({ type: "content", content: value });
+};
+
+const file = (value) => {
+  if (!isToolFile(value)) {
+    throw new TypeError("file expects a ToolFile value");
+  }
+  recordOutput({ type: "file", file: value });
+};
+
+const resource = (value) => {
+  if (!isMcpResourceContentBlock(value) && !isMcpResourceLinkContentBlock(value)) {
+    throw new TypeError("resource expects an MCP resource or resource_link content block");
+  }
+  recordOutput({ type: "content", content: value });
+};
+
+const notify = (value) => {
+  const notification =
+    value && typeof value === "object" && typeof value.message === "string"
+      ? {
+          message: value.message,
+          ...(Object.prototype.hasOwnProperty.call(value, "data") ? { data: value.data } : {}),
+        }
+      : { message: formatOutputText(value) };
+  recordOutput({ type: "notification", notification });
+};
+
+const yield_control = () =>
+  new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    pendingYieldCalls.set(requestId, { resolve, reject });
+    writeIpcMessage({ type: "yield", nonce: ipcNonce, requestId });
+  });
+
+const yieldControl = yield_control;
+
 const emit = (value) => {
   if (isToolFile(value)) {
-    outputs.push({ type: "file", file: value });
+    file(value);
     return;
   }
   if (isMcpContentBlock(value)) {
-    outputs.push({ type: "content", content: value });
+    recordOutput({ type: "content", content: value });
     return;
   }
-  outputs.push({ type: "content", content: { type: "text", text: formatOutputText(value) } });
+  text(value);
 };
 
 const sandboxConsole = {
@@ -181,10 +346,30 @@ const runUserCode = async (code) => {
     "tools",
     "console",
     "emit",
+    "text",
+    "image",
+    "audio",
+    "file",
+    "resource",
+    "notify",
+    "yield_control",
+    "yieldControl",
     `"use strict"; return (async () => {\n${code}\n})();`,
   );
 
-  const result = await execute(tools, sandboxConsole, emit);
+  const result = await execute(
+    tools,
+    sandboxConsole,
+    emit,
+    text,
+    image,
+    audio,
+    file,
+    resource,
+    notify,
+    yield_control,
+    yieldControl,
+  );
   return { result, output: outputs.length > 0 ? outputs : undefined };
 };
 
@@ -243,6 +428,26 @@ const handleToolResult = (message) => {
   pending.reject(new Error(message.error));
 };
 
+const handleYieldResult = (message) => {
+  if (message.nonce !== ipcNonce) {
+    return;
+  }
+
+  const pending = pendingYieldCalls.get(message.requestId);
+  if (!pending) {
+    return;
+  }
+
+  pendingYieldCalls.delete(message.requestId);
+
+  if (message.ok) {
+    pending.resolve();
+    return;
+  }
+
+  pending.reject(new Error(message.error));
+};
+
 const handleHostMessage = (message) => {
   if (!message || typeof message !== "object") {
     return;
@@ -255,6 +460,11 @@ const handleHostMessage = (message) => {
 
   if (message.type === "tool_result") {
     handleToolResult(message);
+    return;
+  }
+
+  if (message.type === "yield_result") {
+    handleYieldResult(message);
   }
 };
 

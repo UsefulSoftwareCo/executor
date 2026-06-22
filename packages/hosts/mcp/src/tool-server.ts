@@ -373,12 +373,35 @@ const isContentOutputItem = (
 ): item is { readonly type: "content"; readonly content: ContentBlock } =>
   isRecord(item) && item.type === "content" && isMcpContentBlock(item.content);
 
+const isNotificationOutputItem = (
+  item: ExecuteOutputItem,
+): item is {
+  readonly type: "notification";
+  readonly notification: { readonly message: string; readonly data?: unknown };
+} =>
+  isRecord(item) &&
+  item.type === "notification" &&
+  isRecord(item.notification) &&
+  typeof item.notification.message === "string";
+
+const notificationContent = (notification: {
+  readonly message: string;
+  readonly data?: unknown;
+}): ContentBlock[] => {
+  const dataText =
+    notification.data === undefined ? "" : `\n${JSON.stringify(notification.data, null, 2)}`;
+  return [{ type: "text", text: `Notification: ${notification.message}${dataText}` }];
+};
+
 const outputItemContent = (item: ExecuteOutputItem): ContentBlock[] => {
   if (isFileOutputItem(item)) {
     return outputFileContent(item.file);
   }
   if (isContentOutputItem(item)) {
     return [item.content];
+  }
+  if (isNotificationOutputItem(item)) {
+    return notificationContent(item.notification);
   }
   return [{ type: "text", text: "Invalid execution output item omitted." }];
 };

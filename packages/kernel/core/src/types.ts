@@ -27,6 +27,16 @@ export interface SandboxToolInvoker {
 }
 
 /** User-visible output accumulated by sandbox helpers. */
+export type ImageDetail = "auto" | "low" | "high" | "original";
+
+export const IMAGE_DETAIL_META_KEY = "codex/imageDetail";
+export const DEFAULT_IMAGE_DETAIL: ImageDetail = "high";
+
+export type ExecuteNotification = {
+  readonly message: string;
+  readonly data?: unknown;
+};
+
 export type ExecuteOutputItem =
   | {
       readonly type: "file";
@@ -35,7 +45,16 @@ export type ExecuteOutputItem =
   | {
       readonly type: "content";
       readonly content: unknown;
+    }
+  | {
+      readonly type: "notification";
+      readonly notification: ExecuteNotification;
     };
+
+export type CodeExecutionOptions = {
+  readonly onOutput?: (item: ExecuteOutputItem) => void | Promise<void>;
+  readonly onYield?: () => void | Promise<void>;
+};
 
 /** Result of executing code in a sandbox */
 export type ExecuteResult = {
@@ -55,7 +74,11 @@ export type ExecuteResult = {
  * `Data.TaggedError` subclass — e.g. `CodeExecutor<WorkerLoaderError>`.
  */
 export interface CodeExecutor<E extends Cause.YieldableError = CodeExecutionError> {
-  execute(code: string, toolInvoker: SandboxToolInvoker): Effect.Effect<ExecuteResult, E>;
+  execute(
+    code: string,
+    toolInvoker: SandboxToolInvoker,
+    options?: CodeExecutionOptions,
+  ): Effect.Effect<ExecuteResult, E>;
 }
 
 /** Accept-anything schema for tools with no input validation */

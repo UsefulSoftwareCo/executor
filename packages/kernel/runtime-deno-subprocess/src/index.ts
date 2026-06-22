@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import {
   recoverExecutionBody,
   type CodeExecutor,
+  type CodeExecutionOptions,
+  type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
 } from "@executor-js/codemode-core";
@@ -13,6 +15,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
@@ -49,6 +52,21 @@ class DenoSpawnError extends Data.TaggedError("DenoSpawnError")<{
   }
 }
 
+class DenoCallbackError extends Data.TaggedError("DenoCallbackError")<{
+  readonly publicMessage: string;
+  readonly reason: unknown;
+}> {}
+
+const isDenoCallbackError = Predicate.isTagged("DenoCallbackError") as (
+  cause: unknown,
+) => cause is DenoCallbackError;
+
+const callbackPublicMessage = (reason: unknown): string =>
+  typeof reason === "string" && reason.length > 0 ? reason : "Deno callback failed";
+
+const callbackErrorMessage = (cause: unknown): string =>
+  isDenoCallbackError(cause) ? cause.publicMessage : "Deno callback failed";
+
 // ---------------------------------------------------------------------------
 // IPC schemas
 // ---------------------------------------------------------------------------
@@ -69,6 +87,18 @@ const WorkerCompletedMessage = Schema.Struct({
   logs: Schema.optional(Schema.Array(Schema.String)),
 });
 
+const WorkerOutputMessage = Schema.Struct({
+  type: Schema.Literal("output"),
+  nonce: Schema.String,
+  item: Schema.Unknown,
+});
+
+const WorkerYieldMessage = Schema.Struct({
+  type: Schema.Literal("yield"),
+  nonce: Schema.String,
+  requestId: Schema.String,
+});
+
 const WorkerFailedMessage = Schema.Struct({
   type: Schema.Literal("failed"),
   nonce: Schema.String,
@@ -79,6 +109,8 @@ const WorkerFailedMessage = Schema.Struct({
 
 const WorkerMessage = Schema.Union([
   WorkerToolCallMessage,
+  WorkerOutputMessage,
+  WorkerYieldMessage,
   WorkerCompletedMessage,
   WorkerFailedMessage,
 ] as const);
@@ -139,6 +171,13 @@ type HostToWorkerMessage =
       ok: boolean;
       value?: unknown;
       error?: string;
+    }
+  | {
+      type: "yield_result";
+      nonce: string;
+      requestId: string;
+      ok: boolean;
+      error?: string;
     };
 
 const causeMessage = (cause: Cause.Cause<unknown>): string => {
@@ -161,6 +200,7 @@ const executeInDeno = (
   code: string,
   toolInvoker: SandboxToolInvoker,
   options: DenoSubprocessExecutorOptions,
+  executionOptions?: CodeExecutionOptions,
 ): Effect.Effect<ExecuteResult, never> => {
   const recoveredBody = recoverExecutionBody(code);
   const denoExecutable = options.denoExecutable ?? defaultDenoExecutable();
@@ -254,6 +294,51 @@ const executeInDeno = (
           const msg = yield* Queue.take(messages);
 
           switch (msg.type) {
+            case "output": {
+              yield* Effect.tryPromise({
+                try: () =>
+                  Promise.resolve(executionOptions?.onOutput?.(msg.item as ExecuteOutputItem)),
+                catch: (reason) =>
+                  new DenoCallbackError({
+                    publicMessage: callbackPublicMessage(reason),
+                    reason,
+                  }),
+              }).pipe(Effect.catch(() => Effect.void));
+              break;
+            }
+
+            case "yield": {
+              const yieldResult = yield* Effect.tryPromise({
+                try: () => Promise.resolve(executionOptions?.onYield?.()),
+                catch: (reason) =>
+                  new DenoCallbackError({
+                    publicMessage: callbackPublicMessage(reason),
+                    reason,
+                  }),
+              }).pipe(
+                Effect.map(
+                  (): HostToWorkerMessage => ({
+                    type: "yield_result",
+                    nonce,
+                    requestId: msg.requestId,
+                    ok: true,
+                  }),
+                ),
+                Effect.catch((cause) =>
+                  Effect.succeed<HostToWorkerMessage>({
+                    type: "yield_result",
+                    nonce,
+                    requestId: msg.requestId,
+                    ok: false,
+                    error: callbackErrorMessage(cause),
+                  }),
+                ),
+              );
+
+              writeMessage(worker.stdin, yieldResult);
+              break;
+            }
+
             case "tool_call": {
               const toolResult = yield* toolInvoker
                 .invoke({ path: msg.toolPath, args: msg.args })
@@ -348,6 +433,9 @@ export const isDenoAvailable = (executable: string = defaultDenoExecutable()): b
 export const makeDenoSubprocessExecutor = (
   options: DenoSubprocessExecutorOptions = {},
 ): CodeExecutor<never> => ({
-  execute: (code: string, toolInvoker: SandboxToolInvoker) =>
-    executeInDeno(code, toolInvoker, options),
+  execute: (
+    code: string,
+    toolInvoker: SandboxToolInvoker,
+    executionOptions?: CodeExecutionOptions,
+  ) => executeInDeno(code, toolInvoker, options, executionOptions),
 });

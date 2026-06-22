@@ -2,6 +2,7 @@ import {
   recoverExecutionBody,
   stripTypeScript,
   type CodeExecutor,
+  type CodeExecutionOptions,
   type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
@@ -127,8 +128,16 @@ const buildExecutionSource = (code: string): string => {
     '"use strict";',
     "const __invokeTool = __executor_invokeTool;",
     "const __log = __executor_log;",
+    "const __output = __executor_output;",
+    "const __yield = __executor_yield;",
+    "const __sleep = __executor_sleep;",
+    "const __cancelSleep = __executor_cancelSleep;",
     "try { delete globalThis.__executor_invokeTool; } catch {}",
     "try { delete globalThis.__executor_log; } catch {}",
+    "try { delete globalThis.__executor_output; } catch {}",
+    "try { delete globalThis.__executor_yield; } catch {}",
+    "try { delete globalThis.__executor_sleep; } catch {}",
+    "try { delete globalThis.__executor_cancelSleep; } catch {}",
     "const __formatLogArg = (value) => {",
     "  if (typeof value === 'string') return value;",
     "  try {",
@@ -140,6 +149,34 @@ const buildExecutionSource = (code: string): string => {
     "const __formatLogLine = (args) => args.map(__formatLogArg).join(' ');",
     "const __outputs = [];",
     "globalThis.__executor_outputs = __outputs;",
+    "const __recordOutput = (item) => { __outputs.push(item); __output(item); };",
+    "const yield_control = () => __yield();",
+    "const yieldControl = yield_control;",
+    "const __timers = new Map();",
+    "let __nextTimerId = 1;",
+    "const setTimeout = (callback, delay = 0, ...args) => {",
+    "  if (typeof callback !== 'function') throw new TypeError('setTimeout callback must be a function');",
+    "  const id = __nextTimerId++;",
+    "  const timer = { cancelled: false };",
+    "  __timers.set(id, timer);",
+    "  const ms = Math.max(0, Number.isFinite(Number(delay)) ? Math.floor(Number(delay)) : 0);",
+    "  __sleep(ms, id).then((active) => {",
+    "    if (active !== 1 || timer.cancelled) return;",
+    "    __timers.delete(id);",
+    "    callback(...args);",
+    "  }, () => {",
+    "    __timers.delete(id);",
+    "  });",
+    "  return id;",
+    "};",
+    "const clearTimeout = (id) => {",
+    "  const key = Number(id);",
+    "  const timer = __timers.get(key);",
+    "  if (!timer) return;",
+    "  timer.cancelled = true;",
+    "  __timers.delete(key);",
+    "  __cancelSleep(key);",
+    "};",
     "const __formatOutputText = (value) => {",
     "  if (typeof value === 'undefined') return 'undefined';",
     "  if (value === null) return 'null';",
@@ -150,30 +187,75 @@ const buildExecutionSource = (code: string): string => {
     "    return String(value);",
     "  }",
     "};",
+    "const __IMAGE_DETAIL_META_KEY = 'codex/imageDetail';",
+    "const __DEFAULT_IMAGE_DETAIL = 'high';",
+    "const __validImageDetails = new Set(['auto', 'low', 'high', 'original']);",
+    "const __normalizeImageDetail = (detail) => {",
+    "  if (detail === null || typeof detail === 'undefined') return undefined;",
+    "  if (typeof detail !== 'string') throw new TypeError('image detail must be a string when provided');",
+    "  const normalized = detail.toLowerCase();",
+    "  if (!__validImageDetails.has(normalized)) throw new TypeError('image detail must be one of: auto, low, high, original');",
+    "  return normalized;",
+    "};",
     "const __isToolFile = (value) => value && typeof value === 'object' && value._tag === 'ToolFile' && typeof value.mimeType === 'string' && value.encoding === 'base64' && typeof value.data === 'string' && typeof value.byteLength === 'number';",
     "const __isMcpTextContentBlock = (value) => value && typeof value === 'object' && value.type === 'text' && typeof value.text === 'string';",
-    "const __isMcpImageContentBlock = (value) => value && typeof value === 'object' && value.type === 'image' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
+    "const __isMcpImageContentBlock = (value) => value && typeof value === 'object' && value.type === 'image' && typeof value.data === 'string' && (typeof value.mimeType === 'string' || typeof value.mime_type === 'string' || value.data.toLowerCase().startsWith('data:'));",
     "const __isMcpAudioContentBlock = (value) => value && typeof value === 'object' && value.type === 'audio' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
     "const __isMcpResourceContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource' && value.resource && typeof value.resource === 'object' && typeof value.resource.uri === 'string' && (typeof value.resource.text === 'string' || typeof value.resource.blob === 'string');",
     "const __isMcpResourceLinkContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource_link' && typeof value.uri === 'string' && typeof value.name === 'string';",
     "const __isMcpContentBlock = (value) => __isMcpTextContentBlock(value) || __isMcpImageContentBlock(value) || __isMcpAudioContentBlock(value) || __isMcpResourceContentBlock(value) || __isMcpResourceLinkContentBlock(value);",
-    "const emit = (value) => {",
-    "  if (__isToolFile(value)) {",
-    "    __outputs.push({ type: 'file', file: value });",
-    "    return;",
-    "  }",
-    "  if (__isMcpContentBlock(value)) {",
-    "    __outputs.push({ type: 'content', content: value });",
-    "    return;",
-    "  }",
-    "  __outputs.push({ type: 'content', content: { type: 'text', text: __formatOutputText(value) } });",
+    "const __parseDataImageUrl = (imageUrl) => {",
+    "  if (typeof imageUrl !== 'string' || imageUrl.length === 0) throw new TypeError('image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block');",
+    "  const lower = imageUrl.toLowerCase();",
+    "  if (lower.startsWith('http://') || lower.startsWith('https://')) throw new TypeError('remote image URLs are not supported in code output; pass a base64 data URI or MCP image block');",
+    "  const match = /^data:([^;,]+);base64,(.*)$/i.exec(imageUrl);",
+    "  if (!match) throw new TypeError('image expects a base64 data URI or MCP image block');",
+    "  return { mimeType: match[1], data: match[2] };",
     "};",
+    "const __imageDetailFromMeta = (value) => {",
+    "  const meta = value && typeof value === 'object' ? value._meta : undefined;",
+    "  const detail = meta && typeof meta === 'object' ? meta[__IMAGE_DETAIL_META_KEY] : undefined;",
+    "  return typeof detail === 'string' && __validImageDetails.has(detail) ? detail : undefined;",
+    "};",
+    "const __imageWithDetail = (block, detail) => ({ ...block, _meta: { ...(block._meta && typeof block._meta === 'object' ? block._meta : {}), [__IMAGE_DETAIL_META_KEY]: detail ?? __DEFAULT_IMAGE_DETAIL } });",
+    "const __normalizeImageBlock = (value, detailOverride) => {",
+    "  const override = __normalizeImageDetail(detailOverride);",
+    "  if (typeof value === 'string') return __imageWithDetail({ type: 'image', ...__parseDataImageUrl(value) }, override);",
+    "  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block');",
+    "  if (typeof value.image_url === 'string') {",
+    "    return __imageWithDetail({ type: 'image', ...__parseDataImageUrl(value.image_url) }, override ?? __normalizeImageDetail(value.detail));",
+    "  }",
+    "  if (value.type === 'image' && typeof value.data === 'string') {",
+    "    const parsed = value.data.toLowerCase().startsWith('data:') ? __parseDataImageUrl(value.data) : { data: value.data, mimeType: typeof value.mimeType === 'string' ? value.mimeType : typeof value.mime_type === 'string' ? value.mime_type : 'application/octet-stream' };",
+    "    return __imageWithDetail({ ...value, type: 'image', data: parsed.data, mimeType: parsed.mimeType }, override ?? __imageDetailFromMeta(value));",
+    "  }",
+    "  throw new TypeError('image expects a non-empty data URI, an object with image_url and optional detail, or a raw MCP image block');",
+    "};",
+    "const text = (value) => { __recordOutput({ type: 'content', content: { type: 'text', text: __formatOutputText(value) } }); };",
+    "const image = (value, detail) => { __recordOutput({ type: 'content', content: __normalizeImageBlock(value, detail) }); };",
+    "const audio = (value) => { if (!__isMcpAudioContentBlock(value)) throw new TypeError('audio expects an MCP audio content block'); __recordOutput({ type: 'content', content: value }); };",
+    "const file = (value) => { if (!__isToolFile(value)) throw new TypeError('file expects a ToolFile value'); __recordOutput({ type: 'file', file: value }); };",
+    "const resource = (value) => { if (!__isMcpResourceContentBlock(value) && !__isMcpResourceLinkContentBlock(value)) throw new TypeError('resource expects an MCP resource or resource_link content block'); __recordOutput({ type: 'content', content: value }); };",
+    "const notify = (value) => { const notification = value && typeof value === 'object' && typeof value.message === 'string' ? { message: value.message, ...(Object.prototype.hasOwnProperty.call(value, 'data') ? { data: value.data } : {}) } : { message: __formatOutputText(value) }; __recordOutput({ type: 'notification', notification }); };",
+    "const emit = (value) => {",
+    "  if (__isToolFile(value)) { file(value); return; }",
+    "  if (__isMcpContentBlock(value)) { __recordOutput({ type: 'content', content: value }); return; }",
+    "  text(value);",
+    "};",
+    "const __builtinToolKeys = { '': ['search', 'describe', 'executor'], 'describe': ['tool'], 'executor': ['sources'], 'executor.sources': ['list'] };",
+    "const __toolKeysForPath = (path) => __builtinToolKeys[path.join('.')] ?? [];",
     "const __makeToolsProxy = (path = []) => new Proxy(() => undefined, {",
     "  get(_target, prop) {",
     "    if (prop === 'then' || typeof prop === 'symbol') {",
     "      return undefined;",
     "    }",
     "    return __makeToolsProxy([...path, String(prop)]);",
+    "  },",
+    "  ownKeys() {",
+    "    return __toolKeysForPath(path);",
+    "  },",
+    "  getOwnPropertyDescriptor(_target, prop) {",
+    "    return typeof prop === 'string' && __toolKeysForPath(path).includes(prop) ? { enumerable: true, configurable: true } : undefined;",
     "  },",
     "  apply(_target, _thisArg, args) {",
     "    const toolPath = path.join('.');",
@@ -235,7 +317,150 @@ const createLogBridge = (context: QuickJSContext, logs: string[]): QuickJSHandle
     return context.undefined;
   });
 
+const createOutputBridge = (
+  context: QuickJSContext,
+  executionOptions: CodeExecutionOptions | undefined,
+): QuickJSHandle =>
+  context.newFunction("__executor_output", (itemHandle) => {
+    const item = context.dump(itemHandle) as ExecuteOutputItem;
+    void executionOptions?.onOutput?.(item);
+    return context.undefined;
+  });
+
 type RunPromise = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
+
+const createYieldBridge = (
+  context: QuickJSContext,
+  pendingDeferreds: Set<QuickJSDeferredPromise>,
+  executionOptions: CodeExecutionOptions | undefined,
+): QuickJSHandle =>
+  context.newFunction("__executor_yield", () => {
+    const deferred = context.newPromise();
+    pendingDeferreds.add(deferred);
+    deferred.settled.finally(() => {
+      pendingDeferreds.delete(deferred);
+    });
+
+    let yielded: void | Promise<void>;
+    try {
+      yielded = executionOptions?.onYield?.();
+    } catch (cause) {
+      if (deferred.alive) {
+        const errorHandle = context.newError(
+          cause instanceof Error ? cause.message : String(cause),
+        );
+        deferred.reject(errorHandle);
+        errorHandle.dispose();
+      }
+      return deferred.handle;
+    }
+
+    void Promise.resolve(yielded).then(
+      () => {
+        if (!deferred.alive) return;
+        deferred.resolve();
+      },
+      (cause) => {
+        if (!deferred.alive) return;
+        const errorHandle = context.newError(
+          cause instanceof Error ? cause.message : String(cause),
+        );
+        deferred.reject(errorHandle);
+        errorHandle.dispose();
+      },
+    );
+
+    return deferred.handle;
+  });
+
+const createSleepBridge = (
+  context: QuickJSContext,
+  pendingDeferreds: Set<QuickJSDeferredPromise>,
+  pendingTimers: Map<
+    number,
+    {
+      readonly timeout: ReturnType<typeof setTimeout>;
+      readonly deferred: QuickJSDeferredPromise;
+    }
+  >,
+): QuickJSHandle =>
+  context.newFunction("__executor_sleep", (delayHandle, idHandle) => {
+    const rawDelay =
+      delayHandle === undefined || context.typeof(delayHandle) === "undefined"
+        ? 0
+        : context.dump(delayHandle);
+    const rawId =
+      idHandle === undefined || context.typeof(idHandle) === "undefined"
+        ? undefined
+        : context.dump(idHandle);
+    const timerId =
+      typeof rawId === "number" && Number.isFinite(rawId) ? Math.floor(rawId) : undefined;
+    const delayMs =
+      typeof rawDelay === "number" && Number.isFinite(rawDelay)
+        ? Math.max(0, Math.floor(rawDelay))
+        : 0;
+    const deferred = context.newPromise();
+    pendingDeferreds.add(deferred);
+
+    const timer = setTimeout(() => {
+      if (timerId !== undefined) {
+        const current = pendingTimers.get(timerId);
+        if (!current || current.deferred !== deferred) return;
+        pendingTimers.delete(timerId);
+      }
+      if (!deferred.alive) return;
+      const activeHandle = context.newNumber(1);
+      deferred.resolve(activeHandle);
+      activeHandle.dispose();
+    }, delayMs);
+    if (timerId !== undefined) {
+      pendingTimers.set(timerId, { timeout: timer, deferred });
+    }
+
+    deferred.settled.finally(() => {
+      clearTimeout(timer);
+      if (timerId !== undefined) {
+        const current = pendingTimers.get(timerId);
+        if (current?.deferred === deferred) {
+          pendingTimers.delete(timerId);
+        }
+      }
+      pendingDeferreds.delete(deferred);
+    });
+
+    return deferred.handle;
+  });
+
+const createCancelSleepBridge = (
+  context: QuickJSContext,
+  pendingTimers: Map<
+    number,
+    {
+      readonly timeout: ReturnType<typeof setTimeout>;
+      readonly deferred: QuickJSDeferredPromise;
+    }
+  >,
+): QuickJSHandle =>
+  context.newFunction("__executor_cancelSleep", (idHandle) => {
+    const rawId =
+      idHandle === undefined || context.typeof(idHandle) === "undefined"
+        ? undefined
+        : context.dump(idHandle);
+    const timerId =
+      typeof rawId === "number" && Number.isFinite(rawId) ? Math.floor(rawId) : undefined;
+    if (timerId === undefined) return context.undefined;
+
+    const current = pendingTimers.get(timerId);
+    if (!current) return context.undefined;
+    clearTimeout(current.timeout);
+    pendingTimers.delete(timerId);
+    if (current.deferred.alive) {
+      const cancelledHandle = context.newNumber(0);
+      current.deferred.resolve(cancelledHandle);
+      cancelledHandle.dispose();
+    }
+    return context.undefined;
+  });
 
 const createToolBridge = (
   context: QuickJSContext,
@@ -362,11 +587,19 @@ const evaluateInQuickJs = async (
   code: string,
   toolInvoker: SandboxToolInvoker,
   runPromise: RunPromise,
+  executionOptions?: CodeExecutionOptions,
 ): Promise<ExecuteResult> => {
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const deadlineMs = Date.now() + timeoutMs;
   const logs: string[] = [];
   const pendingDeferreds = new Set<QuickJSDeferredPromise>();
+  const pendingTimers = new Map<
+    number,
+    {
+      readonly timeout: ReturnType<typeof setTimeout>;
+      readonly deferred: QuickJSDeferredPromise;
+    }
+  >();
   const QuickJS = await resolveQuickJS();
   const runtime = QuickJS.newRuntime();
 
@@ -381,6 +614,22 @@ const evaluateInQuickJs = async (
       const logBridge = createLogBridge(context, logs);
       context.setProp(context.global, "__executor_log", logBridge);
       logBridge.dispose();
+
+      const outputBridge = createOutputBridge(context, executionOptions);
+      context.setProp(context.global, "__executor_output", outputBridge);
+      outputBridge.dispose();
+
+      const yieldBridge = createYieldBridge(context, pendingDeferreds, executionOptions);
+      context.setProp(context.global, "__executor_yield", yieldBridge);
+      yieldBridge.dispose();
+
+      const sleepBridge = createSleepBridge(context, pendingDeferreds, pendingTimers);
+      context.setProp(context.global, "__executor_sleep", sleepBridge);
+      sleepBridge.dispose();
+
+      const cancelSleepBridge = createCancelSleepBridge(context, pendingTimers);
+      context.setProp(context.global, "__executor_cancelSleep", cancelSleepBridge);
+      cancelSleepBridge.dispose();
 
       const toolBridge = createToolBridge(context, toolInvoker, pendingDeferreds, runPromise);
       context.setProp(context.global, "__executor_invokeTool", toolBridge);
@@ -444,6 +693,11 @@ const evaluateInQuickJs = async (
         stateHandle.dispose();
       }
     } finally {
+      for (const { timeout } of pendingTimers.values()) {
+        clearTimeout(timeout);
+      }
+      pendingTimers.clear();
+
       for (const deferred of pendingDeferreds) {
         if (deferred.alive) {
           deferred.dispose();
@@ -468,12 +722,13 @@ const runInQuickJs = (
   options: QuickJsExecutorOptions,
   code: string,
   toolInvoker: SandboxToolInvoker,
+  executionOptions?: CodeExecutionOptions,
 ): Effect.Effect<ExecuteResult, QuickJsExecutionError> =>
   Effect.gen(function* () {
     const context = yield* Effect.context<never>();
     const runPromise = Effect.runPromiseWith(context);
     return yield* Effect.tryPromise({
-      try: () => evaluateInQuickJs(options, code, toolInvoker, runPromise),
+      try: () => evaluateInQuickJs(options, code, toolInvoker, runPromise, executionOptions),
       catch: (cause) => new QuickJsExecutionError({ message: String(cause) }),
     });
   }).pipe(
@@ -485,6 +740,9 @@ const runInQuickJs = (
 export const makeQuickJsExecutor = (
   options: QuickJsExecutorOptions = {},
 ): CodeExecutor<QuickJsExecutionError> => ({
-  execute: (code: string, toolInvoker: SandboxToolInvoker) =>
-    runInQuickJs(options, code, toolInvoker),
+  execute: (
+    code: string,
+    toolInvoker: SandboxToolInvoker,
+    executionOptions?: CodeExecutionOptions,
+  ) => runInQuickJs(options, code, toolInvoker, executionOptions),
 });
