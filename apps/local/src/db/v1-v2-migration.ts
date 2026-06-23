@@ -986,6 +986,7 @@ const insertPlan = async (
     // v1→v2 stamp and keep the writes idempotent; if the process dies before
     // COMMIT, the next boot replays the same secret writes harmlessly.
     await writeMigratedSecrets(secretValues);
+    await pauseMigrationForTest("secrets-written");
     await executeSql(
       client,
       "CREATE TABLE IF NOT EXISTS data_migration (name TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)",
@@ -1515,6 +1516,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
       phase: "building",
     };
     await writeMigrationJournal(journalPath, journal);
+    await pauseMigrationForTest("journal-written");
     writeAuthBackupForMigration(authBackup);
     await pauseMigrationForTest("building");
 

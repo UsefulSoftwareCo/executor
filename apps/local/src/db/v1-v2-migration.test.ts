@@ -725,6 +725,7 @@ const killRestartPausePhases = [
 ] as const;
 
 type KillRestartPausePhase = (typeof killRestartPausePhases)[number];
+type MigrationPausePoint = KillRestartPausePhase | "journal-written" | "secrets-written";
 
 interface ChildOutput {
   stdout: string;
@@ -775,7 +776,7 @@ const waitForPauseMarker = async (
 const killMigrationAtPause = async (input: {
   readonly dbPath: string;
   readonly tenantId: string;
-  readonly pauseAt: KillRestartPausePhase;
+  readonly pauseAt: MigrationPausePoint;
 }): Promise<void> => {
   const marker = join(workDir, `pause-${input.pauseAt}`);
   const code = `
@@ -1212,6 +1213,79 @@ describe("local v1 -> v2 migration", () => {
     ).rejects.toMatchObject({ _tag: "LocalV1V2MigrationError" });
     expect(existsSync(dbPath)).toBe(false);
     expect(existsSync(journalPath)).toBe(true);
+  });
+
+  it("recovers when killed after the journal is written but before auth backup exists", async () => {
+    const scopeId = "executor-journal-before-auth-backup";
+    const secret = "sk_test_journal_before_auth_backup";
+    const walMarker = "wal-journal-before-auth-backup";
+    const dataDir = join(workDir, "data-journal-before-auth-backup");
+    const dbPath = join(dataDir, "data.db");
+    const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+    const authPath = join(authDir, "auth.json");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(authDir, { recursive: true });
+    await seedV1Db(dbPath, scopeId);
+    await writeLiveWalMarker(dbPath, walMarker);
+    writeFileSync(authPath, JSON.stringify({ [scopeId]: { "stripe-key": secret } }, null, 2));
+
+    await killMigrationAtPause({ dbPath, tenantId: scopeId, pauseAt: "journal-written" });
+
+    const journal = readMigrationJournalForTest(dbPath);
+    expect(journal.phase).toBe("building");
+    expect(journal.authExisted).toBe(true);
+    expect(journal.authBackup).not.toBe(null);
+    expect(existsSync(journal.authBackup!)).toBe(false);
+    await assertV1SourceRows({ path: dbPath, scopeId });
+    await assertWalMarkerRows({ path: dbPath, marker: walMarker });
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(true);
+    expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
+    await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
+  });
+
+  it("recovers when killed after external secret writes but before SQL commit", async () => {
+    const scopeId = "executor-secrets-before-commit";
+    const secret = "sk_test_secrets_before_commit";
+    const walMarker = "wal-secrets-before-commit";
+    const dataDir = join(workDir, "data-secrets-before-commit");
+    const dbPath = join(dataDir, "data.db");
+    const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+    const authPath = join(authDir, "auth.json");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(authDir, { recursive: true });
+    await seedV1Db(dbPath, scopeId);
+    await writeLiveWalMarker(dbPath, walMarker);
+    writeFileSync(authPath, JSON.stringify({ [scopeId]: { "stripe-key": secret } }, null, 2));
+
+    await killMigrationAtPause({ dbPath, tenantId: scopeId, pauseAt: "secrets-written" });
+
+    const journal = readMigrationJournalForTest(dbPath);
+    expect(journal.phase).toBe("building");
+    expect(journal.authBackup).not.toBe(null);
+    expect(existsSync(journal.authBackup!)).toBe(true);
+    const interruptedAuth = decodeAuthFile(readFileSync(authPath, "utf-8"));
+    expect(interruptedAuth[migratedItemId(scopeId, "stripe-key")]).toBe(secret);
+    await assertV1SourceRows({ path: dbPath, scopeId });
+    await assertWalMarkerRows({ path: dbPath, marker: walMarker });
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(true);
+    expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
+    await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
   });
 
   it("recovers after SIGKILL at every migration journal boundary", async () => {
