@@ -107,7 +107,7 @@ const logExecutionObserverFailure = (
 ): Effect.Effect<void> =>
   Effect.logWarning("execution observer failed", {
     cause: Cause.pretty(cause),
-    event: event._tag,
+    event: event.constructor.name,
     ...(pluginId ? { pluginId } : {}),
   });
 
