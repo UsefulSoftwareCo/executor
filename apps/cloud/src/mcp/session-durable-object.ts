@@ -208,6 +208,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<Env, CloudSessionDbHandl
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,
+        pausedExecutionHooks: self.pausedExecutionHooks,
         elicitationMode:
           sessionElicitationMode === "browser"
             ? {

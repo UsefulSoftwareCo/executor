@@ -1,8 +1,10 @@
+import { PAUSED_APPROVAL_TIMEOUT_MS } from "@executor-js/host-mcp/tool-server";
+
 /** Idle timeout for MCP sessions with no paused continuations. */
 export const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Lease extension while paused executions block hibernation (matches browser approval wait). */
-export const PAUSED_EXECUTION_LEASE_MS = 10 * 60 * 1000;
+export const PAUSED_EXECUTION_LEASE_MS = PAUSED_APPROVAL_TIMEOUT_MS;
 
 /**
  * Hard upper bound on idle time before a paused session is torn down regardless

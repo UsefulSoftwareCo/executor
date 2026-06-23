@@ -1,4 +1,4 @@
-import { Effect, Match, Option, Schema } from "effect";
+import { Duration, Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
@@ -91,6 +91,12 @@ type SharedMcpServerConfig = {
         readonly mode: "native";
       };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /**
+   * Host-owned lifecycle for paused executions. The MCP server reports pause
+   * boundaries; the host decides whether that means a keepAlive lease, browser
+   * wait, durable record, or no-op.
+   */
+  readonly pausedExecutionHooks?: PausedExecutionHooks;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -102,6 +108,15 @@ export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.Yield
 export type BrowserApprovalStore = {
   readonly takeResponse: (executionId: string) => Effect.Effect<ResumeResponse | null>;
   readonly waitForResponse?: (executionId: string) => Effect.Effect<ResumeResponse | null>;
+};
+
+export const PAUSED_APPROVAL_TIMEOUT_MS = 4 * 60 * 1000;
+const BROWSER_APPROVAL_WAIT_TIMEOUT_MS = PAUSED_APPROVAL_TIMEOUT_MS + 1000;
+
+export type PausedExecutionHooks = {
+  readonly onExecutionPaused?: (executionId: string) => Effect.Effect<void>;
+  readonly onResumeStarted?: (executionId: string) => Effect.Effect<void>;
+  readonly onResumeSettled?: (executionId: string) => Effect.Effect<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -480,6 +495,14 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   };
 };
 
+const logMcpPauseEvent = (event: string, data: Record<string, unknown>): void => {
+  console.info(JSON.stringify({ event, ...data }));
+};
+
+const logMcpToolEvent = (event: string, data: Record<string, unknown>): void => {
+  console.info(JSON.stringify({ event, ...data }));
+};
+
 // A paused execution lives in the session runtime's memory: it expires when
 // the user takes too long to answer, and dies early when the runtime is
 // rebuilt (host restart, redeploy). Either way the recovery is the same and
@@ -544,6 +567,17 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       ({
         mode: "model",
       } as const);
+    const onExecutionPaused = (executionId: string): Effect.Effect<void> =>
+      config.pausedExecutionHooks?.onExecutionPaused?.(executionId) ?? Effect.void;
+    const onResumeStarted = (executionId: string): Effect.Effect<void> =>
+      config.pausedExecutionHooks?.onResumeStarted?.(executionId) ?? Effect.void;
+    const onResumeSettled = (executionId: string): Effect.Effect<void> =>
+      config.pausedExecutionHooks?.onResumeSettled?.(executionId) ?? Effect.void;
+    const resumeWithLifecycle = (executionId: string, response: ResumeResponse) =>
+      Effect.gen(function* () {
+        yield* onResumeStarted(executionId);
+        return yield* engine.resume(executionId, response);
+      }).pipe(Effect.ensuring(onResumeSettled(executionId)));
 
     const resolveParentSpan = (): Tracer.AnySpan | undefined => {
       const ps = config.parentSpan;
@@ -585,7 +619,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           });
           return toMcpResult(result);
         }
+        logMcpToolEvent("mcp_tool_execute_with_pause_start", {
+          codeLength: code.length,
+          elicitationMode: elicitationMode.mode,
+        });
         const outcome = yield* engine.executeWithPause(code);
+        logMcpToolEvent("mcp_tool_execute_with_pause_result", {
+          status: outcome.status,
+          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+          elicitationMode: elicitationMode.mode,
+        });
         debugLog("execute.paused_flow_result", {
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
@@ -594,6 +637,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ? pausedInteractionKind(outcome.execution.elicitationContext.request)
               : undefined,
         });
+        if (outcome.status === "paused") {
+          logMcpPauseEvent("mcp_pause_created", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "execute",
+          });
+          yield* onExecutionPaused(outcome.execution.id);
+          logMcpPauseEvent("mcp_pause_returning", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "execute",
+          });
+        }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
           : elicitationMode.mode === "browser"
@@ -620,7 +676,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           hasContent: content !== undefined,
           clientCapabilities: server.server.getClientCapabilities() ?? null,
         });
-        const outcome = yield* engine.resume(executionId, { action, content });
+        const outcome = yield* resumeWithLifecycle(executionId, { action, content });
         if (!outcome) {
           debugLog("resume.missing_execution", { executionId });
           return missingExecutionResult(executionId);
@@ -634,6 +690,19 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ? pausedInteractionKind(outcome.execution.elicitationContext.request)
               : undefined,
         });
+        if (outcome.status === "paused") {
+          logMcpPauseEvent("mcp_pause_created", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "resume",
+          });
+          yield* onExecutionPaused(outcome.execution.id);
+          logMcpPauseEvent("mcp_pause_returning", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "resume",
+          });
+        }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
           : toMcpPausedResult(formatPausedExecution(outcome.execution));
@@ -682,7 +751,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
       return waitForResponse(executionId).pipe(
         Effect.timeoutOrElse({
-          duration: "10 minutes",
+          duration: Duration.millis(BROWSER_APPROVAL_WAIT_TIMEOUT_MS),
           orElse: () => Effect.succeed(null),
         }),
       );
@@ -693,9 +762,22 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const response = yield* waitForBrowserApprovalResponse(executionId);
         if (!response) return yield* requireUserResumeApproval(executionId);
 
-        const outcome = yield* engine.resume(executionId, response);
+        const outcome = yield* resumeWithLifecycle(executionId, response);
         if (!outcome) {
           return missingExecutionResult(executionId);
+        }
+        if (outcome.status === "paused") {
+          logMcpPauseEvent("mcp_pause_created", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "browser_resume",
+          });
+          yield* onExecutionPaused(outcome.execution.id);
+          logMcpPauseEvent("mcp_pause_returning", {
+            executionId: outcome.execution.id,
+            mode: elicitationMode.mode,
+            source: "browser_resume",
+          });
         }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
@@ -718,7 +800,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           description,
           inputSchema: { code: z.string().trim().min(1) },
         },
-        ({ code }) => runToolEffect(executeCode(code)),
+        ({ code }) => {
+          logMcpToolEvent("mcp_tool_execute_entry", {
+            codeLength: code.length,
+            elicitationMode: elicitationMode.mode,
+          });
+          return runToolEffect(executeCode(code));
+        },
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -750,8 +838,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 .default("{}"),
             },
           },
-          ({ executionId, action, content: rawContent }) =>
-            runToolEffect(resumeExecution(executionId, action, parseJsonContent(rawContent))),
+          ({ executionId, action, content: rawContent }) => {
+            logMcpToolEvent("mcp_tool_resume_entry", {
+              executionId,
+              action,
+              elicitationMode: elicitationMode.mode,
+            });
+            return runToolEffect(
+              resumeExecution(executionId, action, parseJsonContent(rawContent)),
+            );
+          },
         );
       }
 
@@ -767,7 +863,14 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             executionId: z.string().describe("The execution ID from the paused result"),
           },
         },
-        ({ executionId }) => runToolEffect(resumeAfterBrowserApproval(executionId)),
+        ({ executionId }) => {
+          logMcpToolEvent("mcp_tool_resume_entry", {
+            executionId,
+            action: "browser_wait",
+            elicitationMode: elicitationMode.mode,
+          });
+          return runToolEffect(resumeAfterBrowserApproval(executionId));
+        },
       );
     }).pipe(
       Effect.withSpan("mcp.host.register_tool", {

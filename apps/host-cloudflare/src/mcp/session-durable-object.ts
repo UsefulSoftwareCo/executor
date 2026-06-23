@@ -88,6 +88,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         browserApprovalStore: self.browserApprovalStore,
+        pausedExecutionHooks: self.pausedExecutionHooks,
         elicitationMode:
           elicitationMode === "browser"
             ? {

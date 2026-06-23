@@ -651,15 +651,14 @@ export const resolveOpenApiBackedAnnotations = (input: {
   readonly toolRows: readonly { readonly name: string }[];
 }) =>
   Effect.gen(function* () {
-    const ops = yield* input.ctx.storage.listOperations(String(input.integration));
-    const byName = new Map<string, OperationBinding>();
-    for (const op of ops) byName.set(op.toolName, op.binding);
     const out: Record<string, ReturnType<typeof annotationsForOperation>> = {};
     for (const row of input.toolRows) {
-      const binding = byName.get(row.name);
-      if (binding) {
-        out[row.name] = annotationsForOperation(binding.method, binding.pathTemplate);
-      }
+      const operation = yield* input.ctx.storage.getOperation(input.integration, row.name);
+      if (!operation) continue;
+      out[row.name] = annotationsForOperation(
+        operation.binding.method,
+        operation.binding.pathTemplate,
+      );
     }
     return out;
   });
