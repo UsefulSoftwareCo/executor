@@ -5,9 +5,9 @@
  * In prod: spawns the bundled CLI binary in foreground daemon mode.
  *
  * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_TOKEN.
- * The dev sidecar and packaged CLI child announce structured stdout sentinels
- * (`EXECUTOR_READY:<port>` or `EXECUTOR_ATTACHED`). Human-readable log text is
- * never part of the desktop startup contract.
+ * The dev sidecar and packaged CLI child announce the structured stdout sentinel
+ * `EXECUTOR_READY:<port>`. Human-readable log text is never part of the desktop
+ * startup contract.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -36,9 +36,6 @@ const sidecarLog = log.scope("sidecar");
 // sidecar can't grow it unbounded over a long session.
 const STDERR_TAIL_LIMIT = 8 * 1024;
 const READY_SENTINEL = "EXECUTOR_READY";
-const ATTACHED_SENTINEL = "EXECUTOR_ATTACHED";
-const ATTACH_OWNER_TIMEOUT_MS = 15_000;
-const ATTACH_OWNER_POLL_MS = 150;
 
 // Children deliberately stopped via stopSidecar (quit, restart, update) —
 // their exits are expected and must not be reported as crashes.
@@ -223,12 +220,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   const dataDir = scopeDir;
   mkdirSync(dataDir, { recursive: true });
 
-  // Fast path: a reachable local server already owns this data dir (a CLI
-  // daemon, another desktop sidecar, or a supervised service). Attach to it
-  // instead of spawning a child that would only lose the DB ownership race.
-  const attached = await attachToReachableLocalServer(dataDir);
-  if (attached) return attached;
-
   // The stable bearer token from auth.json (shared with the CLI). The main
   // process holds it so it can inject the header into the webview; the child
   // validates against the same value. Always present — auth is unconditional.
@@ -249,8 +240,8 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
   // No process-level startup lock: the dev sidecar child opens the DB through
   // openOwnedLocalDatabase, whose ownership lock is the real gate. If the child
-  // loses the race it exits and onExit attaches to the winner. server.json is an
-  // attach hint only.
+  // loses the race, startup fails as before; only the packaged supervised boot
+  // path attaches to an existing daemon.
   const webBaseUrl = `http://${hostname}:${settings.port}`;
   const child = spawn(command, args, {
     cwd,
@@ -280,7 +271,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     let stdoutControlBuffer = "";
     let resolved = false;
     let rejected = false;
-    let attachedOwnerResolution: Promise<boolean> | null = null;
 
     const logStdoutLine = makeLineSplitter((line) => sidecarLog.info(line));
     const logStderrLine = makeLineSplitter((line) => sidecarLog.error(line));
@@ -290,25 +280,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
       rejected = true;
       // oxlint-disable-next-line executor/no-promise-reject -- boundary: sidecar startup surfaces as a rejected promise
       rejectStart(err);
-    };
-
-    const resolveAttachedOwner = async (): Promise<boolean> => {
-      if (resolved || rejected) return true;
-      if (!attachedOwnerResolution) {
-        attachedOwnerResolution = waitForReachableLocalServer(dataDir)
-          .then((attached) => {
-            if (resolved || rejected) return true;
-            if (!attached) return false;
-            resolved = true;
-            expectedExits.add(child);
-            resolveStart(attached);
-            return true;
-          })
-          .finally(() => {
-            attachedOwnerResolution = null;
-          });
-      }
-      return attachedOwnerResolution;
     };
 
     const onStdout = (chunk: Buffer) => {
@@ -322,10 +293,6 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
       const readyLine = stdoutLines.find((line) => line.startsWith(`${READY_SENTINEL}:`));
-      if (stdoutLines.includes(ATTACHED_SENTINEL) && !resolved) {
-        void resolveAttachedOwner();
-        return;
-      }
       if (readyLine && !resolved) {
         if (!child.pid) {
           reject(
@@ -384,18 +351,15 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         return;
       }
       if (rejected) return;
-      void (async () => {
-        if (await resolveAttachedOwner()) return;
-        // Detect bind failure — the Node listener prints either "EADDRINUSE" or
-        // "address already in use" on stderr before exiting non-zero.
-        if (/EADDRINUSE|address already in use/i.test(stderrBuffer)) {
-          reject(new SidecarPortInUseError(settings.port));
-          return;
-        }
-        const message = `Sidecar exited before ready (code=${code} signal=${signal}). Stderr:\n${stderrBuffer}`;
-        // oxlint-disable-next-line executor/no-error-constructor -- boundary: sidecar boot failure surfaces here as a rejected start promise
-        reject(new Error(message));
-      })();
+      // Detect bind failure — the Node listener prints either "EADDRINUSE" or
+      // "address already in use" on stderr before exiting non-zero.
+      if (/EADDRINUSE|address already in use/i.test(stderrBuffer)) {
+        reject(new SidecarPortInUseError(settings.port));
+        return;
+      }
+      const message = `Sidecar exited before ready (code=${code} signal=${signal}). Stderr:\n${stderrBuffer}`;
+      // oxlint-disable-next-line executor/no-error-constructor -- boundary: sidecar boot failure surfaces here as a rejected start promise
+      reject(new Error(message));
     };
 
     child.stdout?.on("data", onStdout);
@@ -425,61 +389,6 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
     if (attempt < 2) await delay(150);
   }
   return false;
-};
-
-const waitForReachableLocalServer = async (
-  dataDir: string,
-  options: { readonly requireCliDaemon?: boolean } = {},
-): Promise<SidecarConnection | null> => {
-  const deadline = Date.now() + ATTACH_OWNER_TIMEOUT_MS;
-  while (Date.now() <= deadline) {
-    const attached = await attachToReachableLocalServer(dataDir, options);
-    if (attached) return attached;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return null;
-    await delay(Math.min(ATTACH_OWNER_POLL_MS, remaining));
-  }
-  return null;
-};
-
-const attachToReachableLocalServer = async (
-  dataDir: string,
-  options: { readonly requireCliDaemon?: boolean } = {},
-): Promise<SidecarConnection | null> => {
-  const manifest = readManifest(dataDir);
-  if (!manifest) return null;
-  if (options.requireCliDaemon && manifest.kind !== "cli-daemon") return null;
-  if (!isPidAlive(manifest.pid)) {
-    removeManifestIfOwnedBy(dataDir, manifest.pid);
-    return null;
-  }
-
-  const origin = manifest.connection.origin;
-  const auth = manifest.connection.auth;
-  const authToken = auth && auth.kind === "bearer" ? auth.token : "";
-  if (!(await isDaemonReachable(origin))) {
-    sidecarLog.warn(
-      `local Executor ${manifest.kind} at ${origin} (pid ${manifest.pid}) did not answer the health probe; keeping its manifest because the process is still alive`,
-    );
-    return null;
-  }
-
-  const url = new URL(origin);
-  sidecarLog.info(
-    `attaching to local Executor ${manifest.kind} at ${origin} (pid ${manifest.pid})`,
-  );
-  return {
-    baseUrl: origin,
-    hostname: url.hostname,
-    port: Number.parseInt(url.port, 10) || (url.protocol === "https:" ? 443 : 80),
-    username: SERVER_SETTINGS_USERNAME,
-    authToken,
-    child: null,
-    supervisedDaemon: manifest.kind === "cli-daemon",
-    ownerVersion: manifest.owner.version,
-    ownerClient: manifest.owner.client,
-    ownerExecutablePath: manifest.owner.executablePath,
-  };
 };
 
 /**
