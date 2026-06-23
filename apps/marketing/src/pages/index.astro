@@ -99,11 +99,18 @@ Source (and the place to start if something breaks): https://github.com/RhysSull
         <div class="relative z-10 px-6 sm:px-10 pt-24 pb-28 sm:pt-32 sm:pb-36">
           <div class="max-w-[920px] mx-auto text-center">
             <h1
-              class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-12 mx-auto max-w-[18ch] text-balance"
+              class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-6 mx-auto max-w-[18ch] text-balance"
             >
               Connect any agent to <span class="serif-italic">everything</span>.
             </h1>
-            <div class="rise-2 max-w-[760px] mx-auto mb-12">
+            <p
+              class="rise-2 mx-auto mb-12 max-w-[50ch] text-[clamp(1.05rem,2.4vw,1.3rem)] leading-[1.5] text-ink-2"
+            >
+              Executor is an MCP gateway. Anything that speaks MCP, like Claude
+              Code, Cursor, or Codex, points at one endpoint and reaches every
+              tool you connect.
+            </p>
+            <div class="rise-3 max-w-[760px] mx-auto mb-12">
               <div class="surface-card p-6 sm:p-7">
                 <AnimatedBeamDemo client:load variant="stripe" />
               </div>
