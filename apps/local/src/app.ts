@@ -9,6 +9,7 @@ import {
 } from "@executor-js/api/server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { composeExecutionObservers, type AnyPlugin } from "@executor-js/sdk";
 
 import { getExecutorBundle, type LocalExecutor } from "./executor";
 import { makeLocalIdentityLayer } from "./identity";
@@ -50,12 +51,17 @@ import { ErrorCaptureLive } from "./observability";
  * `HostConfig`/`CodeExecutorProvider` seams — the fixed executor is the whole
  * execution model.
  */
-const localFixedExecutionLayer = (executor: LocalExecutor): Layer.Layer<FixedExecutionProvider> =>
+const localFixedExecutionLayer = (
+  executor: LocalExecutor,
+  plugins: readonly AnyPlugin[],
+): Layer.Layer<FixedExecutionProvider> =>
   Layer.succeed(FixedExecutionProvider)({
     executor,
     engine: createExecutionEngine({
       executor,
       codeExecutor: makeQuickJsExecutor(),
+      // Local bypasses makeExecutionStack, so compose plugin observers here.
+      observer: composeExecutionObservers(plugins, executor),
     }),
     // The executor IS its own plugin-extension map (`executor[pluginId]`); the
     // fixed middleware reads `executor[id]` to satisfy each plugin's
@@ -86,7 +92,7 @@ export const makeLocalApiHandler = async (token: string): Promise<LocalApiHandle
   // Layer is the `fixedExecution` seam declaration AND lives in `boot` so the
   // fixed middleware's residual `FixedExecutionProvider` resolves there — exactly
   // as self-host declares `db: SelfHostDbProvider` and puts the handle in `boot`.
-  const fixedExecution = localFixedExecutionLayer(executor);
+  const fixedExecution = localFixedExecutionLayer(executor, plugins);
 
   // The authoritative identity gate for the typed `/api`: validates the boot
   // bearer token and resolves the one local Principal. The Bun shell

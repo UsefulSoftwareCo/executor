@@ -26,6 +26,7 @@
 import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
+import { composeExecutionObservers } from "@executor-js/sdk";
 import type { AnyPlugin, Executor, StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
@@ -108,7 +109,17 @@ export const makeExecutionStack = <
     );
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;
-    const engine = decorate(createExecutionEngine({ executor, codeExecutor }), {
+
+    // Compose every registered plugin's runtime.executionObserver, bound to the
+    // executor's own extensions. Resolves to a no-op when no plugin observes,
+    // so a stack with no history/metrics plugin is unaffected. `plugins()` is
+    // the erased AnyPlugin[]; the caller's TPlugins phantom recovers the tuple.
+    const { plugins } = yield* PluginsProvider;
+    // PluginsProvider erases the tuple to AnyPlugin[]; recover the caller's
+    // TPlugins phantom so the extensions arg (the executor) lines up.
+    const observer = composeExecutionObservers(plugins() as TPlugins, executor);
+
+    const engine = decorate(createExecutionEngine({ executor, codeExecutor, observer }), {
       accountId,
       organizationId,
       organizationName,

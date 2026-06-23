@@ -2,6 +2,7 @@ import { Context, Effect, Layer, ManagedRuntime } from "effect";
 
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { composeExecutionObservers } from "@executor-js/sdk";
 import { makeLocalApiHandler } from "./app";
 import { getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
@@ -62,10 +63,12 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
   // engine instance (the browser-approval + stdio surface is local-only and not
   // part of the shared API). Reuse the shared boot bundle so the MCP executor is
   // byte-identical to the one the API serves.
-  const { executor } = await getExecutorBundle();
+  const { executor, plugins } = await getExecutorBundle();
   const engine = createExecutionEngine({
     executor,
     codeExecutor: makeQuickJsExecutor(),
+    // Local's in-process MCP also bypasses makeExecutionStack, so compose here.
+    observer: composeExecutionObservers(plugins, executor),
   });
   const mcp = createMcpRequestHandler({ engine });
 

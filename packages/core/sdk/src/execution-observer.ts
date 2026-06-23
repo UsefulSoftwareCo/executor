@@ -1,0 +1,162 @@
+import { Data, Effect, Schema } from "effect";
+import * as Cause from "effect/Cause";
+
+import type { ElicitationContext, ElicitationResponse } from "./elicitation";
+import type { AnyPlugin, OwnerBinding, PluginExtensions } from "./plugin";
+
+/* The execution-observer contract: a pull-model lifecycle stream the engine
+ * emits as it runs code. Plugins opt in via `plugin.runtime.executionObserver`
+ * and receive every event; sinks (history, metrics, tracing) are built on top.
+ * Emission is dispatched to all registered observers with per-observer error
+ * logging, so an observer can never break an execution. */
+
+export const ExecutionId = Schema.String.pipe(Schema.brand("ExecutionId"));
+export type ExecutionId = typeof ExecutionId.Type;
+
+export const ExecutionToolCallId = Schema.String.pipe(Schema.brand("ExecutionToolCallId"));
+export type ExecutionToolCallId = typeof ExecutionToolCallId.Type;
+
+export const ExecutionInteractionId = Schema.String.pipe(Schema.brand("ExecutionInteractionId"));
+export type ExecutionInteractionId = typeof ExecutionInteractionId.Type;
+
+export type ExecutionTrigger = {
+  readonly kind: string;
+  readonly metadata?: Record<string, unknown>;
+};
+
+export type ToolCallStatus = "completed" | "failed";
+export type InteractionStatus = "accepted" | "declined" | "cancelled" | "failed";
+export type ExecutionStatus = "completed" | "failed";
+
+export class ExecutionStarted extends Data.TaggedClass("ExecutionStarted")<{
+  readonly executionId: ExecutionId;
+  readonly owner: OwnerBinding;
+  readonly code: string;
+  readonly trigger?: ExecutionTrigger;
+  readonly startedAt: Date;
+}> {}
+
+export class ToolCallStarted extends Data.TaggedClass("ToolCallStarted")<{
+  readonly executionId: ExecutionId;
+  readonly toolCallId: ExecutionToolCallId;
+  readonly owner: OwnerBinding;
+  readonly path: string;
+  readonly args: unknown;
+  readonly startedAt: Date;
+}> {}
+
+export class ToolCallFinished extends Data.TaggedClass("ToolCallFinished")<{
+  readonly executionId: ExecutionId;
+  readonly toolCallId: ExecutionToolCallId;
+  readonly owner: OwnerBinding;
+  readonly path: string;
+  readonly status: ToolCallStatus;
+  readonly result?: unknown;
+  readonly error?: string;
+  readonly completedAt: Date;
+}> {}
+
+export class InteractionStarted extends Data.TaggedClass("InteractionStarted")<{
+  readonly executionId: ExecutionId;
+  readonly interactionId: ExecutionInteractionId;
+  readonly owner: OwnerBinding;
+  readonly context: ElicitationContext;
+  readonly startedAt: Date;
+}> {}
+
+export class InteractionResolved extends Data.TaggedClass("InteractionResolved")<{
+  readonly executionId: ExecutionId;
+  readonly interactionId: ExecutionInteractionId;
+  readonly owner: OwnerBinding;
+  readonly status: InteractionStatus;
+  readonly response?: ElicitationResponse;
+  readonly error?: string;
+  readonly completedAt: Date;
+}> {}
+
+export class ExecutionFinished extends Data.TaggedClass("ExecutionFinished")<{
+  readonly executionId: ExecutionId;
+  readonly owner: OwnerBinding;
+  readonly status: ExecutionStatus;
+  readonly result?: unknown;
+  readonly error?: string;
+  readonly logs?: readonly string[];
+  readonly completedAt: Date;
+}> {}
+
+export type ExecutionEvent =
+  | ExecutionStarted
+  | ToolCallStarted
+  | ToolCallFinished
+  | InteractionStarted
+  | InteractionResolved
+  | ExecutionFinished;
+
+export interface ExecutionObserver<E = never> {
+  readonly handle: (event: ExecutionEvent) => Effect.Effect<void, E>;
+}
+
+export const noopExecutionObserver: ExecutionObserver = {
+  handle: () => Effect.void,
+};
+
+const logExecutionObserverFailure = (
+  event: ExecutionEvent,
+  cause: Cause.Cause<unknown>,
+  pluginId?: string,
+): Effect.Effect<void> =>
+  Effect.logWarning("execution observer failed", {
+    cause: Cause.pretty(cause),
+    event: event._tag,
+    ...(pluginId ? { pluginId } : {}),
+  });
+
+/** Wrap an observer so any failure (defect or expected error) is logged, and
+ *  an observer must never propagate into the execution it observes. */
+export const ignoreExecutionObserverErrors = (
+  observer: ExecutionObserver<unknown>,
+): ExecutionObserver => ({
+  handle: (event) =>
+    observer
+      .handle(event)
+      .pipe(Effect.catchCause((cause) => logExecutionObserverFailure(event, cause))),
+});
+
+/** Collect every plugin's `runtime.executionObserver` and fan each event to
+ *  all of them, logging per-observer errors. Returns the no-op observer when no
+ *  plugin registers one, the common opt-out case. */
+export const composeExecutionObservers = <TPlugins extends readonly AnyPlugin[]>(
+  plugins: TPlugins,
+  extensions: PluginExtensions<TPlugins>,
+): ExecutionObserver => {
+  const observers: { readonly pluginId: string; readonly observer: ExecutionObserver<unknown> }[] =
+    [];
+
+  for (const plugin of plugins) {
+    const observer = plugin.runtime?.executionObserver?.(
+      extensions[plugin.id as keyof PluginExtensions<TPlugins>] as never,
+    );
+    if (observer) {
+      observers.push({ pluginId: plugin.id, observer });
+    }
+  }
+
+  if (observers.length === 0) {
+    return noopExecutionObserver;
+  }
+
+  return {
+    handle: (event) =>
+      Effect.forEach(
+        observers,
+        ({ pluginId, observer }) =>
+          observer
+            .handle(event)
+            .pipe(
+              Effect.catchCause((cause) => logExecutionObserverFailure(event, cause, pluginId)),
+            ),
+        // Preserve plugin order so observers see deterministic sequencing.
+        { discard: true },
+      ),
+  };
+};
