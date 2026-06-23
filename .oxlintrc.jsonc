@@ -153,6 +153,7 @@
     "vendor/",
     "emulators/",
     "e2e/runs/",
+    "e2e/desktop-packaged/linux-vm/repro.mjs",
     "node_modules/",
     "packages/core/fumadb/",
     "packages/core/sdk/src/vendor/json-schema-to-typescript/",

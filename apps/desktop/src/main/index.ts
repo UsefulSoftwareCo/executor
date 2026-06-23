@@ -238,6 +238,13 @@ const ensureSupervisedConnection = async (): Promise<SidecarConnection | null> =
     });
   }
 
+  // Headless/e2e: the first-run background-service prompt and the systemd/
+  // launchd install both need a user (and a real session bus) present. With
+  // this set, fall straight through to managed-spawn after the attach attempt
+  // so the packaged app can be driven without a window server. Mirrors
+  // EXECUTOR_TEST_AUTO_CONFIRM_RESET in reset-state.ts.
+  if (process.env.EXECUTOR_TEST_SKIP_BACKGROUND_SERVICE === "1") return null;
+
   const status = await supervisedServiceStatus();
   if (!status.supported) return null;
 
@@ -504,6 +511,17 @@ const showPortInUseDialog = async (port: number) => {
 // user-facing dialog instead of letting the app vanish without a window.
 let lastSidecarStartError: unknown = null;
 
+// A spawn aborts with this when another local server already owns ~/.executor:
+// the bundled `executor daemon run` (packaged) or assertNoOtherLocalServerOwner
+// (dev) both phrase it the same way. Treated as fatal historically, which
+// wedged the app into the crash screen whenever a CLI `executor daemon run`
+// (or a daemon a prior run left behind) held the data dir.
+const isScopeOwnershipConflict = (error: unknown): boolean => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: spawn-conflict failures arrive as plain Node errors from startSidecar; classified by message text
+  const message = error instanceof Error ? error.message : String(error);
+  return /already running|owns the current data directory/i.test(message);
+};
+
 const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: bind failures surface as a user-facing dialog
   try {
@@ -513,6 +531,21 @@ const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => 
     if (error instanceof SidecarPortInUseError) {
       await showPortInUseDialog(error.port);
       return null;
+    }
+    // The data dir is already owned by another local daemon. If it's a healthy
+    // cli-daemon, adopt it instead of failing — the same handoff boot() does up
+    // front, applied here so the fallback and restart paths recover from a
+    // mid-session daemon takeover. Poll briefly to ride out an owner that's
+    // alive but still finishing its own startup (the health-probe vs.
+    // scope-lock race that left the app wedged on the crash screen).
+    if (isScopeOwnershipConflict(error)) {
+      const adopted = await waitForSupervisedAttach(10_000);
+      if (adopted) {
+        log.info(
+          "Adopted the local daemon that owns the data dir instead of spawning a second one",
+        );
+        return adopted;
+      }
     }
     lastSidecarStartError = error;
     log.error("Failed to start executor sidecar", error);
@@ -550,6 +583,12 @@ const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
     throw new Error("Sidecar failed to restart — see Settings");
   }
   connection = next;
+  // A restart can adopt a daemon that already owns the data dir (the
+  // attach-on-conflict fallback). An adopted daemon has no child process, so
+  // onUnexpectedSidecarExit can't see it die — watch it with the supervised
+  // monitor instead. A freshly spawned sidecar keeps the child-exit path.
+  if (next.supervisedDaemon) armSupervisedMonitor();
+  else stopSupervisedMonitor();
   installBearerAuthHeader(next.baseUrl, next.authToken);
   const window = liveMainWindow();
   if (window) await window.loadURL(webUrlForConnection(next));
@@ -936,6 +975,11 @@ const boot = async () => {
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer navigation failure must show the startup recovery dialog, not a black window
   try {
     await createWindow(connection);
+    // The fallback can adopt a daemon that owns the data dir instead of
+    // spawning (attach-on-conflict). Like the primary supervised path, watch an
+    // adopted daemon with the supervised monitor — it has no child process for
+    // onUnexpectedSidecarExit to observe.
+    if (connection.supervisedDaemon) armSupervisedMonitor();
   } catch (error) {
     log.error("Failed to load managed sidecar web UI", error);
     const failedConnection = connection;
