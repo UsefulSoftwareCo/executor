@@ -76,11 +76,12 @@ type OpenApiOperationObject = {
   readonly responses: {
     readonly "200": {
       readonly description: "Successful response";
-      readonly content: {
-        readonly "application/json": {
+      readonly content: Record<
+        string,
+        {
           readonly schema: OpenApiSchemaObject;
-        };
-      };
+        }
+      >;
     };
   };
   readonly security?: readonly Record<string, readonly string[]>[];
@@ -174,6 +175,8 @@ const DiscoveryMethod = Schema.Struct({
   request: Schema.optional(DiscoveryRef),
   response: Schema.optional(DiscoveryRef),
   scopes: TextArray,
+  supportsMediaDownload: Schema.optional(Schema.Boolean),
+  useMediaDownloadService: Schema.optional(Schema.Boolean),
 });
 type DiscoveryMethod = typeof DiscoveryMethod.Type;
 
@@ -532,6 +535,33 @@ const discoveryDocumentInfo = (
     };
   });
 
+const googleDiscoveryResponseContent = (
+  method: DiscoveryMethod,
+  schemaNameForRef: (name: string) => string,
+): OpenApiOperationObject["responses"]["200"]["content"] => {
+  if (
+    (method.supportsMediaDownload === true || method.useMediaDownloadService === true) &&
+    method.response === undefined
+  ) {
+    return {
+      "application/octet-stream": {
+        schema: {
+          type: "string",
+          format: "binary",
+        },
+      },
+    };
+  }
+
+  return {
+    "application/json": {
+      schema: method.response?.$ref
+        ? { $ref: schemaRef(schemaNameForRef(method.response.$ref)) }
+        : {},
+    },
+  };
+};
+
 const buildDiscoveryOperation = (input: {
   readonly document: DiscoveryDocument;
   readonly method: DiscoveryMethod;
@@ -597,13 +627,7 @@ const buildDiscoveryOperation = (input: {
     responses: {
       "200": {
         description: "Successful response",
-        content: {
-          "application/json": {
-            schema: input.method.response?.$ref
-              ? { $ref: schemaRef(schemaNameForRef(input.method.response.$ref)) }
-              : {},
-          },
-        },
+        content: googleDiscoveryResponseContent(input.method, schemaNameForRef),
       },
     },
     ...(methodScopes.length > 0 ? { security: [{ googleOAuth2: methodScopes }] } : {}),

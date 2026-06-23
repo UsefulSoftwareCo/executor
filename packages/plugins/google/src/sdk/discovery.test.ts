@@ -247,6 +247,64 @@ it.effect("converts Google Discovery documents into Executor-preserving OpenAPI 
   }),
 );
 
+it.effect("marks Google Discovery media-download methods as binary responses", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryToOpenApi({
+      discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      documentText: JSON.stringify({
+        name: "drive",
+        version: "v3",
+        title: "Drive API",
+        rootUrl: "https://www.googleapis.com/",
+        servicePath: "drive/v3/",
+        resources: {
+          files: {
+            methods: {
+              export: {
+                id: "drive.files.export",
+                httpMethod: "GET",
+                path: "files/{fileId}/export",
+                supportsMediaDownload: true,
+                useMediaDownloadService: true,
+                parameters: {
+                  fileId: { location: "path", required: true, type: "string" },
+                  mimeType: { location: "query", required: true, type: "string" },
+                },
+              },
+            },
+          },
+        },
+        schemas: {},
+      }),
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operation = spec.paths["/files/{fileId}/export"]?.get;
+    expect(operation?.responses).toMatchObject({
+      "200": {
+        content: {
+          "application/octet-stream": {
+            schema: { type: "string", format: "binary" },
+          },
+        },
+      },
+    });
+
+    const parsed = yield* parse(result.specText);
+    const extracted = yield* extract(parsed);
+    const exportOperation = extracted.operations.find(
+      (candidate) => candidate.operationId === "files.export",
+    );
+    expect(exportOperation?.operationId).toBe("files.export");
+    const responseFileHint = Option.flatMap(
+      exportOperation?.responseBody ?? Option.none(),
+      (body) => body.fileHint,
+    );
+    expect(Option.isSome(responseFileHint)).toBe(true);
+  }),
+);
+
 it.effect("bundles Google Discovery documents into one Google OpenAPI source", () =>
   Effect.gen(function* () {
     const result = yield* convertGoogleDiscoveryBundleToOpenApi({
