@@ -1161,6 +1161,59 @@ describe("local v1 -> v2 migration", () => {
     expect(auth[migratedItemId(scopeId, "stripe-key")]).toBe("sk_test_recovered");
   });
 
+  it("restarts from an unreadable journal when the canonical v1 database is intact", async () => {
+    const scopeId = "executor-workspace-corruptjournal";
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    const journalPath = `${dbPath}.v1-v2-migration.json`;
+    mkdirSync(dataDir, { recursive: true });
+    await seedV1Db(dbPath, scopeId);
+    await writeLiveWalMarker(dbPath, "wal-corrupt-journal");
+
+    const authDir = join(process.env.XDG_DATA_HOME!, "executor");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(
+      join(authDir, "auth.json"),
+      JSON.stringify({ [scopeId]: { "stripe-key": "sk_test_corrupt_journal" } }, null, 2),
+    );
+    writeFileSync(journalPath, "{ this is not valid json", { mode: 0o600 });
+
+    const result = await migrateLocalV1ToV2IfNeeded({
+      sqlitePath: dbPath,
+      tables: collectTables(),
+      namespace: "executor_local",
+      tenantId: scopeId,
+    });
+
+    expect(result.migrated).toBe(true);
+    expect(existsSync(journalPath)).toBe(false);
+    await assertMigratedStripeDbAndSecret({
+      dbPath,
+      scopeId,
+      secret: "sk_test_corrupt_journal",
+      walMarker: "wal-corrupt-journal",
+    });
+  });
+
+  it("fails closed on an unreadable journal when the canonical database is missing", async () => {
+    const dataDir = join(workDir, "data");
+    const dbPath = join(dataDir, "data.db");
+    const journalPath = `${dbPath}.v1-v2-migration.json`;
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(journalPath, "{ this is not valid json", { mode: 0o600 });
+
+    await expect(
+      migrateLocalV1ToV2IfNeeded({
+        sqlitePath: dbPath,
+        tables: collectTables(),
+        namespace: "executor_local",
+        tenantId: "executor-workspace-missingdb",
+      }),
+    ).rejects.toMatchObject({ _tag: "LocalV1V2MigrationError" });
+    expect(existsSync(dbPath)).toBe(false);
+    expect(existsSync(journalPath)).toBe(true);
+  });
+
   it("recovers after SIGKILL at every migration journal boundary", async () => {
     // Each iteration rewrites the process-global XDG auth.json; keep this sweep
     // sequential so phase secrets cannot bleed across concurrent migrations.
@@ -1191,7 +1244,7 @@ describe("local v1 -> v2 migration", () => {
       await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
       expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
     }
-  });
+  }, 30_000);
 
   it("completes a built journal recovery before opening the canonical DB", async () => {
     const scopeId = "executor-workspace-abcd1234";
