@@ -65,18 +65,14 @@ const executionHistoryPlugin = definePlugin(() => ({
       owner: Owner,
       rows: readonly { readonly key: string; readonly data: ToolCall }[],
     ) =>
-      ctx.pluginStorage.putMany({
+      ctx.storage.toolCalls.putMany({
         owner,
-        entries: rows.map((row) => ({
-          collection: toolCalls.name,
-          key: row.key,
-          data: row.data,
-        })),
+        entries: rows,
       }),
     removeMany: (owner: Owner, keys: readonly string[]) =>
-      ctx.pluginStorage.removeMany({
+      ctx.storage.toolCalls.removeMany({
         owner,
-        entries: keys.map((key) => ({ collection: toolCalls.name, key })),
+        keys,
       }),
     get: (key: string) => ctx.storage.toolCalls.get({ key }),
     getForOwner: (owner: Owner, key: string) => ctx.storage.toolCalls.getForOwner({ owner, key }),
