@@ -855,9 +855,10 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         "execute_cell",
         {
           description: [
-            "Start a persistent execution cell. Use this for code that yields, runs longer than one request, or needs incremental observation.",
-            "The code can call `await yield_control()` or `await yieldControl()` to hand back currently emitted output and continue after the next wait.",
-            "Call `wait_cell` with the returned cellId and cursor to observe new events. Call `terminate_cell` to stop it.",
+            "Start a persistent TypeScript execution cell. Use this when code yields progress, runs longer than one MCP request, or needs incremental observation.",
+            "Inside the cell, call `emit(...)` or output helpers for user-visible output. Call `await yield_control()` or `await yieldControl()` to hand back currently emitted output and continue after the next wait.",
+            "The response includes `cellId`, `cursor`, `status`, and `events`. If status is `running` or `yielded`, call `wait_cell({ cellId, after: cursor })` and repeat with the newest cursor until status is `completed`, `failed`, or `terminated`.",
+            "`resume` is not for cells; use `wait_cell` to continue observing, and `terminate_cell` only to cancel.",
           ].join("\n"),
           inputSchema: {
             code: z.string().trim().min(1),
@@ -876,8 +877,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       server.registerTool(
         "wait_cell",
         {
-          description:
-            "Wait for new events from a persistent execution cell. Pass the cursor returned by execute_cell or the previous wait_cell call.",
+          description: [
+            "Wait for new events from a persistent execution cell. Pass `cellId` and the `after` cursor returned by `execute_cell` or the previous `wait_cell` call.",
+            "Use the returned `cursor` for the next wait. Keep waiting while status is `running` or `yielded`; stop when status is `completed`, `failed`, or `terminated`.",
+            "Do not call `resume` for cells. Set `timeoutMs` when you need to bound how long this wait blocks.",
+          ].join("\n"),
           inputSchema: {
             cellId: z.string(),
             after: z.number().optional(),
@@ -896,7 +900,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       server.registerTool(
         "terminate_cell",
         {
-          description: "Terminate a persistent execution cell.",
+          description:
+            "Terminate a persistent execution cell by `cellId`. Use this only for cancellation or cleanup; normal cell progress is observed with `wait_cell`.",
           inputSchema: {
             cellId: z.string(),
           },

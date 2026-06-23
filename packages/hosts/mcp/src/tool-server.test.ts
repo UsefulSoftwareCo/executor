@@ -163,6 +163,27 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("advertises the persistent cell lifecycle in MCP tool descriptions", async () => {
+    await withNativeClient(makeStubEngine({}), ELICITATION_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      const descriptionFor = (name: string): string =>
+        tools.find((tool) => tool.name === name)?.description ?? "";
+
+      expect(descriptionFor("execute")).toContain("test executor");
+
+      const executeCellDescription = descriptionFor("execute_cell");
+      expect(executeCellDescription).toContain("persistent TypeScript execution cell");
+      expect(executeCellDescription).toContain("wait_cell({ cellId, after: cursor })");
+      expect(executeCellDescription).toContain("`resume` is not for cells");
+
+      const waitCellDescription = descriptionFor("wait_cell");
+      expect(waitCellDescription).toContain("Keep waiting while status is `running` or `yielded`");
+      expect(waitCellDescription).toContain("Do not call `resume` for cells");
+
+      expect(descriptionFor("terminate_cell")).toContain("Use this only for cancellation");
+    });
+  });
+
   it("execute tool renders emitted file image output as MCP images", async () => {
     const engine = makeStubEngine({
       execute: () =>
