@@ -106,25 +106,25 @@ Source (and the place to start if something breaks): https://github.com/RhysSull
               </div>
             </div>
             {/* ── CTA: For humans / For agents ── */}
-            <div class="rise-4 hero-cta" data-audience="humans">
+            <div class="rise-4 hero-cta" data-audience="agents">
               <div class="audience-toggle" role="tablist" aria-label="Choose your path">
-                <button type="button" role="tab" data-audience-set="humans" aria-selected="true">
+                <button type="button" role="tab" data-audience-set="humans" aria-selected="false">
                   For humans
                 </button>
                 <span class="audience-sep" aria-hidden="true"></span>
-                <button type="button" role="tab" data-audience-set="agents" aria-selected="false">
+                <button type="button" role="tab" data-audience-set="agents" aria-selected="true">
                   For agents
                 </button>
               </div>
 
               {/* For humans: sign up or run it yourself */}
-              <div class="audience-pane" data-audience-pane="humans" role="tabpanel">
+              <div class="audience-pane" data-audience-pane="humans" role="tabpanel" hidden>
                 <a href="#install" class="btn-primary btn-primary--hero">Run locally →</a>
                 <a href="/cloud" class="btn-secondary">Try Cloud</a>
               </div>
 
               {/* For agents: hand setup to a coding agent, or read the docs */}
-              <div class="audience-pane" data-audience-pane="agents" role="tabpanel" hidden>
+              <div class="audience-pane" data-audience-pane="agents" role="tabpanel">
                 <button
                   type="button"
                   class="agent-pill copy-btn"
