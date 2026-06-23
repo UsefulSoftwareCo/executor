@@ -103,7 +103,11 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="isolate z-50"
+        // `pointer-events-auto` re-enables interaction when the popup is portaled
+        // out of a modal dialog (Radix sets `pointer-events: none` on the body
+        // for modal dialogs/sheets; without this the portaled list can't be
+        // scrolled or clicked). Harmless outside a dialog (auto is the default).
+        className="isolate z-50 pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"
@@ -268,6 +272,11 @@ export interface FreeformComboboxOption {
   readonly description?: React.ReactNode;
 }
 
+/** How many options the popup renders at once. base-ui slices the filtered list
+ *  to this, so a multi-thousand-operation spec stays cheap: the empty-query open
+ *  shows the top slice, and typing narrows to the top matches. */
+const FREEFORM_COMBOBOX_LIMIT = 100;
+
 function FreeformCombobox(props: {
   readonly value: string;
   readonly onValueChange: (value: string) => void;
@@ -277,25 +286,62 @@ function FreeformCombobox(props: {
   readonly className?: string;
   readonly inputClassName?: string;
   readonly disabled?: boolean;
+  /** Forwarded to the underlying text input so a `<Label htmlFor>` can target it
+   *  (and tests get a stable selector). */
+  readonly id?: string;
 }) {
   const valueOption = props.value.trim();
-  const options =
-    valueOption.length > 0 && !props.options.some((option) => option.value === valueOption)
-      ? [{ value: valueOption, label: valueOption }, ...props.options]
-      : props.options;
+  const propsOptions = props.options;
+  const options = React.useMemo<readonly FreeformComboboxOption[]>(
+    () =>
+      valueOption.length > 0 && !propsOptions.some((option) => option.value === valueOption)
+        ? [{ value: valueOption, label: valueOption }, ...propsOptions]
+        : propsOptions,
+    [valueOption, propsOptions],
+  );
   const selectedValue = options.some((option) => option.value === props.value) ? props.value : null;
+
+  const byValue = React.useMemo(() => {
+    const map = new Map<string, FreeformComboboxOption>();
+    for (const option of options) map.set(option.value, option);
+    return map;
+  }, [options]);
+  const items = React.useMemo(() => options.map((option) => option.value), [options]);
+
+  // base-ui only filters the popup when the list renders from `items` (the
+  // function-child / closed-template path below); a statically-mapped list never
+  // narrows as you type. Match the query against the value AND its string
+  // label/description, so typing a summary word or the human label finds the
+  // option, not just its raw id.
+  const filter = React.useCallback(
+    (item: string, query: string) => {
+      const needle = query.trim().toLowerCase();
+      if (needle === "") return true;
+      const option = byValue.get(item);
+      const haystacks = [
+        item,
+        typeof option?.label === "string" ? option.label : "",
+        typeof option?.description === "string" ? option.description : "",
+      ];
+      return haystacks.some((part) => part.toLowerCase().includes(needle));
+    },
+    [byValue],
+  );
 
   return (
     <Combobox
-      items={options.map((option) => option.value)}
+      items={items}
       inputValue={props.value}
       value={selectedValue}
+      filter={filter}
+      limit={FREEFORM_COMBOBOX_LIMIT}
       onInputValueChange={props.onValueChange}
       onValueChange={(value) => {
         if (value !== null) props.onValueChange(value);
       }}
     >
       <ComboboxInput
+        id={props.id}
         placeholder={props.placeholder}
         className={props.className}
         inputClassName={props.inputClassName}
@@ -305,18 +351,21 @@ function FreeformCombobox(props: {
       <ComboboxContent>
         <ComboboxEmpty>{props.emptyLabel ?? "No options"}</ComboboxEmpty>
         <ComboboxList>
-          {options.map((option) => (
-            <ComboboxItem key={option.value} value={option.value}>
-              <div className="min-w-0 flex-1">
-                <div className="truncate">{option.label ?? option.value}</div>
-                {option.description && (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                    {option.description}
-                  </div>
-                )}
-              </div>
-            </ComboboxItem>
-          ))}
+          {(item: string) => {
+            const option = byValue.get(item);
+            return (
+              <ComboboxItem key={item} value={item}>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{option?.label ?? item}</div>
+                  {option?.description && (
+                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                      {option.description}
+                    </div>
+                  )}
+                </div>
+              </ComboboxItem>
+            );
+          }}
         </ComboboxList>
       </ComboboxContent>
     </Combobox>

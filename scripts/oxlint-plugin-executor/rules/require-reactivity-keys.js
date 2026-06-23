@@ -17,6 +17,10 @@ const readOnlyMutations = new Set([
   "resolveSecret",
   "detectSource",
   "getDomainVerificationLink",
+  // Health-check probes: they hit the live upstream and return a result, but
+  // persist nothing, so there is no cached query for them to invalidate.
+  "validateConnection",
+  "checkConnectionHealth",
 ]);
 
 export default {

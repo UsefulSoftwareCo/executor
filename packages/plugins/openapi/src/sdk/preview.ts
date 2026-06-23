@@ -1,10 +1,25 @@
 import { Effect, Option, Predicate } from "effect";
 import { Schema } from "effect";
 
+import { HealthCheckCandidate, compareHealthCheckCandidates } from "@executor-js/sdk/core";
+
 import { parse, resolveSpecText, type ParsedDocument } from "./parse";
 import { extract } from "./extract";
+import { compileToolDefinitions } from "./definitions";
 import { DocResolver } from "./openapi-utils";
-import { HttpMethod, ServerInfo, type ExtractionResult } from "./types";
+import { HttpMethod, ServerInfo, type ExtractedOperation, type ExtractionResult } from "./types";
+
+// Mutating HTTP methods — mirrors `REQUIRE_APPROVAL` in `./invoke` but kept
+// inline so this browser-safe preview module never pulls in the HTTP execution
+// path. A health check should be safe to re-run, so these rank last.
+const DESTRUCTIVE_METHODS = new Set(["post", "put", "patch", "delete"]);
+
+// Cap on health-check candidate METADATA carried in the preview, so the add
+// screen's operation picker can search the whole spec (not just a top few).
+// Building this is cheap (the rank/sort already runs over every operation); only
+// the payload grows, so the cap bounds Graph-sized specs (16k+ ops) to the
+// top-ranked 1000. Beyond that, the picker stays freeform (type an exact op).
+const MAX_PREVIEW_CANDIDATES = 1000;
 
 // ---------------------------------------------------------------------------
 // OAuth 2.0 flows — one entry per supported grant type
@@ -151,6 +166,9 @@ export const SpecPreview = Schema.Struct({
   headerPresets: Schema.Array(HeaderPreset),
   /** OAuth2 presets — one per (oauth2 scheme × supported flow) combination */
   oauth2Presets: Schema.Array(OAuth2Preset),
+  /** Top-ranked health-check candidates (bounded), so the add screen can offer a
+   *  typed operation picker before the integration is registered. */
+  healthCheckCandidates: Schema.Array(HealthCheckCandidate),
 });
 export type SpecPreview = typeof SpecPreview.Type;
 
@@ -168,6 +186,7 @@ export const SpecPreviewSummary = Schema.Struct({
   authStrategies: Schema.Array(AuthStrategy),
   headerPresets: Schema.Array(HeaderPreset),
   oauth2Presets: Schema.Array(OAuth2Preset),
+  healthCheckCandidates: Schema.Array(HealthCheckCandidate),
 });
 export type SpecPreviewSummary = typeof SpecPreviewSummary.Type;
 
@@ -183,6 +202,7 @@ export const specPreviewSummary = (preview: SpecPreview): SpecPreviewSummary =>
     authStrategies: preview.authStrategies,
     headerPresets: preview.headerPresets,
     oauth2Presets: preview.oauth2Presets,
+    healthCheckCandidates: preview.healthCheckCandidates,
   });
 
 // ---------------------------------------------------------------------------
@@ -404,6 +424,57 @@ const collectTags = (result: ExtractionResult): string[] => {
 };
 
 // ---------------------------------------------------------------------------
+// Health-check candidates (bounded) for the add screen
+// ---------------------------------------------------------------------------
+
+/**
+ * Project the top-ranked health-check candidates from a parsed doc + its
+ * extracted operations, so the add screen can offer a typed operation picker
+ * before registration.
+ *
+ * Tool paths are computed on the FULL operation set (`compileToolDefinitions`
+ * collision resolution is stateful, so they must match the paths the operations
+ * get at registration). Candidates are ranked and sliced to
+ * `MAX_PREVIEW_CANDIDATES` (enough for the operation picker to search the whole
+ * spec).
+ */
+const buildPreviewHealthCheckCandidates = (
+  _doc: ParsedDocument,
+  operations: readonly ExtractedOperation[],
+): HealthCheckCandidate[] => {
+  if (operations.length === 0) return [];
+
+  const definitions = compileToolDefinitions(operations);
+
+  return definitions
+    .map((def): HealthCheckCandidate => {
+      const op = def.operation;
+      const method = op.method.toLowerCase();
+      const parameters = op.parameters.map((parameter) => ({
+        name: parameter.name,
+        location: parameter.location,
+        required: parameter.required,
+        ...(Option.isSome(parameter.description)
+          ? { description: parameter.description.value }
+          : {}),
+      }));
+      return {
+        operation: def.toolPath,
+        method,
+        requiredArgCount: op.parameters.filter((parameter) => parameter.required).length,
+        destructive: DESTRUCTIVE_METHODS.has(method),
+        summary:
+          Option.getOrUndefined(op.summary) ??
+          Option.getOrUndefined(op.description) ??
+          `${method.toUpperCase()} ${op.pathTemplate}`,
+        ...(parameters.length > 0 ? { parameters } : {}),
+      };
+    })
+    .sort(compareHealthCheckCandidates)
+    .slice(0, MAX_PREVIEW_CANDIDATES);
+};
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -448,6 +519,7 @@ export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (s
     authStrategies,
     headerPresets: buildHeaderPresets(securitySchemes, authStrategies),
     oauth2Presets: buildOAuth2Presets(securitySchemes),
+    healthCheckCandidates: buildPreviewHealthCheckCandidates(doc, result.operations),
   });
 });
 

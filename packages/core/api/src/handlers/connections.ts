@@ -7,7 +7,9 @@ import {
   type Connection,
   type ConnectionRef,
   type CreateConnectionInput,
+  type HealthCheckResult,
   type Tool,
+  type ValidateConnectionInput,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
@@ -36,6 +38,13 @@ const toolToResponse = (t: Tool) => ({
   name: String(t.name),
   pluginId: t.pluginId,
   description: t.description,
+});
+
+const toHealthResponse = (r: HealthCheckResult) => ({
+  status: r.status,
+  checkedAt: r.checkedAt,
+  ...(r.httpStatus !== undefined ? { httpStatus: r.httpStatus } : {}),
+  ...(r.detail !== undefined ? { detail: r.detail } : {}),
 });
 
 export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connections", (handlers) =>
@@ -128,6 +137,31 @@ export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connection
             name: path.name,
           });
           return tools.map(toolToResponse);
+        }),
+      ),
+    )
+    .handle("checkHealth", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const result = yield* executor.connections.checkHealth({
+            owner: path.owner,
+            integration: path.integration,
+            name: path.name,
+          });
+          return toHealthResponse(result);
+        }),
+      ),
+    )
+    .handle("validate", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          // The payload mirrors `ValidateConnectionInput`: owner/integration/
+          // template/spec plus a single credential origin (`value` | `values` |
+          // `from`). Pass it through verbatim.
+          const result = yield* executor.connections.validate(payload as ValidateConnectionInput);
+          return toHealthResponse(result);
         }),
       ),
     ),

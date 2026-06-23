@@ -6,6 +6,7 @@ import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
+import { HealthCheckEditor } from "@executor-js/react/components/health-check-editor";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
@@ -113,6 +114,7 @@ export default function OpenApiAccountsPanel(props: {
         createCustomMethod={createCustomMethod}
         removeCustomMethod={removeCustomMethod}
       />
+      <HealthCheckEditor integration={slug} />
     </div>
   );
 }

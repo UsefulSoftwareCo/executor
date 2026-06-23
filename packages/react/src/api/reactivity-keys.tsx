@@ -28,6 +28,8 @@ export const ReactivityKey = {
   policies: "policies",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
+  /** An integration's declared health check (the operation/identity-field spec). */
+  healthChecks: "health-checks",
   // cloud-only resources
   orgMembers: "org:members",
   orgDomains: "org:domains",
@@ -46,6 +48,13 @@ export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.too
 
 /** Mutations that register / replace an OAuth client (app). */
 export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
+
+/** Mutations that set/clear an integration's health check. Touches `integrations`
+ *  so any integration view re-reads (the spec is derived from integration config). */
+export const healthCheckWriteKeys = [
+  ReactivityKey.healthChecks,
+  ReactivityKey.integrations,
+] as const;
 
 /** Mutations that mutate tool policies. Also touches `tools` because
  *  `tools.list` filters blocked tools — adding/removing a `block`

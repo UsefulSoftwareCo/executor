@@ -79,5 +79,30 @@ export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrati
           }));
         }),
       ),
+    )
+    .handle("healthCheckGet", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.integrations.healthCheck.get(path.slug);
+        }),
+      ),
+    )
+    .handle("healthCheckCandidates", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.integrations.healthCheck.candidates(path.slug);
+        }),
+      ),
+    )
+    .handle("healthCheckSet", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          yield* executor.integrations.healthCheck.set(path.slug, payload.spec);
+          return { ok: true };
+        }),
+      ),
     ),
 );

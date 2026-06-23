@@ -4,13 +4,19 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { IntegrationSlug } from "@executor-js/sdk/shared";
-import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import {
+  IntegrationSlug,
+  type HealthCheckCandidate,
+  type HealthCheckSpec,
+} from "@executor-js/sdk/shared";
+import { integrationWriteKeys, healthCheckWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { setIntegrationHealthCheck } from "@executor-js/react/api/atoms";
 import {
   slugifyNamespace,
   useIntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
+import { HealthCheckConfigFields } from "@executor-js/react/components/health-check-editor";
 import {
   AuthMethodListEditor,
   useAuthMethodList,
@@ -99,8 +105,15 @@ export default function AddOpenApiSource(props: {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  // Optional health check drafted while adding. Empty `hcOperation` means "not
+  // drafted": we then leave the integration's auto-detected default untouched
+  // rather than persisting a blank.
+  const [hcOperation, setHcOperation] = useState("");
+  const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+
   const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
   const doAdd = useAtomSet(addOpenApiSpec, { mode: "promiseExit" });
+  const doSetHealthCheck = useAtomSet(setIntegrationHealthCheck, { mode: "promiseExit" });
 
   // Keep the latest handleAnalyze in a ref so the debounced effect doesn't need
   // it as a dependency (it closes over fresh state).
@@ -196,15 +209,47 @@ export default function AddOpenApiSource(props: {
     return templates;
   }, [authMethodList.rows]);
 
+  // Health-check candidates from the bounded preview (top-ranked operations with
+  // their response fields). The picker is freeform, so a custom op is still
+  // reachable when the spec exposes none.
+  const healthCheckCandidates = useMemo<readonly HealthCheckCandidate[]>(
+    () => preview?.healthCheckCandidates ?? [],
+    [preview?.healthCheckCandidates],
+  );
+  const hcSelected = useMemo(
+    () => healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null,
+    [healthCheckCandidates, hcOperation],
+  );
+  const hcRequiredParams = useMemo(
+    () => (hcSelected?.parameters ?? []).filter((p) => p.required),
+    [hcSelected],
+  );
+  const hcMissingRequired = hcRequiredParams.some(
+    (p) => (hcArgs[p.name] ?? "").trim().length === 0,
+  );
+
+  const onHcOperationChange = (next: string) => {
+    setHcOperation(next);
+    // Args are operation-specific; drop them so none dangle onto a freshly
+    // picked operation.
+    setHcArgs({});
+  };
+  const onHcArgChange = (name: string, value: string) =>
+    setHcArgs((prev) => ({ ...prev, [name]: value }));
+
   // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
   // whose slug already exists clobbers the existing one's connections/policies,
   // so the API blocks it. Surface that here from the tenant-scoped catalog list.
   const slugAlreadyExists = useSlugAlreadyExists(resolvedSourceId);
 
   // The base URL is optional when the spec declares servers (resolved per call);
-  // required only when it doesn't.
+  // required only when it doesn't. A drafted health check must have its required
+  // args filled (an empty draft, `hcOperation === ""`, imposes no constraint).
   const canAdd =
-    preview !== null && !slugAlreadyExists && (!previewHasNoServers || resolvedBaseUrl.length > 0);
+    preview !== null &&
+    !slugAlreadyExists &&
+    (!previewHasNoServers || resolvedBaseUrl.length > 0) &&
+    !(hcOperation.length > 0 && hcMissingRequired);
 
   // ---- Handlers ----
 
@@ -271,6 +316,32 @@ export default function AddOpenApiSource(props: {
     if (!integration) {
       setAdding(false);
       return;
+    }
+
+    // Persist the drafted health check only when the user actively picked an
+    // operation; otherwise leave the integration's auto-detected default in
+    // place. A failure here is non-fatal: the integration is already created and
+    // the check stays editable from its detail page, so surface it and move on.
+    if (hcOperation.length > 0) {
+      const argEntries = Object.entries(hcArgs)
+        .map(([key, value]) => [key, value.trim()] as const)
+        .filter(([, value]) => value.length > 0);
+      const spec: HealthCheckSpec = {
+        operation: hcOperation,
+        ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+      };
+      const exit = await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+      if (Exit.isFailure(exit)) {
+        setAddError(
+          errorMessageFromExit(exit, "Integration added, but saving the health check failed"),
+        );
+        setAdding(false);
+        return;
+      }
     }
 
     props.onComplete(String(integration));
@@ -357,6 +428,28 @@ export default function AddOpenApiSource(props: {
           emptyHint="No authentication detected. Add a method, or add the integration without auth and connect an account from the integration page later."
           footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
         />
+      )}
+
+      {preview && healthCheckCandidates.length > 0 && (
+        <section className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
+            <p className="text-[11px] text-muted-foreground">
+              One read-only call Executor runs to tell whether a connection's credential is still
+              alive. You can change this later from the integration page.
+            </p>
+          </div>
+          <HealthCheckConfigFields
+            candidates={healthCheckCandidates}
+            selected={hcSelected}
+            operation={hcOperation}
+            onOperationChange={onHcOperationChange}
+            args={hcArgs}
+            onArgChange={onHcArgChange}
+            disabled={adding}
+            idPrefix="add-health-check"
+          />
+        </section>
       )}
 
       {preview && slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}

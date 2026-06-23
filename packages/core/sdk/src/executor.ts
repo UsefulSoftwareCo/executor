@@ -25,7 +25,9 @@ import type {
   CreateConnectionInput,
   ConnectionValueInput,
   UpdateConnectionInput,
+  ValidateConnectionInput,
 } from "./connection";
+import type { HealthCheckCandidate, HealthCheckResult, HealthCheckSpec } from "./health-check";
 import {
   coreSchema,
   isToolPolicyAction,
@@ -256,6 +258,29 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly detect: (
       url: string,
     ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
+    /** The integration's declared health check: which authenticated operation a
+     *  connection runs to prove its credential is alive and surface whose
+     *  account it is. Configured by the user the same way auth methods are. */
+    readonly healthCheck: {
+      /** The currently declared check, or null when none is configured (or the
+       *  owning plugin has no health-check capability). */
+      readonly get: (
+        slug: IntegrationSlug,
+      ) => Effect.Effect<HealthCheckSpec | null, StorageFailure>;
+      /** The operations a user can pick from, ranked non-destructive-first then
+       *  fewest required arguments. Empty when the plugin has no candidates. */
+      readonly candidates: (
+        slug: IntegrationSlug,
+      ) => Effect.Effect<
+        readonly HealthCheckCandidate[],
+        IntegrationNotFoundError | StorageFailure
+      >;
+      /** Declare (or clear, with `null`) the health check for the integration. */
+      readonly set: (
+        slug: IntegrationSlug,
+        spec: HealthCheckSpec | null,
+      ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
+    };
   };
 
   readonly connections: {
@@ -288,6 +313,23 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       readonly Tool[],
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
     >;
+    /** Run the integration's declared health check against a saved connection:
+     *  classify the credential (healthy / expired / degraded / unknown) and
+     *  extract its identity for display. Never throws on an auth wall or upstream
+     *  error: those come back as a `HealthCheckResult` with the matching status. */
+    readonly checkHealth: (
+      ref: ConnectionRef,
+    ) => Effect.Effect<
+      HealthCheckResult,
+      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+    >;
+    /** Validate an in-flight credential WITHOUT saving it (key-first connect):
+     *  resolve the pasted value(s), run the health check, and return the result
+     *  so the caller can confirm the key works and derive a name from the
+     *  identity before creating the connection. */
+    readonly validate: (
+      input: ValidateConnectionInput,
+    ) => Effect.Effect<HealthCheckResult, IntegrationNotFoundError | StorageFailure>;
   };
 
   /** Shared OAuth service. Hosts use this through the core HTTP OAuth group;
@@ -1698,6 +1740,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }
     };
 
+    // Project a row's declared health check via the owning plugin's
+    // `describeHealthCheck` hook. Pure (no I/O); degrades a plugin throw to
+    // `null` like the other catalog projectors.
+    const describeHealthCheckForRow = (row: IntegrationRow): HealthCheckSpec | null => {
+      const runtime = runtimes.get(row.plugin_id);
+      const describe = runtime?.plugin.describeHealthCheck;
+      if (!describe) return null;
+      const record = rowToIntegrationRecord(row);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
+      try {
+        return describe(record);
+      } catch {
+        return null;
+      }
+    };
+
+    // The health-check hooks are typed `Effect<_, unknown>` at the PluginSpec
+    // boundary (each plugin owns its own error shape). Fold that channel into a
+    // StorageError so the public health-check surface stays StorageFailure-typed.
+    // A genuine storage failure surfaces here; an auth wall or upstream error is
+    // a SUCCESSFUL `HealthCheckResult` (status expired/degraded), not a failure.
+    const foldPluginFailure = <A>(
+      effect: Effect.Effect<A, unknown>,
+      message: string,
+    ): Effect.Effect<A, StorageFailure> =>
+      effect.pipe(
+        Effect.catch((cause: unknown) =>
+          isStorageFailure(cause)
+            ? Effect.fail(cause)
+            : Effect.fail(new StorageError({ message, cause })),
+        ),
+      );
+
     const integrationsList = (): Effect.Effect<readonly Integration[], StorageFailure> =>
       core
         .findMany("integration", {})
@@ -1843,6 +1918,54 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (result) results.push(result);
         }
         return results;
+      });
+
+    // ------------------------------------------------------------------
+    // Health checks — dispatch to the owning plugin's hooks.
+    // ------------------------------------------------------------------
+
+    const integrationHealthCheckGet = (
+      slug: IntegrationSlug,
+    ): Effect.Effect<HealthCheckSpec | null, StorageFailure> =>
+      findIntegrationRow(slug).pipe(
+        Effect.map((row) => (row ? describeHealthCheckForRow(row) : null)),
+      );
+
+    const integrationHealthCheckCandidates = (
+      slug: IntegrationSlug,
+    ): Effect.Effect<readonly HealthCheckCandidate[], IntegrationNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* findIntegrationRow(slug);
+        if (!row) return yield* new IntegrationNotFoundError({ slug });
+        const runtime = runtimes.get(row.plugin_id);
+        const list = runtime?.plugin.listHealthCheckCandidates;
+        if (!runtime || !list) return [];
+        const record = rowToIntegrationRecord(row, describeAuthMethodsForRow(row));
+        return yield* foldPluginFailure(
+          list({ ctx: runtime.ctx, integration: record }),
+          `Listing health-check candidates for "${slug}" failed.`,
+        );
+      });
+
+    const integrationSetHealthCheck = (
+      slug: IntegrationSlug,
+      spec: HealthCheckSpec | null,
+    ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* findIntegrationRow(slug);
+        if (!row) return yield* new IntegrationNotFoundError({ slug });
+        const runtime = runtimes.get(row.plugin_id);
+        const set = runtime?.plugin.setHealthCheck;
+        if (!runtime || !set) {
+          return yield* new StorageError({
+            message: `Plugin "${row.plugin_id}" does not support health checks.`,
+            cause: undefined,
+          });
+        }
+        yield* foldPluginFailure(
+          set({ ctx: runtime.ctx, integration: slug, spec }),
+          `Setting the health check for "${slug}" failed.`,
+        );
       });
 
     // ------------------------------------------------------------------
@@ -2410,6 +2533,114 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return yield* new IntegrationNotFoundError({ slug: ref.integration });
         }
         return yield* produceConnectionTools(integrationRow, ref);
+      });
+
+    // No health-check capability ⇒ "unknown" rather than an error: the caller
+    // can still render the connection, just without a liveness verdict.
+    const unknownHealth = (): HealthCheckResult => ({ status: "unknown", checkedAt: Date.now() });
+
+    // Resolve an in-flight credential's value map (key-first validation) without
+    // saving anything. Mirrors `resolveConnectionValues` for the saved-row path:
+    // pasted `value`/`values` are used directly; `from` origins resolve through
+    // their provider. Single-secret sugar lands on the `token` variable.
+    const resolveInFlightValues = (
+      input: ConnectionValueInput,
+    ): Effect.Effect<Record<string, string | null>, StorageFailure> =>
+      Effect.gen(function* () {
+        const out: Record<string, string | null> = {};
+        for (const { variable, origin } of normalizeConnectionInputs(input)) {
+          if ("value" in origin) {
+            out[variable] = origin.value;
+            continue;
+          }
+          const provider = credentialProviders.get(String(origin.from.provider));
+          if (!provider) {
+            return yield* new StorageError({
+              message: `Credential provider "${origin.from.provider}" is not registered.`,
+              cause: undefined,
+            });
+          }
+          out[variable] = yield* provider.get(origin.from.id);
+        }
+        return out;
+      });
+
+    const connectionCheckHealth = (
+      ref: ConnectionRef,
+    ): Effect.Effect<
+      HealthCheckResult,
+      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const connectionRow = yield* findConnectionRow(ref);
+        if (!connectionRow) {
+          return yield* new ConnectionNotFoundError({
+            owner: ref.owner,
+            integration: ref.integration,
+            name: ref.name,
+          });
+        }
+        const integrationRow = yield* findIntegrationRow(ref.integration);
+        if (!integrationRow) {
+          return yield* new IntegrationNotFoundError({ slug: ref.integration });
+        }
+        const runtime = runtimes.get(integrationRow.plugin_id);
+        const check = runtime?.plugin.checkHealth;
+        if (!runtime || !check) return unknownHealth();
+
+        const values = yield* foldResolutionFailure(resolveConnectionValues(connectionRow));
+        const record = rowToIntegrationRecord(
+          integrationRow,
+          describeAuthMethodsForRow(integrationRow),
+        );
+        const credential: ToolInvocationCredential = {
+          owner: connectionRow.owner as Owner,
+          integration: ref.integration,
+          connection: ConnectionName.make(connectionRow.name),
+          template: AuthTemplateSlug.make(connectionRow.template),
+          value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+          values,
+          config: record.config,
+        };
+        return yield* foldPluginFailure(
+          check({ ctx: runtime.ctx, integration: record, credential }),
+          `Health check for connection "${ref.name}" failed.`,
+        );
+      });
+
+    const connectionValidate = (
+      input: ValidateConnectionInput,
+    ): Effect.Effect<HealthCheckResult, IntegrationNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const integrationRow = yield* findIntegrationRow(input.integration);
+        if (!integrationRow) {
+          return yield* new IntegrationNotFoundError({ slug: input.integration });
+        }
+        const runtime = runtimes.get(integrationRow.plugin_id);
+        const check = runtime?.plugin.checkHealth;
+        if (!runtime || !check) return unknownHealth();
+
+        const values = yield* resolveInFlightValues(input);
+        const record = rowToIntegrationRecord(
+          integrationRow,
+          describeAuthMethodsForRow(integrationRow),
+        );
+        const credential: ToolInvocationCredential = {
+          owner: input.owner,
+          integration: input.integration,
+          // No connection exists yet (key-first); a synthetic name keeps the
+          // credential shape whole. The probe authenticates on values+template,
+          // not on this name (it only appears in upstream-error messages).
+          connection: ConnectionName.make("(unsaved)"),
+          template: input.template,
+          value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+          values,
+          config: record.config,
+        };
+        return yield* foldPluginFailure(
+          check({ ctx: runtime.ctx, integration: record, credential, spec: input.spec }),
+          `Validating credential for "${input.integration}" failed.`,
+        );
       });
 
     // ------------------------------------------------------------------
@@ -3272,6 +3503,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         update: integrationsUpdatePublic,
         remove: integrationsRemove,
         detect: integrationsDetect,
+        healthCheck: {
+          get: integrationHealthCheckGet,
+          candidates: integrationHealthCheckCandidates,
+          set: integrationSetHealthCheck,
+        },
       },
       connections: {
         create: connectionsCreate,
@@ -3280,6 +3516,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         update: connectionsUpdate,
         remove: connectionsRemove,
         refresh: connectionsRefresh,
+        checkHealth: connectionCheckHealth,
+        validate: connectionValidate,
       },
       oauth,
       tools: {

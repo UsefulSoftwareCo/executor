@@ -11,6 +11,8 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import {
+  HealthCheckCandidate,
+  HealthCheckSpec,
   IntegrationDetectionResult,
   IntegrationNotFoundError,
   IntegrationRemovalNotAllowedError,
@@ -88,6 +90,12 @@ const DetectRequest = Schema.Struct({
   url: Schema.String.check(Schema.isMaxLength(2_048)),
 });
 
+// Set (or clear, with null) the integration's declared health check. The spec
+// lives inside the owning plugin's opaque config; core only routes it.
+const SetHealthCheckPayload = Schema.Struct({
+  spec: Schema.NullOr(HealthCheckSpec),
+});
+
 // ---------------------------------------------------------------------------
 // Error schemas with HTTP status annotations
 // ---------------------------------------------------------------------------
@@ -135,5 +143,31 @@ export const IntegrationsApi = HttpApiGroup.make("integrations")
       payload: DetectRequest,
       success: Schema.Array(IntegrationDetectionResult),
       error: InternalError,
+    }),
+  )
+  // The integration's currently declared health check (null when none is set).
+  .add(
+    HttpApiEndpoint.get("healthCheckGet", "/integrations/:slug/health-check", {
+      params: IntegrationParams,
+      success: Schema.NullOr(HealthCheckSpec),
+      error: InternalError,
+    }),
+  )
+  // Operations the user can pick as the health check, ranked non-destructive +
+  // fewest-required-args first so the obvious identity endpoint floats to the top.
+  .add(
+    HttpApiEndpoint.get("healthCheckCandidates", "/integrations/:slug/health-check/candidates", {
+      params: IntegrationParams,
+      success: Schema.Array(HealthCheckCandidate),
+      error: [InternalError, IntegrationNotFound],
+    }),
+  )
+  // Persist (or clear) the integration's health check.
+  .add(
+    HttpApiEndpoint.put("healthCheckSet", "/integrations/:slug/health-check", {
+      params: IntegrationParams,
+      payload: SetHealthCheckPayload,
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: [InternalError, IntegrationNotFound],
     }),
   );

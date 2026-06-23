@@ -32,11 +32,15 @@ import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
 import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileOpenApiSpec,
+  describeHealthCheckOpenApi,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  setHealthCheckOpenApi,
 } from "./backing";
 
 // ---------------------------------------------------------------------------
@@ -783,6 +787,23 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
     describeAuthMethods: describeOpenApiAuthMethods,
     describeIntegrationDisplay: describeOpenApiIntegrationDisplay,
+
+    // Health checks: the declared liveness/identity probe. `describeHealthCheck`
+    // is a pure projector off the opaque config; the rest run operations or
+    // read-modify-write the config, so they thread the plugin's http layer / ctx.
+    describeHealthCheck: describeHealthCheckOpenApi,
+    listHealthCheckCandidates: (input) =>
+      listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+    setHealthCheck: (input) =>
+      setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
+    checkHealth: (input) =>
+      checkHealthOpenApi({
+        ctx: input.ctx,
+        integration: input.integration,
+        credential: input.credential,
+        spec: input.spec,
+        httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
+      }),
 
     // Produce one tool per spec operation. Spec-derived, identical for every
     // connection on the integration - so `getValue` is never called here. The

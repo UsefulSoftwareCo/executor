@@ -15,19 +15,23 @@ export {
 export { invoke, invokeWithLayer, annotationsForOperation } from "./invoke";
 export {
   buildDefsJsonStreaming,
+  checkHealthOpenApi,
   compileAndPersistOpenApiOperations,
   compileAndPersistOpenApiSpec,
   compileAndPersistOpenApiSpecStreaming,
   compileOpenApiDocument,
   compileOpenApiSpec,
+  describeHealthCheckOpenApi,
   extractOpenApiUpstreamMessage,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   loadOpenApiSpecText,
   normalizeOpenApiRefs,
   openApiStoredOperationsFromCompiled,
   openApiToolDefsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  setHealthCheckOpenApi,
   type CompiledOpenApiSpec,
   type OpenApiPersistResult,
 } from "./backing";

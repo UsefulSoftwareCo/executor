@@ -8,6 +8,8 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  type HealthCheckResult,
+  type HealthCheckSpec,
   type OAuthClientSummary,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -17,15 +19,25 @@ import { toast } from "sonner";
 import {
   addConnectionOptimistic,
   connectionsAllAtom,
+  integrationHealthCheckAtom,
+  integrationHealthCheckCandidatesAtom,
   oauthClientsOptimisticAtom,
   probeOAuth,
   providerItemsAtom,
   providersAtom,
   registerDynamicOAuthClient,
   removeOAuthClientOptimistic,
+  setIntegrationHealthCheck,
   startOAuth,
+  validateConnection,
 } from "../api/atoms";
-import { connectionWriteKeys, oauthClientWriteKeys } from "../api/reactivity-keys";
+import {
+  connectionWriteKeys,
+  healthCheckWriteKeys,
+  oauthClientWriteKeys,
+} from "../api/reactivity-keys";
+import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { HealthCheckConfigFields } from "./health-check-editor";
 import { messageFromExit } from "../api/error-reporting";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
@@ -619,6 +631,38 @@ export function AddAccountModal(props: AddAccountModalProps) {
   return props.open ? <AddAccountModalView {...props} /> : null;
 }
 
+// ---------------------------------------------------------------------------
+// Key-check status: the inline line under the credential field that reports the
+// live probe result. `validating` shows a neutral "Checking..."; a result shows
+// the status dot + label, and any upstream detail for a non-healthy verdict.
+// ---------------------------------------------------------------------------
+function KeyValidationStatus(props: {
+  readonly validating: boolean;
+  readonly result: HealthCheckResult | null;
+}) {
+  if (props.validating) {
+    return (
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="size-2 shrink-0 animate-pulse rounded-full bg-muted-foreground/50" />
+        Checking the key...
+      </p>
+    );
+  }
+  if (!props.result) return null;
+  const { status, detail } = props.result;
+  const indicator = HEALTH_INDICATOR_COLOR[status];
+  const tone = status === "healthy" ? "text-muted-foreground" : "text-destructive";
+  return (
+    <div className={`flex items-start gap-2 text-xs ${tone}`}>
+      <span aria-hidden className={`mt-[3px] size-2 shrink-0 rounded-full ${indicator.dot}`} />
+      <span className="min-w-0">
+        <span className="font-medium">{HEALTH_STATUS_LABEL[status]}</span>
+        {status !== "healthy" && detail ? <span className="block opacity-80">{detail}</span> : null}
+      </span>
+    </div>
+  );
+}
+
 function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
@@ -662,6 +706,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [credentialOrigin, setCredentialOrigin] = useState<CredentialOrigin>("paste");
   const [onePasswordItemId, setOnePasswordItemId] = useState("");
   const [label, setLabel] = useState("");
+  // Key check: the in-flight probe state and its last result. When the
+  // integration has no configured health check, `hcOperation`/`hcArgs` hold an
+  // inline-drafted check the user picks to test the key against (and which we
+  // save as the integration's check once it comes back healthy). All of this
+  // lives in the view, so closing the modal unmounts and resets it.
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
+  const [hcOperation, setHcOperation] = useState("");
+  const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
   // Explicit create-time choice (no ambient owner). Cloud defaults to Personal;
   // local/desktop hide the picker and save to the one local workspace.
   const [owner, setOwner] = useState<Owner>(defaultOwner);
@@ -692,6 +745,19 @@ function AddAccountModalView(props: AddAccountModalProps) {
     mode: "promiseExit",
   });
   const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promise" });
+  const doValidate = useAtomSet(validateConnection, { mode: "promiseExit" });
+  const doSetHealthCheck = useAtomSet(setIntegrationHealthCheck, { mode: "promiseExit" });
+
+  // The integration's declared health check + its candidate operations. When a
+  // check is configured we probe against it; when not, the user picks one of the
+  // candidates inline to test the key (and we save it).
+  const healthCheckResult = useAtomValue(integrationHealthCheckAtom(integration));
+  const hasHealthCheck =
+    AsyncResult.isSuccess(healthCheckResult) && healthCheckResult.value !== null;
+  const candidatesResult = useAtomValue(integrationHealthCheckCandidatesAtom(integration));
+  const healthCheckCandidates = AsyncResult.isSuccess(candidatesResult)
+    ? candidatesResult.value
+    : [];
 
   // Full registered-app summaries (carry endpoints + resource the picker's
   // lightweight options omit) and the connection→app usage map that powers the
@@ -791,6 +857,21 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   const isOAuth = method?.kind === "oauth";
   const isNoAuth = method?.kind === "none";
+
+  // Key check (pasteable credentials only): offer it whenever the integration
+  // either has a configured check OR exposes candidate operations to test
+  // against. The inline-picked candidate (when no check is configured) drives
+  // both the probe and what we save as the integration's health check.
+  const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
+  const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
+  const hcMissingRequired = hcRequiredParams.some(
+    (p) => (hcArgs[p.name] ?? "").trim().length === 0,
+  );
+  const canCheckKey = !isOAuth && !isNoAuth && (hasHealthCheck || healthCheckCandidates.length > 0);
+  // True when we have something to probe against: a configured check, or a
+  // complete inline-picked candidate.
+  const keyCheckReady = hasHealthCheck || (hcOperation.length > 0 && !hcMissingRequired);
+
   // The distinct credential inputs the selected method needs — one per variable
   // across its placements. A single-input method yields one field (`token`); a
   // multi-input method (e.g. Datadog) yields one per key. Two placements sharing
@@ -1002,6 +1083,69 @@ function AddAccountModalView(props: AddAccountModalProps) {
     }
     toast.success("Connection added");
     close();
+  };
+
+  // A pasted credential (or the picked operation) changed; the prior verdict is
+  // stale. Clear it so the status line doesn't show a result for a key/operation
+  // that is no longer what's in the form.
+  const clearKeyCheck = (): void => {
+    if (validationResult !== null) setValidationResult(null);
+  };
+
+  // Check the key works: probe the pasted credential WITHOUT saving the
+  // connection. When the integration has a configured health check we run it;
+  // otherwise we run the inline-picked candidate and, if it comes back healthy,
+  // save it as the integration's health check (so it's configured "then").
+  const handleValidate = async () => {
+    const payloadOrigin = createCredentialPayloadOrigin({
+      origin: credentialOrigin,
+      inputs: credentialInputs,
+      values,
+      onePasswordItemId,
+      singleInput,
+    });
+    if (!method || payloadOrigin === null || validating) return;
+    let inlineSpec: HealthCheckSpec | undefined;
+    if (!hasHealthCheck) {
+      if (hcOperation.length === 0 || hcMissingRequired) return;
+      const argEntries = Object.entries(hcArgs)
+        .map(([key, value]) => [key, value.trim()] as const)
+        .filter(([, value]) => value.length > 0);
+      inlineSpec = {
+        operation: hcOperation,
+        ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+      };
+    }
+    setValidating(true);
+    const exit = await doValidate({
+      payload: {
+        owner,
+        integration,
+        template: method.template,
+        ...(inlineSpec ? { spec: inlineSpec } : {}),
+        ...("from" in payloadOrigin
+          ? { from: payloadOrigin.from }
+          : { values: payloadOrigin.values }),
+      },
+    });
+    setValidating(false);
+    if (Exit.isFailure(exit)) {
+      setValidationResult(null);
+      toast.error(messageFromExit(exit, "Couldn't check the key"));
+      return;
+    }
+    const result = exit.value;
+    setValidationResult(result);
+    // Set it "then": a freshly-picked operation that probes healthy becomes the
+    // integration's health check, so the editor + status surfaces pick it up.
+    if (inlineSpec && result.status === "healthy") {
+      const saved = await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec: inlineSpec },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+      if (Exit.isSuccess(saved)) toast.success("Saved as this integration's health check");
+    }
   };
 
   const handleOAuthConnect = async () => {
@@ -1466,19 +1610,82 @@ function AddAccountModalView(props: AddAccountModalProps) {
                               </div>
                             )
                           ) : (
-                            <CredentialValueFields
-                              inputs={credentialInputs}
-                              singleInput={singleInput}
-                              values={values}
-                              onValuesChange={setValues}
-                              origin={credentialOrigin}
-                              onOriginChange={(next) => {
-                                setCredentialOrigin(next);
-                                if (next === "paste") setOnePasswordItemId("");
-                              }}
-                              onePasswordItemId={onePasswordItemId}
-                              onOnePasswordItemIdChange={setOnePasswordItemId}
-                            />
+                            <div className="space-y-2">
+                              <CredentialValueFields
+                                inputs={credentialInputs}
+                                singleInput={singleInput}
+                                values={values}
+                                onValuesChange={(next) => {
+                                  setValues(next);
+                                  clearKeyCheck();
+                                }}
+                                origin={credentialOrigin}
+                                onOriginChange={(next) => {
+                                  setCredentialOrigin(next);
+                                  if (next === "paste") setOnePasswordItemId("");
+                                  clearKeyCheck();
+                                }}
+                                onePasswordItemId={onePasswordItemId}
+                                onOnePasswordItemIdChange={(next) => {
+                                  setOnePasswordItemId(next);
+                                  clearKeyCheck();
+                                }}
+                              />
+                              {/* Check the key works before saving. Runs the
+                              integration's health check, or an operation you pick
+                              here (which we then save as the check). */}
+                              {canCheckKey ? (
+                                <div className="flex flex-col gap-2">
+                                  {!hasHealthCheck ? (
+                                    <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+                                      <p className="text-xs text-muted-foreground">
+                                        Pick a read-only operation to test the key against. We save
+                                        it as this integration's health check.
+                                      </p>
+                                      <HealthCheckConfigFields
+                                        candidates={healthCheckCandidates}
+                                        selected={hcSelected}
+                                        operation={hcOperation}
+                                        onOperationChange={(next) => {
+                                          setHcOperation(next);
+                                          setHcArgs({});
+                                          clearKeyCheck();
+                                        }}
+                                        args={hcArgs}
+                                        onArgChange={(name, value) => {
+                                          setHcArgs((prev) => ({ ...prev, [name]: value }));
+                                          clearKeyCheck();
+                                        }}
+                                        disabled={validating}
+                                        idPrefix="connect-health-check"
+                                      />
+                                    </div>
+                                  ) : null}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={
+                                        credentialPayloadOrigin === null ||
+                                        validating ||
+                                        !keyCheckReady
+                                      }
+                                      onClick={() => void handleValidate()}
+                                    >
+                                      {validating ? "Checking..." : "Check the key works"}
+                                    </Button>
+                                    <span className="text-xs text-muted-foreground">
+                                      Confirms the key authenticates.
+                                    </span>
+                                  </div>
+                                  <KeyValidationStatus
+                                    validating={validating}
+                                    result={validationResult}
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
                           )}
                           {isOAuth && oauthPopup.error ? (
                             <p className="text-xs text-destructive">{oauthPopup.error}</p>

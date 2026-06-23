@@ -16,6 +16,8 @@ import {
   ConnectionName,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
+  HealthCheckResult,
+  HealthCheckSpec,
   IntegrationNotFoundError,
   IntegrationSlug,
   InternalError,
@@ -92,6 +94,31 @@ const UpdateConnectionPayload = Schema.Struct({
 
 const CreateConnectionPayload = Schema.Struct({
   ...CommonCreateFields,
+  value: Schema.optional(Schema.String),
+  values: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  from: Schema.optional(
+    Schema.Struct({
+      provider: ProviderKey,
+      id: ProviderItemId,
+    }),
+  ),
+}).check(
+  Schema.makeFilter((payload) =>
+    [payload.value, payload.values, payload.from].filter(Predicate.isNotUndefined).length === 1
+      ? undefined
+      : "Expected exactly one credential origin",
+  ),
+);
+
+// Validate an in-flight credential WITHOUT saving it (the key-first connect
+// flow). Same origin shape as create, plus an optional `spec` override so the
+// editor can preview a candidate against a live key. No `name` — the point is
+// to derive one from the identity the probe returns.
+const ValidateConnectionPayload = Schema.Struct({
+  owner: Owner,
+  integration: IntegrationSlug,
+  template: AuthTemplateSlug,
+  spec: Schema.optional(HealthCheckSpec),
   value: Schema.optional(Schema.String),
   values: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   from: Schema.optional(
@@ -185,5 +212,26 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
       params: ConnectionParams,
       success: Schema.Array(ToolResponse),
       error: [InternalError, ConnectionNotFound, IntegrationNotFound],
+    }),
+  )
+  // Run the integration's declared health check against a SAVED connection: is
+  // this credential still alive (Google's 7-day dev-token revocation), and whose
+  // account is it? Returns a classified status + optional identity, never an
+  // error for an auth wall (that surfaces as `status: "expired"`).
+  .add(
+    HttpApiEndpoint.post("checkHealth", "/connections/:owner/:integration/:name/health", {
+      params: ConnectionParams,
+      success: HealthCheckResult,
+      error: [InternalError, ConnectionNotFound, IntegrationNotFound],
+    }),
+  )
+  // Run the health check against an IN-FLIGHT credential without saving it (the
+  // key-first connect flow): confirm the pasted key works and surface the
+  // identity the UI derives a connection name from before anything persists.
+  .add(
+    HttpApiEndpoint.post("validate", "/connections/validate", {
+      payload: ValidateConnectionPayload,
+      success: HealthCheckResult,
+      error: [InternalError, IntegrationNotFound],
     }),
   );

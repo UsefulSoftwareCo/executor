@@ -38,11 +38,18 @@ function SheetOverlay({
   );
 }
 
+// base-ui popups (combobox/select) portal their list OUTSIDE the dialog content,
+// so clicking an option reads as an interaction outside the sheet and would
+// dismiss it before the selection lands. Keep the sheet open for interactions
+// that originate inside such a popup.
+const PORTALED_POPUP_SELECTOR = "[data-slot='combobox-content'],[data-slot='select-content']";
+
 function SheetContent({
   className,
   children,
   side = "right",
   showCloseButton = true,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
@@ -53,6 +60,13 @@ function SheetContent({
       <SheetOverlay />
       <SheetPrimitive.Content
         data-slot="sheet-content"
+        onInteractOutside={(event) => {
+          const target = event.detail.originalEvent.target;
+          if (target instanceof Element && target.closest(PORTALED_POPUP_SELECTOR)) {
+            event.preventDefault();
+          }
+          onInteractOutside?.(event);
+        }}
         className={cn(
           "fixed z-50 flex flex-col gap-4 bg-background shadow-lg transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500",
           side === "right" &&

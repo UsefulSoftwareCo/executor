@@ -19,6 +19,7 @@ import type {
   IntegrationDisplayDescriptor,
   RegisterIntegrationInput,
 } from "./integration";
+import type { HealthCheckCandidate, HealthCheckResult, HealthCheckSpec } from "./health-check";
 import type { ToolInvocationRow } from "./core-schema";
 import type {
   AuthTemplateSlug,
@@ -253,6 +254,42 @@ export interface ToolInvocationCredential {
   readonly values: Record<string, string | null>;
   /** The integration's stored config, for template rendering. */
   readonly config: IntegrationConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Health-check hook inputs. A health check is a single declared authenticated
+// operation a connection runs to prove its credential is still alive and to
+// surface whose account it is. The plugin owns which operation (stored in its
+// opaque config); core dispatches these hooks.
+// ---------------------------------------------------------------------------
+
+/** Input to `checkHealth` — run the configured (or overridden) probe against a
+ *  resolved credential. The credential may come from a saved connection OR from
+ *  in-flight values (key-first validation, before the connection is saved). */
+export interface HealthCheckInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  /** The catalog record (with opaque config) whose health is being checked. */
+  readonly integration: IntegrationRecord;
+  /** The resolved credential to authenticate the probe. */
+  readonly credential: ToolInvocationCredential;
+  /** Optional spec override. When omitted, the plugin uses the health check
+   *  stored in its own config; an override lets the editor test a candidate
+   *  before saving it. */
+  readonly spec?: HealthCheckSpec;
+}
+
+/** Input to `listHealthCheckCandidates` — the operations a user can pick. */
+export interface HealthCheckCandidatesInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly integration: IntegrationRecord;
+}
+
+/** Input to `setHealthCheck` — persist or clear an integration's health check. */
+export interface SetHealthCheckInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly integration: IntegrationSlug;
+  /** The new health check, or null to clear it. */
+  readonly spec: HealthCheckSpec | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +537,28 @@ export interface PluginSpec<
   readonly describeIntegrationDisplay?: (
     integration: IntegrationRecord,
   ) => IntegrationDisplayDescriptor;
+
+  /** Project this plugin's opaque integration config into the configured health
+   *  check, when one is set. Synchronous and pure (the config is already
+   *  loaded); must tolerate a malformed/foreign config blob by returning null.
+   *  Absent ⇒ core reports "no health check configured". */
+  readonly describeHealthCheck?: (integration: IntegrationRecord) => HealthCheckSpec | null;
+
+  /** List the operations a user can pick as this integration's health check,
+   *  ranked best-first (non-destructive, fewest required args). */
+  readonly listHealthCheckCandidates?: (
+    input: HealthCheckCandidatesInput<TStore>,
+  ) => Effect.Effect<readonly HealthCheckCandidate[], unknown>;
+
+  /** Persist (or clear, with a null spec) the integration's health check in the
+   *  plugin's opaque config. Mirrors `integrationConfigure`'s read-modify-write. */
+  readonly setHealthCheck?: (input: SetHealthCheckInput<TStore>) => Effect.Effect<void, unknown>;
+
+  /** Run the configured (or overridden) health check against a resolved
+   *  credential and classify the outcome into a `HealthCheckResult`. */
+  readonly checkHealth?: (
+    input: HealthCheckInput<TStore>,
+  ) => Effect.Effect<HealthCheckResult, unknown>;
 
   /** URL autodetection hook for onboarding. */
   readonly detect?: (input: {
