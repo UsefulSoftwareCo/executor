@@ -17,6 +17,8 @@ const makeBaseEngine = (): ExecutionEngine =>
         result: { result: "ok", logs: [] },
       }),
     getPausedExecution: () => Effect.succeed(null),
+    pausedExecutionCount: () => Effect.succeed(0),
+    hasPausedExecutions: () => Effect.succeed(false),
     getDescription: Effect.succeed("desc"),
   }) as ExecutionEngine;
 

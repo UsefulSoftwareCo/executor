@@ -19,5 +19,7 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
   // resume doesn't count as usage
   resume: (executionId, response) => engine.resume(executionId, response),
   getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
+  pausedExecutionCount: () => engine.pausedExecutionCount(),
+  hasPausedExecutions: () => engine.hasPausedExecutions(),
   getDescription: engine.getDescription,
 });
