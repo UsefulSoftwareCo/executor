@@ -342,6 +342,7 @@
         "@executor-js/api": "workspace:*",
         "@executor-js/emulate": "^0.7.5",
         "@executor-js/mcporter": "^0.11.4",
+        "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-microsoft": "workspace:*",

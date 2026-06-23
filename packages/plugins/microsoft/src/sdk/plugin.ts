@@ -19,7 +19,11 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
+  describeHealthCheckOpenApi,
+  listHealthCheckCandidatesOpenApi,
+  setHealthCheckOpenApi,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
@@ -371,6 +375,22 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
       ctx,
       integration: String(integration),
       toolRows,
+    }),
+
+  // Health checks reuse the OpenAPI backing (same store + config superset). The
+  // user picks the identity operation (e.g. GET /me) via the editor.
+  describeHealthCheck: describeHealthCheckOpenApi,
+  listHealthCheckCandidates: (input) =>
+    listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+  setHealthCheck: (input) =>
+    setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
+  checkHealth: (input) =>
+    checkHealthOpenApi({
+      ctx: input.ctx,
+      integration: input.integration,
+      credential: input.credential,
+      spec: input.spec,
+      httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
     }),
 
   removeConnection: () => Effect.void,

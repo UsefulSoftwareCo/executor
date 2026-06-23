@@ -11,6 +11,7 @@ import {
   mergeAuthTemplates,
   sha256Hex,
   type AuthMethodDescriptor,
+  type HealthCheckSpec,
   type Integration,
   type IntegrationConfig,
   type IntegrationRecord,
@@ -18,13 +19,17 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileOpenApiSpec,
+  describeHealthCheckOpenApi,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  setHealthCheckOpenApi,
   type Authentication,
   type AuthenticationInput,
   type OpenapiStore,
@@ -37,6 +42,35 @@ import {
 } from "./discovery";
 import { decodeGoogleIntegrationConfig, type GoogleIntegrationConfig } from "./config";
 import { googleOpenApiBundlePreset } from "./presets";
+
+/** The default health check for a Google bundle: the People API identity call
+ *  (`people.get` with the required `resourceName`/`personFields` pinned), when
+ *  the bundle includes the People API. People API is the canonical Google
+ *  identity endpoint; if it isn't bundled, no default is written (the editor
+ *  remains available). The user can adjust the identity field via the editor. */
+const defaultGoogleHealthCheck = (
+  urls: readonly string[],
+  definitions: readonly {
+    readonly toolPath: string;
+    readonly operation: { readonly method: string; readonly pathTemplate: string };
+  }[],
+): HealthCheckSpec | undefined => {
+  const hasPeopleApi = urls.some((url) => url.includes("/people/"));
+  if (!hasPeopleApi) return undefined;
+  const peopleGet = definitions.find(
+    (def) =>
+      def.operation.method.toLowerCase() === "get" &&
+      (def.toolPath === "people.people.get" ||
+        def.operation.pathTemplate === "/v1/{+resourceName}"),
+  );
+  return peopleGet
+    ? {
+        operation: peopleGet.toolPath,
+        args: { resourceName: "people/me", personFields: "names,emailAddresses" },
+        identityField: "emailAddresses.0.value",
+      }
+    : undefined;
+};
 
 export interface GoogleBundleConfig {
   readonly urls: readonly string[];
@@ -133,6 +167,11 @@ const makeGooglePluginExtension = (
       }
 
       const specHash = yield* sha256Hex(conversion.specText);
+      // Default the health check to the People API identity call
+      // (`people.get` with `resourceName=people/me`) when the bundle includes
+      // the People API, so connections report alive/expired + identity out of the
+      // box. The user can adjust the operation / identity field via the editor.
+      const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
       const integrationConfig: GoogleIntegrationConfig = {
         specHash,
         googleDiscoveryUrls: urls,
@@ -140,10 +179,10 @@ const makeGooglePluginExtension = (
         ...(conversion.authenticationTemplate
           ? { authenticationTemplate: conversion.authenticationTemplate }
           : {}),
+        ...(defaultHealthCheck ? { healthCheck: defaultHealthCheck } : {}),
       };
 
       yield* ctx.storage.putSpec(specHash, conversion.specText);
-      yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
       yield* ctx.transaction(
         Effect.gen(function* () {
@@ -184,7 +223,6 @@ const makeGooglePluginExtension = (
 
       const specHash = yield* sha256Hex(conversion.specText);
       yield* ctx.storage.putSpec(specHash, conversion.specText);
-      yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
       const nextConfig: GoogleIntegrationConfig = {
         ...current,
@@ -319,6 +357,23 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
       ctx,
       integration: String(integration),
       toolRows,
+    }),
+
+  // Health checks reuse the OpenAPI backing (same store + config superset). The
+  // People API identity call is auto-defaulted at addBundle when present, and the
+  // user can adjust the operation / identity field via the editor.
+  describeHealthCheck: describeHealthCheckOpenApi,
+  listHealthCheckCandidates: (input) =>
+    listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+  setHealthCheck: (input) =>
+    setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
+  checkHealth: (input) =>
+    checkHealthOpenApi({
+      ctx: input.ctx,
+      integration: input.integration,
+      credential: input.credential,
+      spec: input.spec,
+      httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
     }),
 
   removeConnection: () => Effect.void,
