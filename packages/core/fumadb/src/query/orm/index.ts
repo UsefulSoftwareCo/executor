@@ -4,6 +4,7 @@ import type {
   AnySchema,
   AnyTable,
 } from "../../schema";
+import { Column } from "../../schema";
 import type {
   AbstractQuery,
   AnySelectClause,
@@ -12,7 +13,12 @@ import type {
   JoinBuilder,
   OrderBy,
 } from "..";
-import { buildCondition, createBuilder, type Condition } from "../condition-builder";
+import {
+  buildCondition,
+  createBuilder,
+  type Condition,
+  ConditionType,
+} from "../condition-builder";
 
 export interface CompiledJoin {
   relation: AnyRelation;
@@ -231,6 +237,27 @@ const applyUpdatePolicies = async (
   return nextWhere;
 };
 
+const conditionKey = (condition: Condition | undefined): string => {
+  if (!condition) return "none";
+  if (condition.type === ConditionType.Compare) {
+    const right =
+      condition.b instanceof Column ? { column: condition.b.ormName } : { value: condition.b };
+    return JSON.stringify({
+      type: "compare",
+      left: condition.a.ormName,
+      operator: condition.operator,
+      right,
+    });
+  }
+  if (condition.type === ConditionType.Not) {
+    return JSON.stringify({ type: "not", item: conditionKey(condition.item) });
+  }
+  return JSON.stringify({
+    type: condition.type === ConditionType.And ? "and" : "or",
+    items: condition.items.map(conditionKey),
+  });
+};
+
 const applyDeletePolicies = async (
   table: AnyTable,
   where: Condition | undefined,
@@ -281,6 +308,16 @@ export interface ORMAdapter<S extends AnySchema = AnySchema> {
       where: Condition | undefined;
       update: Record<string, unknown>;
       create: Record<string, unknown>;
+    },
+  ) => Promise<void>;
+
+  upsertMany?: (
+    table: AnyTable,
+    v: {
+      target: AnyColumn[];
+      update: AnyColumn[];
+      values: Record<string, unknown>[];
+      where?: Condition;
     },
   ) => Promise<void>;
 
@@ -366,6 +403,85 @@ export function toORM<S extends AnySchema>(
         where: compiledWhere,
         ...options,
       });
+    },
+    async upsertMany(name, { target, update, values }) {
+      const table = toTable(name);
+      if (values.length === 0) return;
+
+      const targetColumns = target.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+      const updateColumns = update.map((columnName) => {
+        const column = table.columns[columnName as string];
+        if (!column) throw new Error(`[FumaDB] unknown column name ${String(columnName)}.`);
+        return column;
+      });
+
+      const builder = createBuilder(table.columns);
+      const permittedRows: {
+        readonly value: Record<string, unknown>;
+        readonly where: Condition | undefined;
+      }[] = [];
+      for (const value of values) {
+        const updateValues = Object.fromEntries(
+          updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+        );
+        const constrainedWhere = await applyUpdatePolicies(
+          table,
+          undefined,
+          updateValues,
+          context,
+          "upsert",
+          value,
+        );
+        if (constrainedWhere === false) continue;
+        await runCreatePolicies(table, value, context);
+        permittedRows.push({ value, where: constrainedWhere });
+      }
+      if (permittedRows.length === 0) return;
+
+      if (internal.upsertMany) {
+        const groups = new Map<
+          string,
+          { readonly where: Condition | undefined; readonly values: Record<string, unknown>[] }
+        >();
+        for (const row of permittedRows) {
+          const key = conditionKey(row.where);
+          const group = groups.get(key);
+          if (group) {
+            group.values.push(row.value);
+          } else {
+            groups.set(key, { where: row.where, values: [row.value] });
+          }
+        }
+        for (const group of groups.values()) {
+          await internal.upsertMany(table, {
+            target: targetColumns,
+            update: updateColumns,
+            values: group.values,
+            where: group.where,
+          });
+        }
+        return;
+      }
+
+      for (const row of permittedRows) {
+        const value = row.value;
+        const targetWhere = builder.and(
+          ...targetColumns.map((column) => builder(column.ormName, "=", value[column.ormName])),
+        );
+        const where = builder.and(targetWhere, row.where ?? true);
+        if (where === false) continue;
+        await internal.upsert(table, {
+          where: where === true ? undefined : where,
+          update: Object.fromEntries(
+            updateColumns.map((column) => [column.ormName, value[column.ormName]]),
+          ),
+          create: value,
+        });
+      }
     },
     async create(name, values) {
       const table = toTable(name);

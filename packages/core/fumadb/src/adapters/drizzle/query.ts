@@ -121,6 +121,16 @@ function buildWhere(
   );
 }
 
+function countConditionParameters(condition: Condition): number {
+  if (condition.type === ConditionType.Compare) {
+    if (condition.b instanceof Column) return 0;
+    if (Array.isArray(condition.b)) return condition.b.length;
+    return 1;
+  }
+  if (condition.type === ConditionType.Not) return countConditionParameters(condition.item);
+  return condition.items.reduce((count, item) => count + countConditionParameters(item), 0);
+}
+
 function mapValues(
   values: Record<string, unknown>,
   table: AnyTable
@@ -301,6 +311,70 @@ export function fromDrizzle(
           .where(Drizzle.eq(drizzleTable[idField], targetIds[0].id));
       } else {
         await this.createMany(table, [v.create]);
+      }
+    },
+    async upsertMany(table, v) {
+      if (v.values.length === 0) return;
+      if (v.update.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: adapter rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one update column.");
+      }
+      if (provider !== "sqlite" && provider !== "postgresql") {
+        for (const value of v.values) {
+          const targetCondition: Condition = {
+            type: ConditionType.And,
+            items: v.target.map((column) => ({
+              type: ConditionType.Compare,
+              a: column,
+              operator: "=",
+              b: value[column.ormName],
+            })),
+          };
+          await this.upsert(table, {
+            where: v.where
+              ? { type: ConditionType.And, items: [targetCondition, v.where] }
+              : targetCondition,
+            update: Object.fromEntries(
+              v.update.map((column) => [column.ormName, value[column.ormName]]),
+            ),
+            create: value,
+          });
+        }
+        return;
+      }
+
+      const drizzleTable = toDrizzle(table);
+      const values = v.values.map((value) => mapValues(value, table));
+      const where = v.where ? buildWhere(toDrizzleColumn, v.where) : undefined;
+      const whereParameters = v.where ? countConditionParameters(v.where) : 0;
+      const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
+      const batchSize = maxBoundParameters
+        ? Math.max(
+            1,
+            Math.min(
+              CREATE_MANY_BATCH_SIZE,
+              Math.floor(Math.max(1, maxBoundParameters - whereParameters) / columnsPerRow),
+            ),
+          )
+        : CREATE_MANY_BATCH_SIZE;
+      const target = v.target.map((column) => drizzleTable[column.names.drizzle]);
+      const set = Object.fromEntries(
+        v.update.map((column) => [
+          column.names.drizzle,
+          Drizzle.sql.raw(`excluded.${column.names.sql}`),
+        ]),
+      );
+
+      for (let i = 0; i < values.length; i += batchSize) {
+        const batch = values.slice(i, i + batchSize);
+        await (db as any)
+          .insert(drizzleTable)
+          .values(batch)
+          .onConflictDoUpdate({
+            target,
+            set,
+            ...(where === undefined ? {} : { where }),
+          });
       }
     },
     async findMany(table, v) {
