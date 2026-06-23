@@ -300,7 +300,7 @@ describe("createExecutor", () => {
     }),
   );
 
-  it.effect("registers and starts client-credentials OAuth through Executor tools", () =>
+  it.effect("starts a client-credentials connection through the oauth.start tool", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
@@ -312,20 +312,22 @@ describe("createExecutor", () => {
         yield* executor.demo.seed();
 
         const client = OAuthClientSlug.make("demo-machine");
-        const registered = yield* executor.execute(
-          ToolAddress.make("executor.coreTools.oauth.clients.create"),
-          {
-            owner: "org",
-            slug: String(client),
-            authorizationUrl: server.authorizationEndpoint,
-            tokenUrl: server.tokenEndpoint,
-            grant: "client_credentials",
-            clientId: "test-client",
-            clientSecret: "test-secret",
-            resource: server.resourceUrl,
-          },
-        );
-        expect(registered).toEqual({ client: String(client) });
+        // A confidential client_credentials app carries a secret, so it is
+        // registered through the service layer (the browser-handoff path the web
+        // UI uses) rather than the agent-facing `oauth.clients.create` tool,
+        // which no longer accepts a client secret. The connection still starts
+        // through the `oauth.start` tool below.
+        const registered = yield* executor.oauth.createClient({
+          owner: "org",
+          slug: client,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "client_credentials",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.resourceUrl,
+        });
+        expect(registered).toEqual(client);
 
         const started = yield* executor.execute(
           ToolAddress.make("executor.coreTools.oauth.start"),
