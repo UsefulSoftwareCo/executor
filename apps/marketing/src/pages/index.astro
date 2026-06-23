@@ -267,10 +267,40 @@ Source (and the place to start if something breaks): https://github.com/RhysSull
                 ></span
               >
               <h3>Trace every call</h3>
-              <p>
+              <p class="mb-1">
                 One place to see every run and tool call. Audit any
                 decision after the fact.
               </p>
+              <div class="cap-visual trace">
+                <div class="trace-row is-root">
+                  <span class="lbl">run_7421</span>
+                  <span class="track"
+                    ><span class="bar" style="left:0%;width:100%"></span></span
+                  >
+                  <span class="dur">1.42s</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">sentry.getIssue</span>
+                  <span class="track"
+                    ><span class="bar" style="left:0%;width:18%"></span></span
+                  >
+                  <span class="dur">184ms</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">github.searchCode</span>
+                  <span class="track"
+                    ><span class="bar" style="left:18%;width:34%"></span></span
+                  >
+                  <span class="dur">391ms</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">linear.createIssue</span>
+                  <span class="track"
+                    ><span class="bar" style="left:52%;width:48%"></span></span
+                  >
+                  <span class="dur">612ms</span>
+                </div>
+              </div>
             </div>
 
             {/* Teams */}
@@ -285,40 +315,10 @@ Source (and the place to start if something breaks): https://github.com/RhysSull
                 ></span
               >
               <h3>Set up once, whole team has it</h3>
-              <p class="mb-1">
+              <p>
                 Per-user credentials and shared ones. No onboarding ritual, no
                 toggling MCPs on and off mid-task.
               </p>
-              <div class="cap-visual matrix">
-                <div class="matrix-head">
-                  <span></span><span>GH</span><span>Sntry</span><span>Linr</span
-                  ><span>Slack</span><span>Notn</span>
-                </div>
-                <div class="matrix-row">
-                  <span class="who">Aria</span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-warn"></i></span>
-                </div>
-                <div class="matrix-row">
-                  <span class="who">Noah</span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-off"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                </div>
-                <div class="matrix-row">
-                  <span class="who">Mina</span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                  <span class="cell"><i class="stat stat-ok"></i></span>
-                </div>
-              </div>
             </div>
 
             {/* Destructive gating */}
