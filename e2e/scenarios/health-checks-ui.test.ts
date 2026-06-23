@@ -641,3 +641,144 @@ scenario(
     }),
   ),
 );
+
+// ===========================================================================
+// 6. Edit sheet, click interaction: the combobox popup is portaled outside the
+//    Radix sheet, so clicking an option must not be treated as an outside
+//    interaction that dismisses the sheet (keyboard scenarios above miss this).
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · clicking a combobox option in the sheet selects it without closing the sheet",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const slug = newSlug("hc-ui-click");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, "https://identity.example.com");
+          const operation = yield* getMeOperation(client, slug);
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const sheet = page.getByRole("dialog");
+            const operationInput = page.locator("#health-check-operation");
+            const identityInput = page.locator("#health-check-identity");
+
+            await step("Open the health-check editor", async () => {
+              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
+              await page.getByRole("button", { name: "Set up" }).click();
+              await operationInput.waitFor();
+            });
+
+            await step(
+              "Click the operation option: it selects and the sheet stays open",
+              async () => {
+                await operationInput.click();
+                await page.getByRole("option").filter({ hasText: "getMe" }).first().click();
+                // Clicking the portaled popup option must NOT dismiss the sheet.
+                await sheet.waitFor();
+                expect(await operationInput.inputValue()).toContain("getMe");
+              },
+            );
+
+            await step("Click the identity option by mouse, then save", async () => {
+              await identityInput.click();
+              await page.getByRole("option").filter({ hasText: "email" }).first().click();
+              await sheet.waitFor();
+              expect(await identityInput.inputValue()).toBe("email");
+              await page.getByRole("button", { name: "Save", exact: true }).click();
+              await operationInput.waitFor({ state: "hidden" });
+            });
+          });
+
+          // The mouse-driven selections persisted: only possible if the option
+          // clicks selected without dismissing the sheet first.
+          const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
+          expect(stored).toEqual({ operation, identityField: "email" });
+        }),
+        client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+      );
+    }),
+  ),
+);
+
+// ===========================================================================
+// 7. Edit sheet, scroll: a modal dialog locks body scroll, which freezes the
+//    portaled combobox list. The editor sheet is non-modal so the list scrolls.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · the combobox list scrolls inside the edit sheet",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const slug = newSlug("hc-ui-scroll");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          // Many operations so the popup list overflows and must scroll.
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: largeSpec("https://big.example.com") },
+              slug,
+              baseUrl: "https://big.example.com",
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: { authorization: ["Bearer ", { type: "variable", name: "token" }] },
+                },
+              ],
+            },
+          });
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const operationInput = page.locator("#health-check-operation");
+            const list = page.locator("[data-slot='combobox-list']").first();
+
+            await step("Open the operation combobox in the sheet", async () => {
+              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
+              await page.getByRole("button", { name: "Set up" }).click();
+              await operationInput.waitFor();
+              await operationInput.click();
+              await list.waitFor();
+            });
+
+            await step("Wheel-scroll the list: it actually moves (not scroll-locked)", async () => {
+              const before = await list.evaluate((el) => el.scrollTop);
+              await list.hover();
+              await page.mouse.wheel(0, 600);
+              // Poll: the wheel scroll must move the list (blocked → stays 0).
+              await page.waitForFunction(
+                (start) => {
+                  const el = document.querySelector("[data-slot='combobox-list']");
+                  return el != null && el.scrollTop > start + 20;
+                },
+                before,
+                { timeout: 5000 },
+              );
+              const after = await list.evaluate((el) => el.scrollTop);
+              expect(after, "the list scrolled past its starting offset").toBeGreaterThan(before);
+              // The sheet stayed open through the scroll interaction.
+              await page.getByRole("dialog").waitFor();
+            });
+          });
+        }),
+        client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+      );
+    }),
+  ),
+);

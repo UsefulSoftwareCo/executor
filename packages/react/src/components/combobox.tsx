@@ -103,7 +103,11 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="isolate z-50"
+        // `pointer-events-auto` re-enables interaction when the popup is portaled
+        // out of a modal dialog (Radix sets `pointer-events: none` on the body
+        // for modal dialogs/sheets; without this the portaled list can't be
+        // scrolled or clicked). Harmless outside a dialog (auto is the default).
+        className="isolate z-50 pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"

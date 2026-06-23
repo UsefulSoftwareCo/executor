@@ -483,7 +483,12 @@ function HealthCheckEditorSheet(props: {
   const canPreview = livePreview !== undefined && livePreview.templates.length > 0;
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    // Non-modal: a modal Radix dialog locks body scroll (react-remove-scroll)
+    // and disables outside pointer events, which kills the combobox popup
+    // (portaled to <body>, outside the dialog subtree) - it can't be scrolled or
+    // clicked. The overlay still renders and the dismissal guard still keeps the
+    // sheet open while interacting with the popup.
+    <Sheet open={open} onOpenChange={onOpenChange} modal={false}>
       <SheetContent side="right">
         <SheetHeader>
           <SheetTitle>Health check</SheetTitle>
