@@ -1122,14 +1122,61 @@ const removeMigrationJournal = (path: string): void => {
   fsyncDirectory(dirname(path));
 };
 
-const readMigrationJournal = (path: string): MigrationJournal | null => {
-  if (!fs.existsSync(path)) return null;
+type MigrationJournalReadResult =
+  | { readonly kind: "missing" }
+  | { readonly kind: "valid"; readonly journal: MigrationJournal }
+  | { readonly kind: "unreadable"; readonly cause: unknown };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isMigrationJournalPhase = (value: unknown): value is MigrationJournalPhase =>
+  value === "building" || value === "built" || value === "canonical-moved" || value === "committed";
+
+const isKeychainSecretBackup = (value: unknown): value is KeychainSecretBackup => {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    (typeof value.backupId === "string" || value.backupId === null) &&
+    typeof value.existed === "boolean"
+  );
+};
+
+const isMigrationJournal = (value: unknown): value is MigrationJournal => {
+  if (!isRecord(value)) return false;
+  const keychainBackups = value.keychainBackups;
+  return (
+    value.version === 1 &&
+    typeof value.source === "string" &&
+    typeof value.normalizedSource === "string" &&
+    typeof value.staging === "string" &&
+    typeof value.backup === "string" &&
+    typeof value.authPath === "string" &&
+    (typeof value.authBackup === "string" || value.authBackup === null) &&
+    typeof value.authExisted === "boolean" &&
+    (keychainBackups === undefined ||
+      (Array.isArray(keychainBackups) && keychainBackups.every(isKeychainSecretBackup))) &&
+    typeof value.nonce === "string" &&
+    isMigrationJournalPhase(value.phase)
+  );
+};
+
+const readMigrationJournal = (path: string): MigrationJournalReadResult => {
+  if (!fs.existsSync(path)) return { kind: "missing" };
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf-8")) as MigrationJournal;
-    if (parsed.version !== 1) return null;
-    return parsed;
-  } catch {
-    return null;
+    const parsed = JSON.parse(fs.readFileSync(path, "utf-8"));
+    if (!isMigrationJournal(parsed)) {
+      return {
+        kind: "unreadable",
+        cause: new LocalV1V2MigrationError({
+          message: `Migration journal has an unrecognized shape: ${path}`,
+          cause: parsed,
+        }),
+      };
+    }
+    return { kind: "valid", journal: parsed };
+  } catch (cause) {
+    return { kind: "unreadable", cause };
   }
 };
 
@@ -1371,29 +1418,40 @@ const completeJournaledFlip = async (
   removeMigrationJournal(journalPath);
 };
 
-const recoverV1V2Migration = async (sqlitePath: string): Promise<void> => {
-  const journalPath = migrationJournalPath(sqlitePath);
-  const journal = readMigrationJournal(journalPath);
-  if (!journal) return;
+type MigrationRecoveryResult = "missing" | "recovered" | "unreadable";
 
+const recoverV1V2Migration = async (sqlitePath: string): Promise<MigrationRecoveryResult> => {
+  const journalPath = migrationJournalPath(sqlitePath);
+  const journalRead = readMigrationJournal(journalPath);
+  if (journalRead.kind === "missing") return "missing";
+  if (journalRead.kind === "unreadable") {
+    if (fs.existsSync(sqlitePath)) return "unreadable";
+    throw new LocalV1V2MigrationError({
+      message: `Cannot recover local v1→v2 migration because the journal is unreadable and the canonical database is missing: ${journalPath}`,
+      cause: journalRead.cause,
+    });
+  }
+
+  const { journal } = journalRead;
   if (journal.phase === "building") {
     removeSqliteFileSet(journal.normalizedSource);
     removeSqliteFileSet(journal.staging);
     await restoreAuthFromJournal(journal);
     await cleanupSecretBackups(journal);
     removeMigrationJournal(journalPath);
-    return;
+    return "recovered";
   }
 
   if (journal.phase === "built" || journal.phase === "canonical-moved") {
     await completeJournaledFlip(journalPath, journal);
-    return;
+    return "recovered";
   }
 
   removeSqliteFileSet(journal.normalizedSource);
   removeSqliteFileSet(journal.staging);
   await cleanupSecretBackups(journal);
   removeMigrationJournal(journalPath);
+  return "recovered";
 };
 
 // No migration-internal process lock: this runs only inside
@@ -1406,9 +1464,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
 ): Promise<LocalV1V2MigrationResult> => {
   const journalPath = migrationJournalPath(options.sqlitePath);
 
-  if (fs.existsSync(journalPath)) {
-    await recoverV1V2Migration(options.sqlitePath);
-  }
+  const recovery = await recoverV1V2Migration(options.sqlitePath);
 
   if (!fs.existsSync(options.sqlitePath)) return { migrated: false, warnings: [] };
 
@@ -1418,8 +1474,14 @@ export const migrateLocalV1ToV2IfNeeded = async (
   // actual v1 database falls through to the heavy copy/stage/flip path below.
   const probe: Client = await openLocalLibsql(options.sqlitePath);
   try {
-    if (await hasV1GateStamp(probe)) return { migrated: false, warnings: [] };
-    if (!(await isLocalV1Database(probe))) return { migrated: false, warnings: [] };
+    if (await hasV1GateStamp(probe)) {
+      if (recovery === "unreadable") removeMigrationJournal(journalPath);
+      return { migrated: false, warnings: [] };
+    }
+    if (!(await isLocalV1Database(probe))) {
+      if (recovery === "unreadable") removeMigrationJournal(journalPath);
+      return { migrated: false, warnings: [] };
+    }
   } finally {
     probe.close();
   }
