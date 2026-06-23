@@ -224,10 +224,11 @@ export const createExecutorHandle = async () => {
 export type ExecutorHandle = Awaited<ReturnType<typeof createExecutorHandle>>;
 
 let sharedHandlePromise: ReturnType<typeof createExecutorHandle> | null = null;
+let sharedHandleLifecycle: Promise<void> = Promise.resolve();
 
 const loadSharedHandle = () => {
   if (!sharedHandlePromise) {
-    sharedHandlePromise = createExecutorHandle();
+    sharedHandlePromise = sharedHandleLifecycle.then(() => createExecutorHandle());
   }
   return sharedHandlePromise;
 };
@@ -239,13 +240,22 @@ export const disposeExecutor = async (): Promise<void> => {
   const currentHandlePromise = sharedHandlePromise;
   sharedHandlePromise = null;
 
-  const handle = currentHandlePromise ? await handleOrNull(currentHandlePromise) : null;
-  if (handle) {
-    await ignorePromiseFailure("disposeExecutor", () => handle.dispose());
-  }
+  const disposeCurrent = async (): Promise<void> => {
+    const handle = currentHandlePromise ? await handleOrNull(currentHandlePromise) : null;
+    if (handle) {
+      await ignorePromiseFailure("disposeExecutor", () => handle.dispose());
+    }
+  };
+
+  const nextLifecycle = sharedHandleLifecycle.then(disposeCurrent, disposeCurrent);
+  sharedHandleLifecycle = nextLifecycle.then(
+    () => undefined,
+    () => undefined,
+  );
+  await nextLifecycle;
 };
 
-export const reloadExecutor = () => {
-  disposeExecutor();
+export const reloadExecutor = async () => {
+  await disposeExecutor();
   return getExecutor();
 };
