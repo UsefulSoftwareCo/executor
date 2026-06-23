@@ -17,6 +17,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import { McpConnectionError, McpOAuthReauthorizationRequired } from "./errors";
+import { httpStatusFromCause } from "./http-status";
 
 // ---------------------------------------------------------------------------
 // Connection type
@@ -198,8 +199,18 @@ const connectClient = (input: {
 
     yield* Effect.tryPromise({
       try: () => client.connect(transportInstance),
-      catch: (cause) =>
-        connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
+      catch: (cause) => {
+        // Surface the handshake HTTP status (e.g. 401/403) in the message so the
+        // liveness health check can classify a rejected credential as expired
+        // rather than a generic connection failure.
+        const status = httpStatusFromCause(cause);
+        const suffix = status === undefined ? "" : ` (HTTP ${status})`;
+        return connectionFailure(
+          input.transport,
+          `Failed connecting via ${input.transport}${suffix}`,
+          cause,
+        );
+      },
     }).pipe(
       Effect.withSpan("plugin.mcp.connection.handshake", {
         attributes: { "plugin.mcp.transport": input.transport },

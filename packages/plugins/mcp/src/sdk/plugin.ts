@@ -15,6 +15,7 @@ import {
   tool,
   ToolResult,
   type AuthMethodDescriptor,
+  type HealthCheckResult,
   type Integration,
   type IntegrationConfig,
   type IntegrationRecord,
@@ -63,6 +64,21 @@ import {
 } from "./types";
 
 const MCP_PLUGIN_ID = "mcp" as const;
+
+/** Classify a failed liveness probe. An auth wall (OAuth re-authorization, or a
+ *  401/403 surfaced into the connect message) means the credential is expired;
+ *  anything else (server down, wrong transport) is degraded, not a credential
+ *  problem. */
+const mcpLivenessFailureStatus = (message: string): "expired" | "degraded" => {
+  const lower = message.toLowerCase();
+  const authWalled =
+    lower.includes("oauth re-authorization") ||
+    lower.includes("(http 401)") ||
+    lower.includes("(http 403)") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden");
+  return authWalled ? "expired" : "degraded";
+};
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
   const slug = value
@@ -1164,6 +1180,51 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }
         return out;
       }),
+
+    // Liveness-only health check. MCP has no usable identity source (no
+    // id_token/userinfo, no standard whoami), so this answers "is this
+    // credential still alive?" by dialing the server and listing tools (the same
+    // path resolveTools uses); identity stays the user-supplied connection label.
+    // Only checkHealth is implemented (no candidates/describe/set), so the
+    // operation/identity editor stays hidden while the status dot + "Check now"
+    // light up.
+    checkHealth: ({ credential }) =>
+      Effect.gen(function* () {
+        const parsed = parseMcpIntegrationConfig(credential.config);
+        if (!parsed) {
+          return { status: "unknown" as const, checkedAt: Date.now() } satisfies HealthCheckResult;
+        }
+        const connector = yield* buildConnectorInput(
+          parsed,
+          credential.values,
+          credential.template === null ? null : String(credential.template),
+          allowStdio,
+        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+
+        return yield* discoverTools(connector).pipe(
+          Effect.map(
+            () =>
+              ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,
+          ),
+          Effect.catchTag("McpToolDiscoveryError", (error) =>
+            Effect.succeed({
+              status: mcpLivenessFailureStatus(error.message),
+              checkedAt: Date.now(),
+              detail: error.message,
+            } satisfies HealthCheckResult),
+          ),
+        );
+      }).pipe(
+        // buildConnectorInput rejects (e.g. stdio disabled / missing config).
+        Effect.catchTag("McpConnectionError", (error) =>
+          Effect.succeed({
+            status: mcpLivenessFailureStatus(error.message),
+            checkedAt: Date.now(),
+            detail: error.message,
+          } satisfies HealthCheckResult),
+        ),
+        Effect.withSpan("mcp.plugin.check_health"),
+      ),
 
     describeAuthMethods: describeMcpAuthMethods,
     describeIntegrationDisplay: describeMcpIntegrationDisplay,
