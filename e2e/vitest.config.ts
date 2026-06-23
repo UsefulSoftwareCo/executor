@@ -39,11 +39,18 @@ export default defineConfig({
         fileParallelism: false,
       }),
       // The Cloudflare self-host worker (workerd via wrangler dev, dev-auth).
-      // Scoped to the browser-approval scenario for now — the only cross-target
-      // scenario wired for this host; the rest of scenarios/** is not yet
-      // validated against the worker. Shares self-host's single-admin model.
+      // Scoped to the cross-target scenarios wired for this host; the rest of
+      // scenarios/** is not yet validated against the worker. The full-graph
+      // scenario is included on purpose: workerd's 128MB isolate is the exact
+      // limit the streaming compile + content-addressed serve path defends, so
+      // it is the one host where that regression must be proven. Shares
+      // self-host's single-admin model.
       project("cloudflare", {
-        include: ["scenarios/browser-approval.test.ts", "cloudflare/**/*.test.ts"],
+        include: [
+          "scenarios/browser-approval.test.ts",
+          "scenarios/microsoft-graph-full.test.ts",
+          "cloudflare/**/*.test.ts",
+        ],
         fileParallelism: false,
       }),
       // The Electron desktop app. Only desktop/** scenarios — the desktop

@@ -6,17 +6,20 @@ import { AuthTemplateSlug } from "@executor-js/sdk/core";
 import {
   AuthenticationSchema,
   OpenApiParseError,
-  parse as parseOpenApiDocument,
+  parseEntry,
+  parseHead,
+  parseSmallComponents,
+  structuralSplit,
   type Authentication,
+  type KeepPathItem,
   type OpenApiIntegrationConfig,
-  type ParsedDocument,
+  type SpecStructure,
 } from "@executor-js/plugin-openapi";
 
 import {
   MICROSOFT_AUTHORIZATION_URL,
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
-  MICROSOFT_GRAPH_BASE_URL,
   MICROSOFT_GRAPH_BASE_SCOPES,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
   MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
@@ -43,7 +46,6 @@ export interface MicrosoftGraphSelectionInput {
 
 export interface MicrosoftGraphSpecBuild {
   readonly specText: string;
-  readonly parsedDocument?: ParsedDocument;
   readonly specUrl: string;
   readonly baseUrl?: string;
   readonly authorizationUrl: string;
@@ -92,8 +94,6 @@ const MicrosoftGraphIntegrationConfigSchema = Schema.Struct({
 });
 
 const decodeMicrosoftConfig = Schema.decodeUnknownOption(MicrosoftGraphIntegrationConfigSchema);
-
-type MicrosoftGraphOpenApiDocument = ParsedDocument & Record<string, unknown>;
 
 export const decodeMicrosoftGraphIntegrationConfig = (
   value: unknown,
@@ -174,10 +174,6 @@ const microsoftOAuthTemplate = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-// Hoisted so the compiled encoder is built once, not per call. Emits the small
-// filtered preset spec as JSON, which the OpenAPI SDK's `parse` reads back.
-const encodeOpenApiDocumentToJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-
 const HTTP_METHODS = new Set(["delete", "get", "patch", "post", "put"]);
 const BASE_OAUTH_SCOPES = new Set(["offline_access", "openid", "profile", "email"]);
 
@@ -186,17 +182,6 @@ const firstString = (values: readonly unknown[]): string | undefined =>
 
 const recordValues = (value: unknown): readonly unknown[] =>
   isRecord(value) ? Object.values(value) : [];
-
-const firstServerUrl = (parsed: Record<string, unknown>): string | undefined => {
-  const servers = parsed.servers;
-  if (!Array.isArray(servers)) return undefined;
-  for (const server of servers) {
-    if (!isRecord(server)) continue;
-    const url = server.url;
-    if (typeof url === "string" && url.trim().length > 0) return url.trim();
-  }
-  return undefined;
-};
 
 const firstOAuthFlows = (parsed: Record<string, unknown>): readonly Record<string, unknown>[] => {
   const components = isRecord(parsed.components) ? parsed.components : {};
@@ -336,25 +321,6 @@ const operationMatchesScope = (
     (scope) => selectedScopes.has(scope) && !BASE_OAUTH_SCOPES.has(scope),
   );
 
-const selectedOAuthScopesForPaths = (
-  paths: Record<string, unknown>,
-  requestedScopes: readonly string[],
-  fullGraphScopes: readonly string[] = [],
-): readonly string[] =>
-  uniqueStrings([
-    ...MICROSOFT_GRAPH_BASE_SCOPES,
-    ...fullGraphScopes,
-    ...requestedScopes.filter((scope) => !BASE_OAUTH_SCOPES.has(scope)),
-    ...Object.values(paths).flatMap((pathItem) => {
-      if (!isRecord(pathItem)) return [];
-      return Object.entries(pathItem).flatMap(([method, operation]) =>
-        HTTP_METHODS.has(method.toLowerCase()) && isRecord(operation)
-          ? permissionScopes(operation, { delegatedOnly: true })
-          : [],
-      );
-    }),
-  ]);
-
 const filterPathItem = (
   path: string,
   pathItem: Record<string, unknown>,
@@ -389,89 +355,6 @@ const filterPathItem = (
   }
   return kept;
 };
-
-const selectMicrosoftGraphPaths = (
-  paths: Record<string, unknown>,
-  options: {
-    readonly scopes: readonly string[];
-    readonly exactPaths: readonly string[];
-    readonly pathPrefixes: readonly string[];
-    readonly tagPrefixes: readonly string[];
-  },
-): Record<string, unknown> => {
-  const exactPaths = new Set(options.exactPaths);
-  const selectedScopes = new Set(options.scopes);
-  const entries = Object.entries(paths).flatMap(([path, pathItem]) => {
-    if (!isRecord(pathItem)) return [];
-    const filtered = filterPathItem(path, pathItem, {
-      exactPaths,
-      pathPrefixes: options.pathPrefixes,
-      tagPrefixes: options.tagPrefixes,
-      selectedScopes,
-    });
-    return filtered ? ([[path, filtered]] as const) : [];
-  });
-  return Object.fromEntries(entries);
-};
-
-const decodeJsonPointerSegment = (segment: string): string =>
-  decodeURIComponent(segment).replace(/~1/g, "/").replace(/~0/g, "~");
-
-const componentRefFromString = (
-  value: string,
-): { readonly section: string; readonly name: string } | null => {
-  if (!value.startsWith("#/components/")) return null;
-  const [, section, ...nameSegments] = value.slice(2).split("/");
-  if (!section || nameSegments.length === 0) return null;
-  return {
-    section: decodeJsonPointerSegment(section),
-    name: nameSegments.map(decodeJsonPointerSegment).join("/"),
-  };
-};
-
-const collectComponentRefs = (
-  value: unknown,
-): readonly { readonly section: string; readonly name: string }[] => {
-  if (typeof value === "string") {
-    const ref = componentRefFromString(value);
-    return ref ? [ref] : [];
-  }
-  if (Array.isArray(value)) return value.flatMap(collectComponentRefs);
-  if (!isRecord(value)) return [];
-  return Object.values(value).flatMap(collectComponentRefs);
-};
-
-const prunedComponentsForPaths = (
-  components: Record<string, unknown>,
-  paths: Record<string, unknown>,
-): Record<string, unknown> => {
-  const pruned: Record<string, Record<string, unknown>> = {};
-  const queue = [...collectComponentRefs(paths)];
-  const seen = new Set<string>();
-
-  for (let index = 0; index < queue.length; index += 1) {
-    const ref = queue[index];
-    const key = `${ref.section}/${ref.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const section = components[ref.section];
-    if (!isRecord(section)) continue;
-    const component = section[ref.name];
-    if (component === undefined) continue;
-
-    pruned[ref.section] ??= {};
-    pruned[ref.section][ref.name] = component;
-    queue.push(...collectComponentRefs(component));
-  }
-
-  return pruned;
-};
-
-interface MicrosoftGraphFilterResult {
-  readonly specText: string;
-  readonly scopes: readonly string[];
-}
 
 export const fetchMicrosoftGraphOpenApiSpec = Effect.fn("Microsoft.fetchGraphOpenApiSpec")(
   function* (specUrl: string) {
@@ -539,128 +422,70 @@ export const fetchMicrosoftGraphPermissionsReference = Effect.fn(
   );
 });
 
-const parseMicrosoftGraphOpenApiDocument = (
-  specText: string,
-): Effect.Effect<MicrosoftGraphOpenApiDocument, OpenApiParseError> =>
-  // Delegate to the OpenAPI SDK's lean js-yaml parser. The bespoke eemeli/yaml
-  // parser this replaced built a full CST that peaks ~720MB heap on the 37MB
-  // Graph spec and OOMs the 128MB Cloudflare Workers isolate (measured: HTTP
-  // 503, outcome=exceededMemory). The SDK parser peaks ~315MB and runs in-band
-  // on Workers. `parse` already validates an OpenAPI 3.x object and does not
-  // inline `$ref`s, so peak memory stays bounded for big specs.
-  parseOpenApiDocument(specText).pipe(
-    Effect.mapError(
-      () =>
-        new OpenApiParseError({
-          message: "Failed to parse Microsoft Graph OpenAPI document",
-        }),
-    ),
-    Effect.map((doc) => doc as MicrosoftGraphOpenApiDocument),
+/**
+ * Build the per-path-item filter that the streaming compile applies to each
+ * path-item as it parses the 37MB source. Returns `undefined` for a full-graph
+ * selection (keep everything). The selection predicate is identical to the old
+ * two-pass filter: the selected scopes are derived from the PRESET scopes
+ * (`microsoftGraphScopesForPresetIds`), not the expanded OAuth scopes, so the
+ * kept operation set matches regardless of caller.
+ */
+export const microsoftGraphKeepPathItem = (selection: {
+  readonly coversFullGraph: boolean;
+  readonly presetIds: readonly string[];
+  readonly customScopes: readonly string[];
+  readonly exactPaths: readonly string[];
+  readonly pathPrefixes: readonly string[];
+  readonly tagPrefixes: readonly string[];
+}): KeepPathItem | undefined => {
+  if (selection.coversFullGraph) return undefined;
+  const exactPaths = new Set(selection.exactPaths);
+  const selectedScopes = new Set(
+    microsoftGraphScopesForPresetIds(selection.presetIds, selection.customScopes),
   );
-
-export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
-  parsed: MicrosoftGraphOpenApiDocument,
-  options: {
-    readonly scopes: readonly string[];
-    readonly exactPaths: readonly string[];
-    readonly pathPrefixes: readonly string[];
-    readonly tagPrefixes: readonly string[];
-    readonly baseUrl?: string;
-    readonly authorizationUrl?: string;
-    readonly tokenUrl?: string;
-    readonly clientCredentialsTokenUrl?: string;
-    readonly fullGraphScopes?: readonly string[];
-  },
-): Effect.Effect<MicrosoftGraphFilterResult, OpenApiParseError> =>
-  Effect.gen(function* () {
-    const paths = parsed.paths;
-    if (!isRecord(paths)) {
-      return yield* new OpenApiParseError({
-        message: "Microsoft Graph OpenAPI document is missing paths",
-      });
-    }
-
-    const filteredPaths = selectMicrosoftGraphPaths(paths, options);
-    if (Object.keys(filteredPaths).length === 0) {
-      return yield* new OpenApiParseError({
-        message: "Microsoft Graph scope selection did not match any OpenAPI paths",
-      });
-    }
-
-    const scopes = selectedOAuthScopesForPaths(
-      filteredPaths,
-      options.scopes,
-      options.fullGraphScopes ?? [],
-    );
-    const serverUrl = options.baseUrl ?? firstServerUrl(parsed) ?? MICROSOFT_GRAPH_BASE_URL;
-    const endpoints = resolveOAuthEndpoints(parsed, options);
-    const components = isRecord(parsed.components) ? parsed.components : {};
-    const securitySchemes = isRecord(components.securitySchemes) ? components.securitySchemes : {};
-    const filteredComponents = prunedComponentsForPaths(components, filteredPaths);
-    const next = {
-      ...parsed,
-      info: {
-        ...(isRecord(parsed.info) ? parsed.info : {}),
-        title: "Microsoft Graph",
-        description: "Selected Microsoft Graph workloads from the v1.0 OpenAPI document.",
-      },
-      servers: [{ url: serverUrl }],
-      paths: filteredPaths,
-      components: {
-        ...filteredComponents,
-        securitySchemes: {
-          ...securitySchemes,
-          [MICROSOFT_AUTH_TEMPLATE_SLUG]: {
-            type: "oauth2",
-            flows: {
-              authorizationCode: {
-                authorizationUrl: endpoints.authorizationUrl,
-                tokenUrl: endpoints.tokenUrl,
-                scopes: Object.fromEntries(scopes.map((scope) => [scope, scope])),
-              },
-              clientCredentials: {
-                tokenUrl: endpoints.clientCredentialsTokenUrl,
-                scopes: Object.fromEntries(
-                  MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES.map((scope) => [scope, scope]),
-                ),
-              },
-            },
-          },
-        },
-      },
-      security: [{ [MICROSOFT_AUTH_TEMPLATE_SLUG]: [...scopes] }],
-    };
-
-    // Serialize as JSON, not YAML. The OpenAPI SDK's `parse` reads JSON (a YAML
-    // subset) on the way back in, so the filtered preset spec round-trips without
-    // pulling in a second YAML library. This is the small filtered spec, never
-    // the 37MB source document.
-    const filteredSpecText = yield* Effect.try({
-      try: () => encodeOpenApiDocumentToJson(next),
-      catch: () =>
-        new OpenApiParseError({
-          message: "Failed to serialize Microsoft Graph OpenAPI document",
-        }),
+  return (path, pathItem) =>
+    filterPathItem(path, pathItem, {
+      exactPaths,
+      pathPrefixes: selection.pathPrefixes,
+      tagPrefixes: selection.tagPrefixes,
+      selectedScopes,
     });
-    return { specText: filteredSpecText, scopes };
-  });
+};
 
-export const buildFilteredMicrosoftGraphOpenApiSpec = (
-  specText: string,
-  options: Parameters<typeof buildFilteredMicrosoftGraphOpenApiSpecFromDocument>[1],
-): Effect.Effect<MicrosoftGraphFilterResult, OpenApiParseError> =>
-  Effect.gen(function* () {
-    const parsed = yield* parseMicrosoftGraphOpenApiDocument(specText);
-    return yield* buildFilteredMicrosoftGraphOpenApiSpecFromDocument(parsed, options);
-  });
-
-export const filterMicrosoftGraphOpenApiSpec = (
-  specText: string,
-  options: Parameters<typeof buildFilteredMicrosoftGraphOpenApiSpec>[1],
-): Effect.Effect<string, OpenApiParseError> =>
-  buildFilteredMicrosoftGraphOpenApiSpec(specText, options).pipe(
-    Effect.map((result) => result.specText),
-  );
+/**
+ * Compute the OAuth scopes for the selection by streaming the source path-items
+ * once (never materializing the whole tree). Mirrors the old
+ * `selectedOAuthScopesForPaths`: base scopes + full-graph scopes + requested
+ * scopes + the delegated permission scopes of every kept operation. `keepPathItem`
+ * (when present) restricts the walk to the filtered operation set, exactly as the
+ * old code computed scopes over the already-filtered paths.
+ */
+const streamSelectedScopes = (
+  structure: SpecStructure,
+  requestedScopes: readonly string[],
+  fullGraphScopes: readonly string[],
+  keepPathItem?: KeepPathItem,
+): readonly string[] => {
+  const collected = [
+    ...MICROSOFT_GRAPH_BASE_SCOPES,
+    ...fullGraphScopes,
+    ...requestedScopes.filter((scope) => !BASE_OAUTH_SCOPES.has(scope)),
+  ];
+  for (const range of structure.pathItems) {
+    const entry = parseEntry(structure.text, range, 2);
+    if (!entry) continue;
+    const [path, rawItem] = entry;
+    if (!isRecord(rawItem)) continue;
+    const pathItem = keepPathItem ? keepPathItem(path, rawItem) : rawItem;
+    if (!pathItem) continue;
+    for (const [method, operation] of Object.entries(pathItem)) {
+      if (HTTP_METHODS.has(method.toLowerCase()) && isRecord(operation)) {
+        collected.push(...permissionScopes(operation, { delegatedOnly: true }));
+      }
+    }
+  }
+  return uniqueStrings(collected);
+};
 
 export const buildMicrosoftGraphOpenApiSpec = (
   input: MicrosoftGraphSelectionInput,
@@ -671,6 +496,24 @@ export const buildMicrosoftGraphOpenApiSpec = (
     const sourceText = yield* fetchMicrosoftGraphOpenApiSpec(selection.specUrl).pipe(
       Effect.provide(httpClientLayer),
     );
+
+    // Structural split is the only entry point: parsing the whole 37MB tree
+    // OOMs the 128MB Workers isolate (measured: HTTP 503). No fallback. A spec
+    // outside the streamable block-YAML profile is a hard error on this path;
+    // arbitrary user specs still go through the generic openapi plugin.
+    const structure = structuralSplit(sourceText);
+    if (!structure) {
+      return yield* new OpenApiParseError({
+        message:
+          "Microsoft Graph OpenAPI document is not in the streamable block-YAML profile; cannot compile it in-band on Workers.",
+      });
+    }
+
+    // Head + small components (servers + securitySchemes) parse cheaply and
+    // carry everything `resolveOAuthEndpoints` needs.
+    const headDoc = { ...parseHead(structure), components: parseSmallComponents(structure) };
+    const endpoints = resolveOAuthEndpoints(headDoc, selection);
+
     const permissionsReference =
       selection.coversFullGraph === true
         ? yield* fetchMicrosoftGraphPermissionsReference().pipe(Effect.provide(httpClientLayer))
@@ -678,46 +521,27 @@ export const buildMicrosoftGraphOpenApiSpec = (
     const fullGraphScopes = permissionsReference
       ? parseMicrosoftGraphDelegatedScopes(permissionsReference)
       : [];
-    const parsed = yield* parseMicrosoftGraphOpenApiDocument(sourceText);
-    const endpoints = resolveOAuthEndpoints(parsed, selection);
-    const graphPaths = parsed.paths;
-    if (!isRecord(graphPaths)) {
-      return yield* new OpenApiParseError({
-        message: "Microsoft Graph OpenAPI document is missing paths",
-      });
-    }
-    if (selection.coversFullGraph === true) {
-      const scopes =
-        selection.customScopes.length === 0
-          ? MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES
-          : selectedOAuthScopesForPaths(
-              graphPaths,
-              uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes]),
-              fullGraphScopes,
-            );
-      return {
-        ...selection,
-        specText: sourceText,
-        parsedDocument: parsed,
-        scopes,
-        authorizationUrl: endpoints.authorizationUrl,
-        tokenUrl: endpoints.tokenUrl,
-        clientCredentialsTokenUrl: endpoints.clientCredentialsTokenUrl,
-        authenticationTemplate: microsoftOAuthTemplate(scopes, endpoints),
-      };
-    }
-    const filtered = yield* buildFilteredMicrosoftGraphOpenApiSpecFromDocument(parsed, {
-      ...selection,
-      scopes: selection.scopes,
-      fullGraphScopes,
-    });
+
+    const keepPathItem = microsoftGraphKeepPathItem(selection);
+    const scopes =
+      selection.coversFullGraph === true && selection.customScopes.length === 0
+        ? [...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES]
+        : streamSelectedScopes(
+            structure,
+            selection.coversFullGraph === true
+              ? uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes])
+              : selection.scopes,
+            fullGraphScopes,
+            keepPathItem,
+          );
+
     return {
       ...selection,
-      specText: filtered.specText,
-      scopes: filtered.scopes,
+      specText: sourceText,
+      scopes,
       authorizationUrl: endpoints.authorizationUrl,
       tokenUrl: endpoints.tokenUrl,
       clientCredentialsTokenUrl: endpoints.clientCredentialsTokenUrl,
-      authenticationTemplate: microsoftOAuthTemplate(filtered.scopes, endpoints),
+      authenticationTemplate: microsoftOAuthTemplate(scopes, endpoints),
     };
   });

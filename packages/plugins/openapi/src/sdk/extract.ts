@@ -1,8 +1,16 @@
 import { Effect, Option } from "effect";
 
-import { planToolPaths, type OperationPathInput } from "./definitions";
+import { planToolPaths, type OperationPathInput, type PlannedToolPath } from "./definitions";
 import { OpenApiExtractionError } from "./errors";
 import type { ParsedDocument } from "./parse";
+import {
+  parseEntry,
+  parseHead,
+  parseSmallComponents,
+  type ByteRange,
+  type KeepPathItem,
+  type SpecStructure,
+} from "./split";
 import {
   declaredContents,
   DocResolver,
@@ -622,3 +630,134 @@ export const streamOperationBindings = <E, R>(
 
     return { toolCount: plans.length, toolNames: plans.map((plan) => plan.toolPath) };
   }).pipe(Effect.withSpan("OpenApi.streamOperationBindings"));
+
+const isPathItemValue = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * Stream invocation bindings straight from a `SpecStructure` (the structural
+ * split of a large spec) without ever materializing the whole-document tree.
+ *
+ * This is the fully-streaming compile path: it never parses the spec whole.
+ * Each path-item is parsed in isolation twice (pass 1 for light tool-path
+ * planning metadata, pass 2 to build the heavy binding) and discarded, so peak
+ * memory stays near the size of a single path-item plus the raw text, even for
+ * the 37MB / 16.5k-operation Microsoft Graph spec that OOMs a whole-tree parse.
+ * Re-parsing in pass 2 (rather than holding pass-1 tree references) is the
+ * deliberate CPU-for-memory trade that keeps peak at one-path-item level.
+ *
+ * `keepPathItem`, when given, filters (and may trim) each path-item, so the same
+ * primitive serves both a full-spec compile (no filter) and a selection (e.g.
+ * the Microsoft Graph scope filter) with identical streaming guarantees. It is
+ * applied identically in both passes so the per-operation index stays aligned.
+ *
+ * Schemas are never resolved here: parameter / requestBody / response component
+ * `$ref`s resolve against the small (schema-free) components built from the
+ * structure; `#/components/schemas/X` refs stay as strings in the binding and
+ * are normalized + served from the content-addressed defs blob. Returns the
+ * resolved tool names in sorted order, matching `compileToolDefinitions`.
+ */
+export const streamOperationBindingsFromStructure = <E, R>(
+  structure: SpecStructure,
+  options: { readonly chunkSize: number; readonly keepPathItem?: KeepPathItem },
+  onChunk: (chunk: readonly OperationBindingChunk[]) => Effect.Effect<void, E, R>,
+): Effect.Effect<{ readonly toolCount: number; readonly toolNames: readonly string[] }, E, R> =>
+  Effect.gen(function* () {
+    const { chunkSize, keepPathItem } = options;
+
+    // Parse one path-item range to its kept (optionally trimmed) value, applying
+    // `keepPathItem` identically in both passes so the operation index aligns.
+    const keptPathItem = (range: ByteRange): readonly [string, PathItemObject] | null => {
+      const entry = parseEntry(structure.text, range, 2);
+      if (!entry) return null;
+      const [path, rawValue] = entry;
+      if (!isPathItemValue(rawValue)) return null;
+      if (!keepPathItem) return [path, rawValue as PathItemObject];
+      const kept = keepPathItem(path, rawValue);
+      return kept ? [path, kept as PathItemObject] : null;
+    };
+
+    // Pass 1 (light): collect schema-free tool-path planning metadata in
+    // document order. No bindings, no schemas; one path-item resident at a time.
+    const inputs: OperationPathInput[] = [];
+    for (const range of structure.pathItems) {
+      const kept = keptPathItem(range);
+      if (!kept) continue;
+      const [path, pathItem] = kept;
+      for (const method of HTTP_METHODS) {
+        const operation = pathItem[method];
+        if (!operation) continue;
+        const resolvedPathTemplate = explicitPathTemplate(operation) ?? path;
+        const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
+        inputs.push({
+          operationId: deriveOperationId(method, path, operation),
+          explicitToolPath: explicitToolPath(operation),
+          method,
+          pathTemplate: resolvedPathTemplate,
+          tag0: tags[0],
+        });
+      }
+    }
+
+    // Global, schema-free collision resolution + sort. `plan.operationIndex`
+    // indexes back into `inputs` (document order), so a flat array recovers each
+    // operation's assigned tool path during the document-order pass 2.
+    const plans = planToolPaths(inputs);
+    const planByOpIndex: (PlannedToolPath | undefined)[] = new Array(inputs.length);
+    for (const plan of plans) planByOpIndex[plan.operationIndex] = plan;
+
+    // Pass 2 (heavy, streamed): re-parse each path-item in the same document
+    // order, build a binding per operation, flush a chunk once it fills, then
+    // drop it. The resolver is schema-free (small components only); schema refs
+    // stay as `$ref` strings in the bindings.
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: parseHead/parseSmallComponents return Record<string, unknown>, which does not structurally match the OpenAPIV3 Document union; the schema-free resolver doc (head + small components, empty paths) is only read for .servers (extractServers) and .components ($ref resolution).
+    const resolverDoc = {
+      ...parseHead(structure),
+      paths: {},
+      components: parseSmallComponents(structure),
+    } as unknown as ParsedDocument;
+    const r = new DocResolver(resolverDoc);
+    const docServers = extractServers(resolverDoc);
+
+    let opIndex = 0;
+    let chunk: OperationBindingChunk[] = [];
+    for (const range of structure.pathItems) {
+      const kept = keptPathItem(range);
+      if (!kept) continue;
+      const [path, pathItem] = kept;
+      for (const method of HTTP_METHODS) {
+        const operation = pathItem[method];
+        if (!operation) continue;
+        const plan = planByOpIndex[opIndex];
+        opIndex += 1;
+        if (!plan) continue;
+        const resolvedPathTemplate = explicitPathTemplate(operation) ?? path;
+        const parameters = extractParameters(pathItem, operation, r);
+        const requestBody = extractRequestBody(operation, r);
+        const responseBody = extractResponseBody(operation, r);
+        const servers = operationServers(pathItem, operation, docServers);
+        chunk.push({
+          toolName: plan.toolPath,
+          description:
+            operation.description ??
+            operation.summary ??
+            `${method.toUpperCase()} ${resolvedPathTemplate}`,
+          binding: OperationBinding.make({
+            method,
+            servers,
+            pathTemplate: resolvedPathTemplate,
+            parameters,
+            requestBody: Option.fromNullishOr(requestBody),
+            responseBody: Option.fromNullishOr(responseBody),
+          }),
+        });
+        if (chunk.length >= chunkSize) {
+          yield* onChunk(chunk);
+          chunk = [];
+        }
+      }
+    }
+    if (chunk.length > 0) yield* onChunk(chunk);
+
+    return { toolCount: plans.length, toolNames: plans.map((plan) => plan.toolPath) };
+  }).pipe(Effect.withSpan("OpenApi.streamOperationBindingsFromStructure"));

@@ -21,10 +21,16 @@ import {
   type OpenApiIntegrationConfig,
 } from "./config";
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
-import { buildInputSchema, extract, streamOperationBindings } from "./extract";
+import {
+  buildInputSchema,
+  extract,
+  streamOperationBindings,
+  streamOperationBindingsFromStructure,
+} from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
 import { parse, type ParsedDocument } from "./parse";
+import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
 import { OperationBinding } from "./types";
 
@@ -282,6 +288,32 @@ export const buildDefsJson = (doc: ParsedDocument): string => {
   return `${json}}`;
 };
 
+/**
+ * Streaming twin of `buildDefsJson`: serialize the content-addressed defs blob
+ * from a `SpecStructure` by parsing each `components.schemas` entry in isolation
+ * (indent-4 range) rather than from a whole-document parse. Used by the fully
+ * streaming add path so the 37MB Microsoft Graph spec never builds its
+ * ~300MB tree. The blob carries *all* source schemas (it is shared across every
+ * tenant/selection on the same spec hash); extra unreferenced `$defs` are
+ * harmless. Like `buildDefsJson`, normalizing + stringifying per entry keeps the
+ * whole normalized tree from being co-resident with any parsed schema, and the
+ * ConsString accumulation avoids the join-doubling of an array build.
+ */
+export const buildDefsJsonStreaming = (structure: SpecStructure): string => {
+  let json = "{";
+  let first = true;
+  for (const range of structure.schemas) {
+    const entry = parseEntry(structure.text, range, 4);
+    if (!entry) continue;
+    const [name, schema] = entry;
+    const serialized = JSON.stringify(normalizeOpenApiRefs(schema));
+    if (serialized === undefined) continue;
+    json += `${first ? "" : ","}${JSON.stringify(name)}:${serialized}`;
+    first = false;
+  }
+  return `${json}}`;
+};
+
 const DefsJson = Schema.Record(Schema.String, Schema.Unknown);
 /** Decode the content-addressed defs blob back into the shared `definitions`
  *  map. Returns `None` on a corrupt/non-object blob so the serve path falls
@@ -402,6 +434,65 @@ export const compileAndPersistOpenApiSpec = ({
     });
   });
 
+/**
+ * Fully streaming add/update path: compile + persist operation bindings (and the
+ * content-addressed defs blob) straight from spec *text*, without ever parsing
+ * the whole document. The text is structurally split, then each path-item and
+ * each schema is parsed in isolation and discarded, so peak memory stays near
+ * one item rather than the ~300MB whole-tree parse that OOMs a 128MB Workers
+ * isolate on the 37MB Microsoft Graph spec.
+ *
+ * There is deliberately no whole-parse fallback: a spec that does not present
+ * the streamable block-YAML profile (no top-level `paths:` block) is a hard
+ * `OpenApiExtractionError`, because the fallback is exactly the OOM this path
+ * exists to avoid. `keepPathItem` optionally filters/trims path-items (the
+ * Microsoft Graph scope selection), so the same primitive serves a full-spec
+ * compile and a selection identically.
+ */
+export const compileAndPersistOpenApiSpecStreaming = ({
+  specText,
+  integration,
+  storage,
+  specHash,
+  chunkSize,
+  keepPathItem,
+}: {
+  readonly specText: string;
+  readonly integration: string;
+  readonly storage: OpenapiStore;
+  readonly specHash?: string;
+  readonly chunkSize?: number;
+  readonly keepPathItem?: KeepPathItem;
+}): Effect.Effect<OpenApiPersistResult, OpenApiExtractionError | StorageFailure> =>
+  Effect.gen(function* () {
+    const structure = structuralSplit(specText);
+    if (!structure) {
+      return yield* new OpenApiExtractionError({
+        message:
+          "OpenAPI spec is not in the streamable block-YAML profile (no top-level `paths:` block); cannot stream-compile a spec this large in-band.",
+      });
+    }
+    yield* storage.removeOperations(integration);
+    const result = yield* streamOperationBindingsFromStructure(
+      structure,
+      { chunkSize: chunkSize ?? 500, keepPathItem },
+      (chunk) =>
+        storage.appendOperations(
+          integration,
+          chunk.map((item) => ({
+            integration,
+            toolName: item.toolName,
+            binding: item.binding,
+            description: item.description,
+          })),
+        ),
+    );
+    if (specHash != null) {
+      yield* storage.putDefs(specHash, buildDefsJsonStreaming(structure));
+    }
+    return result;
+  });
+
 export const loadOpenApiSpecText = (
   storage: OpenapiStore,
   config: OpenApiIntegrationConfig,
@@ -464,7 +555,12 @@ export const invokeOpenApiBackedTool = (input: {
     const config = decodeOpenApiIntegrationConfig(input.credential.config);
 
     let binding = (yield* input.ctx.storage.getOperation(integration, input.toolRow.name))?.binding;
-    if ((!binding || Option.isNone(binding.responseBody)) && config) {
+    // Only re-parse when the binding is entirely absent (a legacy row predating
+    // persisted bindings). A present binding is authoritative even if it has no
+    // responseBody: the persisted spec is now the *full* source (37MB for
+    // Microsoft Graph), so re-parsing it here to "enrich" a binding would OOM
+    // the isolate. A genuinely body-less operation must serve from its binding.
+    if (!binding && config) {
       const specText = yield* loadOpenApiSpecText(input.ctx.storage, config).pipe(
         Effect.catch(() => Effect.succeed(null)),
       );

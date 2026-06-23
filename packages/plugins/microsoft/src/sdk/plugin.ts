@@ -19,27 +19,26 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
-  compileAndPersistOpenApiOperations,
-  compileAndPersistOpenApiSpec,
+  compileAndPersistOpenApiSpecStreaming,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
   OpenApiExtractionError,
-  OpenApiParseError,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
   type Authentication,
   type AuthenticationInput,
   type OpenApiPersistResult,
   type OpenapiStore,
-  type ParsedDocument,
 } from "@executor-js/plugin-openapi";
 
 import {
   buildMicrosoftGraphOpenApiSpec,
   decodeMicrosoftGraphIntegrationConfig,
+  microsoftGraphKeepPathItem,
   type MicrosoftGraphIntegrationConfig,
+  type MicrosoftGraphSpecBuild,
 } from "./graph";
 import {
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
@@ -127,26 +126,22 @@ const makeMicrosoftPluginExtension = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
 ) => {
   const persistGraphOperations = (
-    graph: { readonly parsedDocument?: ParsedDocument; readonly specText: string },
+    graph: MicrosoftGraphSpecBuild,
     integration: string,
     specHash: string,
-  ): Effect.Effect<
-    OpenApiPersistResult,
-    OpenApiExtractionError | OpenApiParseError | StorageFailure
-  > =>
-    graph.parsedDocument !== undefined
-      ? compileAndPersistOpenApiOperations({
-          doc: graph.parsedDocument,
-          integration,
-          storage: ctx.storage,
-          specHash,
-        })
-      : compileAndPersistOpenApiSpec({
-          specText: graph.specText,
-          integration,
-          storage: ctx.storage,
-          specHash,
-        });
+  ): Effect.Effect<OpenApiPersistResult, OpenApiExtractionError | StorageFailure> =>
+    // Stream the (full 37MB) source straight to persisted bindings + a
+    // content-addressed defs blob, never materializing the whole-document tree
+    // that OOMs the 128MB Workers isolate. `keepPathItem` applies the Microsoft
+    // Graph scope selection per path-item during the stream; a full-graph
+    // selection returns `undefined` (keep everything).
+    compileAndPersistOpenApiSpecStreaming({
+      specText: graph.specText,
+      integration,
+      storage: ctx.storage,
+      specHash,
+      keepPathItem: microsoftGraphKeepPathItem(graph),
+    });
 
   const addGraph = (config: MicrosoftGraphConfig) =>
     Effect.gen(function* () {

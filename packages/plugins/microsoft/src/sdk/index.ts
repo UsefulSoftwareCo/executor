@@ -30,7 +30,7 @@ export {
   decodeMicrosoftGraphIntegrationConfig,
   fetchMicrosoftGraphOpenApiSpec,
   fetchMicrosoftGraphPermissionsReference,
-  filterMicrosoftGraphOpenApiSpec,
+  microsoftGraphKeepPathItem,
   parseMicrosoftGraphDelegatedScopes,
   type MicrosoftGraphIntegrationConfig,
   type MicrosoftGraphSelectionInput,

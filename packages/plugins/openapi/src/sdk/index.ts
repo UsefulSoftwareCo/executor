@@ -1,9 +1,23 @@
 export { parse, resolveSpecText, fetchSpecText } from "./parse";
-export { extract } from "./extract";
+export { extract, streamOperationBindingsFromStructure } from "./extract";
+export {
+  structuralSplit,
+  isStreamableSpec,
+  indexSchemas,
+  collectReferencedSchemas,
+  parseEntry,
+  parseHead,
+  parseSmallComponents,
+  type SpecStructure,
+  type ByteRange,
+  type KeepPathItem,
+} from "./split";
 export { invoke, invokeWithLayer, annotationsForOperation } from "./invoke";
 export {
+  buildDefsJsonStreaming,
   compileAndPersistOpenApiOperations,
   compileAndPersistOpenApiSpec,
+  compileAndPersistOpenApiSpecStreaming,
   compileOpenApiDocument,
   compileOpenApiSpec,
   extractOpenApiUpstreamMessage,

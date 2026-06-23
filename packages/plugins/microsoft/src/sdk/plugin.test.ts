@@ -343,12 +343,13 @@ describe("Microsoft Graph provider", () => {
           ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
         ]);
 
-        // Full-graph add routes through the streaming `parsedDocument` persist
-        // branch (the path the real 37MB spec takes): it persists each op's
-        // binding plus a `description` and writes the content-addressed defs
-        // blob, never re-parsing on serve. Read the operations back through the
-        // live serve path to prove they landed in storage AND that the serve
-        // fast path rebuilds tools from the persisted bindings (no spec parse).
+        // Full-graph add routes through the streaming compile (the path the
+        // real 37MB spec takes): the source text is structurally split and each
+        // op's binding plus a `description` is persisted, alongside the
+        // content-addressed defs blob, never materializing the whole-document
+        // tree. Read the operations back through the live serve path to prove
+        // they landed in storage AND that the serve fast path rebuilds tools
+        // from the persisted bindings (no spec parse).
         yield* executor.connections.create({
           owner: "org",
           name: ConnectionName.make("full"),
