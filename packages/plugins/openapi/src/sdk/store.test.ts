@@ -49,9 +49,11 @@ describe("OpenAPI operation store", () => {
                 data: input.data,
               }),
             ),
+          putMany: () => Effect.void,
           query: () => Effect.succeed([]),
           count: () => Effect.succeed(0),
           remove: () => Effect.void,
+          removeMany: () => Effect.void,
         }),
         get: <T = unknown>(input: { readonly collection: string; readonly key: string }) =>
           Effect.succeed(
