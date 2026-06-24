@@ -662,6 +662,24 @@
         "vitest": "catalog:",
       },
     },
+    "packages/hosts/eve": {
+      "name": "@executor-js/host-eve",
+      "version": "0.1.0",
+      "dependencies": {
+        "@executor-js/codemode-core": "workspace:*",
+        "@executor-js/execution": "workspace:*",
+        "effect": "catalog:",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@executor-js/runtime-quickjs": "workspace:*",
+        "@executor-js/sdk": "workspace:*",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/hosts/mcp": {
       "name": "@executor-js/host-mcp",
       "version": "1.4.4",
@@ -1643,6 +1661,8 @@
     "@executor-js/fumadb": ["@executor-js/fumadb@workspace:packages/core/fumadb"],
 
     "@executor-js/host-cloudflare": ["@executor-js/host-cloudflare@workspace:apps/host-cloudflare"],
+
+    "@executor-js/host-eve": ["@executor-js/host-eve@workspace:packages/hosts/eve"],
 
     "@executor-js/host-mcp": ["@executor-js/host-mcp@workspace:packages/hosts/mcp"],
 
