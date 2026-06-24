@@ -129,6 +129,24 @@ const runSuite = (name: string, makeHarness: () => Promise<Harness>) => {
       ).toBe(2);
     });
 
+    it("matches empty composite filter semantics", async () => {
+      const { orm } = harness;
+      expect(
+        await orm.jsonCount("events", {
+          column: "data",
+          where: inT1,
+          filter: { kind: "or", items: [] },
+        }),
+      ).toBe(0);
+      expect(
+        await orm.jsonCount("events", {
+          column: "data",
+          where: inT1,
+          filter: { kind: "and", items: [] },
+        }),
+      ).toBe(4);
+    });
+
     it("jsonGroupCount counts distinct values", async () => {
       const rows = await harness.orm.jsonGroupCount("events", {
         column: "data",

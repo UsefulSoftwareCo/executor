@@ -469,6 +469,7 @@ export function fromDrizzle(
       );
     }
     if (filter.kind === "or") {
+      if (filter.items.length === 0) return Drizzle.sql`1 = 0`;
       return Drizzle.or(
         ...filter.items.map((item) => buildJsonFilter(jsonColumn, item)),
       );
