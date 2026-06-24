@@ -7,7 +7,7 @@ import {
   ExecutionId,
   composeExecutionObservers,
   definePlugin,
-  ignoreExecutionObserverErrors,
+  wrapExecutionObserver,
 } from "./index";
 
 const owner = { tenant: Tenant.make("tenant_test"), subject: Subject.make("subject_test") };
@@ -82,7 +82,7 @@ describe("composeExecutionObservers", () => {
 
   it.effect("preserves interrupts from isolated observers", () =>
     Effect.gen(function* () {
-      const observer = ignoreExecutionObserverErrors({
+      const observer = wrapExecutionObserver({
         handle: () => Effect.interrupt,
       });
 

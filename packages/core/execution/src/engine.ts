@@ -21,8 +21,8 @@ import {
   InteractionStarted,
   ToolCallFinished,
   ToolCallStarted,
-  ignoreExecutionObserverErrors,
   noopExecutionObserver,
+  wrapExecutionObserver,
 } from "@executor-js/sdk/core";
 import { CurrentOrgWriteAccess, type OrgWriteAccessState } from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
@@ -635,7 +635,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 
   // Observer wiring. `emit` never fails and logs observer failures before
   // resolving to a no-op when no plugin registered one, the opt-out default.
-  const observer = ignoreExecutionObserverErrors(config.observer ?? noopExecutionObserver);
+  const observer = wrapExecutionObserver(config.observer ?? noopExecutionObserver);
   const emit = observer.handle;
   const owner = executor.owner;
 

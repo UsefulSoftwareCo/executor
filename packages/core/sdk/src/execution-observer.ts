@@ -1,4 +1,4 @@
-import { Data, Effect, Predicate, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import * as Cause from "effect/Cause";
 
 import type { ElicitationContext, ElicitationResponse } from "./elicitation";
@@ -103,12 +103,8 @@ export const noopExecutionObserver: ExecutionObserver = {
 type ExecutionEventName = ExecutionEvent["_tag"];
 
 const executionEventName = (event: ExecutionEvent): ExecutionEventName => {
-  if (Predicate.isTagged(event, "ExecutionStarted")) return "ExecutionStarted";
-  if (Predicate.isTagged(event, "ToolCallStarted")) return "ToolCallStarted";
-  if (Predicate.isTagged(event, "ToolCallFinished")) return "ToolCallFinished";
-  if (Predicate.isTagged(event, "InteractionStarted")) return "InteractionStarted";
-  if (Predicate.isTagged(event, "InteractionResolved")) return "InteractionResolved";
-  return "ExecutionFinished";
+  // oxlint-disable-next-line executor/no-manual-tag-check -- boundary: logging uses the Data.TaggedClass discriminant as an event name
+  return event._tag;
 };
 
 const logExecutionObserverFailure = (
@@ -131,11 +127,9 @@ const handleExecutionObserverCause = (
     ? Effect.interrupt
     : logExecutionObserverFailure(event, cause, pluginId);
 
-/** Wrap an observer so any failure (defect or expected error) is logged, and
- *  an observer must never propagate into the execution it observes. */
-export const ignoreExecutionObserverErrors = (
-  observer: ExecutionObserver<unknown>,
-): ExecutionObserver => ({
+/** Wrap an observer so non-interrupt failures are logged and isolated while
+ *  interrupt causes still propagate as cancellation. */
+export const wrapExecutionObserver = (observer: ExecutionObserver<unknown>): ExecutionObserver => ({
   handle: (event) =>
     observer
       .handle(event)
