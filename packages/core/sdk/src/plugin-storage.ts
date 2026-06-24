@@ -164,6 +164,103 @@ export interface PluginStorageEntry<T = unknown> {
   readonly updatedAt: Date;
 }
 
+export type PluginStorageScalar = string | number | boolean | null;
+
+export type PluginStorageFieldType = "text" | "number" | "boolean";
+
+export interface PluginStorageAggregateFilter<TDefinition> {
+  readonly where?: PluginStorageCollectionWhere<TDefinition>;
+  readonly keyPrefix?: string;
+}
+
+export interface PluginStorageGroupCountInput<
+  TDefinition,
+> extends PluginStorageAggregateFilter<TDefinition> {
+  readonly field: PluginStorageCollectionIndexedField<TDefinition>;
+  readonly valueType?: PluginStorageFieldType;
+}
+
+export interface PluginStorageTimeBucketInput<
+  TDefinition,
+> extends PluginStorageAggregateFilter<TDefinition> {
+  /** Numeric (epoch-ms) field the buckets are computed from. */
+  readonly field: PluginStorageCollectionIndexedField<TDefinition>;
+  readonly bucketMs: number;
+}
+
+export interface PluginStorageStatsInput<
+  TDefinition,
+> extends PluginStorageAggregateFilter<TDefinition> {
+  /** Numeric field the stats are computed over. */
+  readonly field: PluginStorageCollectionIndexedField<TDefinition>;
+  /** Percentile fractions in [0, 1] (e.g. 0.5, 0.95). */
+  readonly percentiles?: readonly number[];
+}
+
+export interface PluginStorageGroupCount {
+  readonly value: PluginStorageScalar;
+  readonly count: number;
+}
+
+export interface PluginStorageTimeBucket {
+  readonly bucket: number;
+  readonly count: number;
+}
+
+export interface PluginStoragePercentile {
+  readonly fraction: number;
+  readonly value: number;
+}
+
+export interface PluginStorageStats {
+  readonly count: number;
+  readonly min: number | null;
+  readonly max: number | null;
+  readonly percentiles: readonly PluginStoragePercentile[];
+}
+
+export interface PluginStorageKeysetOrderBy<TDefinition> {
+  readonly field: PluginStorageCollectionIndexedField<TDefinition>;
+  readonly direction?: "asc" | "desc";
+  readonly valueType?: PluginStorageFieldType;
+}
+
+export interface PluginStorageKeysetCursor {
+  readonly values: readonly PluginStorageScalar[];
+  readonly key: string;
+}
+
+export interface PluginStorageQueryKeysetInput<
+  TDefinition,
+> extends PluginStorageAggregateFilter<TDefinition> {
+  readonly orderBy: readonly PluginStorageKeysetOrderBy<TDefinition>[];
+  readonly limit: number;
+  readonly cursor?: PluginStorageKeysetCursor;
+}
+
+export interface PluginStorageKeysetPage<TData extends object> {
+  readonly entries: readonly PluginStorageEntry<TData>[];
+  readonly nextCursor: PluginStorageKeysetCursor | null;
+}
+
+/** SQL-pushed aggregation over a collection's JSON documents. */
+export interface PluginStorageAggregateFacade<
+  TDefinition extends PluginStorageCollectionDefinition,
+> {
+  readonly count: (
+    input?: PluginStorageAggregateFilter<TDefinition>,
+  ) => Effect.Effect<number, StorageFailure>;
+  readonly groupCount: (
+    input: PluginStorageGroupCountInput<TDefinition>,
+  ) => Effect.Effect<readonly PluginStorageGroupCount[], StorageFailure>;
+  readonly timeBuckets: (
+    input: PluginStorageTimeBucketInput<TDefinition>,
+  ) => Effect.Effect<readonly PluginStorageTimeBucket[], StorageFailure>;
+  readonly stats: (
+    input: PluginStorageStatsInput<TDefinition>,
+  ) => Effect.Effect<PluginStorageStats, StorageFailure>;
+}
+
 export interface PluginStorageCollectionFacade<
   TDefinition extends PluginStorageCollectionDefinition = PluginStorageCollectionDefinition,
 > {
@@ -197,6 +294,15 @@ export interface PluginStorageCollectionFacade<
   readonly count: (
     input?: Omit<PluginStorageCollectionQueryInput<TDefinition>, "orderBy" | "limit" | "offset">,
   ) => Effect.Effect<number, StorageFailure>;
+  /** SQL-pushed keyset pagination ordered by indexed JSON fields. */
+  readonly queryKeyset: (
+    input: PluginStorageQueryKeysetInput<TDefinition>,
+  ) => Effect.Effect<
+    PluginStorageKeysetPage<PluginStorageCollectionData<TDefinition>>,
+    StorageFailure
+  >;
+  /** SQL-pushed aggregation (counts, facets, time buckets, percentiles). */
+  readonly aggregate: PluginStorageAggregateFacade<TDefinition>;
   readonly remove: (
     input: PluginStorageCollectionScopedKeyInput,
   ) => Effect.Effect<void, StorageFailure>;
