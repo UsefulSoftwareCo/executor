@@ -122,6 +122,15 @@ const logExecutionObserverFailure = (
     ...(pluginId ? { pluginId } : {}),
   });
 
+const handleExecutionObserverCause = (
+  event: ExecutionEvent,
+  cause: Cause.Cause<unknown>,
+  pluginId?: string,
+): Effect.Effect<void> =>
+  Cause.hasInterrupts(cause)
+    ? Effect.interrupt
+    : logExecutionObserverFailure(event, cause, pluginId);
+
 /** Wrap an observer so any failure (defect or expected error) is logged, and
  *  an observer must never propagate into the execution it observes. */
 export const ignoreExecutionObserverErrors = (
@@ -130,7 +139,7 @@ export const ignoreExecutionObserverErrors = (
   handle: (event) =>
     observer
       .handle(event)
-      .pipe(Effect.catchCause((cause) => logExecutionObserverFailure(event, cause))),
+      .pipe(Effect.catchCause((cause) => handleExecutionObserverCause(event, cause))),
 });
 
 /** Collect every plugin's `runtime.executionObserver` and fan each event to
@@ -164,7 +173,7 @@ export const composeExecutionObservers = <TPlugins extends readonly AnyPlugin[]>
           observer
             .handle(event)
             .pipe(
-              Effect.catchCause((cause) => logExecutionObserverFailure(event, cause, pluginId)),
+              Effect.catchCause((cause) => handleExecutionObserverCause(event, cause, pluginId)),
             ),
         // Preserve plugin order so observers see deterministic sequencing.
         { discard: true },
