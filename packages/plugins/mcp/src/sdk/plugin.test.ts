@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Option, Predicate, Schema } from "effect";
 import {
@@ -37,6 +40,61 @@ import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 // elicitation.test.ts + owner-isolation.test.ts.
 
 const TEMPLATE = AuthTemplateSlug.make("none");
+
+const makeStdioMcpFixture = () => {
+  const dir = mkdtempSync(join(tmpdir(), "executor-mcp-stdio-"));
+  const script = join(dir, "server.mjs");
+  writeFileSync(
+    script,
+    `let buffer = "";
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, index).replace(/\\r$/, "");
+    buffer = buffer.slice(index + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (!("id" in message)) continue;
+    if (message.method === "initialize") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "stdio-fixture", version: "1.0.0" },
+        },
+      });
+    } else if (message.method === "tools/list") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          tools: [
+            {
+              name: "hello",
+              description: "Greets over stdio",
+              inputSchema: { type: "object", properties: { name: { type: "string" } } },
+            },
+          ],
+        },
+      });
+    } else {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32601, message: "Method not found" },
+      });
+    }
+  }
+});
+`,
+  );
+  return { command: process.execPath, args: [script], dir };
+};
 
 const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
 const JsonRpcRequest = Schema.Struct({
@@ -376,6 +434,46 @@ describe("mcpPlugin", () => {
         address: "tools.stdio_mcp.org.default",
       });
     }),
+  );
+
+  it.effect("produces stdio MCP tools under the default org connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* Effect.acquireRelease(
+          Effect.sync(makeStdioMcpFixture),
+          ({ dir }) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+        );
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          }),
+        );
+
+        yield* executor.mcp.addServer({
+          transport: "stdio",
+          name: "Stdio MCP Tools",
+          command: fixture.command,
+          args: fixture.args,
+          slug: "stdio_tools",
+        });
+
+        const tools = yield* executor.tools.list();
+        const stdioTools = tools.filter((tool) => String(tool.integration) === "stdio_tools");
+
+        expect(stdioTools).toHaveLength(1);
+        expect(stdioTools[0]).toMatchObject({
+          address: ToolAddress.make("tools.stdio_tools.org.default.hello"),
+          owner: "org",
+          integration: IntegrationSlug.make("stdio_tools"),
+          connection: ConnectionName.make("default"),
+          name: "hello",
+          description: "Greets over stdio",
+        });
+      }),
+    ),
   );
 
   it.effect("removing an MCP server removes the OAuth client used by its connection", () =>
