@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Predicate, Schema } from "effect";
 import * as Cause from "effect/Cause";
 
 import type { ElicitationContext, ElicitationResponse } from "./elicitation";
@@ -100,6 +100,17 @@ export const noopExecutionObserver: ExecutionObserver = {
   handle: () => Effect.void,
 };
 
+type ExecutionEventName = ExecutionEvent["_tag"];
+
+const executionEventName = (event: ExecutionEvent): ExecutionEventName => {
+  if (Predicate.isTagged(event, "ExecutionStarted")) return "ExecutionStarted";
+  if (Predicate.isTagged(event, "ToolCallStarted")) return "ToolCallStarted";
+  if (Predicate.isTagged(event, "ToolCallFinished")) return "ToolCallFinished";
+  if (Predicate.isTagged(event, "InteractionStarted")) return "InteractionStarted";
+  if (Predicate.isTagged(event, "InteractionResolved")) return "InteractionResolved";
+  return "ExecutionFinished";
+};
+
 const logExecutionObserverFailure = (
   event: ExecutionEvent,
   cause: Cause.Cause<unknown>,
@@ -107,7 +118,7 @@ const logExecutionObserverFailure = (
 ): Effect.Effect<void> =>
   Effect.logWarning("execution observer failed", {
     cause: Cause.pretty(cause),
-    event: event.constructor.name,
+    event: executionEventName(event),
     ...(pluginId ? { pluginId } : {}),
   });
 
