@@ -91,7 +91,13 @@ export interface JsonTimeBucketRow {
 export interface JsonStatsAdapterOptions extends JsonAdapterBase {
   /** Numeric path the stats are computed over. */
   readonly path: JsonPath;
-  /** Percentile fractions in [0, 1] (e.g. 0.5, 0.95). */
+  /**
+   * Percentile fractions in [0, 1] (e.g. 0.5, 0.95).
+   *
+   * SQLite adapters compute percentiles from all matching numeric values after
+   * projection because SQLite has no native percentile aggregate. Count, min,
+   * and max still run as SQL aggregates.
+   */
   readonly percentiles?: readonly number[];
 }
 
@@ -155,6 +161,13 @@ export interface JsonTimeBucketOptions<TColumns extends Record<string, AnyColumn
 export interface JsonStatsOptions<TColumns extends Record<string, AnyColumn>>
   extends JsonPublicBase<TColumns> {
   readonly path: JsonPath;
+  /**
+   * Percentile fractions in [0, 1] (e.g. 0.5, 0.95).
+   *
+   * SQLite adapters compute percentiles from all matching numeric values after
+   * projection because SQLite has no native percentile aggregate. Count, min,
+   * and max still run as SQL aggregates.
+   */
   readonly percentiles?: readonly number[];
 }
 

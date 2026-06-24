@@ -20,6 +20,7 @@ import {
   withQueryContext,
   type Condition,
   type ConditionBuilder,
+  type JsonCompareOperator,
   type JsonFilter,
   type JsonGroupCountRow,
   type JsonKeysetCursor,
@@ -1506,6 +1507,17 @@ const pluginStorageWhereOperators = ["eq", "in", "gt", "gte", "lt", "lte"] as co
 const isPluginStorageWhereFilter = (value: unknown): value is Readonly<Record<string, unknown>> =>
   isPluginStorageRecord(value) && pluginStorageWhereOperators.some((operator) => operator in value);
 
+const pluginStorageJsonCompareOperators = {
+  eq: "=",
+  gt: ">",
+  gte: ">=",
+  lt: "<",
+  lte: "<=",
+} satisfies Record<
+  Exclude<(typeof pluginStorageWhereOperators)[number], "in">,
+  JsonCompareOperator
+>;
+
 const pluginStorageComparableValue = (value: unknown): string | number | boolean | null => {
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
@@ -1599,16 +1611,11 @@ const pluginStorageWhereToJsonFilter = (
           });
           continue;
         }
+        if (!(operator in pluginStorageJsonCompareOperators)) continue;
         const compareOperator =
-          operator === "gt"
-            ? ">"
-            : operator === "gte"
-              ? ">="
-              : operator === "lt"
-                ? "<"
-                : operator === "lte"
-                  ? "<="
-                  : "=";
+          pluginStorageJsonCompareOperators[
+            operator as keyof typeof pluginStorageJsonCompareOperators
+          ];
         items.push({
           kind: "compare",
           path,
