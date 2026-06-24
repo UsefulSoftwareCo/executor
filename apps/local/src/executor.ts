@@ -221,16 +221,47 @@ export const createExecutorHandle = async () => {
   };
 };
 
+class SharedHandleCreateError extends Data.TaggedError("SharedHandleCreateError")<{
+  readonly cause: unknown;
+}> {}
+
 export type ExecutorHandle = Awaited<ReturnType<typeof createExecutorHandle>>;
 
 let sharedHandlePromise: ReturnType<typeof createExecutorHandle> | null = null;
 let sharedHandleLifecycle: Promise<void> = Promise.resolve();
 
-const loadSharedHandle = () => {
-  if (!sharedHandlePromise) {
-    sharedHandlePromise = sharedHandleLifecycle.then(() => createExecutorHandle());
+const loadSharedHandle = (): Promise<ExecutorHandle> => {
+  if (sharedHandlePromise) {
+    return sharedHandlePromise;
   }
-  return sharedHandlePromise;
+
+  // Capture the lifecycle tail at call time so creation stays ordered behind
+  // in-flight dispose
+  const lifecycle = sharedHandleLifecycle;
+
+  // Identity token the heal closure compares against. Using a `let` declared
+  // up front avoids any reference-before-init ambiguity in the closure.
+  let slot: Promise<ExecutorHandle>;
+
+  const acquire = Effect.tryPromise({
+    try: () => lifecycle.then(() => createExecutorHandle()),
+    catch: (cause) => new SharedHandleCreateError({ cause }),
+  }).pipe(
+    // Self-heal: a failed creation must not poison the memo. Clear the slot on
+    // any non-success outcome so the next getExecutor() retries, but only if a
+    // dispose/reload hasn't already swapped in a newer promise (identity guard).
+    Effect.onError(() =>
+      Effect.sync(() => {
+        if (sharedHandlePromise === slot) {
+          sharedHandlePromise = null;
+        }
+      }),
+    ),
+  );
+
+  slot = Effect.runPromise(acquire);
+  sharedHandlePromise = slot;
+  return slot;
 };
 
 export const getExecutor = () => loadSharedHandle().then((handle) => handle.executor);
