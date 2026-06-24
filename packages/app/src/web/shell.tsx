@@ -403,6 +403,14 @@ function SidebarContent(props: {
       <div className="shrink-0 border-t border-sidebar-border px-4 py-2.5">
         <div className="flex flex-col gap-1.5 text-xs leading-none">
           <a
+            href="https://executor.sh/docs"
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Docs
+          </a>
+          <a
             href={`${VITE_GITHUB_URL}/issues`}
             target="_blank"
             rel="noreferrer"

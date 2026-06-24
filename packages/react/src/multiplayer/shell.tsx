@@ -2,8 +2,10 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { BookOpen, ExternalLink } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import {
@@ -49,6 +51,12 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/policies", label: "Policies" },
 ];
 
+/** Canonical public docs (Mintlify). Same-origin on cloud (executor.sh proxies
+ *  `/docs`); the correct external target for self-host / Cloudflare / local,
+ *  whose `/docs` is Swagger UI rather than the product docs. Hosts can override
+ *  via {@link ShellProps.docsUrl}. */
+export const DEFAULT_DOCS_URL = "https://executor.sh/docs";
+
 // Scope-relative path -> the route id under the optional org segment
 // ("/" -> "/{-$orgSlug}", "/policies" -> "/{-$orgSlug}/policies"). Loosely
 // typed on purpose: host-specific items ("/admin", "/billing") resolve against
@@ -76,6 +84,8 @@ export interface ShellProps {
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
   readonly supportSlot?: ReactNode;
+  /** Docs link target; defaults to {@link DEFAULT_DOCS_URL}. Opens in a new tab. */
+  readonly docsUrl?: string;
   /** Replaces the routed `<Outlet />` (the org-slug gate's in-shell 404). */
   readonly content?: ReactNode;
 }
@@ -109,6 +119,30 @@ function NavItem(props: { to: string; label: string; active: boolean; onNavigate
     >
       {props.label}
     </Link>
+  );
+}
+
+// ── DocsLink ───────────────────────────────────────────────────────────────
+
+/** External link to the documentation. Lives in the sidebar footer (always
+ *  visible, outside the scrollable nav) so docs are reachable from inside the
+ *  app, not only the marketing site. */
+function DocsLink(props: { href: string; onNavigate?: () => void }) {
+  return (
+    <a
+      href={props.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => {
+        trackEvent("docs_opened", { surface: "sidebar" });
+        props.onNavigate?.();
+      }}
+      className="group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-active/60 hover:text-foreground"
+    >
+      <BookOpen className="size-4 shrink-0" />
+      <span className="flex-1">Docs</span>
+      <ExternalLink className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </a>
   );
 }
 
@@ -302,6 +336,10 @@ function SidebarContent(
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
+
+      <div className="shrink-0 border-t border-sidebar-border p-2">
+        <DocsLink href={props.docsUrl ?? DEFAULT_DOCS_URL} onNavigate={props.onNavigate} />
+      </div>
 
       {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
 

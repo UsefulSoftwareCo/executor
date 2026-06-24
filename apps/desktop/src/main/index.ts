@@ -822,6 +822,10 @@ const installApplicationMenu = () => {
         label: "Report a Problem…",
         click: () => void reportAProblem(),
       },
+      {
+        label: "Documentation",
+        click: () => void shell.openExternal("https://executor.sh/docs"),
+      },
       { type: "separator" },
       ...(isMac
         ? ([

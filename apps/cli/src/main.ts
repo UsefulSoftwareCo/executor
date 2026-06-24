@@ -175,6 +175,8 @@ import embeddedWebUI from "./embedded-web-ui.gen";
 
 const { version: CLI_VERSION } = await import("../package.json");
 const DEFAULT_PORT = 4788;
+/** Canonical public docs (Mintlify), matching the web shell's DEFAULT_DOCS_URL. */
+const DOCS_URL = "https://executor.sh/docs";
 const DEFAULT_BASE_URL = `http://localhost:${DEFAULT_PORT}`;
 const DAEMON_BOOT_TIMEOUT_MS = 15_000;
 const DAEMON_BOOT_POLL_MS = 150;
@@ -2863,6 +2865,17 @@ const openCommand = Command.make("open", {}, () => openRunningLocalWebApp()).pip
   Command.withDescription("Open the running Executor web app in your browser, already signed in"),
 );
 
+/**
+ * `executor docs` — open the documentation in the browser. The URL is printed
+ * first so it stays usable on headless machines where no opener is available.
+ */
+const docsCommand = Command.make("docs", {}, () =>
+  Effect.gen(function* () {
+    console.log(`Opening ${DOCS_URL}`);
+    yield* openInBrowser(DOCS_URL);
+  }),
+).pipe(Command.withDescription("Open the Executor documentation in your browser"));
+
 const root = Command.make("executor").pipe(
   Command.withSubcommands([
     callCommand,
@@ -2878,6 +2891,7 @@ const root = Command.make("executor").pipe(
     serviceCommand,
     mcpCommand,
     openCommand,
+    docsCommand,
   ] as const),
   Command.withDescription("Executor local CLI"),
 );
