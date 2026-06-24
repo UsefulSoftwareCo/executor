@@ -7,7 +7,8 @@ import {
   ExecutionId,
   composeExecutionObservers,
   definePlugin,
-  wrapExecutionObserver,
+  emitExecutionEvent,
+  withExecutionObserver,
 } from "./index";
 
 const owner = { tenant: Tenant.make("tenant_test"), subject: Subject.make("subject_test") };
@@ -61,6 +62,19 @@ const finishedEvent = () =>
   });
 
 describe("composeExecutionObservers", () => {
+  it.effect("emits events to the scoped observer", () =>
+    Effect.gen(function* () {
+      calls = [];
+      yield* emitExecutionEvent(finishedEvent()).pipe(
+        withExecutionObserver({
+          handle: () => Effect.sync(() => calls.push("observed")),
+        }),
+      );
+
+      expect(calls).toEqual(["observed"]);
+    }),
+  );
+
   it.effect("dispatches observers sequentially and isolates failures", () =>
     Effect.gen(function* () {
       calls = [];
@@ -80,13 +94,15 @@ describe("composeExecutionObservers", () => {
     }),
   );
 
-  it.effect("preserves interrupts from isolated observers", () =>
+  it.effect("preserves interrupts from scoped observers", () =>
     Effect.gen(function* () {
-      const observer = wrapExecutionObserver({
-        handle: () => Effect.interrupt,
-      });
-
-      const exit = yield* Effect.exit(observer.handle(finishedEvent()));
+      const exit = yield* Effect.exit(
+        emitExecutionEvent(finishedEvent()).pipe(
+          withExecutionObserver({
+            handle: () => Effect.interrupt,
+          }),
+        ),
+      );
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (!Exit.isFailure(exit)) return;

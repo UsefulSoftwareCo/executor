@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Context, Data, Effect, Schema } from "effect";
 import * as Cause from "effect/Cause";
 
 import type { ElicitationContext, ElicitationResponse } from "./elicitation";
@@ -100,6 +100,11 @@ export const noopExecutionObserver: ExecutionObserver = {
   handle: () => Effect.void,
 };
 
+const currentExecutionObserver = Context.Reference<ExecutionObserver>(
+  "@executor-js/sdk/ExecutionObserver",
+  { defaultValue: () => noopExecutionObserver },
+);
+
 type ExecutionEventName = ExecutionEvent["_tag"];
 
 const executionEventName = (event: ExecutionEvent): ExecutionEventName => {
@@ -127,14 +132,27 @@ const handleExecutionObserverCause = (
     ? Effect.interrupt
     : logExecutionObserverFailure(event, cause, pluginId);
 
-/** Wrap an observer so non-interrupt failures are logged and isolated while
- *  interrupt causes still propagate as cancellation. */
-export const wrapExecutionObserver = (observer: ExecutionObserver<unknown>): ExecutionObserver => ({
-  handle: (event) =>
-    observer
-      .handle(event)
-      .pipe(Effect.catchCause((cause) => handleExecutionObserverCause(event, cause))),
-});
+/** Emit an execution lifecycle event to the observer installed in the current
+ *  Effect context. Defaults to a no-op when no observer is installed. */
+export const emitExecutionEvent = (event: ExecutionEvent): Effect.Effect<void> =>
+  Effect.service(currentExecutionObserver).pipe(
+    Effect.flatMap((observer) => observer.handle(event)),
+  );
+
+/** Install an execution observer for the scoped Effect. Non-interrupt observer
+ *  failures are logged and isolated; interrupt causes still propagate as
+ *  cancellation. */
+export const withExecutionObserver =
+  (observer: ExecutionObserver<unknown>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    effect.pipe(
+      Effect.provideService(currentExecutionObserver, {
+        handle: (event) =>
+          observer
+            .handle(event)
+            .pipe(Effect.catchCause((cause) => handleExecutionObserverCause(event, cause))),
+      }),
+    );
 
 /** Collect every plugin's `runtime.executionObserver` and fan each event to
  *  all of them, logging per-observer errors. Returns the no-op observer when no
