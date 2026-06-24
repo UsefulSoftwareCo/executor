@@ -482,6 +482,37 @@ describe("FumaDB table policies", () => {
     }),
   );
 
+  it.effect("rejects invalid bulk upsert conflict shapes", () =>
+    useHarness(async (orm) => {
+      await seedTenants(orm);
+      const tenantA = withQueryContext(orm, makeContext(["tenant-a"], "tenant-a"));
+      const values = [
+        {
+          id: "post-a-bulk-upsert",
+          tenantId: "tenant-a",
+          authorId: "author-a",
+          title: "A bulk upsert",
+        },
+      ];
+
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: [],
+          update: ["title"],
+          values,
+        }),
+      ).rejects.toThrow("[FumaDB] upsertMany requires at least one target column.");
+
+      await expect(
+        tenantA.upsertMany("posts", {
+          target: ["id"],
+          update: [],
+          values,
+        }),
+      ).rejects.toThrow("[FumaDB] upsertMany requires at least one update column.");
+    }),
+  );
+
   it.effect("fails closed when a query wrapper does not forward context rebinding", () =>
     useHarness(async (orm) => {
       const wrapped = { ...orm };

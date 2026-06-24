@@ -407,6 +407,14 @@ export function toORM<S extends AnySchema>(
     async upsertMany(name, { target, update, values }) {
       const table = toTable(name);
       if (values.length === 0) return;
+      if (target.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one target column.");
+      }
+      if (update.length === 0) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects invalid upsert shape
+        throw new Error("[FumaDB] upsertMany requires at least one update column.");
+      }
 
       const targetColumns = target.map((columnName) => {
         const column = table.columns[columnName as string];
