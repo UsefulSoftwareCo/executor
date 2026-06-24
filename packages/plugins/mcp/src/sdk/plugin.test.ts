@@ -345,6 +345,39 @@ describe("mcpPlugin", () => {
     }),
   );
 
+  it.effect("creates a default org connection when adding a stdio MCP server", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        }),
+      );
+
+      yield* executor.mcp.addServer({
+        transport: "stdio",
+        name: "Stdio MCP",
+        command: "",
+        slug: "stdio_mcp",
+      });
+
+      const connections = yield* executor.connections.list({
+        integration: IntegrationSlug.make("stdio_mcp"),
+      });
+
+      expect(connections).toHaveLength(1);
+      expect(connections[0]).toMatchObject({
+        owner: "org",
+        integration: IntegrationSlug.make("stdio_mcp"),
+        name: ConnectionName.make("default"),
+        template: TEMPLATE,
+        address: "tools.stdio_mcp.org.default",
+      });
+    }),
+  );
+
   it.effect("removing an MCP server removes the OAuth client used by its connection", () =>
     Effect.scoped(
       Effect.gen(function* () {

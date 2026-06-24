@@ -8,6 +8,8 @@ import * as z from "zod/v4";
 import {
   authToolFailure,
   definePlugin,
+  AuthTemplateSlug,
+  ConnectionName,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   mergeAuthTemplates,
@@ -63,6 +65,8 @@ import {
 } from "./types";
 
 const MCP_PLUGIN_ID = "mcp" as const;
+const DEFAULT_STDIO_CONNECTION_NAME = ConnectionName.make("default");
+const NO_AUTH_TEMPLATE = AuthTemplateSlug.make("none");
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
   const slug = value
@@ -763,9 +767,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return yield* new IntegrationAlreadyExistsError({ slug: slugFrom(slug) });
           }
 
+          const integration = slugFrom(slug);
+
           yield* ctx.core.integrations
             .register({
-              slug: slugFrom(slug),
+              slug: integration,
               name: input.name,
               description: input.description?.trim() || input.name,
               config,
@@ -777,6 +783,46 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 attributes: { "mcp.integration.slug": slug },
               }),
             );
+
+          if (config.transport === "stdio") {
+            yield* ctx.connections
+              .create({
+                owner: "org",
+                name: DEFAULT_STDIO_CONNECTION_NAME,
+                integration,
+                template: NO_AUTH_TEMPLATE,
+                values: {},
+              })
+              .pipe(
+                Effect.catchTags({
+                  CredentialProviderNotRegisteredError: (error) =>
+                    Effect.fail(
+                      new McpConnectionError({
+                        transport: "stdio",
+                        message: `Failed creating the default stdio MCP connection: ${error.message}`,
+                      }),
+                    ),
+                  IntegrationNotFoundError: (error) =>
+                    Effect.fail(
+                      new McpConnectionError({
+                        transport: "stdio",
+                        message: `Failed creating the default stdio MCP connection: ${error.message}`,
+                      }),
+                    ),
+                  InvalidConnectionInputError: (error) =>
+                    Effect.fail(
+                      new McpConnectionError({
+                        transport: "stdio",
+                        message: `Failed creating the default stdio MCP connection: ${error.message}`,
+                      }),
+                    ),
+                }),
+                Effect.withSpan("mcp.plugin.create_stdio_default_connection", {
+                  attributes: { "mcp.integration.slug": slug },
+                }),
+              );
+          }
+
           return { slug };
         }).pipe(
           Effect.withSpan("mcp.plugin.add_server", {
