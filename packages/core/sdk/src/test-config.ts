@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import type * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 import { withQueryContext } from "@executor-js/fumadb/query";
 import { collectTables, createExecutor, type Executor, type ExecutorConfig } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
@@ -118,6 +119,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly backend?: TestDatabaseBackend;
   readonly dataDir?: string;
   readonly coreTools?: ExecutorConfig<TPlugins>["coreTools"];
+  readonly cache?: KeyValueStore.KeyValueStore;
   /** Override the OAuth callback URL. Pass `null` to construct an executor with
    *  no OAuth callback (exercises the fail-loud redirect path). */
   readonly redirectUri?: string | null;
@@ -155,6 +157,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     db,
     plugins: options?.plugins,
     coreTools: options?.coreTools,
+    cache: options?.cache,
     testDb,
     // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",

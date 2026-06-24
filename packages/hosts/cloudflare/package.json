@@ -8,6 +8,10 @@
       "types": "./src/blob-store.ts",
       "default": "./src/blob-store.ts"
     },
+    "./key-value-store": {
+      "types": "./src/key-value-store.ts",
+      "default": "./src/key-value-store.ts"
+    },
     "./mcp/worker-transport": {
       "types": "./src/mcp/worker-transport.ts",
       "default": "./src/mcp/worker-transport.ts"

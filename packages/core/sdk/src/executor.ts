@@ -1,4 +1,5 @@
 import { Effect, Inspectable, Layer, Option, Predicate, Schema } from "effect";
+import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { fumadb } from "@executor-js/fumadb";
 import { memoryAdapter } from "@executor-js/fumadb/adapters/memory";
@@ -319,6 +320,8 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   ) => Effect.Effect<unknown, ExecuteError>;
 
   readonly close: () => Effect.Effect<void, StorageFailure>;
+
+  readonly cache: KeyValueStore.KeyValueStore;
 } & PluginExtensions<TPlugins>;
 
 export interface ExecutorDb {
@@ -346,6 +349,7 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * values stay out of the relational tier.
    */
   readonly blobs?: BlobStore;
+  readonly cache?: KeyValueStore.KeyValueStore;
   readonly plugins?: TPlugins;
   /** Config-level credential providers, merged with every
    *  `plugin.credentialProviders`. Config providers register first, so the
@@ -417,6 +421,58 @@ const validateExecutorDbTables = (required: FumaTables, actual: FumaTables): voi
 
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
+
+const MEMORY_CACHE_CAPACITY = 2_048;
+const MEMORY_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const makeMemoryCacheStore = (): KeyValueStore.KeyValueStore => {
+  const rows = new Map<string, { readonly value: string; readonly expiresAt: number }>();
+  const evictExpired = (now: number): void => {
+    for (const [key, entry] of rows) {
+      if (entry.expiresAt <= now) rows.delete(key);
+    }
+  };
+  const evictCapacity = (): void => {
+    while (rows.size > MEMORY_CACHE_CAPACITY) {
+      const oldest = rows.keys().next().value;
+      if (oldest === undefined) break;
+      rows.delete(oldest);
+    }
+  };
+  return KeyValueStore.makeStringOnly({
+    get: (key) =>
+      Effect.sync(() => {
+        const now = Date.now();
+        const entry = rows.get(key);
+        if (entry === undefined) return undefined;
+        if (entry.expiresAt <= now) {
+          rows.delete(key);
+          return undefined;
+        }
+        rows.delete(key);
+        rows.set(key, entry);
+        return entry.value;
+      }),
+    set: (key, value) =>
+      Effect.sync(() => {
+        const now = Date.now();
+        evictExpired(now);
+        rows.set(key, { value, expiresAt: now + MEMORY_CACHE_TTL_MS });
+        evictCapacity();
+      }),
+    remove: (key) =>
+      Effect.sync(() => {
+        rows.delete(key);
+      }),
+    clear: Effect.sync(() => {
+      rows.clear();
+    }),
+    size: Effect.sync(() => {
+      evictExpired(Date.now());
+      return rows.size;
+    }),
+  });
+};
 
 const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
   storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
@@ -1277,6 +1333,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
+    const cacheStore = config.cache ?? makeMemoryCacheStore();
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
     // Populated once, never mutated after startup.
@@ -3299,6 +3356,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       },
       execute,
       close,
+      cache: cacheStore,
     };
 
     const toExecutor = (value: unknown): Executor<TPlugins> => value as Executor<TPlugins>;
