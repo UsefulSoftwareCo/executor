@@ -1,5 +1,30 @@
 # executor
 
+## 1.5.19
+
+### Patch Changes
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Google media downloads (Drive file contents, exports, and other binary
+  endpoints) are now returned as binary responses instead of being decoded as
+  text, so files come back intact. Emit them with `emit(result.data)`.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - The CLI now validates that a URL is `http`/`https` before handing it to the
+  operating system's browser opener, and on Windows opens it via
+  `rundll32 url.dll,FileProtocolHandler` instead of `cmd /c start`. This removes a
+  path where a crafted URL could be interpreted as a shell command. `executor
+login` and the "open in browser" prompts behave the same for normal URLs.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hardened the hosted egress guard. Outbound requests from OAuth token exchanges,
+  MCP transports, and GraphQL/Google/Microsoft discovery now all route through the
+  guard, and the guard resolves DNS before connecting so a hostname that points at
+  a private or loopback address is blocked rather than only literal private IPs.
+  This tightens SSRF protection for hosted and cloud execution.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.19
+  - @executor-js/runtime-quickjs@1.5.19
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.39
+
 ## 1.5.18
 
 ### Patch Changes
