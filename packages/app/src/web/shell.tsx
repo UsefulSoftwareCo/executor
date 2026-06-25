@@ -473,7 +473,7 @@ export function Shell() {
     <div className="flex h-screen overflow-hidden">
       <CommandPalette />
       {/* Desktop sidebar */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
+      <aside className="desktop-macos-sidebar hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
         <SidebarContent
           pathname={pathname}
           updateAvailable={updateAvailable}
@@ -493,8 +493,8 @@ export function Shell() {
             onClick={() => setMobileSidebarOpen(false)}
           />
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
-            <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
-              <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center gap-1.5">
+            <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
+              <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
                 <span className="font-display text-base tracking-tight text-foreground">
                   executor
                 </span>
@@ -507,7 +507,7 @@ export function Shell() {
                 size="icon-sm"
                 aria-label="Close navigation"
                 onClick={() => setMobileSidebarOpen(false)}
-                className="desktop-macos-no-drag text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
+                className="text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
               >
                 <svg viewBox="0 0 16 16" className="size-3.5">
                   <path
@@ -534,13 +534,13 @@ export function Shell() {
       {/* Main content */}
       <main className="flex min-h-0 flex-1 flex-col min-w-0 overflow-hidden">
         {/* Mobile top bar */}
-        <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
           <Button
             variant="outline"
             size="icon-sm"
             aria-label="Open navigation"
             onClick={() => setMobileSidebarOpen(true)}
-            className="desktop-macos-no-drag bg-card hover:bg-accent/50"
+            className="bg-card hover:bg-accent/50"
           >
             <svg viewBox="0 0 16 16" className="size-4">
               <path
@@ -551,7 +551,7 @@ export function Shell() {
               />
             </svg>
           </Button>
-          <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center gap-1.5">
+          <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
             <span className="font-display text-base tracking-tight text-foreground">executor</span>
           </Link>
           <div className="w-8 shrink-0" />

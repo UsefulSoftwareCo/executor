@@ -403,7 +403,13 @@ const createWindow = async (conn: SidecarConnection) => {
     y: windowState.y,
     width: windowState.width,
     height: windowState.height,
-    minWidth: 720,
+    // Keep the window at or above the responsive layout's mobile breakpoint
+    // (Tailwind `md` = 768px). Below it the web shell switches to the mobile
+    // header, whose far-left hamburger would render under the native macOS
+    // traffic lights (issue #1125). Staying >= 768 means the desktop always
+    // renders the sidebar layout, so the lights only ever sit over the sidebar
+    // header, which is offset to clear them (.desktop-macos-titlebar).
+    minWidth: 768,
     minHeight: 480,
     show: false,
     backgroundColor: "#0a0a0a",

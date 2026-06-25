@@ -149,11 +149,12 @@
   }
 }
 
-/* Headers that sit at the top-left of the desktop window land under the native
-   macOS traffic-light controls (trafficLightPosition {x:16,y:17} in
-   apps/desktop/src/main/index.ts). Offset them so their content clears the
-   lights, and make the freed strip draggable like a native title bar. Applies
-   to the desktop sidebar header and the responsive mobile headers alike. */
+/* The sidebar header sits at the top-left of the desktop window, under the
+   native macOS traffic-light controls (trafficLightPosition {x:16,y:17} in
+   apps/desktop/src/main/index.ts). Offset its content past the lights and make
+   the freed strip draggable like a native title bar. The desktop window stays
+   at or above the mobile breakpoint (minWidth 768), so the sidebar header is
+   the only header the lights ever overlap. */
 .executor-desktop-macos .desktop-macos-titlebar {
   -webkit-app-region: drag;
   padding-left: 88px;
@@ -161,6 +162,13 @@
 
 .executor-desktop-macos .desktop-macos-no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* The 88px title-bar offset eats into the sidebar's width; without extra room
+   the brand wordmark and the server-connection menu collide. Widen the macOS
+   sidebar so both clear the traffic lights with comfortable spacing. */
+.executor-desktop-macos .desktop-macos-sidebar {
+  width: 15rem;
 }
 
 .dark {

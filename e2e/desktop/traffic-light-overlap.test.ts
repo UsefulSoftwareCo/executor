@@ -1,16 +1,20 @@
-// Regression for issue #1125: on the macOS desktop app, when the window is
-// narrowed below the mobile breakpoint (768px; window minWidth is 720) the
-// responsive header's hamburger button — and, once the menu sheet is opened,
-// its "executor Beta" title — used to render at the far-left (x≈12) where the
-// native macOS traffic-light window controls live. The app offsets the
-// *desktop* sidebar header by 88px (.desktop-macos-titlebar in globals.css) to
-// clear the traffic lights; the fix gives the *mobile* top bar (shell.tsx) and
-// the mobile sheet header the same offset so their content clears the lights.
+// Regression for issue #1125: on the macOS desktop app the native traffic-light
+// window controls are drawn over the frameless web content at
+// trafficLightPosition {x:16,y:17} (apps/desktop/src/main/index.ts) — three
+// 12px buttons with 20px center spacing, occupying x ∈ [16, 68].
 //
-// The macOS traffic lights are drawn at trafficLightPosition {x:16,y:17}
-// (apps/desktop/src/main/index.ts) — three 12px buttons with 20px center
-// spacing, so they occupy x ∈ [16, 68]. After the fix, the hamburger button
-// and the sheet brand must start to the RIGHT of that zone.
+// The original bug: the window minWidth was 720 but the web layout switches to
+// the mobile header at the 768px breakpoint, so narrowing the window into the
+// 720–767 band rendered the mobile hamburger (and, with the menu open, the
+// "executor Beta" brand) at the far left, directly under the lights.
+//
+// The fix has two parts, both asserted here:
+//   1. minWidth is now 768, so the desktop never drops into the mobile layout —
+//      the lights only ever sit over the desktop sidebar header. This proves
+//      the mobile hamburger bar is NOT present at the minimum width.
+//   2. The sidebar header is offset 88px to clear the lights, and the macOS
+//      sidebar is widened (.desktop-macos-sidebar) so the brand wordmark and
+//      the server-connection menu both clear the lights without colliding.
 //
 // Launches the REAL Electron app via Playwright against a throwaway HOME (same
 // harness as local-auth-mcp.test.ts). Captures via CDP page.screenshot:
@@ -40,8 +44,11 @@ const appDir = fileURLToPath(new URL("../../apps/desktop/", import.meta.url));
 const electronBinary = createRequire(join(appDir, "package.json"))("electron") as string;
 
 // Rightmost edge of the traffic-light cluster (left edges 16/36/56, +12px) plus
-// a small margin. Header content must start at or beyond this to be clickable.
+// a small margin. Header content must start at or beyond this to clear them.
 const TRAFFIC_LIGHTS_RIGHT = 72;
+// The window minWidth: the narrowest the desktop window can get, and the worst
+// case for fitting the sidebar header alongside the lights.
+const MIN_WIDTH = 768;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -86,18 +93,14 @@ const captureBoth = async (page: Page, runDir: string, state: string) => {
   await page.evaluate(REMOVE_LIGHTS_JS);
 };
 
-// Assert an element's left edge clears the native traffic-light cluster.
-const expectClearsTrafficLights = async (locator: Locator, label: string) => {
-  const box = await locator.boundingBox();
-  expect(box, `${label}: has a bounding box`).not.toBeNull();
-  expect(
-    box!.x,
-    `${label}: left edge (${Math.round(box!.x)}px) clears the traffic lights (≥ ${TRAFFIC_LIGHTS_RIGHT}px)`,
-  ).toBeGreaterThanOrEqual(TRAFFIC_LIGHTS_RIGHT);
+const box = async (locator: Locator, label: string) => {
+  const b = await locator.boundingBox();
+  expect(b, `${label}: has a bounding box`).not.toBeNull();
+  return b!;
 };
 
 scenario(
-  "Desktop · #1125 mobile headers clear the macOS traffic lights at narrow width",
+  "Desktop · #1125 the desktop stays out of the mobile layout and the sidebar header clears the macOS traffic lights",
   { timeout: 300_000 },
   Effect.gen(function* () {
     const runDir = yield* RunDir;
@@ -112,41 +115,68 @@ const run = async (runDir: string) => {
     const page = await app.firstWindow({ timeout: 120_000 });
     await page.waitForLoadState("domcontentloaded");
 
-    // The 88px offset is gated on this class; without it the assertions below
-    // would be meaningless, so prove it is active before trusting them.
+    // The offset is gated on this class; without it the assertions below would
+    // be meaningless, so prove it is active before trusting them.
     const isMacDesktop = await page.evaluate(() =>
       document.documentElement.classList.contains("executor-desktop-macos"),
     );
     expect(isMacDesktop, "renderer applied the macOS desktop class").toBe(true);
 
-    // Narrow the window below the 768px mobile breakpoint. 730 is the realistic
-    // worst case given the 720 minWidth. (Height clamps to the display.)
-    await app.evaluate(async ({ BrowserWindow }) => {
+    // Try to shrink below the mobile breakpoint. The minWidth fix must clamp the
+    // window at 768, so the desktop can never drop into the mobile layout. We ask
+    // for 700 (the old reachable band) and assert it clamps up.
+    const clampedWidth = await app.evaluate(async ({ BrowserWindow }) => {
       const win = BrowserWindow.getAllWindows()[0]!;
-      win.setSize(730, 800);
-      win.setPosition(80, 40);
+      win.setPosition(60, 40);
+      win.setSize(700, 800);
       win.show();
       win.focus();
+      return win.getSize()[0];
     });
+    expect(
+      clampedWidth,
+      `window cannot shrink below the mobile breakpoint (clamped to ${clampedWidth}px)`,
+    ).toBeGreaterThanOrEqual(MIN_WIDTH);
 
-    // At 730px we're in mobile layout: the hamburger button proves it rendered.
-    const hamburger = page.getByRole("button", { name: "Open navigation" });
-    await hamburger.waitFor({ timeout: 60_000 });
+    const sidebar = page.locator("aside.desktop-macos-sidebar");
+    await sidebar.waitFor({ timeout: 60_000 });
     await sleep(800);
 
-    // Collapsed state: the hamburger button must clear the traffic lights.
-    await captureBoth(page, runDir, "01-collapsed");
-    await expectClearsTrafficLights(hamburger, "mobile hamburger button");
+    // Part 1: at the minimum width the mobile phone bar must NOT be shown, so
+    // its hamburger can never land under the lights.
+    const hamburgerVisible = await page
+      .getByRole("button", { name: "Open navigation" })
+      .isVisible();
+    expect(hamburgerVisible, "mobile hamburger bar is hidden on the desktop at minimum width").toBe(
+      false,
+    );
+    const sidebarVisible = await sidebar.isVisible();
+    expect(sidebarVisible, "desktop sidebar is visible at minimum width").toBe(true);
 
-    // Open the mobile menu sheet: its "executor Beta" brand must clear too.
-    await hamburger.click();
-    const sheet = page.locator("div.fixed.inset-0.z-50");
-    await sheet.getByRole("button", { name: "Close navigation" }).first().waitFor({
-      timeout: 30_000,
-    });
-    await sleep(500);
-    await captureBoth(page, runDir, "02-menu-open");
-    await expectClearsTrafficLights(sheet.locator("a").first(), "mobile sheet brand");
+    await captureBoth(page, runDir, "01-sidebar-header");
+
+    // Part 2a: the brand wordmark clears the traffic-light cluster.
+    const header = sidebar.locator(".desktop-macos-titlebar");
+    const brand = await box(header.locator("a").first(), "sidebar brand");
+    expect(
+      Math.round(brand.x),
+      `sidebar brand left edge (${Math.round(brand.x)}px) clears the lights (>= ${TRAFFIC_LIGHTS_RIGHT}px)`,
+    ).toBeGreaterThanOrEqual(TRAFFIC_LIGHTS_RIGHT);
+
+    // Part 2b: the server-connection menu sits clear of the brand (no collision
+    // with the "Beta" badge, the bug in the screenshot) and stays inside the
+    // sidebar.
+    const menu = await box(
+      header.locator('button[aria-label^="Select Executor server"]'),
+      "server-connection menu",
+    );
+    const asideBox = await box(sidebar, "sidebar");
+    const gap = Math.round(menu.x - (brand.x + brand.width));
+    expect(gap, `server menu does not overlap the brand (gap ${gap}px)`).toBeGreaterThanOrEqual(8);
+    expect(
+      Math.round(menu.x + menu.width),
+      "server menu stays within the sidebar",
+    ).toBeLessThanOrEqual(Math.round(asideBox.x + asideBox.width));
   } finally {
     await app.close().catch(() => {});
     rmSync(home, { recursive: true, force: true });
