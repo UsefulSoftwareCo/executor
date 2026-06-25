@@ -107,6 +107,13 @@ export interface PluginStorageScopedKeyInput extends PluginStorageKeyInput {
 export interface PluginStorageListInput {
   readonly collection: string;
   readonly keyPrefix?: string;
+  /** Restrict the scan to keys starting with any of these prefixes, pushed to
+   *  the storage layer (a key `starts with` / `LIKE 'prefix%'` clause) instead
+   *  of scanning the whole collection. A row matches if it starts with
+   *  `keyPrefix` or any entry here; callers that need an exact-value invariant
+   *  (e.g. distinguishing two integrations whose key prefixes collide under
+   *  `LIKE` wildcards) must still guard on the row data. */
+  readonly keyPrefixes?: readonly string[];
 }
 
 export interface PluginStoragePutInput extends PluginStorageScopedKeyInput {

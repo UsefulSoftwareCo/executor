@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Predicate, Result } from "effect";
+import { withQueryContext } from "@executor-js/fumadb/query";
 
 import { ToolNotFoundError } from "./errors";
+import { StorageError } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -9,13 +11,16 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  Subject,
+  Tenant,
   ToolAddress,
   ToolName,
 } from "./ids";
-import { definePlugin } from "./plugin";
+import { collectTables, createExecutor } from "./executor";
+import { definePlugin, type AnyPlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
-import { makeTestExecutor } from "./testing";
+import { createSqliteTestFumaDb, makeTestExecutor } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
@@ -94,6 +99,9 @@ const demoPlugin = definePlugin(() => ({
         description: "Demo",
         config: {},
       }),
+    // Stamp the integration's `config_revised_at` so every other binding's
+    // connections fall behind and reconverge on their next read.
+    reviseConfig: (rev: number) => ctx.core.integrations.update(INTEG, { config: { rev } }),
     storagePut: (owner: "org" | "user", key: string, value: string) =>
       ctx.storage.put(owner, key, value),
     storageList: () => ctx.storage.list(),
@@ -469,6 +477,169 @@ describe("createExecutor", () => {
           String(suggestion).startsWith(`tools.${INTEG}.org.${CONN}.`),
         ),
       ).toBe(true);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Stale-connection-tools sync: the read path (`tools.list`) must converge a
+// connection whose catalog predates its integration's last config revision,
+// but must NOT re-scan connections on every read once everything is synced at
+// the current revision watermark.
+// ---------------------------------------------------------------------------
+
+const FLAKY = IntegrationSlug.make("flaky");
+
+// Build an executor over a real SQLite DB whose adapter counts how many reads
+// hit each table. The counter is installed on the adapter BEFORE the query
+// context is layered on, so every derived contextual query forwards to it.
+const makeCountingExecutor = <const TPlugins extends readonly AnyPlugin[]>(input: {
+  readonly tenant: string;
+  readonly subject: string;
+  readonly plugins: TPlugins;
+}) =>
+  Effect.gen(function* () {
+    const tables = collectTables();
+    const real = yield* Effect.promise(() =>
+      createSqliteTestFumaDb({ tables, namespace: "executor_test" }),
+    );
+    const counts: Record<string, number> = {};
+    // Count reads per table at the adapter seam, BEFORE the query context is
+    // layered on, so every derived contextual query forwards through it.
+    const adapter = real.db.internal;
+    const realFindMany = adapter.findMany.bind(adapter);
+    adapter.findMany = (table, options) => {
+      counts[table.ormName] = (counts[table.ormName] ?? 0) + 1;
+      return realFindMany(table, options);
+    };
+    const db = withQueryContext(real.db, { tenant: input.tenant, subject: input.subject });
+    const executor = yield* createExecutor({
+      tenant: Tenant.make(input.tenant),
+      subject: Subject.make(input.subject),
+      db,
+      plugins: input.plugins,
+      onElicitation: "accept-all",
+    });
+    return {
+      executor,
+      counts,
+      reset: () => {
+        for (const key of Object.keys(counts)) counts[key] = 0;
+      },
+      close: () =>
+        executor.close().pipe(Effect.ignore, Effect.andThen(Effect.promise(() => real.close()))),
+    };
+  });
+
+// A plugin whose resolveTools can be toggled to fail, to exercise the
+// best-effort retry path (a failed rebuild must not be cached as "synced").
+const makeFlakyPlugin = () => {
+  let fail = false;
+  return definePlugin(() => ({
+    id: "flaky" as const,
+    credentialProviders: [memoryProvider()],
+    storage: () => ({}),
+    resolveTools: () =>
+      fail
+        ? Effect.fail(new StorageError({ message: "resolveTools boom", cause: undefined }))
+        : Effect.succeed({
+            tools: [{ name: ToolName.make("ping"), description: "ping" }],
+            definitions: {},
+          }),
+    invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+    extension: (ctx) => ({
+      seed: () => ctx.core.integrations.register({ slug: FLAKY, description: "Flaky", config: {} }),
+      reviseConfig: (rev: number) => ctx.core.integrations.update(FLAKY, { config: { rev } }),
+      setFail: (value: boolean) =>
+        Effect.sync(() => {
+          fail = value;
+        }),
+    }),
+  }))();
+};
+
+describe("syncStaleConnectionTools", () => {
+  it.effect(
+    "skips the connection scan once synced at the current revision, re-scans on a new one",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeCountingExecutor({
+          tenant: "wm-skip-tenant",
+          subject: "wm-skip-subject",
+          plugins: [demoPlugin] as const,
+        });
+        yield* harness.executor.demo.seed();
+        yield* harness.executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+        // Revise config so the freshly-created connection is now stale.
+        yield* harness.executor.demo.reviseConfig(1);
+
+        // First read converges: it scans connections and rebuilds the stale one.
+        harness.reset();
+        yield* harness.executor.tools.list();
+        expect(harness.counts.connection ?? 0).toBeGreaterThanOrEqual(1);
+
+        // Second read at the same watermark skips the connection scan entirely
+        // (it still reads the integration watermark).
+        harness.reset();
+        yield* harness.executor.tools.list();
+        expect(harness.counts.connection ?? 0).toBe(0);
+        expect(harness.counts.integration ?? 0).toBeGreaterThanOrEqual(1);
+
+        // A new revision moves the watermark and busts the cache: re-scan.
+        yield* harness.executor.demo.reviseConfig(2);
+        harness.reset();
+        yield* harness.executor.tools.list();
+        expect(harness.counts.connection ?? 0).toBeGreaterThanOrEqual(1);
+
+        yield* harness.close();
+      }),
+  );
+
+  it.effect("retries on the next read when a rebuild fails (does not cache failures)", () =>
+    Effect.gen(function* () {
+      const flaky = makeFlakyPlugin();
+      const harness = yield* makeCountingExecutor({
+        tenant: "wm-retry-tenant",
+        subject: "wm-retry-subject",
+        plugins: [flaky] as const,
+      });
+      yield* harness.executor.flaky.seed();
+      yield* harness.executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: FLAKY,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+
+      // Make the next rebuild fail, then revise so the connection is stale.
+      yield* harness.executor.flaky.setFail(true);
+      yield* harness.executor.flaky.reviseConfig(1);
+
+      // Two reads at the same watermark: both must scan (the failed rebuild is
+      // never cached as synced).
+      harness.reset();
+      yield* harness.executor.tools.list();
+      expect(harness.counts.connection ?? 0).toBeGreaterThanOrEqual(1);
+
+      harness.reset();
+      yield* harness.executor.tools.list();
+      expect(harness.counts.connection ?? 0).toBeGreaterThanOrEqual(1);
+
+      // Once it can succeed, the connection converges and the next read skips.
+      yield* harness.executor.flaky.setFail(false);
+      yield* harness.executor.tools.list();
+      harness.reset();
+      yield* harness.executor.tools.list();
+      expect(harness.counts.connection ?? 0).toBe(0);
+
+      yield* harness.close();
     }),
   );
 });

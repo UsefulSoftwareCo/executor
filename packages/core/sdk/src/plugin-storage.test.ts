@@ -78,6 +78,8 @@ const executionHistoryPlugin = definePlugin(() => ({
         owner,
         entries: keys.map((key) => ({ collection: toolCalls.name, key })),
       }),
+    list: (input: { readonly keyPrefix?: string; readonly keyPrefixes?: readonly string[] }) =>
+      ctx.pluginStorage.list({ collection: toolCalls.name, ...input }),
     get: (key: string) => ctx.storage.toolCalls.get({ key }),
     getForOwner: (owner: Owner, key: string) => ctx.storage.toolCalls.getForOwner({ owner, key }),
     query: (input?: PluginStorageCollectionQueryInput<typeof toolCalls>) =>
@@ -291,6 +293,51 @@ describe("plugin storage collections", () => {
         ["shared", "org", "shell"],
         ["shared", "user", "browser"],
       ]);
+    }),
+  );
+
+  it.effect("list narrows the scan to keys matching any of keyPrefixes", () =>
+    Effect.gen(function* () {
+      // Mirrors the openapi operation store: keys carry an integration prefix
+      // (v2 `op.<hash>.` plus the legacy plaintext `<slug>.`). `list` must push
+      // the prefixes to the storage layer and return only matching keys.
+      const executor = yield* makeTestExecutor({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const seed = (key: string) =>
+        executor.executionHistory.record(
+          "org",
+          key,
+          call({
+            runId: "run-prefix",
+            toolId: "shell",
+            status: "ok",
+            startedAt: "2026-05-29T10:00:00.000Z",
+          }),
+        );
+      yield* seed("op.aaaaaaaaaaaaa.one");
+      yield* seed("op.aaaaaaaaaaaaa.two");
+      yield* seed("op.bbbbbbbbbbbbb.three");
+      yield* seed("microsoft_graph.legacy");
+      yield* seed("other_int.legacy");
+
+      const matched = yield* executor.executionHistory.list({
+        keyPrefixes: ["op.aaaaaaaaaaaaa.", "microsoft_graph."],
+      });
+      expect(matched.map((row) => row.key).sort()).toEqual([
+        "microsoft_graph.legacy",
+        "op.aaaaaaaaaaaaa.one",
+        "op.aaaaaaaaaaaaa.two",
+      ]);
+
+      // Back-compat: a single keyPrefix still works.
+      const single = yield* executor.executionHistory.list({ keyPrefix: "op.bbbbbbbbbbbbb." });
+      expect(single.map((row) => row.key)).toEqual(["op.bbbbbbbbbbbbb.three"]);
+
+      // No prefixes => whole collection.
+      const all = yield* executor.executionHistory.list({});
+      expect(all).toHaveLength(5);
     }),
   );
 

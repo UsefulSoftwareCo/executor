@@ -383,6 +383,38 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
 }
 
 // ---------------------------------------------------------------------------
+// Stale-connection-tools sync watermark cache.
+//
+// `tools.list` lazily reconverges connections whose tool catalog predates their
+// integration's last config revision. Detecting that needs a read of the
+// revised integrations (the watermark) plus a scan of their connections. The
+// connection scan is pure waste once everything is already synced at the
+// current watermark, which is the steady state (a config revision stamps
+// `config_revised_at` permanently). We cache, per binding, the highest
+// watermark at which the binding was confirmed fully synced: while the freshly
+// read watermark is unchanged, the connection scan is skipped.
+//
+// The cache is keyed by the underlying DB handle (a WeakMap), then by
+// tenant+subject. In production every per-request scoped executor in an isolate
+// shares one long-lived DB handle, so the cache survives executor rebuilds and
+// the saving lands. Each test builds a fresh DB object, so tests are naturally
+// isolated (no cross-test contamination) and the entry is GC'd with the handle.
+// The watermark is always read fresh, so a revision on any isolate busts the
+// cache on the next read — convergence stays correct.
+// ---------------------------------------------------------------------------
+
+const staleSyncWatermarkCache = new WeakMap<object, Map<string, number>>();
+
+const staleSyncWatermarkFor = (handle: object): Map<string, number> => {
+  let byBinding = staleSyncWatermarkCache.get(handle);
+  if (!byBinding) {
+    byBinding = new Map();
+    staleSyncWatermarkCache.set(handle, byBinding);
+  }
+  return byBinding;
+};
+
+// ---------------------------------------------------------------------------
 // collectTables — return the executor-owned Fuma table set. Plugins persist
 // through host-owned facades (`pluginStorage`, `blobs`) instead of contributing
 // table definitions, so the schema is fixed and plugin-independent.
@@ -820,13 +852,34 @@ const makePluginStorageFacade = (input: {
   const tenant = String(input.owner.tenant);
 
   const whereFor =
-    (collection: string, key?: string): CoreWhere =>
+    (collection: string, key?: string, keyPrefixes?: readonly string[]): CoreWhere =>
     (b: AnyCb) =>
       b.and(
         b("plugin_id", "=", input.pluginId),
         b("collection", "=", collection),
         key === undefined ? true : b("key", "=", key),
+        // Push a key-prefix scan to the storage layer (`key LIKE 'prefix%'`)
+        // so a prefixed list reads only its slice instead of the whole
+        // collection. `LIKE` treats `_`/`%` in a prefix as wildcards, so this
+        // can over-match; callers keep an exact `startsWith` (and any data
+        // guard) to stay correct.
+        keyPrefixes === undefined || keyPrefixes.length === 0
+          ? true
+          : b.or(...keyPrefixes.map((prefix) => b("key", "starts with", prefix))),
       );
+
+  // Collect the effective key prefixes for a list/query: the single `keyPrefix`
+  // plus any `keyPrefixes`, deduped. Returns undefined when there are none.
+  const collectKeyPrefixes = (input: {
+    readonly keyPrefix?: string;
+    readonly keyPrefixes?: readonly string[];
+  }): readonly string[] | undefined => {
+    const all = [
+      ...(input.keyPrefix === undefined ? [] : [input.keyPrefix]),
+      ...(input.keyPrefixes ?? []),
+    ];
+    return all.length === 0 ? undefined : [...new Set(all)];
+  };
 
   const whereOwner = (owner: Owner, collection: string, key: string): CoreWhere => {
     const os = ownerSubject(owner);
@@ -1119,14 +1172,17 @@ const makePluginStorageFacade = (input: {
       getForOwnerImpl(storageInput.owner, storageInput.collection, storageInput.key),
     list: (storageInput) =>
       Effect.gen(function* () {
+        const keyPrefixes = collectKeyPrefixes(storageInput);
         const rows = yield* input.core.findMany("plugin_storage", {
-          where: whereFor(storageInput.collection),
+          where: whereFor(storageInput.collection, undefined, keyPrefixes),
         });
         return sortByOwnerPrecedence(rows)
           .filter((row) =>
-            storageInput.keyPrefix === undefined
+            // Exact prefix guard: the DB `LIKE` clause narrows the scan but can
+            // over-match on `_`/`%`, so re-check with `startsWith`.
+            keyPrefixes === undefined
               ? true
-              : row.key.startsWith(storageInput.keyPrefix),
+              : keyPrefixes.some((prefix) => row.key.startsWith(prefix)),
           )
           .map((row) => pluginStorageEntryFromRow(row));
       }),
@@ -2435,17 +2491,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // every other subject converges here, on their own read, under their own
     // binding. Best-effort: a failed rebuild leaves the stale-but-working
     // catalog in place and retries on the next read.
+    //
+    // The revised-integration read is the watermark; once every connection is
+    // synced past the current watermark we cache it and skip the connection
+    // scan on subsequent reads until a new revision moves the watermark.
+    const staleSyncCache = staleSyncWatermarkFor(rootDbUntyped);
+    const staleSyncCacheKey = `${tenant} ${subject ?? ""}`;
     const syncStaleConnectionTools = Effect.gen(function* () {
       const revised = yield* core.findMany("integration", {
         where: (b: AnyCb) => b.isNotNull("config_revised_at"),
       });
       if (revised.length === 0) return;
+      const watermark = revised.reduce(
+        (max, row) => Math.max(max, Number(row.config_revised_at)),
+        0,
+      );
+      // Already confirmed everything synced at this watermark: skip the scan.
+      if (staleSyncCache.get(staleSyncCacheKey) === watermark) return;
+
       const revisedAt = new Map(
         revised.map((row) => [row.slug, Number(row.config_revised_at)] as const),
       );
       const connections = yield* core.findMany("connection", {
         where: (b: AnyCb) => b.or(...revised.map((row) => b("integration", "=", row.slug))),
       });
+      // Only cache the watermark when every stale connection rebuilt cleanly; a
+      // failed rebuild stays uncached so the next read retries it.
+      let allClean = true;
       for (const connection of connections) {
         const revisedTime = revisedAt.get(connection.integration);
         if (revisedTime === undefined) continue;
@@ -2459,7 +2531,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           integration: IntegrationSlug.make(connection.integration),
           name: ConnectionName.make(connection.name),
         }).pipe(
-          Effect.catch(() => Effect.succeed([] as readonly Tool[])),
+          Effect.catch(() =>
+            Effect.sync(() => {
+              allClean = false;
+              return [] as readonly Tool[];
+            }),
+          ),
           Effect.withSpan("executor.tools.sync_stale", {
             attributes: {
               "executor.integration": connection.integration,
@@ -2468,6 +2545,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
       }
+      if (allClean) staleSyncCache.set(staleSyncCacheKey, watermark);
     });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>

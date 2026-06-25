@@ -149,7 +149,16 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
 
   const listRows = (integration: string) =>
     pluginStorage
-      .list({ collection: OPERATION_COLLECTION })
+      .list({
+        collection: OPERATION_COLLECTION,
+        // Narrow the scan to this integration at the storage layer instead of
+        // reading every operation row and filtering in JS. Cover both key
+        // schemes: the v2 hashed prefix (`op.<hash(integration)>.`) and the
+        // legacy plaintext prefix (`<integration>.`). The `data.integration`
+        // guard below stays the source of truth (the legacy prefix can
+        // over-match under `LIKE` wildcards / hash-prefix collisions).
+        keyPrefixes: [`${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.`, `${integration}.`],
+      })
       .pipe(
         Effect.map((rows: readonly PluginStorageEntry[]) =>
           rows.filter((row) => rowToOperation(row)?.integration === integration),
