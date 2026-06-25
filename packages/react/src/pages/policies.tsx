@@ -112,11 +112,15 @@ function AddPolicyForm(props: {
   // form and focus the pattern input with its content selected so the user
   // can tweak the pattern in one keystroke. Selecting (not just focusing) is
   // the difference between "I have to clear it first" and "I can just type".
+  // The dep is the nonce alone, the prefill object identity always changes
+  // with the nonce, so depending on both is redundant noise.
   const prefillNonce = props.prefill?.nonce;
+  const prefillPattern = props.prefill?.pattern;
+  const prefillAction = props.prefill?.action;
   useEffect(() => {
-    if (props.prefill === undefined) return;
-    setPattern(props.prefill.pattern);
-    setAction(props.prefill.action);
+    if (prefillNonce === undefined) return;
+    setPattern(prefillPattern ?? "");
+    setAction(prefillAction ?? "require_approval");
     // setTimeout instead of requestAnimationFrame so this fires AFTER
     // Radix's DropdownMenu close (which also uses setTimeout(0) to restore
     // focus to its trigger), same task queue, but this is enqueued in the
@@ -128,7 +132,11 @@ function AddPolicyForm(props: {
       patternInputRef.current?.select();
     }, 0);
     return () => clearTimeout(id);
-  }, [prefillNonce, props.prefill]);
+    // prefillPattern / prefillAction are read for their LATEST values when
+    // the nonce changes; including them in the dep array would refire on a
+    // stale object identity comparison.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillNonce]);
   // Non-org hosts (local/desktop) have one local workspace. New local policies
   // are org-owned internally to match the v1->v2 migration.
   const ownerDisplay = useOwnerDisplay();
@@ -389,7 +397,15 @@ export function PoliciesPage() {
     // lands on the same side of the org/user guardrail boundary by default,
     // the user can still flip it before submitting.
     setTargetOwner(policy.owner);
-    setPrefill({ pattern: policy.pattern, action: policy.action, nonce: Date.now() });
+    // Monotonic counter (not Date.now()) so two clicks inside the same
+    // millisecond still produce distinct nonces and re-fire the prefill
+    // effect, the functional updater reads the previous value so we don't
+    // race a concurrent state read.
+    setPrefill((prev) => ({
+      pattern: policy.pattern,
+      action: policy.action,
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
     trackEvent("policy_duplicated", { owner: policy.owner, action: policy.action });
   };
 

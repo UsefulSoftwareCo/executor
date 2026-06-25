@@ -103,15 +103,15 @@ scenario(
         });
 
         await step("Remove the rule via the row's overflow menu", async () => {
-          // The overflow trigger is `opacity-0` until hover/focus; `force`
-          // bypasses the visibility heuristic since Playwright can still
-          // dispatch the click.
-          const overflow = row()
-            .locator('[data-slot="card-stack-entry-actions"]')
-            .getByRole("button")
-            .last();
-          await overflow.click({ force: true });
-          await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
+          // Hover the row to materialize the opacity-0 overflow trigger, what
+          // a real user does, then click without `force`. The menu content
+          // is portaled to body, so wait for it explicitly before targeting
+          // the menu item.
+          await row().hover();
+          await row().locator('[data-slot="dropdown-menu-trigger"]').click();
+          const menu = page.locator('[data-slot="dropdown-menu-content"]');
+          await menu.waitFor();
+          await menu.getByRole("menuitem", { name: "Remove", exact: true }).click();
         });
 
         await step("The row disappears and the empty state returns", async () => {

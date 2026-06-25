@@ -78,9 +78,14 @@ scenario(
           // the row also contains the badge's role="combobox" trigger, which
           // can change the last-button heuristic if the DOM order ever moves.
           await row(originalPattern).hover();
-          await row(originalPattern)
-            .locator('[data-slot="dropdown-menu-trigger"]')
-            .click({ force: true });
+          const trigger = row(originalPattern).locator('[data-slot="dropdown-menu-trigger"]');
+          // Wait for the trigger to be visible (group-hover transition is
+          // opacity-based), then click without `force`, matching the
+          // policies-round-trip overflow pattern. The selfhost dev server
+          // boot can be slow enough that a force-click races the trigger's
+          // opacity transition and the Radix open handler never fires.
+          await trigger.waitFor({ state: "visible" });
+          await trigger.click();
           // The DropdownMenuContent is portaled to body, not the row; wait
           // for it to mount before targeting the menu item, so a timeout
           // here means "the menu never opened", not "the item is missing".
@@ -101,15 +106,22 @@ scenario(
         });
 
         await step("The pattern input is focused, ready to be tweaked", async () => {
-          // Asserting on the focused element rather than calling `.focus()`
-          // ourselves, the product's promise is that Duplicate does the
-          // focusing.
+          // Asserting on the focused element's id rather than a boolean
+          // identity check, a regression where focus lands on the wrong
+          // element will print the actual id instead of bare `false`, which
+          // is the e2e/AGENTS.md "values not booleans" rule.
           await expect
-            .poll(() => patternInput.evaluate((el) => el === document.activeElement), {
-              message: "Duplicate focused the pattern input on its own",
-              timeout: 2_000,
-            })
-            .toBe(true);
+            .poll(
+              () =>
+                patternInput.evaluate(
+                  () => (document.activeElement as HTMLElement | null)?.id ?? "",
+                ),
+              {
+                message: "Duplicate focuses the pattern input by id",
+                timeout: 2_000,
+              },
+            )
+            .toBe("policy-pattern");
         });
 
         await step("Tweak the pattern and submit the copy", async () => {
