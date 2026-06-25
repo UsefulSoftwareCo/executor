@@ -1,7 +1,7 @@
 import * as React from "react";
 
 // ---------------------------------------------------------------------------
-// Product-analytics seam — same DI shape as ./error-reporting: a module-level
+// Product-analytics seam, same DI shape as ./error-reporting: a module-level
 // client set by a provider the HOST mounts, and a free `trackEvent` function
 // callsites import directly (works outside React, e.g. oauth-popup callbacks).
 // No client mounted (local, self-host, cloudflare, tests) → every call is a
@@ -15,14 +15,14 @@ import * as React from "react";
 // BROWSER-ONLY by design: during SSR the host mounts no client (cloud's is
 // undefined when `window` is absent), and on shared-module-scope runtimes
 // (Cloudflare Workers) every SSR render resets the singleton to null. Server-
-// side product events need their own seam — do not route them through this one.
+// side product events need their own seam, do not route them through this one.
 //
-// PROPERTY RULES — properties must never carry:
+// PROPERTY RULES, properties must never carry:
 //   - secrets, tokens, credential values, copied clipboard contents
 //   - emails, person/org names, or any user-entered free text
 //   - connection names or tool ADDRESSES (both embed user-entered label text;
 //     integration slugs and spec-derived tool names are fine)
-//   - policy patterns (user-entered globs) — use `pattern_kind` instead
+//   - policy patterns (user-entered globs), use `pattern_kind` instead
 // Identity attaches via posthog identify/group (the host's concern), never as
 // event properties.
 // ---------------------------------------------------------------------------
@@ -103,6 +103,10 @@ export interface AnalyticsEvents {
   policy_action_changed: { action: string; owner: Owner; success: boolean };
   policy_removed: { owner: Owner; success: boolean };
   policy_reordered: { owner: Owner; direction: "up" | "down"; success: boolean };
+  // Row's Duplicate menu, fires when the form is prefilled, BEFORE the
+  // duplicated row is submitted. Drop in `success` if Duplicate ever becomes
+  // a server call (today the form-fill is purely client-side).
+  policy_duplicated: { action: string; owner: Owner };
 
   // ── API keys ─────────────────────────────────────────────────────────────
   api_key_created: { success: boolean };
@@ -178,7 +182,7 @@ export type AnalyticsClient = <Name extends AnalyticsEventName>(
 let currentAnalyticsClient: AnalyticsClient | null = null;
 
 /**
- * Imperative injection point — what `AnalyticsProvider` uses, and the hook for
+ * Imperative injection point, what `AnalyticsProvider` uses, and the hook for
  * non-React hosts (or tests). Pass `null` to restore the no-op default.
  */
 export const setAnalyticsClient = (client: AnalyticsClient | null): void => {
@@ -200,7 +204,7 @@ export const trackEvent = <Name extends AnalyticsEventName>(
 };
 
 /**
- * Declarative mount for React hosts — sets the module-level client during
+ * Declarative mount for React hosts, sets the module-level client during
  * render, exactly like `FrontendErrorReporterProvider` does for error
  * reporting. Mount once at the app root, ABOVE any tree that fires events
  * (in cloud that is the document root, not ExecutorProvider, because the
