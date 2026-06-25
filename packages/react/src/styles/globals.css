@@ -149,7 +149,12 @@
   }
 }
 
-.executor-desktop-macos .desktop-macos-sidebar-header {
+/* Headers that sit at the top-left of the desktop window land under the native
+   macOS traffic-light controls (trafficLightPosition {x:16,y:17} in
+   apps/desktop/src/main/index.ts). Offset them so their content clears the
+   lights, and make the freed strip draggable like a native title bar. Applies
+   to the desktop sidebar header and the responsive mobile headers alike. */
+.executor-desktop-macos .desktop-macos-titlebar {
   -webkit-app-region: drag;
   padding-left: 88px;
 }
