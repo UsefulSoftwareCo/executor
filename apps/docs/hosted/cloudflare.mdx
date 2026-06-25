@@ -80,6 +80,13 @@ code or redeploy is needed.
    non-browser clients authenticate over OAuth). With it on, Access answers an
    unauthenticated `/mcp` request with an OAuth `401` challenge and serves the OAuth
    discovery, authorize, and token endpoints itself, instead of the HTML login page.
+   Keep the Access application scoped to the whole Worker hostname (as set in the
+   previous section), not a single path like `/mcp`: the discovery probes clients
+   send to `/.well-known/oauth-authorization-server` and
+   `/.well-known/oauth-protected-resource` then land on Access too, which answers
+   them rather than letting them fall through to the Worker's SPA fallback (which the
+   Worker itself does not serve, so a path-scoped application would return HTML or
+   `404` there).
 3. Point your client at the `/mcp` URL with no extra configuration. On connect it
    discovers the OAuth endpoints, opens a browser popup to log in through Access, and
    Cloudflare injects the validated JWT into every subsequent request.
