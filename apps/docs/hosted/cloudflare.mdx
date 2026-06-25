@@ -99,6 +99,13 @@ code or redeploy is needed.
 This is the same flow Cloudflare documents in
 [Secure MCP servers with Access](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/secure-mcp-servers/).
 
+If a client still won't start the OAuth flow after you enable Managed OAuth (it
+classifies `/mcp` as not an MCP endpoint, or you still hit the
+`Unexpected content type: text/html` error), its probe isn't consuming Access's
+`401` challenge. Fall back to the service-token path below: it authenticates with
+request headers and needs no client-side OAuth discovery, so it works regardless of
+how the client handles the challenge.
+
 ### For headless clients: service token
 
 When no human is present to complete the OAuth popup (CI, a background agent),
