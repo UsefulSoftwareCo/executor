@@ -112,8 +112,9 @@ function AddPolicyForm(props: {
   // form and focus the pattern input with its content selected so the user
   // can tweak the pattern in one keystroke. Selecting (not just focusing) is
   // the difference between "I have to clear it first" and "I can just type".
-  // The dep is the nonce alone, the prefill object identity always changes
-  // with the nonce, so depending on both is redundant noise.
+  // The parent constructs a new prefill object on every Duplicate click,
+  // so nonce/pattern/action always change together; depending on all three
+  // primitives reads cleanly to the next editor and never double-fires.
   const prefillNonce = props.prefill?.nonce;
   const prefillPattern = props.prefill?.pattern;
   const prefillAction = props.prefill?.action;
@@ -132,11 +133,7 @@ function AddPolicyForm(props: {
       patternInputRef.current?.select();
     }, 0);
     return () => clearTimeout(id);
-    // prefillPattern / prefillAction are read for their LATEST values when
-    // the nonce changes; including them in the dep array would refire on a
-    // stale object identity comparison.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefillNonce]);
+  }, [prefillNonce, prefillPattern, prefillAction]);
   // Non-org hosts (local/desktop) have one local workspace. New local policies
   // are org-owned internally to match the v1->v2 migration.
   const ownerDisplay = useOwnerDisplay();
@@ -242,6 +239,13 @@ function PolicyRow(props: {
   onDuplicate: () => void;
   showOwnerLabel: boolean;
 }) {
+  // Tracks why the row's dropdown last closed, so onCloseAutoFocus can
+  // suppress Radix's default trigger-refocus only for Duplicate (which is
+  // sending focus to the form's pattern input). Move up / Move down keep the
+  // trigger in the DOM, and a keyboard user needs Radix's default restoration
+  // to land back on it, suppressing for those would drop focus to <body>.
+  // Remove unmounts the row entirely, so trigger-refocus is moot either way.
+  const closeReasonRef = useRef<"duplicate" | null>(null);
   return (
     <CardStackEntry>
       <CardStackEntryContent>
@@ -295,12 +299,18 @@ function PolicyRow(props: {
           <DropdownMenuContent
             align="end"
             className="w-40"
-            // The trigger is opacity-0 until hover/focus and the chosen item
-            // routes focus elsewhere anyway (form input on Duplicate; the
-            // row disappears on Remove). Preventing the default trigger-
-            // refocus stops it from yanking focus out of wherever the item
-            // sent it.
-            onCloseAutoFocus={(e) => e.preventDefault()}
+            onCloseAutoFocus={(e) => {
+              // Only suppress Radix's default trigger-refocus when Duplicate
+              // fired: that path is sending focus to the form's pattern input
+              // and the default restoration would yank it back. For Move
+              // up/Move down the trigger persists and keyboard users need it
+              // re-focused; for Remove the row is unmounted and the default
+              // path silently lands at body either way.
+              if (closeReasonRef.current === "duplicate") {
+                e.preventDefault();
+              }
+              closeReasonRef.current = null;
+            }}
           >
             <DropdownMenuItem disabled={props.isFirst} onClick={props.onMoveUp}>
               Move up
@@ -308,7 +318,14 @@ function PolicyRow(props: {
             <DropdownMenuItem disabled={props.isLast} onClick={props.onMoveDown}>
               Move down
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={props.onDuplicate}>Duplicate</DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                closeReasonRef.current = "duplicate";
+                props.onDuplicate();
+              }}
+            >
+              Duplicate
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:text-destructive text-sm"
               onClick={props.onRemove}
