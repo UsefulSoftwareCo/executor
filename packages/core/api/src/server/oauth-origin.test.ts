@@ -48,4 +48,14 @@ describe("OAuth web origin resolution", () => {
       }),
     ).toBe("https://executor.sh/api/oauth/callback");
   });
+
+  it("carries the URL org selector in OAuth redirect URLs", () => {
+    expect(
+      buildOAuthRedirectUri({
+        webBaseUrl: "https://executor.sh",
+        oauthCallbackPath: "/api/oauth/callback",
+        orgSlug: "acme",
+      }),
+    ).toBe("https://executor.sh/api/oauth/callback?executor_org=acme");
+  });
 });

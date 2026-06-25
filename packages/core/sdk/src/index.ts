@@ -214,7 +214,11 @@ export {
 } from "./plugin-storage";
 
 // OAuth (v2 contracts).
-export { OAUTH2_PROVIDER_KEY, OAUTH2_SESSION_TTL_MS } from "./oauth";
+export {
+  OAUTH2_PROVIDER_KEY,
+  OAUTH2_SESSION_TTL_MS,
+  OAUTH_CALLBACK_ORG_QUERY_PARAM,
+} from "./oauth";
 export {
   OAuthStartError,
   OAuthCompleteError,
@@ -243,6 +247,7 @@ export {
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
   DEFAULT_EXECUTOR_SERVER_USERNAME,
+  EXECUTOR_ORG_SELECTOR_HEADER,
   apiBaseUrlForServerOrigin,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,

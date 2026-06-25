@@ -35,3 +35,6 @@ export const OAUTH2_PROVIDER_KEY = "oauth2" as const;
 
 /** How long a pending authorization stays redeemable. */
 export const OAUTH2_SESSION_TTL_MS = 15 * 60 * 1000;
+
+/** Query parameter used to carry the URL-selected org through OAuth callbacks. */
+export const OAUTH_CALLBACK_ORG_QUERY_PARAM = "executor_org" as const;
