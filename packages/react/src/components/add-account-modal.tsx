@@ -588,7 +588,7 @@ function OAuthAppRadioRow(props: {
   );
 }
 
-export function AddAccountModal(props: {
+interface AddAccountModalProps {
   readonly integration: IntegrationSlug;
   readonly integrationName: string;
   readonly methods: readonly AuthMethod[];
@@ -601,7 +601,20 @@ export function AddAccountModal(props: {
    *  plugin whose auth is fixed (MCP) omits this, hiding the row. */
   readonly createCustomMethod?: CreateCustomMethod;
   readonly removeCustomMethod?: (method: AuthMethod) => Promise<boolean>;
-}) {
+}
+
+/** The add-connection modal is self-contained: every transient bit of state
+ *  (form fields, the in-flight OAuth popup flow) lives in `AddAccountModalView`,
+ *  so closing the modal genuinely unmounts that view and React destroys all of
+ *  it, never hand-reset. Unmounting also runs `useOAuthPopupFlow`'s cleanup,
+ *  which cancels a dangling server OAuth session. That is why abandoning an
+ *  OAuth popup can't wedge a later open: the stuck flow died with its instance.
+ *  The parent owns only open/route intent (deep links, the reconnect handoff). */
+export function AddAccountModal(props: AddAccountModalProps) {
+  return props.open ? <AddAccountModalView {...props} /> : null;
+}
+
+function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
     integrationName,
@@ -855,27 +868,6 @@ export function AddAccountModal(props: {
   const showSavedToPicker = !oauthRegistering && savedToOptions.length > 1;
   const callableName = connectionNameFrom(label, savedToOwner, integrationName, organizationId);
 
-  const reset = () => {
-    setMethodId(methods[0]?.id ?? "");
-    setValues({});
-    setCredentialOrigin("paste");
-    setOnePasswordItemId("");
-    setLabel("");
-    setOwner(defaultOwner);
-    setSubmitting(false);
-    setPickedApp(null);
-    setRegisteringOAuthClient(false);
-    setCcBusy(false);
-    setDcrBusy(false);
-    setDcrFailed(false);
-    setShowOtherApps(false);
-    setEditingClient(null);
-    setRemovingClient(null);
-    setCreatedMethods([]);
-    setRemovedMethodIds(new Set());
-    setAddingMethod(false);
-  };
-
   // Build the picker row's Edit/Remove menu for an app, but only once its full
   // summary has loaded (the picker option lacks endpoints/resource). Until then
   // the row shows no actions menu rather than a broken one.
@@ -953,10 +945,10 @@ export function AddAccountModal(props: {
     }
   };
 
-  const close = () => {
-    onOpenChange(false);
-    reset();
-  };
+  // Just ask the parent to close. Reopening remounts this whole component (see
+  // AddAccountModal), so there is nothing to hand-reset: the form fields and the
+  // OAuth popup flow's busy state die with this instance.
+  const close = () => onOpenChange(false);
 
   const credentialPayloadOrigin = createCredentialPayloadOrigin({
     origin: credentialOrigin,
@@ -1169,13 +1161,7 @@ export function AddAccountModal(props: {
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next: boolean) => {
-        if (!next) close();
-        else onOpenChange(true);
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
