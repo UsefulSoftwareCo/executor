@@ -132,7 +132,7 @@ import {
 import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
-import { collectReferencedDefinitions } from "./schema-refs";
+import { collectReferencedDefinitions, reattachDefs } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
@@ -2473,22 +2473,56 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
         yield* syncStaleConnectionTools;
-        // Projected: the list surface is metadata (address, description,
-        // annotations) — loading every tool's input/output schema JSON made
-        // an unbounded list scale with schema bytes, not tool count.
-        const rows = yield* core.findMany("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              filter?.integration === undefined
-                ? true
-                : b("integration", "=", String(filter.integration)),
-              filter?.owner === undefined ? true : b("owner", "=", filter.owner),
-              filter?.connection === undefined
-                ? true
-                : b("connection", "=", String(filter.connection)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
+        const includeSchemas = filter?.includeSchemas ?? false;
+        // Projected by default: the list surface is metadata (address,
+        // description, annotations) — loading every tool's input/output
+        // schema JSON made an unbounded list scale with schema bytes, not
+        // tool count. Callers that enumerate tools as directly-callable
+        // definitions (non-code-mode MCP) opt in with `includeSchemas`, which
+        // loads the full rows and inlines each tool's referenced shared
+        // `$defs` so the returned schemas are self-contained.
+        const where = (b: AnyCb) =>
+          b.and(
+            filter?.integration === undefined
+              ? true
+              : b("integration", "=", String(filter.integration)),
+            filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+            filter?.connection === undefined
+              ? true
+              : b("connection", "=", String(filter.connection)),
+          );
+        const rows = includeSchemas
+          ? yield* core.findMany("tool", { where })
+          : yield* core.findMany("tool", { where, select: TOOL_INVOCATION_COLUMNS });
+
+        // Shared `$defs` grouped by connection — definition names are unique
+        // per connection, not globally, so each tool's `$ref`s must resolve
+        // against its own connection's defs. One bulk query keeps this from
+        // becoming an N+1 over `tools.schema`.
+        const defsByConnection = new Map<string, Map<string, unknown>>();
+        if (includeSchemas) {
+          const definitionRows = yield* core.findMany("definition", { where });
+          for (const def of definitionRows) {
+            const key = `${def.owner}|${def.integration}|${def.connection}`;
+            let defs = defsByConnection.get(key);
+            if (!defs) {
+              defs = new Map<string, unknown>();
+              defsByConnection.set(key, defs);
+            }
+            defs.set(def.name, decodeJsonColumn(def.schema));
+          }
+        }
+        const selfContain = (tool: Tool): Tool => {
+          if (!includeSchemas) return tool;
+          const defs = defsByConnection.get(`${tool.owner}|${tool.integration}|${tool.connection}`);
+          if (!defs || defs.size === 0) return tool;
+          return {
+            ...tool,
+            inputSchema: reattachDefs(tool.inputSchema, defs),
+            outputSchema: reattachDefs(tool.outputSchema, defs),
+          };
+        };
+
         const includeBlocked = filter?.includeBlocked ?? false;
         const policyRows = yield* core.findMany("tool_policy", {});
         const tools: Tool[] = [];
@@ -2504,8 +2538,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             );
             if (effective.action === "block") continue;
           }
-          tools.push(tool);
+          tools.push(selfContain(tool));
         }
+        // Static tools carry their schema inline already, so they are
+        // self-contained without a definition lookup.
         for (const entry of staticTools.values()) {
           const tool = staticToolToTool(entry);
           if (!matchesToolFilter(tool, filter)) continue;

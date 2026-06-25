@@ -55,4 +55,9 @@ export interface ToolListFilter {
   /** Include tools whose effective `tool_policy` is `block`. Defaults to `false`
    *  so agent-facing surfaces silently omit blocked tools. */
   readonly includeBlocked?: boolean;
+  /** Load each tool's `inputSchema`/`outputSchema` (normally projected out for
+   *  scaling) and inline its referenced shared `$defs` so every returned schema
+   *  is self-contained. Defaults to `false`. Used by surfaces that enumerate
+   *  every tool as a directly-callable definition (non-code-mode MCP). */
+  readonly includeSchemas?: boolean;
 }

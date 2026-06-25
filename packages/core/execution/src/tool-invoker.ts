@@ -66,7 +66,7 @@ const pathToAddress = (path: string): ToolAddress => {
 
 /** Strip the proxy-root `tools.` prefix from a full address so it becomes the
  *  sandbox-callable path the model writes after `tools.`. */
-const addressToPath = (address: string): string =>
+export const addressToPath = (address: string): string =>
   address.startsWith(ADDRESS_PREFIX) ? address.slice(ADDRESS_PREFIX.length) : address;
 
 type DescribedTool = {

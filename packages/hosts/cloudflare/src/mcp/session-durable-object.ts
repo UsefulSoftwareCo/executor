@@ -127,6 +127,9 @@ export interface SessionMeta {
   readonly organizationSlug?: string;
   readonly userId: string;
   readonly elicitationMode?: "browser" | "model" | "native";
+  /** Whether the session runs in code mode (single `execute` tool). Defaults to
+   *  `true`; `false` selects transparent mode (every tool registered directly). */
+  readonly codeMode?: boolean;
   /** Public origin captured at session create — used to derive the runtime's
    *  web base URL when the host configures no static one. */
   readonly webOrigin?: string;

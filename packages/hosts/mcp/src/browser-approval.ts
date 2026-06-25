@@ -52,6 +52,18 @@ export const readElicitationMode = (request: Request): McpElicitationMode => {
 };
 
 /**
+ * Read whether the session runs in code mode off an MCP request's `?codemode=`
+ * query. Code mode (the default) exposes a single `execute` tool the agent
+ * drives with TypeScript; `?codemode=false` selects transparent mode, where
+ * every available tool is registered as a directly-callable MCP tool. Only the
+ * literal value `false` turns code mode off; anything else keeps the default.
+ */
+export const readCodeMode = (request: Request): boolean => {
+  const url = new URL(request.url);
+  return url.searchParams.get("codemode") !== "false";
+};
+
+/**
  * Build the console approval URL for a paused execution:
  * `<origin>/resume/<executionId>?mcp_session_id=<sessionId>`. The
  * `mcp_session_id` query routes the console's resume page back to the host's

@@ -173,6 +173,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         organizationSlug: org.slug,
         userId: token.userId,
         elicitationMode: token.elicitationMode,
+        codeMode: token.codeMode,
       } satisfies SessionMeta;
     }).pipe(
       Effect.withSpan("McpSessionDO.resolveSessionMeta"),
@@ -208,6 +209,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,
+        codeMode: sessionMeta.codeMode,
         elicitationMode:
           sessionElicitationMode === "browser"
             ? {

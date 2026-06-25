@@ -11,6 +11,9 @@ export interface McpSessionInit {
   readonly organizationId: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
+  /** Whether the session runs in code mode (single `execute` tool). Defaults to
+   *  `true`; `false` selects transparent mode (every tool registered directly). */
+  readonly codeMode?: boolean;
   /** Public origin of the create request (`https://host`), so the DO derives a
    *  web base URL zero-config when the host configures no static one. */
   readonly webOrigin?: string;

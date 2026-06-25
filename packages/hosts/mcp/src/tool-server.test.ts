@@ -30,6 +30,9 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   execute?: ExecutionEngine<E>["execute"];
   executeWithPause?: ExecutionEngine<E>["executeWithPause"];
   resume?: ExecutionEngine<E>["resume"];
+  listTools?: ExecutionEngine<E>["listTools"];
+  invokeTool?: ExecutionEngine<E>["invokeTool"];
+  invokeToolWithPause?: ExecutionEngine<E>["invokeToolWithPause"];
   description?: string;
 }): ExecutionEngine<E> => ({
   execute: overrides.execute ?? (() => Effect.succeed({ result: "default" })),
@@ -39,6 +42,11 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   resume: overrides.resume ?? (() => Effect.succeed(null)),
   getPausedExecution: () => Effect.succeed(null),
   getDescription: Effect.succeed(overrides.description ?? "test executor"),
+  listTools: overrides.listTools ?? Effect.succeed([]),
+  invokeTool: overrides.invokeTool ?? (() => Effect.succeed({ result: "default" })),
+  invokeToolWithPause:
+    overrides.invokeToolWithPause ??
+    (() => Effect.succeed({ status: "completed", result: { result: "default" } })),
 });
 
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */

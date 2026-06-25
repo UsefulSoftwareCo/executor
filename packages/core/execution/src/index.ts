@@ -7,6 +7,7 @@ export {
   type ExecutionResult,
   type PausedExecution,
   type ResumeResponse,
+  type ToolListing,
 } from "./engine";
 
 export { buildExecuteDescription } from "./description";

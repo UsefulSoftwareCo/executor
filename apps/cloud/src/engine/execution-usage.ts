@@ -20,4 +20,15 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
   resume: (executionId, response) => engine.resume(executionId, response),
   getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
   getDescription: engine.getDescription,
+  // listTools is discovery, not an execution, so it doesn't count as usage.
+  listTools: engine.listTools,
+  // A direct tool invocation is an execution, so it counts the same as execute.
+  invokeTool: (name, args, options) =>
+    engine
+      .invokeTool(name, args, options)
+      .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
+  invokeToolWithPause: (name, args) =>
+    engine
+      .invokeToolWithPause(name, args)
+      .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
 });

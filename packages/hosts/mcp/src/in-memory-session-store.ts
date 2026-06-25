@@ -8,6 +8,7 @@ import {
   buildResumeApprovalUrl,
   decodeResumeResponse,
   formatResumeAcknowledgement,
+  readCodeMode,
   readElicitationMode,
 } from "./browser-approval";
 import {
@@ -66,6 +67,12 @@ export interface McpBuildServerOptions {
     | { readonly mode: "model" }
     | { readonly mode: "native" };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /**
+   * Whether the session runs in code mode (the single `execute` tool the agent
+   * drives with TypeScript). Defaults to `true`; `?codemode=false` selects
+   * transparent mode, where every available tool is registered directly.
+   */
+  readonly codeMode?: boolean;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
@@ -200,7 +207,10 @@ export const makeInMemoryMcpSessionStore = (
     request: Request,
     sessionId: () => string | null,
   ): McpBuildServerOptions => {
-    if (readElicitationMode(request) !== "browser") return { elicitationMode: { mode: "model" } };
+    const codeMode = readCodeMode(request);
+    if (readElicitationMode(request) !== "browser") {
+      return { elicitationMode: { mode: "model" }, codeMode };
+    }
     return {
       elicitationMode: {
         mode: "browser",
@@ -214,6 +224,7 @@ export const makeInMemoryMcpSessionStore = (
           }),
       },
       browserApprovalStore: approvals.store,
+      codeMode,
     };
   };
 

@@ -1,7 +1,12 @@
 import { Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ContentBlockSchema,
+  ListToolsRequestSchema,
+  type ContentBlock,
+} from "@modelcontextprotocol/sdk/types.js";
 import type {
   jsonSchemaValidator,
   JsonSchemaType,
@@ -10,12 +15,13 @@ import type {
 import { Validator } from "@cfworker/json-schema";
 import * as z from "zod/v4";
 
-import { isToolFile } from "@executor-js/sdk";
+import { isToolFile, isToolResult } from "@executor-js/sdk";
 import type {
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
   ElicitationRequest,
+  ToolError,
   ToolFileValue,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
@@ -91,6 +97,15 @@ type SharedMcpServerConfig = {
         readonly mode: "native";
       };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /**
+   * When `false`, run in transparent (non-code) mode: every available tool is
+   * enumerated as a directly-callable MCP tool instead of being reached through
+   * the single `execute` code tool. Defaults to `true` (code mode). Selected by
+   * a `?codemode=false` query param on the MCP endpoint, mirroring the same
+   * switch Cloudflare's MCP exposes — for clients that lazily load tools and
+   * need them listed individually.
+   */
+  readonly codeMode?: boolean;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -419,6 +434,78 @@ const toMcpPausedResult = (formatted: ReturnType<typeof formatPausedExecution>):
   structuredContent: formatted.structured,
 });
 
+// ---------------------------------------------------------------------------
+// Non-code-mode result formatting
+//
+// In non-code mode each tool is called directly, so the execution result's
+// `result` field is the tool's own `ToolResult` envelope rather than a
+// script's return value. Unwrap it: render `data` on success (a `ToolFile`
+// becomes native MCP content), surface the `ToolError` on an expected
+// failure, and drop transport `http` metadata (a non-code client wants the
+// payload, not pagination headers).
+// ---------------------------------------------------------------------------
+
+const renderToolValueText = (value: unknown): string =>
+  typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2);
+
+// Transparent mode advertises every tool's input schema verbatim over the wire,
+// and the MCP client validates each `inputSchema` root against `type: "object"`.
+// A tool whose top-level input is a union (e.g. `executor.mcp.addServer`)
+// compiles to `{ anyOf: [...] }` with no root `type`, which makes the client
+// reject the ENTIRE `tools/list` response. Executor always invokes tools with a
+// named-args object, so it is safe to stamp `type: "object"` onto any root that
+// lacks one while preserving the rest of the schema (the union variants stay in
+// `anyOf`; MCP's `.passthrough()` keeps the extra keys, and the tool invoker
+// still enforces the real schema).
+const toMcpInputSchema = (schema: unknown): Record<string, unknown> => {
+  if (schema !== null && typeof schema === "object" && !Array.isArray(schema)) {
+    const record = schema as Record<string, unknown>;
+    if (record.type === "object") return record;
+    if (record.type === undefined) return { ...record, type: "object" };
+  }
+  return { type: "object" };
+};
+
+const toolErrorText = (error: ToolError): string => {
+  const status = error.status != null ? ` (status ${error.status})` : "";
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: ToolError is a typed struct whose `message` is a schema field, not an unknown error
+  return `Error [${error.code}]${status}: ${error.message}`;
+};
+
+const renderToolData = (data: unknown): McpToolResult => {
+  if (isToolFile(data)) return { content: toolFileContent(data) };
+  return {
+    content: [{ type: "text", text: renderToolValueText(data) }],
+    ...(isRecord(data) ? { structuredContent: data } : {}),
+  };
+};
+
+const toNonCodeMcpResult = (result: FormattedExecuteInput): McpToolResult => {
+  // Engine-level failure (declined approval, opaque defect surfaced as a
+  // string) — not a tool-domain failure, but still an error for the client.
+  if (result.error) {
+    return {
+      content: [{ type: "text", text: `Error: ${result.error}` }],
+      structuredContent: { status: "error", error: result.error },
+      isError: true,
+    };
+  }
+  const value = result.result;
+  if (isToolResult(value)) {
+    if (!value.ok) {
+      return {
+        content: [{ type: "text", text: toolErrorText(value.error) }],
+        structuredContent: { status: "error", error: value.error },
+        isError: true,
+      };
+    }
+    return renderToolData(value.data);
+  }
+  // Defensive: a direct invoke always yields a `ToolResult`, but render any
+  // bare value rather than dropping it.
+  return renderToolData(value);
+};
+
 // `execute` failures reaching the MCP host are infra defects — domain
 // failures from tools are now expressed as `ToolResult` values (success
 // channel) and flow through `formatExecuteResult`. Emit an opaque
@@ -512,6 +599,15 @@ const parseJsonContent = (raw: string): Record<string, unknown> | undefined => {
   return Option.isSome(parsed) ? parsed.value : undefined;
 };
 
+// The non-code-mode dispatch reads `resume` arguments off the raw CallTool
+// payload (no Zod layer in the low-level handler), so coerce defensively: an
+// unknown executionId becomes "" (resolved to a not-found result) and an
+// unknown action falls back to "cancel".
+const readResumeAction = (value: unknown): "accept" | "decline" | "cancel" =>
+  value === "accept" || value === "decline" || value === "cancel" ? value : "cancel";
+
+const readArgString = (value: unknown): string => (typeof value === "string" ? value : "");
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -544,6 +640,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       ({
         mode: "model",
       } as const);
+    const codeMode = config.codeMode ?? true;
 
     const resolveParentSpan = (): Tracer.AnySpan | undefined => {
       const ps = config.parentSpan;
@@ -709,77 +806,211 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
 
+    // Non-code mode: invoke one named tool directly. Reuses the same
+    // elicitation/pause machinery as `executeCode`, so an approval-gated tool
+    // pauses and resumes identically whether the model reached it through
+    // `execute` or called it by name.
+    const invokeSingleTool = (name: string, args: unknown): Effect.Effect<McpToolResult, E> =>
+      Effect.gen(function* () {
+        debugLog("invoke_tool.call", {
+          name,
+          elicitationMode: elicitationMode.mode,
+          clientCapabilities: server.server.getClientCapabilities() ?? null,
+        });
+        if (elicitationMode.mode === "native") {
+          const result = yield* engine.invokeTool(name, args, {
+            onElicitation: makeMcpElicitationHandler(server, debugLog),
+          });
+          return toNonCodeMcpResult(result);
+        }
+        const outcome = yield* engine.invokeToolWithPause(name, args);
+        debugLog("invoke_tool.paused_flow_result", {
+          name,
+          status: outcome.status,
+          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+          interactionKind:
+            outcome.status === "paused"
+              ? pausedInteractionKind(outcome.execution.elicitationContext.request)
+              : undefined,
+        });
+        return outcome.status === "completed"
+          ? toNonCodeMcpResult(outcome.result)
+          : elicitationMode.mode === "browser"
+            ? yield* requireUserResumeApproval(outcome.execution.id)
+            : toMcpPausedResult(formatPausedExecution(outcome.execution));
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.invoke", {
+          attributes: { "mcp.tool.name": name },
+        }),
+      );
+
     // --- tools ---
+    // Code mode registers the single `execute` tool (plus mode-specific
+    // `resume`) via the high-level wrapper. Transparent mode skips that and
+    // serves every tool through the low-level request handlers instead — the
+    // two registration styles are mutually exclusive on one server.
 
-    yield* Effect.sync(() =>
-      server.registerTool(
-        "execute",
-        {
-          description,
-          inputSchema: { code: z.string().trim().min(1) },
-        },
-        ({ code }) => runToolEffect(executeCode(code)),
-      ),
-    ).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "execute" },
-      }),
-    );
+    if (codeMode) {
+      yield* Effect.sync(() =>
+        server.registerTool(
+          "execute",
+          {
+            description,
+            inputSchema: { code: z.string().trim().min(1) },
+          },
+          ({ code }) => runToolEffect(executeCode(code)),
+        ),
+      ).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "execute" },
+        }),
+      );
 
-    yield* Effect.sync(() => {
-      if (elicitationMode.mode === "native") {
-        return undefined;
-      }
+      yield* Effect.sync(() => {
+        if (elicitationMode.mode === "native") {
+          return undefined;
+        }
 
-      if (elicitationMode.mode === "model") {
+        if (elicitationMode.mode === "model") {
+          return server.registerTool(
+            "resume",
+            {
+              description: [
+                "Resume a paused execution using the executionId returned by execute.",
+                "This connection explicitly allows model-side resume via elicitation_mode=model.",
+              ].join("\n"),
+              inputSchema: {
+                executionId: z.string().describe("The execution ID from the paused result"),
+                action: z
+                  .enum(["accept", "decline", "cancel"])
+                  .describe("How to respond to the interaction"),
+                content: z
+                  .string()
+                  .describe("Optional JSON-encoded response content for form elicitations")
+                  .default("{}"),
+              },
+            },
+            ({ executionId, action, content: rawContent }) =>
+              runToolEffect(resumeExecution(executionId, action, parseJsonContent(rawContent))),
+          );
+        }
+
         return server.registerTool(
           "resume",
           {
             description: [
-              "Resume a paused execution using the executionId returned by execute.",
-              "This connection explicitly allows model-side resume via elicitation_mode=model.",
+              "Request user approval to resume a paused execution.",
+              "Call this with the executionId returned by execute. If the user has not approved in the browser yet, tell them to open the returned approval URL. If they have approved, this returns the resumed execution result.",
+              "This connection does not allow the model to choose accept, decline, cancel, or content.",
             ].join("\n"),
             inputSchema: {
               executionId: z.string().describe("The execution ID from the paused result"),
-              action: z
-                .enum(["accept", "decline", "cancel"])
-                .describe("How to respond to the interaction"),
-              content: z
-                .string()
-                .describe("Optional JSON-encoded response content for form elicitations")
-                .default("{}"),
             },
           },
-          ({ executionId, action, content: rawContent }) =>
-            runToolEffect(resumeExecution(executionId, action, parseJsonContent(rawContent))),
+          ({ executionId }) => runToolEffect(resumeAfterBrowserApproval(executionId)),
         );
-      }
-
-      return server.registerTool(
-        "resume",
-        {
-          description: [
-            "Request user approval to resume a paused execution.",
-            "Call this with the executionId returned by execute. If the user has not approved in the browser yet, tell them to open the returned approval URL. If they have approved, this returns the resumed execution result.",
-            "This connection does not allow the model to choose accept, decline, cancel, or content.",
-          ].join("\n"),
-          inputSchema: {
-            executionId: z.string().describe("The execution ID from the paused result"),
-          },
-        },
-        ({ executionId }) => runToolEffect(resumeAfterBrowserApproval(executionId)),
+      }).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: { "mcp.tool.name": "resume" },
+        }),
       );
-    }).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "resume" },
-      }),
-    );
+    } else {
+      const toolListings = yield* engine.listTools;
+      const resumeWireTool =
+        elicitationMode.mode === "native"
+          ? undefined
+          : elicitationMode.mode === "model"
+            ? {
+                name: "resume",
+                description: [
+                  "Resume a paused tool call using the executionId returned by a paused result.",
+                  "This connection explicitly allows model-side resume via elicitation_mode=model.",
+                ].join("\n"),
+                inputSchema: {
+                  type: "object" as const,
+                  properties: {
+                    executionId: {
+                      type: "string",
+                      description: "The execution ID from the paused result",
+                    },
+                    action: {
+                      type: "string",
+                      enum: ["accept", "decline", "cancel"],
+                      description: "How to respond to the interaction",
+                    },
+                    content: {
+                      type: "string",
+                      description: "Optional JSON-encoded response content for form elicitations",
+                      default: "{}",
+                    },
+                  },
+                  required: ["executionId", "action"],
+                },
+              }
+            : {
+                name: "resume",
+                description: [
+                  "Request user approval to resume a paused tool call.",
+                  "Call this with the executionId returned by a paused result. If the user has not approved in the browser yet, tell them to open the returned approval URL. If they have approved, this returns the resumed result.",
+                  "This connection does not allow the model to choose accept, decline, cancel, or content.",
+                ].join("\n"),
+                inputSchema: {
+                  type: "object" as const,
+                  properties: {
+                    executionId: {
+                      type: "string",
+                      description: "The execution ID from the paused result",
+                    },
+                  },
+                  required: ["executionId"],
+                },
+              };
+
+      const wireTools = [
+        ...toolListings.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: toMcpInputSchema(tool.inputSchema),
+        })),
+        ...(resumeWireTool ? [resumeWireTool] : []),
+      ];
+
+      yield* Effect.sync(() => {
+        // `registerTool` normally declares this; transparent mode bypasses it.
+        server.server.registerCapabilities({ tools: { listChanged: false } });
+
+        server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: wireTools }));
+
+        server.server.setRequestHandler(CallToolRequestSchema, (request) => {
+          const { name } = request.params;
+          const args = request.params.arguments ?? {};
+          if (name === "resume" && elicitationMode.mode !== "native") {
+            if (elicitationMode.mode === "browser") {
+              return runToolEffect(resumeAfterBrowserApproval(readArgString(args.executionId)));
+            }
+            return runToolEffect(
+              resumeExecution(
+                readArgString(args.executionId),
+                readResumeAction(args.action),
+                parseJsonContent(typeof args.content === "string" ? args.content : "{}"),
+              ),
+            );
+          }
+          return runToolEffect(invokeSingleTool(name, args));
+        });
+      }).pipe(
+        Effect.withSpan("mcp.host.register_transparent_tools", {
+          attributes: { "mcp.tool.count": wireTools.length },
+        }),
+      );
+    }
 
     yield* Effect.sync(() => {
       console.error(
         "[executor] MCP session mode",
         JSON.stringify({
           ...capabilitySnapshot(server),
+          codeMode,
           elicitationMode: elicitationMode.mode,
           resumeEnabled: elicitationMode.mode !== "native",
         }),
@@ -787,6 +1018,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       debugLog("tool.visibility", {
         clientCapabilities: server.server.getClientCapabilities() ?? null,
         elicitationSupport: getElicitationSupport(server),
+        codeMode,
         elicitationMode: elicitationMode.mode,
         resumeEnabled: elicitationMode.mode !== "native",
       });

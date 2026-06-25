@@ -160,7 +160,13 @@ export interface McpSurface {
   readonly url: string;
   readonly session: (
     identity: Identity,
-    options?: { readonly elicitationMode?: McpElicitationMode },
+    options?: {
+      readonly elicitationMode?: McpElicitationMode;
+      /** Pass `false` to add `?codemode=false`, switching the session into
+       *  transparent mode (every tool registered directly instead of behind the
+       *  single `execute` tool). Omitted/`true` keeps the default code mode. */
+      readonly codeMode?: boolean;
+    },
   ) => McpSession;
   /**
    * Mint a real MCP bearer headlessly: protected-resource discovery →
@@ -268,12 +274,18 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     // identity's OAuth isolated. The traceparent ledger keys off the URL, not
     // this name, so it is unaffected.
     const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
-    // `browser` mode is selected per the ecosystem convention — an
-    // `?elicitation_mode=` query on the MCP endpoint — so a paused execution
-    // yields an approvalUrl instead of letting the model resume inline.
-    const sessionUrl = options?.elicitationMode
-      ? `${target.mcpUrl}?elicitation_mode=${options.elicitationMode}`
-      : target.mcpUrl;
+    // Session config rides query params on the MCP endpoint, per ecosystem
+    // convention: `?elicitation_mode=` (a paused execution yields an approvalUrl
+    // instead of letting the model resume inline) and `?codemode=false` (every
+    // tool registered directly instead of behind the single `execute` tool).
+    const sessionUrl = (() => {
+      const url = new URL(target.mcpUrl);
+      if (options?.elicitationMode) {
+        url.searchParams.set("elicitation_mode", options.elicitationMode);
+      }
+      if (options?.codeMode === false) url.searchParams.set("codemode", "false");
+      return url.toString();
+    })();
     let runtimePromise: Promise<Runtime> | undefined;
     let connected = false;
 

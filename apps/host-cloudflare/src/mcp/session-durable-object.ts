@@ -62,6 +62,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
       organizationSlug: this.cfConfig.organizationSlug,
       userId: token.userId,
       elicitationMode: token.elicitationMode,
+      codeMode: token.codeMode,
     } satisfies SessionMeta);
   }
 
@@ -88,6 +89,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         browserApprovalStore: self.browserApprovalStore,
+        codeMode: sessionMeta.codeMode,
         elicitationMode:
           elicitationMode === "browser"
             ? {

@@ -18,6 +18,13 @@ const makeBaseEngine = (): ExecutionEngine =>
       }),
     getPausedExecution: () => Effect.succeed(null),
     getDescription: Effect.succeed("desc"),
+    listTools: Effect.succeed([]),
+    invokeTool: () => Effect.succeed({ result: "ok", logs: [] }),
+    invokeToolWithPause: () =>
+      Effect.succeed({
+        status: "completed",
+        result: { result: "ok", logs: [] },
+      }),
   }) as ExecutionEngine;
 
 describe("withExecutionUsageTracking", () => {
