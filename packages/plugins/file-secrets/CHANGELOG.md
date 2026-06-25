@@ -1,5 +1,12 @@
 # @executor-js/plugin-file-secrets
 
+## 1.5.20
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.20
+
 ## 1.5.19
 
 ### Patch Changes

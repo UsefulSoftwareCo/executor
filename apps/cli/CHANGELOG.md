@@ -1,5 +1,17 @@
 # executor
 
+## 1.5.20
+
+### Patch Changes
+
+- [#1132](https://github.com/RhysSullivan/executor/pull/1132) [`580fc7f`](https://github.com/RhysSullivan/executor/commit/580fc7f8b2615a0d7760b3a4daddf8d45673ef3f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the PostHog custom MCP OAuth setup flow so Add connection opens PostHog authorization instead of falling back to manual OAuth app registration.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.20
+  - @executor-js/runtime-quickjs@1.5.20
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.40
+
 ## 1.5.19
 
 ### Patch Changes
