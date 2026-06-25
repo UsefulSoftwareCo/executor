@@ -14,6 +14,7 @@ import {
   connectionLabel,
   connectionLabelForHost,
   createCredentialPayloadOrigin,
+  dcrClientNameForIntegration,
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
   runDcrConnect,
@@ -194,6 +195,11 @@ describe("createCredentialPayloadOrigin", () => {
 });
 
 describe("runDcrConnect", () => {
+  it("names dynamically registered OAuth apps as Executor clients", () => {
+    expect(dcrClientNameForIntegration("PostHog MCP")).toBe("Executor for PostHog MCP");
+    expect(dcrClientNameForIntegration("   ")).toBe("Executor");
+  });
+
   it("auto-registers (no picker) then starts: probe → register → start in order", async () => {
     const calls: string[] = [];
     let registerArgs: RegisterArgs | null = null;
@@ -243,6 +249,7 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
+    expect(registerArgs!.clientName).toBe("Executor for Linear MCP");
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
     expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);

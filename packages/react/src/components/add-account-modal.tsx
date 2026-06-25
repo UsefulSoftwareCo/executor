@@ -481,6 +481,11 @@ type RunDcrConnectInput = {
   readonly integration: IntegrationSlug;
 };
 
+export const dcrClientNameForIntegration = (integrationName: string): string => {
+  const trimmed = integrationName.trim();
+  return trimmed.length > 0 ? `Executor for ${trimmed}` : "Executor";
+};
+
 /**
  * Run the transparent DCR connect sequence: probe → register → start.
  *
@@ -513,7 +518,7 @@ export async function runDcrConnect(
     resource: probe.resource ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-    clientName: input.integrationName,
+    clientName: dcrClientNameForIntegration(input.integrationName),
     redirectUri: input.redirectUri,
     originIntegration: input.integration,
   });
