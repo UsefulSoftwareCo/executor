@@ -6,8 +6,13 @@ import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
-import { HealthCheckEditor } from "@executor-js/react/components/health-check-editor";
+import {
+  HealthCheckEditor,
+  type HealthCheckLivePreview,
+} from "@executor-js/react/components/health-check-editor";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { useOrganizationId } from "@executor-js/react/api/organization-context";
+import { defaultConnectionOwnerForHost } from "@executor-js/react/plugins/connection-owner";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
   useCustomMethodActions,
@@ -104,6 +109,20 @@ export default function OpenApiAccountsPanel(props: {
     configure,
   });
 
+  // Live-preview context for the health-check edit sheet: probe as the host's
+  // default owner against the integration's API-key auth methods (the only kind
+  // a pasted test key can validate). OAuth/none methods can't be previewed with
+  // a key, so they're filtered out; with no apikey method the sheet hides the
+  // preview block entirely.
+  const organizationId = useOrganizationId();
+  const livePreview = useMemo<HealthCheckLivePreview | undefined>(() => {
+    const templates = methods
+      .filter((m) => m.kind === "apikey")
+      .map((m) => ({ template: m.template, label: m.label }));
+    if (templates.length === 0) return undefined;
+    return { owner: defaultConnectionOwnerForHost(organizationId), templates };
+  }, [methods, organizationId]);
+
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
       <AccountsSection
@@ -114,7 +133,7 @@ export default function OpenApiAccountsPanel(props: {
         createCustomMethod={createCustomMethod}
         removeCustomMethod={removeCustomMethod}
       />
-      <HealthCheckEditor integration={slug} />
+      <HealthCheckEditor integration={slug} livePreview={livePreview} />
     </div>
   );
 }

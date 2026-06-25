@@ -44,7 +44,9 @@ const toHealthResponse = (r: HealthCheckResult) => ({
   status: r.status,
   checkedAt: r.checkedAt,
   ...(r.httpStatus !== undefined ? { httpStatus: r.httpStatus } : {}),
+  ...(r.identity !== undefined ? { identity: r.identity } : {}),
   ...(r.detail !== undefined ? { detail: r.detail } : {}),
+  ...(r.responseSample !== undefined ? { responseSample: r.responseSample } : {}),
 });
 
 export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connections", (handlers) =>

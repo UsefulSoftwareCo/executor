@@ -107,8 +107,10 @@ export default function AddOpenApiSource(props: {
 
   // Optional health check drafted while adding. Empty `hcOperation` means "not
   // drafted": we then leave the integration's auto-detected default untouched
-  // rather than persisting a blank.
+  // rather than persisting a blank. No live preview here (no integration/key
+  // exists pre-creation, and `validateConnection` requires a persisted one).
   const [hcOperation, setHcOperation] = useState("");
+  const [hcIdentityField, setHcIdentityField] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
 
   const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
@@ -230,9 +232,10 @@ export default function AddOpenApiSource(props: {
 
   const onHcOperationChange = (next: string) => {
     setHcOperation(next);
-    // Args are operation-specific; drop them so none dangle onto a freshly
-    // picked operation.
+    // Args and identity path are operation-specific; drop them so neither
+    // dangles onto a freshly picked operation.
     setHcArgs({});
+    setHcIdentityField("");
   };
   const onHcArgChange = (name: string, value: string) =>
     setHcArgs((prev) => ({ ...prev, [name]: value }));
@@ -323,12 +326,14 @@ export default function AddOpenApiSource(props: {
     // place. A failure here is non-fatal: the integration is already created and
     // the check stays editable from its detail page, so surface it and move on.
     if (hcOperation.length > 0) {
+      const identity = hcIdentityField.trim();
       const argEntries = Object.entries(hcArgs)
         .map(([key, value]) => [key, value.trim()] as const)
         .filter(([, value]) => value.length > 0);
       const spec: HealthCheckSpec = {
         operation: hcOperation,
         ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+        ...(identity.length > 0 ? { identityField: identity } : {}),
       };
       const exit = await doSetHealthCheck({
         params: { slug: integration },
@@ -436,7 +441,8 @@ export default function AddOpenApiSource(props: {
             <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
             <p className="text-[11px] text-muted-foreground">
               One read-only call Executor runs to tell whether a connection's credential is still
-              alive. You can change this later from the integration page.
+              alive and, optionally, whose account it is. You can change this later, and run a live
+              preview against a key, from the integration page.
             </p>
           </div>
           <HealthCheckConfigFields
@@ -444,6 +450,8 @@ export default function AddOpenApiSource(props: {
             selected={hcSelected}
             operation={hcOperation}
             onOperationChange={onHcOperationChange}
+            identityField={hcIdentityField}
+            onIdentityFieldChange={setHcIdentityField}
             args={hcArgs}
             onArgChange={onHcArgChange}
             disabled={adding}

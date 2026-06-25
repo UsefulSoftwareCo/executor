@@ -107,10 +107,15 @@ export {
   HealthStatus,
   HealthCheckSpec,
   HealthCheckResult,
+  HealthCheckResponseSample,
   HealthCheckCandidate,
   HealthCheckCandidateParameter,
+  HealthCheckResponseField,
   classifyHttpStatus,
+  extractIdentity,
   compareHealthCheckCandidates,
+  projectResponseFields,
+  extractResponseFields,
 } from "./health-check";
 
 // Core schema.

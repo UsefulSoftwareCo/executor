@@ -9,7 +9,11 @@ import {
   authToolFailure,
   classifyHttpStatus,
   compareHealthCheckCandidates,
+  extractIdentity,
+  extractResponseFields,
+  projectResponseFields,
   type HealthCheckCandidate,
+  type HealthCheckResponseField,
   type HealthCheckResult,
   type HealthCheckSpec,
   type IntegrationConfig,
@@ -673,7 +677,7 @@ export const resolveOpenApiBackedAnnotations = (input: {
   });
 
 // ---------------------------------------------------------------------------
-// Health checks — the declared liveness probe for a connection.
+// Health checks — the declared liveness/identity probe for a connection.
 // ---------------------------------------------------------------------------
 
 /** Resolve the invocation binding for a health-check operation. Unlike the tool
@@ -787,10 +791,17 @@ export const checkHealthOpenApi = (input: {
     }
 
     const status = classifyHttpStatus(probe.result.status);
+    const identity =
+      status === "healthy" ? extractIdentity(probe.result.data, spec.identityField) : undefined;
+    // Sample the actual returned body (success body, else the error body) so the
+    // live preview can show what the operation returns regardless of status.
+    const responseSample = extractResponseFields(probe.result.data ?? probe.result.error);
     return {
       status,
       httpStatus: probe.result.status,
+      ...(identity !== undefined ? { identity } : {}),
       checkedAt,
+      ...(responseSample.length > 0 ? { responseSample } : {}),
       ...(status === "healthy"
         ? {}
         : { detail: extractOpenApiUpstreamMessage(probe.result.error, probe.result.status) }),
@@ -799,7 +810,7 @@ export const checkHealthOpenApi = (input: {
 
 /** List the operations a user can pick as the health check, ranked
  *  non-destructive-first then fewest-required-args so the obvious "GET /me"
- *  style endpoint floats to the top. Recompiles the spec once (best-effort)
+ *  identity endpoint floats to the top. Recompiles the spec once (best-effort)
  *  to recover human summaries the stored binding does not keep. */
 export const listHealthCheckCandidatesOpenApi = (input: {
   readonly ctx: PluginCtx<OpenapiStore>;
@@ -811,6 +822,7 @@ export const listHealthCheckCandidatesOpenApi = (input: {
     const config = decodeOpenApiIntegrationConfig(input.integration.config);
 
     const summaries = new Map<string, string>();
+    const responseFieldsByTool = new Map<string, readonly HealthCheckResponseField[]>();
     if (config) {
       const specText = yield* loadOpenApiSpecText(input.ctx.storage, config).pipe(
         Effect.catch(() => Effect.succeed(null)),
@@ -825,6 +837,13 @@ export const listHealthCheckCandidatesOpenApi = (input: {
             Option.getOrUndefined(def.operation.summary) ??
             Option.getOrUndefined(def.operation.description);
           if (summary) summaries.set(def.toolPath, summary);
+          // `outputSchema` is NOT pre-normalized; `hoistedDefs` ARE, so normalize
+          // the schema before walking refs against them.
+          const fields = projectResponseFields(
+            normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
+            compiled.hoistedDefs,
+          );
+          if (fields.length > 0) responseFieldsByTool.set(def.toolPath, fields);
         }
       }
     }
@@ -839,6 +858,7 @@ export const listHealthCheckCandidatesOpenApi = (input: {
           ? { description: parameter.description.value }
           : {}),
       }));
+      const responseFields = responseFieldsByTool.get(op.toolName);
       return {
         operation: op.toolName,
         method,
@@ -846,6 +866,7 @@ export const listHealthCheckCandidatesOpenApi = (input: {
         destructive: REQUIRE_APPROVAL.has(method),
         summary: summaries.get(op.toolName) ?? `${method.toUpperCase()} ${op.binding.pathTemplate}`,
         ...(parameters.length > 0 ? { parameters } : {}),
+        ...(responseFields && responseFields.length > 0 ? { responseFields } : {}),
       };
     });
     return [...candidates].sort(compareHealthCheckCandidates);

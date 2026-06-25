@@ -1,13 +1,14 @@
 // Cross-target: connection health checks, the feature that answers "has this
-// credential expired?" (the Google 7-day dev-token case) in one declared probe.
-// Entirely through the typed client:
+// credential expired?" (the Google 7-day dev-token case) and "whose account is
+// this?" in one declared probe. Entirely through the typed client:
 //
 //   1. register an OpenAPI integration whose `GET /me` is auth-gated,
 //   2. CONFIGURE a health check by picking that operation (the same flow the
 //      user drives in the editor: list candidates, ranked GET-first, then set),
-//   3. CHECK a SAVED connection and watch its status flip healthy -> expired
-//      when the stored key stops working,
-//   4. confirm a connection with no configured check reports `unknown`.
+//   3. VALIDATE a pasted key without saving it (the key-first connect flow) and
+//      watch the probe derive the connection identity from the live response,
+//   4. CHECK a SAVED connection and watch its status flip healthy -> expired
+//      when the stored key stops working.
 //
 // The upstream API is a real node:http server started inside the scenario on
 // 127.0.0.1 that gates `GET /me` on a bearer token: a generic "bring your own
@@ -30,14 +31,14 @@ const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
 
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
-const ACCOUNT_EMAIL = "alice@example.com";
+const IDENTITY = "alice@example.com";
 
 const newSlug = (prefix: string) =>
   IntegrationSlug.make(`${prefix}-${randomBytes(4).toString("hex")}`);
 
-/** OpenAPI 3 spec with an auth-gated GET (`/me`, the obvious health check) plus a
- *  destructive POST so the candidate ranking has something to sort the GET ahead
- *  of. */
+/** OpenAPI 3 spec with an auth-gated identity GET (`/me`, the obvious health
+ *  check) plus a destructive POST so the candidate ranking has something to sort
+ *  the GET ahead of. */
 const identitySpec = (baseUrl: string): string =>
   JSON.stringify({
     openapi: "3.0.3",
@@ -73,6 +74,72 @@ const identitySpec = (baseUrl: string): string =>
     },
   });
 
+/** OpenAPI 3 spec whose `GET /me` response mirrors Vercel's `getAuthUser`: the
+ *  account is a `oneOf` of two object variants, the obvious identity scalars
+ *  (`email`, `id`) sit behind a large nested object, and one field (`limited`)
+ *  exists only on the second variant. A naive walker that follows only the first
+ *  union branch (and descends the nested object until a field cap) drops both
+ *  `user.email` and `user.limited`; the projector must merge branches and emit
+ *  shallow fields first. No live server needed (candidate projection is static). */
+const discriminatedUnionSpec = (baseUrl: string): string => {
+  // 60 nested scalars, listed before `email`, so a depth-first walk blows the
+  // field cap inside `profile` before it ever reaches the top-level identity.
+  const profileProps: Record<string, unknown> = {};
+  for (let i = 0; i < 60; i++) profileProps[`field${i}`] = { type: "string" };
+  return JSON.stringify({
+    openapi: "3.0.3",
+    info: { title: "Union Identity API", version: "1.0.0" },
+    servers: [{ url: baseUrl }],
+    paths: {
+      "/me": {
+        get: {
+          operationId: "getAuthUser",
+          summary: "The current account",
+          responses: {
+            "200": {
+              description: "The authenticated account",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      user: {
+                        oneOf: [
+                          { $ref: "#/components/schemas/AccountFull" },
+                          { $ref: "#/components/schemas/AccountLimited" },
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        AccountFull: {
+          type: "object",
+          properties: {
+            profile: { type: "object", properties: profileProps },
+            email: { type: "string" },
+            id: { type: "string" },
+          },
+        },
+        AccountLimited: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+            limited: { type: "boolean" },
+          },
+        },
+      },
+    },
+  });
+};
+
 /** A real node:http identity API on 127.0.0.1. `GET /me` returns the account
  *  JSON only when the bearer token matches `validToken`; any other token is a
  *  401 (the "the dev token got revoked" case the health check classifies as
@@ -89,7 +156,7 @@ const serveIdentityApi = (validToken: string) =>
             return;
           }
           response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify({ email: ACCOUNT_EMAIL, login: "alice" }));
+          response.end(JSON.stringify({ email: IDENTITY, login: "alice" }));
           return;
         }
         response.writeHead(404, { "content-type": "application/json" });
@@ -130,9 +197,9 @@ const registerIdentityIntegration = (client: Client, slug: IntegrationSlug, base
     },
   });
 
-/** The stored operation name for the GET probe (openapi prefixes it by tag, e.g.
- *  `me.getMe`), discovered the same way the editor does: from the ranked
- *  candidate list. */
+/** The stored operation name for the GET identity probe (openapi prefixes it by
+ *  tag, e.g. `me.getMe`), discovered the same way the editor does: from the
+ *  ranked candidate list. */
 const getMeOperation = (client: Client, slug: IntegrationSlug) =>
   Effect.gen(function* () {
     const candidates = yield* client.integrations.healthCheckCandidates({ params: { slug } });
@@ -142,7 +209,7 @@ const getMeOperation = (client: Client, slug: IntegrationSlug) =>
   });
 
 scenario(
-  "Health checks · the editor ranks the non-destructive GET ahead of the destructive POST",
+  "Health checks · configuring a check, then validating a key derives the connection identity",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -152,14 +219,14 @@ scenario(
       const client = yield* makeClient(api, identity);
       const goodToken = `gk_${randomBytes(8).toString("hex")}`;
       const server = yield* serveIdentityApi(goodToken);
-      const slug = newSlug("hc-rank");
+      const slug = newSlug("hc-validate");
 
       yield* Effect.ensuring(
         Effect.gen(function* () {
           yield* registerIdentityIntegration(client, slug, server.url);
 
           // The editor offers the integration's operations, ranked so the
-          // non-destructive GET endpoint floats to the top.
+          // non-destructive GET identity endpoint floats to the top.
           const candidates = yield* client.integrations.healthCheckCandidates({
             params: { slug },
           });
@@ -169,7 +236,7 @@ scenario(
             return yield* Effect.die("identity spec should expose a GET and a POST candidate");
           }
           // Operations are stored tag-prefixed (e.g. `me.getMe`); match the suffix.
-          expect(get.operation.split(".").at(-1), "the GET is offered").toBe("getMe");
+          expect(get.operation.split(".").at(-1), "the identity GET is offered").toBe("getMe");
           expect(post.operation.split(".").at(-1), "the destructive POST is offered").toBe(
             "sendMessage",
           );
@@ -177,18 +244,37 @@ scenario(
             candidates[0]?.operation,
             "the non-destructive GET ranks ahead of the destructive POST",
           ).toBe(get.operation);
-          expect(get.destructive, "the GET probe is non-destructive").toBe(false);
+          expect(get.destructive, "the GET identity probe is non-destructive").toBe(false);
           expect(post.destructive, "the POST is flagged destructive").toBe(true);
+          const operation = get.operation;
 
-          // Pick it: just the operation (a pure liveness probe).
+          // Pick it: the operation plus the dot-path to the identity field.
           yield* client.integrations.healthCheckSet({
             params: { slug },
-            payload: { spec: { operation: get.operation } },
+            payload: { spec: { operation, identityField: "email" } },
           });
           const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
           expect(stored, "the chosen health check round-trips").toEqual({
-            operation: get.operation,
+            operation,
+            identityField: "email",
           });
+
+          // Key-first connect: a pasted key is probed WITHOUT saving, and the
+          // probe surfaces the identity the UI fills the connection name from.
+          const healthy = yield* client.connections.validate({
+            payload: { owner: "org", integration: slug, template: TEMPLATE, value: goodToken },
+          });
+          expect(healthy.status, "a live key validates as healthy").toBe("healthy");
+          expect(healthy.httpStatus, "the probe saw the 200").toBe(200);
+          expect(healthy.identity, "the identity is derived from the response body").toBe(IDENTITY);
+
+          // A revoked / wrong key validates as expired, with no identity.
+          const expired = yield* client.connections.validate({
+            payload: { owner: "org", integration: slug, template: TEMPLATE, value: "wrong-key" },
+          });
+          expect(expired.status, "a rejected key validates as expired").toBe("expired");
+          expect(expired.httpStatus, "the probe saw the 401").toBe(401);
+          expect(expired.identity, "no identity is surfaced for a rejected key").toBeUndefined();
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
@@ -216,10 +302,10 @@ scenario(
           const operation = yield* getMeOperation(client, slug);
           yield* client.integrations.healthCheckSet({
             params: { slug },
-            payload: { spec: { operation } },
+            payload: { spec: { operation, identityField: "email" } },
           });
 
-          // A connection holding the live key checks out healthy.
+          // A connection holding the live key checks out healthy, identity and all.
           yield* client.connections.create({
             payload: {
               owner: "org",
@@ -234,6 +320,7 @@ scenario(
           });
           expect(healthy.status, "the saved connection's live key is healthy").toBe("healthy");
           expect(healthy.httpStatus, "the saved probe saw the 200").toBe(200);
+          expect(healthy.identity, "the saved probe derives the account identity").toBe(IDENTITY);
 
           // Re-creating the same (owner, integration, name) replaces the stored
           // key in place: now the connection holds a key the server rejects.
@@ -251,6 +338,7 @@ scenario(
           });
           expect(expired.status, "the same connection now reads as expired").toBe("expired");
           expect(expired.httpStatus, "the saved probe saw the 401").toBe(401);
+          expect(expired.identity, "an expired connection surfaces no identity").toBeUndefined();
         }),
         Effect.gen(function* () {
           yield* client.connections
@@ -258,6 +346,56 @@ scenario(
             .pipe(Effect.ignore);
           yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
         }),
+      );
+    }),
+  ),
+);
+
+scenario(
+  "Health checks · the identity picker surfaces shallow fields across a discriminated union",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const slug = newSlug("hc-union");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: discriminatedUnionSpec("https://union.example.com") },
+              slug,
+              baseUrl: "https://union.example.com",
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: { authorization: ["Bearer ", { type: "variable", name: "token" }] },
+                },
+              ],
+            },
+          });
+
+          // The identity picker is fed by the GET candidate's projected response
+          // fields. They must include the shallow identity scalar even though it
+          // sits behind a 60-field nested object...
+          const candidates = yield* client.integrations.healthCheckCandidates({ params: { slug } });
+          const get = candidates.find((candidate) => candidate.method === "get");
+          if (!get) return yield* Effect.die("union spec exposed no GET candidate");
+          const paths = (get.responseFields ?? []).map((field) => field.path);
+          expect(paths, "the shallow identity scalar is offered, not starved by nesting").toContain(
+            "user.email",
+          );
+          // ...and the field that exists ONLY on the second union variant, proving
+          // every branch contributes (not just the first).
+          expect(paths, "a field unique to the second union branch is offered").toContain(
+            "user.limited",
+          );
+        }),
+        client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
     }),
   ),

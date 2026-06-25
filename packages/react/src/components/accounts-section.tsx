@@ -88,10 +88,14 @@ function AccountRow(props: {
   const status: HealthStatus = probe?.status ?? "unknown";
   const indicator = HEALTH_INDICATOR_COLOR[status];
 
-  const displayLabel =
-    connection.identityLabel && connection.identityLabel.length > 0
+  // Prefer a probed identity (the live account), then the stored label, then the
+  // connection name. The probe is the whole point: it shows WHICH account this is.
+  const identity =
+    (probe?.identity && probe.identity.length > 0 ? probe.identity : null) ??
+    (connection.identityLabel && connection.identityLabel.length > 0
       ? connection.identityLabel
-      : String(connection.name);
+      : null);
+  const displayLabel = identity ?? String(connection.name);
 
   const expired = status === "expired";
 
@@ -112,7 +116,9 @@ function AccountRow(props: {
     }
     setProbe(exit.value);
     if (exit.value.status === "healthy") {
-      toast.success("Connection is healthy");
+      toast.success(
+        exit.value.identity ? `Healthy — ${exit.value.identity}` : "Connection is healthy",
+      );
     } else if (exit.value.status === "expired") {
       toast.error("Connection expired — reconnect to restore access");
     } else if (exit.value.status === "degraded") {

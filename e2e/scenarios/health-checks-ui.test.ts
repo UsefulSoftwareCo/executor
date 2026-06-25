@@ -27,13 +27,16 @@ import type { HttpApiClient } from "effect/unstable/httpapi";
 import type { Page } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { IntegrationSlug } from "@executor-js/sdk/shared";
+import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
+
+const TEMPLATE = AuthTemplateSlug.make("apiKey");
+const IDENTITY = "alice@example.com";
 
 const newSlug = (prefix: string) =>
   IntegrationSlug.make(`${prefix}-${randomBytes(4).toString("hex")}`);
@@ -127,6 +130,47 @@ const registerIdentityIntegration = (client: Client, slug: IntegrationSlug, base
       ],
     },
   });
+
+/** Like `serveIdentityApi`, but with a `revoke()` that flips the key off so a
+ *  saved connection's previously-good key stops working mid-session (the editor
+ *  scenario's healthy -> expired transition). */
+const serveMutableIdentityApi = (validToken: string) =>
+  Effect.acquireRelease(
+    Effect.callback<{
+      readonly url: string;
+      readonly revoke: () => void;
+      readonly close: () => void;
+    }>((resume) => {
+      let live = true;
+      const server = createServer((request, response) => {
+        const authorized = live && request.headers["authorization"] === `Bearer ${validToken}`;
+        if (request.method === "GET" && (request.url ?? "").startsWith("/me")) {
+          response.writeHead(authorized ? 200 : 401, { "content-type": "application/json" });
+          response.end(JSON.stringify(authorized ? { email: IDENTITY } : { error: "x" }));
+          return;
+        }
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not_found" }));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        resume(
+          Effect.succeed({
+            url: `http://127.0.0.1:${port}`,
+            revoke: () => {
+              live = false;
+            },
+            close: () => {
+              server.close();
+              server.closeAllConnections();
+            },
+          }),
+        );
+      });
+    }),
+    (server) => Effect.sync(server.close),
+  );
 
 /** The stored operation name for the GET probe (openapi prefixes it by tag),
  *  discovered the same way the editor does: from the ranked candidate list. */
@@ -563,6 +607,163 @@ scenario(
               expect(after, "the list scrolled past its starting offset").toBeGreaterThan(before);
               // The sheet stayed open through the scroll interaction.
               await page.getByRole("dialog").waitFor();
+            });
+          });
+        }),
+        client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+      );
+    }),
+  ),
+);
+
+// ===========================================================================
+// Edit sheet WITH identity (identity layer): pick the operation + identity field
+// by mouse, live-preview the response, then drive "Check now" on a saved
+// connection healthy -> expired once the upstream revokes the key.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · edit sheet with identity: preview the response, then healthy then expired",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      const server = yield* serveMutableIdentityApi(goodToken);
+      const slug = newSlug("hc-ui-id");
+      const name = ConnectionName.make("main");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+          const operation = yield* getMeOperation(client, slug);
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: goodToken,
+            },
+          });
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const connections = page.locator("section").filter({
+              has: page.getByRole("heading", { level: 3, name: "Connections" }),
+            });
+            const menuTrigger = connections.locator('button[aria-haspopup="menu"]');
+
+            await step("Open the integration's connections", async () => {
+              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await connections.getByText("main", { exact: true }).waitFor();
+              await page.getByRole("heading", { level: 3, name: "Health check" }).waitFor();
+            });
+
+            await step(
+              "Pick the GET identity call and its email identity field by mouse",
+              async () => {
+                await page.getByRole("button", { name: "Set up" }).click();
+                await clickComboboxOption(page, "health-check-operation", "getMe");
+                await clickComboboxOption(page, "health-check-identity", "email");
+              },
+            );
+
+            await step("Live preview a pasted key: status, response, and identity", async () => {
+              const sheet = page.getByRole("dialog");
+              await page.locator("#health-check-preview-key").fill(goodToken);
+              await sheet.getByRole("button", { name: "Preview", exact: true }).click();
+              await sheet.getByText("Response", { exact: true }).waitFor({ timeout: 30_000 });
+              await sheet.getByText("Resolves to:").waitFor();
+              await sheet.getByText(IDENTITY).first().waitFor();
+            });
+
+            await step("Save the health check", async () => {
+              await page.getByRole("button", { name: "Save", exact: true }).click();
+              await page.locator("#health-check-operation").waitFor({ state: "hidden" });
+            });
+
+            await step("Check the live connection: healthy, and whose account it is", async () => {
+              await menuTrigger.click();
+              await page.getByRole("menuitem", { name: "Check now" }).click();
+              await connections.getByText(IDENTITY).waitFor({ timeout: 30_000 });
+              await connections.getByLabel("Status: Healthy").waitFor();
+            });
+
+            await step("The upstream revokes the key: the connection reads expired", async () => {
+              server.revoke();
+              await menuTrigger.click();
+              await page.getByRole("menuitem", { name: "Check now" }).click();
+              await connections.getByText("Expired", { exact: true }).waitFor({ timeout: 30_000 });
+              await connections.getByLabel("Status: Expired").waitFor();
+            });
+          });
+
+          const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
+          expect(stored).toEqual({ operation, identityField: "email" });
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);
+
+// ===========================================================================
+// Add Connection, check configured WITH identity (identity layer): checking the
+// key derives the connection name from the probed identity.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · Add Connection derives the connection name from the probed identity",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      const server = yield* serveIdentityApi(goodToken);
+      const slug = newSlug("hc-ui-name");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+          const operation = yield* getMeOperation(client, slug);
+          yield* client.integrations.healthCheckSet({
+            params: { slug },
+            payload: { spec: { operation, identityField: "email" } },
+          });
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const dialog = page.getByRole("dialog");
+
+            await step("Open the Add Connection modal", async () => {
+              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await page.getByRole("button", { name: "Add connection", exact: true }).click();
+              await page.getByRole("heading", { name: /Add connection/ }).waitFor();
+            });
+
+            await step("A valid key checks healthy and names the connection", async () => {
+              await dialog.getByPlaceholder("paste the value / token").fill(goodToken);
+              await dialog.getByRole("button", { name: "Check the key works" }).click();
+              await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
+              await page.waitForFunction(
+                (expected) =>
+                  (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
+                  expected,
+                IDENTITY,
+                { timeout: 10_000 },
+              );
             });
           });
         }),
