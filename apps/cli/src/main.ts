@@ -2352,6 +2352,19 @@ const webCommand = Command.make(
   ({ foreground, port, scope, hostname, allowedHost, authToken }) =>
     Effect.gen(function* () {
       if (!foreground) {
+        // `--scope` can ONLY be honored by a foreground server we boot here.
+        // Without `--foreground` we just open whatever background service is
+        // already running, which uses the scope IT was started with — so a
+        // `--scope` here would be silently ignored and the user could land on a
+        // different workspace ("where did my config go?"). Say so loudly and
+        // point at the flag that actually applies it.
+        if (Option.isSome(scope)) {
+          console.warn(
+            `Ignoring --scope ${scope.value}: it only applies with --foreground. ` +
+              `The running web app uses the scope it was started with. ` +
+              `Run \`executor web --foreground --scope ${scope.value}\` to serve that workspace.`,
+          );
+        }
         yield* openRunningLocalWebApp();
         return;
       }

@@ -55,3 +55,35 @@ scenario(
     }
   }),
 );
+
+scenario(
+  "CLI web · --scope without --foreground warns instead of silently ignoring it",
+  { timeout: 120_000 },
+  Effect.promise(async () => {
+    // Regression guard for "Had to setup my config again": `executor web --scope X`
+    // without `--foreground` cannot honor the scope (it opens the running service,
+    // which keeps its own scope). That used to be a SILENT no-op — the user lands
+    // on a different workspace and thinks their config vanished. It must warn.
+    const root = mkdtempSync(join(tmpdir(), "executor-web-scope-"));
+    const dataDir = join(root, "data");
+    const scopeDir = join(root, "workspace");
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        "bun",
+        ["run", "dev:cli", "web", "--scope", scopeDir],
+        { cwd: repoRoot, env: { ...process.env, EXECUTOR_DATA_DIR: dataDir } },
+      );
+      const output = `${stdout}\n${stderr}`;
+
+      expect(output, "the dropped --scope is called out, not silently ignored").toContain(
+        "Ignoring --scope",
+      );
+      expect(output, "the warning names the scope it dropped").toContain(scopeDir);
+      expect(output, "the warning points at the flag that actually applies scope").toContain(
+        "--foreground",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }),
+);
