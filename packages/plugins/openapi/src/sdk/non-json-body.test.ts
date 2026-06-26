@@ -344,6 +344,30 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
+  it.effect("application/octet-stream: object body fails before dispatch", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+      const conn = yield* addOpenApiTestConnection(executor, server, {
+        slug: "bin_object_body",
+      });
+
+      const exit = yield* executor
+        .execute(conn.address("body.submit"), {
+          body: { name: "photo.png" },
+        })
+        .pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(captured.contentType).toBe("");
+      expect(captured.body.length).toBe(0);
+    }),
+  );
+
   it.effect(
     "format: byte response: Gmail-style image attachment data is exposed as a file artifact",
     () =>
