@@ -14,12 +14,15 @@ const fmt = (date: Date) =>
     year: "numeric",
     month: "long",
     day: "numeric",
+    // Frontmatter dates are bare YYYY-MM-DD (UTC midnight); format in UTC so
+    // the displayed day matches what the author wrote regardless of timezone.
+    timeZone: "UTC",
   });
 ---
 
 <Layout
   title="Blog — Executor"
-  description="Notes on agents, tools, and the integration layer underneath them, from the team building Executor."
+  description="Essays on agents, tools, and the integration layer underneath them, from building Executor."
 >
   <main class="bg-soft relative min-h-dvh antialiased">
     <div
@@ -71,11 +74,11 @@ const fmt = (date: Date) =>
           <h1
             class="text-[clamp(2.4rem,5.6vw,4rem)] font-semibold leading-[1.02] tracking-[-0.025em] text-ink"
           >
-            Field notes on <span class="serif-italic">agents</span> and tools.
+            Agents, tools, and the <span class="serif-italic">mess</span> in
+            between.
           </h1>
           <p class="mt-5 max-w-[54ch] text-[17px] leading-[1.6] text-ink-2 text-pretty">
-            Thinking from the team building Executor, the integration layer that
-            connects any agent to everything.
+            Essays from building Executor.
           </p>
         </div>
       </section>
