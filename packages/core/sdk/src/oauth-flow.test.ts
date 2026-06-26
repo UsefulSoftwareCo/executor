@@ -10,6 +10,7 @@ import {
   ToolAddress,
   ToolName,
 } from "./ids";
+import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
@@ -184,6 +185,64 @@ describe("oauth.start / oauth.complete", () => {
           expect(yield* server.acceptsAccessToken(out.token)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("carries the URL org selector in provider state without changing redirect_uri", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          oauthCallbackStateOrgSlug: "acme",
+        });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main-account"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const authorizationUrl = new URL(started.authorizationUrl);
+        const redirectUri = new URL(authorizationUrl.searchParams.get("redirect_uri") ?? "");
+        const providerState = authorizationUrl.searchParams.get("state") ?? "";
+
+        expect(redirectUri.toString()).toBe("http://localhost/oauth/callback");
+        expect(providerState).not.toBe(String(started.state));
+        expect(decodeOAuthCallbackState(providerState)).toEqual({
+          state: String(started.state),
+          orgSlug: "acme",
+        });
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const callbackState = decodeOAuthCallbackState(callback.state);
+        expect(callbackState).not.toBeNull();
+        if (callbackState === null) return;
+
+        const connection = yield* executor.oauth.complete({
+          state: OAuthState.make(callbackState.state),
+          code: callback.code,
+        });
+        expect(String(connection.address)).toBe("tools.acme.org.mainAccount");
+      }),
+    ),
   );
 
   it.effect("records offline_access when a refresh token proves it was granted", () =>

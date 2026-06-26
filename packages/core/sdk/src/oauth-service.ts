@@ -67,7 +67,7 @@ import {
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
-import { OAUTH2_SESSION_TTL_MS } from "./oauth";
+import { OAUTH2_SESSION_TTL_MS, encodeOAuthCallbackState } from "./oauth";
 
 /** Connection-minting input for the OAuth flow — extends a connection create
  *  with the OAuth lifecycle fields (client slug, refresh material, expiry,
@@ -148,6 +148,8 @@ export interface OAuthServiceDeps {
    * that serve OAuth MUST derive this from the request origin / web base URL.
    */
   readonly redirectUri: string | null;
+  /** URL selected organization slug to round-trip through OAuth `state`. */
+  readonly callbackStateOrgSlug?: string | null;
 }
 
 type LooseDb = {
@@ -724,6 +726,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const verifier = createPkceCodeVerifier();
       const challenge = yield* Effect.promise(() => createPkceCodeChallenge(verifier));
       const state = OAuthState.make(createOAuthState());
+      const providerState = encodeOAuthCallbackState({
+        state: String(state),
+        orgSlug: deps.callbackStateOrgSlug,
+      });
 
       const now = new Date();
       const expiresAt = Date.now() + OAUTH2_SESSION_TTL_MS;
@@ -757,7 +763,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             clientId: client.clientId,
             redirectUrl: flowRedirectUri,
             scopes: requestedScopes,
-            state: String(state),
+            state: providerState,
             codeChallenge: challenge,
             resource: client.resource ?? undefined,
             // Provider quirks (Google: access_type=offline + prompt=consent) —

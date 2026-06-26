@@ -121,6 +121,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   /** Override the OAuth callback URL. Pass `null` to construct an executor with
    *  no OAuth callback (exercises the fail-loud redirect path). */
   readonly redirectUri?: string | null;
+  readonly oauthCallbackStateOrgSlug?: string;
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -159,6 +160,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",
     ...(redirectUri != null ? { redirectUri } : {}),
+    oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
   };
 };
 

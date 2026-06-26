@@ -217,7 +217,9 @@ export {
 export {
   OAUTH2_PROVIDER_KEY,
   OAUTH2_SESSION_TTL_MS,
-  OAUTH_CALLBACK_ORG_QUERY_PARAM,
+  decodeOAuthCallbackState,
+  encodeOAuthCallbackState,
+  type OAuthCallbackState,
 } from "./oauth";
 export {
   OAuthStartError,
