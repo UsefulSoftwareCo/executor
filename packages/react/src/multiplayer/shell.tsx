@@ -198,6 +198,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                     { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
+                  sourceId={slug}
                   url={
                     integration.displayUrl ??
                     integrationInferredUrl({ id: slug, name }) ??
