@@ -108,6 +108,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
                     origin: origin ?? "https://unconfigured-origin.invalid",
                     executionId,
                     sessionId: self.sessionId,
+                    organizationSlug: sessionMeta.organizationSlug,
                   });
                 },
               }

@@ -53,6 +53,8 @@ export const readElicitationMode = (request: Request): McpElicitationMode => {
 
 /**
  * Build the console approval URL for a paused execution:
+ * `<origin>/<organizationSlug>/resume/<executionId>?mcp_session_id=<sessionId>`
+ * when the host knows the org slug, otherwise
  * `<origin>/resume/<executionId>?mcp_session_id=<sessionId>`. The
  * `mcp_session_id` query routes the console's resume page back to the host's
  * approval endpoint for that session.
@@ -61,8 +63,10 @@ export const buildResumeApprovalUrl = (input: {
   readonly origin: string | URL;
   readonly executionId: string;
   readonly sessionId?: string | null;
+  readonly organizationSlug?: string | null;
 }): string => {
-  const url = new URL(`/resume/${encodeURIComponent(input.executionId)}`, input.origin);
+  const orgPath = input.organizationSlug ? `/${encodeURIComponent(input.organizationSlug)}` : "";
+  const url = new URL(`${orgPath}/resume/${encodeURIComponent(input.executionId)}`, input.origin);
   if (input.sessionId) url.searchParams.set("mcp_session_id", input.sessionId);
   return url.toString();
 };

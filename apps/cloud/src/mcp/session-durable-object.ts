@@ -217,6 +217,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
                     origin: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
                     executionId,
                     sessionId: self.sessionId,
+                    organizationSlug: sessionMeta.organizationSlug,
                   }),
               }
             : { mode: sessionElicitationMode },
