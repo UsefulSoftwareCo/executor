@@ -370,6 +370,8 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * Hosts serving OAuth derive this from the request origin / web base URL.
    */
   readonly redirectUri?: string;
+  /** Optional URL selected organization slug to carry inside OAuth `state`. */
+  readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
    * Enable the built-in `core-tools` plugin which contributes agent-facing
@@ -3094,6 +3096,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // instead of silently using `http://127.0.0.1/callback`. Hosts that serve
       // OAuth (cloud, self-host) derive a real `${webBaseUrl}/oauth/callback`.
       redirectUri: config.redirectUri ?? null,
+      callbackStateOrgSlug: config.oauthCallbackStateOrgSlug ?? null,
     });
 
     // ------------------------------------------------------------------

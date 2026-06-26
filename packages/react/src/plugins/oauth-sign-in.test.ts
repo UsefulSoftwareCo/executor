@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { OAUTH_CALLBACK_ORG_QUERY_PARAM } from "@executor-js/sdk/shared";
 
 import { oauthCallbackUrl } from "./oauth-sign-in";
 
@@ -29,13 +28,13 @@ describe("oauthCallbackUrl", () => {
     expect(oauthCallbackUrl()).toBe("/api/oauth/callback");
   });
 
-  it("carries the active org slug from the console URL", () => {
+  it("keeps the callback URL static from an org console URL", () => {
     setLocation("https://executor.sh/acme/integrations/posthog");
 
     const url = new URL(oauthCallbackUrl());
 
-    expect(url.toString()).toBe("https://executor.sh/api/oauth/callback?executor_org=acme");
-    expect(url.searchParams.get(OAUTH_CALLBACK_ORG_QUERY_PARAM)).toBe("acme");
+    expect(url.toString()).toBe("https://executor.sh/api/oauth/callback");
+    expect(url.search).toBe("");
   });
 
   it("does not add an org selector on bare app routes", () => {

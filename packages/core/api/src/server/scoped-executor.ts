@@ -35,7 +35,6 @@ import { Context, Effect, Option } from "effect";
 
 import {
   createExecutor,
-  OAUTH_CALLBACK_ORG_QUERY_PARAM,
   Subject,
   Tenant,
   type AnyPlugin,
@@ -152,13 +151,9 @@ export const resolveScopedWebBaseUrl = (input: {
 export const buildOAuthRedirectUri = (input: {
   readonly webBaseUrl: string | undefined;
   readonly oauthCallbackPath: string;
-  readonly orgSlug?: string | null;
 }): string | undefined => {
   if (!input.webBaseUrl) return undefined;
-  const url = new URL(input.oauthCallbackPath, input.webBaseUrl);
-  const slug = input.orgSlug?.trim();
-  if (slug) url.searchParams.set(OAUTH_CALLBACK_ORG_QUERY_PARAM, slug);
-  return url.toString();
+  return new URL(input.oauthCallbackPath, input.webBaseUrl).toString();
 };
 
 // ---------------------------------------------------------------------------
@@ -245,7 +240,6 @@ export const makeScopedExecutor = <
     const redirectUri = buildOAuthRedirectUri({
       webBaseUrl,
       oauthCallbackPath: config.oauthCallbackPath,
-      orgSlug,
     });
 
     const plugins = pluginsFactory();
@@ -268,6 +262,7 @@ export const makeScopedExecutor = <
       fetch: hostedFetch,
       onElicitation: "accept-all",
       redirectUri,
+      oauthCallbackStateOrgSlug: orgSlug,
       coreTools: {
         webBaseUrl,
         orgSlug,

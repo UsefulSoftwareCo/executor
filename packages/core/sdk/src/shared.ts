@@ -99,7 +99,11 @@ export type { ToolPolicyAction } from "./core-schema";
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 
-export { OAUTH_CALLBACK_ORG_QUERY_PARAM } from "./oauth";
+export {
+  decodeOAuthCallbackState,
+  encodeOAuthCallbackState,
+  type OAuthCallbackState,
+} from "./oauth";
 
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {

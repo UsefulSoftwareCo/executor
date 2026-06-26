@@ -2,8 +2,8 @@
 //
 // A browser session cookie can be pinned to org B while a tab is operating in
 // org A via the URL org selector. OAuth redirects leave the console route and
-// land on /api/oauth/callback, so the callback URL itself must carry the same
-// org selector that was present when oauth.start created the session.
+// land on /api/oauth/callback, so the provider state must carry the org selector
+// without adding provider-facing query params to redirect_uri.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -11,11 +11,7 @@ import { Effect } from "effect";
 import type { Page } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import {
-  IntegrationSlug,
-  OAUTH_CALLBACK_ORG_QUERY_PARAM,
-  OAuthClientSlug,
-} from "@executor-js/sdk/shared";
+import { IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
@@ -171,7 +167,7 @@ const oauthIntegrationSpec = (oauth: {
   }) as const;
 
 scenario(
-  "OAuth callback · URL-scoped org survives a callback while the session cookie points elsewhere",
+  "OAuth callback · state-scoped org survives a callback while the session cookie points elsewhere",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -211,6 +207,7 @@ scenario(
     });
 
     let callback = new URL("http://invalid.example");
+    let providerAuthorizeUrl = new URL("http://invalid.example");
     yield* browser.session(identity, async ({ page, step }) => {
       await installSameWindowOAuthPopup(page);
 
@@ -232,11 +229,28 @@ scenario(
         await page.getByRole("heading", { name: /Add connection/ }).waitFor({
           timeout: 30_000,
         });
+        const authorizeRequest = page.waitForRequest(
+          (request) => {
+            const url = new URL(request.url());
+            return url.origin === new URL(oauth.issuerUrl).origin && url.pathname === "/authorize";
+          },
+          { timeout: 30_000 },
+        );
         await page.getByRole("button", { name: "Connect with OAuth" }).click();
+        providerAuthorizeUrl = new URL((await authorizeRequest).url());
         await page.waitForURL(
           (url) => url.origin === new URL(oauth.issuerUrl).origin && url.pathname === "/login",
           { timeout: 30_000 },
         );
+        const redirectUri = new URL(providerAuthorizeUrl.searchParams.get("redirect_uri") ?? "");
+        expect(redirectUri.pathname, "the provider redirects to the OAuth callback").toBe(
+          "/api/oauth/callback",
+        );
+        expect(redirectUri.search, "the provider-facing redirect_uri has no org query").toBe("");
+        expect(
+          providerAuthorizeUrl.searchParams.get("state"),
+          "OAuth state is present",
+        ).toBeTruthy();
         await page.getByText("OAuth test login").waitFor();
       });
 
@@ -258,8 +272,12 @@ scenario(
     });
 
     expect(
-      callback.searchParams.get(OAUTH_CALLBACK_ORG_QUERY_PARAM),
-      "the provider callback URL carries the original org selector",
-    ).toBe(orgA.slug);
+      new URL(providerAuthorizeUrl.searchParams.get("redirect_uri") ?? "").search,
+      "the provider-facing redirect_uri remains static",
+    ).toBe("");
+    expect(
+      callback.searchParams.has("executor_org"),
+      "the provider callback has no org query",
+    ).toBe(false);
   }).pipe(Effect.scoped),
 );

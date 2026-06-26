@@ -12,6 +12,8 @@
 // row and core owns the flow (D14).
 // ---------------------------------------------------------------------------
 
+import { Encoding, Option, Result, Schema } from "effect";
+
 export {
   type OAuthGrant,
   type OAuthAuthentication,
@@ -36,5 +38,46 @@ export const OAUTH2_PROVIDER_KEY = "oauth2" as const;
 /** How long a pending authorization stays redeemable. */
 export const OAUTH2_SESSION_TTL_MS = 15 * 60 * 1000;
 
-/** Query parameter used to carry the URL-selected org through OAuth callbacks. */
-export const OAUTH_CALLBACK_ORG_QUERY_PARAM = "executor_org" as const;
+const OAuthCallbackStateSchema = Schema.Struct({
+  state: Schema.String,
+  orgSlug: Schema.String,
+});
+
+export type OAuthCallbackState = typeof OAuthCallbackStateSchema.Type;
+
+const OAuthCallbackStateFromJson = Schema.fromJsonString(OAuthCallbackStateSchema);
+const decodeOAuthCallbackStateJson = Schema.decodeUnknownOption(OAuthCallbackStateFromJson);
+const encodeOAuthCallbackStateJson = Schema.encodeSync(OAuthCallbackStateFromJson);
+
+/** Encode URL selected callback routing data into OAuth `state`.
+ *
+ * The persisted OAuth session still uses the raw random state. Only the value
+ * sent to the authorization server is wrapped, so providers can keep a static
+ * redirect_uri while echoing enough state for the callback edge to pick the
+ * correct organization before completing the flow.
+ */
+export const encodeOAuthCallbackState = (input: {
+  readonly state: string;
+  readonly orgSlug?: string | null;
+}): string => {
+  const orgSlug = input.orgSlug?.trim();
+  if (!orgSlug) return input.state;
+  return Encoding.encodeBase64Url(encodeOAuthCallbackStateJson({ state: input.state, orgSlug }));
+};
+
+/** Decode a callback state value minted by `encodeOAuthCallbackState`.
+ *
+ * Returns null for raw or foreign state values, which lets non-org hosts use
+ * the raw OAuth state unchanged.
+ */
+export const decodeOAuthCallbackState = (
+  value: string | null | undefined,
+): OAuthCallbackState | null => {
+  if (!value) return null;
+  const json = Result.getOrNull(Encoding.decodeBase64UrlString(value));
+  if (json === null) return null;
+  const decoded = Option.getOrNull(decodeOAuthCallbackStateJson(json));
+  if (decoded === null) return null;
+  const orgSlug = decoded.orgSlug.trim();
+  return orgSlug ? { state: decoded.state, orgSlug } : null;
+};

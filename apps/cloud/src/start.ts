@@ -1,5 +1,5 @@
 import { createMiddleware, createStart } from "@tanstack/react-start";
-import { OAUTH_CALLBACK_ORG_QUERY_PARAM } from "@executor-js/sdk/shared";
+import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
 import { cloudApiHandler } from "./app";
 import { isAppOwnedPath } from "./app-paths";
@@ -42,11 +42,14 @@ const SESSION_COOKIE = "wos-session";
 const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
 const oauthCallbackOrgScopedRequest = (request: Request): Request => {
-  const orgSelector = new URL(request.url).searchParams.get(OAUTH_CALLBACK_ORG_QUERY_PARAM);
-  if (!orgSelector) return request;
-  const headers = new Headers(request.headers);
-  headers.set(ORG_SELECTOR_HEADER, orgSelector);
-  return new Request(request, { headers });
+  const url = new URL(request.url);
+  const callbackState = decodeOAuthCallbackState(url.searchParams.get("state"));
+  if (callbackState === null) return request;
+  url.searchParams.set("state", callbackState.state);
+  const rewritten = new Request(url, request);
+  const headers = new Headers(rewritten.headers);
+  headers.set(ORG_SELECTOR_HEADER, callbackState.orgSlug);
+  return new Request(rewritten, { headers });
 };
 
 const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).server(

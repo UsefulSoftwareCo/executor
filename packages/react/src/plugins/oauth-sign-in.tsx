@@ -14,7 +14,6 @@ import {
   type OAuthPopupResult,
 } from "../api/oauth-popup";
 import { connectionWriteKeys } from "../api/reactivity-keys";
-import { getActiveOrgSlug } from "../api/server-connection";
 
 type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
@@ -31,7 +30,6 @@ const getDesktopBridge = (): DesktopBridge | null => {
 import { Button } from "../components/button";
 import {
   OAUTH_POPUP_MESSAGE_TYPE,
-  OAUTH_CALLBACK_ORG_QUERY_PARAM,
   OAuthState,
   type AuthTemplateSlug,
   type ConnectionName,
@@ -99,10 +97,7 @@ export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload
 
 export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
   if (typeof window === "undefined") return path;
-  const url = new URL(path, window.location.origin);
-  const orgSlug = getActiveOrgSlug();
-  if (orgSlug) url.searchParams.set(OAUTH_CALLBACK_ORG_QUERY_PARAM, orgSlug);
-  return url.toString();
+  return new URL(path, window.location.origin).toString();
 }
 
 export function useOAuthPopupFlow<
