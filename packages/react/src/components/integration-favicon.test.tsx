@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  integrationFaviconSrc,
   integrationFaviconUrl,
   integrationInferredUrl,
   integrationLocalIconUrl,
@@ -28,6 +29,28 @@ describe("IntegrationFavicon", () => {
   it("uses the Executor favicon for the built-in executor source", () => {
     expect(integrationLocalIconUrl("executor")).toBe("/favicon-32.png");
     expect(integrationLocalIconUrl("openapi")).toBeNull();
+  });
+
+  it("resolves the Executor sidebar icon only when the source id is threaded (cloud/self-host repro)", () => {
+    // Reconstruct the props the multiplayer shell derives for the built-in
+    // executor source (EXECUTOR_SOURCE: kind "built-in", name "Executor", no
+    // displayUrl). The sidebar's IntegrationList builds icon/url exactly this way.
+    const slug = "executor";
+    const name = "Executor";
+    const icon = integrationPresetIconUrl({ id: slug, kind: "built-in", name, url: undefined }, []);
+    const url = integrationInferredUrl({ id: slug, name }) ?? undefined;
+
+    // The built-in source matches no preset and has no inferable host, so the
+    // sourceId branch is the only thing that can resolve its icon.
+    expect(icon).toBeNull();
+    expect(url).toBeUndefined();
+
+    // Bug: cloud/self-host dropped sourceId, so the cascade fell through to null
+    // and rendered the neutral BoxIcon placeholder.
+    expect(integrationFaviconSrc({ icon, url, size: 16 })).toBeNull();
+
+    // Fix: threading sourceId resolves the bundled Executor favicon.
+    expect(integrationFaviconSrc({ icon, sourceId: slug, url, size: 16 })).toBe("/favicon-32.png");
   });
 
   it("finds preset icons from a source URL", () => {

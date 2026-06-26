@@ -321,9 +321,6 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                   size="sm"
                 />
                 <span className="flex-1 truncate">{name}</span>
-                <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
-                  {integration.kind}
-                </span>
               </Link>
             );
           })}
