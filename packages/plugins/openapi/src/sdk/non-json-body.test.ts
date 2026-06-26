@@ -994,11 +994,13 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       const schema = view!.inputSchema as {
         required?: string[];
         properties?: {
+          body?: unknown;
           bodyBase64?: { contentEncoding?: string };
         };
       };
       expect(schema.required).toContain("bodyBase64");
       expect(schema.required).not.toContain("body");
+      expect(schema.properties?.body).toBeUndefined();
       expect(schema.properties?.bodyBase64?.contentEncoding).toBe("base64");
     }),
   );

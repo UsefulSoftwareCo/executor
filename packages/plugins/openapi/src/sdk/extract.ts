@@ -328,12 +328,11 @@ export const buildInputSchema = (
   if (serverProperty && !("server" in properties)) properties.server = serverProperty;
 
   if (requestBody) {
-    properties.body = Option.getOrElse(requestBody.schema, () => ({ type: "object" }));
-
     // When the spec declares multiple media types for this requestBody,
     // expose `contentType` so the model can pick. Default = first declared.
-    // `body` schema tracks the default; the model is responsible for
-    // supplying a body shape that matches whichever contentType it picks.
+    // For mixed bodies, `body` schema tracks the default; the model is
+    // responsible for supplying a body shape that matches whichever
+    // contentType it picks. Octet-only operations use `bodyBase64` instead.
     const contents = Option.getOrUndefined(requestBody.contents);
     const defaultIsOctetStream =
       requestBody.contentType.split(";")[0]?.trim().toLowerCase() === "application/octet-stream";
@@ -349,6 +348,9 @@ export const buildInputSchema = (
         (content) =>
           content.contentType.split(";")[0]?.trim().toLowerCase() !== "application/octet-stream",
       ) === true;
+    if (acceptsBody) {
+      properties.body = Option.getOrElse(requestBody.schema, () => ({ type: "object" }));
+    }
     if (acceptsOctetStream) {
       properties.bodyBase64 = {
         type: "string",
