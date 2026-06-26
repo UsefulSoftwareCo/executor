@@ -460,6 +460,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly grant: OAuthGrant;
           readonly clientId: string;
           readonly resource?: string | null;
+          readonly originIntegration?: IntegrationSlug | null;
         };
       },
     ) =>
@@ -472,7 +473,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           tokenUrl: arg.payload.tokenUrl,
           resource: arg.payload.resource ?? null,
           clientId: arg.payload.clientId,
-          origin: { kind: "manual" },
+          origin: { kind: "manual", integration: arg.payload.originIntegration ?? null },
         };
         const index = rows.findIndex(
           (client) => client.owner === summary.owner && client.slug === summary.slug,

@@ -56,11 +56,26 @@ export interface OAuthClient {
 }
 
 export type OAuthClientOrigin =
-  | { readonly kind: "manual" }
+  | {
+      readonly kind: "manual";
+      /** Integration this app was registered FOR, when known. A user can reuse
+       *  one app across integrations, so this is a hint (the integration whose
+       *  connect flow created it), not an exclusive binding. Used by the connect
+       *  picker to surface this app for its integration even when the integration
+       *  declares no static endpoints to match on (e.g. an MCP source). */
+      readonly integration?: IntegrationSlug | null;
+    }
   | {
       readonly kind: "dynamic_client_registration";
       readonly integration?: IntegrationSlug | null;
     };
+
+/** The integration an OAuth app was registered for, from either origin kind
+ *  (null when unknown). Centralizes the "which integration owns this app" read so
+ *  the picker and the duplicate-DCR guard agree. */
+export const oauthClientOriginIntegration = (
+  origin: OAuthClientOrigin,
+): IntegrationSlug | null => origin.integration ?? null;
 
 export type CreateOAuthClientInput = OAuthClient & {
   readonly origin?: OAuthClientOrigin;

@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/shared";
+import {
+  type IntegrationSlug,
+  OAuthClientSlug,
+  type OAuthGrant,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
@@ -53,6 +58,10 @@ export interface OAuthClientFormPrefill {
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
   readonly integrationName: string;
+  /** Slug of the integration this app is registered for. Recorded on the client
+   *  (`origin.integration`) so the connect picker surfaces it for this integration
+   *  even when the integration declares no static endpoints (e.g. an MCP source). */
+  readonly originIntegration?: IntegrationSlug;
   /** Existing client slugs, so the generated slug stays unique across apps. */
   readonly existingSlugs: readonly string[];
   /** Endpoints/scopes declared by the integration's OAuth method. */
@@ -71,6 +80,7 @@ export function OAuthClientForm(props: {
 }) {
   const {
     integrationName,
+    originIntegration,
     existingSlugs,
     prefill,
     fixedSlug,
@@ -195,6 +205,7 @@ export function OAuthClientForm(props: {
         tokenEndpointAuthMethodsSupported: authMethods,
         clientName: name.trim(),
         redirectUri: oauthCallbackUrl(),
+        originIntegration: originIntegration ?? null,
       },
       reactivityKeys: oauthClientWriteKeys,
     });
@@ -223,6 +234,7 @@ export function OAuthClientForm(props: {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         resource,
+        originIntegration: originIntegration ?? null,
       },
       reactivityKeys: oauthClientWriteKeys,
     });

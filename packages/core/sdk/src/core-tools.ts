@@ -221,7 +221,10 @@ const OAuthClientOutput = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
   origin: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("manual") }),
+    Schema.Struct({
+      kind: Schema.Literal("manual"),
+      integration: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
     Schema.Struct({
       kind: Schema.Literal("dynamic_client_registration"),
       integration: Schema.optional(Schema.NullOr(Schema.String)),

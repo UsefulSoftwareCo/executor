@@ -65,6 +65,10 @@ const CreateClientPayload = Schema.Struct({
   clientId: Schema.String,
   clientSecret: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Integration this app is being registered for, recorded on the client so the
+   *  connect picker can surface it for that integration (mirrors the DCR path).
+   *  A manual app can still be reused across integrations. */
+  originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
 });
 
 const CreateClientResponse = Schema.Struct({
@@ -111,7 +115,10 @@ const OAuthClientSummaryResponse = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
   origin: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("manual") }),
+    Schema.Struct({
+      kind: Schema.Literal("manual"),
+      integration: Schema.optional(Schema.NullOr(IntegrationSlug)),
+    }),
     Schema.Struct({
       kind: Schema.Literal("dynamic_client_registration"),
       integration: Schema.optional(Schema.NullOr(IntegrationSlug)),

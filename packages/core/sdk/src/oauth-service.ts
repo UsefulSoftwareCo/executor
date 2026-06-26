@@ -229,14 +229,10 @@ const parseOAuthClientOrigin = (row: {
   readonly origin_kind?: unknown;
   readonly origin_integration?: unknown;
 }): OAuthClientOrigin => {
+  const integration =
+    row.origin_integration == null ? null : IntegrationSlug.make(String(row.origin_integration));
   if (row.origin_kind === "dynamic_client_registration") {
-    return {
-      kind: "dynamic_client_registration",
-      integration:
-        row.origin_integration == null
-          ? null
-          : IntegrationSlug.make(String(row.origin_integration)),
-    };
+    return { kind: "dynamic_client_registration", integration };
   }
   const slug = row.slug == null ? "" : String(row.slug);
   const resource = row.resource == null ? "" : String(row.resource);
@@ -246,9 +242,9 @@ const parseOAuthClientOrigin = (row: {
     /(^|[-_])mcp($|[-_])/.test(slug) &&
     /(^|\/)mcp($|[/?#])/.test(resource)
   ) {
-    return { kind: "dynamic_client_registration", integration: null };
+    return { kind: "dynamic_client_registration", integration };
   }
-  return { kind: "manual" };
+  return { kind: "manual", integration };
 };
 
 interface LoadedOAuthClient {
@@ -404,11 +400,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           resource: input.resource ?? null,
           origin_kind: input.origin?.kind ?? "manual",
           origin_integration:
-            input.origin?.kind === "dynamic_client_registration"
-              ? input.origin.integration == null
-                ? null
-                : String(input.origin.integration)
-              : null,
+            input.origin?.integration == null ? null : String(input.origin.integration),
           created_at: now,
         }),
       );

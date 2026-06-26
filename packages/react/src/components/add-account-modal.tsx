@@ -827,7 +827,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
     loading: oauthLoading,
     endpointMatched: oauthEndpointMatched,
     displayRegisterCTA: oauthDisplayRegisterCTA,
+    allClients: oauthAllClients,
   } = useOAuthClientsForIntegration({
+    integration,
     tokenUrl: method?.oauth?.tokenUrl,
     authorizationUrl: method?.oauth?.authorizationUrl,
   });
@@ -1201,9 +1203,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
             <div className="px-5 py-5">
               <OAuthClientForm
                 integrationName={integrationName}
-                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-                  String(app.slug),
-                )}
+                originIntegration={integration}
+                existingSlugs={oauthAllClients.map((app: OAuthClientOption) => String(app.slug))}
                 fixedSlug={editingClient.slug}
                 fixedOwner={editingClient.owner}
                 prefill={{
@@ -1230,9 +1231,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
             <div className="px-5 py-5">
               <OAuthClientForm
                 integrationName={integrationName}
-                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-                  String(app.slug),
-                )}
+                originIntegration={integration}
+                existingSlugs={oauthAllClients.map((app: OAuthClientOption) => String(app.slug))}
                 prefill={{
                   authorizationUrl:
                     oauthHandoffPrefill?.authorizationUrl ?? method.oauth?.authorizationUrl,
