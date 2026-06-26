@@ -14,6 +14,7 @@ import {
   type OAuthPopupResult,
 } from "../api/oauth-popup";
 import { connectionWriteKeys } from "../api/reactivity-keys";
+import { getActiveOrgSlug } from "../api/server-connection";
 
 type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
@@ -98,6 +99,39 @@ export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload
 export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
   if (typeof window === "undefined") return path;
   return new URL(path, window.location.origin).toString();
+}
+
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH = "/api/oauth/client-id-metadata/default.json";
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH =
+  "/api/oauth/client-id-metadata/local.json";
+
+const configuredClientIdMetadataBaseUrl = (): string | undefined => {
+  const env = (
+    import.meta as ImportMeta & {
+      readonly env?: Record<string, string | undefined>;
+    }
+  ).env;
+  const value = env?.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL?.trim();
+  return value ? value : undefined;
+};
+
+export function oauthClientIdMetadataDocumentUrl(options?: {
+  readonly hostedBaseUrl?: string | null;
+  readonly path?: string;
+}): string {
+  const hostedBaseUrl = options?.hostedBaseUrl ?? configuredClientIdMetadataBaseUrl();
+  if (hostedBaseUrl) {
+    return new URL(OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH, hostedBaseUrl).toString();
+  }
+
+  const defaultPath = options?.path ?? OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH;
+  if (typeof window === "undefined") return defaultPath;
+  const orgSlug = getActiveOrgSlug();
+  const metadataPath = orgSlug
+    ? `/api/oauth/client-id-metadata/${encodeURIComponent(orgSlug)}.json`
+    : defaultPath;
+  const url = new URL(metadataPath, window.location.origin);
+  return url.toString();
 }
 
 export function useOAuthPopupFlow<

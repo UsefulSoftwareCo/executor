@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
-import { oauthCallbackUrl } from "./oauth-sign-in";
+import { oauthCallbackUrl, oauthClientIdMetadataDocumentUrl } from "./oauth-sign-in";
 
 const originalWindow = globalThis.window;
 
@@ -20,6 +20,32 @@ afterEach(() => {
     return;
   }
   Reflect.deleteProperty(globalThis, "window");
+});
+
+describe("oauthClientIdMetadataDocumentUrl", () => {
+  it("returns a relative default metadata path outside the browser", () => {
+    Reflect.deleteProperty(globalThis, "window");
+    expect(oauthClientIdMetadataDocumentUrl()).toBe("/api/oauth/client-id-metadata/default.json");
+  });
+
+  it("carries the active org slug from the console URL", () => {
+    setLocation("https://executor.sh/acme/integrations/posthog");
+
+    const url = new URL(oauthClientIdMetadataDocumentUrl());
+
+    expect(url.toString()).toBe("https://executor.sh/api/oauth/client-id-metadata/acme.json");
+    expect(url.search).toBe("");
+  });
+
+  it("uses the hosted local document when configured", () => {
+    setLocation("http://localhost:4788/integrations/posthog");
+
+    expect(
+      oauthClientIdMetadataDocumentUrl({
+        hostedBaseUrl: "https://executor.sh",
+      }),
+    ).toBe("https://executor.sh/api/oauth/client-id-metadata/local.json");
+  });
 });
 
 describe("oauthCallbackUrl", () => {

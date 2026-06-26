@@ -95,6 +95,18 @@ export {
   type MakeAccountApiLayerOptions,
   type ApiHandler,
 } from "./server/host-foundation";
+export {
+  makeOAuthClientIdMetadataRoute,
+  oauthClientIdMetadataDocumentFromRequest,
+  oauthClientIdMetadataDocumentPath,
+  oauthClientIdMetadataDocumentTargetPath,
+  oauthClientIdMetadataDocumentUrlFromRequest,
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_BASE_PATH,
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_DEFAULT_TARGET,
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_TARGET,
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_TARGET_PATH_PREFIX,
+} from "./server/oauth-client-metadata";
 export * as ExecutorApp from "./server/executor-app";
 export type {
   ExecutorAppOptions,

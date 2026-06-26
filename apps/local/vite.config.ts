@@ -4,9 +4,14 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import appPlugin from "@executor-js/app/vite";
+import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
 import { loadOrMintLocalAuthToken } from "./src/auth";
 import { consumeOAuthResult } from "./src/oauth-result-store";
-import { isUnauthenticatedOAuthCallbackPath, makeIsAuthorized } from "./src/serve-shared";
+import {
+  isUnauthenticatedOAuthClientMetadataPath,
+  isUnauthenticatedOAuthPath,
+  makeIsAuthorized,
+} from "./src/serve-shared";
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const rootPackage = JSON.parse(
@@ -32,6 +37,23 @@ const EXECUTOR_GITHUB_URL = (
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
+
+const oauthClientMetadataResponse = (requestUrl: string, webRequest: Request): Response =>
+  new Response(
+    JSON.stringify(
+      oauthClientIdMetadataDocumentFromRequest({
+        requestUrl,
+        webRequest,
+        mountPrefix: "/api",
+      }),
+    ),
+    {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=300",
+      },
+    },
+  );
 
 /**
  * Vite plugin that forwards /api and /mcp requests to the Effect handlers
@@ -85,8 +107,7 @@ function executorApiPlugin(): Plugin {
         // bootstrap, so the UI is unaffected; external MCP clients use the
         // daemon port.
         const pathOnly = rawUrl.split("?")[0] ?? "/";
-        const authExempt =
-          pathOnly === "/api/health" || isUnauthenticatedOAuthCallbackPath(pathOnly);
+        const authExempt = pathOnly === "/api/health" || isUnauthenticatedOAuthPath(pathOnly);
         if (!authExempt) {
           const presented = req.headers.authorization;
           const authValue = Array.isArray(presented) ? presented[0] : presented;
@@ -125,7 +146,9 @@ function executorApiPlugin(): Plugin {
             } as RequestInit);
 
           let response: Response;
-          if (isMcp) {
+          if (isUnauthenticatedOAuthClientMetadataPath(pathOnly) && req.method === "GET") {
+            response = oauthClientMetadataResponse(rawUrl, webRequest(rawUrl));
+          } else if (isMcp) {
             response = await handlers.mcp.handleRequest(webRequest(rawUrl));
           } else if (pathOnly === "/api/health" && req.method === "GET") {
             response = new Response("ok", { headers: { "content-type": "text/plain" } });
@@ -182,6 +205,9 @@ export default defineConfig({
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify(EXECUTOR_GITHUB_URL),
     "import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD": JSON.stringify(REPO_ROOT),
+    "import.meta.env.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL": JSON.stringify(
+      process.env.EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL ?? "https://executor.sh",
+    ),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
   resolve: {

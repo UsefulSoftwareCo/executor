@@ -4,7 +4,9 @@ import {
   DEFAULT_ALLOWED_HOSTS,
   hasBearerToken,
   isAllowedOrigin,
+  isUnauthenticatedOAuthClientMetadataPath,
   isUnauthenticatedOAuthCallbackPath,
+  isUnauthenticatedOAuthPath,
   makeIsAuthorized,
 } from "./serve-shared";
 
@@ -47,5 +49,26 @@ describe("isUnauthenticatedOAuthCallbackPath", () => {
     expect(isUnauthenticatedOAuthCallbackPath("/api/oauth/callback/x")).toBe(true);
     expect(isUnauthenticatedOAuthCallbackPath("/api/oauth/await/session-1")).toBe(false);
     expect(isUnauthenticatedOAuthCallbackPath("/api/scope")).toBe(false);
+  });
+});
+
+describe("isUnauthenticatedOAuthClientMetadataPath", () => {
+  it("exempts the CIMD documents the OAuth provider fetches", () => {
+    expect(isUnauthenticatedOAuthClientMetadataPath("/api/oauth/client-id-metadata.json")).toBe(
+      true,
+    );
+    expect(
+      isUnauthenticatedOAuthClientMetadataPath("/api/oauth/client-id-metadata/default.json"),
+    ).toBe(true);
+    expect(
+      isUnauthenticatedOAuthClientMetadataPath("/api/oauth/client-id-metadata/local.json"),
+    ).toBe(true);
+  });
+
+  it("does not exempt OAuth result polling or arbitrary API paths", () => {
+    expect(isUnauthenticatedOAuthPath("/api/oauth/client-id-metadata/local.json")).toBe(true);
+    expect(isUnauthenticatedOAuthPath("/api/oauth/callback")).toBe(true);
+    expect(isUnauthenticatedOAuthPath("/api/oauth/await/session-1")).toBe(false);
+    expect(isUnauthenticatedOAuthPath("/api/connections")).toBe(false);
   });
 });

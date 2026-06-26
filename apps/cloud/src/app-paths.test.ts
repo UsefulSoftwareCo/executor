@@ -13,6 +13,7 @@ describe("isAppOwnedPath", () => {
     "/api/executions",
     "/api/auth/me",
     "/api/openapi.json",
+    "/api/oauth/client-id-metadata/default.json",
     "/api/billing/customer", // AutumnProvider pathPrefix — the billing UI
     "/api/billing/attach",
     "/api/docs", // Swagger UI
