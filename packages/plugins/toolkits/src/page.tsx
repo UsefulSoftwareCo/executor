@@ -1,17 +1,9 @@
 import { useId, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import {
-  ArrowLeftIcon,
-  BoxIcon,
-  CheckIcon,
-  PlugIcon,
-  PlusIcon,
-  SearchIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { ArrowLeftIcon, BoxIcon, PlugIcon, PlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import {
   createPluginAtomClient,
   useIntegrationPlugins,
@@ -28,15 +20,27 @@ import {
 } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom, toolsAllAtom } from "@executor-js/react/api/atoms";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
+import { useOrganizationSlug } from "@executor-js/react/api/organization-context";
 import {
   getExecutorApiBaseUrl,
   getExecutorOrganizationHeaders,
   getExecutorServerAuthorizationHeader,
 } from "@executor-js/react/api/server-connection";
-import { ownerLabel } from "@executor-js/react/api/owner-display";
+import { ownerLabel, useOwnerDisplay } from "@executor-js/react/api/owner-display";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 import { CopyButton } from "@executor-js/react/components/copy-button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@executor-js/react/components/alert-dialog";
 import {
   IntegrationFavicon,
   integrationPresetIconUrl,
@@ -294,6 +298,9 @@ const compareTools = (a: ToolRow, b: ToolRow): number =>
 const connectionTitle = (group: ToolkitConnectionGroup): string =>
   `${ownerLabel(group.owner)} ${group.integration} / ${group.connection}`;
 
+const connectionTitleForHost = (group: ToolkitConnectionGroup, showOwnerLabels: boolean): string =>
+  showOwnerLabels ? connectionTitle(group) : `${group.integration} / ${group.connection}`;
+
 const connectionDisplayTitle = (group: ToolkitConnectionGroup, meta: IntegrationMeta): string =>
   group.connection === "built-in" || group.connection === "default" ? meta.name : group.connection;
 
@@ -301,6 +308,15 @@ const connectionDisplaySubtitle = (group: ToolkitConnectionGroup, meta: Integrat
   group.connection === "built-in" || group.connection === "default"
     ? `${group.tools.length} ${group.tools.length === 1 ? "tool" : "tools"}`
     : `${meta.name} · ${group.tools.length} ${group.tools.length === 1 ? "tool" : "tools"}`;
+
+const connectionDisplaySubtitleForHost = (
+  group: ToolkitConnectionGroup,
+  meta: IntegrationMeta,
+  showOwnerLabels: boolean,
+): string => {
+  const subtitle = connectionDisplaySubtitle(group, meta);
+  return showOwnerLabels ? `${ownerLabel(group.owner)} · ${subtitle}` : subtitle;
+};
 
 const integrationMetaFor = (
   group: ToolkitConnectionGroup,
@@ -340,6 +356,7 @@ const configuredConnectionViews = (
   connectionGroups: readonly ToolkitConnectionGroup[],
   integrations: readonly Integration[],
   integrationPlugins: readonly IntegrationPlugin[],
+  showOwnerLabels: boolean,
 ): readonly ConfiguredConnectionView[] =>
   connections.map((connection) => {
     const group = connectionGroups.find((candidate) =>
@@ -358,7 +375,7 @@ const configuredConnectionViews = (
     return {
       id: connection.id,
       title: connectionDisplayTitle(group, meta),
-      subtitle: `${ownerLabel(group.owner)} · ${connectionDisplaySubtitle(group, meta)}`,
+      subtitle: connectionDisplaySubtitleForHost(group, meta, showOwnerLabels),
       pattern: connection.pattern,
       sourceId: meta.sourceId,
       icon: meta.icon,
@@ -434,7 +451,7 @@ function ToolkitConnectionIconStack(props: { connections: readonly ConfiguredCon
 const connectionCountLabel = (count: number): string =>
   count === 0 ? "No connections" : `${count} ${count === 1 ? "connection" : "connections"}`;
 
-function ToolkitTile(props: { pluginId: string; toolkit: ToolkitResponse }) {
+function ToolkitTile(props: { showOwnerLabels: boolean; toolkit: ToolkitResponse }) {
   const toolkit = props.toolkit;
   const tools = useAtomValue(toolsAllAtom);
   const integrations = useAtomValue(integrationsOptimisticAtom);
@@ -464,12 +481,13 @@ function ToolkitTile(props: { pluginId: string; toolkit: ToolkitResponse }) {
         connectionGroups,
         integrationRows,
         integrationPlugins,
+        props.showOwnerLabels,
       )
     : [];
   return (
     <Link
-      to="/{-$orgSlug}/plugins/$pluginId/$"
-      params={{ pluginId: props.pluginId, _splat: toolkit.slug }}
+      to="/{-$orgSlug}/toolkits/$toolkitSlug"
+      params={{ toolkitSlug: toolkit.slug }}
       aria-label={`Open toolkit ${toolkit.name}`}
       className="group flex min-h-36 min-w-0 self-start flex-col justify-between rounded-md border border-border/70 bg-card p-3.5 text-left text-card-foreground shadow-xs transition-[border-color,background-color,box-shadow] hover:border-foreground/25 hover:bg-muted/20 hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
       style={toolkitCardStyle}
@@ -491,12 +509,18 @@ function ToolkitTile(props: { pluginId: string; toolkit: ToolkitResponse }) {
   );
 }
 
-const addToolkitScopeLabel = (owner: Owner): string => (owner === "org" ? "workspace" : "personal");
-const addToolkitTitle = (owner: Owner): string =>
-  owner === "org" ? "New workspace toolkit" : "New personal toolkit";
+const addToolkitScopeLabel = (owner: Owner, showOwnerLabels: boolean): string =>
+  showOwnerLabels ? (owner === "org" ? "workspace" : "personal") : "";
+const addToolkitTitle = (owner: Owner, showOwnerLabels: boolean): string =>
+  showOwnerLabels
+    ? owner === "org"
+      ? "New workspace toolkit"
+      : "New personal toolkit"
+    : "New toolkit";
 
 function CreateToolkitDialog(props: {
   owner: Owner;
+  showOwnerLabels: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreate: (input: { owner: Owner; name: string }) => Promise<void>;
@@ -504,7 +528,7 @@ function CreateToolkitDialog(props: {
   const inputId = useId();
   const [name, setName] = useState("");
   const trimmed = name.trim();
-  const title = addToolkitTitle(props.owner);
+  const title = addToolkitTitle(props.owner, props.showOwnerLabels);
 
   const submit = async () => {
     if (!trimmed) return;
@@ -568,14 +592,14 @@ function CreateToolkitDialog(props: {
   );
 }
 
-function AddToolkitCard(props: { owner: Owner; onClick: () => void }) {
-  const scopeLabel = addToolkitScopeLabel(props.owner);
+function AddToolkitCard(props: { owner: Owner; showOwnerLabels: boolean; onClick: () => void }) {
+  const scopeLabel = addToolkitScopeLabel(props.owner, props.showOwnerLabels);
   return (
     <Button
       type="button"
       variant="ghost"
       onClick={props.onClick}
-      aria-label={`Add ${scopeLabel} toolkit`}
+      aria-label={scopeLabel ? `Add ${scopeLabel} toolkit` : "Add toolkit"}
       className="group flex h-auto min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-0 text-muted-foreground transition-[border-color,background-color,box-shadow,color] hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
       style={toolkitCardStyle}
     >
@@ -593,9 +617,9 @@ function AddToolkitCard(props: { owner: Owner; onClick: () => void }) {
 }
 
 function ToolkitSection(props: {
-  pluginId: string;
   owner: Owner;
-  title: string;
+  title?: string;
+  showOwnerLabels: boolean;
   toolkits: readonly ToolkitResponse[];
   onCreate: (input: { owner: Owner; name: string }) => Promise<void>;
 }) {
@@ -604,24 +628,31 @@ function ToolkitSection(props: {
   const openCreate = () => setCreateOpen(true);
   return (
     <section className="space-y-3">
-      <div className="border-b border-border/60 pb-2">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          {props.title}
-        </h2>
-      </div>
+      {props.title ? (
+        <div className="border-b border-border/60 pb-2">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            {props.title}
+          </h2>
+        </div>
+      ) : null}
 
       <div
         className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
         style={toolkitShelfStyle}
       >
         {rows.map((toolkit) => (
-          <ToolkitTile key={toolkit.id} pluginId={props.pluginId} toolkit={toolkit} />
+          <ToolkitTile key={toolkit.id} showOwnerLabels={props.showOwnerLabels} toolkit={toolkit} />
         ))}
-        <AddToolkitCard owner={props.owner} onClick={openCreate} />
+        <AddToolkitCard
+          owner={props.owner}
+          showOwnerLabels={props.showOwnerLabels}
+          onClick={openCreate}
+        />
       </div>
 
       <CreateToolkitDialog
         owner={props.owner}
+        showOwnerLabels={props.showOwnerLabels}
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreate={props.onCreate}
@@ -631,27 +662,41 @@ function ToolkitSection(props: {
 }
 
 function ToolkitGrid(props: {
-  pluginId: string;
   toolkits: readonly ToolkitResponse[];
   onCreate: (input: { owner: Owner; name: string }) => Promise<void>;
 }) {
+  const ownerDisplay = useOwnerDisplay();
   // Toolkit shelves are grouped by owner; the selected toolkit owns the page.
   const workspaceToolkits = props.toolkits.filter((toolkit) => toolkit.owner === "org");
   const personalToolkits = props.toolkits.filter((toolkit) => toolkit.owner === "user");
+  if (!ownerDisplay.showOwnerLabels) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
+          <ToolkitSection
+            owner="org"
+            showOwnerLabels={false}
+            toolkits={props.toolkits}
+            onCreate={props.onCreate}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
         <ToolkitSection
-          pluginId={props.pluginId}
           owner="org"
+          showOwnerLabels
           title="Workspace"
           toolkits={workspaceToolkits}
           onCreate={props.onCreate}
         />
         <ToolkitSection
-          pluginId={props.pluginId}
           owner="user"
+          showOwnerLabels
           title="Personal"
           toolkits={personalToolkits}
           onCreate={props.onCreate}
@@ -661,7 +706,7 @@ function ToolkitGrid(props: {
   );
 }
 
-function ToolkitContentsEmpty(props: { onAddConnection: () => void }) {
+function ToolkitContentsEmpty(props: { onManageConnections: () => void }) {
   return (
     <div className="flex h-full items-center justify-center px-6 py-10">
       <div className="max-w-sm text-center">
@@ -672,63 +717,9 @@ function ToolkitContentsEmpty(props: { onAddConnection: () => void }) {
         <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
           Add a connection to decide what this toolkit exposes.
         </p>
-        <Button type="button" size="sm" onClick={props.onAddConnection} className="mt-4">
-          <PlusIcon className="size-3.5" />
-          Add connection
+        <Button type="button" size="sm" onClick={props.onManageConnections} className="mt-4">
+          Manage connections
         </Button>
-      </div>
-    </div>
-  );
-}
-
-function ToolkitConfiguredConnections(props: {
-  connections: readonly ConfiguredConnectionView[];
-  onRemoveConnection: (connectionId: string) => void;
-}) {
-  if (props.connections.length === 0) return null;
-  return (
-    <div className="border-b border-border/60 bg-background/60 px-3 py-2">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Connections
-        </span>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {props.connections.length}
-        </span>
-      </div>
-      <div className="space-y-1">
-        {props.connections.map((connection) => (
-          <div
-            key={connection.id}
-            className="group flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-card px-2 py-1.5"
-          >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/30">
-              <IntegrationFavicon
-                icon={connection.icon}
-                sourceId={connection.sourceId}
-                url={connection.url}
-                size={16}
-              />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-medium text-foreground">{connection.title}</div>
-              <div className="truncate text-[11px] text-muted-foreground">
-                {connection.subtitle}
-              </div>
-            </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label={`Remove connection ${connection.title} from toolkit`}
-              title="Remove connection"
-              onClick={() => props.onRemoveConnection(connection.id)}
-              className="size-6 shrink-0 text-muted-foreground hover:text-destructive"
-            >
-              <Trash2Icon className="size-3.5" />
-            </Button>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -736,11 +727,9 @@ function ToolkitConfiguredConnections(props: {
 
 function ToolkitToolsPanel(props: {
   tools: readonly ToolSummary[];
-  configuredConnections: readonly ConfiguredConnectionView[];
   selectedToolId: string | null;
   policies: readonly ToolkitPolicyResponse[];
-  onAddConnection: () => void;
-  onRemoveConnection: (connectionId: string) => void;
+  onManageConnections: () => void;
   onSelectTool: (toolId: string) => void;
   onSetPolicy: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy: (pattern: string) => void;
@@ -748,38 +737,12 @@ function ToolkitToolsPanel(props: {
   return (
     <div
       role="region"
-      aria-label="Toolkit tools"
+      aria-label="Tools"
       className="flex min-h-0 shrink-0 flex-col border-r border-border/60"
       style={toolkitToolTreeStyle}
     >
-      <div className="border-b border-border/60 px-3 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Toolkit tools
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {props.tools.length} {props.tools.length === 1 ? "tool" : "tools"}
-            </p>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            aria-label="Add connection to toolkit"
-            onClick={props.onAddConnection}
-            className="h-8"
-          >
-            <PlusIcon className="size-3.5" />
-            Add
-          </Button>
-        </div>
-      </div>
-      <ToolkitConfiguredConnections
-        connections={props.configuredConnections}
-        onRemoveConnection={props.onRemoveConnection}
-      />
       {props.tools.length === 0 ? (
-        <ToolkitContentsEmpty onAddConnection={props.onAddConnection} />
+        <ToolkitContentsEmpty onManageConnections={props.onManageConnections} />
       ) : (
         <ToolTree
           tools={props.tools}
@@ -799,11 +762,13 @@ function ToolkitToolsPanel(props: {
 function AddConnectionDialog(props: {
   open: boolean;
   groups: readonly ToolkitConnectionGroup[];
-  configuredToolIds: ReadonlySet<string>;
+  configuredConnections: readonly ConfiguredConnectionView[];
   integrations: readonly Integration[];
   integrationPlugins: readonly IntegrationPlugin[];
+  showOwnerLabels: boolean;
   onOpenChange: (open: boolean) => void;
   onAddPatterns: (patterns: readonly string[]) => Promise<void> | void;
+  onRemoveConnection: (connectionId: string) => Promise<void> | void;
 }) {
   const searchId = useId();
   const [query, setQuery] = useState("");
@@ -823,9 +788,12 @@ function AddConnectionDialog(props: {
     });
   }, [props.groups, trimmedQuery]);
 
-  const addAndClose = async (patterns: readonly string[]) => {
+  const addConnection = async (patterns: readonly string[]) => {
     await props.onAddPatterns(patterns);
-    props.onOpenChange(false);
+  };
+
+  const removeConnection = async (connectionId: string) => {
+    await props.onRemoveConnection(connectionId);
   };
 
   return (
@@ -852,9 +820,9 @@ function AddConnectionDialog(props: {
               <PlugIcon className="size-4" />
             </span>
             <div className="min-w-0">
-              <DialogTitle className="text-sm">Add connection</DialogTitle>
+              <DialogTitle className="text-sm">Manage connections</DialogTitle>
               <DialogDescription className="mt-1 text-xs">
-                Choose which connected account this toolkit can use.
+                Choose which connected accounts this toolkit can use.
               </DialogDescription>
             </div>
           </div>
@@ -892,10 +860,11 @@ function AddConnectionDialog(props: {
             ) : (
               <div className="overflow-hidden rounded-md border border-border/70 bg-background/30">
                 {filteredGroups.map((group) => {
-                  const title = connectionTitle(group);
-                  const added = group.tools.every((tool) =>
-                    props.configuredToolIds.has(toolMatchId(tool)),
+                  const title = connectionTitleForHost(group, props.showOwnerLabels);
+                  const configuredConnection = props.configuredConnections.find((connection) =>
+                    group.patterns.includes(connection.pattern),
                   );
+                  const added = configuredConnection !== undefined;
                   const meta = integrationMetaFor(
                     group,
                     props.integrations,
@@ -919,9 +888,11 @@ function AddConnectionDialog(props: {
                           <span className="truncate text-xs font-medium text-foreground">
                             {connectionDisplayTitle(group, meta)}
                           </span>
-                          <Badge variant="outline" className="shrink-0 text-[10px]">
-                            {ownerLabel(group.owner)}
-                          </Badge>
+                          {props.showOwnerLabels ? (
+                            <Badge variant="outline" className="shrink-0 text-[10px]">
+                              {ownerLabel(group.owner)}
+                            </Badge>
+                          ) : null}
                         </div>
                         <div className="flex min-w-0 items-center gap-2">
                           <span className="truncate text-[11px] text-muted-foreground">
@@ -933,22 +904,25 @@ function AddConnectionDialog(props: {
                         type="button"
                         variant={added ? "outline" : "default"}
                         size="sm"
-                        disabled={added}
-                        aria-label={`${added ? "Connection added" : "Add connection"} ${title}`}
-                        onClick={() => void addAndClose(group.patterns)}
+                        aria-label={`${added ? "Remove connection" : "Add connection"} ${title}`}
+                        onClick={() =>
+                          void (added && configuredConnection
+                            ? removeConnection(configuredConnection.id)
+                            : addConnection(group.patterns))
+                        }
                         className={cn(
                           "h-7 shrink-0 px-2.5 text-xs",
                           added
-                            ? "border-border/70 bg-transparent text-muted-foreground"
+                            ? "border-border/70 bg-transparent text-muted-foreground hover:text-destructive"
                             : "bg-primary/10 text-primary hover:bg-primary/15",
                         )}
                       >
                         {added ? (
-                          <CheckIcon className="size-3.5" />
+                          <Trash2Icon className="size-3.5" />
                         ) : (
                           <PlusIcon className="size-3.5" />
                         )}
-                        {added ? "Added" : "Add"}
+                        {added ? "Remove" : "Add"}
                       </Button>
                     </div>
                   );
@@ -964,9 +938,11 @@ function AddConnectionDialog(props: {
 
 function ToolkitHeader(props: {
   toolkit: ToolkitResponse;
+  showOwnerLabels: boolean;
   toolCount: number;
   mcpUrl: string;
   onBack: () => void;
+  onManageConnections: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -985,9 +961,11 @@ function ToolkitHeader(props: {
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="truncate text-sm font-semibold text-foreground">{props.toolkit.name}</h2>
-            <Badge variant="outline" className="text-[10px]">
-              {ownerLabel(props.toolkit.owner)}
-            </Badge>
+            {props.showOwnerLabels ? (
+              <Badge variant="outline" className="text-[10px]">
+                {ownerLabel(props.toolkit.owner)}
+              </Badge>
+            ) : null}
             <span className="text-xs tabular-nums text-muted-foreground">
               {props.toolCount} {props.toolCount === 1 ? "tool" : "tools"}
             </span>
@@ -999,16 +977,46 @@ function ToolkitHeader(props: {
             <CopyButton value={props.mcpUrl} label="Copy toolkit MCP URL" />
           </div>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Delete toolkit"
-          onClick={props.onRemove}
-          className="text-muted-foreground hover:text-destructive"
-        >
-          <Trash2Icon className="size-3.5" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label="Manage toolkit connections"
+            onClick={props.onManageConnections}
+            className="h-8"
+          >
+            Manage
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Delete toolkit"
+                className="text-muted-foreground hover:text-destructive"
+              >
+                <Trash2Icon className="size-3.5" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent size="sm">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete {props.toolkit.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes the toolkit and its dedicated MCP endpoint. Connections are not
+                  deleted.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={props.onRemove}>
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
     </div>
   );
@@ -1016,6 +1024,7 @@ function ToolkitHeader(props: {
 
 function ToolkitWorkspace(props: {
   toolkit: ToolkitResponse;
+  showOwnerLabels: boolean;
   policies: readonly ToolkitPolicyResponse[];
   connections: readonly ToolkitConnectionResponse[];
   tools: readonly ToolRow[];
@@ -1043,8 +1052,15 @@ function ToolkitWorkspace(props: {
         connectionGroups,
         props.integrations,
         props.integrationPlugins,
+        props.showOwnerLabels,
       ),
-    [connectionGroups, props.connections, props.integrationPlugins, props.integrations],
+    [
+      connectionGroups,
+      props.connections,
+      props.integrationPlugins,
+      props.integrations,
+      props.showOwnerLabels,
+    ],
   );
   const legacyPolicyIds = useMemo(
     () => legacyConnectionPolicyIds(props.policies, connectionGroups, props.connections),
@@ -1103,20 +1119,20 @@ function ToolkitWorkspace(props: {
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <ToolkitHeader
         toolkit={props.toolkit}
+        showOwnerLabels={props.showOwnerLabels}
         toolCount={exposedToolIds.size}
         mcpUrl={props.mcpUrl}
         onBack={props.onBack}
+        onManageConnections={() => setAddOpen(true)}
         onRemove={props.onRemoveToolkit}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ToolkitToolsPanel
           tools={toolkitTools}
-          configuredConnections={configuredConnections}
           selectedToolId={selectedToolId}
           policies={accessPolicies}
-          onAddConnection={() => setAddOpen(true)}
-          onRemoveConnection={(connectionId) => void props.onRemoveConnection(connectionId)}
+          onManageConnections={() => setAddOpen(true)}
           onSelectTool={setSelectedToolId}
           onSetPolicy={(pattern, action) => void props.onSetPolicy(pattern, action)}
           onClearPolicy={(pattern) => void props.onClearPolicy(pattern)}
@@ -1142,59 +1158,66 @@ function ToolkitWorkspace(props: {
         open={addOpen}
         onOpenChange={setAddOpen}
         groups={connectionGroups}
-        configuredToolIds={configuredToolIds}
+        configuredConnections={configuredConnections}
         integrations={props.integrations}
         integrationPlugins={props.integrationPlugins}
+        showOwnerLabels={props.showOwnerLabels}
         onAddPatterns={async (patterns) => {
           for (const pattern of patterns) {
             await props.onAddConnection(pattern);
           }
         }}
+        onRemoveConnection={props.onRemoveConnection}
       />
     </div>
   );
 }
 
-function ToolkitTileSkeleton(props: { index: number }) {
+function ToolkitTileSkeleton() {
   return (
     <div
-      className="flex min-h-36 min-w-0 items-start gap-3 rounded-md border border-border/60 bg-card/35 p-3.5"
+      className="flex h-auto min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-0"
       style={toolkitCardStyle}
       aria-hidden="true"
     >
-      <Skeleton className="size-9 shrink-0 rounded-md" />
-      <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-        <Skeleton className="h-4" style={{ width: `${52 + ((props.index * 17) % 28)}%` }} />
-        <Skeleton className="h-3" style={{ width: `${34 + ((props.index * 11) % 24)}%` }} />
-      </div>
+      <Skeleton className="size-12 rounded-md" />
     </div>
   );
 }
 
-function ToolkitSectionSkeleton(props: { title: string; offset: number }) {
+function ToolkitSectionSkeleton(props: { title?: string }) {
   return (
-    <section className="space-y-3" aria-label={`Loading ${props.title.toLowerCase()} toolkits`}>
-      <div className="border-b border-border/60 pb-2">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          {props.title}
-        </h2>
-      </div>
+    <section className="space-y-3" aria-label="Loading toolkits">
+      {props.title ? (
+        <div className="border-b border-border/60 pb-2">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            {props.title}
+          </h2>
+        </div>
+      ) : null}
 
-      <div className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <ToolkitTileSkeleton key={index} index={props.offset + index} />
-        ))}
+      <div
+        className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
+        style={toolkitShelfStyle}
+      >
+        <ToolkitTileSkeleton />
       </div>
     </section>
   );
 }
 
-function ToolkitGridSkeleton() {
+function ToolkitGridSkeleton(props: { showOwnerLabels: boolean }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
-        <ToolkitSectionSkeleton title="Workspace" offset={0} />
-        <ToolkitSectionSkeleton title="Personal" offset={3} />
+        {props.showOwnerLabels ? (
+          <>
+            <ToolkitSectionSkeleton title="Workspace" />
+            <ToolkitSectionSkeleton title="Personal" />
+          </>
+        ) : (
+          <ToolkitSectionSkeleton />
+        )}
       </div>
     </div>
   );
@@ -1258,6 +1281,7 @@ function ToolkitDetailSkeleton() {
 
 function ToolkitDetailView(props: {
   toolkit: ToolkitResponse;
+  showOwnerLabels: boolean;
   tools: readonly ToolRow[];
   integrations: readonly Integration[];
   integrationPlugins: readonly IntegrationPlugin[];
@@ -1326,6 +1350,7 @@ function ToolkitDetailView(props: {
   return (
     <ToolkitWorkspace
       toolkit={props.toolkit}
+      showOwnerLabels={props.showOwnerLabels}
       policies={policyRows}
       connections={connectionRows}
       tools={props.tools}
@@ -1343,8 +1368,9 @@ function ToolkitDetailView(props: {
 }
 
 export function ToolkitsPage(props: PluginPageProps) {
-  const params = useParams({ strict: false }) as { orgSlug?: string };
   const navigate = useNavigate();
+  const organizationSlug = useOrganizationSlug();
+  const ownerDisplay = useOwnerDisplay();
   const integrationPlugins = useIntegrationPlugins();
   const toolkits = useAtomValue(toolkitsAtom);
   const tools = useAtomValue(toolsAllAtom);
@@ -1367,8 +1393,7 @@ export function ToolkitsPage(props: PluginPageProps) {
   const toolsFailed = AsyncResult.isFailure(tools);
   const navigateToIndex = () =>
     navigate({
-      to: "/{-$orgSlug}/plugins/$pluginId/$",
-      params: { pluginId: props.pluginId, _splat: "" },
+      to: "/{-$orgSlug}/toolkits",
     });
 
   const createToolkitHandler = async (input: { owner: Owner; name: string }) => {
@@ -1411,7 +1436,7 @@ export function ToolkitsPage(props: PluginPageProps) {
         toolkitsFailed ? (
           <div className="p-6 text-sm text-destructive">Failed to load toolkits</div>
         ) : (
-          <ToolkitGridSkeleton />
+          <ToolkitGridSkeleton showOwnerLabels={ownerDisplay.showOwnerLabels} />
         )
       ) : selectedToolkit ? (
         toolsFailed ? (
@@ -1421,10 +1446,11 @@ export function ToolkitsPage(props: PluginPageProps) {
         ) : (
           <ToolkitDetailView
             toolkit={selectedToolkit}
+            showOwnerLabels={ownerDisplay.showOwnerLabels}
             tools={toolRows}
             integrations={integrationRows}
             integrationPlugins={integrationPlugins}
-            orgSlug={params.orgSlug}
+            orgSlug={organizationSlug ?? undefined}
             onBack={() => void navigateToIndex()}
             onRemoveToolkit={removeToolkitHandler}
           />
@@ -1444,11 +1470,7 @@ export function ToolkitsPage(props: PluginPageProps) {
           <div className="text-sm text-muted-foreground">Toolkit not found</div>
         </div>
       ) : (
-        <ToolkitGrid
-          pluginId={props.pluginId}
-          toolkits={toolkitRows}
-          onCreate={createToolkitHandler}
-        />
+        <ToolkitGrid toolkits={toolkitRows} onCreate={createToolkitHandler} />
       )}
     </div>
   );

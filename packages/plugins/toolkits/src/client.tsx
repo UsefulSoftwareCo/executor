@@ -8,7 +8,6 @@ export default defineClientPlugin({
     {
       path: "/",
       component: ToolkitsPage,
-      nav: { label: "Toolkits" },
     },
     {
       path: "/$toolkitSlug",

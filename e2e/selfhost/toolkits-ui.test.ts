@@ -52,12 +52,13 @@ scenario(
 
       yield* browser.session(identity, async ({ page, step }) => {
         await step("Open the Toolkits plugin page", async () => {
-          await page.goto("/plugins/toolkits/", { waitUntil: "networkidle" });
+          await page.goto("/default/toolkits/", { waitUntil: "domcontentloaded" });
           await page.getByRole("heading", { name: "Toolkits" }).waitFor();
           await page.getByRole("heading", { name: "Workspace" }).waitFor();
           await page.getByRole("heading", { name: "Personal" }).waitFor();
           await page.getByRole("button", { name: "Add workspace toolkit" }).waitFor();
           await page.getByRole("button", { name: "Add personal toolkit" }).waitFor();
+          await page.locator('main [data-slot="skeleton"]').first().waitFor({ state: "detached" });
           expect(await page.locator('main [data-slot="skeleton"]').count()).toBe(0);
           const seededCard = page.getByRole("link", {
             name: `Open toolkit ${prefix}-workspace-a`,
@@ -104,8 +105,8 @@ scenario(
 
         await step("Open the created toolkit from the grid", async () => {
           await page.getByRole("link", { name: `Open toolkit ${name}` }).click();
-          await page.waitForURL(new RegExp(`/plugins/toolkits/${slug}$`));
-          expect(page.url()).toMatch(new RegExp(`/plugins/toolkits/${slug}$`));
+          await page.waitForURL(new RegExp(`/toolkits/${slug}$`));
+          expect(page.url()).toMatch(new RegExp(`/toolkits/${slug}$`));
           await page
             .locator("code")
             .filter({ hasText: `/mcp/toolkits/${slug}` })
@@ -116,15 +117,15 @@ scenario(
 
         await step("Return to the toolkit grid with browser-visible routing", async () => {
           await page.getByRole("button", { name: "Toolkits" }).click();
-          await page.waitForURL(/\/plugins\/toolkits\/?$/);
-          expect(page.url()).toMatch(/\/plugins\/toolkits\/?$/);
+          await page.waitForURL(/\/toolkits\/?$/);
+          expect(page.url()).toMatch(/\/toolkits\/?$/);
           await page.getByRole("heading", { name: "Workspace" }).waitFor();
           await page.getByRole("link", { name: `Open toolkit ${name}` }).waitFor();
         });
 
         await step("Open the created toolkit from a direct URL", async () => {
-          await page.goto(`/plugins/toolkits/${slug}`, { waitUntil: "networkidle" });
-          expect(page.url()).toMatch(new RegExp(`/plugins/toolkits/${slug}$`));
+          await page.goto(`/default/toolkits/${slug}`, { waitUntil: "domcontentloaded" });
+          expect(page.url()).toMatch(new RegExp(`/toolkits/${slug}$`));
           await page
             .locator("code")
             .filter({ hasText: `/mcp/toolkits/${slug}` })
@@ -133,9 +134,18 @@ scenario(
           expect(await page.getByLabel("New toolkit").count()).toBe(0);
         });
 
+        await step("Cancel toolkit deletion from the confirmation modal", async () => {
+          await page.getByRole("button", { name: "Delete toolkit" }).click();
+          const dialog = page.getByRole("alertdialog", { name: `Delete ${name}?` });
+          await dialog.waitFor();
+          await dialog.getByRole("button", { name: "Cancel" }).click();
+          await dialog.waitFor({ state: "detached" });
+          await page.getByRole("heading", { name }).waitFor();
+        });
+
         await step("Add a connection to the toolkit", async () => {
-          await page.getByRole("button", { name: "Add connection to toolkit" }).click();
-          const dialog = page.getByRole("dialog", { name: "Add connection" });
+          await page.getByRole("button", { name: "Manage toolkit connections" }).click();
+          const dialog = page.getByRole("dialog", { name: "Manage connections" });
           await dialog.waitFor();
           await dialog.getByLabel("Search connections and tools").fill("policies.list");
           expect(await dialog.getByRole("button", { name: /^Add tool/ }).count()).toBe(0);
@@ -145,6 +155,8 @@ scenario(
             .getByRole("button", { name: /^Add connection / })
             .first()
             .click();
+          await dialog.getByRole("button", { name: /^Remove connection / }).waitFor();
+          await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "hidden" });
           const toolkitTools = page.getByRole("region", { name: "Toolkit tools" });
           await toolkitTools.waitFor();
@@ -154,30 +166,39 @@ scenario(
         });
 
         await step("The add connection list reflects the saved toolkit connection", async () => {
-          await page.getByRole("button", { name: "Add connection to toolkit" }).click();
-          const dialog = page.getByRole("dialog", { name: "Add connection" });
+          await page.getByRole("button", { name: "Manage toolkit connections" }).click();
+          const dialog = page.getByRole("dialog", { name: "Manage connections" });
           await dialog.waitFor();
           await dialog.getByLabel("Search connections and tools").fill("policies.list");
-          await dialog.getByRole("button", { name: /^Connection added / }).waitFor();
+          await dialog.getByRole("button", { name: /^Remove connection / }).waitFor();
           expect(await dialog.getByRole("button", { name: /^Add connection / }).count()).toBe(0);
           await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "hidden" });
         });
 
-        await step("Remove the connection from the toolkit tools list", async () => {
-          await page
+        await step("Remove the connection from the manage modal", async () => {
+          await page.getByRole("button", { name: "Manage toolkit connections" }).click();
+          const removeDialog = page.getByRole("dialog", { name: "Manage connections" });
+          await removeDialog.waitFor();
+          await removeDialog.getByLabel("Search connections and tools").fill("policies.list");
+          await removeDialog
             .getByRole("button", { name: /^Remove connection / })
             .first()
             .click();
+          await removeDialog.getByRole("button", { name: /^Add connection / }).waitFor();
+          await page.keyboard.press("Escape");
+          await removeDialog.waitFor({ state: "hidden" });
           await page.getByText("No connections added").waitFor();
-          await page.getByRole("button", { name: "Add connection to toolkit" }).click();
-          const dialog = page.getByRole("dialog", { name: "Add connection" });
+          await page.getByRole("button", { name: "Manage toolkit connections" }).click();
+          const dialog = page.getByRole("dialog", { name: "Manage connections" });
           await dialog.waitFor();
           await dialog.getByLabel("Search connections and tools").fill("policies.list");
           await dialog
             .getByRole("button", { name: /^Add connection / })
             .first()
             .click();
+          await dialog.getByRole("button", { name: /^Remove connection / }).waitFor();
+          await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "hidden" });
           const toolkitTools = page.getByRole("region", { name: "Toolkit tools" });
           await toolkitTools.getByLabel("Filter tools").fill("policies.list");

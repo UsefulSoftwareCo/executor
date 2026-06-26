@@ -1,4 +1,4 @@
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute, Navigate, notFound } from "@tanstack/react-router";
 import { useClientPlugins } from "@executor-js/sdk/client";
 
 // ---------------------------------------------------------------------------
@@ -84,13 +84,28 @@ export const matchPluginPage = <TPage extends { readonly path: string }>(
 };
 
 function PluginRouteComponent() {
-  const { pluginId, _splat: rest } = Route.useParams();
+  const { orgSlug, pluginId, _splat: rest } = Route.useParams();
   const plugins = useClientPlugins();
+  const target = normalizePath(rest ?? "/");
+  if (pluginId === "toolkits") {
+    const segments = pathSegments(target);
+    const toolkitSlug = segments[0];
+    if (toolkitSlug) {
+      return (
+        <Navigate
+          to="/{-$orgSlug}/toolkits/$toolkitSlug"
+          params={{ orgSlug, toolkitSlug }}
+          replace
+        />
+      );
+    }
+    return <Navigate to="/{-$orgSlug}/toolkits" params={{ orgSlug }} replace />;
+  }
+
   const plugin = plugins.find((p) => p.id === pluginId);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: TanStack Router represents not-found from components by throwing notFound()
   if (!plugin) throw notFound();
 
-  const target = normalizePath(rest ?? "/");
   const match = matchPluginPage(plugin.pages, target);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: TanStack Router represents not-found from components by throwing notFound()
   if (!match) throw notFound();
