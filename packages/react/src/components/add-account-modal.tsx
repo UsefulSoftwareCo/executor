@@ -150,17 +150,48 @@ function PasteCredentialInputs(props: {
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Record<string, string>) => void;
 }) {
+  if (!props.singleInput) {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        {props.inputs.map((input) => (
+          <div key={input.variable} className="min-w-0 space-y-1.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <Label
+                htmlFor={`credential-input-${input.variable}`}
+                className="min-w-0 truncate font-mono text-xs font-medium text-muted-foreground"
+              >
+                {input.label}
+              </Label>
+            </div>
+            <Input
+              id={`credential-input-${input.variable}`}
+              type="password"
+              autoComplete="new-password"
+              placeholder={`paste ${input.label}`}
+              value={props.values[input.variable] ?? ""}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                props.onChange({
+                  ...props.values,
+                  [input.variable]: e.target.value,
+                })
+              }
+              className="h-9 font-mono text-sm"
+              data-ph-block
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
       {props.inputs.map((input) => (
         <div key={input.variable} className="space-y-1">
-          {!props.singleInput && (
-            <Label className="text-xs text-muted-foreground">{input.label}</Label>
-          )}
           <Input
             type="password"
             autoComplete="new-password"
-            placeholder={props.singleInput ? "paste the value / token" : `paste ${input.label}`}
+            placeholder="paste the value / token"
             value={props.values[input.variable] ?? ""}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
               props.onChange({
@@ -1356,7 +1387,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       value={methodId}
                       className="mt-0 min-w-0 space-y-5 rounded-md border border-border/60 bg-muted/15 p-4"
                     >
-                      {method?.placements && method.placements.length > 0 ? (
+                      {method?.placements && method.placements.length > 0 && singleInput ? (
                         <div className="flex flex-wrap gap-x-3.5 gap-y-1">
                           {method.placements.map((placement, i: number) => (
                             <PlacementLine key={i} placement={placement} />
