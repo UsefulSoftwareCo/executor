@@ -1519,3 +1519,137 @@ body {
     transition: none;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════
+   BLOG: editorial prose for Markdown-rendered posts (/blog/[slug]).
+   Reads off the same tokens as the rest of the site (ink / accent /
+   rule / surface) so posts stay on-brand without a separate palette.
+   ═══════════════════════════════════════════════════════════════ */
+.blog-prose {
+  color: color-mix(in srgb, var(--color-ink) 88%, transparent);
+  font-size: 17px;
+  line-height: 1.75;
+  letter-spacing: -0.011em;
+}
+.blog-prose > :first-child {
+  margin-top: 0;
+}
+.blog-prose p {
+  margin: 1.25rem 0;
+  text-wrap: pretty;
+}
+.blog-prose h2 {
+  margin-top: 2.75rem;
+  margin-bottom: 0.9rem;
+  font-family: var(--font-sans);
+  font-size: clamp(1.4rem, 2.6vw, 1.7rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--color-ink);
+}
+.blog-prose h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.18rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+.blog-prose ul,
+.blog-prose ol {
+  margin: 1.25rem 0;
+  padding-left: 0;
+  list-style: none;
+}
+.blog-prose li {
+  position: relative;
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.blog-prose ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.78rem;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  opacity: 0.75;
+}
+.blog-prose ol {
+  counter-reset: blog-ol;
+}
+.blog-prose ol > li {
+  counter-increment: blog-ol;
+}
+.blog-prose ol > li::before {
+  content: counter(blog-ol) ".";
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+.blog-prose a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  text-underline-offset: 3px;
+  transition:
+    color 0.15s ease,
+    text-decoration-color 0.15s ease;
+}
+.blog-prose a:hover {
+  color: var(--color-accent-hover);
+  text-decoration-color: var(--color-accent-hover);
+}
+.blog-prose strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.blog-prose em {
+  font-style: italic;
+}
+.blog-prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  color: var(--color-ink-2);
+  font-style: italic;
+}
+.blog-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+}
+.blog-prose pre {
+  margin: 1.5rem 0;
+  padding: 1.1rem 1.25rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.blog-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.blog-prose hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-rule);
+}
+.blog-prose h2 + p,
+.blog-prose h3 + p {
+  margin-top: 0;
+}
