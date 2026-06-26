@@ -300,6 +300,30 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
+  it.effect("application/octet-stream: invalid nested bodyBase64 fails before dispatch", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+      const conn = yield* addOpenApiTestConnection(executor, server, {
+        slug: "bin_nested_b64_bad",
+      });
+
+      const exit = yield* executor
+        .execute(conn.address("body.submit"), {
+          body: { bodyBase64: "@@" },
+        })
+        .pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(captured.contentType).toBe("");
+      expect(captured.body.length).toBe(0);
+    }),
+  );
+
   it.effect("application/octet-stream: required body fails before dispatch when missing", () =>
     Effect.gen(function* () {
       const { server, captured } = yield* startEchoServer({
