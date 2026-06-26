@@ -168,6 +168,29 @@ export {
   type InvokeOptions,
 } from "./elicitation";
 
+// Execution observers: the engine lifecycle stream history/metrics/tracing build on.
+export {
+  ExecutionId,
+  ExecutionToolCallId,
+  ExecutionInteractionId,
+  ExecutionStarted,
+  ToolCallStarted,
+  ToolCallFinished,
+  InteractionStarted,
+  InteractionResolved,
+  ExecutionFinished,
+  noopExecutionObserver,
+  composeExecutionObservers,
+  emitExecutionEvent,
+  withExecutionObserver,
+  type ExecutionTrigger,
+  type ToolCallStatus,
+  type InteractionStatus,
+  type ExecutionStatus,
+  type ExecutionEvent,
+  type ExecutionObserver,
+} from "./execution-observer";
+
 // Blob store — the plugin-facing contract (`BlobStore`/`PluginBlobStore`)
 // plus the platform-neutral backends (`makeFumaBlobStore` default,
 // `makeInMemoryBlobStore` for tests). Platform-specific backends live with

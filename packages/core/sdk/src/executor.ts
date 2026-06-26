@@ -319,6 +319,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   ) => Effect.Effect<unknown, ExecuteError>;
 
   readonly close: () => Effect.Effect<void, StorageFailure>;
+
+  /** The (tenant, subject) this executor acts as. Surfaced so engine-level
+   *  machinery (e.g. execution observers) can attribute work to an owner
+   *  without re-threading identity through every call site. */
+  readonly owner: OwnerBinding;
 } & PluginExtensions<TPlugins>;
 
 export interface ExecutorDb {
@@ -3302,6 +3307,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       },
       execute,
       close,
+      owner: ownerBinding,
     };
 
     const toExecutor = (value: unknown): Executor<TPlugins> => value as Executor<TPlugins>;
