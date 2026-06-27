@@ -45,7 +45,14 @@ function OrgPage() {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       {/* Shared members / roles / invite / org-name surface. */}
-      <SharedOrgPage domainsSection={<DomainsSection />} />
+      <SharedOrgPage
+        domainsSection={<DomainsSection />}
+        upgradeAction={
+          <Link to="/{-$orgSlug}/billing/plans">
+            <Button size="sm">Upgrade plan</Button>
+          </Link>
+        }
+      />
     </div>
   );
 }

@@ -1164,6 +1164,7 @@
     },
   },
   "patchedDependencies": {
+    "@executor-js/emulate@0.7.5": "patches/@executor-js%2Femulate@0.7.5.patch",
     "libsql@0.5.29": "patches/libsql@0.5.29.patch",
     "postgres@3.4.9": "patches/postgres@3.4.9.patch",
   },
