@@ -278,6 +278,7 @@ describe("runDcrConnect", () => {
       },
       {
         discoveryUrl: "https://mcp.example.com/mcp",
+        resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
         existingSlugs: [],
@@ -287,7 +288,42 @@ describe("runDcrConnect", () => {
     );
     expect(outcome.kind).toBe("started");
     expect(registerArgs!.scopes).toEqual(["declared.scope"]);
+    // PRM named no `resource`, so the genuine discovery URL (MCP) seeds the
+    // RFC 8707 resource indicator.
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
+  });
+
+  it("never seeds the resource indicator from the token endpoint (non-MCP DCR)", async () => {
+    // A DCR integration with no discovery URL: `discoveryUrl` falls back to the
+    // token endpoint for probing, but the token endpoint is not an RFC 8707
+    // resource identifier, so it must NOT become the resource. With no genuine
+    // discovery URL and no PRM-named resource, the indicator stays null.
+    let registerArgs: RegisterArgs | null = null;
+    const outcome = await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            registrationEndpoint: "https://auth.example.com/register",
+          }),
+        register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
+          registerArgs = args;
+          return Promise.resolve(OAuthClientSlug.make("app"));
+        },
+        start: (): void => {},
+      },
+      {
+        // discoveryUrl collapsed to the token endpoint (no real discovery URL).
+        discoveryUrl: "https://auth.example.com/token",
+        owner: "user",
+        integrationName: "App",
+        existingSlugs: [],
+        integration: TEST_INTEGRATION,
+      },
+    );
+    expect(outcome.kind).toBe("started");
+    expect(registerArgs!.resource).toBeNull();
   });
 
   it("falls back to BYO when there is no registration endpoint (no register/start)", async () => {

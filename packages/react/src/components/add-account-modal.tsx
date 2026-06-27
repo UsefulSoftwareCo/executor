@@ -508,6 +508,13 @@ type RunDcrConnectDeps = {
 
 type RunDcrConnectInput = {
   readonly discoveryUrl: string;
+  /** The integration's genuine protected-resource URL (the MCP discovery URL),
+   *  used as the RFC 8707 resource indicator when the server's PRM names no
+   *  `resource`. Distinct from `discoveryUrl`, which falls back to the token
+   *  endpoint for probing: the token endpoint is NOT a resource identifier, so
+   *  it must never become the indicator. Undefined for integrations with no
+   *  discovery URL (non-MCP DCR), collapsing the resource to null as before. */
+  readonly resourceFallback?: string;
   readonly owner: Owner;
   readonly integrationName: string;
   /** The owner's existing client slugs, so the minted slug stays unique. */
@@ -550,7 +557,7 @@ export async function runDcrConnect(
     registrationEndpoint,
     authorizationUrl: probe.authorizationUrl,
     tokenUrl: probe.tokenUrl,
-    resource: probe.resource ?? input.discoveryUrl,
+    resource: probe.resource ?? input.resourceFallback ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
     clientName: dcrClientNameForIntegration(input.integrationName),
@@ -1187,6 +1194,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
       },
       {
         discoveryUrl,
+        // Only a genuine discovery URL (MCP) seeds the RFC 8707 resource
+        // indicator; the token-endpoint fallback baked into `discoveryUrl` must
+        // not, so pass the un-collapsed method value here.
+        resourceFallback: method.oauth?.discoveryUrl,
         owner: dcrOwner,
         integrationName,
         existingSlugs: [...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
