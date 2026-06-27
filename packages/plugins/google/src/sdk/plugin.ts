@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
@@ -7,9 +7,11 @@ import {
   IntegrationDetectionResult,
   IntegrationNotFoundError,
   IntegrationSlug,
+  ToolResult,
   definePlugin,
   mergeAuthTemplates,
   sha256Hex,
+  tool,
   type AuthMethodDescriptor,
   type Integration,
   type IntegrationConfig,
@@ -25,6 +27,7 @@ import {
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  OpenApiParseError,
   type Authentication,
   type AuthenticationInput,
   type OpenapiStore,
@@ -36,7 +39,14 @@ import {
   normalizeGoogleDiscoveryUrl,
 } from "./discovery";
 import { decodeGoogleIntegrationConfig, type GoogleIntegrationConfig } from "./config";
-import { googleOpenApiBundlePreset } from "./presets";
+import {
+  googleAudienceWarningMessagesForUrls,
+  googleOAuthConsentScopesForPreset,
+  googleOpenApiBundlePreset,
+  googleOpenApiPresetById,
+  googleOpenApiPresets,
+  googlePresetForDiscoveryUrl,
+} from "./presets";
 
 export interface GoogleBundleConfig {
   readonly urls: readonly string[];
@@ -289,6 +299,208 @@ const makeGooglePluginExtension = (
 
 export type GooglePluginExtension = ReturnType<typeof makeGooglePluginExtension>;
 
+// ---------------------------------------------------------------------------
+// Agent-facing setup tools.
+//
+// These mirror the web Add-Google flow (product picker, bundle, connect) so an
+// agent configuring Google by conversation gets the same guided experience:
+// pick products by name, bundle them in one call, and receive the exact OAuth
+// next steps. Secret entry (the Google Cloud Client ID / Client Secret) still
+// happens in the web UI via the oauth.clients handoff: Google has no dynamic
+// client registration, so the user must bring their own Google Cloud OAuth
+// client, and the secret never crosses the agent.
+// ---------------------------------------------------------------------------
+
+const GoogleProductSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  summary: Schema.String,
+  discoveryUrl: Schema.optional(Schema.String),
+  oauthAudience: Schema.String,
+  consentScopes: Schema.Array(Schema.String),
+  recommended: Schema.Boolean,
+  needsSpecialConsent: Schema.Boolean,
+});
+
+const ListProductsOutput = Schema.Struct({ products: Schema.Array(GoogleProductSchema) });
+
+const AddBundleToolInput = Schema.Struct({
+  productIds: Schema.optional(Schema.Array(Schema.String)),
+  customDiscoveryUrls: Schema.optional(Schema.Array(Schema.String)),
+  slug: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+});
+
+const AddBundleToolOutput = Schema.Struct({
+  slug: Schema.String,
+  toolCount: Schema.Number,
+  products: Schema.Array(Schema.String),
+  audienceWarnings: Schema.Array(Schema.String),
+  nextSteps: Schema.String,
+});
+
+const SetupStatusInput = Schema.Struct({ slug: Schema.optional(Schema.String) });
+
+const SetupStatusOutput = Schema.Struct({
+  configured: Schema.Boolean,
+  slug: Schema.String,
+  products: Schema.Array(Schema.String),
+  discoveryUrls: Schema.Array(Schema.String),
+  audienceWarnings: Schema.Array(Schema.String),
+  nextSteps: Schema.String,
+});
+
+const ListProductsOutputStd = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(ListProductsOutput),
+);
+const AddBundleToolInputStd = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddBundleToolInput),
+);
+const AddBundleToolOutputStd = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(AddBundleToolOutput),
+);
+const SetupStatusInputStd = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(SetupStatusInput),
+);
+const SetupStatusOutputStd = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(SetupStatusOutput),
+);
+
+const googleToolFailure = (code: string, message: string) => ToolResult.fail({ code, message });
+
+const needsSpecialConsent = (audience: string): boolean =>
+  audience === "workspace-admin" || audience === "unsupported-user";
+
+// The connect step is identical for any Google bundle, so phrase it once. Google
+// has no DCR, so the user brings a Google Cloud OAuth client; the secret is
+// entered in the web UI through the handoff, never in chat.
+const googleConnectInstructions = (slug: string): string =>
+  `Integration "${slug}" is registered. To connect an account, Google requires your own Google Cloud OAuth client (Google does not support automatic / dynamic client registration). ` +
+  `1) Call oauth.clients.createHandoff for integration "${slug}", then ask the user to open the returned URL and enter their Google Cloud OAuth Client ID and Client Secret in the Executor web UI. Never ask for the client secret in chat. ` +
+  `2) After they save it, call oauth.clients.list to find the new client slug, then oauth.start for "${slug}" to begin Google consent and return the authorization URL for the user to approve.`;
+
+const googleSetupTools = (self: GooglePluginExtension) => [
+  tool({
+    name: "listProducts",
+    description:
+      "List the Google APIs (Gmail, Calendar, Drive, …) that can be bundled into one Google integration. Call this first when a user wants to set up Google, then pass the chosen ids to `addBundle`. `recommended` marks the defaults the web picker pre-selects; `needsSpecialConsent` flags products that require a Workspace admin account or that Google does not grant through standard user consent.",
+    outputSchema: ListProductsOutputStd,
+    execute: () =>
+      Effect.succeed(
+        ToolResult.ok({
+          products: googleOpenApiPresets.map((preset) => ({
+            id: preset.id,
+            name: preset.name,
+            summary: preset.summary,
+            ...(preset.url ? { discoveryUrl: preset.url } : {}),
+            oauthAudience: preset.oauthAudience,
+            consentScopes: googleOAuthConsentScopesForPreset(preset.id),
+            recommended: preset.featured === true,
+            needsSpecialConsent: needsSpecialConsent(preset.oauthAudience),
+          })),
+        }),
+      ),
+  }),
+  tool({
+    name: "addBundle",
+    description:
+      "Register a Google integration from chosen product ids (see `listProducts`), the same one-call bundling the web Add-Google flow does. Pass `productIds` and/or raw `customDiscoveryUrls`. Returns the integration slug, tool count, any consent warnings for the selected APIs, and the exact OAuth next steps. This only registers the integration; connecting an account (Google Cloud OAuth client + consent) is a separate step described in `nextSteps`.",
+    annotations: {
+      requiresApproval: true,
+      approvalDescription: "Add a Google integration",
+    },
+    inputSchema: AddBundleToolInputStd,
+    outputSchema: AddBundleToolOutputStd,
+    execute: (input: typeof AddBundleToolInput.Type) =>
+      Effect.gen(function* () {
+        const productIds = input.productIds ?? [];
+        const unknownIds: string[] = [];
+        const presetUrls: string[] = [];
+        for (const id of productIds) {
+          const url = googleOpenApiPresetById(id)?.url;
+          if (url) presetUrls.push(url);
+          else unknownIds.push(id);
+        }
+        if (unknownIds.length > 0) {
+          return googleToolFailure(
+            "unknown_product",
+            `Unknown Google product id(s): ${unknownIds.join(", ")}. Call listProducts to see valid ids.`,
+          );
+        }
+
+        const urls = [...new Set([...presetUrls, ...(input.customDiscoveryUrls ?? [])])];
+        if (urls.length === 0) {
+          return googleToolFailure(
+            "no_products_selected",
+            "Pass at least one productId (see listProducts) or a customDiscoveryUrls entry.",
+          );
+        }
+
+        return yield* self
+          .addBundle({
+            urls,
+            slug: input.slug,
+            name: input.name,
+            description: input.description,
+          })
+          .pipe(
+            Effect.map((result) =>
+              ToolResult.ok({
+                slug: String(result.slug),
+                toolCount: result.toolCount,
+                products: productIds,
+                audienceWarnings: googleAudienceWarningMessagesForUrls(urls),
+                nextSteps: googleConnectInstructions(String(result.slug)),
+              }),
+            ),
+            Effect.catchTags({
+              OpenApiParseError: ({ message }: OpenApiParseError) =>
+                Effect.succeed(googleToolFailure("google_discovery_failed", message)),
+              IntegrationAlreadyExistsError: ({ slug }: IntegrationAlreadyExistsError) =>
+                Effect.succeed(
+                  googleToolFailure(
+                    "integration_already_exists",
+                    `Integration ${slug} already exists; update it instead of re-adding.`,
+                  ),
+                ),
+            }),
+          );
+      }),
+  }),
+  tool({
+    name: "setupStatus",
+    description:
+      "Report where a Google integration is in setup: whether it is registered, which products it bundles, any consent warnings, and the next step to take. Use this to resume or verify an in-progress Google setup.",
+    inputSchema: SetupStatusInputStd,
+    outputSchema: SetupStatusOutputStd,
+    execute: (input: typeof SetupStatusInput.Type) =>
+      Effect.gen(function* () {
+        const slug = input.slug?.trim() || DEFAULT_GOOGLE_SLUG;
+        const config = yield* self.getConfig(slug);
+        if (!config) {
+          return ToolResult.ok({
+            configured: false,
+            slug,
+            products: [],
+            discoveryUrls: [],
+            audienceWarnings: [],
+            nextSteps: `No Google integration "${slug}" yet. Call listProducts to see what is available, then addBundle with the productIds you want.`,
+          });
+        }
+        const urls = config.googleDiscoveryUrls ?? [];
+        return ToolResult.ok({
+          configured: true,
+          slug,
+          products: urls.map((url) => googlePresetForDiscoveryUrl(url)?.id ?? url),
+          discoveryUrls: [...urls],
+          audienceWarnings: googleAudienceWarningMessagesForUrls(urls),
+          nextSteps: googleConnectInstructions(slug),
+        });
+      }),
+  }),
+];
+
 export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
   id: "google" as const,
   packageName: "@executor-js/plugin-google",
@@ -296,6 +508,15 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
   storage: (deps): OpenapiStore => makeDefaultOpenapiStore(deps),
 
   extension: (ctx: PluginCtx<OpenapiStore>) => makeGooglePluginExtension(options, ctx),
+
+  staticSources: (self) => [
+    {
+      id: "google",
+      kind: "executor",
+      name: "Google",
+      tools: googleSetupTools(self),
+    },
+  ],
 
   describeAuthMethods: describeGoogleAuthMethods,
   describeIntegrationDisplay: describeGoogleIntegrationDisplay,

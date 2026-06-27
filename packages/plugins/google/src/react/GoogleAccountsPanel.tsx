@@ -23,14 +23,7 @@ import {
 import type { Authentication } from "@executor-js/plugin-openapi";
 
 import { googleConfigAtom, googleConfigure } from "./atoms";
-import { googleAudienceWarningsForUrls } from "../sdk/presets";
-
-const GOOGLE_AUDIENCE_WARNING: Readonly<Record<string, string>> = {
-  "workspace-admin":
-    "This connection includes Google Workspace admin APIs. Connecting requires a Workspace admin account; personal Gmail accounts cannot grant these scopes.",
-  "unsupported-user":
-    "This connection includes APIs that Google does not grant through standard user OAuth consent. Those tools may fail to authorize.",
-};
+import { googleAudienceWarningMessagesForUrls } from "../sdk/presets";
 
 const NO_AUTH_METHOD: AuthMethod = {
   id: "none",
@@ -96,10 +89,7 @@ export default function GoogleAccountsPanel(props: {
   const audienceWarnings = useMemo<readonly string[]>(() => {
     if (!AsyncResult.isSuccess(configResult) || configResult.value == null) return [];
     const urls = configResult.value.googleDiscoveryUrls ?? [];
-    return googleAudienceWarningsForUrls(urls).flatMap((audience: string) => {
-      const message = GOOGLE_AUDIENCE_WARNING[audience];
-      return message ? [message] : [];
-    });
+    return googleAudienceWarningMessagesForUrls(urls);
   }, [configResult]);
 
   return (

@@ -276,3 +276,32 @@ export const googleAudienceWarningsForUrls = (
   }
   return [...seen];
 };
+
+// ---------------------------------------------------------------------------
+// Human-facing consent cautions, keyed by `oauthAudience`. Shared by the web
+// Add-account panel and the agent-facing `google.addBundle` / `google.setupStatus`
+// tools so both surfaces warn with identical wording.
+// ---------------------------------------------------------------------------
+
+export const GOOGLE_AUDIENCE_WARNING: Readonly<Record<string, string>> = {
+  "workspace-admin":
+    "This connection includes Google Workspace admin APIs. Connecting requires a Workspace admin account; personal Gmail accounts cannot grant these scopes.",
+  "unsupported-user":
+    "This connection includes APIs that Google does not grant through standard user OAuth consent. Those tools may fail to authorize.",
+};
+
+/** The caution messages for a set of Discovery URLs: `googleAudienceWarningsForUrls`
+ *  mapped through `GOOGLE_AUDIENCE_WARNING`. Returns `[]` when nothing needs a warning. */
+export const googleAudienceWarningMessagesForUrls = (urls: readonly string[]): readonly string[] =>
+  googleAudienceWarningsForUrls(urls).flatMap((audience) => {
+    const message = GOOGLE_AUDIENCE_WARNING[audience];
+    return message ? [message] : [];
+  });
+
+const googlePresetsById: ReadonlyMap<string, GoogleOpenApiPreset> = new Map(
+  googleOpenApiPresets.map((preset) => [preset.id, preset] as const),
+);
+
+/** Look up a bundleable Google product preset by its stable `id` (e.g. `google-gmail`). */
+export const googleOpenApiPresetById = (id: string): GoogleOpenApiPreset | undefined =>
+  googlePresetsById.get(id);
