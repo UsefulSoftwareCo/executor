@@ -62,7 +62,17 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
     // Probe via `localhost`, not 127.0.0.1 — without --host, vite binds the
     // resolver's first answer for localhost (::1 on macOS), so the IPv4
     // loopback literal never answers.
-    await waitForHttp(`http://localhost:${options.port}`);
+    await procs.waitUntilReady(
+      waitForHttp(`http://localhost:${options.port}/api/health`, {
+        expectedStatus: 200,
+        validateResponse: async (response) => {
+          const body: unknown = await response.json();
+          return (
+            typeof body === "object" && body !== null && "status" in body && body.status === "ok"
+          );
+        },
+      }),
+    );
   } catch (error) {
     await procs.teardown();
     throw error;

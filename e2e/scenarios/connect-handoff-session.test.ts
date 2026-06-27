@@ -1,38 +1,66 @@
-// The connect handoff as a DEVELOPER SESSION — the way a human actually
+// The connect handoff as a DEVELOPER SESSION, the way a human actually
 // tests this: an agent chat in a real terminal where the agent wires up the
 // API over MCP and drops a connect link, a browser hop to paste the key,
 // then back to the chat to prove the connection works with a live send.
 //
 // No inference, no third-party agent binary: the "agent" is the chat
 // theater (src/clients/chat-theater.ts) presenting REAL mcporter MCP calls
-// — OAuth, execute, approval pause/resume all genuine, every tool spinner
+// OAuth, execute, and approval pause/resume are genuine, with every tool spinner
 // on screen bracketing the actual call it narrates. The provider on the
-// other side is real too (resend.emulators.dev); its request ledger is the
-// final evidence.
+// other side is a local, wire-level Resend emulator; its request ledger is
+// the final evidence without shared hosted state or internet drift.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
 import { join } from "node:path";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import { composePluginApi } from "@executor-js/api/server";
+import { createEmulator, type Emulator } from "@executor-js/emulate";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 
 import { scenario } from "../src/scenario";
-import { Browser, Cli, Mcp, RunDir, Target } from "../src/services";
+import { Api, Browser, Cli, Mcp, RunDir, Target } from "../src/services";
 import { withChatTheater } from "../src/clients/chat-theater";
 import type { McpSession } from "../src/surfaces/mcp";
 
-const EMULATOR_BASE = "https://resend.emulators.dev";
+const api = composePluginApi([openApiHttpPlugin()] as const);
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
+const availablePort = Effect.callback<number>((resume) => {
+  const server = createServer();
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    server.close(() => resume(Effect.succeed(port)));
+  });
+});
+
+const resendEmulator = Effect.acquireRelease(
+  Effect.gen(function* () {
+    const port = yield* availablePort;
+    // The suite-owned app targets share the host network with this worker.
+    // An attached remote target fails while importing this URL, which is
+    // preferable to silently falling back to shared hosted emulator state.
+    return yield* Effect.promise(() =>
+      createEmulator({
+        service: "resend",
+        port,
+        baseUrl: `http://127.0.0.1:${port}`,
+      }),
+    );
+  }),
+  (emulator: Emulator) => Effect.promise(() => emulator.close()).pipe(Effect.ignore),
+);
+
 // The emulator serves its own OpenAPI document (bearer auth, base URL in
-// `servers`) — adding by URL with nothing else is exactly what an agent
+// `servers`). Adding by URL with nothing else is exactly what an agent
 // does, and the platform derives the paste-a-token auth method from the
 // spec's security scheme.
-const EMULATOR_SPEC_URL = `${EMULATOR_BASE}/openapi.json`;
-
-const addSpecCode = (slug: string) => `
+const addSpecCode = (slug: string, specUrl: string) => `
 const added = await tools.executor.openapi.addSpec({
-  spec: { kind: "url", url: ${JSON.stringify(EMULATOR_SPEC_URL)} },
+  spec: { kind: "url", url: ${JSON.stringify(specUrl)} },
   slug: ${JSON.stringify(slug)},
 });
 return added.ok ? { ok: true, slug: added.data.slug, toolCount: added.data.toolCount } : { ok: false, error: added.error };
@@ -64,6 +92,15 @@ const sent = await t({
 return { ok: sent.ok, path, result: sent.ok ? sent.data : sent.error };
 `;
 
+const removeConnectionsCode = (slug: string) => `
+const list = await tools.executor.coreTools.connections.list({});
+const mine = (list.ok ? list.data.connections : []).filter((c) => c.integration === ${JSON.stringify(slug)});
+for (const c of mine) {
+  await tools.executor.coreTools.connections.remove({ owner: c.owner, integration: c.integration, name: c.name });
+}
+return { removed: mine.length };
+`;
+
 /** Run `execute`, auto-approving a paused execution (policy elicitation)
  *  once, and parse the sandbox's JSON return value. */
 const executeJson = (session: McpSession, code: string) =>
@@ -76,18 +113,6 @@ const executeJson = (session: McpSession, code: string) =>
     return JSON.parse(result.text) as Record<string, unknown>;
   });
 
-const mintEmulatorApiKey = Effect.promise(async () => {
-  const response = await fetch(`${EMULATOR_BASE}/_emulate/credentials`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "api-key" }),
-  });
-  const body = (await response.json()) as { credential?: { token?: string } };
-  const token = body.credential?.token;
-  if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(body)}`);
-  return token;
-});
-
 scenario(
   "Connect · developer session: agent chat → handoff link → paste key → verified send",
   { timeout: 240_000 },
@@ -98,92 +123,108 @@ scenario(
       const browser = yield* Browser;
       const cli = yield* Cli;
       const runDir = yield* RunDir;
+      const { client: makeApiClient } = yield* Api;
+      const emulator = yield* resendEmulator;
 
       const integration = unique("resendsesh");
       const emailSubject = unique("dev-session");
-      const apiKey = yield* mintEmulatorApiKey;
+      const credential = yield* Effect.promise(() =>
+        emulator.credentials.mint({ type: "api-key" }),
+      );
+      const apiKey = credential.token;
+      if (!apiKey) return yield* Effect.die("Resend emulator returned no API key.");
       const identity = yield* target.newIdentity();
       const session = mcp.session(identity);
+      const client = yield* makeApiClient(api, identity);
 
-      yield* withChatTheater(
-        cli,
-        { title: "executor agent — connect Resend", record: join(runDir, "terminal.cast") },
-        (chat) =>
+      yield* Effect.gen(function* () {
+        yield* withChatTheater(
+          cli,
+          { title: "executor agent: connect Resend", record: join(runDir, "terminal.cast") },
+          (chat) =>
+            Effect.gen(function* () {
+              // Real MCP OAuth + tool discovery happens behind this call.
+              yield* chat.tool(
+                { name: "executor (mcp)", result: (tools) => `${tools.length} tools available` },
+                session.listTools(),
+              );
+
+              yield* chat.user(
+                "Add the Resend API to my executor and give me a link to connect my account",
+              );
+              yield* chat.assistant("I'll register the Resend API in your Executor now.");
+              const added = yield* chat.tool(
+                { name: "execute", input: addSpecCode(integration, emulator.openapiUrl) },
+                executeJson(session, addSpecCode(integration, emulator.openapiUrl)),
+              );
+              expect(added.ok, `addSpec succeeded: ${JSON.stringify(added)}`).toBe(true);
+
+              yield* chat.assistant("Registered. Creating your connect link…");
+              const handoff = yield* chat.tool(
+                { name: "execute", input: createHandoffCode(integration) },
+                executeJson(session, createHandoffCode(integration)),
+              );
+              expect(handoff.ok, `createHandoff succeeded: ${JSON.stringify(handoff)}`).toBe(true);
+              const handoffUrl = String(handoff.url);
+              expect(new URL(handoffUrl).origin, "handoff targets this deployment").toBe(
+                new URL(target.baseUrl).origin,
+              );
+
+              yield* chat.assistant(
+                `Open this link to connect your Resend account:\n\n${handoffUrl}\n\nTell me once you've pasted your API key.`,
+              );
+
+              // The browser hop. The terminal session stays open while the
+              // "user" pastes the key; the paste is the real add-account UI.
+              yield* chat.status("you, in the browser: opening the link and pasting the API key…");
+              yield* browser.session(identity, async ({ page, step }) => {
+                await step("Open the connect link from the chat", async () => {
+                  await page.goto(handoffUrl, { waitUntil: "networkidle" });
+                  await page
+                    .getByRole("heading", { name: /Add connection/ })
+                    .waitFor({ timeout: 15_000 });
+                });
+                await step("Paste the Resend API key and connect", async () => {
+                  const credential = page.getByPlaceholder(/paste the value \/ token/i);
+                  await credential.waitFor({ timeout: 15_000 });
+                  await credential.fill(apiKey);
+                  await page.getByRole("button", { name: "Add connection", exact: true }).click();
+                  await page
+                    .getByRole("heading", { name: /Add connection/ })
+                    .waitFor({ state: "hidden", timeout: 20_000 });
+                });
+              });
+
+              yield* chat.user("Connected, now send a test email to prove it works");
+              yield* chat.assistant("Sending a test email through your new connection…");
+              const sent = yield* chat.tool(
+                { name: "execute", input: sendEmailCode(integration, emailSubject) },
+                executeJson(session, sendEmailCode(integration, emailSubject)),
+              );
+              expect(sent.ok, `email sent through the connection: ${JSON.stringify(sent)}`).toBe(
+                true,
+              );
+
+              yield* chat.assistant("Test email sent - your Resend connection works.");
+            }),
+        );
+
+        // Final evidence: the emulator's typed ledger saw the send from Executor.
+        const ledger = yield* Effect.promise(() => emulator.ledger.list());
+        expect(
+          ledger.some((entry) => JSON.stringify(entry.request.body ?? "").includes(emailSubject)),
+          "the emulator request ledger recorded the test email",
+        ).toBe(true);
+      }).pipe(
+        // Install cleanup before registering the integration. This covers the
+        // shared selfhost admin as well as isolated cloud identities.
+        Effect.ensuring(
           Effect.gen(function* () {
-            // Real MCP OAuth + tool discovery happens behind this call.
-            yield* chat.tool(
-              { name: "executor (mcp)", result: (tools) => `${tools.length} tools available` },
-              session.listTools(),
-            );
-
-            yield* chat.user(
-              "Add the Resend API to my executor and give me a link to connect my account",
-            );
-            yield* chat.assistant("I'll register the Resend API in your Executor now.");
-            const added = yield* chat.tool(
-              { name: "execute", input: addSpecCode(integration) },
-              executeJson(session, addSpecCode(integration)),
-            );
-            expect(added.ok, `addSpec succeeded: ${JSON.stringify(added)}`).toBe(true);
-
-            yield* chat.assistant("Registered. Creating your connect link…");
-            const handoff = yield* chat.tool(
-              { name: "execute", input: createHandoffCode(integration) },
-              executeJson(session, createHandoffCode(integration)),
-            );
-            expect(handoff.ok, `createHandoff succeeded: ${JSON.stringify(handoff)}`).toBe(true);
-            const handoffUrl = String(handoff.url);
-            expect(new URL(handoffUrl).origin, "handoff targets this deployment").toBe(
-              new URL(target.baseUrl).origin,
-            );
-
-            yield* chat.assistant(
-              `Open this link to connect your Resend account:\n\n${handoffUrl}\n\nTell me once you've pasted your API key.`,
-            );
-
-            // The browser hop — the terminal session stays open while the
-            // "user" pastes the key; the paste is the real add-account UI.
-            yield* chat.status("you, in the browser: opening the link and pasting the API key…");
-            yield* browser.session(identity, async ({ page, step }) => {
-              await step("Open the connect link from the chat", async () => {
-                await page.goto(handoffUrl, { waitUntil: "networkidle" });
-                await page
-                  .getByRole("heading", { name: /Add connection/ })
-                  .waitFor({ timeout: 15_000 });
-              });
-              await step("Paste the Resend API key and connect", async () => {
-                const credential = page.getByPlaceholder(/paste the value \/ token/i);
-                await credential.waitFor({ timeout: 15_000 });
-                await credential.fill(apiKey);
-                await page.getByRole("button", { name: "Add connection", exact: true }).click();
-                await page
-                  .getByRole("heading", { name: /Add connection/ })
-                  .waitFor({ state: "hidden", timeout: 20_000 });
-              });
-            });
-
-            yield* chat.user("Connected, now send a test email to prove it works");
-            yield* chat.assistant("Sending a test email through your new connection…");
-            const sent = yield* chat.tool(
-              { name: "execute", input: sendEmailCode(integration, emailSubject) },
-              executeJson(session, sendEmailCode(integration, emailSubject)),
-            );
-            expect(sent.ok, `email sent through the connection: ${JSON.stringify(sent)}`).toBe(
-              true,
-            );
-
-            yield* chat.assistant("Test email sent - your Resend connection works.");
+            yield* executeJson(session, removeConnectionsCode(integration)).pipe(Effect.ignore);
+            yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
           }),
+        ),
       );
-
-      // Final evidence: the emulator's ledger saw the send from Executor.
-      const ledger = yield* Effect.promise(async () =>
-        (await fetch(`${EMULATOR_BASE}/_emulate/ledger`)).text(),
-      );
-      expect(
-        ledger.includes(emailSubject),
-        "the emulator request ledger recorded the test email",
-      ).toBe(true);
     }),
   ),
 );

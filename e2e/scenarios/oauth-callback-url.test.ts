@@ -2,7 +2,7 @@
 // they register an OAuth app. Two guarantees:
 //
 //   1. Accuracy (every target): the callback the authorization-code flow sends
-//      to the provider is `${origin}/api/oauth/callback` — the URL the form
+//      to the provider is `${origin}/api/oauth/callback`, the URL the form
 //      shows. Run on cloud + self-host so the per-platform mount prefix is
 //      proven, not assumed. `ExecutorApp.make` derives this path from the same
 //      `mountPrefix` that mounts the API, so omitting a per-host knob can no
@@ -83,50 +83,67 @@ scenario(
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
 
-      // What the registration form shows for THIS target — the same value the
+      // What the registration form shows for THIS target, the same value the
       // React `oauthCallbackUrl()` helper resolves from `window.location`.
       const expectedCallback = new URL("/api/oauth/callback", target.baseUrl).toString();
 
       const integration = IntegrationSlug.make(unique("cburlint"));
-      yield* client.openapi.addSpec({
-        payload: { ...oauthIntegrationSpec(oauth), slug: integration },
-      });
-
       const clientSlug = OAuthClientSlug.make(unique("cburlc"));
-      yield* client.oauth.createClient({
-        payload: {
-          owner: "org",
-          slug: clientSlug,
-          authorizationUrl: oauth.authorizationEndpoint,
-          tokenUrl: oauth.tokenEndpoint,
-          grant: "authorization_code",
-          clientId: "test-client",
-          clientSecret: "test-secret",
-        },
-      });
+      const connection = ConnectionName.make("main");
 
-      // start WITHOUT a redirectUri — the platform falls back to its OWN
-      // configured callback, which is exactly what the form would have shown.
-      const started = yield* client.oauth.start({
-        payload: {
-          client: clientSlug,
-          clientOwner: "org",
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration,
-          template: AuthTemplateSlug.make("oauth"),
-        },
-      });
-      expect(started.status, "oauth.start hands back a redirect to the authorization server").toBe(
-        "redirect",
+      yield* Effect.gen(function* () {
+        yield* client.openapi.addSpec({
+          payload: { ...oauthIntegrationSpec(oauth), slug: integration },
+        });
+
+        yield* client.oauth.createClient({
+          payload: {
+            owner: "org",
+            slug: clientSlug,
+            authorizationUrl: oauth.authorizationEndpoint,
+            tokenUrl: oauth.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+          },
+        });
+
+        // start WITHOUT a redirectUri. The platform falls back to its OWN
+        // configured callback, which is exactly what the form would have shown.
+        const started = yield* client.oauth.start({
+          payload: {
+            client: clientSlug,
+            clientOwner: "org",
+            owner: "org",
+            name: connection,
+            integration,
+            template: AuthTemplateSlug.make("oauth"),
+          },
+        });
+        expect(
+          started.status,
+          "oauth.start hands back a redirect to the authorization server",
+        ).toBe("redirect");
+        const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
+
+        const redirectUri = new URL(authorizationUrl).searchParams.get("redirect_uri");
+        expect(
+          redirectUri,
+          "the authorization request redirects to this platform's served callback",
+        ).toBe(expectedCallback);
+      }).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            yield* client.connections
+              .remove({ params: { owner: "org", integration, name: connection } })
+              .pipe(Effect.ignore);
+            yield* client.oauth
+              .removeClient({ params: { slug: clientSlug }, payload: { owner: "org" } })
+              .pipe(Effect.ignore);
+            yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
+          }),
+        ),
       );
-      const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
-
-      const redirectUri = new URL(authorizationUrl).searchParams.get("redirect_uri");
-      expect(
-        redirectUri,
-        "the authorization request redirects to this platform's served callback",
-      ).toBe(expectedCallback);
     }),
   ),
 );
@@ -147,26 +164,32 @@ scenario(
     // offers the "Register app" CTA (no automatic registration to short-circuit
     // it).
     const integration = IntegrationSlug.make(unique("cburlui"));
-    yield* client.openapi.addSpec({
-      payload: { ...oauthIntegrationSpec(oauth), slug: integration },
-    });
+    yield* Effect.gen(function* () {
+      yield* client.openapi.addSpec({
+        payload: { ...oauthIntegrationSpec(oauth), slug: integration },
+      });
 
-    yield* browser.session(identity, async ({ page, step }) => {
-      await step("Open the connect modal for an OAuth integration", async () => {
-        await page.goto(`/integrations/${String(integration)}?addAccount=1`, {
-          waitUntil: "networkidle",
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Open the connect modal for an OAuth integration", async () => {
+          await page.goto(`/integrations/${String(integration)}?addAccount=1`, {
+            waitUntil: "networkidle",
+          });
+          await page.getByRole("button", { name: "Register app", exact: true }).click();
         });
-        await page.getByRole("button", { name: "Register app", exact: true }).click();
-      });
 
-      await step("The OAuth app form shows this platform's callback URL", async () => {
-        const callback = page.locator("#oauth-callback-url");
-        await callback.waitFor();
-        const shown = (await callback.textContent())?.trim();
-        expect(shown, "the displayed callback URL matches the platform's served callback").toBe(
-          expectedCallback,
-        );
+        await step("The OAuth app form shows this platform's callback URL", async () => {
+          const callback = page.locator("#oauth-callback-url");
+          await callback.waitFor();
+          const shown = (await callback.textContent())?.trim();
+          expect(shown, "the displayed callback URL matches the platform's served callback").toBe(
+            expectedCallback,
+          );
+        });
       });
-    });
+    }).pipe(
+      Effect.ensuring(
+        client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
+      ),
+    );
   }).pipe(Effect.scoped),
 );

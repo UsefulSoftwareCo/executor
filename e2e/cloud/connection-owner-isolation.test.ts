@@ -1,8 +1,8 @@
 // Cloud-only: the connection OWNER model, with real multi-user organizations.
 // Every connection is filed under `owner: "org"` (shared with the whole tenant)
 // or `owner: "user"` (this subject's own). The org membership is built through
-// the real product flows — invite → accept-invitation, create-organization,
-// switch-organization — so the guarantees hold for genuine sessions:
+// the real product flows: invite, accept-invitation, create-organization, and
+// the same organization selector that URL-scoped browser requests send:
 //
 //   1. A user-owned connection is private to its creator, even from co-workers
 //      in the same org (personal OAuth tokens don't leak to colleagues).
@@ -16,7 +16,12 @@ import { Effect } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
-import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  EXECUTOR_ORG_SELECTOR_HEADER,
+  IntegrationSlug,
+} from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
@@ -62,8 +67,8 @@ const registerIntegration = (client: Client) =>
 const freshConnectionName = () => ConnectionName.make(`conn${randomBytes(4).toString("hex")}`);
 
 // ── Session plumbing over the real auth endpoints ───────────────────────────
-// These mirror what the product web app does: cookie-authenticated calls whose
-// responses re-seal the session when the active org changes.
+// These mirror the product's cookie-authenticated account mutations and
+// URL-derived organization selector used by scoped API requests.
 
 const cookieOf = (identity: Identity): string => identity.headers?.["cookie"] ?? "";
 
@@ -114,14 +119,14 @@ const createAnotherOrg = (target: TargetShape, identity: Identity, name: string)
     return withRefreshedSession(identity, response);
   });
 
-/** Switch this account's active org; returns the identity bound to it. */
-const switchOrg = (target: TargetShape, identity: Identity, organizationId: string) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/switch-organization", identity, {
-      organizationId,
-    });
-    return withRefreshedSession(identity, response);
-  });
+const inOrganization = (identity: Identity, organizationId: string) =>
+  ({
+    ...identity,
+    headers: {
+      ...identity.headers,
+      [EXECUTOR_ORG_SELECTOR_HEADER]: organizationId,
+    },
+  }) satisfies Identity;
 
 /** The org this identity's session is currently bound to. */
 const activeOrganizationId = (target: TargetShape, identity: Identity) =>
@@ -245,7 +250,7 @@ scenario(
     const { client } = yield* Api;
     const userInOrgA = yield* target.newIdentity();
     const orgAId = yield* activeOrganizationId(target, userInOrgA);
-    const clientA = yield* client(api, userInOrgA);
+    const clientA = yield* client(api, inOrganization(userInOrgA, orgAId));
 
     const integration = yield* registerIntegration(clientA);
     const name = freshConnectionName();
@@ -265,7 +270,8 @@ scenario(
       userInOrgA,
       `Second Org ${randomBytes(3).toString("hex")}`,
     );
-    const clientB = yield* client(api, userInOrgB);
+    const orgBId = yield* activeOrganizationId(target, userInOrgB);
+    const clientB = yield* client(api, inOrganization(userInOrgB, orgBId));
 
     const orgBIntegrations = yield* clientB.integrations.list();
     expect(
@@ -279,9 +285,8 @@ scenario(
       "the user's org-A connection is invisible from their second org",
     ).not.toContain(name);
 
-    // Switching back to org A, the connection is still theirs.
-    const backInOrgA = yield* switchOrg(target, userInOrgB, orgAId);
-    const clientABack = yield* client(api, backInOrgA);
+    // Browser switching changes the URL selector, not the shared session cookie.
+    const clientABack = yield* client(api, inOrganization(userInOrgB, orgAId));
     const orgAUserList = yield* clientABack.connections.list({
       query: { integration, owner: "user" },
     });

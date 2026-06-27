@@ -58,6 +58,15 @@ export const resolveBrowserExecutorServerConnection = (input: {
   });
 };
 
+export const resolveExecutorServerConnectionBridgeHydration = (input: {
+  readonly initial: ExecutorServerConnection;
+  readonly current: ExecutorServerConnection;
+  readonly bridge: ExecutorServerConnectionInput;
+}): ExecutorServerConnection =>
+  input.current.key === input.initial.key
+    ? normalizeExecutorServerConnection(input.bridge)
+    : input.current;
+
 const resolveInitialExecutorServerConnection = (): ExecutorServerConnection => {
   const browserWindow = globalThis.window;
   if (!browserWindow) {
@@ -134,9 +143,6 @@ interface ExecutorServerConnectionContextValue {
 const ExecutorServerConnectionContext =
   React.createContext<ExecutorServerConnectionContextValue | null>(null);
 
-const hasDesktopServerConnectionBridge = (): boolean =>
-  typeof globalThis.window?.executor?.getServerConnection === "function";
-
 export function ExecutorServerConnectionProvider(
   props: React.PropsWithChildren<{
     readonly connection?: ExecutorServerConnectionInput;
@@ -152,7 +158,6 @@ export function ExecutorServerConnectionProvider(
   const [connection, setConnection] = React.useState(initialConnection);
   const setActiveConnection = React.useCallback((input: ExecutorServerConnectionInput): void => {
     const next = normalizeExecutorServerConnection(input);
-    if (hasDesktopServerConnectionBridge() && next.kind !== "desktop-sidecar") return;
     activeConnection = next;
     setConnection(next);
   }, []);
@@ -174,10 +179,15 @@ export function ExecutorServerConnectionProvider(
     void bridge.getServerConnection().then(
       (input) => {
         if (cancelled || !input) return;
-        const next = normalizeExecutorServerConnection(input);
-        setConnection(() => {
+        setConnection((current) => {
           // Electron loads the UI from a local URL before the async bridge
-          // answers. Once it does, the bridge is the authoritative app server.
+          // answers. Apply that bootstrap value only while no profile selection
+          // has replaced the initial connection.
+          const next = resolveExecutorServerConnectionBridgeHydration({
+            initial: initialConnection,
+            current,
+            bridge: input,
+          });
           activeConnection = next;
           return next;
         });
@@ -188,7 +198,7 @@ export function ExecutorServerConnectionProvider(
     return () => {
       cancelled = true;
     };
-  }, [props.connection]);
+  }, [initialConnection, props.connection]);
 
   activeConnection = connection;
   const value = React.useMemo(

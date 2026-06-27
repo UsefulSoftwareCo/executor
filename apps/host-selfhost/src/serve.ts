@@ -32,13 +32,12 @@ import {
   OAUTH_CALLBACK_PATH,
   oauthCallbackSignInRedirectLocation,
 } from "./auth/oauth-callback-login";
-import { stripMcpOrgSegment } from "./mcp/org-path";
+import { resolveMcpOrgPath } from "./mcp/org-path";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 
-// Rewrite `/<org>/mcp` (and its OAuth discovery path) to the bare path before
-// routing, so the "Connect an agent" card's org-pinned URL reaches the real
-// `/mcp` route — see ./mcp/org-path. A no-op for every other request.
+// Validate `/<org>/mcp` and its OAuth discovery path before routing. The live
+// org id or slug reaches the bare MCP route; foreign scopes get a plain 404.
 const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
   HttpMiddleware.make((httpApp) =>
     Effect.gen(function* () {
@@ -56,12 +55,17 @@ const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
         if (location) return HttpServerResponse.redirect(location, { status: 302 });
       }
 
-      const rewritten = stripMcpOrgSegment(url.pathname);
-      if (rewritten === null) return yield* httpApp;
+      const scopedPath = resolveMcpOrgPath(url.pathname, {
+        id: betterAuth.organizationId,
+        slug: betterAuth.organizationSlug,
+      });
+      if (scopedPath.kind === "none") return yield* httpApp;
+      if (scopedPath.kind === "reject")
+        return HttpServerResponse.text("Not Found", { status: 404 });
       return yield* httpApp.pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
-          request.modify({ url: `${rewritten}${url.search}` }),
+          request.modify({ url: `${scopedPath.pathname}${url.search}` }),
         ),
       );
     }),

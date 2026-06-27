@@ -8,7 +8,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
 
 import { routes } from "./tsr.routes";
-import { stripMcpOrgSegment } from "./src/mcp/org-path";
+import { isScopedMcpPath } from "./src/mcp/org-path";
 
 // Self-host web SPA. Mirrors @executor-js/app's vite plugin bundle, but points
 // the TanStack router codegen at THIS app's routes (web/routes) so we get the
@@ -54,26 +54,19 @@ function executorApiPlugin(): Plugin {
         if (path.includes("/src/") || path.endsWith("/executor.config.ts")) handlerPromise = null;
       });
       server.middlewares.use(async (req, res, next) => {
-        let rawUrl = req.url ?? "/";
-        // The "Connect an agent" card prints `/<organizationId>/mcp`; self-host
-        // serves the bare `/mcp`, so rewrite it here (prod does the same in
-        // serve.ts) — otherwise this org-pinned path isn't recognized as an MCP
-        // path and falls through to the SPA as a 404. Mirrors ./src/mcp/org-path.
+        const rawUrl = req.url ?? "/";
         const devOrigin = `http://${req.headers.host ?? `localhost:${DEV_PORT}`}`;
-        const pathname = stripMcpOrgSegment(new URL(rawUrl, devOrigin).pathname) ?? "";
-        if (pathname !== "") {
-          const original = new URL(rawUrl, devOrigin);
-          rawUrl = `${pathname}${original.search}`;
-        }
         // Match on PATHNAME, not a raw-URL prefix: `/mcp` must NOT swallow the
         // SPA route `/mcp-consent`, or the dev server misroutes it to the API
-        // handler and returns a 404.
+        // handler and returns a 404. Scoped MCP paths are forwarded unchanged;
+        // the live app validates the org id or slug before rewriting.
         const path = new URL(rawUrl, devOrigin).pathname;
         const handled =
           path === "/api" ||
           path.startsWith("/api/") ||
           path === "/mcp" ||
           path.startsWith("/mcp/") ||
+          isScopedMcpPath(path) ||
           path === "/docs" ||
           path.startsWith("/docs/") ||
           // RFC 9728 / RFC 8414 OAuth discovery the MCP client fetches before

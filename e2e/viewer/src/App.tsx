@@ -1,10 +1,19 @@
 import React, { Suspense, useEffect, useState } from "react";
 
+import type { EvidencePublicationMetadata } from "../../src/published-artifacts";
+import type { ManifestArtifact, ManifestRun } from "../../src/viewer/manifest";
+import PublicationBanner, { parsePublicationMetadata } from "./PublicationBanner";
 import type { SessionTimeline } from "./SessionPlayer";
+import {
+  liveMotelViewerFromSearch,
+  parsePortableTraceExport,
+  type PortableTraceExport,
+} from "./portable-traces";
 
 const TestSource = React.lazy(() => import("./TestSource"));
 const TerminalCast = React.lazy(() => import("./TerminalCast"));
 const SessionPlayer = React.lazy(() => import("./SessionPlayer"));
+const PortableTraceExplorer = React.lazy(() => import("./PortableTraceExplorer"));
 
 // ---------------------------------------------------------------------------
 // The matrix (scenario × target health) plus a per-run artifact page. The
@@ -12,15 +21,6 @@ const SessionPlayer = React.lazy(() => import("./SessionPlayer"));
 // everything green" and hands you the debugging artifacts (Playwright trace,
 // session video, screenshots, failure output) for any run.
 // ---------------------------------------------------------------------------
-
-interface ManifestRun {
-  scenario: string;
-  target: string;
-  slug: string;
-  ok: boolean;
-  durationMs?: number;
-  endedAt?: number;
-}
 
 interface Manifest {
   generatedAt: number;
@@ -39,6 +39,18 @@ interface RunResult {
   artifacts: string[];
 }
 
+export const runRoute = (target: string, slug: string): string =>
+  `#/run/${encodeURIComponent(target)}/${encodeURIComponent(slug)}`;
+
+const decodedRoutePart = (value: string | undefined) => {
+  if (!value) return undefined;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+};
+
 const useRoute = () => {
   const [hash, setHash] = useState(window.location.hash);
   useEffect(() => {
@@ -47,19 +59,37 @@ const useRoute = () => {
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  return parts.length >= 2 ? { target: parts[0], slug: parts[1] } : null;
+  const routeParts = parts[0] === "run" ? parts.slice(1) : parts;
+  const target = decodedRoutePart(routeParts[0]);
+  const slug = decodedRoutePart(routeParts[1]);
+  return target && slug ? { target, slug } : null;
 };
 
 export const App = () => {
   const route = useRoute();
-  return route ? <RunView target={route.target} slug={route.slug} /> : <Matrix />;
+  const [publication, setPublication] = useState<EvidencePublicationMetadata | null>();
+  useEffect(() => {
+    fetch("publication.json")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((value) => setPublication(parsePublicationMetadata(value)))
+      .catch(() => setPublication(null));
+  }, []);
+  return route ? (
+    <RunView target={route.target} slug={route.slug} publication={publication} />
+  ) : (
+    <Matrix publication={publication} />
+  );
 };
 
 // ---------------------------------------------------------------------------
 // Matrix
 // ---------------------------------------------------------------------------
 
-const Matrix = () => {
+const Matrix = ({
+  publication,
+}: {
+  readonly publication: EvidencePublicationMetadata | null | undefined;
+}) => {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -85,10 +115,11 @@ const Matrix = () => {
 
   return (
     <div className="page">
-      <h1>Executor e2e — every scenario, on every deployment</h1>
+      <PublicationBanner metadata={publication} />
+      <h1>Executor e2e: every scenario, on every deployment</h1>
       <p className="hint">
         Click a result for that run's artifacts (Playwright trace, video, screenshots, failure
-        output). “—” = capability not on that target.
+        output). "n/a" means the capability is unavailable on that target.
       </p>
       <table>
         <thead>
@@ -110,11 +141,17 @@ const Matrix = () => {
                     <td key={target}>
                       <a
                         className={`watch ${run.ok ? "ok" : "no"}`}
-                        href={`#/${run.target}/${run.slug}`}
+                        href={runRoute(run.target, run.slug)}
                       >
                         {run.ok ? "✓ passed" : "✗ FAILED"}
                         {run.durationMs != null && (
                           <span className="d"> {(run.durationMs / 1000).toFixed(1)}s</span>
+                        )}
+                        {run.portableTraceCount != null && run.portableTraceCount > 0 && (
+                          <span className="d"> · {run.portableTraceCount} traces</span>
+                        )}
+                        {run.portableTraceMissing != null && run.portableTraceMissing > 0 && (
+                          <span className="d"> · {run.portableTraceMissing} missing</span>
                         )}
                       </a>
                     </td>
@@ -122,7 +159,7 @@ const Matrix = () => {
                 }
                 return (
                   <td key={target} className="dim">
-                    {skipFor(scenario, target) ? "—" : "·"}
+                    {skipFor(scenario, target) ? "n/a" : "·"}
                   </td>
                 );
               })}
@@ -143,28 +180,73 @@ const Matrix = () => {
 // mixed-content fetch of trace.zip. Same-origin avoids all of it.
 // ---------------------------------------------------------------------------
 
-// The suite's motel (local OTLP store, booted by the global setup on a
-// fixed port). Every run exports distributed traces there; the run page
-// links its harvested trace ids straight into motel's per-trace waterfall.
-const MOTEL_VIEWER = "http://127.0.0.1:4796";
-
 interface RunTraceRef {
   id: string;
   at: number;
   url: string;
+  ms?: number;
+  status?: number;
+  source?: "terminal" | "browser";
+  label?: string;
 }
 
 type RunTab = "session" | "browser" | "terminal" | "source";
 
-const RunView = ({ target, slug }: { target: string; slug: string }) => {
-  const base = `${target}/${slug}`;
+const artifactUrl = (base: string, name: string): string => `${base}/${encodeURIComponent(name)}`;
+
+export const ArtifactNavigation = ({
+  base,
+  artifacts,
+}: {
+  readonly base: string;
+  readonly artifacts: ReadonlyArray<ManifestArtifact>;
+}) => {
+  if (artifacts.length === 0) return null;
+  return (
+    <section className="artifact-navigation" aria-labelledby="artifact-navigation-title">
+      <h2 className="section" id="artifact-navigation-title">
+        Persisted evidence
+      </h2>
+      <ul>
+        {artifacts.map((artifact) => (
+          <li key={artifact.name}>
+            <a href={artifactUrl(base, artifact.name)} target="_blank" rel="noreferrer">
+              <span>{artifact.label ?? artifact.name}</span>
+              <code>{artifact.name}</code>
+              <small>{artifact.kind}</small>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+const RunView = ({
+  target,
+  slug,
+  publication,
+}: {
+  target: string;
+  slug: string;
+  publication: EvidencePublicationMetadata | null | undefined;
+}) => {
+  const base = `${encodeURIComponent(target)}/${encodeURIComponent(slug)}`;
   const [result, setResult] = useState<RunResult | null>(null);
+  const [manifestRun, setManifestRun] = useState<ManifestRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<RunTab | null>(null);
   const [traces, setTraces] = useState<RunTraceRef[]>([]);
   const [timeline, setTimeline] = useState<SessionTimeline | null>(null);
+  const [portableTraces, setPortableTraces] = useState<PortableTraceExport | null>(null);
+  const [selectedTraceId, setSelectedTraceId] = useState<string>();
+  const liveMotelViewer = liveMotelViewerFromSearch(window.location.search);
+  const portableTraceIds = new Set(portableTraces?.traces.map((entry) => entry.traceId) ?? []);
 
   useEffect(() => {
+    setPortableTraces(null);
+    setSelectedTraceId(undefined);
+    setManifestRun(null);
     fetch(`${base}/result.json`)
       .then((r) => r.json())
       .then(setResult)
@@ -177,7 +259,19 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
       .then((r) => (r.ok ? r.json() : null))
       .then(setTimeline)
       .catch(() => setTimeline(null));
-  }, [base]);
+    fetch(`${base}/otel-traces.json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((value) => setPortableTraces(parsePortableTraceExport(value)))
+      .catch(() => setPortableTraces(null));
+    fetch("manifest.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((manifest: Manifest | null) =>
+        setManifestRun(
+          manifest?.runs.find((run) => run.target === target && run.slug === slug) ?? null,
+        ),
+      )
+      .catch(() => setManifestRun(null));
+  }, [base, slug, target]);
 
   if (error) return <div className="page error-text">failed to load run: {error}</div>;
   if (!result) return <div className="page dim">loading…</div>;
@@ -218,12 +312,23 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
 
   return (
     <div className="page">
+      <PublicationBanner metadata={publication} />
       <div className="topbar">
         <a href="#/">← all runs</a>
         <span>
           {traceUrl && (
             <a className="tool-link" href={traceUrl} target="_blank" rel="noreferrer">
               ⊙ open trace
+            </a>
+          )}
+          {portableTraces && (
+            <a
+              className="tool-link"
+              href={`${base}/otel-traces.json`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              portable traces
             </a>
           )}
           <a className="tool-link" href={`${base}/result.json`} target="_blank" rel="noreferrer">
@@ -239,11 +344,13 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
         {new Date(result.endedAt).toLocaleString()}
       </p>
       {result.error && <pre className="errbox">{result.error}</pre>}
+      <ArtifactNavigation base={base} artifacts={manifestRun?.artifacts ?? []} />
 
       {available.length > 1 && (
         <div className="tabs">
           {available.map((entry) => (
             <button
+              type="button"
               key={entry.id}
               className={active === entry.id ? "tab active" : "tab"}
               onClick={() => setTab(entry.id)}
@@ -263,7 +370,10 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
               timeline={timeline}
               traces={traces}
               playwrightTraceUrl={traceUrl}
-              motelViewer={MOTEL_VIEWER}
+              liveMotelViewer={liveMotelViewer}
+              {...(portableTraceIds.size > 0
+                ? { onInspectTrace: setSelectedTraceId, inspectableTraceIds: portableTraceIds }
+                : {})}
             />
           </Suspense>
         ) : (
@@ -315,25 +425,40 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
 
       {active === "source" && has("test.ts") && (
         <Suspense fallback={<p className="dim">loading test source…</p>}>
-          <TestSource url={`${base}/test.ts`} />
+          <TestSource
+            url={`${base}/test.ts`}
+            {...(has("test-source-metadata.json")
+              ? { metadataUrl: `${base}/test-source-metadata.json` }
+              : {})}
+          />
         </Suspense>
       )}
 
       {!active && screenshots.length === 0 && (
         <p className="dim">
-          No visual artifacts — this surface's source of truth is the test code and its assertions.
+          No visual artifacts. This surface's source of truth is the test code and its assertions.
         </p>
       )}
 
-      {/* The session tab carries its own timeline-aligned trace table; the
-          flat list stays for runs viewed through any other lens. */}
-      {active !== "session" && traces.length > 0 && (
+      {portableTraces && (
+        <Suspense fallback={<p className="dim">loading portable traces…</p>}>
+          <PortableTraceExplorer
+            exportData={portableTraces}
+            ledger={traces}
+            selectedTraceId={selectedTraceId}
+            onSelectTrace={setSelectedTraceId}
+            liveMotelViewer={liveMotelViewer}
+          />
+        </Suspense>
+      )}
+
+      {/* Runs without a portable export retain the request ledger. A live
+          Motel link appears only when the viewer was opened with ?motel=. */}
+      {!portableTraces && active !== "session" && traces.length > 0 && (
         <>
           <h2 className="section">Distributed traces</h2>
           <p className="hint">
-            Every API call the recording made, as a click→server→DB waterfall in the suite's motel
-            store (runs/.motel). Links need a motel serving that store — the suite's own while it
-            runs, or `bun run motel` afterwards.
+            The request ledger is available, but this run has no self-contained span export.
           </p>
           <table>
             <thead>
@@ -353,14 +478,18 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
                   </td>
                   <td className="dim">{trace.url.replace(/^https?:\/\/[^/]+/, "")}</td>
                   <td>
-                    <a
-                      className="tool-link"
-                      href={`${MOTEL_VIEWER}/trace/${trace.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {trace.id.slice(0, 8)}…
-                    </a>
+                    {liveMotelViewer ? (
+                      <a
+                        className="tool-link"
+                        href={`${liveMotelViewer}/trace/${trace.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {trace.id.slice(0, 8)}…
+                      </a>
+                    ) : (
+                      <code>{trace.id.slice(0, 8)}…</code>
+                    )}
                   </td>
                 </tr>
               ))}

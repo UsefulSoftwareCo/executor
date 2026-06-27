@@ -5,13 +5,15 @@
 // stack instead.
 import { claimPorts } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
-import { waitForHttp } from "./boot";
+import { targetBootMode, waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
 import { bootMotel, motelExporterEnv } from "./motel";
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
-  if (process.env.E2E_CLOUD_URL) {
-    await waitForHttp(process.env.E2E_CLOUD_URL);
+  const mode = targetBootMode("E2E_CLOUD_URL");
+  if (mode.kind === "attach") {
+    process.env.E2E_CLOUD_URL = mode.url;
+    await waitForHttp(mode.url);
     return;
   }
 
@@ -24,10 +26,15 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     { envVar: "E2E_CLOUD_DB_PORT", offset: 1, label: "cloud dev-db (PGlite)" },
     { envVar: "E2E_WORKOS_EMULATOR_PORT", offset: 2, label: "WorkOS emulator" },
     { envVar: "E2E_AUTUMN_EMULATOR_PORT", offset: 3, label: "Autumn emulator" },
+    { envVar: "E2E_MOTEL_PORT", offset: 7, label: "Motel telemetry store" },
   ]);
 
   // Suite-owned trace store — every run captures distributed traces.
-  const motel = await bootMotel();
+  const motel = await bootMotel(ports.E2E_MOTEL_PORT!, {
+    required:
+      process.env.E2E_REQUIRED_CAPABILITY_MODE === "required" &&
+      (process.env.E2E_REQUIRED_CAPABILITIES ?? "").split(",").includes("telemetry"),
+  });
   // Publish to the test workers (they inherit this process's env): scenarios
   // that assert on exported spans yield the Telemetry service, which exists
   // only when this is set. No motel → those scenarios skip, never fail.

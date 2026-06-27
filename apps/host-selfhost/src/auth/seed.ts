@@ -4,6 +4,7 @@ import type { Client } from "@libsql/client";
 
 import type { SelfHostConfig } from "../config";
 import type { Auth } from "./better-auth";
+import { ensureOrganizationSignupClaim } from "./invites";
 
 // ---------------------------------------------------------------------------
 // Idempotent first-boot bootstrap: ensure the single organization and a
@@ -39,6 +40,23 @@ export const seedOrgAndAdmin = async (
         args: [config.orgSlug, existingOrg.id],
       });
     }
+    // Backfill the durable first-owner claim for databases created before the
+    // claim table existed. Once claimed, deleting every membership must not
+    // reopen public signup, so the upsert only fills an empty claim.
+    // Any existing user proves this instance has already admitted an account,
+    // even if an administrator later removed its final membership.
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: the SELECT columns are the schema contract for Better Auth user rows read off the libSQL client
+    const existingUser = (
+      await client.execute({
+        sql: "SELECT id AS user_id, email FROM user ORDER BY createdAt ASC LIMIT 1",
+        args: [],
+      })
+    ).rows[0] as unknown as { user_id: string; email: string } | undefined;
+    await ensureOrganizationSignupClaim(client, {
+      organizationId: existingOrg.id,
+      claimedBy: existingUser?.user_id,
+      claimedEmail: existingUser?.email,
+    });
     return { organizationId: existingOrg.id, organizationName: existingOrg.name };
   }
 
@@ -74,6 +92,11 @@ export const seedOrgAndAdmin = async (
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: org creation must succeed for a usable instance
       throw new Error("Failed to create the bootstrap organization");
     }
+    await ensureOrganizationSignupClaim(client, {
+      organizationId: org.id,
+      claimedBy: adminId,
+      claimedEmail: config.bootstrapAdminEmail,
+    });
     return { organizationId: org.id, organizationName: config.organizationName };
   }
 
@@ -85,5 +108,6 @@ export const seedOrgAndAdmin = async (
     sql: "INSERT INTO organization (id, name, slug, createdAt) VALUES (?, ?, ?, ?)",
     args: [organizationId, config.organizationName, config.orgSlug, new Date().toISOString()],
   });
+  await ensureOrganizationSignupClaim(client, { organizationId });
   return { organizationId, organizationName: config.organizationName };
 };

@@ -1,4 +1,4 @@
-import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { betterAuth, getCurrentAdapter, type BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { admin, bearer, deviceAuthorization, mcp, organization } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
@@ -7,23 +7,51 @@ import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
 import { loadConfig } from "../config";
+import {
+  ensureInviteCodeTable,
+  finalizeFirstOwner,
+  finalizeInviteCode,
+  reserveFirstOwner,
+  reserveInviteCode,
+  signupClaimPlugin,
+} from "./invites";
 import { seedOrgAndAdmin } from "./seed";
-import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
 
-// The self-service signup gate: present only on the live (phase-2) auth
-// instance, so the bootstrap seed's `createUser` — which
-// runs on the gate-free phase-1 instance — is never blocked. `getAuth` is
-// late-bound because the hooks call `auth.api.addMember` AFTER the instance they
-// belong to is constructed (the closure resolves it at request time).
+// The self-service gate acts only on the public email-signup endpoint, so the
+// bootstrap seed's server-side createUser call is never blocked.
 interface SignupGate {
-  readonly client: Client;
   readonly organizationId: string;
-  readonly getAuth: () => Auth | null;
 }
 
 // Only self-service email signups are code-gated. Server/admin-initiated user
 // creation (the seed, or a future admin "add user") flows through other paths.
 const SIGNUP_PATH = "/sign-up/email";
+
+type SignupClaim =
+  | NonNullable<Awaited<ReturnType<typeof reserveFirstOwner>>>
+  | NonNullable<Awaited<ReturnType<typeof reserveInviteCode>>>;
+
+// Both hooks execute in the same endpoint context and database transaction.
+// Keeping the reservation on that context passes only an opaque claim id from
+// the pre-user hook to the pre-account hook, without accepting client state.
+const signupClaims = new WeakMap<object, SignupClaim>();
+
+// libSQL supports transactions, but its single adopted client cannot begin two
+// transactions concurrently. Queue only email signups at this process boundary
+// so each request gets a real transaction instead of racing into SQLITE_BUSY.
+// The database claim predicates remain the authority across processes.
+const serializeEmailSignups = (handler: (request: Request) => Promise<Response>) => {
+  let pending = Promise.resolve();
+  return (request: Request) => {
+    if (new URL(request.url).pathname !== `/api/auth${SIGNUP_PATH}`) return handler(request);
+    const response = pending.then(() => handler(request));
+    pending = response.then(
+      () => undefined,
+      () => undefined,
+    );
+    return response;
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Better Auth instance over the SAME libSQL CONNECTION as the FumaDB executor
@@ -53,8 +81,8 @@ const SIGNUP_PATH = "/sign-up/email";
 //
 // We build exactly ONE auth instance, held for the process lifetime. An earlier
 // design also built a throwaway "bootstrap" instance (discarded mid-boot); that
-// is gone too — the org id is late-bound the same way the signup gate's
-// `getAuth` already is, so no second instance is ever needed.
+// is gone too. The org id is late-bound through a shared reference, so no
+// second instance is needed.
 //
 // `satisfies BetterAuthOptions` (not a return annotation) keeps the literal
 // plugin tuple so `betterAuth` infers the plugin-augmented `auth.api` and
@@ -86,6 +114,10 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       // oxlint-disable-next-line executor/no-double-cast -- boundary: the two @libsql/core versions' Client types are structurally identical for the calls the dialect makes (see above); no schema/decode applies to a native client handle.
       dialect: new LibsqlDialect({ client } as unknown as LibsqlDialectConfig),
       type: "sqlite" as const,
+      // Better Auth defaults Kysely transaction support off, even when the
+      // dialect supports it. Signup claims rely on the user, membership,
+      // credential account, session, and claim sharing one real transaction.
+      transaction: true,
     },
     secret,
     // The browser Origin must match this exactly; CLI/MCP bearer requests carry
@@ -111,6 +143,7 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     // not the /api/auth basePath).
     plugins: [
       organization(),
+      signupClaimPlugin,
       admin(),
       apiKey({ enableSessionForAPIKeys: true, rateLimit: { enabled: false } }),
       bearer(),
@@ -148,17 +181,27 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
           }),
         },
       },
-      // The signup gate. First-run: an org with ZERO members is unclaimed, so
-      // the first signup is admitted ungated and becomes the owner. After that,
-      // `before` rejects a signup without a valid, unused, unexpired invite code
-      // and `after` makes the new user a real `member` + burns the code.
+      // The signup gate reserves the first-owner slot or invite before creating
+      // the user, then creates the membership and finalizes the claim before
+      // creating the credential account. Better Auth wraps the whole email
+      // signup in one database transaction, so any later failure rolls back the
+      // user, membership, and claim together.
       ...(gate
         ? {
             user: {
               create: {
-                before: async (_user, context) => {
+                before: async (user, context) => {
                   if (context?.path !== SIGNUP_PATH) return;
-                  if (await orgHasNoMembers(gate)) return; // first user claims the org
+                  const adapter = await getCurrentAdapter(context.context.adapter);
+                  const ownerClaim = await reserveFirstOwner(
+                    adapter,
+                    gate.organizationId,
+                    user.email,
+                  );
+                  if (ownerClaim) {
+                    signupClaims.set(context, ownerClaim);
+                    return;
+                  }
                   const code = inviteCodeFrom(context);
                   if (!code) {
                     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
@@ -166,39 +209,55 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
                       message: "An invite code is required to sign up.",
                     });
                   }
-                  if (!(await findRedeemableCode(gate.client, code))) {
+                  const inviteClaim = await reserveInviteCode(adapter, code, user.email);
+                  if (!inviteClaim) {
                     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
                     throw new APIError("FORBIDDEN", {
                       message: "That invite code is invalid, already used, or expired.",
                     });
                   }
+                  signupClaims.set(context, inviteClaim);
                 },
-                after: async (user, context) => {
+              },
+            },
+            account: {
+              create: {
+                before: async (account, context) => {
                   if (context?.path !== SIGNUP_PATH) return;
-                  const auth = gate.getAuth();
-                  if (!auth) return;
-                  // First user into an empty org becomes its owner (no code).
-                  if (await orgHasNoMembers(gate)) {
-                    await auth.api.addMember({
-                      body: { userId: user.id, role: "owner", organizationId: gate.organizationId },
+                  const claim = signupClaims.get(context);
+                  if (!claim) {
+                    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
+                    throw new APIError("FORBIDDEN", {
+                      message: "The signup claim could not be completed.",
                     });
-                    return;
                   }
-                  const code = inviteCodeFrom(context);
-                  if (!code) return;
-                  const redeemable = await findRedeemableCode(gate.client, code);
-                  if (!redeemable) return;
-                  await auth.api.addMember({
-                    body: {
-                      userId: user.id,
-                      role: redeemable.role,
+                  const adapter = await getCurrentAdapter(context.context.adapter);
+                  await adapter.create({
+                    model: "member",
+                    data: {
                       organizationId: gate.organizationId,
+                      userId: account.userId,
+                      role: claim.kind === "owner" ? "owner" : claim.role,
+                      createdAt: new Date(),
                     },
                   });
-                  await consumeInviteCode(gate.client, code, {
-                    usedBy: user.id,
-                    usedByEmail: user.email,
-                  });
+                  const finalized =
+                    claim.kind === "owner"
+                      ? await finalizeFirstOwner(adapter, gate.organizationId, claim.claimId, {
+                          id: account.userId,
+                          email: claim.email,
+                        })
+                      : await finalizeInviteCode(adapter, claim, {
+                          id: account.userId,
+                          email: claim.email,
+                        });
+                  if (!finalized) {
+                    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
+                    throw new APIError("FORBIDDEN", {
+                      message: "The signup claim could not be completed.",
+                    });
+                  }
+                  signupClaims.delete(context);
                 },
               },
             },
@@ -220,23 +279,13 @@ const inviteCodeFrom = (context: { body?: unknown }): string | undefined => {
   return undefined;
 };
 
-// Count org members via Better Auth's OWN adapter. Now that auth shares
-// SelfHostDb's libSQL client (one connection), this no longer guards against a
-// cross-connection snapshot lag — that lag is gone with the second connection.
-// It stays the canonical read because the adapter already models the `member`
-// table and the count gates the first-run claim; reading through it keeps the
-// gate logic next to the writes.
+// Count org members via Better Auth's own adapter. System setup status uses the
+// live membership count, while the durable signup claim separately prevents a
+// previously claimed instance from reopening when every member is removed.
 export const countOrgMembers = (auth: Auth, organizationId: string): Promise<number> =>
   auth.$context.then(({ adapter }) =>
     adapter.count({ model: "member", where: [{ field: "organizationId", value: organizationId }] }),
   );
-
-// True when the single org has no members yet — the unclaimed first-run state.
-const orgHasNoMembers = async (gate: SignupGate): Promise<boolean> => {
-  const auth = gate.getAuth();
-  if (!auth) return true;
-  return (await countOrgMembers(auth, gate.organizationId)) === 0;
-};
 
 const createAuthInstance = (client: Client, getOrganizationId: () => string, gate?: SignupGate) =>
   betterAuth(makeAuthOptions(client, getOrganizationId, gate));
@@ -262,9 +311,9 @@ export class BetterAuth extends Context.Service<BetterAuth, BetterAuthHandle>()(
  * runMigrations and the seed are idempotent, so this is safe on every boot.
  *
  * One instance, not two: the org id the session-pin and gate need isn't known
- * until the seed creates the org, but both read it lazily (a ref, like the
- * gate's `getAuth`), so there's no need for a throwaway bootstrap instance —
- * and so no second libSQL connection to be GC-closed mid-boot and unlink the
+ * until the seed creates the org, but both read it lazily through one ref, so
+ * there is no need for a throwaway bootstrap instance, and no second libSQL
+ * connection to be GC-closed mid-boot and unlink the
  * shared WAL (see the header comment; that was the self-host data-loss bug).
  *
  * The gate is active during the seed, but its hooks only act on the
@@ -281,32 +330,29 @@ export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle>
   const config = loadConfig();
 
   // The org id is resolved by the seed below, AFTER this instance is built; the
-  // session-pin hook and the gate read it through these late-bound accessors
-  // (no session is created during the seed, so the empty initial id is never
-  // observed). `getAuth` resolves to this very instance, so the gate's `after`
-  // hook can call `auth.api.addMember` once a code is redeemed.
-  let auth: Auth | null = null;
+  // session-pin hook and the gate read it through this late-bound accessor (no
+  // session is created during the seed, so the empty initial id is never
+  // observed).
   const orgRef = { id: "" };
   const gate: SignupGate = {
-    client,
     get organizationId() {
       return orgRef.id;
     },
-    getAuth: () => auth,
   };
 
-  auth = createAuthInstance(client, () => orgRef.id, gate);
+  const auth = createAuthInstance(client, () => orgRef.id, gate);
   // `runMigrations()` flows through the LibsqlDialect and is idempotent.
   await (await auth.$context).runMigrations();
   await ensureInviteCodeTable(client);
   const { organizationId, organizationName } = await seedOrgAndAdmin(auth, client, config);
   orgRef.id = organizationId;
+  const handler = serializeEmailSignups(auth.handler);
 
   return {
     auth,
     organizationId,
     organizationName,
     organizationSlug: config.orgSlug,
-    handler: auth.handler,
+    handler,
   };
 };

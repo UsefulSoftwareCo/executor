@@ -1,5 +1,7 @@
-// Cross-target: policies CRUD through the typed HttpApiClient — a created
+// Cross-target: policies CRUD through the typed HttpApiClient. A created
 // policy comes back in the list with the shape that was sent.
+import { randomBytes } from "node:crypto";
+
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
@@ -17,18 +19,31 @@ scenario(
     const { client } = yield* Api;
     const identity = yield* target.newIdentity();
     const api = yield* client(coreApi, identity);
+    const pattern = `policies-scn-${randomBytes(4).toString("hex")}.*`;
 
-    const created = yield* api.policies.create({
-      payload: { owner: "org", pattern: "policies-scn.*", action: "block" },
-    });
-    expect(created.owner).toBe("org");
-    expect(created.pattern).toBe("policies-scn.*");
-    expect(created.action).toBe("block");
+    yield* Effect.acquireUseRelease(
+      api.policies.create({
+        payload: { owner: "org", pattern, action: "block" },
+      }),
+      (created) =>
+        Effect.gen(function* () {
+          expect(created.owner).toBe("org");
+          expect(created.pattern).toBe(pattern);
+          expect(created.action).toBe("block");
 
-    const list = yield* api.policies.list();
-    const found = list.find((p) => p.id === created.id);
-    expect(found, "created policy appears in the list").toBeDefined();
-    expect(found?.pattern, "listed entry preserves the pattern").toBe("policies-scn.*");
-    expect(found?.action, "listed entry preserves the action").toBe("block");
+          const list = yield* api.policies.list();
+          const found = list.find((policy) => policy.id === created.id);
+          expect(found, "created policy appears in the list").toBeDefined();
+          expect(found?.pattern, "listed entry preserves the pattern").toBe(pattern);
+          expect(found?.action, "listed entry preserves the action").toBe("block");
+        }),
+      (created) =>
+        api.policies
+          .remove({
+            params: { policyId: created.id },
+            payload: { owner: created.owner },
+          })
+          .pipe(Effect.ignore),
+    );
   }),
 );

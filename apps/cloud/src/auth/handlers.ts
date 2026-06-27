@@ -16,6 +16,7 @@ import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
 import { SessionContext, SessionCookies } from "./middleware";
 import { encodeLoginState, decodeLoginState } from "./login-state";
 import { safeReturnTo } from "./return-to";
+import { activeOrganizationMemberships } from "./organization-memberships";
 import { UserStoreService } from "./context";
 import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
@@ -161,8 +162,9 @@ const deleteResponseCookie = (response: HttpServerResponse.HttpServerResponse, n
   HttpServerResponse.setCookieUnsafe(response, name, "", DELETE_COOKIE_OPTIONS);
 
 // ---------------------------------------------------------------------------
-// Single non-protected API surface — public (login/callback) + session
-// (me/logout/organizations/switch-organization). The session group has SessionAuth on it.
+// Single non-protected API surface: public login/callback plus session-scoped
+// identity, logout, organization listing, creation, and invitations. The
+// session group has SessionAuth on it.
 // ---------------------------------------------------------------------------
 
 export const NonProtectedApi = HttpApi.make("cloudWeb").add(CloudAuthPublicApi).add(CloudAuthApi);
@@ -337,10 +339,12 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const session = yield* SessionContext;
 
           const memberships = yield* workos.listUserMemberships(session.accountId);
+          const activeMemberships = activeOrganizationMemberships(memberships.data);
           // Resolve through the mirror (not WorkOS directly) so each org's
-          // URL slug is minted/read — the switcher navigates to `/<slug>`.
+          // URL slug is minted/read. Pending and inactive memberships are not
+          // switchable and must stay out of the URL navigation menu.
           const organizations = yield* Effect.all(
-            memberships.data.map((m) =>
+            activeMemberships.map((m) =>
               resolveOrganization(m.organizationId).pipe(
                 Effect.map((org) => ({ id: org.id, name: org.name, slug: org.slug })),
                 Effect.orElseSucceed(() => null),
@@ -364,9 +368,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           const name = payload.name.trim();
           const memberships = yield* workos.listUserMemberships(session.accountId);
-          const activeMemberships = memberships.data.filter(
-            (membership) => membership.status === "active",
-          );
+          const activeMemberships = activeOrganizationMemberships(memberships.data);
 
           if (isOverFreeOrganizationLimit(activeMemberships)) {
             const paidOrganizationIds = yield* Effect.all(

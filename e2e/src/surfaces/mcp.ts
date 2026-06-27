@@ -4,7 +4,8 @@
 // methods are Effects;
 // mcporter itself is promise-native underneath. Assertions are vitest's job.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,8 +29,14 @@ import type { Identity, Target } from "../target";
 // duration, status, and source: "terminal".
 // ---------------------------------------------------------------------------
 
-let traceFetchInstalled = false;
-let traceSink: { mcpUrl: string; runDir: string } | null = null;
+interface TraceSink {
+  readonly mcpUrl: string;
+  readonly runDir: string;
+}
+
+const traceSink = new AsyncLocalStorage<TraceSink>();
+let traceFetchUsers = 0;
+let originalFetch: typeof globalThis.fetch | undefined;
 
 /** JSON-RPC body → a human label: tool name for tools/call, else method. */
 const rpcLabel = (body: unknown): string | undefined => {
@@ -48,17 +55,23 @@ const rpcLabel = (body: unknown): string | undefined => {
   }
 };
 
-const installTraceparentFetch = (mcpUrl: string, runDir: string): void => {
-  traceSink = { mcpUrl, runDir };
-  if (traceFetchInstalled) return;
-  traceFetchInstalled = true;
+const acquireTraceparentFetch = () => {
+  traceFetchUsers += 1;
+  const release = () => {
+    traceFetchUsers -= 1;
+    if (traceFetchUsers !== 0 || !originalFetch) return;
+    globalThis.fetch = originalFetch;
+    originalFetch = undefined;
+  };
+  if (originalFetch) return release;
   const original = globalThis.fetch;
+  originalFetch = original;
   globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    const sink = traceSink;
+    const sink = traceSink.getStore();
     if (!sink || method !== "POST" || !url.startsWith(sink.mcpUrl)) {
       return original(input, init);
     }
@@ -89,7 +102,11 @@ const installTraceparentFetch = (mcpUrl: string, runDir: string): void => {
       throw error;
     }
   };
+  return release;
 };
+
+const withTraceSink = <T>(sink: TraceSink | undefined, operation: () => Promise<T>) =>
+  sink ? traceSink.run(sink, operation) : operation();
 
 export interface McpCallResult {
   readonly raw: unknown;
@@ -172,7 +189,9 @@ export interface McpSurface {
    * client *behavior* (scope choices, refresh, token storage) is never
    * modeled here; that's what driving the real client binaries is for.
    */
-  readonly mintBearer: (email: string) => Effect.Effect<string>;
+  readonly mintBearer: (identity: Identity | string) => Effect.Effect<string>;
+  /** Close every client/runtime and remove its private credential/config home. */
+  readonly close: () => Effect.Effect<void>;
 }
 
 const textOf = (result: unknown): string => {
@@ -201,11 +220,12 @@ const jsonFrom = async <T>(response: Response, label: string): Promise<T> => {
   return JSON.parse(text) as T;
 };
 
-const mintBearerFlow = async (target: Target, email: string): Promise<string> => {
-  const consent = target.mcpConsent?.({
-    label: email,
-    credentials: { email, password: "" },
-  });
+const mintBearerFlow = async (target: Target, identity: Identity | string): Promise<string> => {
+  const consentIdentity: Identity =
+    typeof identity === "string"
+      ? { label: identity, credentials: { email: identity, password: "" } }
+      : identity;
+  const consent = target.mcpConsent?.(consentIdentity);
   if (!consent) throw new Error(`target ${target.name} has no mcpConsent strategy`);
 
   const mcpPath = new URL(target.mcpUrl).pathname;
@@ -282,67 +302,179 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
   return token.access_token;
 };
 
-export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => ({
-  url: target.mcpUrl,
-  mintBearer: (email) => Effect.promise(() => mintBearerFlow(target, email)),
-  session: (identity, options) => {
-    const mcpUrl = options?.url ?? target.mcpUrl;
-    if (runDir) installTraceparentFetch(mcpUrl, runDir);
-    // mcporter caches OAuth tokens (and the DCR client) per server NAME, so a
-    // constant name would let a later session reuse an earlier identity's token
-    // — landing in the wrong org. A unique name per session keeps each
-    // identity's OAuth isolated. The traceparent ledger keys off the URL, not
-    // this name, so it is unaffected.
-    const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
-    // `browser` mode is selected per the ecosystem convention — an
-    // `?elicitation_mode=` query on the MCP endpoint — so a paused execution
-    // yields an approvalUrl instead of letting the model resume inline.
-    const sessionUrl = options?.elicitationMode
-      ? `${mcpUrl}?elicitation_mode=${options.elicitationMode}`
-      : mcpUrl;
+export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => {
+  const cleanups = new Set<() => Promise<void>>();
+  const releaseTraceFetch = runDir ? acquireTraceparentFetch() : undefined;
+  let closed = false;
 
-    if (target.name === "cloudflare") {
-      let clientPromise: Promise<Client> | undefined;
-      const client = () => {
-        if (!clientPromise) {
-          clientPromise = (async () => {
-            const directClient = new Client(
-              { name: serverName, version: "1.0.0" },
-              { capabilities: {} },
-            );
-            const transport = new StreamableHTTPClientTransport(new URL(sessionUrl), {
-              requestInit: { headers: identity.headers ?? {} },
-            });
-            await directClient.connect(transport);
-            return directClient;
-          })();
+  return {
+    url: target.mcpUrl,
+    mintBearer: (identity) => Effect.promise(() => mintBearerFlow(target, identity)),
+    close: () =>
+      Effect.promise(async () => {
+        if (closed) return;
+        closed = true;
+        const pending = [...cleanups];
+        cleanups.clear();
+        await Promise.allSettled(pending.map((cleanup) => cleanup()));
+        releaseTraceFetch?.();
+      }),
+    session: (identity, options) => {
+      const mcpUrl = options?.url ?? target.mcpUrl;
+      const sessionTraceSink = runDir ? { mcpUrl, runDir } : undefined;
+      // mcporter caches OAuth tokens (and the DCR client) per server NAME, so a
+      // constant name would let a later session reuse an earlier identity's token
+      // and land in the wrong org. A unique name per session keeps each
+      // identity's OAuth isolated. The traceparent ledger keys off the URL, not
+      // this name, so it is unaffected.
+      const serverName = `${target.name}-${randomUUID().slice(0, 8)}`;
+      // `browser` mode is selected per the ecosystem convention: an
+      // `?elicitation_mode=` query on the MCP endpoint, so a paused execution
+      // yields an approvalUrl instead of letting the model resume inline.
+      const sessionUrl = options?.elicitationMode
+        ? `${mcpUrl}?elicitation_mode=${options.elicitationMode}`
+        : mcpUrl;
+
+      if (target.name === "cloudflare") {
+        let clientPromise: Promise<Client> | undefined;
+        const cleanup = async () => {
+          if (clientPromise) await (await clientPromise).close();
+        };
+        cleanups.add(cleanup);
+        const client = () => {
+          if (!clientPromise) {
+            clientPromise = (async () => {
+              const directClient = new Client(
+                { name: serverName, version: "1.0.0" },
+                { capabilities: {} },
+              );
+              const transport = new StreamableHTTPClientTransport(new URL(sessionUrl), {
+                requestInit: { headers: identity.headers ?? {} },
+              });
+              await directClient.connect(transport);
+              return directClient;
+            })();
+          }
+          return clientPromise;
+        };
+
+        const listTools = () =>
+          Effect.promise(() =>
+            withTraceSink(sessionTraceSink, async () => {
+              const listed = await (await client()).listTools();
+              return listed.tools.map((tool) => tool.name);
+            }),
+          );
+
+        const call = (name: string, args: Record<string, unknown> = {}) =>
+          Effect.promise(() =>
+            withTraceSink(sessionTraceSink, async () => {
+              const raw = await (await client()).callTool({ name, arguments: args });
+              const isError = Boolean((raw as { isError?: boolean })?.isError);
+              return { raw, text: textOf(raw), ok: !isError };
+            }),
+          );
+
+        return {
+          listTools,
+          describeTools: () =>
+            Effect.promise(() =>
+              withTraceSink(sessionTraceSink, async () => {
+                const listed = await (await client()).listTools();
+                return listed.tools.map((tool) => ({
+                  name: tool.name,
+                  description: tool.description ?? "",
+                }));
+              }),
+            ),
+          call,
+          approvePaused: (text, content = {}) =>
+            Effect.suspend(() => {
+              const match = /\bexecutionId:\s*(\S+)/.exec(text);
+              if (!match)
+                return Effect.die(new Error("approvePaused: executionId not found in text"));
+              return call("resume", {
+                executionId: match[1],
+                action: "accept",
+                content: JSON.stringify(content),
+              });
+            }),
+          awaitResume: (executionId) => call("resume", { executionId }),
+        };
+      }
+
+      let runtimePromise: Promise<Runtime> | undefined;
+      let runtimeDir: string | undefined;
+      let connected = false;
+
+      const cleanup = async () => {
+        if (runtimePromise) await (await runtimePromise).close();
+        if (runtimeDir) rmSync(runtimeDir, { recursive: true, force: true });
+      };
+      cleanups.add(cleanup);
+
+      const consent = target.mcpConsent?.(identity);
+      const callOptions = {
+        autoAuthorize: true,
+        oauthSessionOptions: consent ? { consentStrategy: consent } : {},
+      };
+
+      const runtime = () => {
+        if (!runtimePromise) {
+          const dir = mkdtempSync(join(tmpdir(), "executor-e2e-mcp-"));
+          runtimeDir = dir;
+          writeFileSync(
+            join(dir, "mcporter.json"),
+            JSON.stringify({
+              mcpServers: { [serverName]: { url: sessionUrl } },
+            }),
+          );
+          runtimePromise = createRuntime({
+            configPath: join(dir, "mcporter.json"),
+          });
         }
-        return clientPromise;
+        return runtimePromise;
       };
 
       const listTools = () =>
-        Effect.promise(async () => {
-          const listed = await (await client()).listTools();
-          return listed.tools.map((tool) => tool.name);
-        });
+        Effect.promise(() =>
+          withTraceSink(sessionTraceSink, async () => {
+            const defs = await (await runtime()).listTools(serverName, callOptions);
+            connected = true;
+            return defs.map((tool: { name: string }) => tool.name);
+          }),
+        );
 
-      const call = (name: string, args: Record<string, unknown> = {}) =>
-        Effect.promise(async (): Promise<McpCallResult> => {
-          const raw = await (await client()).callTool({ name, arguments: args });
-          const isError = Boolean((raw as { isError?: boolean })?.isError);
-          return { raw, text: textOf(raw), ok: !isError };
-        });
-
-      return {
-        listTools,
-        describeTools: () =>
-          Effect.promise(async (): Promise<ReadonlyArray<McpToolDef>> => {
-            const listed = await (await client()).listTools();
-            return listed.tools.map((tool) => ({
+      const describeTools = () =>
+        Effect.promise(() =>
+          withTraceSink(sessionTraceSink, async () => {
+            const defs = await (await runtime()).listTools(serverName, callOptions);
+            connected = true;
+            return defs.map((tool: { name: string; description?: string }) => ({
               name: tool.name,
               description: tool.description ?? "",
             }));
           }),
+        );
+
+      const call = (name: string, args: Record<string, unknown> = {}) =>
+        Effect.promise(() =>
+          withTraceSink(sessionTraceSink, async () => {
+            if (!connected) {
+              await (await runtime()).listTools(serverName, callOptions);
+              connected = true;
+            }
+            const raw = await (
+              await runtime()
+            ).callTool(serverName, name, { args, ...callOptions });
+            const isError = Boolean((raw as { isError?: boolean })?.isError);
+            return { raw, text: textOf(raw), ok: !isError };
+          }),
+        );
+
+      return {
+        listTools,
+        describeTools,
         call,
         approvePaused: (text, content = {}) =>
           Effect.suspend(() => {
@@ -355,80 +487,10 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
               content: JSON.stringify(content),
             });
           }),
+        // No action argument: in browser mode `resume` blocks until the human's
+        // decision arrives via the console, then returns the resumed result.
         awaitResume: (executionId) => call("resume", { executionId }),
       };
-    }
-
-    let runtimePromise: Promise<Runtime> | undefined;
-    let connected = false;
-
-    const consent = target.mcpConsent?.(identity);
-    const callOptions = {
-      autoAuthorize: true,
-      oauthSessionOptions: consent ? { consentStrategy: consent } : {},
-    };
-
-    const runtime = () => {
-      if (!runtimePromise) {
-        const dir = mkdtempSync(join(tmpdir(), "executor-e2e-mcp-"));
-        writeFileSync(
-          join(dir, "mcporter.json"),
-          JSON.stringify({
-            mcpServers: { [serverName]: { url: sessionUrl } },
-          }),
-        );
-        runtimePromise = createRuntime({
-          configPath: join(dir, "mcporter.json"),
-        });
-      }
-      return runtimePromise;
-    };
-
-    const listTools = () =>
-      Effect.promise(async () => {
-        const defs = await (await runtime()).listTools(serverName, callOptions);
-        connected = true;
-        return defs.map((tool: { name: string }) => tool.name);
-      });
-
-    const describeTools = () =>
-      Effect.promise(async (): Promise<ReadonlyArray<McpToolDef>> => {
-        const defs = await (await runtime()).listTools(serverName, callOptions);
-        connected = true;
-        return defs.map((tool: { name: string; description?: string }) => ({
-          name: tool.name,
-          description: tool.description ?? "",
-        }));
-      });
-
-    const call = (name: string, args: Record<string, unknown> = {}) =>
-      Effect.promise(async (): Promise<McpCallResult> => {
-        if (!connected) {
-          await (await runtime()).listTools(serverName, callOptions);
-          connected = true;
-        }
-        const raw = await (await runtime()).callTool(serverName, name, { args, ...callOptions });
-        const isError = Boolean((raw as { isError?: boolean })?.isError);
-        return { raw, text: textOf(raw), ok: !isError };
-      });
-
-    return {
-      listTools,
-      describeTools,
-      call,
-      approvePaused: (text, content = {}) =>
-        Effect.suspend(() => {
-          const match = /\bexecutionId:\s*(\S+)/.exec(text);
-          if (!match) return Effect.die(new Error("approvePaused: executionId not found in text"));
-          return call("resume", {
-            executionId: match[1],
-            action: "accept",
-            content: JSON.stringify(content),
-          });
-        }),
-      // No action argument: in browser mode `resume` blocks until the human's
-      // decision arrives via the console, then returns the resumed result.
-      awaitResume: (executionId) => call("resume", { executionId }),
-    };
-  },
-});
+    },
+  };
+};

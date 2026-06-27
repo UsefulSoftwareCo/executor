@@ -41,9 +41,26 @@ working instance of X" — read them before inventing a boot path.
 
 `e2e/AGENTS.md` covers writing scenarios. Operationally:
 
-- `cd e2e && bun run test` boots dev servers and runs everything;
-  `--project cloud|selfhost` narrows. `E2E_CLOUD_URL`/`E2E_SELFHOST_URL`
-  attach to an already-running server instead of booting.
+- `cd e2e && bun run test` runs the portable hermetic projects: harness unit
+  tests, client adapters, cloud, selfhost, local, and Cloudflare. The cloud and
+  selfhost projects exclude scenarios whose purpose is to detect drift in a
+  public service.
+- `bun run test:cloud`, `bun run test:selfhost`, and
+  `bun run test:cloudflare` run the corresponding full project, including
+  live-provider checks. Their `:hermetic` variants match the pull-request
+  gates.
+- `bun run test:selfhost-docker:hermetic` runs the same journeys against the
+  production Docker artifact. `bun run test:desktop-packaged` builds and drives
+  the unsigned packaged Electron application and needs a GUI display.
+- `E2E_CLOUD_URL` and `E2E_SELFHOST_URL` attach to an already-running server
+  instead of booting one.
+- Project names describe execution policy, while `E2E_TARGET` describes the
+  deployed product. For example, `cloud` and `cloud-hermetic` both resolve the
+  cloud target and use the same boot recipe.
+- Local exploration allows a scenario to skip when its target does not offer a
+  requested Effect service. CI sets `E2E_REQUIRED_CAPABILITY_MODE=required`, so
+  a missing service promised by the project's matrix fails instead of becoming
+  a green skip. The matrix is `e2e/src/project-matrix.ts`.
 - Runs land in `e2e/runs/<target>/<scenario-slug>/` — `result.json`, step
   screenshots, `session.mp4` + `trace.zip` for browser scenarios, and the
   scenario source as `test.ts`.
@@ -68,6 +85,46 @@ and walks to the next free block if squatted, so concurrent worktrees never
 collide or attach to each other's servers. `E2E_*_PORT` env vars pin ports
 explicitly. If a boot reports a squatted port, an old dev server leaked —
 `bun run reap` (repo root) lists and kills orphaned stacks.
+
+## E2E CI tiers
+
+The end-to-end workflow separates deterministic product guarantees from
+environment and provider drift:
+
+- Pull requests run harness unit tests, emulator-backed cloud and selfhost,
+  local, Cloudflare, and the production selfhost image on ephemeral
+  GitHub-hosted Linux VMs. The same VM runs development and packaged Electron
+  journeys under Xvfb.
+- The Cloudflare lane leaves `ENABLE_DEV_AUTH` off. A scoped loopback Access
+  issuer signs human and service application tokens and serves the team JWKS,
+  so issuer, audience, expiry, signature, and machine-identity checks remain in
+  the pull-request gate without a Cloudflare account.
+- The client lanes install pinned Claude Code and OpenCode binaries and require
+  their real-client capabilities. Model traffic goes only to local replay
+  fixtures, so they need neither a user login nor paid inference.
+- macOS and Windows runners build the native unsigned package and start the
+  bundled Executor binary. They do not claim GUI journey coverage. Linux is the
+  current required packaged-GUI lane.
+- The scheduled or manually dispatched `desktop-linux-kvm` job provides the
+  stronger guest boundary when `E2E_LINUX_KVM_ENABLED=true`. A labeled x64
+  self-hosted runner uses the prepared QCOW2 image at `E2E_KVM_BASE_IMAGE` to
+  create a disposable cloud-init overlay, launch the packaged app on Xorg,
+  drive a native window, record its SPICE framebuffer, and discard the domain.
+  The runner must provide QEMU, libvirt, `virt-install`, `cloud-localds`, SSH,
+  Xvfb, Openbox, `remote-viewer`, and ffmpeg. The base image must provide the
+  guest Xorg, Openbox, D-Bus, `xdpyinfo`, `xdotool`, SSH, and Electron runtime
+  libraries.
+- Public Microsoft Graph metadata and the hosted Microsoft OAuth emulator run
+  nightly and are nonblocking. `bun run test:live` reproduces that group. The
+  Resend handoff, no-auth API, and PostHog-shaped MCP flows use scoped local
+  emulators and remain in pull-request coverage.
+- Real service installation and reboot in Tart macOS/Linux guests is enabled
+  only when `E2E_TART_VM_ENABLED=true` and an `executor-e2e` macOS runner has the
+  documented base images. The EC2 Windows guest is similarly gated by
+  `E2E_WINDOWS_VM_ENABLED=true` and dedicated AWS credentials. These are CLI
+  service VMs, not macOS or Windows desktop-GUI claims.
+- Every e2e job sanitizes `e2e/runs` before artifact upload. If sanitization
+  fails, the workflow does not publish the unsanitized directory.
 
 ## The dev CLI: live instances, interactively
 

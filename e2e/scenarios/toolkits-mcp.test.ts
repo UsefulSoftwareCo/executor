@@ -170,8 +170,6 @@ scenario(
       "metadata still advertises authorization servers",
     ).toBe(true);
 
-    if (target.name === "cloudflare") return;
-
     const challenged = yield* Effect.promise(() =>
       fetch(mcpUrl, {
         method: "POST",

@@ -11,7 +11,7 @@ import { cookieConsentStrategy } from "@executor-js/mcporter";
 import { e2ePort } from "../src/ports";
 import type { Identity, Target } from "../src/target";
 import { runSelfhostContainer, stopSelfhostContainer } from "../setup/selfhost-docker.boot";
-import { SELFHOST_ADMIN, signInSession } from "./selfhost";
+import { createInvitedSelfhostIdentity, SELFHOST_ADMIN } from "./selfhost";
 
 export const SELFHOST_DOCKER_PORT = e2ePort("E2E_SELFHOST_DOCKER_PORT", 5);
 export const SELFHOST_DOCKER_BASE_URL =
@@ -23,18 +23,7 @@ export const selfhostDockerTarget = (): Target => ({
   mcpUrl: `${SELFHOST_DOCKER_BASE_URL}/mcp`,
   capabilities: new Set(["api", "browser", "mcp-oauth"]),
   newIdentity: () =>
-    Effect.promise(async (): Promise<Identity> => {
-      const { cookieHeader, cookies } = await signInSession(
-        SELFHOST_DOCKER_BASE_URL,
-        SELFHOST_ADMIN,
-      );
-      return {
-        label: SELFHOST_ADMIN.email,
-        credentials: SELFHOST_ADMIN,
-        headers: { cookie: cookieHeader },
-        cookies,
-      };
-    }),
+    Effect.promise(() => createInvitedSelfhostIdentity(SELFHOST_DOCKER_BASE_URL, SELFHOST_ADMIN)),
   mcpConsent: (identity: Identity) =>
     cookieConsentStrategy({
       appBaseUrl: SELFHOST_DOCKER_BASE_URL,

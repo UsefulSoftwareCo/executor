@@ -12,6 +12,12 @@ import type { BrowserSurface } from "./surfaces/browser";
 import type { CliSurface } from "./surfaces/cli";
 import type { McpSurface } from "./surfaces/mcp";
 import type { TelemetrySurface } from "./surfaces/telemetry";
+import type {
+  makeClaudeCodeHome,
+  removeClaudeCodeHome,
+  replaceClaudeCodeServer,
+  runClaudeCode,
+} from "./clients/claude-code";
 import type { completeOAuthConsent, makeOpenCodeHome, warmUp } from "./clients/opencode";
 
 /** The target under test (always provided). */
@@ -46,6 +52,17 @@ export interface OpenCodeClient {
   readonly completeOAuthConsent: typeof completeOAuthConsent;
 }
 export class OpenCode extends Context.Service<OpenCode, OpenCodeClient>()("e2e/opencode") {}
+
+/** The real Claude Code binary with isolated state and replayed model inference. */
+export interface ClaudeCodeClient {
+  readonly makeHome: typeof makeClaudeCodeHome;
+  readonly run: typeof runClaudeCode;
+  readonly replaceServer: typeof replaceClaudeCodeServer;
+  readonly removeHome: typeof removeClaudeCodeHome;
+}
+export class ClaudeCode extends Context.Service<ClaudeCode, ClaudeCodeClient>()(
+  "e2e/claude-code",
+) {}
 
 /** Compress (or restore, with null) the authorization server's access-token TTL. */
 export class TtlControl extends Context.Service<

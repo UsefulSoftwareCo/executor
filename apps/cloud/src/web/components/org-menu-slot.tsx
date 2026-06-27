@@ -23,6 +23,7 @@ import {
 import { useAuth } from "../auth";
 import { organizationsAtom } from "../auth";
 import { CreateOrganizationFields, useCreateOrganizationForm } from "./create-organization-form";
+import { organizationNavigationHref } from "./org-navigation";
 
 // ---------------------------------------------------------------------------
 // Cloud-only org-switcher slot for the shared shell's account dropdown.
@@ -54,11 +55,11 @@ function OrganizationSwitcherItems(props: { activeOrganizationId: string | null 
   // Switching orgs is now a pure URL navigation: the session authenticates the
   // user to ALL their orgs, and the slug in the path scopes every request (the
   // `x-executor-organization` header). No cookie to rewrite, no server switch
-  // call — just land on the other org's URL root and the whole app re-scopes.
+  // call, just land on the other org's URL and let the whole app re-scope.
   const handleSwitch = (organization: { id: string; slug: string }) => {
     if (organization.id === props.activeOrganizationId) return;
     trackEvent("org_switched", { success: true });
-    window.location.href = `/${organization.slug}`;
+    window.location.href = organizationNavigationHref(organization.slug, window.location);
   };
 
   return AsyncResult.match(organizations, {
@@ -101,10 +102,9 @@ export function OrgMenuSlot() {
 
   const form = useCreateOrganizationForm({
     defaultName: suggestedOrganizationName,
-    // Land on the new org's URL root — a reload would keep the old slug and
-    // the slug gate would switch the session right back.
+    // Keep the current route intent while replacing its organization scope.
     onSuccess: (org) => {
-      window.location.href = `/${org.slug}`;
+      window.location.href = organizationNavigationHref(org.slug, window.location);
     },
   });
 

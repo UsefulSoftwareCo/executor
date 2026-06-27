@@ -57,8 +57,22 @@ const procs = bootProcesses(
   { label: "record-stack" },
 );
 
-await waitForHttp(baseUrl);
-await waitForHttp(`${baseUrl}/api/auth/login`, { expectRedirect: true });
+await procs.waitUntilReady(
+  (async () => {
+    await waitForHttp(baseUrl);
+    await waitForHttp(`${baseUrl}/api/auth/login`, {
+      expectRedirect: true,
+      validateResponse: (response) => {
+        const location = response.headers.get("location");
+        return (
+          location !== null &&
+          URL.canParse(location, workos.url) &&
+          new URL(location, workos.url).origin === new URL(workos.url).origin
+        );
+      },
+    });
+  })(),
+);
 console.log(`ready: ${baseUrl}`);
 
 const teardown = async () => {

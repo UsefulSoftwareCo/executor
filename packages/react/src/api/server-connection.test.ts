@@ -7,6 +7,7 @@ import {
   normalizeExecutorServerOrigin,
   originFromApiBaseUrl,
   resolveBrowserExecutorServerConnection,
+  resolveExecutorServerConnectionBridgeHydration,
 } from "./server-connection";
 
 describe("Executor server connection", () => {
@@ -62,5 +63,28 @@ describe("Executor server connection", () => {
     expect(connection.kind).toBe("http");
     expect(connection.origin).toBe("http://localhost:4788");
     expect(getExecutorServerAuthorizationHeader(connection)).toBeNull();
+  });
+
+  it("does not let a late desktop bridge read replace an explicit profile selection", () => {
+    const initial = normalizeExecutorServerConnection({ origin: "http://127.0.0.1:4788" });
+    const remote = normalizeExecutorServerConnection({
+      key: "profile:remote-account",
+      origin: "https://executor.example",
+      displayName: "Remote account",
+      auth: { kind: "bearer", token: "token_remote" },
+    });
+    const bridge = {
+      kind: "desktop-sidecar" as const,
+      key: "desktop-sidecar",
+      origin: "http://127.0.0.1:4788",
+      displayName: "Local Executor",
+    };
+
+    expect(
+      resolveExecutorServerConnectionBridgeHydration({ initial, current: initial, bridge }).kind,
+    ).toBe("desktop-sidecar");
+    expect(
+      resolveExecutorServerConnectionBridgeHydration({ initial, current: remote, bridge }),
+    ).toBe(remote);
   });
 });

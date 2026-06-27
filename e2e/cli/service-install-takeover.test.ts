@@ -3,7 +3,7 @@
 // a same-data-dir predecessor instead of refusing and leaving users to find a
 // pid. Runs on the CLI VM targets where the test worker can SSH into the guest
 // that globalsetup provisioned.
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import { expect } from "@effect/vitest";
@@ -127,7 +127,7 @@ const startPredecessor = async (exe: string): Promise<PredecessorHandle> => {
   }
 
   const invocation = sshInvocation(windowsPredecessorCommand(exe));
-  const child: ChildProcessWithoutNullStreams = spawn(invocation.command, [...invocation.args], {
+  const child = spawn(invocation.command, [...invocation.args], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";

@@ -1,29 +1,38 @@
-// Cloud-only (browser): two tabs, two orgs, at the same time — independent.
-//
-// WorkOS still pins ONE org into the sealed `wos-session` cookie, and the whole
-// browser shares one cookie jar. Under the OLD cookie-based "active org" model
-// that made "active organization" a browser-global: two tabs could not be in
-// two orgs at once, and a switch (or the slug gate's switch-to-honor-the-URL)
-// silently re-scoped the other tab out from under it.
-//
-// The stateless URL model removes that hazard. The slug in the path is the
-// request scope: every API call carries it (the `x-executor-organization`
-// header), the server re-checks live membership and resolves data for THAT
-// org, and the session merely authenticates the user to all their orgs at
-// once. Nothing writes the cookie on a switch. So this scenario — once the
-// reproduction of the corruption — now asserts the opposite: each tab's
-// requests stay scoped to its own URL org, no matter what the other tab does.
-//
-// Everything runs through the browser (onboarding + the menu create-org), so
-// the single-use WorkOS refresh-token chain stays browser-owned and valid.
+// Cloud browser coverage for two tabs sharing one cookie jar while their URLs
+// select different organizations. Distinct persisted policies make accidental
+// cross-tab re-scoping visible in both the network and the rendered page.
+import { randomBytes } from "node:crypto";
+
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import type { Page } from "playwright";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 
+const policyResponse = (page: Page, method: "GET" | "POST") =>
+  page.waitForResponse(
+    (response) =>
+      response.request().method() === method &&
+      new URL(response.url()).pathname === "/api/policies",
+    { timeout: 30_000 },
+  );
+
+const createPolicy = async (page: Page, pattern: string) => {
+  const responsePromise = policyResponse(page, "POST");
+  await page.locator("#policy-pattern").fill(pattern);
+  await page.getByRole("button", { name: "Add policy" }).click();
+  const response = await responsePromise;
+  expect(response.ok(), `creating ${pattern} succeeds`).toBe(true);
+  await page.getByText(pattern, { exact: true }).waitFor();
+  return response.request();
+};
+
+const sessionCookieValue = async (page: Page) =>
+  (await page.context().cookies()).find((cookie) => cookie.name === "wos-session")?.value ?? "";
+
 scenario(
-  "Org tabs · two tabs on different orgs stay independent (URL-scoped, no cookie steal)",
+  "Org tabs · two URL-scoped organizations retain independent resources",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -31,81 +40,99 @@ scenario(
     const identity = yield* target.newIdentity({ org: false });
 
     yield* browser.session(identity, async ({ page: tab1, step }) => {
-      const slugOf = (page: typeof tab1) => new URL(page.url()).pathname.replace(/^\/|\/.*$/g, "");
+      const suffix = randomBytes(4).toString("hex");
+      const organizationA = `Multitab A ${suffix}`;
+      const organizationB = `Multitab B ${suffix}`;
+      const policyA = `multitab-a-${suffix}.*`;
+      const policyB = `multitab-b-${suffix}.*`;
 
-      // The org slug a page's REAL app requests carry — read straight off the
-      // outgoing `x-executor-organization` header, the actual request scope.
-      // This is what makes the two tabs independent; the shared session cookie
-      // is irrelevant to it.
-      const requestOrgSlugOf = async (page: typeof tab1): Promise<string> => {
-        const matching = page.waitForRequest(
-          (request) =>
-            request.url().includes("/api/") &&
-            request.headers()["x-executor-organization"] !== undefined,
-          { timeout: 15_000 },
-        );
-        // Nudge the app to refetch so a fresh scoped request goes out.
-        void page.reload({ waitUntil: "commit" });
-        return (await matching).headers()["x-executor-organization"]!;
-      };
-
-      let slugA = "";
-      let slugB = "";
-
-      await step("Onboard org A in tab 1", async () => {
+      await step("Create organization A and its policy in tab 1", async () => {
         await tab1.goto("/", { waitUntil: "networkidle" });
-        await tab1.getByPlaceholder("Northwind Labs").fill("Multitab A");
+        await tab1.getByPlaceholder("Northwind Labs").fill(organizationA);
         await tab1.getByRole("button", { name: "Create organization" }).click();
         await tab1.getByText("Connect your MCP client").waitFor({ timeout: 30_000 });
         await tab1.getByRole("button", { name: "Continue to app" }).click();
-        await tab1.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), { timeout: 30_000 });
-        await tab1.getByText("Integrations").first().waitFor({ timeout: 30_000 });
-        slugA = slugOf(tab1);
+        await tab1.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
+          timeout: 30_000,
+        });
       });
 
-      await step("Create org B from tab 1's account menu — tab 1 is now in B", async () => {
+      const slugA = new URL(tab1.url()).pathname.split("/")[1]!;
+
+      await step("Persist organization A data with an A selector", async () => {
+        await tab1.goto(`/${slugA}/policies`, { waitUntil: "networkidle" });
+        const request = await createPolicy(tab1, policyA);
+        expect(
+          request.headers()["x-executor-organization"],
+          "organization A policy writes use the A URL selector",
+        ).toBe(slugA);
+      });
+
+      await step("Create organization B and its distinct policy in tab 1", async () => {
         await tab1.getByRole("button", { name: /Test User/ }).click();
-        await tab1.getByRole("menuitem", { name: "Multitab A" }).click();
-        await tab1
-          .locator('[data-slot="dropdown-menu-sub-content"]')
-          .getByText("Create organization", { exact: true })
-          .click();
+        await tab1.getByRole("menuitem", { name: organizationA, exact: true }).click();
+        const submenu = tab1.locator('[data-slot="dropdown-menu-sub-content"]');
+        await submenu.waitFor({ state: "visible" });
+        await submenu.getByText("Create organization", { exact: true }).click();
         await tab1.getByText("Add another organization").waitFor();
-        await tab1.getByPlaceholder("Northwind Labs").fill("Multitab B");
+        await tab1.getByPlaceholder("Northwind Labs").fill(organizationB);
         await tab1.getByRole("button", { name: "Create organization" }).click();
-        await tab1.waitForURL((url) => url.pathname !== `/${slugA}`, { timeout: 30_000 });
-        await tab1.getByText("Integrations").first().waitFor({ timeout: 30_000 });
-        slugB = slugOf(tab1);
+        await tab1.waitForURL(
+          (url) => url.pathname.endsWith("/policies") && url.pathname !== `/${slugA}/policies`,
+          { timeout: 30_000 },
+        );
       });
-      expect(slugB, "the two orgs have distinct slugs").not.toBe(slugA);
 
-      // A second tab in the SAME context — shares tab 1's cookie jar.
+      const slugB = new URL(tab1.url()).pathname.split("/")[1]!;
+      expect(slugB, "organization B has a distinct URL slug").not.toBe(slugA);
+
+      await step("Persist organization B data with a B selector", async () => {
+        const request = await createPolicy(tab1, policyB);
+        expect(
+          request.headers()["x-executor-organization"],
+          "organization B policy writes use the B URL selector",
+        ).toBe(slugB);
+        expect(await tab1.getByText(policyA, { exact: true }).count()).toBe(0);
+      });
+
+      const cookieWhileInB = await sessionCookieValue(tab1);
+      expect(cookieWhileInB, "organization creation leaves a real browser session").not.toBe("");
+
       const tab2 = await tab1.context().newPage();
 
-      await step("Tab 2 opens org A's URL and stays in A — no switch, no reload loop", async () => {
+      await step("Tab 2 renders organization A data from the A URL", async () => {
+        const responsePromise = policyResponse(tab2, "GET");
         await tab2.goto(`/${slugA}/policies`, { waitUntil: "networkidle" });
-        await tab2.getByText("Policies").first().waitFor({ timeout: 30_000 });
-        expect(new URL(tab2.url()).pathname, "tab 2 stays on org A's URL").toBe(
-          `/${slugA}/policies`,
-        );
-        expect(await requestOrgSlugOf(tab2), "tab 2's API requests are scoped to org A").toBe(
-          slugA,
-        );
+        const response = await responsePromise;
+        expect(response.ok(), "organization A policies load in tab 2").toBe(true);
+        expect(
+          response.request().headers()["x-executor-organization"],
+          "tab 2 requests remain scoped to organization A",
+        ).toBe(slugA);
+        await tab2.getByText(policyA, { exact: true }).waitFor();
+        expect(await tab2.getByText(policyB, { exact: true }).count()).toBe(0);
       });
 
-      await step("Tab 1 is untouched: still org B, and its requests still scope to B", async () => {
-        expect(new URL(tab1.url()).pathname, "tab 1's URL still says org B").toBe(`/${slugB}`);
-        expect(
-          await tab1.getByRole("button", { name: /Multitab B/ }).isVisible(),
-          "tab 1's sidebar still shows org B",
-        ).toBe(true);
-        // The crux: tab 2 opening org A did NOT re-scope tab 1. Tab 1's own
-        // requests still carry org B's slug — the URL is the scope, not a
-        // shared cookie a sibling tab can steal.
-        expect(await requestOrgSlugOf(tab1), "tab 1's API requests stay scoped to org B").toBe(
-          slugB,
+      await step("Tab 1 still renders organization B data from the B URL", async () => {
+        const responsePromise = policyResponse(tab1, "GET");
+        await tab1.reload({ waitUntil: "networkidle" });
+        const response = await responsePromise;
+        expect(new URL(tab1.url()).pathname, "tab 1 stays on organization B").toBe(
+          `/${slugB}/policies`,
         );
+        expect(
+          response.request().headers()["x-executor-organization"],
+          "tab 1 requests remain scoped to organization B",
+        ).toBe(slugB);
+        await tab1.getByRole("button", { name: new RegExp(organizationB) }).waitFor();
+        await tab1.getByText(policyB, { exact: true }).waitFor();
+        expect(await tab1.getByText(policyA, { exact: true }).count()).toBe(0);
       });
+
+      expect(
+        await sessionCookieValue(tab1),
+        "opening organization A in tab 2 does not rewrite the shared cookie",
+      ).toBe(cookieWhileInB);
     });
   }),
 );
@@ -138,8 +165,8 @@ scenario(
         await page.getByPlaceholder("https://api.example.com/openapi.json").waitFor();
       });
 
-      const orgSlug = new URL(page.url()).pathname.split("/")[1];
-      expect(orgSlug, "the add form landed on an org-scoped URL").toBeTruthy();
+      const organizationSlug = new URL(page.url()).pathname.split("/")[1];
+      expect(organizationSlug, "the add form lands on an organization URL").toBeTruthy();
 
       await step("Paste an inline spec", async () => {
         const previewRequest = page.waitForRequest(
@@ -151,8 +178,8 @@ scenario(
 
         expect(
           (await previewRequest).headers()["x-executor-organization"],
-          "plugin-owned preview requests use the URL's org selector",
-        ).toBe(orgSlug);
+          "plugin preview requests use the URL organization selector",
+        ).toBe(organizationSlug);
       });
     });
   }),

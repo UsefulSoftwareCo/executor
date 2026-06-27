@@ -7,7 +7,8 @@
 // "Authorize device". The terminal then runs `whoami` and `tools sources`; a
 // clean exit of that chain proves the Better Auth device token is accepted as a
 // Bearer on the protected /api/* plane.
-import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,26 +46,44 @@ scenario(
       const cli = yield* Cli;
       const browser = yield* Browser;
       const runDir = yield* RunDir;
-      const dataDir = join(runDir, "cli-home");
+      // This directory contains live OAuth credentials. Keep it outside the
+      // viewer-served runs tree and remove it when the scenario finishes.
+      const dataDir = mkdtempSync(join(tmpdir(), "executor-e2e-cli-selfhost-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(dataDir, { recursive: true, force: true })),
+      );
 
       // A signed-in identity (its session cookie authorizes the /device page).
       const identity = yield* target.newIdentity();
 
-      const env = { ...process.env, EXECUTOR_DATA_DIR: dataDir };
-      for (const key of ["EXECUTOR_API_KEY", "EXECUTOR_AUTH_TOKEN", "EXECUTOR_AUTH_PASSWORD"]) {
-        delete (env as Record<string, string | undefined>)[key];
-      }
+      const env: Record<string, string> = {
+        ...process.env,
+        EXECUTOR_DATA_DIR: dataDir,
+      };
+      delete env.EXECUTOR_API_KEY;
+      delete env.EXECUTOR_AUTH_TOKEN;
+      delete env.EXECUTOR_AUTH_PASSWORD;
 
-      let resolveUrl!: (url: string) => void;
-      const verificationUrl = new Promise<string>((r) => {
-        resolveUrl = r;
+      let resolveFirstUrl!: (url: string) => void;
+      const firstVerificationUrl = new Promise<string>((resolveUrl) => {
+        resolveFirstUrl = resolveUrl;
+      });
+      let resolveSecondUrl!: (url: string) => void;
+      const secondVerificationUrl = new Promise<string>((resolveUrl) => {
+        resolveSecondUrl = resolveUrl;
       });
 
       const cli_ = `bun run ${CLI_ENTRY}`;
       const journey =
         `${cli_} login --base-url ${SELFHOST_BASE_URL} --no-browser --name selfhost && ` +
         `${cli_} whoami --server selfhost && ` +
-        `${cli_} tools sources --server selfhost`;
+        `${cli_} tools sources --server selfhost && ` +
+        `${cli_} logout --server selfhost && ` +
+        `${cli_} whoami --server selfhost && ` +
+        `echo SECOND_LOGIN_START && ` +
+        `${cli_} login --base-url ${SELFHOST_BASE_URL} --no-browser && ` +
+        `${cli_} tools sources --server selfhost && ` +
+        `${cli_} server list`;
 
       const terminal = cli.session(
         ["bash", "-c", journey],
@@ -72,8 +91,21 @@ scenario(
           await session.screen.waitForText(/user_code=/, { timeoutMs: 60_000 });
           const match = (await session.screen.text()).match(/(https?:\/\/\S*user_code=\S+)/);
           if (!match) throw new Error("verification URL not found on screen");
-          resolveUrl(match[1]);
+          resolveFirstUrl(match[1]);
           await session.screen.waitForText("Logged in to", { timeoutMs: 60_000 });
+
+          const secondLogin = await session.screen.waitUntil(
+            (current) => {
+              const marker = current.text.lastIndexOf("SECOND_LOGIN_START");
+              return marker >= 0 && /https?:\/\/\S*user_code=\S+/.test(current.text.slice(marker));
+            },
+            { timeoutMs: 60_000 },
+          );
+          const marker = secondLogin.text.lastIndexOf("SECOND_LOGIN_START");
+          const secondMatch = secondLogin.text.slice(marker).match(/(https?:\/\/\S*user_code=\S+)/);
+          if (!secondMatch) throw new Error("second verification URL not found on screen");
+          resolveSecondUrl(secondMatch[1]);
+
           const exit = await session.waitForExit({ timeoutMs: 60_000 });
           if (exit.reason !== "exited" || exit.exit.code !== 0) {
             throw new Error(
@@ -93,16 +125,27 @@ scenario(
       // The browser leg, approve on the self-host /device page (session cookie
       // from the identity authorizes it). Recorded to session.mp4.
       const browserApproval = Effect.gen(function* () {
-        const url = yield* Effect.promise(() => verificationUrl);
+        const firstUrl = yield* Effect.promise(() => firstVerificationUrl);
         yield* browser.session(identity, async ({ page, step }) => {
-          await step("Open the device verification page", async () => {
-            await page.goto(url, { waitUntil: "domcontentloaded" });
+          await step("Open the first device verification page", async () => {
+            await page.goto(firstUrl, { waitUntil: "domcontentloaded" });
             // The Authorize button appears once the page binds the signed-in user.
             await page
               .getByRole("button", { name: /Authorize device/i })
               .waitFor({ timeout: 20_000 });
           });
-          await step("Authorize the device", async () => {
+          await step("Authorize the first login", async () => {
+            await page.getByRole("button", { name: /Authorize device/i }).click();
+            await page.getByText(/Device approved/i).waitFor({ timeout: 15_000 });
+          });
+          const secondUrl = await secondVerificationUrl;
+          await step("Open the re-login device verification page", async () => {
+            await page.goto(secondUrl, { waitUntil: "domcontentloaded" });
+            await page
+              .getByRole("button", { name: /Authorize device/i })
+              .waitFor({ timeout: 20_000 });
+          });
+          await step("Authorize the re-login", async () => {
             await page.getByRole("button", { name: /Authorize device/i }).click();
             await page.getByText(/Device approved/i).waitFor({ timeout: 15_000 });
           });
@@ -112,23 +155,19 @@ scenario(
         yield* Effect.promise(() => enterFocus(runDir, "terminal"));
       });
 
-      // Reaching here means the whole `&&` chain exited 0, including the
-      // authenticated `tools sources` /api call.
-      yield* Effect.all([terminal, browserApproval], { concurrency: "unbounded" });
-
-      // The stored profile carries an oauth device-login credential, not a key.
-      const store = JSON.parse(readFileSync(join(dataDir, "server-connections.json"), "utf8")) as {
-        defaultProfile: string | null;
-        profiles: Array<{
-          name: string;
-          connection: { auth?: { kind: string; accessToken?: string } };
-        }>;
-      };
-      expect(store.defaultProfile, "the login became the default profile").toBe("selfhost");
-      const profile = store.profiles.find((p) => p.name === "selfhost");
-      expect(profile?.connection.auth?.kind, "credential is an oauth device token").toBe("oauth");
-      expect(typeof profile?.connection.auth?.accessToken, "an access token is stored").toBe(
-        "string",
+      // Reaching here means the whole chain exited 0, including protected calls
+      // before logout and after re-login.
+      const [finalScreen] = yield* Effect.all([terminal, browserApproval], {
+        concurrency: "unbounded",
+      });
+      expect(finalScreen, "named logout cleared the selected local credential").toContain(
+        "Not logged in (no stored credentials).",
+      );
+      expect(finalScreen, "re-login reused the named profile").toMatch(
+        /Logged in to \S+ \(profile "selfhost", now the default\)\./,
+      );
+      expect(finalScreen, "the public profile list reports restored authentication").toMatch(
+        /\* selfhost\s+http\s+\S+\s+\S+\s+stored-auth/,
       );
     }),
   ),

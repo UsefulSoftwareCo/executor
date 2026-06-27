@@ -29,6 +29,9 @@ export interface CloudflareEnv {
   readonly ACCESS_TEAM_DOMAIN: string;
   /** The Access application's AUD tag (the JWT audience to verify). */
   readonly ACCESS_AUD: string;
+  /** Optional issuer override for loopback e2e. Production defaults to the
+   *  HTTPS team domain and should leave this unset. */
+  readonly ACCESS_ISSUER_URL?: string;
   /** Claim holding the display name (default `name`). */
   readonly ACCESS_NAME_CLAIM?: string;
   /** Claim holding the user's groups (default `groups`). */
@@ -56,6 +59,7 @@ export interface CloudflareEnv {
 export interface CloudflareConfig {
   readonly accessTeamDomain: string;
   readonly accessAud: string;
+  readonly accessIssuerUrl?: string;
   readonly accessNameClaim: string;
   readonly accessGroupsClaim: string;
   readonly adminEmails: readonly string[];
@@ -76,6 +80,27 @@ const splitLower = (value: string | undefined): readonly string[] =>
     .split(",")
     .map((part) => part.trim().toLowerCase())
     .filter((part) => part.length > 0);
+
+const resolveAccessIssuerUrl = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  if (!URL.canParse(value)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an invalid issuer would make Access verification fail unpredictably
+    throw new Error("ACCESS_ISSUER_URL must be an absolute HTTPS URL or a loopback HTTP URL");
+  }
+  const url = new URL(value);
+  const isLoopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  if (
+    (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback)) ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: production Access issuers must not permit plaintext remote JWKS or URL credentials
+    throw new Error("ACCESS_ISSUER_URL must be an absolute HTTPS URL or a loopback HTTP URL");
+  }
+  return url.toString().replace(/\/+$/, "");
+};
 
 // The org slug doubles as a URL segment (`/<slug>/policies`), so an
 // operator-set value must fit the shared grammar and avoid reserved root
@@ -114,6 +139,7 @@ export const loadConfig = (env: CloudflareEnv): CloudflareConfig => {
   return {
     accessTeamDomain: env.ACCESS_TEAM_DOMAIN.replace(/^https?:\/\//, "").replace(/\/+$/, ""),
     accessAud: env.ACCESS_AUD,
+    accessIssuerUrl: resolveAccessIssuerUrl(env.ACCESS_ISSUER_URL),
     accessNameClaim: env.ACCESS_NAME_CLAIM ?? "name",
     accessGroupsClaim: env.ACCESS_GROUPS_CLAIM ?? "groups",
     adminEmails: splitLower(env.ADMIN_EMAILS),

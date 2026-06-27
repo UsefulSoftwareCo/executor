@@ -1,7 +1,7 @@
 // Read-only Monaco showing the run's test source (the scenario's code with
 // imports + sibling tests stripped, written by the runner as test.ts).
-// Uses Monaco CORE + the monarch TypeScript colorizer only — no language
-// service, no ts.worker — a read-only pane needs highlighting, not IntelliSense
+// Uses Monaco CORE + the monarch TypeScript colorizer only, with no language
+// service or ts.worker. A read-only pane needs highlighting, not IntelliSense
 // (the full build is ~12 MB of workers). Lazy-loaded so the matrix stays light.
 import React, { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
@@ -15,9 +15,39 @@ declare global {
 }
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
-export default function TestSource({ url }: { url: string }) {
+interface SourceMetadata {
+  readonly sourcePath: string;
+  readonly testName: string;
+  readonly registration: string;
+  readonly extractor: string;
+}
+
+const parseSourceMetadata = (value: unknown): SourceMetadata | null => {
+  if (typeof value !== "object" || value === null) return null;
+  if (
+    !("sourcePath" in value) ||
+    typeof value.sourcePath !== "string" ||
+    !("testName" in value) ||
+    typeof value.testName !== "string" ||
+    !("registration" in value) ||
+    typeof value.registration !== "string" ||
+    !("extractor" in value) ||
+    typeof value.extractor !== "string"
+  ) {
+    return null;
+  }
+  return {
+    sourcePath: value.sourcePath,
+    testName: value.testName,
+    registration: value.registration,
+    extractor: value.extractor,
+  };
+};
+
+export default function TestSource({ url, metadataUrl }: { url: string; metadataUrl?: string }) {
   const container = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  const [metadata, setMetadata] = useState<SourceMetadata | null>(null);
 
   useEffect(() => {
     let editor: monaco.editor.IStandaloneCodeEditor | undefined;
@@ -57,6 +87,27 @@ export default function TestSource({ url }: { url: string }) {
     };
   }, [url]);
 
+  useEffect(() => {
+    if (!metadataUrl) {
+      setMetadata(null);
+      return;
+    }
+    fetch(metadataUrl)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((value) => setMetadata(parseSourceMetadata(value)))
+      .catch(() => setMetadata(null));
+  }, [metadataUrl]);
+
   if (failed) return null;
-  return <div className="code" ref={container} />;
+  return (
+    <>
+      {metadata && (
+        <p className="source-provenance">
+          Focused from <code>{metadata.sourcePath}</code> via {metadata.registration} (
+          {metadata.extractor})
+        </p>
+      )}
+      <div className="code" ref={container} />
+    </>
+  );
 }

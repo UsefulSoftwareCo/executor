@@ -9,13 +9,14 @@ import { orgDomainWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
 import { CopyButton } from "@executor-js/react/components/copy-button";
+import { Skeleton } from "@executor-js/react/components/skeleton";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@executor-js/react/components/dropdown-menu";
-import { OrgPage as SharedOrgPage } from "@executor-js/react/pages/org";
+import { OrgPage as SharedOrgPage, type OrgPageAccess } from "@executor-js/react/pages/org";
 import { orgDomainsAtom, getDomainVerificationLink, deleteDomain } from "../../web/org-atoms";
 
 // ---------------------------------------------------------------------------
@@ -45,12 +46,12 @@ function OrgPage() {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       {/* Shared members / roles / invite / org-name surface. */}
-      <SharedOrgPage domainsSection={<DomainsSection />} />
+      <SharedOrgPage domainsSection={(access) => <DomainsSection access={access} />} />
     </div>
   );
 }
 
-function DomainsSection() {
+function DomainsSection(props: { access: OrgPageAccess }) {
   const domainsResult = useAtomValue(orgDomainsAtom);
   const doDeleteDomain = useAtomSet(deleteDomain, { mode: "promiseExit" });
   const doGetVerificationLink = useAtomSet(getDomainVerificationLink, {
@@ -93,9 +94,18 @@ function DomainsSection() {
             Verify a domain to let anyone with a matching email join automatically.
           </p>
         </div>
-        <Button size="sm" className="min-w-32" disabled={!canUseDomains} onClick={handleAddDomain}>
-          Add domain
-        </Button>
+        {props.access.status === "loading" ? (
+          <Skeleton className="h-8 w-32" data-testid="organization-domain-actions-loading" />
+        ) : props.access.canManageOrganization ? (
+          <Button
+            size="sm"
+            className="min-w-32"
+            disabled={!canUseDomains}
+            onClick={() => void handleAddDomain()}
+          >
+            Add domain
+          </Button>
+        ) : null}
       </div>
 
       {!canUseDomains && (
@@ -103,11 +113,15 @@ function DomainsSection() {
           <p className="text-sm text-muted-foreground">
             Join by domain is available on the Team plan.
           </p>
-          <Link to="/{-$orgSlug}/billing/plans">
-            <Button size="sm" variant="outline">
-              Upgrade
-            </Button>
-          </Link>
+          {props.access.status === "loading" ? (
+            <Skeleton className="h-8 w-20" data-testid="organization-domain-upgrade-loading" />
+          ) : props.access.canManageOrganization ? (
+            <Link to="/{-$orgSlug}/billing/plans">
+              <Button size="sm" variant="outline">
+                Upgrade
+              </Button>
+            </Link>
+          ) : null}
         </div>
       )}
 
@@ -129,7 +143,9 @@ function DomainsSection() {
             if (!canUseDomains) return null;
             return (
               <p className="py-6 text-center text-sm text-muted-foreground">
-                No domains yet. Add your company domain so members can join without an invite.
+                {props.access.canManageOrganization
+                  ? "No domains yet. Add your company domain so members can join without an invite."
+                  : "No domains have been configured for this organization."}
               </p>
             );
           }
@@ -140,6 +156,7 @@ function DomainsSection() {
                 <DomainCard
                   key={d.id}
                   domain={d}
+                  access={props.access}
                   onDelete={() => handleDeleteDomain(d.id, d.domain)}
                 />
               ))}
@@ -151,7 +168,15 @@ function DomainsSection() {
   );
 }
 
-function DomainCard({ domain: d, onDelete }: { domain: DomainData; onDelete: () => void }) {
+function DomainCard({
+  domain: d,
+  access,
+  onDelete,
+}: {
+  domain: DomainData;
+  access: OrgPageAccess;
+  onDelete: () => void;
+}) {
   const isVerified = d.state === "verified";
   const isPending = d.state === "pending";
 
@@ -180,26 +205,30 @@ function DomainCard({ domain: d, onDelete }: { domain: DomainData; onDelete: () 
             </Badge>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7">
-                <svg viewBox="0 0 16 16" className="size-3">
-                  <circle cx="8" cy="3" r="1.2" fill="currentColor" />
-                  <circle cx="8" cy="8" r="1.2" fill="currentColor" />
-                  <circle cx="8" cy="13" r="1.2" fill="currentColor" />
-                </svg>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive text-sm"
-                onClick={onDelete}
-              >
-                Remove domain
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+        <div className="flex size-7 shrink-0 items-center justify-center">
+          {access.status === "loading" ? (
+            <Skeleton className="size-7" data-testid="organization-domain-row-action-loading" />
+          ) : access.canManageOrganization ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-7">
+                  <svg viewBox="0 0 16 16" className="size-3">
+                    <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                    <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                    <circle cx="8" cy="13" r="1.2" fill="currentColor" />
+                  </svg>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive text-sm"
+                  onClick={onDelete}
+                >
+                  Remove domain
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </div>
       </div>
 

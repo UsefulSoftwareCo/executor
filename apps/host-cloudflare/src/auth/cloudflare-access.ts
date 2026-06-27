@@ -58,7 +58,7 @@ export const principalFromAccessClaims = (
  * `jose` caches + rotates the team JWKS, so build the verifier once per config.
  */
 export const makeAccessVerifier = (config: CloudflareConfig) => {
-  const issuer = `https://${config.accessTeamDomain}`;
+  const issuer = config.accessIssuerUrl ?? `https://${config.accessTeamDomain}`;
   // Cached, lazily-fetched team signing keys; jose handles rotation + caching.
   const jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
 
@@ -83,12 +83,18 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
       if (!token) return null;
 
       const verified = yield* Effect.tryPromise({
-        try: () => jwtVerify(token, jwks, { issuer, audience: config.accessAud }),
+        try: () =>
+          jwtVerify(token, jwks, {
+            algorithms: ["RS256"],
+            issuer,
+            audience: config.accessAud,
+          }),
         catch: () => "invalid access assertion",
       }).pipe(Effect.orElseSucceed(() => null));
       if (!verified) return null;
 
-      return principalFromAccessClaims(verified.payload as Record<string, unknown>, config);
+      const principal = principalFromAccessClaims(verified.payload, config);
+      return principal.accountId.length > 0 ? principal : null;
     });
 
   return { verify };

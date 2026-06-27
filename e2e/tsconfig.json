@@ -10,5 +10,22 @@
     "jsx": "react-jsx",
     "types": ["node"]
   },
-  "include": ["src", "cloud", "scenarios", "selfhost", "setup", "targets", "scripts", "viewer/src"]
+  "include": [
+    "src",
+    "cli",
+    "cloud",
+    "cloudflare",
+    "desktop",
+    "desktop-kvm",
+    "desktop-packaged",
+    "harness",
+    "local",
+    "scenarios",
+    "selfhost",
+    "setup",
+    "targets",
+    "scripts",
+    "viewer",
+    "vitest.config.ts"
+  ]
 }

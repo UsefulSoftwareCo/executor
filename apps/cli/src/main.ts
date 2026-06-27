@@ -121,6 +121,7 @@ import {
   canAutoStartCliServerConnection,
   chooseCliServerConnectionWithActiveLocal,
   parseCliExecutorServerConnection,
+  readCliServerAuth,
   type CliServerConnectionSource,
   withCliServerAuthFallback,
 } from "./server-connection";
@@ -139,14 +140,17 @@ import {
   stopWindowsExecutorListenersOnPort,
 } from "./service";
 import {
+  cliServerConnectionProfileRows,
+  clearCliServerConnectionProfileAuth,
   defaultCliServerConnectionProfile,
   findCliServerConnectionProfile,
   readCliServerConnectionStore,
   removeCliServerConnectionProfile,
   setDefaultCliServerConnectionProfile,
   upsertCliServerConnectionProfile,
+  upsertCliServerLoginProfile,
+  updateCliServerConnectionProfileAfterOAuthRefresh,
   validateCliServerConnectionProfileName,
-  type CliServerConnectionStore,
 } from "./server-profile";
 import {
   buildResumeContentTemplate,
@@ -642,10 +646,10 @@ const refreshOAuthConnection = (
 
     const profileName = profileNameFromKey(connection.key);
     if (profileName) {
-      yield* upsertCliServerConnectionProfile({
+      yield* updateCliServerConnectionProfileAfterOAuthRefresh({
         name: profileName,
+        previousAccessToken: auth.accessToken,
         connection: nextConnection,
-        makeDefault: false,
       }).pipe(Effect.ignore);
     }
     return nextConnection;
@@ -1944,20 +1948,13 @@ const printServerProfiles = () =>
       return;
     }
 
-    const rows = store.profiles.map((profile) => ({
-      marker: profile.name === store.defaultProfile ? "*" : " ",
-      name: profile.name,
-      kind: profile.connection.kind,
-      origin: profile.connection.origin,
-      displayName: profile.connection.displayName,
-      auth: profile.connection.auth ? "stored-auth" : "env-auth",
-    }));
+    const rows = cliServerConnectionProfileRows(store, readCliServerAuth());
     const nameWidth = rows.reduce((max, row) => Math.max(max, row.name.length), 4);
     const kindWidth = rows.reduce((max, row) => Math.max(max, row.kind.length), 4);
 
     for (const row of rows) {
       console.log(
-        `${row.marker} ${row.name.padEnd(nameWidth)}  ${row.kind.padEnd(kindWidth)}  ${row.origin}  ${row.displayName}  ${row.auth}`,
+        `${row.marker} ${row.name.padEnd(nameWidth)}  ${row.kind.padEnd(kindWidth)}  ${row.origin}  ${row.displayName}  ${row.auth}  account=${row.account}  org=${row.organization}`,
       );
     }
   });
@@ -2083,45 +2080,6 @@ const sanitizeProfileName = (raw: string): string => {
   return cleaned.length > 0 ? cleaned : "server";
 };
 
-// The (origin, user, org) a stored oauth profile authenticates as, lets us
-// recognize a re-login to the SAME account (update in place) versus a
-// different account on the same host (needs its own profile).
-const oauthAccountIdentity = (connection: ExecutorServerConnection): string | null => {
-  const auth = connection.auth;
-  if (!auth || auth.kind !== "oauth") return null;
-  const claims = decodeAccessTokenClaims(auth.accessToken);
-  const sub = typeof claims?.sub === "string" ? claims.sub : undefined;
-  const org = typeof claims?.org_id === "string" ? claims.org_id : undefined;
-  return sub && org ? `${connection.origin}|${sub}|${org}` : null;
-};
-
-// Name a login's profile by the ACCOUNT it authenticates (email, falling back
-// to user id), not the hostname, so two accounts on the same server get
-// distinct profiles instead of clobbering each other (the way opencode keys
-// accounts by email/url). A re-login to the same account reuses its profile.
-const chooseLoginProfileName = (
-  store: CliServerConnectionStore,
-  account: {
-    readonly origin: string;
-    readonly sub?: string;
-    readonly org?: string;
-    readonly email?: string;
-  },
-): string => {
-  const identity =
-    account.sub && account.org ? `${account.origin}|${account.sub}|${account.org}` : null;
-  if (identity) {
-    const existing = store.profiles.find((p) => oauthAccountIdentity(p.connection) === identity);
-    if (existing) return existing.name;
-  }
-  const base = sanitizeProfileName(account.email ?? account.sub ?? loginHostLabel(account.origin));
-  if (!store.profiles.some((p) => p.name === base)) return base;
-  for (let suffix = 2; ; suffix += 1) {
-    const candidate = `${base}-${suffix}`;
-    if (!store.profiles.some((p) => p.name === candidate)) return candidate;
-  }
-};
-
 // Resolve which server a login/logout targets: an existing profile (--server
 // or the default) or a bare origin (--base-url). The profile name is decided
 // later, from the authenticated account.
@@ -2207,17 +2165,18 @@ const loginCommand = Command.make(
         tokens.organizationId ?? (typeof claims?.org_id === "string" ? claims.org_id : undefined);
       const email = tokens.email;
 
-      // Name by account so a different account on the same host doesn't clobber
-      // an existing login; --server / the default profile / --name pin it.
-      const store = yield* readCliServerConnectionStore();
-      const profileName = explicitName
-        ? validateCliServerConnectionProfileName(explicitName)
-        : target.profile
-          ? target.profile.name
-          : chooseLoginProfileName(store, { origin: target.origin, sub, org, email });
-
-      yield* upsertCliServerConnectionProfile({
-        name: profileName,
+      // Choose and save the account-bound profile under one filesystem lock.
+      // --server, the default profile, and --name intentionally pin the name;
+      // --base-url selects an existing account identity or creates a new name.
+      const pinnedName = explicitName ?? target.profile?.name;
+      const saved = yield* upsertCliServerLoginProfile({
+        ...(pinnedName ? { name: validateCliServerConnectionProfileName(pinnedName) } : {}),
+        suggestedName: sanitizeProfileName(email ?? sub ?? loginHostLabel(target.origin)),
+        account: {
+          ...(sub ? { subject: sub } : {}),
+          ...(org ? { organizationId: org } : {}),
+          ...(email ? { email } : {}),
+        },
         connection: {
           kind: "http",
           origin: target.origin,
@@ -2231,8 +2190,8 @@ const loginCommand = Command.make(
             clientId: discovery.clientId,
           },
         },
-        makeDefault: true,
       });
+      const profileName = saved.profile.name;
 
       console.log("");
       console.log(`Logged in to ${target.origin} (profile "${profileName}", now the default).`);
@@ -2249,9 +2208,21 @@ const logoutCommand = Command.make(
     Effect.gen(function* () {
       const target = yield* resolveLoginOrigin({ baseUrl, server });
       const store = yield* readCliServerConnectionStore();
-      // --server / default give the profile directly; --base-url matches by origin.
-      const profile =
-        target.profile ?? store.profiles.find((p) => p.connection.origin === target.origin) ?? null;
+      // --server and the default identify one profile. A bare origin may map to
+      // multiple accounts, so never guess which local credential to delete.
+      const matchingProfiles = target.profile
+        ? [target.profile]
+        : store.profiles.filter((profile) => profile.connection.origin === target.origin);
+      if (matchingProfiles.length > 1) {
+        return yield* Effect.fail(
+          new Error(
+            `Multiple server profiles use ${target.origin}: ${matchingProfiles
+              .map((profile) => profile.name)
+              .join(", ")}. Re-run with --server <profile>.`,
+          ),
+        );
+      }
+      const profile = matchingProfiles[0] ?? null;
       if (!profile) {
         console.log(`No stored login for ${target.origin}.`);
         return;
@@ -2260,15 +2231,7 @@ const logoutCommand = Command.make(
         console.log(`Profile "${profile.name}" has no stored credentials.`);
         return;
       }
-      yield* upsertCliServerConnectionProfile({
-        name: profile.name,
-        connection: {
-          kind: profile.connection.kind,
-          origin: profile.connection.origin,
-          displayName: profile.connection.displayName,
-        },
-        makeDefault: store.defaultProfile === profile.name,
-      });
+      yield* clearCliServerConnectionProfileAuth(profile.name);
       console.log(
         `Logged out of ${profile.connection.origin} (cleared credentials for "${profile.name}").`,
       );

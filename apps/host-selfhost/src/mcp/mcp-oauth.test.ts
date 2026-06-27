@@ -99,13 +99,27 @@ const signUp = async (email: string): Promise<string> => {
   return res.headers.get("set-cookie") ?? "";
 };
 
+const signInToken = async (email: string, password: string) => {
+  const response = await handler(
+    new Request(`${BASE}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const token = response.headers.get("set-auth-token") ?? "";
+  expect(token).not.toBe("");
+  return token;
+};
+
 const b64url = (buf: Uint8Array): string =>
   btoa(String.fromCharCode(...buf))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
 
-test("MCP OAuth opaque-bearer flow authenticates /mcp end-to-end", async () => {
+test("MCP OAuth opaque-bearer flow authenticates end-to-end and rejects removed members", async () => {
   const cookie = await signUp("oauth@env.test");
 
   // 1. Dynamic client registration (public/PKCE client).
@@ -208,5 +222,44 @@ test("MCP OAuth opaque-bearer flow authenticates /mcp end-to-end", async () => {
     }),
   );
   expect(init.status).toBe(200);
-  expect(init.headers.get("mcp-session-id")).not.toBe(null);
+  const sessionId = init.headers.get("mcp-session-id") ?? "";
+  expect(sessionId).not.toBe("");
+
+  // Membership is authorization, not a property cached in the OAuth token.
+  // Remove this user while the access token and MCP session both still exist;
+  // the very next request must fail before that session can be reused.
+  const adminToken = await signInToken("admin@env.test", "admin-pass-123456");
+  const members = await handler(
+    new Request(`${BASE}/api/account/members`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    }),
+  );
+  expect(members.status).toBe(200);
+  const membersBody = (await members.json()) as {
+    members: ReadonlyArray<{ id: string; email: string }>;
+  };
+  const membership = membersBody.members.find((member) => member.email === "oauth@env.test");
+  expect(membership).toBeDefined();
+
+  const remove = await handler(
+    new Request(`${BASE}/api/account/members/${membership?.id ?? "missing"}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${adminToken}` },
+    }),
+  );
+  expect(remove.status).toBe(200);
+
+  const stale = await handler(
+    new Request(`${BASE}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "mcp-session-id": sessionId,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    }),
+  );
+  expect(stale.status).toBe(401);
 });

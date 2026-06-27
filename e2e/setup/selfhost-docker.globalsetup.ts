@@ -8,12 +8,22 @@ import { fileURLToPath } from "node:url";
 
 import { claimPorts } from "../src/ports";
 import { SELFHOST_ADMIN } from "../targets/selfhost";
-import { waitForHttp } from "./boot";
+import { targetBootMode, waitForHttp } from "./boot";
 import { bootSelfhostDocker } from "./selfhost-docker.boot";
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
-  if (process.env.E2E_SELFHOST_DOCKER_URL) {
-    await waitForHttp(process.env.E2E_SELFHOST_DOCKER_URL);
+  const mode = targetBootMode("E2E_SELFHOST_DOCKER_URL");
+  if (mode.kind === "attach") {
+    process.env.E2E_SELFHOST_DOCKER_URL = mode.url;
+    await waitForHttp(`${mode.url}/api/health`, {
+      expectedStatus: 200,
+      validateResponse: async (response) => {
+        const body: unknown = await response.json();
+        return (
+          typeof body === "object" && body !== null && "status" in body && body.status === "ok"
+        );
+      },
+    });
     return;
   }
 

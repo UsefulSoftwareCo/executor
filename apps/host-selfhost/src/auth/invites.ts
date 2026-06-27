@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { Client, Row } from "@libsql/client";
+import type { BetterAuthPlugin, DBTransactionAdapter } from "better-auth";
 
 // ---------------------------------------------------------------------------
 // Invite codes — the join mechanism for a single-tenant instance.
@@ -32,6 +33,42 @@ export interface InviteCodeRow {
   readonly usedByEmail: string | null;
   readonly usedAt: string | null;
 }
+
+export const signupClaimPlugin = {
+  id: "executor-signup-claims",
+  schema: {
+    inviteCode: {
+      modelName: "invite_code",
+      disableMigration: true,
+      fields: {
+        code: { type: "string", unique: true },
+        role: { type: "string" },
+        label: { type: "string", required: false },
+        createdBy: { type: "string", fieldName: "created_by" },
+        createdAt: { type: "date", fieldName: "created_at" },
+        expiresAt: { type: "date", required: false, fieldName: "expires_at" },
+        usedBy: { type: "string", required: false, fieldName: "used_by" },
+        usedByEmail: { type: "string", required: false, fieldName: "used_by_email" },
+        usedAt: { type: "date", required: false, fieldName: "used_at" },
+      },
+    },
+    signupClaim: {
+      modelName: "signup_claim",
+      disableMigration: true,
+      fields: {
+        organizationId: {
+          type: "string",
+          unique: true,
+          fieldName: "organization_id",
+          references: { model: "organization", field: "id", onDelete: "cascade" },
+        },
+        claimedBy: { type: "string", required: false, fieldName: "claimed_by" },
+        claimedEmail: { type: "string", required: false, fieldName: "claimed_email" },
+        claimedAt: { type: "date", required: false, fieldName: "claimed_at" },
+      },
+    },
+  },
+} satisfies BetterAuthPlugin;
 
 // Unambiguous alphabet (no 0/O/1/I/l) so a code is easy to read and type.
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -73,7 +110,128 @@ export const ensureInviteCodeTable = async (client: Client): Promise<void> => {
       used_at       TEXT
     )
   `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS signup_claim (
+      id              TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL UNIQUE REFERENCES organization(id) ON DELETE CASCADE,
+      claimed_by      TEXT,
+      claimed_email   TEXT,
+      claimed_at      TEXT
+    )
+  `);
 };
+
+export const ensureOrganizationSignupClaim = async (
+  client: Client,
+  input: {
+    readonly organizationId: string;
+    readonly claimedBy?: string | null;
+    readonly claimedEmail?: string | null;
+  },
+) => {
+  const claimedAt = input.claimedBy ? new Date().toISOString() : null;
+  await client.execute({
+    sql: `INSERT INTO signup_claim
+            (id, organization_id, claimed_by, claimed_email, claimed_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(organization_id) DO UPDATE SET
+            claimed_by = COALESCE(signup_claim.claimed_by, excluded.claimed_by),
+            claimed_email = COALESCE(signup_claim.claimed_email, excluded.claimed_email),
+            claimed_at = COALESCE(signup_claim.claimed_at, excluded.claimed_at)`,
+    args: [
+      input.organizationId,
+      input.organizationId,
+      input.claimedBy ?? null,
+      input.claimedEmail ?? null,
+      claimedAt,
+    ],
+  });
+};
+
+const pendingClaimId = () => `pending:${randomBytes(16).toString("hex")}`;
+
+export const reserveFirstOwner = async (
+  adapter: DBTransactionAdapter,
+  organizationId: string,
+  email: string,
+) => {
+  const claimId = pendingClaimId();
+  const claimed = await adapter.updateMany({
+    model: "signupClaim",
+    where: [
+      { field: "organizationId", value: organizationId },
+      { field: "claimedAt", value: null },
+    ],
+    update: { claimedBy: claimId, claimedEmail: email, claimedAt: new Date() },
+  });
+  return claimed === 1 ? { kind: "owner" as const, claimId, email } : null;
+};
+
+export const finalizeFirstOwner = async (
+  adapter: DBTransactionAdapter,
+  organizationId: string,
+  claimId: string,
+  user: { readonly id: string; readonly email: string },
+) =>
+  (await adapter.updateMany({
+    model: "signupClaim",
+    where: [
+      { field: "organizationId", value: organizationId },
+      { field: "claimedBy", value: claimId },
+    ],
+    update: { claimedBy: user.id, claimedEmail: user.email },
+  })) === 1;
+
+export const reserveInviteCode = async (
+  adapter: DBTransactionAdapter,
+  code: string,
+  email: string,
+) => {
+  const normalizedCode = code.trim().toUpperCase();
+  const claimId = pendingClaimId();
+  const claimedAt = new Date();
+  const claimed = await adapter.updateMany({
+    model: "inviteCode",
+    where: [
+      { field: "code", value: normalizedCode },
+      { field: "usedAt", value: null },
+      { field: "expiresAt", value: null, connector: "OR" },
+      { field: "expiresAt", value: claimedAt, operator: "gt", connector: "OR" },
+    ],
+    update: { usedBy: claimId, usedByEmail: email, usedAt: claimedAt },
+  });
+  if (claimed !== 1) return null;
+
+  const row = await adapter.findOne<{ readonly role: string }>({
+    model: "inviteCode",
+    where: [
+      { field: "code", value: normalizedCode },
+      { field: "usedBy", value: claimId },
+    ],
+  });
+  if (!row) return null;
+  return {
+    kind: "invite" as const,
+    claimId,
+    code: normalizedCode,
+    email,
+    role: row.role === "admin" ? ("admin" as const) : ("member" as const),
+  };
+};
+
+export const finalizeInviteCode = async (
+  adapter: DBTransactionAdapter,
+  reservation: { readonly code: string; readonly claimId: string },
+  user: { readonly id: string; readonly email: string },
+) =>
+  (await adapter.updateMany({
+    model: "inviteCode",
+    where: [
+      { field: "code", value: reservation.code },
+      { field: "usedBy", value: reservation.claimId },
+    ],
+    update: { usedBy: user.id, usedByEmail: user.email },
+  })) === 1;
 
 export interface CreateInviteCodeInput {
   readonly createdBy: string;
@@ -119,35 +277,4 @@ export const revokeInviteCode = async (client: Client, id: string): Promise<void
     sql: "DELETE FROM invite_code WHERE id = ? AND used_at IS NULL",
     args: [id],
   });
-};
-
-// A code is redeemable when it exists, is unused, and is unexpired.
-export const findRedeemableCode = async (
-  client: Client,
-  code: string,
-): Promise<InviteCodeRow | null> => {
-  const result = await client.execute({
-    sql: "SELECT * FROM invite_code WHERE code = ? AND used_at IS NULL",
-    args: [code.trim().toUpperCase()],
-  });
-  const raw = result.rows[0];
-  if (!raw) return null;
-  const row = toRow(raw);
-  if (row.expiresAt && Date.parse(row.expiresAt) < Date.now()) return null;
-  return row;
-};
-
-// Mark a code consumed. The `used_at IS NULL` guard makes this the single-use
-// gate even under a race: rowsAffected === 0 means someone redeemed it first.
-export const consumeInviteCode = async (
-  client: Client,
-  code: string,
-  by: { usedBy: string; usedByEmail: string },
-): Promise<boolean> => {
-  const result = await client.execute({
-    sql: `UPDATE invite_code SET used_by = ?, used_by_email = ?, used_at = ?
-          WHERE code = ? AND used_at IS NULL`,
-    args: [by.usedBy, by.usedByEmail, new Date().toISOString(), code.trim().toUpperCase()],
-  });
-  return result.rowsAffected > 0;
 };

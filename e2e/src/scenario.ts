@@ -10,7 +10,8 @@
 // scenario × target matrix) plus whatever artifacts the surfaces produced
 // (browser video/trace/screenshots, terminal casts).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,11 +26,23 @@ import { makeBrowserSurface } from "./surfaces/browser";
 import { makeCliSurface } from "./surfaces/cli";
 import { makeMcpSurface } from "./surfaces/mcp";
 import { makeTelemetrySurface } from "./surfaces/telemetry";
+import {
+  hasClaudeCode,
+  makeClaudeCodeHome,
+  removeClaudeCodeHome,
+  replaceClaudeCodeServer,
+  runClaudeCode,
+} from "./clients/claude-code";
 import { completeOAuthConsent, hasOpenCode, makeOpenCodeHome, warmUp } from "./clients/opencode";
+import { evidenceReferenceFor, writeJsonAtomicSync } from "./artifact-io";
+import { writeRunLaneProvenance } from "./evidence-provenance";
+import { currentProjectPolicy, isCapabilityRequired } from "./project-matrix";
+import { exportPortableTraces } from "./portable-traces";
 import {
   Api,
   Billing,
   Browser,
+  ClaudeCode,
   Cli,
   Mcp,
   OpenCode,
@@ -39,6 +52,7 @@ import {
   Telemetry,
   TtlControl,
 } from "./services";
+import { writeFocusedTestSource } from "./test-source";
 import { buildManifest } from "./viewer/manifest";
 
 export const RUNS_DIR = fileURLToPath(new URL("../runs/", import.meta.url));
@@ -63,6 +77,7 @@ type AllServices =
   | Mcp
   | Billing
   | OpenCode
+  | ClaudeCode
   | TtlControl
   | Restart
   | Telemetry;
@@ -73,7 +88,8 @@ type AllServices =
  * one fails with Effect's missing-service defect, which the runner turns
  * into the skip.
  */
-const contextFor = (target: TargetShape, dir: string): Context.Context<AllServices> => {
+const contextFor = (target: TargetShape, dir: string) => {
+  let mcpSurface: ReturnType<typeof makeMcpSurface> | undefined;
   let context = Context.empty().pipe(
     Context.add(Target, target),
     Context.add(RunDir, dir),
@@ -82,13 +98,24 @@ const contextFor = (target: TargetShape, dir: string): Context.Context<AllServic
   const has = target.capabilities.has.bind(target.capabilities);
   if (has("api")) context = Context.add(context, Api, makeApiSurface(target));
   if (has("browser")) context = Context.add(context, Browser, makeBrowserSurface(dir, target));
-  if (has("mcp-oauth")) context = Context.add(context, Mcp, makeMcpSurface(target, dir));
+  if (has("mcp-oauth")) {
+    mcpSurface = makeMcpSurface(target, dir);
+    context = Context.add(context, Mcp, mcpSurface);
+  }
   if (has("billing")) context = Context.add(context, Billing, true);
   if (hasOpenCode()) {
     context = Context.add(context, OpenCode, {
       makeHome: makeOpenCodeHome,
       warmUp,
       completeOAuthConsent,
+    });
+  }
+  if (hasClaudeCode()) {
+    context = Context.add(context, ClaudeCode, {
+      makeHome: makeClaudeCodeHome,
+      run: runClaudeCode,
+      replaceServer: replaceClaudeCodeServer,
+      removeHome: removeClaudeCodeHome,
     });
   }
   if (target.setAccessTokenTtl) {
@@ -100,7 +127,10 @@ const contextFor = (target: TargetShape, dir: string): Context.Context<AllServic
   if (process.env.E2E_MOTEL_URL) {
     context = Context.add(context, Telemetry, makeTelemetrySurface(process.env.E2E_MOTEL_URL));
   }
-  return context;
+  return {
+    context,
+    cleanup: mcpSurface?.close() ?? Effect.void,
+  };
 };
 
 export const scenario = (
@@ -109,36 +139,47 @@ export const scenario = (
   body: Effect.Effect<void, unknown, AllServices | HttpClient.HttpClient>,
 ): void => {
   const target = resolveTarget();
-  const dir = join(RUNS_DIR, target.name, slugify(name));
-  const context = contextFor(target, dir);
+  const slug = slugify(name);
   const testFile = captureTestFile();
 
   it.live(
     name,
     (testCtx) =>
       Effect.gen(function* () {
-        // A run's directory is the run — never mix artifacts across attempts.
-        rmSync(dir, { recursive: true, force: true });
+        const attemptId = randomUUID();
+        const dir = join(RUNS_DIR, target.name, `${slug}--${attemptId}`);
         mkdirSync(dir, { recursive: true });
+        const laneProvenance = writeRunLaneProvenance(dir, target.name);
+        const evidence = evidenceReferenceFor(dir, attemptId);
+        const { context, cleanup } = contextFor(target, dir);
         const startedAt = Date.now();
         const exit = yield* Effect.exit(
-          body.pipe(Effect.provideContext(context)) as Effect.Effect<
-            void,
-            unknown,
-            HttpClient.HttpClient
-          >,
+          (
+            body.pipe(Effect.provideContext(context)) as Effect.Effect<
+              void,
+              unknown,
+              HttpClient.HttpClient
+            >
+          ).pipe(Effect.ensuring(cleanup)),
         );
         const endedAt = Date.now();
+        const portableTraces = process.env.E2E_MOTEL_URL
+          ? yield* exportPortableTraces(dir, process.env.E2E_MOTEL_URL)
+          : undefined;
 
         // Yielding a service this target can't provide is the skip signal.
         const missing = exit._tag === "Failure" ? missingServices(exit.cause) : [];
-        if (missing.length > 0) {
-          rmSync(dir, { recursive: true, force: true });
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(
-            join(dir, "skipped.json"),
-            JSON.stringify({ scenario: name, target: target.name, missing }, null, 1),
-          );
+        const policy = currentProjectPolicy();
+        const requiredMissing = missing.filter((capability) =>
+          isCapabilityRequired(policy.projectName, capability),
+        );
+        if (missing.length > 0 && requiredMissing.length === 0) {
+          writeJsonAtomicSync(join(dir, "skipped.json"), {
+            scenario: name,
+            target: target.name,
+            missing,
+            ...evidence,
+          });
           buildManifest(RUNS_DIR);
           return yield* Effect.sync(() =>
             testCtx.skip(`needs ${missing.join(", ")} — not on ${target.name}`),
@@ -146,27 +187,15 @@ export const scenario = (
         }
 
         const error = exit._tag === "Failure" ? failureMessage(exit.cause) : undefined;
-        // The test source is the review artifact — ship this scenario's code
-        // (imports + sibling scenarios stripped) alongside the run.
-        const source = testFile ? extractScenarioSource(testFile, name) : undefined;
-        if (source) writeFileSync(join(dir, "test.ts"), source);
-        writeFileSync(
-          join(dir, "result.json"),
-          JSON.stringify(
-            {
-              scenario: name,
-              target: target.name,
-              ok: exit._tag === "Success",
-              startedAt,
-              endedAt,
-              durationMs: endedAt - startedAt,
-              ...(error ? { error } : {}),
-              artifacts: readdirSync(dir).filter((f) => f !== "result.json"),
-            },
-            null,
-            1,
-          ),
-        );
+        const evidenceError =
+          portableTraces &&
+          isCapabilityRequired(policy.projectName, "telemetry") &&
+          (portableTraces.missing > 0 || portableTraces.invalid > 0)
+            ? `portable trace export incomplete: ${portableTraces.missing} missing, ${portableTraces.invalid} invalid`
+            : undefined;
+        // The test source is the review artifact. Ship the named registration
+        // with imports and sibling tests removed, plus extraction provenance.
+        if (testFile) writeFocusedTestSource({ runDir: dir, filePath: testFile, testName: name });
         // A run with both recordings is ONE developer session — splice them
         // into film.mp4 (scripts/film.ts cuts on the focus timeline) so the
         // viewer plays a single recording, not parts. Best-effort: missing
@@ -190,9 +219,36 @@ export const scenario = (
             }
           });
         }
+        writeJsonAtomicSync(join(dir, "result.json"), {
+          scenario: name,
+          target: target.name,
+          ok: exit._tag === "Success" && evidenceError === undefined,
+          startedAt,
+          endedAt,
+          durationMs: endedAt - startedAt,
+          ...evidence,
+          ...(laneProvenance
+            ? {
+                project: laneProvenance.project,
+                visualEvidence: {
+                  dataClassification: laneProvenance.dataClassification,
+                },
+              }
+            : {}),
+          ...(requiredMissing.length > 0 ? { missingRequiredCapabilities: requiredMissing } : {}),
+          ...(portableTraces ? { portableTraces } : {}),
+          ...((error ?? evidenceError) ? { error: error ?? evidenceError } : {}),
+          artifacts: readdirSync(dir).filter((f) => f !== "result.json"),
+        });
         buildManifest(RUNS_DIR);
         if (exit._tag === "Failure") {
           return yield* Effect.failCause(exit.cause);
+        }
+        if (evidenceError) {
+          return yield* Effect.fail({
+            _tag: "PortableTraceEvidenceIncomplete",
+            message: evidenceError,
+          } as const);
         }
       }).pipe(Effect.provide(FetchHttpClient.layer)),
     options.timeout ?? 120_000,
@@ -220,48 +276,4 @@ const captureTestFile = (): string | undefined => {
     if (match) return match[1];
   }
   return undefined;
-};
-
-/**
- * This scenario's code as a reader sees it: the file minus import statements
- * and minus every OTHER scenario() block (module-level helpers stay — they're
- * part of understanding the test). Falls back to undefined on any surprise so
- * a parsing edge case can never fail a run.
- */
-const extractScenarioSource = (filePath: string, name: string): string | undefined => {
-  try {
-    const source = readFileSync(filePath, "utf8").replace(/^import[\s\S]*?;[^\S\n]*$/gm, "");
-    const needle = "scenario(";
-    const blocks: Array<{ start: number; end: number; mine: boolean }> = [];
-    let index = 0;
-    while ((index = source.indexOf(needle, index)) !== -1) {
-      let depth = 0;
-      let end = -1;
-      for (let i = index + needle.length - 1; i < source.length; i++) {
-        if (source[i] === "(") depth++;
-        else if (source[i] === ")") {
-          depth--;
-          if (depth === 0) {
-            end = source[i + 1] === ";" ? i + 2 : i + 1;
-            break;
-          }
-        }
-      }
-      if (end === -1) return undefined; // unbalanced — bail to be safe
-      blocks.push({
-        start: index,
-        end,
-        mine: source.slice(index, end).includes(`"${name}"`),
-      });
-      index = end;
-    }
-    if (!blocks.some((b) => b.mine)) return undefined;
-    let out = source;
-    for (const block of [...blocks].reverse()) {
-      if (!block.mine) out = out.slice(0, block.start) + out.slice(block.end);
-    }
-    return `${out.replace(/\n{3,}/g, "\n\n").trim()}\n`;
-  } catch {
-    return undefined;
-  }
 };

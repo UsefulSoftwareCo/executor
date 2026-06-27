@@ -35,11 +35,11 @@ export interface ServerHandle {
  * the browser, a typed API client, an MCP client — anything that needs the live
  * server.
  */
-export const withLocalServer = (
+export const withLocalServer = <E, R>(
   cli: CliSurface,
   runDir: string,
-  body: (server: ServerHandle) => Effect.Effect<void>,
-): Effect.Effect<void> =>
+  body: (server: ServerHandle) => Effect.Effect<void, E, R>,
+): Effect.Effect<void, E, R> =>
   Effect.gen(function* () {
     const dataDir = mkdtempSync(join(tmpdir(), "executor-local-e2e-"));
 

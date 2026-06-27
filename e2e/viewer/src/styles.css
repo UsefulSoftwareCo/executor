@@ -83,6 +83,39 @@ a.watch.no {
 }
 
 /* run page */
+.publication-banner {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 14px;
+  padding: 9px 11px;
+  border: 1px solid #2d333b;
+  border-radius: 8px;
+  background: #101722;
+  color: #8b98a9;
+  font-size: 12px;
+}
+.publication-banner strong {
+  color: #d7dce5;
+  font-size: 12.5px;
+}
+.publication-banner.passed {
+  border-color: #2ea04366;
+  background: #102019;
+}
+.publication-banner.failed {
+  border-color: #f8514966;
+  background: #241111;
+}
+.publication-banner.failed strong {
+  color: #ff7b72;
+}
+.publication-banner.local {
+  border-color: #d2992266;
+  background: #211a0d;
+}
+.publication-banner.local strong {
+  color: #d29922;
+}
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -139,6 +172,47 @@ a.watch.no {
   font-size: 12.5px;
   margin-top: 4px;
 }
+.artifact-navigation ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.artifact-navigation a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  background: #0f1620;
+}
+.artifact-navigation a:hover {
+  border-color: #388bfd;
+}
+.artifact-navigation a > span {
+  color: #d7dce5;
+  font-size: 12.5px;
+  text-transform: capitalize;
+}
+.artifact-navigation code {
+  grid-column: 1;
+  color: #6b7785;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+.artifact-navigation small {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: #596779;
+  font-size: 10px;
+  text-transform: uppercase;
+}
 
 /* test source (monaco) */
 .section {
@@ -153,6 +227,14 @@ a.watch.no {
   border: 1px solid #21262d;
   border-radius: 8px;
   overflow: hidden;
+}
+.source-provenance {
+  margin: 0 0 6px;
+  color: #6b7785;
+  font-size: 11.5px;
+}
+.source-provenance code {
+  color: #8b98a9;
 }
 
 /* run-page tabs (video / source) */
@@ -187,7 +269,7 @@ a.watch.no {
   border: 1px solid #2a2a2a;
 }
 
-/* session player — synthetic window chrome + synced two-recording stage */
+/* Session player: synthetic window chrome and synced two-recording stage. */
 .player {
   margin-top: 0.8rem;
 }
@@ -262,7 +344,7 @@ a.watch.no {
   white-space: nowrap;
 }
 /* Fixed 16:10 stage (the browser records at 1280x800): the size never
-   changes when the act cuts between terminal and browser — both
+   changes when the act cuts between terminal and browser. Both
    recordings letterbox into the same box, like one screen. */
 .stage {
   border: 1px solid #21262d;
@@ -495,8 +577,19 @@ a.watch.no {
     Menlo,
     monospace;
   color: #3d4651;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
 }
 .trace-id:hover {
+  color: #58a6ff;
+}
+.trace-live {
+  color: #3d4651;
+  font-size: 11px;
+}
+.trace-live:hover {
   color: #58a6ff;
 }
 
@@ -515,4 +608,336 @@ a.watch.no {
 .trace-src.browser {
   color: #79c0ff;
   background: #1d3a5f66;
+}
+
+/* Portable OTLP trace explorer */
+.portable-traces {
+  margin-top: 1.4rem;
+  scroll-margin-top: 18px;
+}
+.portable-trace-title {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.portable-trace-title .section,
+.portable-trace-title .hint {
+  margin-bottom: 0;
+}
+.portable-trace-grid {
+  display: grid;
+  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+.portable-trace-list,
+.portable-waterfall {
+  border: 1px solid #21262d;
+  border-radius: 9px;
+  background: #0d1219;
+  overflow: hidden;
+}
+.portable-trace-list {
+  align-self: start;
+}
+.portable-trace-list button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  color: #8b98a9;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #161b22;
+  padding: 9px 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.portable-trace-list button:hover,
+.portable-trace-list button.active {
+  color: #d7dce5;
+  background: #14222e;
+}
+.portable-trace-list button.active {
+  box-shadow: inset 2px 0 0 #388bfd;
+}
+.portable-trace-list button > span {
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+.portable-trace-list small,
+.portable-trace-list code {
+  color: #596779;
+  font-size: 10.5px;
+}
+.portable-waterfall > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #21262d;
+  background: #161b22;
+}
+.portable-waterfall > header > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.portable-waterfall > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.portable-waterfall > header span {
+  color: #6b7785;
+  font-size: 11px;
+}
+.portable-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+.portable-span-list > button {
+  display: grid;
+  grid-template-columns: minmax(180px, 34%) minmax(120px, 1fr) 70px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  color: #8b98a9;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #141a22;
+  padding: 5px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.portable-span-list > button:hover,
+.portable-span-list > button.active {
+  background: #101722;
+}
+.portable-span-list > button.active {
+  box-shadow: inset 2px 0 0 #388bfd;
+}
+.portable-span-list > button.error {
+  color: #ff7b72;
+}
+.portable-span-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.portable-span-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.portable-span-name > i {
+  width: 12px;
+  color: #58a6ff;
+  font-style: normal;
+  flex: none;
+}
+.portable-span-name > small {
+  color: #3d4651;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.portable-span-track {
+  position: relative;
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: #161b22;
+  overflow: hidden;
+}
+.portable-span-track > i {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 3px;
+  background: #2ea043;
+}
+.portable-span-track > i.error {
+  background: #f85149;
+}
+.portable-span-duration {
+  color: #6b7785;
+  font:
+    11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-align: right;
+}
+.portable-span-details {
+  padding: 12px;
+  border-top: 1px solid #21262d;
+  background: #0b0f17;
+}
+.portable-detail-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.portable-detail-heading > span {
+  color: #3d4651;
+  font:
+    10.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.portable-span-details > dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+.portable-span-details dt,
+.portable-tags dt {
+  color: #6b7785;
+}
+.portable-span-details dd,
+.portable-tags dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.portable-detail-section {
+  margin-top: 12px;
+}
+.portable-detail-section h4 {
+  margin: 0 0 5px;
+  color: #6b7785;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.portable-tags {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  max-height: 230px;
+  overflow: auto;
+}
+.portable-tags > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 30%) minmax(0, 1fr);
+  gap: 10px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #141a22;
+  font:
+    11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.portable-warnings,
+.portable-events {
+  margin: 0;
+  padding-left: 18px;
+  color: #ff7b72;
+  font-size: 11.5px;
+}
+.portable-events {
+  color: #8b98a9;
+}
+.portable-events li {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: 4px 10px;
+}
+.portable-events code {
+  grid-column: 1 / -1;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trace-warnings {
+  padding: 8px 28px;
+  border-bottom: 1px solid #21262d;
+}
+.portable-export-warning {
+  color: #d29922;
+  font-size: 12px;
+}
+
+@media (max-width: 880px) {
+  .player-split {
+    flex-direction: column;
+  }
+  .trace-rail {
+    width: auto;
+    max-height: 360px;
+  }
+  .portable-trace-grid {
+    grid-template-columns: 1fr;
+  }
+  .portable-trace-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+  .portable-span-list > button {
+    grid-template-columns: minmax(150px, 42%) minmax(80px, 1fr) 62px;
+  }
+}
+
+@media (max-width: 560px) {
+  .page {
+    padding: 14px;
+  }
+  .topbar,
+  .portable-trace-title,
+  .portable-waterfall > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .topbar > span {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .tool-link {
+    margin-left: 0;
+  }
+  .portable-trace-list {
+    display: block;
+  }
+  .portable-trace-summary {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+  .portable-span-list > button {
+    grid-template-areas:
+      "name duration"
+      "track track";
+    grid-template-columns: minmax(0, 1fr) max-content;
+    gap: 5px 8px;
+    padding: 7px 9px;
+  }
+  .portable-span-name {
+    grid-area: name;
+  }
+  .portable-span-track {
+    grid-area: track;
+  }
+  .portable-span-duration {
+    grid-area: duration;
+  }
+  .portable-detail-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .portable-tags > div,
+  .portable-events li {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

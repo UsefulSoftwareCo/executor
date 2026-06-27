@@ -1,12 +1,11 @@
 // Packaged desktop supervised-daemon regressions. These run against the real
 // electron-builder bundle and its bundled executor because the supervised attach
 // path is production-only (`app.isPackaged`).
-import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
@@ -14,7 +13,7 @@ import {
 } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import net from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -25,6 +24,21 @@ import {
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
 
+import {
+  closePackagedDesktop,
+  createPackagedDesktopHome,
+  freePort,
+  launchPackagedDesktop,
+  packagedDesktopPreflight,
+  packagedDesktopSettingsDir,
+  reconnectPackagedDesktopPage,
+  removePackagedDesktopHome,
+  requirePackagedDesktopBundle,
+  startSupervisedDaemon,
+  stopProcess,
+  type PackagedDesktopApp,
+  type PackagedDesktopPage,
+} from "../src/desktop/packaged";
 import { scenario } from "../src/scenario";
 import { RunDir } from "../src/services";
 import { waitForHttp } from "../setup/boot";
@@ -32,223 +46,15 @@ import { waitForHttp } from "../setup/boot";
 const execFileAsync = promisify(execFile);
 const SERVICE_LABEL = "sh.executor.daemon";
 
-interface PackagedExecutorBridge {
-  readonly getSettings: () => Promise<{ readonly port: number }>;
-  readonly updateSettings: (patch: { readonly port: number }) => Promise<unknown>;
-  readonly restartServer: () => Promise<unknown>;
-  readonly getServerConnection: () => Promise<{ readonly origin: string } | null>;
-}
-
-interface PackagedApp {
-  readonly child: ChildProcess;
-  cdp: CdpPage;
-  readonly debugPort: string;
-  readonly output: () => string;
-}
-
-interface CdpResponse<T> {
-  readonly id: number;
-  readonly result?: T;
-  readonly error?: { readonly message?: string; readonly data?: string };
-}
-
-interface CdpEvaluateResult {
-  readonly result: { readonly value?: unknown };
-  readonly exceptionDetails?: unknown;
-}
-
-interface CdpTarget {
-  readonly type: string;
-  readonly url: string;
-  readonly webSocketDebuggerUrl?: string;
-}
-
-class CdpPage {
-  private nextId = 1;
-  private readonly pending = new Map<
-    number,
-    {
-      readonly resolve: (value: unknown) => void;
-      readonly reject: (error: Error) => void;
-    }
-  >();
-
-  private constructor(private readonly socket: WebSocket) {
-    socket.addEventListener("message", (event) => {
-      const data = event.data;
-      if (typeof data !== "string") return;
-      const message = JSON.parse(data) as CdpResponse<unknown>;
-      if (!message.id) return;
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error.message ?? "CDP command failed"));
-        return;
-      }
-      pending.resolve(message.result);
-    });
-    socket.addEventListener("close", () => {
-      for (const [, pending] of this.pending) {
-        pending.reject(new Error("CDP socket closed"));
-      }
-      this.pending.clear();
-    });
-  }
-
-  static connect = (url: string): Promise<CdpPage> =>
-    new Promise((resolve, reject) => {
-      const socket = new WebSocket(url);
-      const timer = setTimeout(() => {
-        socket.close();
-        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: WebSocket connection promise adapter
-        reject(new Error(`Timed out connecting to page CDP target ${url}`));
-      }, 30_000);
-      socket.addEventListener(
-        "open",
-        () => {
-          clearTimeout(timer);
-          resolve(new CdpPage(socket));
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "error",
-        () => {
-          clearTimeout(timer);
-          // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: WebSocket connection promise adapter
-          reject(new Error(`Failed to connect to page CDP target ${url}`));
-        },
-        { once: true },
-      );
-    });
-
-  command = async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-    const id = this.nextId;
-    this.nextId += 1;
-    const result = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
-      });
-    });
-    this.socket.send(JSON.stringify({ id, method, params }));
-    return result;
-  };
-
-  evaluate = async <T>(expression: string): Promise<T> => {
-    const result = await this.command<CdpEvaluateResult>("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) {
-      throw new Error(`CDP evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
-    }
-    return result.result.value as T;
-  };
-
-  waitForText = async (text: string, timeoutMs: number): Promise<void> => {
-    const deadline = Date.now() + timeoutMs;
-    const expression = `document.body?.innerText.includes(${JSON.stringify(text)}) ?? false`;
-    for (;;) {
-      if (await this.evaluate<boolean>(expression).catch(() => false)) return;
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for text: ${text}`);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  };
-
-  waitForExpression = async (
-    expression: string,
-    timeoutMs: number,
-    description: string,
-  ): Promise<void> => {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      if (await this.evaluate<boolean>(`Boolean(${expression})`).catch(() => false)) return;
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  };
-
-  textPresent = async (text: string): Promise<boolean> =>
-    this.evaluate<boolean>(`document.body?.innerText.includes(${JSON.stringify(text)}) ?? false`);
-
-  setViewport = async (width: number, height: number): Promise<void> => {
-    await this.command("Emulation.setDeviceMetricsOverride", {
-      width,
-      height,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-  };
-
-  wheel = async (x: number, y: number, deltaY: number): Promise<void> => {
-    await this.command("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      x,
-      y,
-      deltaX: 0,
-      deltaY,
-    });
-  };
-
-  screenshot = async (path: string): Promise<void> => {
-    const result = await this.command<{ readonly data: string }>("Page.captureScreenshot", {
-      format: "png",
-      fromSurface: true,
-    });
-    writeFileSync(path, Buffer.from(result.data, "base64"));
-  };
-
-  close = (): void => {
-    this.socket.close();
-  };
-}
-
-declare global {
-  interface Window {
-    readonly executor: PackagedExecutorBridge;
-  }
-}
-
-const appExe = process.env.E2E_DESKTOP_APP_EXE;
-const executorBin = process.env.E2E_DESKTOP_EXECUTOR_BIN;
-
-const guiAvailable = (): boolean => {
-  if (process.platform === "darwin") {
-    try {
-      return execFileSync("launchctl", ["managername"], { encoding: "utf8" }).trim() === "Aqua";
-    } catch {
-      return false;
-    }
-  }
-  if (process.platform === "linux")
-    return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
-  return true;
-};
-
-const packagedSingleInstanceAvailable = (): boolean => {
-  if (process.platform !== "darwin" || !appExe) return true;
-  try {
-    const lines = execFileSync("pgrep", ["-fl", "Executor.app/Contents/MacOS/Executor"], {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter(Boolean);
-    return !lines.some((line) => !line.includes(appExe));
-  } catch {
-    return true;
-  }
-};
-
-const requireBundle = (): { readonly app: string; readonly executor: string } => {
-  if (!appExe || !executorBin) {
-    throw new Error(
-      "E2E_DESKTOP_APP_EXE / E2E_DESKTOP_EXECUTOR_BIN not set — did desktop-packaged.globalsetup run?",
-    );
-  }
-  return { app: appExe, executor: executorBin };
+const nonLoopbackIpv4Address = () => {
+  const addresses = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => entry.family === "IPv4" && !entry.internal);
+  return (
+    addresses.find((entry) => !entry.address.startsWith("169.254."))?.address ??
+    addresses[0]?.address ??
+    null
+  );
 };
 
 const currentUid = (): number => {
@@ -259,38 +65,28 @@ const currentUid = (): number => {
 const serviceTarget = (): string => `gui/${currentUid()}/${SERVICE_LABEL}`;
 const launchAgentPath = (): string =>
   join(homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
-const isolatedDesktopSettingsDir = (home: string): string =>
-  join(home, ".executor-desktop-settings");
 const desktopSettingsDirs = (home: string): readonly string[] => {
   if (process.platform === "darwin") {
     const support = join(home, "Library", "Application Support");
     return [
-      isolatedDesktopSettingsDir(home),
+      packagedDesktopSettingsDir(home),
       join(support, "@executor-js", "desktop"),
       join(support, "Executor"),
     ];
   }
   if (process.platform === "linux") {
     return [
-      isolatedDesktopSettingsDir(home),
+      packagedDesktopSettingsDir(home),
       join(home, ".config", "@executor-js", "desktop"),
       join(home, ".config", "Executor"),
     ];
   }
   const roaming = join(home, "AppData", "Roaming");
   return [
-    isolatedDesktopSettingsDir(home),
+    packagedDesktopSettingsDir(home),
     join(roaming, "@executor-js", "desktop"),
     join(roaming, "Executor"),
   ];
-};
-
-const packagedAppEnv = (home: string): NodeJS.ProcessEnv => {
-  return {
-    ...process.env,
-    HOME: home,
-    EXECUTOR_DESKTOP_SETTINGS_DIR: isolatedDesktopSettingsDir(home),
-  };
 };
 
 interface LaunchdServiceSnapshot {
@@ -340,157 +136,8 @@ const restoreLaunchdService = async (snapshot: LaunchdServiceSnapshot | null): P
   }
 };
 
-const freePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-  });
-
-interface DaemonStart {
-  readonly child: ChildProcess;
-  readonly ready: boolean;
-  readonly stderr: string;
-}
-
-const startSupervisedDaemon = (
-  env: NodeJS.ProcessEnv,
-  port: number,
-  hostname = "127.0.0.1",
-): Promise<DaemonStart> =>
-  new Promise((resolve) => {
-    const { executor } = requireBundle();
-    const child = spawn(
-      executor,
-      ["daemon", "run", "--foreground", "--port", String(port), "--hostname", hostname],
-      { env, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stderr = "";
-    let settled = false;
-    const settle = (ready: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve({ child, ready, stderr });
-    };
-    const timer = setTimeout(() => settle(false), 60_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (/Daemon ready on http:\/\//.test(chunk.toString())) {
-        clearTimeout(timer);
-        settle(true);
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on("exit", () => {
-      clearTimeout(timer);
-      settle(false);
-    });
-  });
-
-const stopProcess = async (child: ChildProcess | undefined): Promise<void> => {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      resolve();
-    }, 5_000);
-    child.once("exit", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    child.kill("SIGTERM");
-  });
-};
-
-const waitForPageWebSocket = async (debugPort: string): Promise<string> => {
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    const targets = (await fetch(`http://127.0.0.1:${debugPort}/json/list`)
-      .then((response) => (response.ok ? response.json() : []))
-      .catch(() => [])) as ReadonlyArray<CdpTarget>;
-    const page = targets.find(
-      (target) =>
-        target.type === "page" &&
-        target.webSocketDebuggerUrl &&
-        !target.url.startsWith("devtools://"),
-    );
-    if (page?.webSocketDebuggerUrl) return page.webSocketDebuggerUrl;
-    if (Date.now() >= deadline) {
-      throw new Error("Timed out waiting for packaged app page CDP target");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-};
-
-const launchPackaged = async (home: string): Promise<PackagedApp> => {
-  const { app } = requireBundle();
-  let output = "";
-  let settled = false;
-  const child = spawn(app, ["--remote-debugging-port=0"], {
-    env: packagedAppEnv(home),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  const browserCdpUrl = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: packaged-app launch promise adapter
-      reject(new Error(`Timed out waiting for packaged app CDP URL\n${output}`));
-    }, 120_000);
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-    const collectOutput = (chunk: Buffer) => {
-      const text = chunk.toString();
-      output = (output + text).slice(-16_384);
-      const match = output.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) settle(() => resolve(match[1]));
-    };
-    child.stdout?.on("data", collectOutput);
-    child.stderr?.on("data", collectOutput);
-    // oxlint-disable-next-line executor/no-promise-reject -- boundary: packaged-app launch promise adapter
-    child.once("error", (error) => settle(() => reject(error)));
-    child.once("exit", (code, signal) =>
-      settle(() =>
-        // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: packaged-app launch promise adapter
-        reject(
-          new Error(`Packaged app exited before CDP (code=${code} signal=${signal})\n${output}`),
-        ),
-      ),
-    );
-  });
-
-  const debugPort = new URL(browserCdpUrl).port;
-  const pageCdpUrl = await waitForPageWebSocket(debugPort);
-  const cdp = await CdpPage.connect(pageCdpUrl);
-  await cdp.command("Runtime.enable");
-  await cdp.command("Page.enable");
-  return { child, cdp, debugPort, output: () => output };
-};
-
-const reconnectPackagedPage = async (app: PackagedApp): Promise<CdpPage> => {
-  app.cdp.close();
-  const pageCdpUrl = await waitForPageWebSocket(app.debugPort);
-  const cdp = await CdpPage.connect(pageCdpUrl);
-  await cdp.command("Runtime.enable");
-  await cdp.command("Page.enable");
-  app.cdp = cdp;
-  return cdp;
-};
-
-const closePackaged = async (app: PackagedApp | undefined): Promise<void> => {
-  app?.cdp.close();
-  await stopProcess(app?.child);
-};
-
 const waitForServerConnectionLabel = async (
-  page: CdpPage,
+  page: PackagedDesktopPage,
   expectedText: string,
   timeoutMs: number,
 ): Promise<string> => {
@@ -531,7 +178,7 @@ const settingsScrollFrameExpression = `(() => {
   };
 })()`;
 
-const assertDesktopSettingsScrolls = async (page: CdpPage): Promise<void> => {
+const assertDesktopSettingsScrolls = async (page: PackagedDesktopPage): Promise<void> => {
   await page.setViewport(900, 420);
   await page.waitForExpression(
     `${settingsScrollFrameExpression} !== null`,
@@ -564,7 +211,7 @@ const assertDesktopSettingsScrolls = async (page: CdpPage): Promise<void> => {
   );
 };
 
-const openDesktopSettings = async (page: CdpPage): Promise<void> => {
+const openDesktopSettings = async (page: PackagedDesktopPage): Promise<void> => {
   const clicked = await page.evaluate<boolean>(`(() => {
     const link = document.querySelector('a[href*="desktop-settings"]');
     if (!(link instanceof HTMLAnchorElement)) return false;
@@ -573,6 +220,216 @@ const openDesktopSettings = async (page: CdpPage): Promise<void> => {
   })()`);
   expect(clicked, "the packaged desktop app should expose a Settings nav link").toBe(true);
   await page.waitForText("Desktop server connection", 30_000);
+};
+
+const openServerProfiles = async (page: PackagedDesktopPage) => {
+  const alreadyOpen = await page.evaluate<boolean>(
+    `document.querySelector('[data-slot="popover-content"][data-state="open"]') !== null`,
+  );
+  const opened =
+    alreadyOpen ||
+    (await page.evaluate<boolean>(`(() => {
+        const trigger = document.querySelector('[aria-label^="Select Executor server:"]');
+        if (!(trigger instanceof HTMLButtonElement)) return false;
+        trigger.click();
+        return true;
+      })()`));
+  expect(opened, "the packaged desktop app should expose the server profile trigger").toBe(true);
+  await page.waitForExpression(
+    `document.querySelector('[data-slot="popover-content"][data-state="open"]')?.textContent?.includes("Server profiles")`,
+    30_000,
+    "the server profiles popover",
+  );
+};
+
+const closeServerProfiles = async (page: PackagedDesktopPage) => {
+  const open = await page.evaluate<boolean>(
+    `document.querySelector('[data-slot="popover-content"][data-state="open"]') !== null`,
+  );
+  const clicked =
+    !open ||
+    (await page.evaluate<boolean>(`(() => {
+      const trigger = document.querySelector('[aria-label^="Select Executor server:"]');
+      if (!(trigger instanceof HTMLButtonElement)) return false;
+      trigger.click();
+      return true;
+    })()`));
+  expect(clicked, "the server profile trigger should close its open popover").toBe(true);
+  await page.waitForExpression(
+    `document.querySelector('[data-slot="popover-content"][data-state="open"]') === null`,
+    30_000,
+    "the server profiles popover to close",
+  );
+};
+
+const clickServerProfileButton = async (page: PackagedDesktopPage, text: string) => {
+  const clicked = await page.evaluate<boolean>(`(() => {
+    const content = document.querySelector('[data-slot="popover-content"][data-state="open"]');
+    if (!(content instanceof HTMLElement)) return false;
+    const expected = ${JSON.stringify(text)};
+    const button = Array.from(content.querySelectorAll("button")).find(
+      (candidate) => candidate.getClientRects().length > 0 &&
+        candidate.textContent?.includes(expected),
+    );
+    if (!(button instanceof HTMLButtonElement)) return false;
+    button.click();
+    return true;
+  })()`);
+  expect(clicked, `the server profiles popover should contain a ${text} button`).toBe(true);
+};
+
+const setServerProfileFormControl = async (
+  page: PackagedDesktopPage,
+  selector: string,
+  value: string,
+) => {
+  const changed = await page.evaluate<boolean>(`(() => {
+    const control = document.querySelector(${JSON.stringify(selector)});
+    const nextValue = ${JSON.stringify(value)};
+    const prototype = control instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : control instanceof HTMLInputElement
+        ? HTMLInputElement.prototype
+        : null;
+    const setter = prototype
+      ? Object.getOwnPropertyDescriptor(prototype, "value")?.set
+      : undefined;
+    if (!control || !setter) return false;
+    setter.call(control, nextValue);
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  expect(changed, `the server profile form should expose ${selector}`).toBe(true);
+};
+
+const addServerProfile = async (
+  page: PackagedDesktopPage,
+  input: { readonly origin: string; readonly name: string; readonly token: string },
+) => {
+  await openServerProfiles(page);
+  await clickServerProfileButton(page, "Custom server");
+  await page.waitForExpression(
+    `document.querySelector('input[placeholder="https://executor.example"]') !== null`,
+    30_000,
+    "the custom server form",
+  );
+  await setServerProfileFormControl(
+    page,
+    'input[placeholder="https://executor.example"]',
+    input.origin,
+  );
+  await setServerProfileFormControl(page, 'input[placeholder="Remote executor"]', input.name);
+  await setServerProfileFormControl(page, "form select", "bearer");
+  await page.waitForExpression(
+    `document.querySelector('form input[type="password"]') !== null`,
+    30_000,
+    "the bearer token input",
+  );
+  await setServerProfileFormControl(page, 'form input[type="password"]', input.token);
+  await clickServerProfileButton(page, "Add and use");
+  await waitForServerConnectionLabel(page, input.name, 30_000);
+};
+
+const selectServerProfile = async (page: PackagedDesktopPage, name: string) => {
+  await openServerProfiles(page);
+  await page.waitForExpression(
+    `document.querySelector('[data-slot="popover-content"][data-state="open"]')?.textContent?.includes(${JSON.stringify(name)})`,
+    30_000,
+    `the ${name} profile to hydrate`,
+  );
+  await clickServerProfileButton(page, name);
+  await waitForServerConnectionLabel(page, name, 30_000);
+};
+
+const expectServerProfileKind = async (
+  page: PackagedDesktopPage,
+  name: string,
+  kind: "Local" | "Remote",
+) => {
+  await openServerProfiles(page);
+  await page.waitForExpression(
+    `(() => {
+      const content = document.querySelector('[data-slot="popover-content"][data-state="open"]');
+      if (!(content instanceof HTMLElement)) return false;
+      const button = Array.from(content.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.includes(${JSON.stringify(name)}),
+      );
+      return button?.parentElement?.textContent?.includes(${JSON.stringify(kind)}) ?? false;
+    })()`,
+    30_000,
+    `the ${name} profile to be classified as ${kind}`,
+  );
+};
+
+interface PersistedDesktopProfileProof {
+  readonly kind: string;
+  readonly key: string;
+  readonly origin: string;
+  readonly displayName: string;
+  readonly token: string | null;
+}
+
+interface PersistedDesktopProfilesProof {
+  readonly activeKey: string | null;
+  readonly profiles: readonly PersistedDesktopProfileProof[];
+}
+
+const readPersistedDesktopProfiles = (page: PackagedDesktopPage) =>
+  page.evaluate<PersistedDesktopProfilesProof>(`(() => {
+    const bridge = window.executor;
+    if (!bridge?.getServerProfiles) return { activeKey: null, profiles: [] };
+    return bridge.getServerProfiles().then((raw) => {
+      const snapshot = JSON.parse(raw ?? '{"profiles":[]}');
+      return {
+        activeKey: snapshot.activeKey ?? null,
+        profiles: (snapshot.profiles ?? []).map((profile) => ({
+          kind: profile.kind ?? "http",
+          key: profile.key ?? "",
+          origin: profile.origin ?? "",
+          displayName: profile.displayName ?? "",
+          token: profile.auth?.kind === "bearer" ? profile.auth.token : null,
+        })),
+      };
+    });
+  })()`);
+
+const waitForPersistedDesktopProfiles = async (
+  page: PackagedDesktopPage,
+  displayNames: readonly string[],
+  activeDisplayName?: string,
+) => {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const snapshot = await readPersistedDesktopProfiles(page);
+    const active = snapshot.profiles.find((profile) => profile.key === snapshot.activeKey);
+    if (
+      displayNames.every((name) =>
+        snapshot.profiles.some((profile) => profile.displayName === name),
+      ) &&
+      (activeDisplayName === undefined || active?.displayName === activeDisplayName)
+    ) {
+      return snapshot;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for persisted desktop profiles: ${displayNames.join(", ")}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+};
+
+const expectIntegrationAccount = async (
+  page: PackagedDesktopPage,
+  expected: string,
+  rejected: string,
+) => {
+  await page.waitForText(expected, 30_000);
+  expect(
+    await page.textPresent(rejected),
+    `the ${expected} account must not render data from ${rejected}`,
+  ).toBe(false);
 };
 
 const writeStaleActiveServerProfile = (input: {
@@ -610,25 +467,24 @@ scenario(
   "Desktop packaged supervised daemon · server manifest is owner-only",
   { timeout: 180_000 },
   Effect.promise(async () => {
-    requireBundle();
-    const home = mkdtempSync(join(tmpdir(), "executor-pkg-manifest-mode-"));
+    requirePackagedDesktopBundle();
+    const home = createPackagedDesktopHome("executor-pkg-manifest-mode-");
     const dataDir = join(home, ".executor");
     const manifestPath = join(dataDir, "server-control", "server.json");
     const port = await freePort();
     let daemon: ChildProcess | undefined;
     const previousUmask = process.umask(0o022);
     try {
-      const started = await startSupervisedDaemon(
-        {
-          ...process.env,
-          HOME: home,
+      const started = await startSupervisedDaemon({
+        home,
+        port,
+        env: {
           EXECUTOR_SUPERVISED: "1",
           EXECUTOR_DATA_DIR: dataDir,
           EXECUTOR_AUTH_TOKEN: "manifest-mode-token",
           EXECUTOR_CLIENT: "desktop",
         },
-        port,
-      );
+      });
       daemon = started.child;
       expect(started.ready, `supervised daemon became ready; stderr:\n${started.stderr}`).toBe(
         true,
@@ -642,14 +498,22 @@ scenario(
       ).toBe("600");
     } finally {
       process.umask(previousUmask);
-      daemon?.kill("SIGTERM");
-      rmSync(home, { recursive: true, force: true });
+      await stopProcess(daemon);
+      removePackagedDesktopHome(home);
     }
   }),
 );
 
-if (!guiAvailable() || !packagedSingleInstanceAvailable()) {
-  it.skip("Desktop packaged supervised attach security (needs a GUI display and no already-running Executor.app)", () => {});
+const desktopPreflight = packagedDesktopPreflight();
+
+if (desktopPreflight.status === "skip") {
+  it.skip(`Desktop packaged supervised attach security (${desktopPreflight.reason})`, () => {});
+} else if (desktopPreflight.status === "fail") {
+  scenario(
+    "Desktop packaged supervised attach security preflight",
+    { timeout: 30_000 },
+    Effect.die(desktopPreflight.reason),
+  );
 } else {
   scenario(
     "Desktop packaged supervised attach · a slow live daemon does not look crashed",
@@ -684,6 +548,15 @@ if (!guiAvailable() || !packagedSingleInstanceAvailable()) {
     Effect.gen(function* () {
       const runDir = yield* RunDir;
       yield* Effect.promise(() => runSupervisedIntegrationsLoad(runDir));
+    }),
+  );
+
+  scenario(
+    "Desktop packaged server profiles · same-origin accounts stay isolated across restart",
+    { timeout: 360_000 },
+    Effect.gen(function* () {
+      const runDir = yield* RunDir;
+      yield* Effect.promise(() => runServerProfileSwitching(runDir));
     }),
   );
 }
@@ -726,7 +599,7 @@ const writeCliDaemonManifest = (input: {
 const shellSingleQuote = (value: string): string => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
 const withFailingBundledInstall = async <T>(run: () => Promise<T>): Promise<T> => {
-  const { executor } = requireBundle();
+  const { executor } = requirePackagedDesktopBundle();
   const original = readFileSync(executor);
   const mode = statSync(executor).mode & 0o777;
   const backup = `${executor}.e2e-real`;
@@ -756,7 +629,7 @@ const withFailingBundledInstall = async <T>(run: () => Promise<T>): Promise<T> =
 };
 
 const runInstallFailureFallsBackToManagedSidecar = async (runDir: string) => {
-  const home = mkdtempSync(join(tmpdir(), "executor-pkg-install-failure-fallback-"));
+  const home = createPackagedDesktopHome("executor-pkg-install-failure-fallback-");
   const dataDir = join(home, ".executor");
   const controlDir = join(dataDir, "server-control");
   const token = "install-failure-fallback-token";
@@ -767,7 +640,7 @@ const runInstallFailureFallsBackToManagedSidecar = async (runDir: string) => {
   const sawHealthProbe = new Promise<void>((resolve) => {
     resolveHealthProbe = resolve;
   });
-  let app: PackagedApp | undefined;
+  let app: PackagedDesktopApp | undefined;
   let serverOpen = false;
 
   const server = createServer((req: IncomingMessage, res) => {
@@ -813,11 +686,14 @@ const runInstallFailureFallsBackToManagedSidecar = async (runDir: string) => {
     });
 
     await withFailingBundledInstall(async () => {
-      app = await launchPackaged(home);
-      const page = app.cdp;
+      const launched = await launchPackagedDesktop({ home });
+      app = launched;
+      const page = launched.cdp;
       await sawHealthProbe;
       await page.waitForText("Settings", 120_000);
-      await page.screenshot(join(runDir, "01-fell-back-to-managed-sidecar.png"));
+      await launched.captureEvidence({
+        rendererPath: join(runDir, "01-fell-back-to-managed-sidecar.png"),
+      });
 
       const connection = await page.evaluate<{ readonly origin: string } | null>(
         "window.executor.getServerConnection()",
@@ -834,15 +710,15 @@ const runInstallFailureFallsBackToManagedSidecar = async (runDir: string) => {
       ).not.toContain(`Bearer ${token}`);
     });
   } finally {
-    await closePackaged(app);
+    await closePackagedDesktop(app);
     await restoreLaunchdService(launchdSnapshot);
     await closeServer();
-    rmSync(home, { recursive: true, force: true });
+    removePackagedDesktopHome(home);
   }
 };
 
 const runSlowLiveDaemonProbe = async (runDir: string) => {
-  const home = mkdtempSync(join(tmpdir(), "executor-pkg-slow-live-daemon-"));
+  const home = createPackagedDesktopHome("executor-pkg-slow-live-daemon-");
   const dataDir = join(home, ".executor");
   const controlDir = join(dataDir, "server-control");
   const manifestPath = join(controlDir, "server.json");
@@ -881,7 +757,7 @@ const runSlowLiveDaemonProbe = async (runDir: string) => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as net.AddressInfo).port;
-  let app: PackagedApp | undefined;
+  let app: PackagedDesktopApp | undefined;
 
   try {
     writeCliDaemonManifest({
@@ -892,10 +768,13 @@ const runSlowLiveDaemonProbe = async (runDir: string) => {
       token,
     });
 
-    app = await launchPackaged(home);
-    const page = app.cdp;
+    const launched = await launchPackagedDesktop({ home });
+    app = launched;
+    const page = launched.cdp;
     await page.waitForText("Fake Executor UI", 120_000);
-    await page.screenshot(join(runDir, "01-attached-to-fake-daemon.png"));
+    await launched.captureEvidence({
+      rendererPath: join(runDir, "01-attached-to-fake-daemon.png"),
+    });
 
     const firstHealthProbe = requests.find((request) => request.url.startsWith("/api/health"));
     expect(
@@ -931,46 +810,48 @@ const runSlowLiveDaemonProbe = async (runDir: string) => {
       await page.textPresent("Fake Executor UI"),
       "the original renderer should stay loaded",
     ).toBe(true);
-    await page.screenshot(join(runDir, "02-still-rendering-after-slow-health.png"));
+    await launched.captureEvidence({
+      rendererPath: join(runDir, "02-still-rendering-after-slow-health.png"),
+    });
   } finally {
-    await closePackaged(app);
+    await closePackagedDesktop(app);
     await restoreLaunchdService(launchdSnapshot);
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(home, { recursive: true, force: true });
+    removePackagedDesktopHome(home);
   }
 };
 
 const runSupervisedPortSetting = async (runDir: string) => {
-  const home = mkdtempSync(join(tmpdir(), "executor-pkg-port-setting-"));
+  const home = createPackagedDesktopHome("executor-pkg-port-setting-");
   const dataDir = join(home, ".executor");
   const launchdSnapshot = captureLaunchdService();
   const oldPort = await freePort();
   const newPort = await freePort();
   let daemon: ChildProcess | undefined;
-  let app: PackagedApp | undefined;
+  let app: PackagedDesktopApp | undefined;
 
   try {
-    const started = await startSupervisedDaemon(
-      {
-        ...process.env,
-        HOME: home,
+    const started = await startSupervisedDaemon({
+      home,
+      port: oldPort,
+      env: {
         EXECUTOR_SUPERVISED: "1",
         EXECUTOR_DATA_DIR: dataDir,
         EXECUTOR_AUTH_TOKEN: "port-setting-token",
         EXECUTOR_CLIENT: "desktop",
       },
-      oldPort,
-    );
+    });
     daemon = started.child;
     expect(started.ready, `supervised daemon became ready; stderr:\n${started.stderr}`).toBe(true);
     await waitForHttp(`http://127.0.0.1:${oldPort}/`, { timeoutMs: 30_000 });
 
-    app = await launchPackaged(home);
-    let page = app.cdp;
+    const launched = await launchPackagedDesktop({ home });
+    app = launched;
+    let page = launched.cdp;
     await page.waitForText("Settings", 120_000);
     await openDesktopSettings(page);
     await assertDesktopSettingsScrolls(page);
-    await page.screenshot(join(runDir, "01-attached-settings.png"));
+    await launched.captureEvidence({ rendererPath: join(runDir, "01-attached-settings.png") });
 
     const before = await page.evaluate<{ readonly origin: string } | null>(
       "window.executor.getServerConnection()",
@@ -984,7 +865,7 @@ const runSupervisedPortSetting = async (runDir: string) => {
     await page
       .evaluate("window.executor.restartServer().catch(() => undefined)")
       .catch(() => undefined);
-    page = await reconnectPackagedPage(app);
+    page = await reconnectPackagedDesktopPage(launched);
     await page.waitForText("Settings", 120_000);
 
     const after = await page.evaluate<{
@@ -999,37 +880,38 @@ const runSupervisedPortSetting = async (runDir: string) => {
       new URL(after.connection!.origin).port,
       "after restart, the active supervised daemon should be serving on the saved port",
     ).toBe(String(newPort));
-    await page.screenshot(join(runDir, "02-restarted-on-new-port.png"));
+    await launched.captureEvidence({
+      rendererPath: join(runDir, "02-restarted-on-new-port.png"),
+    });
   } finally {
-    await closePackaged(app);
+    await closePackagedDesktop(app);
     await stopProcess(daemon);
     await restoreLaunchdService(launchdSnapshot);
-    rmSync(home, { recursive: true, force: true });
+    removePackagedDesktopHome(home);
   }
 };
 
 const runSupervisedIntegrationsLoad = async (runDir: string) => {
-  const home = mkdtempSync(join(tmpdir(), "executor-pkg-integrations-load-"));
+  const home = createPackagedDesktopHome("executor-pkg-integrations-load-");
   const dataDir = join(home, ".executor");
   const launchdSnapshot = captureLaunchdService();
   const port = await freePort();
   let daemon: ChildProcess | undefined;
-  let app: PackagedApp | undefined;
+  let app: PackagedDesktopApp | undefined;
 
   try {
     writeStaleActiveServerProfile({ home, port });
-    const started = await startSupervisedDaemon(
-      {
-        ...process.env,
-        HOME: home,
+    const started = await startSupervisedDaemon({
+      home,
+      port,
+      hostname: "localhost",
+      env: {
         EXECUTOR_SUPERVISED: "1",
         EXECUTOR_DATA_DIR: dataDir,
         EXECUTOR_AUTH_TOKEN: "integrations-load-token",
         EXECUTOR_CLIENT: "desktop",
       },
-      port,
-      "localhost",
-    );
+    });
     daemon = started.child;
     expect(started.ready, `supervised daemon became ready; stderr:\n${started.stderr}`).toBe(true);
     await waitForHttp(`http://localhost:${port}/`, { timeoutMs: 30_000 });
@@ -1047,8 +929,9 @@ const runSupervisedIntegrationsLoad = async (runDir: string) => {
     ).toBe("no-store");
     await indexDocument.body?.cancel();
 
-    app = await launchPackaged(home);
-    const page = app.cdp;
+    const launched = await launchPackagedDesktop({ home });
+    app = launched;
+    const page = launched.cdp;
 
     const serverLabel = await waitForServerConnectionLabel(page, "Local Executor", 120_000);
     expect(serverLabel, "desktop must not auto-select a stale persisted server profile").toContain(
@@ -1086,7 +969,9 @@ const runSupervisedIntegrationsLoad = async (runDir: string) => {
     expect(bootstrap.href, "desktop should strip bootstrap token params after load").not.toContain(
       "_token=",
     );
-    await page.screenshot(join(runDir, "01-integrations-loaded.png"));
+    await launched.captureEvidence({
+      rendererPath: join(runDir, "01-integrations-loaded.png"),
+    });
     expect(
       await page.textPresent("Failed to load integrations").then((present) => (present ? 1 : 0)),
       "integrations should render from the attached daemon, not a cached 401/500 failure",
@@ -1100,9 +985,278 @@ const runSupervisedIntegrationsLoad = async (runDir: string) => {
       "the packaged app is rendering data from the supervised daemon",
     ).toBe(String(port));
   } finally {
-    await closePackaged(app);
+    await closePackagedDesktop(app);
     await stopProcess(daemon);
     await restoreLaunchdService(launchdSnapshot);
-    rmSync(home, { recursive: true, force: true });
+    removePackagedDesktopHome(home);
+  }
+};
+
+const runServerProfileSwitching = async (runDir: string) => {
+  const home = createPackagedDesktopHome("executor-pkg-server-profiles-");
+  const dataDir = join(home, ".executor");
+  const launchdSnapshot = captureLaunchdService();
+  const localPort = await freePort();
+  const fixtureHost = nonLoopbackIpv4Address();
+  if (!fixtureHost) {
+    throw new Error("Packaged desktop account switching requires a non-loopback IPv4 interface");
+  }
+  const accountA = {
+    name: "Remote account A",
+    token: "desktop-profile-account-a",
+    marker: "Wire catalog alpha",
+    slug: "fixture-account-a",
+  };
+  const accountB = {
+    name: "Remote account B",
+    token: "desktop-profile-account-b",
+    marker: "Wire catalog beta",
+    slug: "fixture-account-b",
+  };
+  const requests: Array<{
+    readonly method: string;
+    readonly url: string;
+    readonly authorization: string | null;
+  }> = [];
+  const integrationByAuthorization = new Map(
+    [accountA, accountB].map((account) => [
+      `Bearer ${account.token}`,
+      {
+        slug: account.slug,
+        name: account.marker,
+        description: `Bearer-specific catalog for ${account.name}`,
+        kind: "fixture",
+        canRemove: false,
+        canRefresh: false,
+        authMethods: [],
+      },
+    ]),
+  );
+  const fixture = createServer((req, res) => {
+    const method = req.method ?? "GET";
+    const url = req.url ?? "/";
+    const authorization = req.headers.authorization ?? null;
+    requests.push({ method, url, authorization });
+
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin ?? "*");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      req.headers["access-control-request-headers"] ??
+        "authorization, content-type, x-executor-org, traceparent, baggage",
+    );
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Vary", "Origin, Access-Control-Request-Headers");
+
+    if (method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const pathname = new URL(url, "http://desktop-profile-fixture").pathname;
+    if (method !== "GET" || pathname !== "/api/integrations") {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ message: "Not found" }));
+      return;
+    }
+
+    const integration = authorization ? integrationByAuthorization.get(authorization) : undefined;
+    if (!integration) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ message: "Invalid bearer" }));
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify([integration]));
+  });
+  let fixtureOpen = false;
+  let daemon: ChildProcess | undefined;
+  let app: PackagedDesktopApp | undefined;
+
+  try {
+    await new Promise<void>((resolve) => fixture.listen(0, fixtureHost, resolve));
+    fixtureOpen = true;
+    const fixturePort = (fixture.address() as net.AddressInfo).port;
+    const fixtureOrigin = `http://${fixtureHost}:${fixturePort}`;
+
+    const started = await startSupervisedDaemon({
+      home,
+      port: localPort,
+      env: {
+        EXECUTOR_SUPERVISED: "1",
+        EXECUTOR_DATA_DIR: dataDir,
+        EXECUTOR_AUTH_TOKEN: "desktop-profile-local-token",
+        EXECUTOR_CLIENT: "desktop",
+      },
+    });
+    daemon = started.child;
+    expect(started.ready, `supervised daemon became ready; stderr:\n${started.stderr}`).toBe(true);
+    await waitForHttp(`http://127.0.0.1:${localPort}/`, { timeoutMs: 30_000 });
+
+    app = await launchPackagedDesktop({ home });
+    let page = app.cdp;
+    await waitForServerConnectionLabel(page, "Local Executor", 120_000);
+    await page.waitForText("Integrations", 120_000);
+
+    await addServerProfile(page, {
+      origin: fixtureOrigin,
+      name: accountA.name,
+      token: accountA.token,
+    });
+    await expectIntegrationAccount(page, accountA.marker, accountB.marker);
+    await expectServerProfileKind(page, accountA.name, "Remote");
+    await closeServerProfiles(page);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "01-account-a-catalog.png"),
+    });
+
+    await addServerProfile(page, {
+      origin: fixtureOrigin,
+      name: accountB.name,
+      token: accountB.token,
+    });
+    await expectIntegrationAccount(page, accountB.marker, accountA.marker);
+    await closeServerProfiles(page);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "02-account-b-catalog.png"),
+    });
+
+    await selectServerProfile(page, accountA.name);
+    await expectIntegrationAccount(page, accountA.marker, accountB.marker);
+    await closeServerProfiles(page);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "03-account-a-restored.png"),
+    });
+
+    await selectServerProfile(page, "Local Executor");
+    await page.waitForExpression(
+      `!document.body?.innerText.includes(${JSON.stringify(accountA.marker)}) &&
+        !document.body?.innerText.includes(${JSON.stringify(accountB.marker)})`,
+      30_000,
+      "the local sidecar catalog to replace remote account data",
+    );
+    const localIntegrationsStatus = await page.evaluate<number>(`(() => {
+      return window.executor.getServerConnection().then((connection) => {
+        if (!connection) return 0;
+        return fetch(new URL("/api/integrations", connection.origin)).then(
+          (response) => response.status,
+        );
+      });
+    })()`);
+    expect(
+      localIntegrationsStatus,
+      "the preserved local sidecar profile should remain usable",
+    ).toBe(200);
+    await openServerProfiles(page);
+    await page.waitForText(accountA.name, 30_000);
+    await page.waitForText(accountB.name, 30_000);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "04-local-sidecar-and-remote-profiles.png"),
+    });
+    await closeServerProfiles(page);
+
+    await selectServerProfile(page, accountB.name);
+    await expectIntegrationAccount(page, accountB.marker, accountA.marker);
+    await closeServerProfiles(page);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "05-account-b-before-restart.png"),
+    });
+
+    const beforeRestart = await waitForPersistedDesktopProfiles(
+      page,
+      [accountA.name, accountB.name],
+      accountB.name,
+    );
+    const remoteBeforeRestart = beforeRestart.profiles.filter(
+      (profile) => profile.displayName === accountA.name || profile.displayName === accountB.name,
+    );
+    expect(
+      beforeRestart.profiles.some((profile) => profile.kind === "desktop-sidecar"),
+      "the local sidecar profile should remain persisted while a remote account is active",
+    ).toBe(true);
+    expect(remoteBeforeRestart).toHaveLength(2);
+    expect(remoteBeforeRestart.every((profile) => profile.origin === fixtureOrigin)).toBe(true);
+    expect(new Set(remoteBeforeRestart.map((profile) => profile.key)).size).toBe(2);
+    expect(remoteBeforeRestart.every((profile) => profile.key.startsWith("profile:"))).toBe(true);
+
+    await closePackagedDesktop(app);
+    app = undefined;
+    await waitForHttp(`http://127.0.0.1:${localPort}/`, { timeoutMs: 30_000 });
+
+    app = await launchPackagedDesktop({ home });
+    page = app.cdp;
+    await waitForServerConnectionLabel(page, accountB.name, 120_000);
+    await expectIntegrationAccount(page, accountB.marker, accountA.marker);
+    const afterRestart = await waitForPersistedDesktopProfiles(
+      page,
+      [accountA.name, accountB.name],
+      accountB.name,
+    );
+    const remoteAfterRestart = afterRestart.profiles
+      .filter(
+        (profile) => profile.displayName === accountA.name || profile.displayName === accountB.name,
+      )
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+    expect(
+      afterRestart.profiles.some((profile) => profile.kind === "desktop-sidecar"),
+      "restoring the remote account must not remove the local sidecar profile",
+    ).toBe(true);
+    expect(remoteAfterRestart).toEqual([
+      {
+        kind: "http",
+        key: remoteBeforeRestart.find((profile) => profile.displayName === accountA.name)!.key,
+        origin: fixtureOrigin,
+        displayName: accountA.name,
+        token: accountA.token,
+      },
+      {
+        kind: "http",
+        key: remoteBeforeRestart.find((profile) => profile.displayName === accountB.name)!.key,
+        origin: fixtureOrigin,
+        displayName: accountB.name,
+        token: accountB.token,
+      },
+    ]);
+    await expectServerProfileKind(page, accountB.name, "Remote");
+    await page.waitForText("Local Executor", 30_000);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "06-account-b-restored-after-restart.png"),
+    });
+    await closeServerProfiles(page);
+
+    await selectServerProfile(page, accountA.name);
+    await expectIntegrationAccount(page, accountA.marker, accountB.marker);
+    await closeServerProfiles(page);
+    await app.captureEvidence({
+      rendererPath: join(runDir, "07-account-a-after-restart.png"),
+    });
+
+    const integrationRequests = requests.filter(
+      (request) =>
+        request.method === "GET" &&
+        new URL(request.url, "http://desktop-profile-fixture").pathname === "/api/integrations",
+    );
+    const authorizations = integrationRequests.map((request) => request.authorization);
+    expect(authorizations).toContain(`Bearer ${accountA.token}`);
+    expect(authorizations).toContain(`Bearer ${accountB.token}`);
+    expect(
+      authorizations.every(
+        (authorization) =>
+          authorization === `Bearer ${accountA.token}` ||
+          authorization === `Bearer ${accountB.token}`,
+      ),
+      "the remote fixture must never receive the local sidecar bearer",
+    ).toBe(true);
+  } finally {
+    await closePackagedDesktop(app);
+    await stopProcess(daemon);
+    await restoreLaunchdService(launchdSnapshot);
+    if (fixtureOpen) {
+      await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    }
+    removePackagedDesktopHome(home);
   }
 };

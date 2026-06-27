@@ -1,8 +1,9 @@
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import { IdentityProvider, NoOrganization, Unauthorized } from "@executor-js/api/server";
+import { EXECUTOR_ORG_SELECTOR_HEADER } from "@executor-js/sdk/shared";
 
-import { BetterAuth } from "./better-auth";
+import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 
 // ---------------------------------------------------------------------------
 // The self-host identity seam — the production implementation of the shared
@@ -27,6 +28,45 @@ const bearerToken = (headers: Headers): string | undefined => {
     : undefined;
 };
 
+/**
+ * Resolve the instance's one organization and verify that the user is still a
+ * member. The optional selector comes from the console URL header (or a
+ * credential's active organization) and must match the live organization id or
+ * slug. Reading through Better Auth's database adapter keeps membership
+ * removal and organization renames visible on the very next request.
+ */
+export const resolveSelfHostAuthorization = async (
+  betterAuth: BetterAuthHandle,
+  userId: string,
+  selector?: string | null,
+) => {
+  const context = await betterAuth.auth.$context;
+  const organization = await context.adapter.findOne<{
+    readonly id: string;
+    readonly name: string;
+    readonly slug: string;
+  }>({
+    model: "organization",
+    where: [{ field: "id", value: betterAuth.organizationId }],
+  });
+  if (!organization) return null;
+  if (selector && selector !== organization.id && selector !== organization.slug) return null;
+
+  const member = await context.adapter.findOne<{
+    readonly id: string;
+    readonly userId: string;
+    readonly organizationId: string;
+    readonly role: string;
+  }>({
+    model: "member",
+    where: [
+      { field: "userId", value: userId },
+      { field: "organizationId", value: organization.id },
+    ],
+  });
+  return member ? { member, organization } : null;
+};
+
 // ---------------------------------------------------------------------------
 // The production IdentityProvider: resolve a request to a Better Auth session
 // and map it to a neutral Principal. Three credential shapes resolve here:
@@ -36,13 +76,14 @@ const bearerToken = (headers: Headers): string | undefined => {
 //     resolution fails we retry with the Bearer value as x-api-key, which (with
 //     enableSessionForAPIKeys) mints the owner's session. This is what lets a
 //     generated API key authenticate the API + MCP endpoint as a Bearer token.
-// Single-org instance, so organizationName is the boot-cached org name.
+// The live organization row is resolved after the credential on every request.
 // ---------------------------------------------------------------------------
 
 export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, BetterAuth> =
   Layer.effect(IdentityProvider)(
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
+      const betterAuth = yield* BetterAuth;
+      const { auth, organizationId } = betterAuth;
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
@@ -61,16 +102,21 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // No session resolved from any credential shape -> unauthenticated.
             // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
-            // Single-org instance: every authenticated user belongs to the one
-            // seeded org. Cookie/bearer-session logins are pinned to it by the
-            // session hook; API-key-minted sessions carry no active org, so we
-            // default to the seeded org rather than rejecting with NoOrganization.
-            const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
+
+            const selector =
+              request.headers.get(EXECUTOR_ORG_SELECTOR_HEADER) ??
+              resolved.session.activeOrganizationId ??
+              organizationId;
+            const authorization = yield* Effect.promise(() =>
+              resolveSelfHostAuthorization(betterAuth, resolved.user.id, selector),
+            );
+            if (!authorization) return yield* new NoOrganization();
+
             return {
               accountId: resolved.user.id,
-              organizationId: resolvedOrganizationId,
-              organizationName,
-              organizationSlug,
+              organizationId: authorization.organization.id,
+              organizationName: authorization.organization.name,
+              organizationSlug: authorization.organization.slug,
               email: resolved.user.email,
               name: resolved.user.name ?? null,
               avatarUrl: resolved.user.image ?? null,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  createExecutorServerProfileKey,
   getActiveExecutorServerProfile,
+  mergeExecutorDesktopSidecarProfile,
   parseExecutorServerProfilesSnapshot,
   readExecutorServerProfiles,
   removeExecutorServerProfile,
@@ -89,5 +91,111 @@ describe("Executor server profiles", () => {
 
     const removed = removeExecutorServerProfile(roundTripped, "http:http://127.0.0.1:4788");
     expect(removed.activeKey).toBe("http:https://executor.example");
+  });
+
+  it("keeps same-origin accounts isolated across profile switches", () => {
+    const firstKey = createExecutorServerProfileKey();
+    const secondKey = createExecutorServerProfileKey();
+    expect(firstKey).not.toBe(secondKey);
+
+    const local = upsertExecutorServerProfile(
+      { activeKey: null, profiles: [] },
+      {
+        kind: "desktop-sidecar",
+        key: "desktop-sidecar",
+        origin: "http://127.0.0.1:4788",
+        displayName: "Desktop",
+        auth: { kind: "bearer", token: "token_desktop" },
+      },
+    );
+    const first = upsertExecutorServerProfile(local!, {
+      key: firstKey,
+      origin: "https://executor.example",
+      displayName: "Account A",
+      auth: { kind: "bearer", token: "token_account_a" },
+    });
+    const second = upsertExecutorServerProfile(first!, {
+      key: secondKey,
+      origin: "https://executor.example",
+      displayName: "Account B",
+      auth: { kind: "bearer", token: "token_account_b" },
+    });
+
+    expect(second?.profiles).toHaveLength(3);
+    expect(second?.profiles.map((profile) => profile.key)).toEqual([
+      "desktop-sidecar",
+      firstKey,
+      secondKey,
+    ]);
+
+    const selectedFirst = selectExecutorServerProfile(second!, firstKey);
+    expect(getActiveExecutorServerProfile(selectedFirst)?.auth).toEqual({
+      kind: "bearer",
+      token: "token_account_a",
+    });
+
+    const selectedSecond = selectExecutorServerProfile(selectedFirst, secondKey);
+    expect(getActiveExecutorServerProfile(selectedSecond)?.auth).toEqual({
+      kind: "bearer",
+      token: "token_account_b",
+    });
+
+    const selectedLocal = selectExecutorServerProfile(selectedSecond, "desktop-sidecar");
+    expect(getActiveExecutorServerProfile(selectedLocal)?.kind).toBe("desktop-sidecar");
+
+    const selectedFirstAgain = selectExecutorServerProfile(selectedLocal, firstKey);
+    expect(getActiveExecutorServerProfile(selectedFirstAgain)?.auth).toEqual({
+      kind: "bearer",
+      token: "token_account_a",
+    });
+
+    const roundTripped = parseExecutorServerProfilesSnapshot(
+      serializeExecutorServerProfilesSnapshot(selectedFirstAgain),
+    );
+    expect(roundTripped.profiles.map((profile) => profile.key)).toEqual([
+      "desktop-sidecar",
+      firstKey,
+      secondKey,
+    ]);
+    expect(roundTripped.activeKey).toBe(firstKey);
+  });
+
+  it("merges a refreshed desktop sidecar without replacing the active remote profile", () => {
+    const remoteKey = createExecutorServerProfileKey();
+    const local = mergeExecutorDesktopSidecarProfile(
+      { activeKey: null, profiles: [] },
+      {
+        kind: "desktop-sidecar",
+        key: "desktop-sidecar",
+        origin: "http://127.0.0.1:4788",
+        displayName: "Old sidecar",
+      },
+    );
+    expect(local.activeKey).toBe("desktop-sidecar");
+    const stored = upsertExecutorServerProfile(local, {
+      key: remoteKey,
+      origin: "https://executor.example",
+      displayName: "Persisted remote",
+      auth: { kind: "bearer", token: "token_remote" },
+    })!;
+
+    const merged = mergeExecutorDesktopSidecarProfile(stored, {
+      kind: "desktop-sidecar",
+      key: "desktop-sidecar",
+      origin: "http://127.0.0.1:4799",
+      displayName: "Current sidecar",
+    });
+
+    expect(merged.activeKey).toBe(remoteKey);
+    expect(getActiveExecutorServerProfile(merged)?.displayName).toBe("Persisted remote");
+    expect(merged.profiles.find((profile) => profile.kind === "desktop-sidecar")?.origin).toBe(
+      "http://127.0.0.1:4799",
+    );
+
+    const restored = parseExecutorServerProfilesSnapshot(
+      serializeExecutorServerProfilesSnapshot(merged),
+    );
+    expect(restored.activeKey).toBe(remoteKey);
+    expect(getActiveExecutorServerProfile(restored)?.displayName).toBe("Persisted remote");
   });
 });

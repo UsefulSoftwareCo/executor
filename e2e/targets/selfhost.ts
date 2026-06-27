@@ -2,6 +2,8 @@
 // on a throwaway data dir, with Better Auth + the bootstrap admin. MCP OAuth is
 // headless via `forcedMcpConsent` below. Boot lives in
 // setup/selfhost.globalsetup.ts.
+import { randomUUID } from "node:crypto";
+
 import { Effect } from "effect";
 
 import { e2ePort } from "../src/ports";
@@ -41,6 +43,60 @@ export const signInSession = async (
     return { name: pair.slice(0, eq), value: pair.slice(eq + 1) };
   });
   return { cookieHeader: pairs.join("; "), cookies };
+};
+
+/** Create a distinct administrator through the same invite and signup flow a
+ * real second operator uses. This keeps per-scenario browser, API, CLI, and MCP
+ * credential caches independent while retaining permission to create the
+ * workspace resources exercised by the shared scenario suite. */
+export const createInvitedSelfhostIdentity = async (
+  baseUrl: string,
+  bootstrapAdmin: { readonly email: string; readonly password: string },
+) => {
+  const origin = new URL(baseUrl).origin;
+  const adminSession = await signInSession(baseUrl, bootstrapAdmin);
+  const invite = await fetch(new URL("/api/admin/invites", baseUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie: adminSession.cookieHeader,
+      origin,
+    },
+    body: JSON.stringify({ role: "admin", label: "e2e scenario identity" }),
+  });
+  if (!invite.ok) {
+    throw new Error(`selfhost: invite creation failed (${invite.status}): ${await invite.text()}`);
+  }
+  const inviteBody = (await invite.json()) as { readonly code?: unknown };
+  if (typeof inviteBody.code !== "string") {
+    throw new Error("selfhost: invite creation returned no code");
+  }
+
+  const label = `user-${randomUUID().slice(0, 8)}`;
+  const credentials = {
+    email: `${label}@e2e.test`,
+    password: `e2e-${randomUUID()}-password`,
+  };
+  const signup = await fetch(new URL("/api/auth/sign-up/email", baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({
+      ...credentials,
+      name: label,
+      inviteCode: inviteBody.code,
+    }),
+  });
+  if (!signup.ok) {
+    throw new Error(`selfhost: invited signup failed (${signup.status}): ${await signup.text()}`);
+  }
+
+  const session = await signInSession(baseUrl, credentials);
+  return {
+    label: credentials.email,
+    credentials,
+    headers: { cookie: session.cookieHeader },
+    cookies: session.cookies,
+  } satisfies Identity;
 };
 
 // Headless MCP OAuth consent. The self-host serving layer forces
@@ -105,22 +161,11 @@ export const selfhostTarget = (): Target => ({
   mcpUrl: `${SELFHOST_BASE_URL}/mcp`,
   // No "billing" (no limits) and no setAccessTokenTtl yet (Better Auth is the
   // authorization server; its token TTL isn't test-adjustable, so token-expiry
-  // scenarios skip here). Identity is the bootstrap admin for now —
-  // single-tenant; per-test invite-signup isolation is the next step here, so
-  // browser scenarios must prefix the resources they create.
+  // scenarios skip here). Every scenario receives a distinct invited admin in
+  // the single workspace, so account credentials and caches cannot bleed.
   capabilities: new Set(["api", "browser", "mcp-oauth"]),
   newIdentity: () =>
-    Effect.promise(async (): Promise<Identity> => {
-      // Sign in once and carry the session in both shapes: `headers` for the
-      // API surface, `cookies` for an injectable logged-in browser context.
-      const { cookieHeader, cookies } = await signInSession(SELFHOST_BASE_URL, SELFHOST_ADMIN);
-      return {
-        label: SELFHOST_ADMIN.email,
-        credentials: SELFHOST_ADMIN,
-        headers: { cookie: cookieHeader },
-        cookies,
-      };
-    }),
+    Effect.promise(() => createInvitedSelfhostIdentity(SELFHOST_BASE_URL, SELFHOST_ADMIN)),
   mcpConsent: (identity: Identity) =>
     forcedMcpConsent(SELFHOST_BASE_URL, {
       email: identity.credentials?.email ?? SELFHOST_ADMIN.email,

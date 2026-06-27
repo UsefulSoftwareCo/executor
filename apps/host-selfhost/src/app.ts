@@ -19,6 +19,7 @@ import {
   SelfHostPluginsProvider,
 } from "./execution";
 import { makeSelfHostMcpSeams } from "./mcp";
+import { resolveMcpOrgPath } from "./mcp/org-path";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
@@ -161,6 +162,17 @@ export const makeSelfHostApiHandler = async (
   const web = toWebHandler();
   return {
     handler: async (request) => {
+      const url = new URL(request.url);
+      const scopedPath = resolveMcpOrgPath(url.pathname, {
+        id: betterAuth.organizationId,
+        slug: betterAuth.organizationSlug,
+      });
+      if (scopedPath.kind === "reject") return new Response("Not Found", { status: 404 });
+      if (scopedPath.kind === "rewrite") {
+        url.pathname = scopedPath.pathname;
+        request = new Request(url, request);
+      }
+
       const location = await oauthCallbackSignInRedirectLocation(request, betterAuth.auth);
       if (location) return new Response(null, { status: 302, headers: { location } });
       return web.handler(request);

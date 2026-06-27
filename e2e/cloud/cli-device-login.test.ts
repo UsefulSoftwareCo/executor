@@ -9,7 +9,8 @@
 // and `tools sources`; a clean exit of that chain proves the resulting WorkOS
 // access token (a JWT) is accepted by the protected `/api/*` plane.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,17 +49,25 @@ scenario(
       const cli = yield* Cli;
       const browser = yield* Browser;
       const runDir = yield* RunDir;
-      const dataDir = join(runDir, "cli-home");
+      // This directory contains live OAuth credentials. Keep it outside the
+      // viewer-served runs tree and remove it when the scenario finishes.
+      const dataDir = mkdtempSync(join(tmpdir(), "executor-e2e-cli-cloud-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(dataDir, { recursive: true, force: true })),
+      );
 
       // A fresh signed-in user with an org, the org is what the device token's
       // org_id claim binds to, and what the /api plane authorizes against.
       const identity = yield* target.newIdentity();
       const email = identity.credentials?.email ?? identity.label;
 
-      const env = { ...process.env, EXECUTOR_DATA_DIR: dataDir };
-      for (const key of ["EXECUTOR_API_KEY", "EXECUTOR_AUTH_TOKEN", "EXECUTOR_AUTH_PASSWORD"]) {
-        delete (env as Record<string, string | undefined>)[key];
-      }
+      const env: Record<string, string> = {
+        ...process.env,
+        EXECUTOR_DATA_DIR: dataDir,
+      };
+      delete env.EXECUTOR_API_KEY;
+      delete env.EXECUTOR_AUTH_TOKEN;
+      delete env.EXECUTOR_AUTH_PASSWORD;
 
       // Hand the printed verification URL from the terminal fiber to the browser.
       let resolveUrl!: (url: string) => void;
@@ -73,7 +82,8 @@ scenario(
       const journey =
         `${cli_} login --base-url ${CLOUD_BASE_URL} --no-browser --name cloud && ` +
         `${cli_} whoami --server cloud && ` +
-        `${cli_} tools sources --server cloud`;
+        `${cli_} tools sources --server cloud && ` +
+        `${cli_} server list`;
 
       const terminal = cli.session(
         ["bash", "-c", journey],
@@ -129,41 +139,52 @@ scenario(
         concurrency: "unbounded",
       });
       expect(finalScreen, "whoami reported the bound organization").toMatch(/org_\w+/);
-
-      // The stored profile carries an oauth device-login credential, not a key.
-      const store = JSON.parse(readFileSync(join(dataDir, "server-connections.json"), "utf8")) as {
-        defaultProfile: string | null;
-        profiles: Array<{
-          name: string;
-          connection: { auth?: { kind: string; accessToken?: string } };
-        }>;
-      };
-      expect(store.defaultProfile, "the login became the default profile").toBe("cloud");
-      const cloudProfile = store.profiles.find((p) => p.name === "cloud");
-      expect(cloudProfile?.connection.auth?.kind, "credential is an oauth device token").toBe(
-        "oauth",
-      );
-      expect(typeof cloudProfile?.connection.auth?.accessToken, "an access token is stored").toBe(
-        "string",
+      expect(finalScreen, "the public profile list reports stored authentication").toMatch(
+        /\* cloud\s+http\s+\S+\s+\S+\s+stored-auth/,
       );
     }),
   ),
 );
 
+const cliEnvironment = (dataDir: string) => {
+  const env: Record<string, string> = {
+    ...process.env,
+    EXECUTOR_DATA_DIR: dataDir,
+  };
+  delete env.EXECUTOR_API_KEY;
+  delete env.EXECUTOR_AUTH_TOKEN;
+  delete env.EXECUTOR_AUTH_PASSWORD;
+  return env;
+};
+
+const runCli = (args: readonly string[], dataDir: string) =>
+  new Promise<{ code: number | null; stdout: string; stderr: string }>((res, rej) => {
+    const child = spawn("bun", ["run", CLI_ENTRY, ...args], {
+      cwd: REPO_ROOT,
+      env: cliEnvironment(dataDir),
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", rej);
+    child.on("close", (code) => res({ code, stdout, stderr }));
+  });
+
 // Run `executor login` as a subprocess, approving the device for `approveEmail`
 // the moment the verification URL is printed (raw stdout, no PTY).
-const runCliLogin = (
-  args: readonly string[],
-  dataDir: string,
-  approveEmail: string,
-): Promise<{ code: number | null; stdout: string }> =>
-  new Promise((res, rej) => {
-    const env = { ...process.env, EXECUTOR_DATA_DIR: dataDir };
-    for (const k of ["EXECUTOR_API_KEY", "EXECUTOR_AUTH_TOKEN", "EXECUTOR_AUTH_PASSWORD"]) {
-      delete (env as Record<string, string | undefined>)[k];
-    }
-    const child = spawn("bun", ["run", CLI_ENTRY, ...args], { cwd: REPO_ROOT, env });
+const runCliLogin = (args: readonly string[], dataDir: string, approveEmail: string) =>
+  new Promise<{ code: number | null; stdout: string; stderr: string }>((res, rej) => {
+    const child = spawn("bun", ["run", CLI_ENTRY, ...args], {
+      cwd: REPO_ROOT,
+      env: cliEnvironment(dataDir),
+    });
     let stdout = "";
+    let stderr = "";
     let approved = false;
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -175,49 +196,110 @@ const runCliLogin = (
       url.searchParams.set("login_hint", approveEmail);
       void fetch(url, { redirect: "manual" });
     });
-    child.stderr.on("data", () => {});
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
     child.on("error", rej);
-    child.on("close", (code) => res({ code, stdout }));
+    child.on("close", (code) => res({ code, stdout, stderr }));
   });
 
+const profileNameFromLogin = (stdout: string) => {
+  const profileName = stdout.match(/profile "([^"]+)"/)?.[1];
+  if (!profileName) throw new Error(`login output did not contain a profile name:\n${stdout}`);
+  return profileName;
+};
+
 scenario(
-  "CLI · two accounts on the same host get separate profiles",
+  "CLI · switch, logout, and re-login two accounts on one host",
   { timeout: 120_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    if (target.name !== "cloud") return;
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      if (target.name !== "cloud") return;
 
-    const runDir = yield* RunDir;
-    const dataDir = join(runDir, "multi-home");
+      const dataDir = mkdtempSync(join(tmpdir(), "executor-e2e-cli-cloud-accounts-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(dataDir, { recursive: true, force: true })),
+      );
 
-    // Two distinct hosted accounts (different user + org) on the SAME server.
-    const a = yield* target.newIdentity();
-    const b = yield* target.newIdentity();
-    const emailA = a.credentials?.email ?? a.label;
-    const emailB = b.credentials?.email ?? b.label;
+      // Two distinct hosted accounts (different user + org) on the same server.
+      const a = yield* target.newIdentity();
+      const b = yield* target.newIdentity();
+      const emailA = a.credentials?.email ?? a.label;
+      const emailB = b.credentials?.email ?? b.label;
 
-    // Log in as each with NO --name, so naming is driven by the account.
-    const loginA = yield* Effect.promise(() =>
-      runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailA),
-    );
-    expect(loginA.code, "first login exited cleanly").toBe(0);
-    const loginB = yield* Effect.promise(() =>
-      runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailB),
-    );
-    expect(loginB.code, "second login exited cleanly").toBe(0);
+      // Log in as each with no pinned name, so naming is driven by account identity.
+      const loginA = yield* Effect.promise(() =>
+        runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailA),
+      );
+      expect(loginA.code, `first login failed:\n${loginA.stderr}`).toBe(0);
+      const profileA = profileNameFromLogin(loginA.stdout);
 
-    const store = JSON.parse(readFileSync(join(dataDir, "server-connections.json"), "utf8")) as {
-      defaultProfile: string | null;
-      profiles: Array<{
-        name: string;
-        connection: { origin: string; displayName?: string; auth?: { kind: string } };
-      }>;
-    };
-    const oauthProfiles = store.profiles.filter((p) => p.connection.auth?.kind === "oauth");
-    // The second login must NOT clobber the first, both accounts kept.
-    expect(oauthProfiles.length, "both accounts retained as separate profiles").toBe(2);
-    expect(new Set(oauthProfiles.map((p) => p.name)).size, "profile names are distinct").toBe(2);
-    const emails = new Set(oauthProfiles.map((p) => p.connection.displayName));
-    expect(emails.has(emailA) && emails.has(emailB), "both account emails present").toBe(true);
-  }),
+      const loginB = yield* Effect.promise(() =>
+        runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailB),
+      );
+      expect(loginB.code, `second login failed:\n${loginB.stderr}`).toBe(0);
+      const profileB = profileNameFromLogin(loginB.stdout);
+      expect(profileB, "the second account has a distinct profile").not.toBe(profileA);
+
+      const useA = yield* Effect.promise(() => runCli(["server", "use", profileA], dataDir));
+      expect(useA.code, `selecting account A failed:\n${useA.stderr}`).toBe(0);
+      const callA = yield* Effect.promise(() => runCli(["tools", "sources"], dataDir));
+      expect(callA.code, `account A protected call failed:\n${callA.stderr}`).toBe(0);
+
+      const useB = yield* Effect.promise(() => runCli(["server", "use", profileB], dataDir));
+      expect(useB.code, `selecting account B failed:\n${useB.stderr}`).toBe(0);
+      const callB = yield* Effect.promise(() => runCli(["tools", "sources"], dataDir));
+      expect(callB.code, `account B protected call failed:\n${callB.stderr}`).toBe(0);
+
+      const ambiguousLogout = yield* Effect.promise(() =>
+        runCli(["logout", "--base-url", CLOUD_BASE_URL], dataDir),
+      );
+      expect(ambiguousLogout.code, "origin-only logout rejects ambiguous accounts").not.toBe(0);
+      expect(`${ambiguousLogout.stdout}\n${ambiguousLogout.stderr}`).toContain(
+        "Multiple server profiles",
+      );
+
+      const logoutB = yield* Effect.promise(() =>
+        runCli(["logout", "--server", profileB], dataDir),
+      );
+      expect(logoutB.code, `named logout failed:\n${logoutB.stderr}`).toBe(0);
+      const loggedOutB = yield* Effect.promise(() =>
+        runCli(["whoami", "--server", profileB], dataDir),
+      );
+      expect(loggedOutB.stdout).toContain("Not logged in (no stored credentials).");
+
+      yield* Effect.promise(() => runCli(["server", "use", profileA], dataDir));
+      const stillAuthenticatedA = yield* Effect.promise(() =>
+        runCli(["tools", "sources"], dataDir),
+      );
+      expect(
+        stillAuthenticatedA.code,
+        `account A was affected by logging out B:\n${stillAuthenticatedA.stderr}`,
+      ).toBe(0);
+
+      const reloginB = yield* Effect.promise(() =>
+        runCliLogin(["login", "--base-url", CLOUD_BASE_URL, "--no-browser"], dataDir, emailB),
+      );
+      expect(reloginB.code, `account B re-login failed:\n${reloginB.stderr}`).toBe(0);
+      expect(profileNameFromLogin(reloginB.stdout), "re-login reused B's profile").toBe(profileB);
+
+      const useReloggedB = yield* Effect.promise(() =>
+        runCli(["server", "use", profileB], dataDir),
+      );
+      expect(useReloggedB.code, `reselecting account B failed:\n${useReloggedB.stderr}`).toBe(0);
+      const reloggedCallB = yield* Effect.promise(() => runCli(["tools", "sources"], dataDir));
+      expect(reloggedCallB.code, `re-logged account B call failed:\n${reloggedCallB.stderr}`).toBe(
+        0,
+      );
+
+      const listed = yield* Effect.promise(() => runCli(["server", "list"], dataDir));
+      expect(listed.code, `listing profiles failed:\n${listed.stderr}`).toBe(0);
+      expect(listed.stdout).toContain(profileA);
+      expect(listed.stdout).toContain(profileB);
+      expect(listed.stdout.match(/stored-auth/g), "both profiles retain credentials").toHaveLength(
+        2,
+      );
+    }),
+  ),
 );

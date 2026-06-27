@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -135,20 +135,47 @@ const makeMcp = async (url: string, token: string, name: string) => {
   return { client, transport };
 };
 
-const textFromCall = (result: Awaited<ReturnType<Client["callTool"]>>): string => {
-  const blocks = result.content ?? [];
+const McpTextResult = Schema.Struct({
+  content: Schema.Array(
+    Schema.Struct({
+      type: Schema.String,
+      text: Schema.optional(Schema.String),
+    }),
+  ),
+});
+
+const decodeMcpTextResult = Schema.decodeUnknownSync(McpTextResult);
+
+const textFromCall = (result: unknown): string => {
+  const blocks = decodeMcpTextResult(result).content;
   const text = blocks.find((block) => block.type === "text")?.text;
   if (typeof text !== "string") throw new Error(`MCP call returned no text block`);
   return text;
 };
 
-const executeJson = async (client: Client, code: string): Promise<Record<string, unknown>> => {
-  const result = await client.callTool({
-    name: "execute",
-    arguments: { code },
+const ExecuteResult = Schema.Struct({
+  ok: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(Schema.String),
+  data: Schema.optional(
+    Schema.Struct({
+      id: Schema.optional(Schema.String),
+    }),
+  ),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+});
+
+const decodeExecuteResult = Schema.decodeUnknownEffect(Schema.fromJsonString(ExecuteResult));
+
+const executeJson = (client: Client, code: string) =>
+  Effect.gen(function* () {
+    const result = yield* Effect.promise(() =>
+      client.callTool({
+        name: "execute",
+        arguments: { code },
+      }),
+    );
+    return yield* decodeExecuteResult(textFromCall(result));
   });
-  return JSON.parse(textFromCall(result)) as Record<string, unknown>;
-};
 
 scenario(
   "Local toolkits · scoped MCP hides blocked and unselected connections",
@@ -239,49 +266,42 @@ scenario(
             Effect.promise(() => toolkitMcp.client.close()).pipe(Effect.ignore),
           );
 
-          const selectedCall = yield* Effect.promise(() =>
-            executeJson(
-              toolkitMcp.client,
-              callPingCode({
-                integration,
-                connection: selected,
-                id: "from-toolkit",
-              }),
-            ),
+          const selectedCall = yield* executeJson(
+            toolkitMcp.client,
+            callPingCode({
+              integration,
+              connection: selected,
+              id: "from-toolkit",
+            }),
           );
           expect(selectedCall.ok, `selected call: ${JSON.stringify(selectedCall)}`).toBe(true);
-          expect((selectedCall.data as { id?: unknown }).id).toBe("from-toolkit");
+          expect(selectedCall.data?.id).toBe("from-toolkit");
 
-          const visible = yield* Effect.promise(() =>
-            executeJson(toolkitMcp.client, listVisiblePathsCode(integration)),
-          );
-          expect(visible.paths).toContain(pingToolPath(integration, selected));
-          expect(visible.paths).not.toContain(pingToolPath(integration, blocked));
-          expect(visible.paths).not.toContain(pingToolPath(integration, unselected));
+          const visible = yield* executeJson(toolkitMcp.client, listVisiblePathsCode(integration));
+          const visiblePaths = visible.paths ?? [];
+          expect(visiblePaths).toContain(pingToolPath(integration, selected));
+          expect(visiblePaths).not.toContain(pingToolPath(integration, blocked));
+          expect(visiblePaths).not.toContain(pingToolPath(integration, unselected));
 
-          const blockedCall = yield* Effect.promise(() =>
-            executeJson(
-              toolkitMcp.client,
-              callPingCode({
-                integration,
-                connection: blocked,
-                id: "blocked-should-not-run",
-              }),
-            ),
+          const blockedCall = yield* executeJson(
+            toolkitMcp.client,
+            callPingCode({
+              integration,
+              connection: blocked,
+              id: "blocked-should-not-run",
+            }),
           );
           expect(blockedCall.reason, `blocked call: ${JSON.stringify(blockedCall)}`).toBe(
             "missing",
           );
 
-          const unselectedCall = yield* Effect.promise(() =>
-            executeJson(
-              toolkitMcp.client,
-              callPingCode({
-                integration,
-                connection: unselected,
-                id: "should-not-run",
-              }),
-            ),
+          const unselectedCall = yield* executeJson(
+            toolkitMcp.client,
+            callPingCode({
+              integration,
+              connection: unselected,
+              id: "should-not-run",
+            }),
           );
           expect(unselectedCall.reason, `unselected call: ${JSON.stringify(unselectedCall)}`).toBe(
             "missing",

@@ -1,5 +1,5 @@
-// One synced playback head over BOTH of a run's real recordings — the
-// terminal cast and the browser video — driven by the run's focus timeline
+// One synced playback head over BOTH of a run's real recordings: the
+// terminal cast and the browser video, driven by the run's focus timeline
 // (timeline.json). Where film.mp4 bakes the cuts into pixels, this player
 // performs them live: the active act decides which recording is on screen,
 // a synthetic window chrome floats above it (terminal title bar, or a
@@ -10,7 +10,7 @@
 // The master clock is WALL CLOCK: focus entries are wall-contiguous, so
 // session-time t maps to exactly one act, and each recording's own clock
 // is recovered through its anchor (timeline.anchors). No idle compression
-// anywhere — cast time must equal wall time for the cuts to land.
+// anywhere. Cast time must equal wall time for the cuts to land.
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as AsciinemaPlayer from "asciinema-player";
 import "asciinema-player/dist/bundle/asciinema-player.css";
@@ -25,7 +25,7 @@ export interface SessionTraceRef {
   id: string;
   at: number;
   url: string;
-  /** Request duration (ms) — recorded by the surfaces at run time. */
+  /** Request duration (ms), recorded by the surfaces at run time. */
   ms?: number;
   status?: number;
   /** Which window made the request: terminal (MCP/CLI) or browser. */
@@ -64,14 +64,18 @@ export const SessionPlayer = ({
   timeline,
   traces,
   playwrightTraceUrl,
-  motelViewer,
+  liveMotelViewer,
+  onInspectTrace,
+  inspectableTraceIds,
 }: {
   castUrl: string;
   videoUrl: string;
   timeline: SessionTimeline;
   traces: SessionTraceRef[];
   playwrightTraceUrl: string | null;
-  motelViewer: string;
+  liveMotelViewer?: string;
+  onInspectTrace?: (traceId: string) => void;
+  inspectableTraceIds?: ReadonlySet<string>;
 }) => {
   const sessionStart = timeline.focus[0]?.at ?? 0;
   const terminalAnchor = timeline.anchors.terminal ?? sessionStart;
@@ -127,7 +131,7 @@ export const SessionPlayer = ({
         1000,
     );
 
-  // Mount the cast player once (no idle compression — sync needs real time).
+  // Mount the cast player once (no idle compression, sync needs real time).
   useEffect(() => {
     if (!castMount.current) return;
     const player = AsciinemaPlayer.create(castUrl, castMount.current, {
@@ -252,7 +256,7 @@ export const SessionPlayer = ({
         .filter((trace) => trace.t >= 0),
     [traces, sessionStart],
   );
-  // Duration bars are scaled to the slowest request — the question the rail
+  // Duration bars are scaled to the slowest request. The question the rail
   // answers is "which of these was the slow one", not absolute ms.
   const slowest = Math.max(...traceMarks.map((mark) => mark.ms ?? 0), 1);
 
@@ -270,7 +274,7 @@ export const SessionPlayer = ({
     <div className="player">
       <div className="player-split">
         <div className="player-main">
-          {/* Synthetic window chrome — the recordings are chromeless, so the
+          {/* Synthetic window chrome: the recordings are chromeless, so the
               viewer restores what a developer would actually see: a terminal
               title bar, or a browser URL bar with the address the page is on. */}
           <div className={`chrome ${activeWindow}`}>
@@ -295,7 +299,7 @@ export const SessionPlayer = ({
                 )}
               </>
             ) : (
-              <span className="termtitle">terminal — agent chat</span>
+              <span className="termtitle">terminal: agent chat</span>
             )}
           </div>
 
@@ -370,17 +374,18 @@ export const SessionPlayer = ({
 
         {/* The trace rail: every API request the session made, beside the
             video it happened in, with a duration bar scaled to the slowest
-            request — "why did that take so long" is answered at a glance.
-            Rows seek the player; ids open motel's waterfall. */}
+            request. "Why did that take so long" is answered at a glance.
+            Rows seek the player; ids open the portable waterfall. */}
         {traceMarks.length > 0 && (
           <div className="trace-rail" ref={railRef}>
             <div className="rail-head">
               traces
-              <span className="rail-sub">click = seek · id = waterfall</span>
+              <span className="rail-sub">click = seek · id = portable waterfall</span>
             </div>
             {traceMarks.map((mark, index) => {
               const isNow = index === nowIndex;
               const slow = (mark.ms ?? 0) >= 1000;
+              const inspectTrace = inspectableTraceIds?.has(mark.id) ? onInspectTrace : undefined;
               return (
                 <div
                   key={`${mark.id}-${index}`}
@@ -413,15 +418,38 @@ export const SessionPlayer = ({
                         width: `${Math.max(((mark.ms ?? 0) / slowest) * 100, 1.5)}%`,
                       }}
                     />
-                    <a
-                      className="trace-id"
-                      href={`${motelViewer}/trace/${mark.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      {mark.id.slice(0, 7)}
-                    </a>
+                    {inspectTrace ? (
+                      <button
+                        type="button"
+                        className="trace-id"
+                        aria-label={`Inspect trace ${mark.id} for ${mark.label ?? mark.url.replace(/^https?:\/\/[^/]+/, "")} in the portable waterfall`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          inspectTrace(mark.id);
+                          requestAnimationFrame(() => {
+                            document
+                              .getElementById(`trace-${mark.id}`)
+                              ?.scrollIntoView({ block: "start", behavior: "smooth" });
+                          });
+                        }}
+                      >
+                        {mark.id.slice(0, 7)}
+                      </button>
+                    ) : (
+                      <code className="trace-id">{mark.id.slice(0, 7)}</code>
+                    )}
+                    {liveMotelViewer && (
+                      <a
+                        className="trace-live"
+                        href={`${liveMotelViewer}/trace/${mark.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(event) => event.stopPropagation()}
+                        title="Open this trace in the live local Motel"
+                      >
+                        ↗
+                      </a>
+                    )}
                   </div>
                 </div>
               );

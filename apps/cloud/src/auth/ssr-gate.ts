@@ -22,6 +22,7 @@
 
 import { createMiddleware } from "@tanstack/react-start";
 import { Effect, Exit, Layer, ManagedRuntime } from "effect";
+import { isValidOrgSlug } from "@executor-js/api";
 
 import {
   AUTH_HINT_COOKIE,
@@ -39,6 +40,7 @@ import { sealedSessionDisplayName } from "./middleware";
 import { browserOriginFromRequest } from "./request-origin";
 import { loginPath, safeReturnTo } from "./return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "./route-paths";
+import { authorizeOrganizationSelector } from "./organization";
 import { WorkOSClient } from "./workos";
 
 const SESSION_COOKIE = "wos-session";
@@ -76,6 +78,8 @@ type VerifiedSession = {
   readonly refreshedSession?: string | undefined;
 };
 
+type DocumentOrganization = NonNullable<AuthHint["organization"]>;
+
 // EVERY failure collapses to "signed out" — WorkOS errors inside the effect
 // and layer-construction errors like a bad cookie password (runPromiseExit
 // carries those in its Exit too) — so the login flow surfaces the real
@@ -100,21 +104,24 @@ const verifySession = async (sealed: string): Promise<VerifiedSession | null> =>
 
 /**
  * The hint this request should be served with: the browser's own cookie when
- * it already matches the verified identity, else one minted fresh from the
- * session. `mint` is set when the cookie must also be (re)written — identity
- * data freshness (a renamed user/org) is the CLIENT's job via /account/me,
+ * it already matches the verified identity and document organization, else a
+ * request-local hint. `mint` is set when the cookie must also be (re)written,
+ * but URL-specific hints are never persisted because tabs share cookies.
+ * Identity data freshness (a renamed user/org) is the CLIENT's job via /account/me,
  * so the gate only steps in when the ids are wrong, never to rewrite display
  * fields (which would ping-pong with the client's authoritative write).
  */
 const resolveAuthHint = async (
   session: VerifiedSession,
   cookieHeader: string | null,
+  organization: DocumentOrganization | null,
+  persist: boolean,
 ): Promise<{ hint: AuthHint; mint: boolean }> => {
   const existing = decodeAuthHint(parseCookie(cookieHeader, AUTH_HINT_COOKIE));
   if (
     existing &&
     existing.user.id === session.userId &&
-    (existing.organization?.id ?? null) === session.organizationId
+    (existing.organization?.id ?? null) === organization?.id
   ) {
     return { hint: existing, mint: false };
   }
@@ -127,14 +134,9 @@ const resolveAuthHint = async (
         name: session.name,
         avatarUrl: session.avatarUrl,
       },
-      organization: session.organizationId
-        ? {
-            id: session.organizationId,
-            ...(await organizationDisplay(session.organizationId)),
-          }
-        : null,
+      organization,
     },
-    mint: true,
+    mint: persist,
   };
 };
 
@@ -156,6 +158,29 @@ const organizationDisplay = async (
   return Exit.isSuccess(exit)
     ? { name: exit.value?.name ?? "", slug: exit.value?.slug ?? "" }
     : { name: "", slug: "" };
+};
+
+const userStoreLayer = () => Layer.provide(makeUserStoreLayer(), makeDbLayer());
+
+const organizationSelectorFromPath = (pathname: string) => {
+  const segment = pathname.split("/")[1];
+  return segment && isValidOrgSlug(segment) ? segment : null;
+};
+
+const organizationForDocument = async (session: VerifiedSession, selector: string | null) => {
+  if (!selector) {
+    if (!session.organizationId) return null;
+    return {
+      id: session.organizationId,
+      ...(await organizationDisplay(session.organizationId)),
+    };
+  }
+
+  const exit = await getRuntime().runPromiseExit(
+    authorizeOrganizationSelector(session.userId, selector).pipe(Effect.provide(userStoreLayer())),
+  );
+  if (!Exit.isSuccess(exit) || !exit.value) return null;
+  return { id: exit.value.id, name: exit.value.name, slug: exit.value.slug };
 };
 
 const hintSetCookie = (hint: AuthHint) =>
@@ -235,7 +260,20 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
     // SSR render the real `https://…/<org>/mcp` instead of the client-side
     // `http://127.0.0.1:4000` default — which would otherwise flash until
     // hydration corrected it. Set-cookie writes ride on the rendered response.
-    const { hint, mint } = await resolveAuthHint(session, cookieHeader);
+    // A slugged document is scoped by its URL, not by the browser-global
+    // session or hint cookies. Resolve that organization before rendering so
+    // the first HTML cannot paint another tab's organization. A foreign or
+    // inactive organization deliberately produces a null organization hint,
+    // which makes the root render its unframed not-found page. Do not persist
+    // URL-specific hints here because sibling tabs share one cookie jar.
+    const organizationSelector = organizationSelectorFromPath(pathname);
+    const organization = await organizationForDocument(session, organizationSelector);
+    const { hint, mint } = await resolveAuthHint(
+      session,
+      cookieHeader,
+      organization,
+      organizationSelector === null,
+    );
     const result = await next({
       context: { authHint: hint, origin: browserOriginFromRequest(request) },
     });

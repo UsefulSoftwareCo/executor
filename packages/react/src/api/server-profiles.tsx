@@ -7,6 +7,8 @@ import {
 
 export const EXECUTOR_SERVER_PROFILES_STORAGE_KEY = "executor.serverConnections.v1";
 
+export const createExecutorServerProfileKey = () => `profile:${globalThis.crypto.randomUUID()}`;
+
 export interface ExecutorServerProfilesSnapshot {
   readonly activeKey: string | null;
   readonly profiles: readonly ExecutorServerConnection[];
@@ -167,6 +169,18 @@ export const upsertExecutorServerProfile = (
     activeKey,
     profiles: [...profiles.values()],
   });
+};
+
+export const mergeExecutorDesktopSidecarProfile = (
+  snapshot: ExecutorServerProfilesSnapshot,
+  sidecar: ExecutorServerConnectionInput,
+): ExecutorServerProfilesSnapshot => {
+  if (sidecar.kind !== "desktop-sidecar") return snapshot;
+  return (
+    upsertExecutorServerProfile(snapshot, sidecar, {
+      makeActive: getActiveExecutorServerProfile(snapshot) === null,
+    }) ?? snapshot
+  );
 };
 
 export const selectExecutorServerProfile = (

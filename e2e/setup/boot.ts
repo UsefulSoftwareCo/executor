@@ -9,7 +9,42 @@ export interface BootedProcesses {
   readonly teardown: () => Promise<void>;
   /** Process-group leader pids — what an external `down` must signal. */
   readonly pids: ReadonlyArray<number>;
+  /** Race a readiness probe against any child stopping before readiness. */
+  readonly waitUntilReady: <A>(readiness: Promise<A>) => Promise<A>;
 }
+
+export type TargetBootMode =
+  | { readonly kind: "spawn" }
+  | { readonly kind: "attach"; readonly url: string };
+
+/**
+ * Attaching is selected only by an explicit target URL. Port overrides still
+ * mean "spawn on this port" and must pass the normal collision checks.
+ */
+export const targetBootMode = (
+  urlEnvVar: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): TargetBootMode => {
+  const configured = env[urlEnvVar]?.trim();
+  if (!configured) return { kind: "spawn" };
+  if (!URL.canParse(configured)) {
+    throw new Error(`e2e: ${urlEnvVar} must be an absolute http(s) URL`);
+  }
+  const parsed = new URL(configured);
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error(`e2e: ${urlEnvVar} must be an http(s) URL without embedded credentials`);
+  }
+  return { kind: "attach", url: parsed.toString().replace(/\/$/, "") };
+};
+
+/** Resolve readiness unless a monitored process reports a concrete failure. */
+export const waitForReadiness = <A>(readiness: Promise<A>, failure: Promise<Error>): Promise<A> =>
+  Promise.race([
+    readiness,
+    failure.then((error) => {
+      throw error;
+    }),
+  ]);
 
 export const bootProcesses = (
   procs: ReadonlyArray<{
@@ -23,6 +58,7 @@ export const bootProcesses = (
   options: { readonly label: string },
 ): BootedProcesses => {
   const children: ChildProcess[] = [];
+  const stopped: Array<Promise<Error>> = [];
   let tearingDown = false;
   for (const proc of procs) {
     const log = proc.logFile ? openSync(proc.logFile, "a") : undefined;
@@ -36,13 +72,32 @@ export const bootProcesses = (
       // kill and squat the port into the NEXT invocation's waitForHttp.
       detached: true,
     });
-    child.on("exit", (code) => {
-      if (code !== 0 && code !== null && !tearingDown) {
-        console.error(`[e2e:${options.label}] ${proc.cmd} exited with ${code}`);
+    stopped.push(
+      new Promise((resolve) => {
+        child.once("error", (error) =>
+          resolve(
+            new Error(`[e2e:${options.label}] ${proc.cmd} failed to start: ${error.message}`),
+          ),
+        );
+        child.once("exit", (code, signal) =>
+          resolve(
+            new Error(
+              `[e2e:${options.label}] ${proc.cmd} stopped before readiness (${signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`})`,
+            ),
+          ),
+        );
+      }),
+    );
+    child.on("exit", (code, signal) => {
+      if (!tearingDown) {
+        console.error(
+          `[e2e:${options.label}] ${proc.cmd} stopped (${signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`})`,
+        );
       }
     });
     children.push(child);
   }
+  const firstStop = Promise.race(stopped);
 
   // Signal the process GROUP (negative pid); fall back to the direct child
   // when the group is already gone.
@@ -61,6 +116,7 @@ export const bootProcesses = (
       : new Promise((resolve) => child.once("exit", () => resolve()));
 
   return {
+    waitUntilReady: (readiness) => waitForReadiness(readiness, firstStop),
     teardown: async () => {
       tearingDown = true;
       const allExited = Promise.all(children.map(exited));
@@ -82,17 +138,35 @@ export const bootProcesses = (
 
 export const waitForHttp = async (
   url: string,
-  options: { readonly timeoutMs?: number; readonly expectRedirect?: boolean } = {},
+  options: {
+    readonly timeoutMs?: number;
+    readonly expectRedirect?: boolean;
+    readonly expectedStatus?: number;
+    readonly headers?: HeadersInit;
+    readonly validateResponse?: (response: Response) => boolean | Promise<boolean>;
+  } = {},
 ): Promise<void> => {
   const deadline = Date.now() + (options.timeoutMs ?? 90_000);
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { redirect: "manual" });
+      const response = await fetch(url, { redirect: "manual", headers: options.headers });
       // During a cold vite compile /api/* falls back to the SPA's 200 HTML —
       // expectRedirect waits for the real handler (302) instead.
-      if (options.expectRedirect ? response.status === 302 : response.status < 500) return;
-      lastError = new Error(`status ${response.status}`);
+      const ready =
+        options.expectedStatus !== undefined
+          ? response.status === options.expectedStatus
+          : options.expectRedirect
+            ? response.status === 302
+            : response.status < 500;
+      const valid =
+        ready && (options.validateResponse ? await options.validateResponse(response) : true);
+      if (valid) return;
+      lastError = new Error(
+        ready
+          ? `response validation failed with status ${response.status}`
+          : `status ${response.status}`,
+      );
     } catch (error) {
       lastError = error;
     }

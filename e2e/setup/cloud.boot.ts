@@ -131,9 +131,24 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
 
   try {
     const local = `http://127.0.0.1:${options.cloudPort}`;
-    await waitForHttp(local);
-    // The API plane is ready when login actually redirects to AuthKit.
-    await waitForHttp(`${local}/api/auth/login`, { expectRedirect: true });
+    await procs.waitUntilReady(
+      (async () => {
+        await waitForHttp(local);
+        // The API plane is ready only when login redirects to this boot's
+        // AuthKit emulator, not merely when something answers the app port.
+        await waitForHttp(`${local}/api/auth/login`, {
+          expectRedirect: true,
+          validateResponse: (response) => {
+            const location = response.headers.get("location");
+            return (
+              location !== null &&
+              URL.canParse(location, workosUrl) &&
+              new URL(location, workosUrl).origin === new URL(workosUrl).origin
+            );
+          },
+        });
+      })(),
+    );
   } catch (error) {
     await teardown();
     throw error;

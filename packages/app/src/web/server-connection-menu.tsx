@@ -11,7 +11,9 @@ import {
 } from "@executor-js/react/api/server-connection";
 import {
   EXECUTOR_SERVER_PROFILES_STORAGE_KEY,
+  createExecutorServerProfileKey,
   getActiveExecutorServerProfile,
+  mergeExecutorDesktopSidecarProfile,
   normalizeExecutorServerProfilesSnapshot,
   parseExecutorServerProfilesSnapshot,
   readExecutorServerProfiles,
@@ -195,7 +197,12 @@ const withoutLoopbackProfiles = (
 ): ExecutorServerProfilesSnapshot =>
   normalizeExecutorServerProfilesSnapshot({
     activeKey: snapshot.activeKey,
-    profiles: snapshot.profiles.filter((profile) => !isLoopbackConnection(profile)),
+    profiles: snapshot.profiles.filter(
+      (profile) =>
+        profile.kind === "desktop-sidecar" ||
+        profile.key.startsWith("profile:") ||
+        !isLoopbackConnection(profile),
+    ),
   });
 
 const draftAuth = (draft: DraftProfile): ExecutorServerAuth | undefined => {
@@ -223,6 +230,7 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
   const connection = useExecutorServerConnection();
   const setServerConnection = useSetExecutorServerConnection();
   const hydratedRef = useRef(false);
+  const snapshotRevisionRef = useRef(0);
   const [hydrated, setHydrated] = useState(false);
   const [snapshot, setSnapshot] = useState<ExecutorServerProfilesSnapshot>(() => ({
     activeKey: connection.key,
@@ -233,6 +241,7 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
   const [showCustomServer, setShowCustomServer] = useState(false);
 
   const persistSnapshot = useCallback((next: ExecutorServerProfilesSnapshot) => {
+    snapshotRevisionRef.current += 1;
     setSnapshot(next);
     writeStoredProfiles(next);
   }, []);
@@ -240,34 +249,41 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
+    const hydrationRevision = snapshotRevisionRef.current;
 
     let cancelled = false;
     void readStoredProfiles().then((stored) => {
       void (async () => {
         if (cancelled) return;
-        const desktopBridge = hasDesktopServerConnectionBridge();
         const desktopConnection =
           (await readDesktopServerConnection()?.then(
             (value) => value,
             () => null,
           )) ?? null;
-        const storedActive = getActiveExecutorServerProfile(stored);
+        if (cancelled) return;
+        if (snapshotRevisionRef.current !== hydrationRevision) {
+          setHydrated(true);
+          return;
+        }
         const current = desktopConnection
           ? normalizeExecutorServerConnection(desktopConnection)
           : connection;
         const baseStored = desktopConnection ? withoutLoopbackProfiles(stored) : stored;
-        const shouldKeepCurrent =
-          desktopBridge ||
-          storedActive === null ||
-          (hasBearerAuth(current) &&
-            storedActive !== null &&
-            sameLoopbackServer(current, storedActive));
-        const next = snapshotWithCurrent(baseStored, current, shouldKeepCurrent);
+        const storedActive = getActiveExecutorServerProfile(baseStored);
+        const next = desktopConnection
+          ? mergeExecutorDesktopSidecarProfile(baseStored, current)
+          : snapshotWithCurrent(
+              baseStored,
+              current,
+              storedActive === null ||
+                (hasBearerAuth(current) &&
+                  storedActive !== null &&
+                  sameLoopbackServer(current, storedActive)),
+            );
+        const active = getActiveExecutorServerProfile(next);
         persistSnapshot(next);
-        if (desktopConnection) {
-          setServerConnection(desktopConnection);
-        } else if (!shouldKeepCurrent && storedActive && storedActive.key !== connection.key) {
-          setServerConnection(storedActive);
+        if (active && active.key !== connection.key) {
+          setServerConnection(active);
         }
         setHydrated(true);
       })();
@@ -320,6 +336,7 @@ export function ServerConnectionMenu(props: ServerConnectionMenuProps = {}) {
     const auth = draftAuth(draft);
     const input: ExecutorServerConnectionInput = {
       kind: "http",
+      key: createExecutorServerProfileKey(),
       origin,
       ...(draft.displayName.trim() ? { displayName: draft.displayName.trim() } : {}),
       ...(auth ? { auth } : {}),

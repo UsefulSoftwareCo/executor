@@ -63,12 +63,29 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
               ? { slowMo }
               : {},
         );
+        // Cloudflare Access adds its signed assertion as an origin-facing
+        // header. Browser identities carry that header directly in hermetic
+        // runs. Cookie headers remain handled by addCookies below because
+        // Chromium owns the Cookie header.
+        const identityHeaders = Object.fromEntries(
+          Object.entries(identity.headers ?? {}).filter(
+            ([name]) => name.toLowerCase() !== "cookie",
+          ),
+        );
         const context = await browser.newContext({
           colorScheme: "dark",
           viewport: { width: 1280, height: 800 },
           recordVideo: { dir: videoTmp, size: { width: 1280, height: 800 } },
           baseURL: target.baseUrl,
         });
+        if (Object.keys(identityHeaders).length > 0) {
+          const targetOrigin = new URL(target.baseUrl).origin;
+          await context.route(`${targetOrigin}/**`, (route) =>
+            route.continue({
+              headers: { ...route.request().headers(), ...identityHeaders },
+            }),
+          );
+        }
         await context.tracing.start({
           screenshots: true,
           snapshots: true,

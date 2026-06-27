@@ -1,6 +1,6 @@
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { Exit, Match } from "effect";
-import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { toast } from "sonner";
 import { trackEvent } from "../api/analytics";
@@ -16,8 +16,11 @@ import {
 } from "../components/dialog";
 import { Button } from "../components/button";
 import { Badge } from "../components/badge";
+import { Alert, AlertDescription, AlertTitle } from "../components/alert";
+import { Info, InfoDescription, InfoTitle } from "../components/info";
 import { Input } from "../components/input";
 import { Label } from "../components/label";
+import { Skeleton } from "../components/skeleton";
 import {
   Select,
   SelectContent,
@@ -64,6 +67,74 @@ type MemberData = {
 };
 
 type RoleData = { slug: string; name: string };
+
+type OrganizationNameDraft = {
+  readonly organizationId: string | null;
+  readonly sourceName: string;
+  readonly value: string;
+};
+
+export type OrgPageAccess =
+  | { readonly status: "loading"; readonly canManageOrganization: false }
+  | { readonly status: "allowed"; readonly canManageOrganization: true }
+  | { readonly status: "denied"; readonly canManageOrganization: false }
+  | { readonly status: "failed"; readonly canManageOrganization: false };
+
+type OrgPageAccessSource =
+  | { readonly status: "loading" }
+  | { readonly status: "failed" }
+  | { readonly status: "resolved"; readonly role: string | null | undefined };
+
+export const canManageOrganizationRole = (role: string | null | undefined) =>
+  role === "admin" || role === "owner";
+
+export const resolveOrgPageAccess = (source: OrgPageAccessSource) => {
+  if (source.status === "loading") {
+    return { status: "loading", canManageOrganization: false } satisfies OrgPageAccess;
+  }
+  if (source.status === "failed" || source.role == null) {
+    return { status: "failed", canManageOrganization: false } satisfies OrgPageAccess;
+  }
+  if (canManageOrganizationRole(source.role)) {
+    return { status: "allowed", canManageOrganization: true } satisfies OrgPageAccess;
+  }
+  return { status: "denied", canManageOrganization: false } satisfies OrgPageAccess;
+};
+
+export const resolveOrgPageAccessResult = (
+  result:
+    | AsyncResult.Initial<unknown, unknown>
+    | AsyncResult.Failure<unknown, unknown>
+    | AsyncResult.Success<
+        {
+          readonly members: ReadonlyArray<Pick<MemberData, "isCurrentUser" | "role">>;
+        },
+        unknown
+      >,
+) => {
+  if (AsyncResult.isWaiting(result) && AsyncResult.isFailure(result)) {
+    return resolveOrgPageAccess({ status: "loading" });
+  }
+  if (AsyncResult.isInitial(result)) {
+    return resolveOrgPageAccess({ status: "loading" });
+  }
+  if (AsyncResult.isFailure(result)) {
+    return resolveOrgPageAccess({ status: "failed" });
+  }
+  return resolveOrgPageAccess({
+    status: "resolved",
+    role: result.value.members.find((member) => member.isCurrentUser)?.role,
+  });
+};
+
+const organizationNameDraft = (
+  organizationId: string | null,
+  sourceName: string,
+): OrganizationNameDraft => ({
+  organizationId,
+  sourceName,
+  value: sourceName,
+});
 
 type InviteState = {
   email: string;
@@ -120,19 +191,94 @@ function formatLastActive(lastActiveAt: string | null): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function OrgPage(props: { domainsSection?: React.ReactNode }) {
+function OrganizationPermissionNotice(props: { access: OrgPageAccess; onRetry: () => void }) {
+  if (props.access.status === "denied") {
+    return (
+      <Info className="mb-8" data-testid="organization-permission-read-only">
+        <InfoTitle>Read-only organization access</InfoTitle>
+        <InfoDescription>
+          An organization administrator manages names, domains, invitations, and member roles.
+        </InfoDescription>
+      </Info>
+    );
+  }
+
+  if (props.access.status === "failed") {
+    return (
+      <Alert variant="destructive" className="mb-8" data-testid="organization-permission-failed">
+        <AlertTitle>Organization permissions unavailable</AlertTitle>
+        <AlertDescription>
+          <p>
+            Management controls are unavailable because your organization permissions could not be
+            determined.
+          </p>
+          <Button size="sm" variant="outline" onClick={props.onRetry}>
+            Retry permissions
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return null;
+}
+
+function OrganizationMembersSkeleton() {
+  return (
+    <div className="space-y-2" data-testid="organization-members-loading">
+      {[1, 2, 3].map((index) => (
+        <Skeleton key={index} className="h-14" />
+      ))}
+    </div>
+  );
+}
+
+export function OrgPage(props: {
+  domainsSection?: React.ReactNode | ((access: OrgPageAccess) => React.ReactNode);
+}) {
   const auth = useAuth();
+  const organizationId = auth.status === "authenticated" ? (auth.organization?.id ?? null) : null;
   const organizationName =
     auth.status === "authenticated" ? (auth.organization?.name ?? "Organization") : "Organization";
   const membersResult = useAtomValue(orgMembersAtom);
   const rolesResult = useAtomValue(orgRolesAtom);
+  const refreshMembers = useAtomRefresh(orgMembersAtom);
   const doRemove = useAtomSet(removeMember, { mode: "promiseExit" });
   const doUpdateRole = useAtomSet(updateMemberRole, { mode: "promiseExit" });
   const doUpdateOrgName = useAtomSet(updateOrgName, { mode: "promiseExit" });
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [editName, setEditName] = useState(organizationName);
-  const [savingName, setSavingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(() =>
+    organizationNameDraft(organizationId, organizationName),
+  );
+  const [savingOrganizationId, setSavingOrganizationId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+
+  // A URL-driven organization switch can replace auth while this page remains
+  // mounted. Associate the draft with its organization so stale text from the
+  // previous workspace is never rendered or submitted during that transition.
+  const activeNameDraft =
+    nameDraft.organizationId === organizationId
+      ? nameDraft
+      : organizationNameDraft(organizationId, organizationName);
+  const editName = activeNameDraft.value;
+  const savingName = savingOrganizationId === organizationId;
+
+  useEffect(() => {
+    setNameDraft((current) => {
+      if (current.organizationId !== organizationId) {
+        return organizationNameDraft(organizationId, organizationName);
+      }
+      if (current.sourceName === organizationName) return current;
+      return {
+        organizationId,
+        sourceName: organizationName,
+        value: current.value === current.sourceName ? organizationName : current.value,
+      };
+    });
+  }, [organizationId, organizationName]);
+
+  const access = resolveOrgPageAccessResult(membersResult);
+  const canManageOrganization = access.canManageOrganization;
 
   const roles = AsyncResult.match(rolesResult, {
     onInitial: () => [] as readonly RoleData[],
@@ -164,12 +310,14 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
   };
 
   const handleSaveName = async () => {
+    if (!canManageOrganization || !organizationId) return;
     const trimmed = editName.trim();
     if (!trimmed || trimmed === organizationName) {
-      setEditName(organizationName);
+      setNameDraft(organizationNameDraft(organizationId, organizationName));
       return;
     }
-    setSavingName(true);
+    const targetOrganizationId = organizationId;
+    setSavingOrganizationId(targetOrganizationId);
     const exit = await doUpdateOrgName({
       payload: { name: trimmed },
       reactivityKeys: orgInfoWriteKeys,
@@ -179,10 +327,19 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
       toast.success("Organization name updated");
     } else {
       toast.error("Failed to update organization name");
-      setEditName(organizationName);
+      setNameDraft((current) =>
+        current.organizationId === targetOrganizationId
+          ? organizationNameDraft(targetOrganizationId, organizationName)
+          : current,
+      );
     }
-    setSavingName(false);
+    setSavingOrganizationId((current) => (current === targetOrganizationId ? null : current));
   };
+
+  const domainsSection =
+    typeof props.domainsSection === "function"
+      ? props.domainsSection(access)
+      : props.domainsSection;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -191,30 +348,54 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
           <h1 className="font-display text-[2rem] tracking-tight text-foreground">Organization</h1>
         </div>
 
+        <OrganizationPermissionNotice access={access} onRetry={refreshMembers} />
+
         <section className="mb-10">
-          <div className="flex items-end gap-3">
-            <div className="min-w-0 flex-1">
-              <Label htmlFor="org-name" className="text-sm font-medium text-foreground">
-                Organization name
-              </Label>
-              <Input
-                id="org-name"
-                value={editName}
-                onChange={(e) => setEditName((e.target as HTMLInputElement).value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveName();
-                }}
-                className="mt-1.5 h-9 text-sm"
-              />
+          <Label
+            htmlFor={canManageOrganization ? "org-name" : undefined}
+            className="text-sm font-medium text-foreground"
+          >
+            Organization name
+          </Label>
+          {access.status === "loading" ? (
+            <div
+              role="status"
+              className="mt-1.5"
+              data-testid="organization-name-permission-loading"
+            >
+              <span className="sr-only">Checking organization permissions</span>
+              <Skeleton className="h-9 w-full" />
             </div>
-            {editName.trim() !== organizationName && editName.trim() !== "" && (
-              <Button size="sm" onClick={handleSaveName} disabled={savingName}>
-                {savingName ? "Saving…" : "Save"}
-              </Button>
-            )}
-          </div>
+          ) : canManageOrganization ? (
+            <div className="mt-1.5 flex items-end gap-3">
+              <div className="min-w-0 flex-1">
+                <Input
+                  id="org-name"
+                  value={editName}
+                  onChange={(e) =>
+                    setNameDraft({
+                      organizationId,
+                      sourceName: organizationName,
+                      value: (e.target as HTMLInputElement).value,
+                    })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleSaveName();
+                  }}
+                  className="h-9 text-sm"
+                />
+              </div>
+              {editName.trim() !== organizationName && editName.trim() !== "" && (
+                <Button size="sm" onClick={() => void handleSaveName()} disabled={savingName}>
+                  {savingName ? "Saving…" : "Save"}
+                </Button>
+              )}
+            </div>
+          ) : (
+            <p className="mt-1.5 text-sm text-foreground">{organizationName}</p>
+          )}
         </section>
-        {props.domainsSection && props.domainsSection}
+        {domainsSection}
 
         <section className="mb-10">
           <div className="flex items-center justify-between mb-4">
@@ -224,9 +405,13 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
                 People with access to this Executor instance.
               </p>
             </div>
-            <Button size="sm" className="min-w-32" onClick={() => setInviteOpen(true)}>
-              Invite member
-            </Button>
+            {access.status === "loading" ? (
+              <Skeleton className="h-8 w-32" data-testid="organization-member-actions-loading" />
+            ) : canManageOrganization ? (
+              <Button size="sm" className="min-w-32" onClick={() => setInviteOpen(true)}>
+                Invite member
+              </Button>
+            ) : null}
           </div>
           <Input
             type="text"
@@ -236,148 +421,148 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
             className="mb-3 h-9 text-sm"
           />
 
-          {AsyncResult.match(membersResult, {
-            onInitial: () => (
-              <div className="space-y-2">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
-                ))}
-              </div>
-            ),
-            onFailure: () => (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-                <p className="text-sm text-destructive">Failed to load members</p>
-              </div>
-            ),
-            onSuccess: ({ value }) => {
-              const members = value.members;
-              const filtered = search
-                ? members.filter(
-                    (m: MemberData) =>
-                      m.email.toLowerCase().includes(search.toLowerCase()) ||
-                      (m.name?.toLowerCase().includes(search.toLowerCase()) ?? false),
-                  )
-                : members;
+          {access.status === "loading" ? (
+            <OrganizationMembersSkeleton />
+          ) : (
+            AsyncResult.match(membersResult, {
+              onInitial: () => <OrganizationMembersSkeleton />,
+              onFailure: () => (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+                  <p className="text-sm text-destructive">Failed to load members</p>
+                </div>
+              ),
+              onSuccess: ({ value }) => {
+                const members = value.members;
+                const filtered = search
+                  ? members.filter(
+                      (m: MemberData) =>
+                        m.email.toLowerCase().includes(search.toLowerCase()) ||
+                        (m.name?.toLowerCase().includes(search.toLowerCase()) ?? false),
+                    )
+                  : members;
 
-              if (filtered.length === 0) {
+                if (filtered.length === 0) {
+                  return (
+                    <p className="py-8 text-center text-sm text-muted-foreground">
+                      {search ? "No matching members" : "No members yet"}
+                    </p>
+                  );
+                }
+
                 return (
-                  <p className="py-8 text-center text-sm text-muted-foreground">
-                    {search ? "No matching members" : "No members yet"}
-                  </p>
-                );
-              }
+                  <div className="space-y-px">
+                    {filtered.map((member: MemberData) => (
+                      <div
+                        key={member.id}
+                        className="group relative grid grid-cols-[2rem_1fr_6rem_5rem_2rem] items-center gap-3 rounded-lg border border-transparent px-4 py-3 transition-all hover:bg-muted/30"
+                      >
+                        {member.avatarUrl ? (
+                          <img src={member.avatarUrl} alt="" className="size-8 rounded-full" />
+                        ) : (
+                          <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                            {member.name
+                              ? member.name
+                                  .split(" ")
+                                  .map((n: string) => n[0])
+                                  .join("")
+                                  .slice(0, 2)
+                                  .toUpperCase()
+                              : member.email[0]!.toUpperCase()}
+                          </div>
+                        )}
 
-              return (
-                <div className="space-y-px">
-                  {filtered.map((member: MemberData) => (
-                    <div
-                      key={member.id}
-                      className="group relative grid grid-cols-[2rem_1fr_6rem_5rem_2rem] items-center gap-3 rounded-lg border border-transparent px-4 py-3 transition-all hover:bg-muted/30"
-                    >
-                      {member.avatarUrl ? (
-                        <img src={member.avatarUrl} alt="" className="size-8 rounded-full" />
-                      ) : (
-                        <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-                          {member.name
-                            ? member.name
-                                .split(" ")
-                                .map((n: string) => n[0])
-                                .join("")
-                                .slice(0, 2)
-                                .toUpperCase()
-                            : member.email[0]!.toUpperCase()}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-sm font-medium text-foreground leading-none">
+                              {member.name ?? member.email}
+                            </p>
+                            {member.isCurrentUser && (
+                              <Badge className="bg-muted text-muted-foreground">You</Badge>
+                            )}
+                            {member.status === "pending" && (
+                              <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                                Invited
+                              </Badge>
+                            )}
+                          </div>
+                          {member.name && (
+                            <p className="mt-0.5 truncate text-xs text-muted-foreground leading-none">
+                              {member.email}
+                            </p>
+                          )}
                         </div>
-                      )}
 
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="truncate text-sm font-medium text-foreground leading-none">
-                            {member.name ?? member.email}
-                          </p>
-                          {member.isCurrentUser && (
-                            <Badge className="bg-muted text-muted-foreground">You</Badge>
-                          )}
-                          {member.status === "pending" && (
-                            <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                              Invited
-                            </Badge>
-                          )}
-                        </div>
-                        {member.name && (
-                          <p className="mt-0.5 truncate text-xs text-muted-foreground leading-none">
-                            {member.email}
-                          </p>
+                        <p className="text-sm text-muted-foreground capitalize leading-none">
+                          {member.role}
+                        </p>
+
+                        <p className="text-xs text-muted-foreground leading-none">
+                          {formatLastActive(member.lastActiveAt)}
+                        </p>
+
+                        {canManageOrganization && !member.isCurrentUser ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <svg viewBox="0 0 16 16" className="size-3">
+                                  <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                                  <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                                  <circle cx="8" cy="13" r="1.2" fill="currentColor" />
+                                </svg>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              {roles.length > 0 && (
+                                <>
+                                  <DropdownMenuSub>
+                                    <DropdownMenuSubTrigger className="text-xs">
+                                      Change role
+                                    </DropdownMenuSubTrigger>
+                                    <DropdownMenuSubContent>
+                                      {roles.map((role: RoleData) => (
+                                        <DropdownMenuItem
+                                          key={role.slug}
+                                          className="text-xs"
+                                          disabled={role.slug === member.role}
+                                          onClick={() =>
+                                            handleChangeRole(member.id, role.slug, role.name)
+                                          }
+                                        >
+                                          {role.name}
+                                        </DropdownMenuItem>
+                                      ))}
+                                    </DropdownMenuSubContent>
+                                  </DropdownMenuSub>
+                                  <DropdownMenuSeparator />
+                                </>
+                              )}
+                              <DropdownMenuItem
+                                className="text-destructive focus:text-destructive text-sm"
+                                onClick={() => handleRemove(member.id, member.name ?? member.email)}
+                              >
+                                Remove member
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : (
+                          <div />
                         )}
                       </div>
-
-                      <p className="text-sm text-muted-foreground capitalize leading-none">
-                        {member.role}
-                      </p>
-
-                      <p className="text-xs text-muted-foreground leading-none">
-                        {formatLastActive(member.lastActiveAt)}
-                      </p>
-
-                      {!member.isCurrentUser ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-7 opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              <svg viewBox="0 0 16 16" className="size-3">
-                                <circle cx="8" cy="3" r="1.2" fill="currentColor" />
-                                <circle cx="8" cy="8" r="1.2" fill="currentColor" />
-                                <circle cx="8" cy="13" r="1.2" fill="currentColor" />
-                              </svg>
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
-                            {roles.length > 0 && (
-                              <>
-                                <DropdownMenuSub>
-                                  <DropdownMenuSubTrigger className="text-xs">
-                                    Change role
-                                  </DropdownMenuSubTrigger>
-                                  <DropdownMenuSubContent>
-                                    {roles.map((role: RoleData) => (
-                                      <DropdownMenuItem
-                                        key={role.slug}
-                                        className="text-xs"
-                                        disabled={role.slug === member.role}
-                                        onClick={() =>
-                                          handleChangeRole(member.id, role.slug, role.name)
-                                        }
-                                      >
-                                        {role.name}
-                                      </DropdownMenuItem>
-                                    ))}
-                                  </DropdownMenuSubContent>
-                                </DropdownMenuSub>
-                                <DropdownMenuSeparator />
-                              </>
-                            )}
-                            <DropdownMenuItem
-                              className="text-destructive focus:text-destructive text-sm"
-                              onClick={() => handleRemove(member.id, member.name ?? member.email)}
-                            >
-                              Remove member
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      ) : (
-                        <div />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              );
-            },
-          })}
+                    ))}
+                  </div>
+                );
+              },
+            })
+          )}
         </section>
 
-        <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />
+        {canManageOrganization && (
+          <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />
+        )}
       </div>
     </div>
   );

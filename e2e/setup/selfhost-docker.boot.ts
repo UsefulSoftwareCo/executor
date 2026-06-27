@@ -19,7 +19,7 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { waitForHttp, type BootedProcesses } from "./boot";
+import { waitForHttp, waitForReadiness, type BootedProcesses } from "./boot";
 
 const exec = promisify(execFile);
 
@@ -82,7 +82,7 @@ export interface RunContainerOptions {
  * — a restart starts a genuinely new container, so it MUST run the exact
  * same way the boot did.
  */
-export const runSelfhostContainer = async (options: RunContainerOptions): Promise<void> => {
+export const runSelfhostContainer = async (options: RunContainerOptions) => {
   const name = selfhostDockerContainerName(options.port);
   const volume = selfhostDockerVolumeName(options.port);
   const args = [
@@ -111,12 +111,52 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     options.image,
   ];
   log(options.logFile, `docker ${args.join(" ")}`);
-  await exec("docker", args).catch((error: { stderr?: string }) => {
+  const started = await exec("docker", args).catch((error: { stderr?: string }) => {
     throw new Error(`selfhost-docker: docker run failed: ${String(error.stderr ?? error)}`);
   });
+  const containerId = started.stdout.trim();
+  if (!containerId) throw new Error("selfhost-docker: docker run returned no container id");
+  const stopped = exec("docker", ["wait", name]).then(
+    ({ stdout }) =>
+      new Error(
+        `selfhost-docker: container ${containerId.slice(0, 12)} stopped before readiness (exit ${stdout.trim() || "unknown"})`,
+      ),
+    (error: { stderr?: string }) =>
+      new Error(
+        `selfhost-docker: could not monitor container ${containerId.slice(0, 12)}: ${String(error.stderr ?? error)}`,
+      ),
+  );
+
+  const assertRunning = async () => {
+    const inspected = await exec("docker", [
+      "inspect",
+      "--format",
+      "{{.Id}} {{.State.Running}}",
+      name,
+    ]);
+    const [actualId, running] = inspected.stdout.trim().split(/\s+/);
+    if (actualId !== containerId || running !== "true") {
+      throw new Error(
+        `selfhost-docker: expected running container ${containerId.slice(0, 12)}, got ${actualId?.slice(0, 12) ?? "none"} (${running ?? "missing"})`,
+      );
+    }
+  };
 
   try {
-    await waitForHttp(`${options.webBaseUrl}/api/health`, { timeoutMs: 120_000 });
+    await waitForReadiness(
+      waitForHttp(`${options.webBaseUrl}/api/health`, {
+        timeoutMs: 120_000,
+        expectedStatus: 200,
+        validateResponse: async (response) => {
+          const body: unknown = await response.json();
+          return (
+            typeof body === "object" && body !== null && "status" in body && body.status === "ok"
+          );
+        },
+      }),
+      stopped,
+    );
+    await assertRunning();
   } catch (error) {
     const { stdout } = await exec("docker", ["logs", "--tail", "100", name]).catch(() => ({
       stdout: "(docker logs unavailable)",
@@ -125,6 +165,7 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     await exec("docker", ["rm", "-f", name]).catch(() => {});
     throw error;
   }
+  return { containerId, stopped, assertRunning };
 };
 
 /**
@@ -154,7 +195,7 @@ export const bootSelfhostDocker = async (
   await exec("docker", ["rm", "-f", name]).catch(() => {});
   await exec("docker", ["volume", "rm", "-f", volume]).catch(() => {});
 
-  await runSelfhostContainer({ image, ...options });
+  const container = await runSelfhostContainer({ image, ...options });
 
   // The target's restart() runs in a different process (test worker, not
   // globalsetup) and must re-run the same image. claimPorts-style env
@@ -162,6 +203,11 @@ export const bootSelfhostDocker = async (
   process.env.E2E_SELFHOST_DOCKER_RESOLVED_IMAGE = image;
 
   return {
+    waitUntilReady: async <A>(readiness: Promise<A>) => {
+      const value = await waitForReadiness(readiness, container.stopped);
+      await container.assertRunning();
+      return value;
+    },
     teardown: async () => {
       await stopSelfhostContainer(options.port, options.logFile);
       await exec("docker", ["volume", "rm", "-f", volume]).catch(() => {});

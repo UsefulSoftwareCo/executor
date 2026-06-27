@@ -64,83 +64,103 @@ scenario(
     const client = yield* makeApiClient(api, identity);
 
     const integration = IntegrationSlug.make(unique("selfhostsignedoutcb"));
-    yield* client.openapi.addSpec({
-      payload: { ...oauthIntegrationSpec(oauth), slug: integration },
-    });
-
     const clientSlug = OAuthClientSlug.make(unique("selfhostsignedoutc"));
-    yield* client.oauth.createClient({
-      payload: {
-        owner: "org",
-        slug: clientSlug,
-        authorizationUrl: oauth.authorizationEndpoint,
-        tokenUrl: oauth.tokenEndpoint,
-        grant: "authorization_code",
-        clientId: "test-client",
-        clientSecret: "test-secret",
-      },
-    });
+    const connection = ConnectionName.make(unique("main"));
 
-    const started = yield* client.oauth.start({
-      payload: {
-        client: clientSlug,
-        clientOwner: "org",
-        owner: "org",
-        name: ConnectionName.make("main"),
-        integration,
-        template: AuthTemplateSlug.make("oauth"),
-      },
-    });
-    expect(started.status, "oauth.start begins at the provider").toBe("redirect");
-    const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
+    yield* Effect.gen(function* () {
+      yield* client.openapi.addSpec({
+        payload: { ...oauthIntegrationSpec(oauth), slug: integration },
+      });
 
-    const authorize = yield* Effect.promise(() => fetch(authorizationUrl, { redirect: "manual" }));
-    expect(authorize.status, "the provider asks the user to log in").toBe(302);
-    const consent = yield* Effect.promise(() =>
-      fetch(authorize.headers.get("location") ?? "", {
-        method: "POST",
-        redirect: "manual",
-        headers: {
-          authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
+      yield* client.oauth.createClient({
+        payload: {
+          owner: "org",
+          slug: clientSlug,
+          authorizationUrl: oauth.authorizationEndpoint,
+          tokenUrl: oauth.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
         },
-      }),
-    );
-    expect(consent.status, "provider consent redirects back to Executor").toBe(302);
-    const callback = new URL(consent.headers.get("location") ?? "");
-    const callbackPath = `${callback.pathname}${callback.search}`;
-
-    yield* browser.session({ label: "anonymous" }, async ({ page, step }) => {
-      await step("Provider sends a signed-out browser to the OAuth callback", async () => {
-        const response = await page.goto(callbackPath, { waitUntil: "networkidle" });
-        expect(response?.status(), "the callback redirects into the login flow").toBe(200);
-        await page.getByText("Sign in to your instance").waitFor();
       });
 
-      const loginUrl = new URL(page.url());
-      expect(loginUrl.pathname, "the signed-out callback lands on the sign-in page").toBe("/login");
-      expect(
-        loginUrl.searchParams.get("returnTo"),
-        "login preserves the callback so it can resume after sign-in",
-      ).toBe(callbackPath);
-
-      await step("Sign in resumes the original OAuth callback", async () => {
-        await page.getByLabel("Email").fill(identity.credentials!.email);
-        await page.getByLabel("Password").fill(identity.credentials!.password);
-        await page.getByRole("button", { name: "Sign in" }).click();
-        await page.waitForURL((url) => url.pathname === "/api/oauth/callback", {
-          timeout: 30_000,
-        });
-        await page.waitForFunction(() => document.body.innerText.includes("Connected"), null, {
-          timeout: 30_000,
-        });
+      const started = yield* client.oauth.start({
+        payload: {
+          client: clientSlug,
+          clientOwner: "org",
+          owner: "org",
+          name: connection,
+          integration,
+          template: AuthTemplateSlug.make("oauth"),
+        },
       });
+      expect(started.status, "oauth.start begins at the provider").toBe("redirect");
+      const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
 
-      const body = (await page.locator("body").textContent())?.trim() ?? "";
-      expect(new URL(page.url()).pathname, "the login returnTo lands back on the callback").toBe(
-        "/api/oauth/callback",
+      const authorize = yield* Effect.promise(() =>
+        fetch(authorizationUrl, { redirect: "manual" }),
       );
-      expect(body, "the callback completes after the sign-in recovery").toContain("Connected");
-      expect(body, "the raw protected API response is not shown").not.toContain("Unauthorized");
-    });
+      expect(authorize.status, "the provider asks the user to log in").toBe(302);
+      const consent = yield* Effect.promise(() =>
+        fetch(authorize.headers.get("location") ?? "", {
+          method: "POST",
+          redirect: "manual",
+          headers: {
+            authorization: `Basic ${Buffer.from("alice:password").toString("base64")}`,
+          },
+        }),
+      );
+      expect(consent.status, "provider consent redirects back to Executor").toBe(302);
+      const callback = new URL(consent.headers.get("location") ?? "");
+      const callbackPath = `${callback.pathname}${callback.search}`;
+
+      yield* browser.session({ label: "anonymous" }, async ({ page, step }) => {
+        await step("Provider sends a signed-out browser to the OAuth callback", async () => {
+          const response = await page.goto(callbackPath, { waitUntil: "networkidle" });
+          expect(response?.status(), "the callback redirects into the login flow").toBe(200);
+          await page.getByText("Sign in to your instance").waitFor();
+        });
+
+        const loginUrl = new URL(page.url());
+        expect(loginUrl.pathname, "the signed-out callback lands on the sign-in page").toBe(
+          "/login",
+        );
+        expect(
+          loginUrl.searchParams.get("returnTo"),
+          "login preserves the callback so it can resume after sign-in",
+        ).toBe(callbackPath);
+
+        await step("Sign in resumes the original OAuth callback", async () => {
+          await page.getByLabel("Email").fill(identity.credentials!.email);
+          await page.getByLabel("Password").fill(identity.credentials!.password);
+          await page.getByRole("button", { name: "Sign in" }).click();
+          await page.waitForURL((url) => url.pathname === "/api/oauth/callback", {
+            timeout: 30_000,
+          });
+          await page.waitForFunction(() => document.body.innerText.includes("Connected"), null, {
+            timeout: 30_000,
+          });
+        });
+
+        const body = (await page.locator("body").textContent())?.trim() ?? "";
+        expect(new URL(page.url()).pathname, "the login returnTo lands back on the callback").toBe(
+          "/api/oauth/callback",
+        );
+        expect(body, "the callback completes after the sign-in recovery").toContain("Connected");
+        expect(body, "the raw protected API response is not shown").not.toContain("Unauthorized");
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration, name: connection } })
+            .pipe(Effect.ignore);
+          yield* client.oauth
+            .removeClient({ params: { slug: clientSlug }, payload: { owner: "org" } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore);
+        }),
+      ),
+    );
   }).pipe(Effect.scoped),
 );
