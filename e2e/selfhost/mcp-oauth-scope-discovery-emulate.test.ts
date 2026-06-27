@@ -67,7 +67,9 @@ scenario(
         },
       });
       yield* Effect.addFinalizer(() =>
-        client.mcp.removeServer({ params: { slug: IntegrationSlug.make(slug) } }).pipe(Effect.ignore),
+        client.mcp
+          .removeServer({ params: { slug: IntegrationSlug.make(slug) } })
+          .pipe(Effect.ignore),
       );
 
       // An OAuth app bound to the emulate MCP server as its resource (RFC 8707),
