@@ -1181,23 +1181,19 @@ function ToolkitWorkspace(props: {
   );
 }
 
-function ToolkitTileSkeleton(props: { index: number }) {
+function ToolkitTileSkeleton() {
   return (
     <div
-      className="flex min-h-36 min-w-0 items-start gap-3 rounded-md border border-border/60 bg-card/35 p-3.5"
+      className="flex h-auto min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-0"
       style={toolkitCardStyle}
       aria-hidden="true"
     >
-      <Skeleton className="size-9 shrink-0 rounded-md" />
-      <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-        <Skeleton className="h-4" style={{ width: `${52 + ((props.index * 17) % 28)}%` }} />
-        <Skeleton className="h-3" style={{ width: `${34 + ((props.index * 11) % 24)}%` }} />
-      </div>
+      <Skeleton className="size-12 rounded-md" />
     </div>
   );
 }
 
-function ToolkitSectionSkeleton(props: { title?: string; offset: number }) {
+function ToolkitSectionSkeleton(props: { title?: string }) {
   return (
     <section className="space-y-3" aria-label="Loading toolkits">
       {props.title ? (
@@ -1208,10 +1204,11 @@ function ToolkitSectionSkeleton(props: { title?: string; offset: number }) {
         </div>
       ) : null}
 
-      <div className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <ToolkitTileSkeleton key={index} index={props.offset + index} />
-        ))}
+      <div
+        className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
+        style={toolkitShelfStyle}
+      >
+        <ToolkitTileSkeleton />
       </div>
     </section>
   );
@@ -1223,11 +1220,11 @@ function ToolkitGridSkeleton(props: { showOwnerLabels: boolean }) {
       <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
         {props.showOwnerLabels ? (
           <>
-            <ToolkitSectionSkeleton title="Workspace" offset={0} />
-            <ToolkitSectionSkeleton title="Personal" offset={3} />
+            <ToolkitSectionSkeleton title="Workspace" />
+            <ToolkitSectionSkeleton title="Personal" />
           </>
         ) : (
-          <ToolkitSectionSkeleton offset={0} />
+          <ToolkitSectionSkeleton />
         )}
       </div>
     </div>
