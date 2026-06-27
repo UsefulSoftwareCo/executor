@@ -14,7 +14,11 @@ import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
-import { getMemberLimitForPlan, selectActiveMemberLimitPlan } from "../extensions/billing/plans";
+import {
+  countSeatsUsed,
+  getMemberLimitForPlan,
+  selectActiveMemberLimitPlan,
+} from "../extensions/billing/plans";
 
 // The per-request resolved caller, injected by the cookie-only session
 // middleware in `account-api.ts`. Carries the authenticated WorkOS session, or
@@ -140,11 +144,15 @@ export const workosAccountProvider: Layer.Layer<
         const planId = selectActiveMemberLimitPlan(customer.subscriptions);
         const limit = getMemberLimitForPlan(planId);
 
+        // `listOrgMembers` returns active members AND pending memberships (an
+        // invited user shows up as status "pending"); `listPendingInvitations`
+        // returns the same invited users again. `countSeatsUsed` dedupes them
+        // so an outstanding invite is not counted twice.
         const memberships = yield* workos.listOrgMembers(organizationId);
         const invitations = yield* workos.listPendingInvitations(organizationId);
 
         return {
-          used: memberships.data.length + invitations.data.length,
+          used: countSeatsUsed(memberships.data, invitations.data.length),
           granted: limit ?? 0,
           unlimited: limit === null,
         };
@@ -157,7 +165,14 @@ export const workosAccountProvider: Layer.Layer<
           Effect.catchCause(() => Effect.fail(new AccountForbidden())),
         );
         if (!seats.unlimited && seats.used >= seats.granted) {
-          return yield* new AccountForbidden();
+          // Name the real reason so the UI can tell the admin this is a plan
+          // limit (retrying will not help), not a transient failure. The
+          // fail-closed lookup error above stays message-less (genuinely
+          // retryable), so only the cap hit carries this copy.
+          const plural = seats.granted === 1 ? "member" : "members";
+          return yield* new AccountForbidden({
+            message: `Your plan includes ${seats.granted} ${plural}. Upgrade your plan to invite more.`,
+          });
         }
       });
 
