@@ -355,6 +355,7 @@ export const buildInputSchema = (
       properties.bodyBase64 = {
         type: "string",
         contentEncoding: "base64",
+        contentMediaType: "application/octet-stream",
         description:
           "Base64-encoded bytes for application/octet-stream request bodies. When contentType is omitted, this selects application/octet-stream.",
       };

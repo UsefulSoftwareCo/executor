@@ -967,11 +967,12 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       const schema = view!.inputSchema as {
         anyOf?: readonly { readonly required?: readonly string[] }[];
         properties?: {
-          bodyBase64?: { contentEncoding?: string };
+          bodyBase64?: { contentEncoding?: string; contentMediaType?: string };
         };
       };
       expect(schema.anyOf).toEqual([{ required: ["body"] }, { required: ["bodyBase64"] }]);
       expect(schema.properties?.bodyBase64?.contentEncoding).toBe("base64");
+      expect(schema.properties?.bodyBase64?.contentMediaType).toBe("application/octet-stream");
     }),
   );
 
@@ -1019,13 +1020,14 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         required?: string[];
         properties?: {
           body?: unknown;
-          bodyBase64?: { contentEncoding?: string };
+          bodyBase64?: { contentEncoding?: string; contentMediaType?: string };
         };
       };
       expect(schema.required).toContain("bodyBase64");
       expect(schema.required).not.toContain("body");
       expect(schema.properties?.body).toBeUndefined();
       expect(schema.properties?.bodyBase64?.contentEncoding).toBe("base64");
+      expect(schema.properties?.bodyBase64?.contentMediaType).toBe("application/octet-stream");
     }),
   );
 
