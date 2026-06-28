@@ -39,6 +39,14 @@ exports[`classifies every Google service for bundle OAuth UX 1`] = `
     "oauthAudience": "standard-user",
   },
   {
+    "id": "google-photos-library",
+    "oauthAudience": "advanced-user",
+  },
+  {
+    "id": "google-photos-picker",
+    "oauthAudience": "advanced-user",
+  },
+  {
     "id": "google-chat",
     "oauthAudience": "workspace-admin",
   },
