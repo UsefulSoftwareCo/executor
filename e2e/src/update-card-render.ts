@@ -40,10 +40,18 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
         await step("The sidebar surfaces the update-available card", async () => {
           await page.getByText("Update available").waitFor({ timeout: 30_000 });
           await page.getByText(`v${FORCED_LATEST}`).waitFor({ timeout: 5_000 });
+          // Self-host and Cloudflare upgrade via their own deploy (image pull /
+          // rebuild / redeploy), not npm: the card links to the host's upgrade
+          // guide and shows NO npm command.
+          const guide = page.getByRole("link", { name: "Upgrade guide" });
+          await guide.waitFor({ timeout: 5_000 });
+          expect(await guide.getAttribute("href"), "links to the hosted upgrade docs").toContain(
+            "/docs/hosted/",
+          );
           expect(
-            await page.getByText("npm i -g executor@latest", { exact: true }).count(),
-            "the web card shows the npm upgrade command",
-          ).toBeGreaterThan(0);
+            await page.getByText("npm i -g", { exact: false }).count(),
+            "the self-host / Cloudflare card shows no npm command",
+          ).toBe(0);
         });
       });
     }),

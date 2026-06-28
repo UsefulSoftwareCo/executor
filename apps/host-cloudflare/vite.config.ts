@@ -37,6 +37,9 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify("0.0.0-cloudflare"),
+    // Cloudflare upgrades by redeploying the Worker (wrangler deploy), not npm,
+    // so the update card links to the upgrade guide instead of a command.
+    "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("cloudflare"),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "production"),
   },

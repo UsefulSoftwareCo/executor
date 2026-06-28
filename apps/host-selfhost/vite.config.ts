@@ -141,6 +141,9 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify("0.0.0-selfhost"),
+    // Self-host upgrades by pulling/rebuilding the image (or git + rebuild), not
+    // npm, so the update card links to the upgrade guide instead of a command.
+    "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("selfhost"),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },

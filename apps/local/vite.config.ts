@@ -217,6 +217,9 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
+    // The local app IS the npm-installed CLI, so its update card shows the npm
+    // upgrade command (the desktop bridge overrides this with a native action).
+    "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("npm"),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify(EXECUTOR_GITHUB_URL),
     "import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD": JSON.stringify(REPO_ROOT),
     "import.meta.env.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL": JSON.stringify(
