@@ -24,22 +24,32 @@ export interface CliSurface {
   ) => Effect.Effect<T>;
 }
 
+interface AsciicastEvent {
+  type: string;
+  cols?: number;
+  rows?: number;
+  at_ms?: number;
+  bytes?: number[];
+}
+
 /** terminal-control's JSONL recording → asciicast v2 (what asciinema plays). */
 const toAsciicast = (recording: Uint8Array): string => {
   const events = new TextDecoder()
     .decode(recording)
     .split("\n")
     .filter(Boolean)
-    .map(
-      (line) =>
-        JSON.parse(line) as {
-          type: string;
-          cols?: number;
-          rows?: number;
-          at_ms?: number;
-          bytes?: number[];
-        },
-    );
+    .flatMap((line): AsciicastEvent[] => {
+      // The PTY can be killed mid-write on teardown (e.g. a vitest timeout
+      // interrupts the fiber), leaving a truncated final JSONL line. A line
+      // that doesn't parse is one dropped frame, never a failed test: skip it
+      // instead of throwing.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: lenient parse of a best-effort recording artifact
+      try {
+        return [JSON.parse(line) as AsciicastEvent];
+      } catch {
+        return [];
+      }
+    });
   const header = events.find((event) => event.type === "header");
   const lines = [
     JSON.stringify({ version: 2, width: header?.cols ?? 80, height: header?.rows ?? 24 }),
@@ -89,7 +99,15 @@ export const makeCliSurface = (): CliSurface => ({
         Effect.promise(async () => {
           if (options?.record) {
             const recording = await session.recording().catch(() => undefined);
-            if (recording) writeFileSync(options.record, toAsciicast(recording));
+            // Writing the cast is a best-effort film artifact (symmetric with the
+            // fetch above): a serialization or IO hiccup in teardown must never
+            // fail an otherwise-passing test.
+            // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort artifact write
+            try {
+              if (recording) writeFileSync(options.record, toAsciicast(recording));
+            } catch {
+              // drop the cast; the test result stands
+            }
           }
           await session.stop().catch(() => {});
           await tc[Symbol.asyncDispose]();

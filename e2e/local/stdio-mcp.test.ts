@@ -39,7 +39,14 @@ const SECRET = "s3cr3t-from-the-vault";
 
 scenario(
   "Local · a stdio MCP server's tools are detected on a fresh install, with env stored as a secret",
-  { timeout: 180_000 },
+  // Must stay STRICTLY greater than the boot-URL wait in `withLocalServer`
+  // (currently 180s). When this CI job runs `stdio-mcp.test.ts` alone it always
+  // pays a cold `vite optimizeDeps` boot (no prior file to warm the cache), the
+  // one variable step. If this test timeout equals the boot wait, both deadlines
+  // fire together and vitest's generic "Test timed out" wins, swallowing the
+  // harness's "printed no ?_token URL\n<terminal tail>" error that tells us what
+  // boot actually got stuck on. Keep the gap so the boot diagnostic surfaces.
+  { timeout: 240_000 },
   Effect.gen(function* () {
     const cli = yield* Cli;
     const runDir = yield* RunDir;

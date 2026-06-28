@@ -59,12 +59,29 @@ export const withLocalServer = (
           async (term) => {
             markRecordingStart(runDir, "terminal");
             markFocus(runDir, "terminal");
-            const snapshot = await term.screen.waitUntil(
-              (current) => TOKEN_URL.test(current.text),
-              // A cold `executor web` runs vite's optimizeDeps before it prints
-              // the URL; give CI runners headroom over the warm ~3s boot.
-              { timeoutMs: 180_000 },
-            );
+            // Capture the latest rendered screen on every poll so a boot that
+            // never prints the URL is still diagnosable: `waitUntil` rejects
+            // with a tail-less "timed out" on its deadline, so without this the
+            // failure tells us nothing about how far boot actually got.
+            let lastText = "";
+            const snapshot = await term.screen
+              .waitUntil(
+                (current) => {
+                  lastText = current.text;
+                  return TOKEN_URL.test(current.text);
+                },
+                // A cold `executor web` runs vite's optimizeDeps before it prints
+                // the URL; 180s is generous headroom over the warm ~3s boot. Kept
+                // BELOW each scenario's test timeout (240s) so that on a slow or
+                // wedged boot THIS error surfaces, with the terminal tail, rather
+                // than racing vitest's generic timeout at the same deadline.
+                { timeoutMs: 180_000 },
+              )
+              .catch((cause: unknown) => {
+                throw new Error(
+                  `executor web --foreground printed no ?_token URL within 180s (${String(cause)}):\n${lastText.slice(-600)}`,
+                );
+              });
             const url = TOKEN_URL.exec(snapshot.text)?.[0];
             if (!url) {
               throw new Error(
