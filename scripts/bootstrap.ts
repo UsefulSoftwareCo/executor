@@ -31,4 +31,10 @@ if (!existsSync(resolve(repoRoot, "node_modules/.bin/vitest"))) {
   throw new Error("bootstrap: vitest missing after install — bun install likely failed");
 }
 
+// Point git at the tracked .githooks dir so the pre-commit hook auto-formats
+// staged code with oxfmt. hooksPath is local config, never cloned or copied
+// into worktrees, so every fresh checkout and agent worktree must re-set it;
+// without it, unformatted commits slip through and CI's `format` job fails.
+run("git hooks", "git", ["config", "core.hooksPath", ".githooks"]);
+
 console.log("\n[bootstrap] done — `cd e2e && bun run test` runs the full suite.");
