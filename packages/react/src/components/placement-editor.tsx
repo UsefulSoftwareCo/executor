@@ -1,4 +1,4 @@
-import { PlusIcon, XIcon } from "lucide-react";
+import { PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 
 import {
   emptyPlacement,
@@ -46,6 +46,10 @@ export function PlacementEditor(props: {
 
   const remove = (index: number): void =>
     onChange(placements.filter((_p: Placement, j: number) => j !== index));
+
+  // A non-empty prefix with no trailing space is sent JOINED to the credential
+  // (e.g. "Bearer" + token -> "Bearertoken"). Almost always a mistake: warn.
+  const barePrefix = placements.some((p) => p.prefix.length > 0 && !p.prefix.endsWith(" "));
 
   return (
     <div className="flex flex-col gap-3">
@@ -147,6 +151,24 @@ export function PlacementEditor(props: {
           ) : null}
         </div>
       ))}
+      {barePrefix ? (
+        <section className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-1 rounded-md border border-l-[3px] border-amber-300/70 border-l-amber-500 bg-amber-50 px-3 py-2.5 text-[12px] leading-5 dark:border-amber-500/25 dark:border-l-amber-500/80 dark:bg-amber-500/10">
+          <TriangleAlertIcon
+            className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+            aria-hidden
+          />
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium text-amber-900 dark:text-amber-100">
+              Prefix has no trailing space
+            </p>
+            <p className="text-amber-900/80 dark:text-amber-100/80">
+              It is sent joined to the value (<span className="font-mono">Bearer••••••</span>). Most
+              APIs expect a space, like <span className="font-mono">"Bearer "</span>.
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       <Button
         type="button"
         variant="outline"
