@@ -14,10 +14,9 @@
 // the cap, and the 403 was masked behind a generic, retry-implying message.
 //
 // The dedupe itself is unit-tested in `apps/cloud/src/extensions/billing/
-// plans.test.ts` (the WorkOS emulator does not model pending memberships, so it
-// cannot reproduce the double-count). This scenario covers the user-facing
-// guards: the cap turns "Invite member" into an upgrade prompt, and the
-// endpoint refuses with a reason.
+// plans.test.ts`. This scenario covers the user-facing flow end to end: invited
+// people appear as pending members, the cap turns "Invite member" into an
+// upgrade prompt, and the endpoint refuses with a reason.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { AccountHttpApi } from "@executor-js/api";
@@ -74,7 +73,11 @@ scenario(
       for (let seat = 2; seat <= FREE_MEMBER_SEATS; seat++) {
         await step(`Invite a teammate (fills seat ${seat} of ${FREE_MEMBER_SEATS})`, async () => {
           await submitInvite(`teammate-${seat}@example.com`);
-          // The seat counter in the header reflects the consumed seat.
+          // The invited person shows up in the members list as a pending
+          // ("Invited") member, and the header seat counter reflects the seat.
+          await page
+            .getByText(`teammate-${seat}@example.com`, { exact: true })
+            .waitFor({ timeout: 10_000 });
           await page.getByText(`${seat} of ${FREE_MEMBER_SEATS} seats used`).waitFor({
             timeout: 10_000,
           });
