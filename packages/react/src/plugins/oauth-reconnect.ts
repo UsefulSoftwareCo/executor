@@ -28,9 +28,7 @@ export function reconnectMode(connection: Connection): ReconnectMode {
  *  connection are exactly the branded types `oauth.start` expects, so the same
  *  connection (owner/integration/name) is re-minted with a fresh refresh token
  *  and the widened scope union. Returns null for a non-OAuth connection. */
-export function oauthReconnectPayload(
-  connection: Connection,
-): OAuthStartPayload | null {
+export function oauthReconnectPayload(connection: Connection): OAuthStartPayload | null {
   if (connection.oauthClient == null) return null;
   return {
     client: connection.oauthClient,
@@ -61,8 +59,7 @@ const OAUTH_SCOPE_ALIASES: Readonly<Record<string, string>> = {
   "https://www.googleapis.com/auth/userinfo.profile": "profile",
 };
 
-const canonicalScope = (scope: string): string =>
-  OAUTH_SCOPE_ALIASES[scope] ?? scope;
+const canonicalScope = (scope: string): string => OAUTH_SCOPE_ALIASES[scope] ?? scope;
 
 /** Normalize a scope list: trim, canonicalize known provider aliases, drop
  *  empties, de-dupe (order-preserving). A scope set is compared as a SET —
@@ -94,12 +91,8 @@ export function missingScopes(
 
 /** The scopes a connection was actually GRANTED, parsed from its space-delimited
  *  `oauthScope` record. Empty for static creds / when the AS omitted scope. */
-export function connectionGrantedScopes(
-  connection: Connection,
-): readonly string[] {
-  return connection.oauthScope
-    ? connection.oauthScope.split(/\s+/).filter(Boolean)
-    : [];
+export function connectionGrantedScopes(connection: Connection): readonly string[] {
+  return connection.oauthScope ? connection.oauthScope.split(/\s+/).filter(Boolean) : [];
 }
 
 /** Whether an OAuth connection must RECONNECT to grant newly-needed access: the
@@ -113,10 +106,7 @@ export function connectionNeedsReconsent(
   declaredScopes: readonly string[] | undefined,
 ): boolean {
   if (connection.oauthClient == null) return false;
-  return (
-    missingScopes(declaredScopes, connectionGrantedScopes(connection)).length >
-    0
-  );
+  return missingScopes(declaredScopes, connectionGrantedScopes(connection)).length > 0;
 }
 
 /** The scopes that count as REQUIRED for a connection to be considered fully
