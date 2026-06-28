@@ -154,6 +154,10 @@ function PasteCredentialInputs(props: {
   /** Force the per-input label even for a single input (env vars name their
    *  field rather than relying on a generic "value / token" placeholder). */
   readonly showLabels?: boolean;
+  /** Single-input only: the placement's lead + prefix (e.g. "Authorization:
+   *  Bearer "), rendered as a non-editable affix INSIDE the field so the input
+   *  reads as the header value being built. Replaces the separate preview line. */
+  readonly affix?: string | null;
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Record<string, string>) => void;
 }) {
@@ -173,7 +177,11 @@ function PasteCredentialInputs(props: {
             <Input
               id={`credential-input-${input.variable}`}
               type="password"
-              autoComplete="new-password"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+              data-form-type="other"
               placeholder={`paste ${input.label}`}
               value={props.values[input.variable] ?? ""}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -201,20 +209,55 @@ function PasteCredentialInputs(props: {
           {labelled && (
             <Label className="font-mono text-xs text-muted-foreground">{input.label}</Label>
           )}
-          <Input
-            type="password"
-            autoComplete="new-password"
-            placeholder={labelled ? "secret value" : "paste the value / token"}
-            value={props.values[input.variable] ?? ""}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              props.onChange({
-                ...props.values,
-                [input.variable]: e.target.value,
-              })
-            }
-            className="font-mono"
-            data-ph-block
-          />
+          {props.affix ? (
+            // Merged field: the placement's lead + prefix is a FIXED addon (its
+            // own muted segment, divider, non-selectable), and the user types
+            // only the token after it — the field reads as the header value being
+            // built. Only the border reacts to focus (no full-field glow). The
+            // autoComplete/ignore attrs stop the browser and password managers
+            // from offering to GENERATE a password here; the app's own 1Password
+            // picker covers filling an existing secret.
+            <div className="flex h-9 w-full min-w-0 items-stretch overflow-hidden rounded-md border border-input bg-transparent font-mono text-sm shadow-xs transition-colors focus-within:border-ring dark:bg-input/30">
+              <span className="flex shrink-0 select-none items-center whitespace-pre border-r border-input bg-muted/40 px-3 text-muted-foreground/70">
+                {props.affix}
+              </span>
+              {/* oxlint-disable-next-line react/forbid-elements */}
+              <input
+                type="password"
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+                placeholder="token"
+                value={props.values[input.variable] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onChange({ ...props.values, [input.variable]: e.target.value })
+                }
+                className="min-w-0 flex-1 bg-transparent px-3 outline-none placeholder:text-muted-foreground/60"
+                data-ph-block
+              />
+            </div>
+          ) : (
+            <Input
+              type="password"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+              data-form-type="other"
+              placeholder={labelled ? "secret value" : "paste the value / token"}
+              value={props.values[input.variable] ?? ""}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                props.onChange({
+                  ...props.values,
+                  [input.variable]: e.target.value,
+                })
+              }
+              className="font-mono"
+              data-ph-block
+            />
+          )}
         </div>
       ))}
     </div>
@@ -292,6 +335,8 @@ function CredentialValueFields(props: {
   readonly inputs: readonly CredentialInput[];
   readonly singleInput: boolean;
   readonly showLabels?: boolean;
+  /** Single-input only: placement lead + prefix to merge into the field. */
+  readonly affix?: string | null;
   /** Allow an external provider (1Password) origin. Off for env methods: the
    *  wire's external `from` is keyed under the canonical `token` variable, but
    *  an env credential must be keyed under its env var name, so a 1Password
@@ -346,6 +391,7 @@ function CredentialValueFields(props: {
           inputs={props.inputs}
           singleInput={props.singleInput}
           showLabels={props.showLabels}
+          affix={props.affix}
           values={props.values}
           onChange={props.onValuesChange}
         />
@@ -882,6 +928,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
     method != null &&
     method.placements.length > 0 &&
     method.placements.every((p) => p.carrier === "env");
+  // Single-input header/query methods: the placement's lead + prefix (e.g.
+  // "Authorization: Bearer ") merges INTO the credential field as a non-editable
+  // affix, so the input reads as the header value being built and the separate
+  // preview line is dropped. Env and multi-input methods keep the plain field.
+  const singleCredentialAffix = useMemo<string | null>(() => {
+    if (!method || !singleInput || isEnvMethod) return null;
+    const placement = method.placements.find((p) => p.carrier !== "env");
+    if (!placement) return null;
+    const lead =
+      placement.carrier === "header"
+        ? `${placement.name || "Authorization"}: `
+        : `?${placement.name || "api_key"}=`;
+    return `${lead}${placement.prefix ?? ""}`;
+  }, [method, singleInput, isEnvMethod]);
   // DCR-capable: the integration advertises dynamic registration (MCP oauth2),
   // OR carries a discovery URL we can probe at connect time. When DCR-capable
   // and not yet fallen back, we skip the app picker entirely (Option A).
@@ -1394,9 +1454,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 <Tabs
                   value={methodId}
                   onValueChange={selectMethod}
-                  className="w-full min-w-0 max-w-full gap-3"
+                  className="w-full min-w-0 max-w-full gap-0"
                 >
-                  <TabsList className="flex h-10 w-fit min-w-0 max-w-full justify-start overflow-x-auto overflow-y-hidden p-1 [scrollbar-width:thin]">
+                  <TabsList className="flex h-10 w-full min-w-0 max-w-full justify-start overflow-x-auto overflow-y-hidden rounded-b-none rounded-t-md border border-b-0 border-border/60 bg-muted/30 p-1 [scrollbar-width:thin]">
                     <div className="flex w-max shrink-0 items-stretch gap-1">
                       {allMethods.map((m: AuthMethod) => (
                         <div
@@ -1452,9 +1512,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   {dcrActive ? null : (
                     <TabsContent
                       value={methodId}
-                      className="mt-0 min-w-0 space-y-5 rounded-md border border-border/60 bg-muted/15 p-4"
+                      className="mt-0 min-w-0 space-y-5 rounded-b-md rounded-t-none border border-border/60 bg-muted/15 p-4"
                     >
-                      {method?.placements && !isEnvMethod && singleInput
+                      {method?.placements && !isEnvMethod && singleInput && !singleCredentialAffix
                         ? (() => {
                             const shown = method.placements.filter((p) => p.carrier !== "env");
                             return shown.length > 0 ? (
@@ -1573,6 +1633,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                               inputs={credentialInputs}
                               singleInput={singleInput}
                               showLabels={isEnvMethod}
+                              affix={singleCredentialAffix}
                               allowExternalProvider={!isEnvMethod}
                               values={values}
                               onValuesChange={setValues}
