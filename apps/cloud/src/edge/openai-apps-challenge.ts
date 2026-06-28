@@ -1,8 +1,7 @@
 import { createMiddleware } from "@tanstack/react-start";
 
 export const OPENAI_APPS_CHALLENGE_PATH = "/.well-known/openai-apps-challenge";
-export const OPENAI_APPS_CHALLENGE_TOKEN =
-  "P_fW7WgF8HkXXQkP85B7aDZD_RuZv8YmQA2Zq9JoIfc";
+export const OPENAI_APPS_CHALLENGE_TOKEN = "P_fW7WgF8HkXXQkP85B7aDZD_RuZv8YmQA2Zq9JoIfc";
 
 export const isOpenAiAppsChallengePath = (pathname: string) =>
   pathname === OPENAI_APPS_CHALLENGE_PATH;
