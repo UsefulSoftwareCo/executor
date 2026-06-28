@@ -20,6 +20,7 @@ import { Input } from "@executor-js/react/components/input";
 import { Spinner } from "@executor-js/react/components/spinner";
 import { TagInput } from "@executor-js/react/components/tag-input";
 import {
+  integrationDisplayNameFromStdio,
   integrationDisplayNameFromUrl,
   slugifyNamespace,
   IntegrationIdentityFields,
@@ -55,6 +56,19 @@ import { mcpPresets, type McpPreset } from "../sdk/presets";
 function findPreset(id: string | undefined): McpPreset | undefined {
   if (!id) return undefined;
   return mcpPresets.find((p) => p.id === id);
+}
+
+// Splits the raw args field into tokens, honoring double-quoted groups so an
+// argument with spaces stays intact.
+function parseStdioArgs(raw: string): string[] {
+  if (!raw.trim()) return [];
+  const args: string[] = [];
+  const regex = /[^\s"]+|"([^"]*)"/g;
+  let match;
+  while ((match = regex.exec(raw)) !== null) {
+    args.push(match[1] ?? match[0]);
+  }
+  return args;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +188,10 @@ export default function AddMcpSource(props: {
   );
   const [stdioEnvVars, setStdioEnvVars] = useState<string[]>([]);
   const stdioIdentity = useIntegrationIdentity({
-    fallbackName: isStdioPreset ? preset.name : stdioCommand,
+    fallbackName: isStdioPreset
+      ? preset.name
+      : (integrationDisplayNameFromStdio(stdioCommand, parseStdioArgs(stdioArgs), "MCP") ??
+        stdioCommand),
   });
   const [stdioAdding, setStdioAdding] = useState(false);
   const [stdioError, setStdioError] = useState<string | null>(null);
@@ -332,17 +349,6 @@ export default function AddMcpSource(props: {
   }, [probe, authMethodList.rows, registerIntegration, props]);
 
   // ---- Stdio actions ----
-
-  const parseStdioArgs = (raw: string): string[] => {
-    if (!raw.trim()) return [];
-    const args: string[] = [];
-    const regex = /[^\s"]+|"([^"]*)"/g;
-    let match;
-    while ((match = regex.exec(raw)) !== null) {
-      args.push(match[1] ?? match[0]);
-    }
-    return args;
-  };
 
   const handleAddStdio = useCallback(async () => {
     const cmd = stdioCommand.trim();
