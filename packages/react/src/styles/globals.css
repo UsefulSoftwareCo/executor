@@ -5,7 +5,7 @@
 @source "../**/*.{ts,tsx}";
 @source "../../../../apps/local/src/**/*.{ts,tsx}";
 @source "../../../../apps/cloud/src/**/*.{ts,tsx}";
-@source "../../../plugins/*/src/react/**/*.{ts,tsx}";
+@source "../../../plugins/*/src/**/*.{ts,tsx}";
 
 @theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
