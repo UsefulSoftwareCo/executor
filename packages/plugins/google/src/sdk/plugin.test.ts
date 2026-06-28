@@ -35,7 +35,7 @@ const CALENDAR_URL = "https://www.googleapis.com/discovery/v1/apis/calendar/v3/r
 const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
 const DRIVE_URL = "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest";
 const PHOTOS_LIBRARY_URL = "https://www.googleapis.com/discovery/v1/apis/photoslibrary/v1/rest";
-const PHOTOS_PICKER_URL = "https://www.googleapis.com/discovery/v1/apis/photospicker/v1/rest";
+const PHOTOS_PICKER_URL = "https://photospicker.googleapis.com/$discovery/rest?version=v1";
 
 const calendarDoc = {
   name: "calendar",
@@ -197,15 +197,6 @@ const photosPickerDoc = {
   title: "Google Photos Picker API",
   rootUrl: "https://photospicker.googleapis.com/",
   servicePath: "v1/",
-  auth: {
-    oauth2: {
-      scopes: {
-        "https://www.googleapis.com/auth/photospicker.mediaitems.readonly": {
-          description: "Read selected Google Photos media",
-        },
-      },
-    },
-  },
   resources: {
     mediaItems: {
       methods: {
@@ -213,7 +204,6 @@ const photosPickerDoc = {
           id: "photospicker.mediaItems.list",
           httpMethod: "GET",
           path: "mediaItems",
-          scopes: ["https://www.googleapis.com/auth/photospicker.mediaitems.readonly"],
           parameters: {},
         },
       },
@@ -233,12 +223,14 @@ const DISCOVERY_BODIES: Readonly<Record<string, string>> = {
 };
 
 // A stub HTTP client that serves the canned Discovery document for whichever
-// URL the bundle converter fetches (query params are ignored when matching).
+// URL the bundle converter fetches. Service-hosted Discovery URLs carry their
+// version in the query string, so match the full URL before falling back to the
+// path-only key used by central Discovery URLs.
 const discoveryHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
   HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
     const url = new URL(request.url);
     const key = `${url.origin}${url.pathname}`;
-    const body = DISCOVERY_BODIES[key];
+    const body = DISCOVERY_BODIES[url.toString()] ?? DISCOVERY_BODIES[key];
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
