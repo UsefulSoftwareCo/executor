@@ -240,7 +240,7 @@ export function McpInstallCard(props: { className?: string }) {
 
   const header = (
     <CardStackHeader
-      className="items-start pt-4 pb-1"
+      className="items-start py-4"
       rightSlot={
         showStdio ? (
           <TabsList>
@@ -259,7 +259,7 @@ export function McpInstallCard(props: { className?: string }) {
 
   const body = (
     <CardStackContent>
-      <div className="px-4 pt-1 pb-3">
+      <div className="px-4 pt-3 pb-3">
         <CodeBlock
           code={command}
           lang="bash"
