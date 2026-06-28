@@ -25,6 +25,7 @@
     "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       ".": {
         "import": {
@@ -50,8 +51,7 @@
           "default": "./dist/testing.js"
         }
       }
-    },
-    "access": "public"
+    }
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",

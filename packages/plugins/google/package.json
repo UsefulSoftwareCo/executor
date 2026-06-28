@@ -23,6 +23,7 @@
     "./client": "./src/react/plugin-client.tsx"
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       ".": {
         "import": {
@@ -42,8 +43,7 @@
           "default": "./dist/client.js"
         }
       }
-    },
-    "access": "public"
+    }
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",

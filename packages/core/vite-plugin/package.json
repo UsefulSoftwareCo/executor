@@ -23,6 +23,7 @@
     }
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       ".": {
         "import": {
@@ -30,8 +31,7 @@
           "default": "./dist/index.js"
         }
       }
-    },
-    "access": "public"
+    }
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",

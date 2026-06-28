@@ -21,6 +21,7 @@
     "./shared": "./src/shared.ts"
   },
   "publishConfig": {
+    "access": "public",
     "exports": {
       "./server": {
         "import": {
@@ -40,8 +41,7 @@
           "default": "./dist/shared.js"
         }
       }
-    },
-    "access": "public"
+    }
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
