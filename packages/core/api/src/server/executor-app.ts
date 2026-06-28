@@ -56,6 +56,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { composePluginApi } from "../plugin-routes";
+import { makeNpmDistTagsRoute } from "./npm-dist-tags";
 import type { ErrorCapture } from "../observability";
 import {
   EngineDecoratorNoop,
@@ -565,6 +566,8 @@ export const make = <
   // the same — every route requirement is provided.
   const routeLayers: AppRouteLayer[] = [
     makeOAuthClientIdMetadataRoute(config.mountPrefix) as AppRouteLayer,
+    // Un-prefixed `/v1/app/npm/dist-tags` powering the web shell's UpdateCard.
+    makeNpmDistTagsRoute() as AppRouteLayer,
     apiLive,
   ];
   if (mcpRouteLive) routeLayers.push(mcpRouteLive);

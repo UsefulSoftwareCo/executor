@@ -76,6 +76,12 @@ function executorApiPlugin(): Plugin {
           path.startsWith("/mcp/") ||
           path === "/docs" ||
           path.startsWith("/docs/") ||
+          // Un-prefixed app-level routes (e.g. `/v1/app/npm/dist-tags`, which the
+          // shell's update check fetches). Served by the Effect router in prod;
+          // without this the SPA index.html fallback answers 200-with-HTML and
+          // the JSON parse fails, so the UpdateCard never appears.
+          path === "/v1" ||
+          path.startsWith("/v1/") ||
           // RFC 9728 / RFC 8414 OAuth discovery the MCP client fetches before
           // auth. Served by the Effect router in prod; without this the SPA
           // index.html fallback answers 200-with-HTML and breaks discovery.

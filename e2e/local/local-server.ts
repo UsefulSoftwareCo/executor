@@ -39,6 +39,11 @@ export const withLocalServer = (
   cli: CliSurface,
   runDir: string,
   body: (server: ServerHandle) => Effect.Effect<void>,
+  options?: {
+    /** Extra env merged into the `executor web` process, e.g. to force a
+     *  published-version signal for the update check. */
+    readonly env?: Record<string, string>;
+  },
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const dataDir = mkdtempSync(join(tmpdir(), "executor-local-e2e-"));
@@ -80,7 +85,7 @@ export const withLocalServer = (
           },
           {
             cwd: repoRoot,
-            env: { EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: dataDir },
+            env: { EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: dataDir, ...options?.env },
             record: join(runDir, "terminal.cast"),
             viewport: { cols: 120, rows: 40 },
           },

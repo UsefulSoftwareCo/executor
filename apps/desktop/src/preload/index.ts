@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopServerConnection, DesktopServerSettings } from "../shared/server-settings";
+import {
+  type DesktopUpdateStatus,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_STATUS_CHANNEL,
+  UPDATE_STATUS_GET_CHANNEL,
+} from "../shared/update";
 
 const api = {
   /** Read the active Executor server connection backing this desktop window. */
@@ -66,6 +72,25 @@ const api = {
    */
   checkForUpdates(): Promise<void> {
     return ipcRenderer.invoke("executor:updates:check");
+  },
+  /** Read the current auto-update status once (renderer mount). */
+  getUpdateStatus(): Promise<DesktopUpdateStatus> {
+    return ipcRenderer.invoke(UPDATE_STATUS_GET_CHANNEL);
+  },
+  /**
+   * Subscribe to auto-update status changes pushed by main (available →
+   * downloading → downloaded). Returns an unsubscribe function.
+   */
+  onUpdateStatus(callback: (status: DesktopUpdateStatus) => void): () => void {
+    const listener = (_event: unknown, status: DesktopUpdateStatus) => callback(status);
+    ipcRenderer.on(UPDATE_STATUS_CHANNEL, listener);
+    return () => {
+      ipcRenderer.removeListener(UPDATE_STATUS_CHANNEL, listener);
+    };
+  },
+  /** Apply a downloaded update and restart the app. */
+  installUpdate(): Promise<void> {
+    return ipcRenderer.invoke(UPDATE_INSTALL_CHANNEL);
   },
   /**
    * Last-resort recovery for damaged executor state: after a native confirm,

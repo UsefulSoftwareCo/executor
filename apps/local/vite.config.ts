@@ -101,8 +101,12 @@ function executorApiPlugin(): Plugin {
         const pathOnly = rawUrl.split("?")[0] ?? "/";
         const isApi = pathOnly.startsWith("/api/") || pathOnly === "/api";
         const isMcp = pathOnly === "/mcp" || pathOnly.startsWith("/mcp/");
+        // App-level routes the Effect app serves at root, outside the `/api`
+        // prefix (e.g. `/v1/app/npm/dist-tags`, the update-check the web shell
+        // fetches). Public, like `/api/health` below.
+        const isV1 = pathOnly === "/v1" || pathOnly.startsWith("/v1/");
 
-        if (!isApi && !isMcp) return next();
+        if (!isApi && !isMcp && !isV1) return next();
 
         // Gate parity with the production Bun shell (serve.ts): the vite server
         // is reachable by any local process, so /api and /mcp require the bearer
@@ -111,7 +115,8 @@ function executorApiPlugin(): Plugin {
         // callback. The SPA carries the token from its `?_token`/localStorage
         // bootstrap, so the UI is unaffected; external MCP clients use the
         // daemon port.
-        const authExempt = pathOnly === "/api/health" || isUnauthenticatedOAuthPath(pathOnly);
+        const authExempt =
+          pathOnly === "/api/health" || isV1 || isUnauthenticatedOAuthPath(pathOnly);
         if (!authExempt) {
           const presented = req.headers.authorization;
           const authValue = Array.isArray(presented) ? presented[0] : presented;
@@ -154,6 +159,9 @@ function executorApiPlugin(): Plugin {
             response = oauthClientMetadataResponse(rawUrl, webRequest(rawUrl));
           } else if (isMcp) {
             response = await handlers.mcp.handleRequest(webRequest(rawUrl));
+          } else if (isV1) {
+            // Served at root by the Effect app; forward verbatim (no /api strip).
+            response = await handlers.api.handler(webRequest(rawUrl));
           } else if (pathOnly === "/api/health" && req.method === "GET") {
             response = new Response("ok", {
               headers: { "content-type": "text/plain" },

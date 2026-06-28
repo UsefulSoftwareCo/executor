@@ -107,6 +107,7 @@ export {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_TARGET_PATH_PREFIX,
 } from "./server/oauth-client-metadata";
+export { makeNpmDistTagsRoute, NPM_DIST_TAGS_PATH } from "./server/npm-dist-tags";
 export * as ExecutorApp from "./server/executor-app";
 export type {
   ExecutorAppOptions,

@@ -55,6 +55,12 @@ import {
   type DesktopServerConnection,
   type DesktopServerSettings,
 } from "../shared/server-settings";
+import {
+  type DesktopUpdateStatus,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_STATUS_CHANNEL,
+  UPDATE_STATUS_GET_CHANNEL,
+} from "../shared/update";
 
 // Pin userData to a friendly app-name-scoped dir BEFORE app.ready so every
 // Electron-side consumer (electron-store, electron-log, window-state) lands
@@ -633,6 +639,24 @@ const registerIpcHandlers = () => {
   // fixed upstream. Reuses the menu flow — staged updates prompt to install,
   // "no updates" / failures surface in their own dialogs.
   ipcMain.handle("executor:updates:check", () => runUpdateCheck({ alertOnFail: true }));
+  ipcMain.handle(UPDATE_STATUS_GET_CHANNEL, (): DesktopUpdateStatus => updateStatus);
+  ipcMain.handle(UPDATE_INSTALL_CHANNEL, async (): Promise<void> => {
+    const version = "version" in updateStatus ? updateStatus.version : "";
+    // Outside a packaged build there is no real bundle to swap, and quitting
+    // would tear down the e2e harness — reflect "installing" so the renderer
+    // can prove the wiring instead.
+    if (!app.isPackaged) {
+      setUpdateStatus({ state: "installing", version });
+      return;
+    }
+    // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle, matching
+    // the native dialog's restart path.
+    if (connection) {
+      await stopConnection(connection);
+      connection = null;
+    }
+    autoUpdater.quitAndInstall(false, true);
+  });
   // Crash-screen last resort for damaged state: confirm, move the data dir
   // aside (never delete), then restart the sidecar against the fresh dir.
   // Returns false when the user cancelled.
@@ -679,6 +703,54 @@ const registerIpcHandlers = () => {
 let downloadedUpdateVersion: string | null = null;
 let updateDialogOpen = false;
 
+// Renderer-facing auto-update status. The web shell renders a desktop-native
+// "Restart to update" card from this (in place of its npm card) — see
+// ../shared/update.ts and packages/react/.../hooks/desktop-update.ts.
+let updateStatus: DesktopUpdateStatus = { state: "idle" };
+let pendingUpdateVersion: string | null = null;
+
+type ProgressInfo = { readonly percent: number };
+
+const broadcastUpdateStatus = () => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(UPDATE_STATUS_CHANNEL, updateStatus);
+  }
+};
+
+const setUpdateStatus = (status: DesktopUpdateStatus) => {
+  updateStatus = status;
+  broadcastUpdateStatus();
+};
+
+// Dev/e2e seam: a packaged build is required for a REAL electron-updater
+// release, so `EXECUTOR_DESKTOP_FAKE_UPDATE` (JSON like
+// `{"state":"downloaded","version":"99.0.0"}`) seeds a status to exercise the
+// renderer card and the install handler without one. Ignored in production.
+const applyFakeUpdateFromEnv = () => {
+  const raw = process.env.EXECUTOR_DESKTOP_FAKE_UPDATE?.trim();
+  if (!raw) return;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: dev-only env override is untrusted text; a malformed value is logged and ignored, not fatal
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: dev-only env override, shape-checked below
+    const parsed = JSON.parse(raw) as { readonly state?: string; readonly version?: string };
+    const version = typeof parsed.version === "string" ? parsed.version : "0.0.0";
+    const state = parsed.state ?? "downloaded";
+    if (
+      state === "available" ||
+      state === "downloaded" ||
+      state === "downloading" ||
+      state === "installing"
+    ) {
+      if (state === "downloaded") downloadedUpdateVersion = version;
+      setUpdateStatus(
+        state === "downloading" ? { state, version, percent: 100 } : { state, version },
+      );
+    }
+  } catch (error) {
+    log.warn("[updater] bad EXECUTOR_DESKTOP_FAKE_UPDATE", error);
+  }
+};
+
 const promptInstallUpdate = async (version: string) => {
   if (updateDialogOpen) return;
   updateDialogOpen = true;
@@ -718,8 +790,22 @@ const setupAutoUpdater = () => {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
 
+  autoUpdater.on("update-available", (info: UpdateInfo) => {
+    pendingUpdateVersion = info.version;
+    setUpdateStatus({ state: "available", version: info.version });
+  });
+  autoUpdater.on("download-progress", (progress: ProgressInfo) => {
+    if (pendingUpdateVersion) {
+      setUpdateStatus({
+        state: "downloading",
+        version: pendingUpdateVersion,
+        percent: Math.round(progress.percent ?? 0),
+      });
+    }
+  });
   autoUpdater.on("update-downloaded", (info: UpdateInfo) => {
     downloadedUpdateVersion = info.version;
+    setUpdateStatus({ state: "downloaded", version: info.version });
     void promptInstallUpdate(info.version);
   });
   autoUpdater.on("error", (err: Error) => {
@@ -860,6 +946,7 @@ const boot = async () => {
   installDockIcon();
   installApplicationMenu();
   setupAutoUpdater();
+  applyFakeUpdateFromEnv();
   registerIpcHandlers();
   // A sidecar that dies under a live window would leave the web UI failing
   // every request with no explanation. Swap in the crash screen — its

@@ -1,5 +1,15 @@
 export { ExecutorApi, CoreExecutorApi, addGroup } from "./api";
 export {
+  checkForUpdate,
+  resolveDistTags,
+  resolveUpdateChannel,
+  compareVersions,
+  EXECUTOR_PACKAGE_NAME,
+  type UpdateStatus,
+  type UpdateChannel,
+  type DistTags,
+} from "./update-check";
+export {
   composePluginApi,
   composePluginHandlers,
   composePluginHandlerLayer,

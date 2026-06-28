@@ -64,7 +64,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 
-import { ExecutorApi } from "@executor-js/api";
+import { ExecutorApi, checkForUpdate } from "@executor-js/api";
 import {
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
@@ -989,6 +989,17 @@ const runForegroundSession = (input: {
             console.log(`   Extra CORS origins: ${input.allowedHosts.join(", ")}`);
           }
         }
+
+        // Best-effort upgrade nudge. `checkForUpdate` never throws and bounds
+        // its own registry fetch, so a slow or offline registry just yields no
+        // notice rather than stalling the prompt. Quiet when up to date or when
+        // EXECUTOR_DISABLE_UPDATE_CHECK is set.
+        const update = yield* Effect.promise(() => checkForUpdate(CLI_VERSION));
+        if (update.updateAvailable && update.latestVersion) {
+          console.log(`\nUpdate available: ${update.currentVersion} -> ${update.latestVersion}`);
+          console.log(`Run ${update.command} to update.`);
+        }
+
         console.log(`\nPress Ctrl+C to stop.`);
 
         yield* waitForShutdownSignal();

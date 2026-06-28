@@ -17,6 +17,7 @@ import { integrationPresetIconUrl } from "@executor-js/react/components/integrat
 import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
+import { type DesktopUpdate, useDesktopUpdate } from "@executor-js/react/hooks/desktop-update";
 import { ServerConnectionMenu } from "./server-connection-menu";
 
 // ── Env ─────────────────────────────────────────────────────────────────
@@ -209,6 +210,70 @@ function UpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
   );
 }
 
+// ── DesktopUpdateCard ─────────────────────────────────────────────────────
+
+// Desktop builds update via electron-updater (a new bundle, swapped in place),
+// not `npm i -g`, so the desktop shows a native action wired to the main
+// process instead of UpdateCard's copyable command. Driven by the auto-update
+// status main pushes over IPC (see hooks/desktop-update).
+function DesktopUpdateCard(props: { update: DesktopUpdate }) {
+  const { status, install } = props.update;
+  const version = "version" in status ? status.version : null;
+
+  const action = (() => {
+    if (status.state === "downloaded") {
+      return (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={install}
+          className="mt-2.5 w-full rounded-lg border-border/60 bg-background/50 px-2.5 py-1.5 text-xs hover:bg-background/80"
+        >
+          Restart to update
+        </Button>
+      );
+    }
+    if (status.state === "downloading") {
+      return (
+        <p className="mt-2.5 text-xs text-muted-foreground tabular-nums">
+          Downloading… {status.percent}%
+        </p>
+      );
+    }
+    if (status.state === "available") {
+      return <p className="mt-2.5 text-xs text-muted-foreground">Preparing update…</p>;
+    }
+    if (status.state === "installing") {
+      return <p className="mt-2.5 text-xs text-muted-foreground">Restarting…</p>;
+    }
+    return null;
+  })();
+
+  return (
+    <div className="mx-2 mb-2 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
+      <div className="flex items-center gap-2">
+        <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15">
+          <svg viewBox="0 0 16 16" fill="none" className="size-3 text-primary">
+            <path
+              d="M8 3v7M5 7l3 3 3-3"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path d="M3 12h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-foreground">Update available</p>
+          {version && <p className="text-sm text-muted-foreground">v{version}</p>}
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
 // ── NavItem ──────────────────────────────────────────────────────────────
 
 function NavItem(props: { to: string; label: string; active: boolean; onNavigate?: () => void }) {
@@ -338,6 +403,7 @@ function SidebarContent(props: {
   updateAvailable: boolean;
   latestVersion: string | null;
   channel: UpdateChannel;
+  desktopUpdate: DesktopUpdate | null;
 }) {
   const isHome = props.pathname === "/";
   const isSecrets = props.pathname === "/secrets";
@@ -401,9 +467,17 @@ function SidebarContent(props: {
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
 
-      {props.updateAvailable && props.latestVersion && (
-        <UpdateCard latestVersion={props.latestVersion} channel={props.channel} />
-      )}
+      {/* In the desktop app electron-updater owns updates, so show a native
+          "Restart to update" card and never the npm command. Web and
+          CLI-served installs keep the npm UpdateCard. */}
+      {props.desktopUpdate
+        ? props.desktopUpdate.status.state !== "idle" && (
+            <DesktopUpdateCard update={props.desktopUpdate} />
+          )
+        : props.updateAvailable &&
+          props.latestVersion && (
+            <UpdateCard latestVersion={props.latestVersion} channel={props.channel} />
+          )}
 
       {/* Footer */}
       <div className="shrink-0 border-t border-sidebar-border px-4 py-2.5">
@@ -449,6 +523,7 @@ export function Shell() {
   const refreshSources = useAtomRefresh(integrationsAtom);
   const refreshTools = useAtomRefresh(toolsAllAtom);
   const { latestVersion, updateAvailable, channel } = useLatestVersion(VITE_APP_VERSION);
+  const desktopUpdate = useDesktopUpdate();
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   if (lastPathname.current !== pathname) {
@@ -493,6 +568,7 @@ export function Shell() {
           updateAvailable={updateAvailable}
           latestVersion={latestVersion}
           channel={channel}
+          desktopUpdate={desktopUpdate}
         />
       </aside>
 
@@ -540,6 +616,7 @@ export function Shell() {
               updateAvailable={updateAvailable}
               latestVersion={latestVersion}
               channel={channel}
+              desktopUpdate={desktopUpdate}
             />
           </div>
         </div>

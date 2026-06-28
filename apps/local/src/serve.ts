@@ -418,6 +418,15 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         return withCors(await handlers.api.handler(new Request(url, req)));
       }
 
+      // App-level routes the Effect app serves at root, OUTSIDE the `/api`
+      // prefix the shell strips (e.g. `/v1/app/npm/dist-tags`, which the web
+      // shell's update check fetches). Public, like `/api/health` above, so no
+      // bearer gate. Forward verbatim; without this they'd fall through to the
+      // vite/SPA fallback and answer 200-with-HTML, breaking the JSON parse.
+      if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
+        return withCors(await handlers.api.handler(new Request(url, req)));
+      }
+
       // Dev mode: forward everything else (SPA + hashed assets) to the
       // vite child so source edits show up without a rebuild.
       if (viteChild) {
