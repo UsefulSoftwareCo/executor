@@ -61,7 +61,9 @@ export const withLocalServer = (
             markFocus(runDir, "terminal");
             const snapshot = await term.screen.waitUntil(
               (current) => TOKEN_URL.test(current.text),
-              { timeoutMs: 120_000 },
+              // A cold `executor web` runs vite's optimizeDeps before it prints
+              // the URL; give CI runners headroom over the warm ~3s boot.
+              { timeoutMs: 180_000 },
             );
             const url = TOKEN_URL.exec(snapshot.text)?.[0];
             if (!url) {
