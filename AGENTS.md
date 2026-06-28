@@ -17,6 +17,10 @@ writing e2e scenarios, see [e2e/AGENTS.md](e2e/AGENTS.md). Run
 - For code changes, run the narrowest useful verification before handing back.
 - For broad or merge-ready changes, the full gates are `bun run format:check`,
   `bun run lint`, `bun run typecheck`, and `bun run test`.
+- Always run `bun run format` before opening a PR so the diff lands
+  already-formatted. Only commit formatting changes to files your branch
+  actually touches: if `format` rewrites unrelated pre-existing files, leave
+  those out of the PR (stage just your files).
 
 ## Handing Back Work: Evidence, Not Assertions
 
