@@ -42,6 +42,7 @@
         "@executor-js/runtime-quickjs": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@jitl/quickjs-wasmfile-release-sync": "catalog:",
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@sentry/bun": "^10.57.0",
         "effect": "catalog:",
         "quickjs-emscripten": "catalog:",

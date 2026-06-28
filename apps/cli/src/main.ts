@@ -63,6 +63,9 @@ import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { ExecutorApi, checkForUpdate } from "@executor-js/api";
 import {
@@ -84,15 +87,12 @@ import {
 } from "./device-login";
 import {
   startServer,
-  runMcpStdioServer,
-  getExecutor,
   rotateLocalAuthToken,
   localAuthTokenPath,
   findDataDirOwnershipHeld,
   type ServerInstance,
   type StartServerOptions,
 } from "@executor-js/local";
-import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { fetchIntegrations } from "./integrations";
 import {
   buildDaemonSpawnSpec,
@@ -501,6 +501,89 @@ const waitForDaemonStartupTarget = (input: {
 // Serialize daemon startup behind a filesystem lock so concurrent CLI invocations don't
 // each spawn their own daemon. The post-lock pointer recheck catches the case where
 // another invocation finished bootstrapping while we were waiting for the lock.
+// A storm of concurrent cold starts should elect ONE owner with the rest
+// attaching, never N-1 hard failures. Each attempt either wins the per-scope
+// start lock and spawns the daemon, or waits for the current holder's manifest.
+// Re-acquiring after a wait timeout is what recovers the one window the wait
+// alone cannot: acquireDaemonStartLock reclaims a STALE lock at acquisition, so
+// a holder that took the lock then died BEFORE spawning (no daemon, no manifest)
+// is recovered when a loser loops back and re-acquires.
+const MAX_DAEMON_ELECTION_ATTEMPTS = 3;
+
+/** The stable message acquireDaemonStartLock fails with on genuine lock
+ * contention. Only this should be treated as "another process is electing";
+ * any other failure (e.g. an unwritable data dir) must propagate, not masquerade
+ * as a race the caller should wait out. */
+const isStartLockContention = (error: Error): boolean =>
+  error.message.includes("Another daemon startup is already in progress");
+
+const spawnDaemonAsLockHolder = (input: {
+  host: string;
+  scopeId: string;
+  preferredPort: number;
+  allowedHosts: ReadonlyArray<string>;
+}): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const existing = yield* readDaemonPointer({ hostname: input.host, scopeId: input.scopeId });
+    if (existing && isPidAlive(existing.pid)) {
+      const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+      if (yield* isServerReachable(existingUrl)) {
+        return existingUrl;
+      }
+    }
+
+    const selectedPort = yield* chooseDaemonPort({
+      preferredPort: input.preferredPort,
+      hostname: input.host,
+    });
+
+    if (selectedPort !== input.preferredPort) {
+      console.error(
+        `Port ${input.preferredPort} is in use. Starting daemon on available port ${selectedPort} instead.`,
+      );
+    }
+
+    const spec = yield* Effect.try({
+      try: () =>
+        buildDaemonSpawnSpec({
+          port: selectedPort,
+          hostname: input.host,
+          isDevMode,
+          scriptPath: script,
+          executablePath: process.execPath,
+          allowedHosts: input.allowedHosts,
+        }),
+      catch: (cause) =>
+        cause instanceof Error
+          ? cause
+          : new Error(`Failed to build daemon command: ${String(cause)}`),
+    });
+
+    const startBaseUrl = daemonBaseUrl(input.host, selectedPort);
+    console.error(`Starting daemon on ${input.host}:${selectedPort}...`);
+    const child = yield* spawnDetached({
+      command: spec.command,
+      args: spec.args,
+      env: process.env,
+    });
+
+    const readyBaseUrl = yield* waitForDaemonStartupTarget({ requestedBaseUrl: startBaseUrl });
+
+    if (!readyBaseUrl) {
+      yield* terminateSpawnedDetachedProcess(child).pipe(Effect.ignore);
+      return yield* Effect.fail(
+        new Error(
+          [
+            `Daemon did not become reachable at ${startBaseUrl} and no reachable local server manifest appeared within ${DAEMON_BOOT_TIMEOUT_MS}ms.`,
+            `Run in foreground to inspect logs: ${cliPrefix} daemon run --foreground --port ${selectedPort} --hostname ${input.host}`,
+          ].join("\n"),
+        ),
+      );
+    }
+
+    return readyBaseUrl;
+  });
+
 const spawnAndWaitForDaemon = (input: {
   host: string;
   scopeId: string;
@@ -508,70 +591,44 @@ const spawnAndWaitForDaemon = (input: {
   allowedHosts: ReadonlyArray<string>;
 }): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
-    const lock = yield* acquireDaemonStartLock({ hostname: input.host, scopeId: input.scopeId });
+    const requestedBaseUrl = daemonBaseUrl(input.host, input.preferredPort);
 
-    try {
-      const existing = yield* readDaemonPointer({ hostname: input.host, scopeId: input.scopeId });
-      if (existing && isPidAlive(existing.pid)) {
-        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
-        if (yield* isServerReachable(existingUrl)) {
-          return existingUrl;
-        }
-      }
-
-      const selectedPort = yield* chooseDaemonPort({
-        preferredPort: input.preferredPort,
+    for (let attempt = 1; attempt <= MAX_DAEMON_ELECTION_ATTEMPTS; attempt++) {
+      const acquired = yield* acquireDaemonStartLock({
         hostname: input.host,
-      });
+        scopeId: input.scopeId,
+      }).pipe(
+        Effect.map((lock) => ({ held: true as const, lock })),
+        Effect.catch((error) =>
+          isStartLockContention(error)
+            ? Effect.succeed({ held: false as const, lock: null })
+            : Effect.fail(error),
+        ),
+      );
 
-      if (selectedPort !== input.preferredPort) {
-        console.error(
-          `Port ${input.preferredPort} is in use. Starting daemon on available port ${selectedPort} instead.`,
+      if (acquired.held) {
+        const lock = acquired.lock;
+        return yield* spawnDaemonAsLockHolder(input).pipe(
+          Effect.ensuring(releaseDaemonStartLock(lock).pipe(Effect.ignore)),
         );
       }
 
-      const spec = yield* Effect.try({
-        try: () =>
-          buildDaemonSpawnSpec({
-            port: selectedPort,
-            hostname: input.host,
-            isDevMode,
-            scriptPath: script,
-            executablePath: process.execPath,
-            allowedHosts: input.allowedHosts,
-          }),
-        catch: (cause) =>
-          cause instanceof Error
-            ? cause
-            : new Error(`Failed to build daemon command: ${String(cause)}`),
-      });
-
-      const startBaseUrl = daemonBaseUrl(input.host, selectedPort);
-      console.error(`Starting daemon on ${input.host}:${selectedPort}...`);
-      const child = yield* spawnDetached({
-        command: spec.command,
-        args: spec.args,
-        env: process.env,
-      });
-
-      const readyBaseUrl = yield* waitForDaemonStartupTarget({ requestedBaseUrl: startBaseUrl });
-
-      if (!readyBaseUrl) {
-        yield* terminateSpawnedDetachedProcess(child).pipe(Effect.ignore);
-        return yield* Effect.fail(
-          new Error(
-            [
-              `Daemon did not become reachable at ${startBaseUrl} and no reachable local server manifest appeared within ${DAEMON_BOOT_TIMEOUT_MS}ms.`,
-              `Run in foreground to inspect logs: ${cliPrefix} daemon run --foreground --port ${selectedPort} --hostname ${input.host}`,
-            ].join("\n"),
-          ),
-        );
-      }
-
-      return readyBaseUrl;
-    } finally {
-      yield* releaseDaemonStartLock(lock).pipe(Effect.ignore);
+      // Lost the lock: wait for the current holder to advertise a manifest.
+      const ready = yield* waitForDaemonStartupTarget({ requestedBaseUrl });
+      if (ready) return ready;
+      // Timed out with no manifest. The holder may have died mid-startup; loop to
+      // re-acquire, which reclaims its now-stale lock.
     }
+
+    return yield* Effect.fail(
+      new Error(
+        [
+          `Could not elect or attach to a local Executor daemon after ${MAX_DAEMON_ELECTION_ATTEMPTS} attempts.`,
+          "A daemon startup may be stuck. Stop any partial daemon and retry, or run it in the foreground:",
+          `${cliPrefix} daemon run --foreground --port ${input.preferredPort} --hostname ${input.host}`,
+        ].join("\n"),
+      ),
+    );
   });
 
 // Auto-start a local daemon on demand so commands like `executor call` work without the
@@ -1254,125 +1311,146 @@ const runBackgroundDaemonStart = (input: {
   }).pipe(Effect.mapError(toError));
 
 // ---------------------------------------------------------------------------
-// Stdio MCP session
+// Stdio MCP session: a pure stdio <-> HTTP bridge to the owning local daemon.
 // ---------------------------------------------------------------------------
 
-const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A> => {
-  const originalWrite = process.stdout.write;
-  const originalLog = console.log;
-  const originalInfo = console.info;
-  const originalDebug = console.debug;
-  const stderrWrite = process.stderr.write.bind(process.stderr);
+const mcpUrlForActiveLocalServer = (
+  connection: ExecutorServerConnection,
+  elicitationMode: "browser" | "model",
+): URL => {
+  const url = new URL("/mcp", connection.origin);
+  if (elicitationMode === "browser") {
+    url.searchParams.set("elicitation_mode", "browser");
+  }
+  return url;
+};
 
-  process.stdout.write = ((...args: Parameters<typeof process.stdout.write>) =>
-    stderrWrite(...args)) as typeof process.stdout.write;
-  console.log = console.error.bind(console);
-  console.info = console.error.bind(console);
-  console.debug = console.error.bind(console);
+/**
+ * Bridge a stdio MCP client to a local server's HTTP `/mcp` endpoint. `executor
+ * mcp` owns NO database: it forwards JSON-RPC between the client's stdin/stdout
+ * and the daemon over Streamable HTTP. That keeps any number of MCP clients (plus
+ * the web UI and the desktop app) attached to the single owning daemon at once,
+ * and means a transient MCP client exiting never takes the server down. Resolves
+ * when stdin closes or the daemon connection drops; close is best-effort.
+ */
+const runMcpHttpBridge = async (input: {
+  readonly manifest: ExecutorLocalServerManifest;
+  readonly elicitationMode: "browser" | "model";
+}): Promise<void> => {
+  const stdio = new StdioServerTransport();
+  const authorization = getExecutorServerAuthorizationHeader(input.manifest.connection);
+  const http = new StreamableHTTPClientTransport(
+    mcpUrlForActiveLocalServer(input.manifest.connection, input.elicitationMode),
+    authorization ? { requestInit: { headers: { Authorization: authorization } } } : undefined,
+  );
+
+  let finished = false;
+  let closing = false;
+  let closePromise: Promise<void> | null = null;
+  let resolveExit: () => void = () => {};
+  const waitForExit = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    process.stdin.off("end", shutdown);
+    process.stdin.off("close", shutdown);
+    resolveExit();
+  };
+
+  const closeBoth = (): Promise<void> => {
+    if (!closePromise) {
+      closing = true;
+      closePromise = Promise.allSettled([stdio.close(), http.close()]).then(() => undefined);
+    }
+    return closePromise;
+  };
+
+  function shutdown() {
+    finish();
+    void closeBoth();
+  }
+
+  const isAbortDuringClose = (error: Error): boolean =>
+    error.name === "AbortError" || error.message.toLowerCase().includes("aborted");
+
+  const reportError = (context: string, cause: unknown) => {
+    const error = toError(cause);
+    if (closing && isAbortDuringClose(error)) return;
+    console.error(`Executor MCP bridge ${context}: ${error.message}`);
+  };
+
+  const forwardMessage =
+    (send: (message: JSONRPCMessage) => Promise<void>, context: string) =>
+    (message: JSONRPCMessage) => {
+      void send(message).then(undefined, (cause: unknown) => {
+        reportError(context, cause);
+        shutdown();
+      });
+    };
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  process.stdin.once("end", shutdown);
+  process.stdin.once("close", shutdown);
+
+  stdio.onclose = shutdown;
+  http.onclose = shutdown;
+  stdio.onerror = (error) => reportError("stdio transport error", error);
+  http.onerror = (error) => reportError("daemon transport error", error);
+  stdio.onmessage = forwardMessage((message) => http.send(message), "failed to send to daemon");
+  http.onmessage = forwardMessage((message) => stdio.send(message), "failed to send to stdio");
 
   try {
-    return await body();
+    await http.start();
+    await stdio.start();
+    await waitForExit;
   } finally {
-    process.stdout.write = originalWrite;
-    console.log = originalLog;
-    console.info = originalInfo;
-    console.debug = originalDebug;
+    finish();
+    await closeBoth();
   }
 };
 
 const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
-    // No process-level startup lock: the DB ownership lock inside startServer
-    // (openOwnedLocalDatabase) is the real gate. assertNoOtherActiveLocalServer
-    // is a friendly fast-path that may race without being unsafe.
-    yield* assertNoOtherActiveLocalServer();
-    const web = yield* Effect.tryPromise({
-      try: () =>
-        withStdoutReroutedToStderr(async () => {
-          const host = "127.0.0.1";
-          const port = await Effect.runPromise(
-            chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
-          );
-          const baseUrl = `http://localhost:${port}`;
-          const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
-
-          try {
-            const executor = await getExecutor();
-            const server = await startServer({
-              port,
-              hostname: host,
-              embeddedWebUI,
-            });
-            const serverBaseUrl = `http://localhost:${server.port}`;
-            return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
-          } catch (cause) {
-            restoreWebBaseUrl();
-            throw cause;
-          }
-        }),
-      catch: (cause) => cause,
-    }).pipe(
-      Effect.catch((cause) => {
-        const ownership = findDataDirOwnershipHeld(cause);
-        if (!ownership) return Effect.fail(toError(cause));
-        return Effect.gen(function* () {
-          const manifest = yield* readReachableLocalServerHint();
-          const path = yield* PlatformPath.Path;
-          const dataDir = resolveExecutorDataDir(path);
-          if (manifest) {
-            return yield* Effect.fail(
-              new Error(
-                [
-                  `A local Executor server already owns ${dataDir} at ${manifest.connection.origin}.`,
-                  "The stdio MCP server needs exclusive access to the local database.",
-                  `Use the running HTTP MCP endpoint instead: ${manifest.connection.origin}/mcp`,
-                ].join("\n"),
-              ),
-            );
-          }
-          return yield* Effect.fail(
-            new Error(
-              [
-                "Executor data directory is owned by another live process, but no reachable local server was advertised.",
-                `Data directory: ${dataDir}`,
-                `Ownership lock: ${ownership.lockPath}`,
-                "Wait for the existing process to finish starting, or stop it and retry.",
-              ].join("\n"),
-            ),
-          );
-        });
-      }),
-    );
-    yield* publishLocalServerManifest({
-      kind: "foreground",
-      connection: normalizeExecutorServerConnection({
-        kind: "http",
-        origin: web.baseUrl,
-        displayName: "CLI MCP",
-        auth: { kind: "bearer", token: web.server.authToken },
-      }),
-    });
-
-    try {
+    // `executor mcp` never owns the local database. If a local server is already
+    // running, bridge this stdio client to it; otherwise ensure a durable
+    // background daemon is up and bridge to that. ensureDaemon is the race-safe
+    // election: concurrent cold starts elect one owner and the losers wait for
+    // its manifest (waitForDaemonStartupTarget) rather than failing. Bridging
+    // means many MCP clients, the web UI, and the desktop app share one owner,
+    // and that owner's lifetime is never tied to a transient MCP client.
+    const active = yield* readActiveLocalServerManifest();
+    if (active) {
       yield* Effect.promise(() =>
-        runMcpStdioServer({
-          executor: web.executor,
-          codeExecutor: makeQuickJsExecutor(),
-          elicitationMode:
-            input.elicitationMode === "browser"
-              ? {
-                  mode: "browser" as const,
-                  approvalUrl: (executionId) =>
-                    `${web.baseUrl}/resume/${encodeURIComponent(executionId)}`,
-                }
-              : { mode: input.elicitationMode },
-        }),
+        runMcpHttpBridge({ manifest: active, elicitationMode: input.elicitationMode }),
       );
-    } finally {
-      web.restoreWebBaseUrl();
-      yield* Effect.promise(() => web.server.stop());
-      yield* removeLocalServerManifestIfOwnedBy({ pid: process.pid }).pipe(Effect.ignore);
+      return;
     }
+
+    // No reachable owner yet: ensure one. If we lose the election (another
+    // process became owner first), ensureDaemon may fail, but the winner's
+    // manifest is then reachable, so re-read it and bridge to that instead.
+    const elected = yield* ensureDaemon(DEFAULT_BASE_URL).pipe(
+      Effect.flatMap(() => readActiveLocalServerManifest()),
+      Effect.catch((error) =>
+        readActiveLocalServerManifest().pipe(
+          Effect.flatMap((manifest) => (manifest ? Effect.succeed(manifest) : Effect.fail(error))),
+        ),
+      ),
+    );
+    if (!elected) {
+      return yield* Effect.fail(
+        new Error("The local Executor daemon started but did not advertise a reachable manifest."),
+      );
+    }
+    yield* Effect.promise(() =>
+      runMcpHttpBridge({ manifest: elected, elicitationMode: input.elicitationMode }),
+    );
   });
 
 const scope = Options.string("scope").pipe(
