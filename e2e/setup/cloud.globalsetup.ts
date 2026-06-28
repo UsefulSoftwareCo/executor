@@ -50,6 +50,11 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
       // slow" gets a span waterfall, not a guess.
       extraEnv: motelExporterEnv(motel, publicUrl),
     });
+    // Publish the Autumn emulator URL to the test workers (they inherit this
+    // process's env): scenarios that assert on tracked usage yield the Autumn
+    // service, which exists only when this is set. No emulator → those scenarios
+    // skip, never fail. (Cloud-only; selfhost never boots Autumn.)
+    process.env.E2E_AUTUMN_URL = booted.autumnUrl;
   } catch (error) {
     await motel?.teardown();
     await release();

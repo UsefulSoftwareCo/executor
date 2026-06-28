@@ -50,9 +50,11 @@ export {
 //   - `cloudIdentityFailureStrategy` -> renders the shared identity errors as
 //                                     cloud's exact `{ error, code }` JSON at
 //                                     status 401/403/503 (byte-identical).
-//   - `cloudPlugins` + `CloudMeteredExecutionStackLayer` — the executor plane is
-//                                     the ONLY path that meters, so billing lives
-//                                     here (not in the neutral stack the DO shares).
+//   - `cloudPlugins` + `CloudMeteredExecutionStackLayer` — the HTTP executor
+//                                     plane meters here; the MCP session DO uses
+//                                     the same metered stack (with its own
+//                                     `AutumnService.Default`), so both planes
+//                                     bill executions.
 //
 // Only `AutumnService` is captured at boot; `IdentityProvider` + `DbService` +
 // `UserStoreService` stay residual and are supplied per request by the combined

@@ -1,15 +1,17 @@
 // ---------------------------------------------------------------------------
-// Metered execution stack — the HTTP executor plane's billing overlay.
+// Metered execution stack: cloud's billing overlay over the execution seams.
 //
-// Cloud is the only host that meters executions, and only the HTTP `/api/*`
-// executor plane does so (the MCP session DO never bills). This module is where
-// the billing decorator binds to the neutral `CloudExecutionStackLayer`: it
-// overrides the base stack's no-op `EngineDecorator` with one that calls
-// `AutumnService.trackExecution` after each execution.
+// Cloud is the only host that meters executions, and BOTH of its execution
+// planes do so: the HTTP `/api/*` executor plane (api/protected.ts) and the MCP
+// session Durable Object (mcp/session-durable-object.ts). This module composes
+// the four billing-free `CloudExecutionSeamsLayer` seams with an `EngineDecorator`
+// that calls `AutumnService.trackExecution` after each execution.
 //
 // Keeping this in the cloud APP layer (not the neutral `engine/execution-stack.ts`)
-// is the billing-boundary line: the neutral stack the DO shares names no billing
-// service; the metered overlay — provided ONLY here — does.
+// is the billing-boundary line: the seams module names no billing service; the
+// metered overlay, provided ONLY here, does. Both planes import THIS layer and
+// supply `AutumnService` from their own context (boot for the HTTP plane,
+// `AutumnService.Default` locally for the DO).
 // ---------------------------------------------------------------------------
 
 import { Effect, Layer } from "effect";
@@ -42,10 +44,10 @@ export const CloudMeteringEngineDecorator: Layer.Layer<EngineDecorator, never, A
   );
 
 /**
- * The execution-stack seams for the metered HTTP executor plane: the four
- * billing-free `CloudExecutionSeamsLayer` seams plus the billing decorator.
- * Requires `DbService` (per-request Hyperdrive db) and `AutumnService` (usage
- * metering) from the surrounding context.
+ * The metered execution stack used by BOTH cloud planes (HTTP executor plane and
+ * MCP session DO): the four billing-free `CloudExecutionSeamsLayer` seams plus
+ * the billing decorator. Requires `DbService` (per-request Hyperdrive db) and
+ * `AutumnService` (usage metering) from the surrounding context.
  */
 export const CloudMeteredExecutionStackLayer: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,

@@ -22,12 +22,14 @@
 //                            a test flag. `webBaseUrl` is `VITE_PUBLIC_SITE_URL ??
 //                            executor.sh`.
 //   - CodeExecutorProvider -> `makeDynamicWorkerExecutor({ loader: env.LOADER })`.
-//   - EngineDecorator      -> the BASE stack uses the no-op decorator (the MCP
-//                            session DO never meters); the METERED stack (HTTP
-//                            executor plane only) overrides it with the billing
-//                            decorator (`CloudMeteredExecutionStackLayer`,
-//                            ../engine/execution-stack-metered.ts). Billing lives in
-//                            the cloud app, not this neutral stack.
+//   - EngineDecorator      -> the billing decorator that meters each execution
+//                            to Autumn. BOTH cloud execution planes (the HTTP
+//                            `/api/*` executor plane AND the MCP session DO) use
+//                            the metered stack (`CloudMeteredExecutionStackLayer`,
+//                            ../engine/execution-stack-metered.ts), since the MCP
+//                            server is the primary execution surface. Billing
+//                            still lives in the cloud app, not this neutral
+//                            seams module; the decorator is composed on top.
 // ---------------------------------------------------------------------------
 
 import { env } from "cloudflare:workers";
@@ -36,8 +38,6 @@ import { Layer } from "effect";
 import {
   CodeExecutorProvider,
   DbProvider,
-  EngineDecorator,
-  EngineDecoratorNoop,
   HostConfig,
   PluginsProvider,
   collectTables,
@@ -98,11 +98,11 @@ export const CloudCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Laye
 
 /**
  * The four billing-free execution-stack seams (db / plugins / host-config /
- * code-executor) — everything `makeExecutionStack` reads EXCEPT the
- * `EngineDecorator`. The metered HTTP plane composes this with the billing
- * decorator (../engine/execution-stack-metered.ts); the neutral stack below adds
- * the no-op decorator. Exported so the metered overlay builds over the SAME four
- * seams rather than relying on a layer override.
+ * code-executor): everything `makeExecutionStack` reads EXCEPT the
+ * `EngineDecorator`. Both cloud planes compose this with the billing decorator
+ * via `CloudMeteredExecutionStackLayer` (../engine/execution-stack-metered.ts);
+ * exported so that overlay builds over the SAME four seams. There is no neutral
+ * no-op-decorator variant anymore: every cloud execution meters.
  */
 export const CloudExecutionSeamsLayer: Layer.Layer<
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider,
@@ -114,20 +114,3 @@ export const CloudExecutionSeamsLayer: Layer.Layer<
   CloudHostConfig,
   CloudCodeExecutorProvider,
 );
-
-/**
- * The five execution-stack seams the shared `makeExecutionStack` reads from,
- * with the NO-OP engine decorator. This is the neutral stack: it requires only
- * `DbService` (per-request Hyperdrive db) and carries NO billing dependency, so
- * the MCP session DO — which never meters — can build an engine without dragging
- * in any billing service.
- *
- * The HTTP executor plane (the only path that meters) uses
- * `CloudMeteredExecutionStackLayer` (../engine/execution-stack-metered.ts), which
- * swaps the no-op decorator for the billing one.
- */
-export const CloudExecutionStackLayer: Layer.Layer<
-  DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator,
-  never,
-  DbService
-> = Layer.merge(CloudExecutionSeamsLayer, EngineDecoratorNoop);
