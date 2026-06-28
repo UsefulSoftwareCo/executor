@@ -15,7 +15,7 @@ Using the published image:
 ```bash
 docker run -d \
   --name executor-selfhost \
-  -p 17888:17888 \
+  -p 4788:4788 \
   -v executor-data:/data \
   ghcr.io/rhyssullivan/executor-selfhost:latest
 ```
@@ -27,7 +27,7 @@ from `apps/host-selfhost`:
 docker compose up -d --build
 ```
 
-No configuration is required. Open [http://localhost:17888](http://localhost:17888);
+No configuration is required. Open [http://localhost:4788](http://localhost:4788);
 the first person to create an account becomes the owner. After that, people join
 through single-use invite links you mint from the **Admin** page, and open signup
 is closed.
@@ -55,11 +55,11 @@ the container defaults.
 
 | Variable                            | Default                         | Purpose                                                                                         |
 | ----------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `PORT`                              | `17888`                         | HTTP port the server listens on.                                                                |
+| `PORT`                              | `4788`                          | HTTP port the server listens on.                                                                |
 | `EXECUTOR_HOST`                     | `0.0.0.0`                       | Bind address. The image binds all interfaces.                                                   |
 | `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                              |
 | `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                           |
-| `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:17888`) | Public URL browsers use. Required behind a domain or TLS (see below).                           |
+| `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                           |
 | `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                     |
 | `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                             |
 | `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`    | unset                           | Pre-create the admin headlessly (with the password below); skips browser first-run.             |
@@ -78,7 +78,7 @@ the container defaults.
 
 ```bash
 docker run -d \
-  -p 17888:17888 \
+  -p 4788:4788 \
   -v executor-data:/data \
   -e EXECUTOR_WEB_BASE_URL=https://executor.example.com \
   ghcr.io/rhyssullivan/executor-selfhost:latest
@@ -91,5 +91,5 @@ setup screen.
 ## Connect an agent
 
 The server exposes a streamable-HTTP MCP endpoint at `/mcp`. Point your client at
-`http://localhost:17888/mcp` (or your public URL). See [MCP Proxy](/mcp-proxy) for
+`http://localhost:4788/mcp` (or your public URL). See [MCP Proxy](/mcp-proxy) for
 how that endpoint exposes your integrations.

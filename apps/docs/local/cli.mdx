@@ -37,7 +37,7 @@ Install the durable background service, then open the web UI:
 
 ```bash
 executor install   # install/start the durable background service
-executor web        # open the web UI at http://127.0.0.1:17888
+executor web        # open the web UI at http://127.0.0.1:4788
 ```
 
 `executor install` registers Executor so it keeps running across restarts. For a
@@ -51,10 +51,10 @@ the CLI:
 
 <Tabs>
   <Tab title="HTTP">
-    Executor serves a streamable-HTTP MCP endpoint at `http://127.0.0.1:17888/mcp`:
+    Executor serves a streamable-HTTP MCP endpoint at `http://127.0.0.1:4788/mcp`:
 
     ```bash
-    npx add-mcp http://127.0.0.1:17888/mcp --transport http --name executor
+    npx add-mcp http://127.0.0.1:4788/mcp --transport http --name executor
     ```
 
     The **Connect** card in the web UI shows this command with your exact URL
