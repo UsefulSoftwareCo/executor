@@ -321,9 +321,6 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                   size="sm"
                 />
                 <span className="flex-1 truncate">{name}</span>
-                <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
-                  {integration.kind}
-                </span>
               </Link>
             );
           })}
@@ -345,16 +342,19 @@ function SidebarContent(props: {
   const isHome = props.pathname === "/";
   const isSecrets = props.pathname === "/secrets";
   const isPolicies = props.pathname === "/policies";
+  const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
 
   return (
     <>
       {props.showBrand !== false && (
-        <div className="desktop-macos-sidebar-header flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+        <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
           <Link
             to="/{-$orgSlug}"
             className="desktop-macos-no-drag flex shrink-0 items-center gap-1.5"
           >
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
+            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
+              executor
+            </span>
             <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
               Beta
             </span>
@@ -384,6 +384,12 @@ function SidebarContent(props: {
           active={isPolicies}
           onNavigate={props.onNavigate}
         />
+        <NavItem
+          to="/{-$orgSlug}/toolkits"
+          label="Toolkits"
+          active={isToolkits}
+          onNavigate={props.onNavigate}
+        />
 
         <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
@@ -402,6 +408,14 @@ function SidebarContent(props: {
       {/* Footer */}
       <div className="shrink-0 border-t border-sidebar-border px-4 py-2.5">
         <div className="flex flex-col gap-1.5 text-xs leading-none">
+          <a
+            href="https://executor.sh/docs"
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Docs
+          </a>
           <a
             href={`${VITE_GITHUB_URL}/issues`}
             target="_blank"
@@ -473,7 +487,7 @@ export function Shell() {
     <div className="flex h-screen overflow-hidden">
       <CommandPalette />
       {/* Desktop sidebar */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
+      <aside className="desktop-macos-sidebar hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
         <SidebarContent
           pathname={pathname}
           updateAvailable={updateAvailable}
@@ -495,7 +509,7 @@ export function Shell() {
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
               <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-                <span className="font-display text-base tracking-tight text-foreground">
+                <span className="font-mono text-sm font-medium tracking-tight text-foreground">
                   executor
                 </span>
                 <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
@@ -533,6 +547,11 @@ export function Shell() {
 
       {/* Main content */}
       <main className="flex min-h-0 flex-1 flex-col min-w-0 overflow-hidden">
+        {/* Desktop (macOS frameless) draggable title-bar strip. Gives the main
+            area the same native window drag + double-click-to-zoom as the
+            sidebar header; hidden everywhere else via CSS. */}
+        <div className="desktop-macos-main-titlebar" />
+
         {/* Mobile top bar */}
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
           <Button
@@ -552,7 +571,9 @@ export function Shell() {
             </svg>
           </Button>
           <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
+            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
+              executor
+            </span>
           </Link>
           <div className="w-8 shrink-0" />
         </div>

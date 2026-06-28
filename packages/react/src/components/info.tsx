@@ -17,8 +17,8 @@ const variantClassName: Record<
     icon: "text-muted-foreground",
   },
   warning: {
-    root: "border-border/70 border-l-amber-500 bg-card text-foreground shadow-xs dark:border-border/70 dark:border-l-amber-400 dark:bg-card/70",
-    icon: "text-amber-600 dark:text-amber-400",
+    root: "border-border/70 border-l-foreground/40 bg-card text-foreground shadow-xs dark:border-border/70 dark:border-l-foreground/30 dark:bg-card/70",
+    icon: "text-muted-foreground",
   },
 };
 

@@ -85,13 +85,6 @@ export const OrgAuthLive = Layer.effect(
             return yield* Effect.fail(new NoOrganization());
           }
 
-          // NOTE: the domains plane stays scoped to the SESSION org, not the URL
-          // org. Unlike the data + account planes (which resolve the selector
-          // header), this `HttpApiMiddleware` security handler may carry no
-          // residual requirement, so it can't reach the per-request
-          // `UserStoreService` a slug→id resolution needs. The domains surface
-          // (org-settings → domain verification) is niche; URL-scoping it would
-          // mean converting this to an HttpRouter middleware — deferred.
           const session = sessionFromSealed(result, Redacted.value(credential));
           const auth = {
             accountId: session.accountId,

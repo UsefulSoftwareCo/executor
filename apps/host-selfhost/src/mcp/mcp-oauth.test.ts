@@ -36,6 +36,16 @@ test("serves OAuth Protected Resource metadata at the origin root", async () => 
   expect(Array.isArray(body.authorization_servers)).toBe(true);
 });
 
+test("serves OAuth Protected Resource metadata for a toolkit MCP resource", async () => {
+  const res = await handler(
+    new Request(`${BASE}/.well-known/oauth-protected-resource/mcp/toolkits/deploy`),
+  );
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as Record<string, unknown>;
+  expect(body.resource).toBe(`${BASE}/mcp/toolkits/deploy`);
+  expect(Array.isArray(body.authorization_servers)).toBe(true);
+});
+
 test("an unauthenticated /mcp request returns 401 with a WWW-Authenticate challenge", async () => {
   const res = await handler(
     new Request(`${BASE}/mcp`, {
@@ -51,6 +61,25 @@ test("an unauthenticated /mcp request returns 401 with a WWW-Authenticate challe
   const challenge = res.headers.get("www-authenticate") ?? "";
   expect(challenge).toContain("Bearer");
   expect(challenge).toContain("resource_metadata=");
+});
+
+test("an unauthenticated toolkit MCP request challenges with toolkit metadata", async () => {
+  const res = await handler(
+    new Request(`${BASE}/mcp/toolkits/deploy`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+    }),
+  );
+  expect(res.status).toBe(401);
+  const challenge = res.headers.get("www-authenticate") ?? "";
+  expect(challenge).toContain("Bearer");
+  expect(challenge).toContain(
+    `resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp/toolkits/deploy"`,
+  );
 });
 
 // --- End-to-end MCP OAuth: DCR -> authorize -> token -> /mcp with bearer ---

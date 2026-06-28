@@ -4,6 +4,7 @@ import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
+import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 // ---------------------------------------------------------------------------
 // The Cloudflare host's plugin list — the same protocol/provider plugins as
@@ -16,13 +17,17 @@ import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 // spawn arbitrary stdio MCP processes.
 // ---------------------------------------------------------------------------
 
-export const makeCloudflarePlugins = (secretKey: string) =>
+export const makeCloudflarePlugins = (
+  secretKey: string,
+  options: { readonly activeToolkitSlug?: string } = {},
+) =>
   [
     openApiHttpPlugin(),
     googleHttpPlugin(),
     microsoftHttpPlugin(),
     mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
     graphqlHttpPlugin(),
+    toolkitsPlugin({ activeToolkitSlug: options.activeToolkitSlug }),
     encryptedSecretsPlugin({ key: secretKey }),
   ] as const;
 

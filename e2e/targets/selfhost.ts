@@ -83,7 +83,13 @@ const forcedMcpConsent =
     if (!decision.ok) {
       throw new Error(`forcedMcpConsent: consent grant failed (status ${decision.status})`);
     }
-    const body = (await decision.json()) as { redirectURI?: string };
+    const decisionText = await decision.text();
+    if (!decisionText) {
+      throw new Error(
+        `forcedMcpConsent: consent grant returned an empty body (status ${decision.status})`,
+      );
+    }
+    const body = JSON.parse(decisionText) as { redirectURI?: string };
     const code = body.redirectURI ? new URL(body.redirectURI).searchParams.get("code") : null;
     if (!code) {
       throw new Error(
@@ -118,6 +124,6 @@ export const selfhostTarget = (): Target => ({
   mcpConsent: (identity: Identity) =>
     forcedMcpConsent(SELFHOST_BASE_URL, {
       email: identity.credentials?.email ?? SELFHOST_ADMIN.email,
-      password: identity.credentials?.password ?? SELFHOST_ADMIN.password,
+      password: identity.credentials?.password || SELFHOST_ADMIN.password,
     }),
 });

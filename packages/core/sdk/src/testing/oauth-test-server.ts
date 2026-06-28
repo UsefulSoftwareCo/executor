@@ -389,6 +389,13 @@ const completeAuthorizationCodeTokenFlow =
       };
     });
 
+/** Parse the `scope` query param from an authorize URL into an ordered list
+ *  (empty when the parameter is absent or blank). */
+export const scopesFromAuthorizeUrl = (authorizationUrl: string): readonly string[] => {
+  const raw = new URL(authorizationUrl).searchParams.get("scope");
+  return raw == null || raw.length === 0 ? [] : raw.split(" ");
+};
+
 export const serveOAuthTestServer = (
   options: OAuthTestServerOptions = {},
 ): Effect.Effect<OAuthTestServerShape, OAuthTestServerAddressError, Scope.Scope> =>

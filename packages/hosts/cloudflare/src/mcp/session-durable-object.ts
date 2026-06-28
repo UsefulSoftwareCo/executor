@@ -29,9 +29,12 @@ import { makeMcpWorkerTransport, type McpWorkerTransport } from "./worker-transp
 import {
   INTERNAL_ACCOUNT_ID_HEADER,
   INTERNAL_ORGANIZATION_ID_HEADER,
+  INTERNAL_RESOURCE_KEY_HEADER,
   type IncomingPropagationHeaders,
 } from "./do-headers";
+import { mcpResourceKey } from "@executor-js/host-mcp";
 import type { McpSessionInit } from "./seams";
+import type { McpResource } from "@executor-js/host-mcp";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -122,6 +125,7 @@ export interface SessionDbHandle {
 export interface SessionMeta {
   readonly organizationId: string;
   readonly organizationName: string;
+  readonly resource: McpResource;
   /** The org's URL slug, when the host's `resolveSessionMeta` carried one.
    *  Pins browser-handoff URLs to the right org's console. */
   readonly organizationSlug?: string;
@@ -541,8 +545,11 @@ export abstract class McpSessionDOBase<
 
       const accountId = request.headers.get(INTERNAL_ACCOUNT_ID_HEADER);
       const organizationId = request.headers.get(INTERNAL_ORGANIZATION_ID_HEADER);
+      const resourceKey = request.headers.get(INTERNAL_RESOURCE_KEY_HEADER);
       const matches =
-        accountId === sessionMeta.userId && organizationId === sessionMeta.organizationId;
+        accountId === sessionMeta.userId &&
+        organizationId === sessionMeta.organizationId &&
+        resourceKey === mcpResourceKey(sessionMeta.resource);
 
       yield* Effect.annotateCurrentSpan({
         "mcp.session.owner_match": matches,
@@ -559,9 +566,11 @@ export abstract class McpSessionDOBase<
       // Carry the create request's origin onto the persisted meta (the host's
       // resolveSessionMeta is identity-only and doesn't see it), so a cold
       // isolate rebuilds the runtime with the same web base URL.
-      const sessionMeta: SessionMeta = token.webOrigin
-        ? { ...resolved, webOrigin: token.webOrigin }
-        : resolved;
+      const sessionMeta: SessionMeta = {
+        ...resolved,
+        resource: token.resource,
+        ...(token.webOrigin ? { webOrigin: token.webOrigin } : {}),
+      };
       yield* Effect.promise(() => self.saveSessionMeta(sessionMeta)).pipe(
         Effect.withSpan("mcp.session.save_meta"),
       );

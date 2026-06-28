@@ -13,9 +13,11 @@
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
+import { mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
 
 export const INTERNAL_ACCOUNT_ID_HEADER = "x-executor-mcp-account-id";
 export const INTERNAL_ORGANIZATION_ID_HEADER = "x-executor-mcp-organization-id";
+export const INTERNAL_RESOURCE_KEY_HEADER = "x-executor-mcp-resource-key";
 
 /** The verified identity used to stamp the DO's internal owner headers. */
 export type VerifiedTokenHeaders = {
@@ -70,10 +72,12 @@ export const withPropagationHeaders = (
 export const withVerifiedIdentityHeaders = (
   request: Request,
   token: VerifiedTokenHeaders,
+  resource: McpResource,
 ): Request => {
   const headers = new Headers(request.headers);
   headers.set(INTERNAL_ACCOUNT_ID_HEADER, token.accountId);
   headers.set(INTERNAL_ORGANIZATION_ID_HEADER, token.organizationId ?? "");
+  headers.set(INTERNAL_RESOURCE_KEY_HEADER, mcpResourceKey(resource));
   return new Request(request, { headers });
 };
 

@@ -25,6 +25,7 @@ import type { ParsedDocument } from "./parse";
 import { parse } from "./parse";
 import { extract } from "./extract";
 import { openApiPlugin } from "./plugin";
+import { deriveAuthenticationTemplateFromPreview } from "./derive-auth";
 import { previewSpec as previewSpecRaw } from "./preview";
 import type { ExtractionResult } from "./types";
 
@@ -240,6 +241,21 @@ describe("Real specs: Cloudflare API", { timeout: 60_000 }, () => {
       expect(keyEmailPreset).toBeDefined();
       expect(keyEmailPreset!.headers["X-Auth-Email"]).toBeNull();
       expect(keyEmailPreset!.headers["X-Auth-Key"]).toBeNull();
+
+      const templates = deriveAuthenticationTemplateFromPreview(preview, undefined);
+      const keyEmailTemplate = templates.find(
+        (template) =>
+          template.kind === "apikey" &&
+          template.placements.some((placement) => placement.name === "X-Auth-Email"),
+      );
+      expect(keyEmailTemplate).toBeDefined();
+      expect(keyEmailTemplate).toMatchObject({
+        kind: "apikey",
+        placements: [
+          { carrier: "header", name: "X-Auth-Email", variable: "x_auth_email" },
+          { carrier: "header", name: "X-Auth-Key", variable: "x_auth_key" },
+        ],
+      });
     }),
   );
 

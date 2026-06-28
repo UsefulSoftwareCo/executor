@@ -20,7 +20,7 @@ const queryRows = <T extends Record<string, unknown>>(
   const sql = typeof stmt === "string" ? stmt : stmt.sql;
   const args = typeof stmt === "string" ? [] : stmt.args;
   const prepared = session.prepare(sql).bind(...args);
-  if (firstWord(sql) === "SELECT") {
+  if (firstWord(sql) === "SELECT" || firstWord(sql) === "PRAGMA") {
     return prepared.all<T>().then((result) => result.results);
   }
   return prepared.run<T>().then(() => []);
@@ -38,6 +38,93 @@ export const d1DataMigrationClient = (db: D1Database): SqliteDataMigrationClient
   };
 };
 
+const tableColumns = async (db: D1Database, table: string): Promise<ReadonlySet<string>> => {
+  const session = db.withSession("first-primary");
+  const result = await session.prepare(`PRAGMA table_info('${table}')`).all<{
+    readonly name?: unknown;
+  }>();
+  return new Set(
+    result.results
+      .map((row) => row.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+};
+
+const rebuildLegacyConnectionTable = async (db: D1Database): Promise<void> => {
+  const statements = [
+    `DROP TABLE IF EXISTS connection_next`,
+    `DROP TABLE IF EXISTS connection_legacy_item_id`,
+    `CREATE TABLE connection_next (
+      integration text NOT NULL,
+      name text NOT NULL,
+      template text NOT NULL,
+      provider text NOT NULL,
+      item_ids json NOT NULL,
+      identity_label text,
+      description text,
+      tools_synced_at integer,
+      oauth_client text,
+      oauth_client_owner text,
+      refresh_item_id text,
+      expires_at integer,
+      oauth_scope text,
+      oauth_token_url text,
+      provider_state text,
+      created_at integer NOT NULL,
+      updated_at integer NOT NULL,
+      row_id text PRIMARY KEY NOT NULL,
+      tenant text NOT NULL,
+      owner text NOT NULL,
+      subject text NOT NULL
+    )`,
+    `INSERT INTO connection_next
+      (integration, name, template, provider, item_ids, identity_label,
+       description, tools_synced_at, oauth_client, oauth_client_owner,
+       refresh_item_id, expires_at, oauth_scope, oauth_token_url,
+       provider_state, created_at, updated_at, row_id, tenant, owner, subject)
+     SELECT integration, name, template, provider,
+       CASE
+         WHEN item_ids IS NOT NULL AND item_ids <> '{}' THEN item_ids
+         ELSE json_object('token', item_id)
+       END,
+       identity_label, description, tools_synced_at, oauth_client,
+       oauth_client_owner, refresh_item_id, expires_at, oauth_scope,
+       oauth_token_url, provider_state, created_at, updated_at, row_id,
+       tenant, owner, subject
+     FROM connection`,
+    `ALTER TABLE connection RENAME TO connection_legacy_item_id`,
+    `ALTER TABLE connection_next RENAME TO connection`,
+    `DROP TABLE connection_legacy_item_id`,
+  ];
+  for (const statement of statements) {
+    await db.prepare(statement).run();
+  }
+};
+
+export const ensureCloudflareD1SchemaCompatibility = async (db: D1Database): Promise<void> => {
+  const integrationColumns = await tableColumns(db, "integration");
+  if (integrationColumns.has("config")) {
+    await db
+      .prepare(
+        `UPDATE integration
+         SET config = NULL
+         WHERE config IS NOT NULL
+           AND NOT json_valid(config)`,
+      )
+      .run();
+  }
+
+  const connectionColumns = await tableColumns(db, "connection");
+  if (connectionColumns.size === 0) return;
+  if (!connectionColumns.has("item_ids")) {
+    await db.prepare(`ALTER TABLE connection ADD COLUMN item_ids json NOT NULL DEFAULT '{}'`).run();
+  }
+  const updatedConnectionColumns = await tableColumns(db, "connection");
+  if (updatedConnectionColumns.has("item_id")) {
+    await rebuildLegacyConnectionTable(db);
+  }
+};
+
 const r2ObjectName = (tenant: string, pluginId: string, key: string): string =>
   `o:${tenant}/${pluginId}/${key}`;
 
@@ -52,6 +139,7 @@ const copyGoogleOpenApiSpecBlobsToR2 = (
          FROM integration
          WHERE plugin_id = 'openapi'
            AND config IS NOT NULL
+           AND json_valid(config)
            AND json_type(config, '$.googleDiscoveryUrls') = 'array'
            AND json_extract(config, '$.specHash') IS NOT NULL
            AND json_extract(config, '$.specHash') <> ''`,
@@ -67,7 +155,10 @@ const copyGoogleOpenApiSpecBlobsToR2 = (
       }
     },
     catch: (cause) =>
-      new DataMigrationError({ migration: googleOpenApiOwnershipDataMigration.name, cause }),
+      new DataMigrationError({
+        migration: googleOpenApiOwnershipDataMigration.name,
+        cause,
+      }),
   });
 
 const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly SqliteDataMigration[] => [
@@ -86,5 +177,9 @@ export const runCloudflareDataMigrations = (
   bucket: R2Bucket | undefined,
 ): Promise<readonly string[]> =>
   Effect.runPromise(
-    runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)),
+    Effect.promise(() => ensureCloudflareD1SchemaCompatibility(db)).pipe(
+      Effect.flatMap(() =>
+        runSqliteDataMigrations(d1DataMigrationClient(db), cloudflareDataMigrations(bucket)),
+      ),
+    ),
   );

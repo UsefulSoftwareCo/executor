@@ -39,6 +39,7 @@
     "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-onepassword": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",

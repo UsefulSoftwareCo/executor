@@ -1,12 +1,11 @@
-/* Logo wordmark: Instrument Serif, the brand display font (--font-display in
-   the app console and the marketing wordmark/accent treatment). The navbar
-   default is a bold sans; Instrument Serif ships a single 400 weight, so drop
-   the faux-bold and tight tracking. */
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap");
+/* Logo wordmark: Geist Mono, matching the app console and marketing wordmark.
+   The navbar default is a bold sans; the mono wordmark is the brand signature,
+   so set the mono family at medium weight with no extra tracking. */
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap");
 
 .nav-logo,
 .nav-logo * {
-  font-family: "Instrument Serif", ui-serif, Georgia, serif !important;
-  font-weight: 400 !important;
+  font-family: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace !important;
+  font-weight: 500 !important;
   letter-spacing: 0 !important;
 }

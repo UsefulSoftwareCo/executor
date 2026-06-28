@@ -1,3 +1,5 @@
+import type { McpResource } from "@executor-js/host-mcp";
+
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 
 // ---------------------------------------------------------------------------
@@ -10,6 +12,7 @@ import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-header
 export interface McpSessionInit {
   readonly organizationId: string;
   readonly userId: string;
+  readonly resource: McpResource;
   readonly elicitationMode: McpElicitationMode;
   /** Public origin of the create request (`https://host`), so the DO derives a
    *  web base URL zero-config when the host configures no static one. */

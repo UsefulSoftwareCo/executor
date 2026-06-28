@@ -18,6 +18,8 @@ export {
   McpSessionStore,
   McpErrorReporter,
   McpErrorReporterNoop,
+  defaultMcpResource,
+  mcpResourceKey,
   principalOwns,
   authenticated,
   unauthorized,
@@ -31,6 +33,7 @@ export {
   type McpDiscoveryRoute,
   type McpDispatchInput,
   type McpDispatchResult,
+  type McpResource,
 } from "./seams";
 
 export { McpServingRoutes, jsonRpcErrorBody } from "./envelope";

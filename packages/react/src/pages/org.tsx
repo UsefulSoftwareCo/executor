@@ -44,6 +44,7 @@ import {
   updateOrgName,
 } from "../api/account-atoms";
 import { useAuth } from "../multiplayer/auth-context";
+import { messageFromExit } from "../api/error-reporting";
 
 // ---------------------------------------------------------------------------
 // Shared organization page — members + roles + invites + org name, over the
@@ -69,6 +70,9 @@ type InviteState = {
   email: string;
   roleSlug: string;
   status: "idle" | "sending" | "error";
+  // The reason the invite was refused, when the server gave one (e.g. the
+  // plan's member-seat limit). Undefined falls back to the generic message.
+  errorMessage?: string;
 };
 
 const initialInviteState: InviteState = {
@@ -81,7 +85,7 @@ type InviteAction =
   | { type: "setEmail"; email: string }
   | { type: "setRole"; roleSlug: string }
   | { type: "send" }
-  | { type: "error" }
+  | { type: "error"; message?: string }
   | { type: "reset" };
 
 function inviteReducer(state: InviteState, action: InviteAction): InviteState {
@@ -98,14 +102,19 @@ function inviteReducer(state: InviteState, action: InviteAction): InviteState {
       ...state,
       status: "sending" as const,
     })),
-    Match.discriminator("type")("error", () => ({
+    Match.discriminator("type")("error", (a) => ({
       ...state,
       status: "error" as const,
+      errorMessage: a.message,
     })),
     Match.discriminator("type")("reset", () => initialInviteState),
     Match.exhaustive,
   );
 }
+
+// Generic fallback when the server gave no typed reason (a transient failure
+// the admin genuinely can retry). A seat-limit refusal carries its own message.
+const GENERIC_INVITE_ERROR = "Failed to send invitation. Please try again.";
 
 function formatLastActive(lastActiveAt: string | null): string {
   if (!lastActiveAt) return "—";
@@ -120,7 +129,14 @@ function formatLastActive(lastActiveAt: string | null): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function OrgPage(props: { domainsSection?: React.ReactNode }) {
+export function OrgPage(props: {
+  domainsSection?: React.ReactNode;
+  // Cloud injects the plan-upgrade call to action (a link to billing/plans).
+  // When set and the org is at its seat limit, clicking "Invite member" opens
+  // an upgrade prompt instead of the invite form. Self-host has no seat limit,
+  // so it never reaches this and can omit it.
+  upgradeAction?: React.ReactNode;
+}) {
   const auth = useAuth();
   const organizationName =
     auth.status === "authenticated" ? (auth.organization?.name ?? "Organization") : "Organization";
@@ -130,6 +146,7 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
   const doUpdateRole = useAtomSet(updateMemberRole, { mode: "promiseExit" });
   const doUpdateOrgName = useAtomSet(updateOrgName, { mode: "promiseExit" });
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [editName, setEditName] = useState(organizationName);
   const [savingName, setSavingName] = useState(false);
   const [search, setSearch] = useState("");
@@ -139,6 +156,17 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
     onFailure: () => [] as readonly RoleData[],
     onSuccess: ({ value }) => value.roles,
   });
+
+  const seats = AsyncResult.match(membersResult, {
+    onInitial: () => undefined,
+    onFailure: () => undefined,
+    onSuccess: ({ value }) => value.seats,
+  });
+  // At the plan's member-seat limit, "Invite member" opens an upgrade prompt
+  // (when cloud provided one) instead of the invite form, so the admin gets a
+  // clear next step rather than a refused invite.
+  const atSeatLimit = !!seats && !seats.unlimited && seats.used >= seats.granted;
+  const showUpgradeOnInvite = atSeatLimit && !!props.upgradeAction;
 
   const handleRemove = async (membershipId: string, name: string) => {
     const exit = await doRemove({
@@ -222,9 +250,14 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
               <h2 className="text-sm font-medium text-foreground">Members</h2>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 People with access to this Executor instance.
+                {seats && !seats.unlimited && ` ${seats.used} of ${seats.granted} seats used.`}
               </p>
             </div>
-            <Button size="sm" className="min-w-32" onClick={() => setInviteOpen(true)}>
+            <Button
+              size="sm"
+              className="min-w-32"
+              onClick={() => (showUpgradeOnInvite ? setUpgradeOpen(true) : setInviteOpen(true))}
+            >
               Invite member
             </Button>
           </div>
@@ -298,9 +331,7 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
                             <Badge className="bg-muted text-muted-foreground">You</Badge>
                           )}
                           {member.status === "pending" && (
-                            <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                              Invited
-                            </Badge>
+                            <Badge className="bg-muted text-muted-foreground">Invited</Badge>
                           )}
                         </div>
                         {member.name && (
@@ -378,8 +409,45 @@ export function OrgPage(props: { domainsSection?: React.ReactNode }) {
         </section>
 
         <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />
+        <UpgradeDialog
+          open={upgradeOpen}
+          onOpenChange={setUpgradeOpen}
+          granted={seats?.granted ?? 0}
+          upgradeAction={props.upgradeAction}
+        />
       </div>
     </div>
+  );
+}
+
+// Shown when the org is at its member-seat limit: a clear "you're at the limit"
+// prompt with the plan-upgrade call to action cloud injects (a link to billing).
+function UpgradeDialog(props: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  granted: number;
+  upgradeAction?: React.ReactNode;
+}) {
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="sm:max-w-[400px]">
+        <DialogHeader>
+          <DialogTitle className="font-display text-xl">You are at your member limit</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed">
+            Your plan includes {props.granted} member{props.granted === 1 ? "" : "s"}. Upgrade your
+            plan to invite more.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="ghost" size="sm">
+              Cancel
+            </Button>
+          </DialogClose>
+          {props.upgradeAction}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -408,7 +476,11 @@ function InviteDialog(props: {
       props.onOpenChange(false);
       return;
     }
-    dispatch({ type: "error" });
+    // Surface a server-provided reason (e.g. the plan's member-seat limit, a
+    // 403 AccountForbidden carrying a message) so the admin knows WHY and that
+    // retrying will not help. Transient/untyped failures fall back to the
+    // generic retry copy.
+    dispatch({ type: "error", message: messageFromExit(exit, GENERIC_INVITE_ERROR) });
   };
 
   return (
@@ -482,7 +554,7 @@ function InviteDialog(props: {
           {state.status === "error" && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
               <p className="text-sm text-destructive">
-                Failed to send invitation. Please try again.
+                {state.errorMessage ?? GENERIC_INVITE_ERROR}
               </p>
             </div>
           )}

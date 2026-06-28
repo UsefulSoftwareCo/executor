@@ -17,10 +17,13 @@ import {
 import { jsonRpcErrorBody } from "./envelope";
 import {
   McpSessionStore,
+  defaultMcpResource,
+  mcpResourceKey,
   principalOwns,
   type McpDispatchInput,
   type McpDispatchResult,
   type Principal,
+  type McpResource,
 } from "./seams";
 import type { BrowserApprovalStore } from "./tool-server";
 
@@ -61,6 +64,7 @@ export interface BuiltMcpServer {
 
 /** The browser-mode wiring the store hands a build call when a session opts in. */
 export interface McpBuildServerOptions {
+  readonly resource?: McpResource;
   readonly elicitationMode?:
     | { readonly mode: "browser"; readonly approvalUrl: (executionId: string) => string }
     | { readonly mode: "model" }
@@ -120,6 +124,19 @@ const json = (value: unknown, status = 200): Response =>
 const PAUSED_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
 const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
 
+interface SessionOwner {
+  readonly principal: Principal;
+  readonly resource: McpResource;
+}
+
+const sessionOwnerMatches = (
+  owner: SessionOwner,
+  principal: Principal,
+  resource: McpResource,
+): boolean =>
+  principalOwns(owner.principal, principal) &&
+  mcpResourceKey(owner.resource) === mcpResourceKey(resource);
+
 /**
  * Build the in-process session store plus an explicit `close()` that disposes
  * all live sessions. `close()` is not part of the seam — it is the host lifetime
@@ -137,7 +154,7 @@ export const makeInMemoryMcpSessionStore = (
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
-  const owners = new Map<string, Principal>();
+  const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
 
@@ -181,12 +198,13 @@ export const makeInMemoryMcpSessionStore = (
   const forward = (
     sessionId: string,
     principal: Principal,
+    resource: McpResource,
     request: Request,
   ): Effect.Effect<McpDispatchResult> => {
     const transport = transports.get(sessionId);
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
-    if (!principalOwns(owner, principal)) return Effect.succeed("forbidden");
+    if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
     return runHandleRequest(transport, request);
   };
 
@@ -218,12 +236,16 @@ export const makeInMemoryMcpSessionStore = (
   };
 
   /** Open a new session: build the server, connect a transport, drive the request. */
-  const create = (principal: Principal, request: Request): Effect.Effect<McpDispatchResult> => {
+  const create = (
+    principal: Principal,
+    resource: McpResource,
+    request: Request,
+  ): Effect.Effect<McpDispatchResult> => {
     let createdSessionId: string | null = null;
-    return buildServer(
-      principal,
-      buildOptionsFor(request, () => createdSessionId),
-    ).pipe(
+    return buildServer(principal, {
+      ...buildOptionsFor(request, () => createdSessionId),
+      resource,
+    }).pipe(
       Effect.flatMap(({ mcpServer, engine }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
@@ -233,7 +255,7 @@ export const makeInMemoryMcpSessionStore = (
               createdSessionId = sid;
               transports.set(sid, transport);
               servers.set(sid, mcpServer);
-              owners.set(sid, principal);
+              owners.set(sid, { principal, resource });
               engines.set(sid, engine);
             },
             onsessionclosed: (sid) => void dispose(sid, { server: true }),
@@ -259,8 +281,10 @@ export const makeInMemoryMcpSessionStore = (
   };
 
   const store: McpSessionStore["Service"] = {
-    dispatch: ({ request, principal, sessionId }: McpDispatchInput) =>
-      sessionId ? forward(sessionId, principal, request) : create(principal, request),
+    dispatch: ({ request, principal, resource, sessionId }: McpDispatchInput) =>
+      sessionId
+        ? forward(sessionId, principal, resource, request)
+        : create(principal, resource ?? defaultMcpResource, request),
     dispose: (sessionId) =>
       Effect.promise(() => dispose(sessionId, { transport: true, server: true })),
   };
@@ -271,7 +295,7 @@ export const makeInMemoryMcpSessionStore = (
   ): "allowed" | "not-found" | "forbidden" => {
     const owner = owners.get(sessionId);
     if (!owner) return "not-found";
-    if (principal && !principalOwns(owner, principal)) return "forbidden";
+    if (principal && !principalOwns(owner.principal, principal)) return "forbidden";
     return "allowed";
   };
 

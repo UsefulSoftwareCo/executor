@@ -41,6 +41,9 @@ export interface ToolSummary {
   /** Name of the connection (account) that produced this tool. Present only in
    *  the account-grouped view; ignored in the flat tree. */
   readonly connection?: string;
+  /** Integration that produced this tool. Used to disambiguate same-name
+   *  connections from different integrations in grouped views. */
+  readonly integration?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,9 +56,10 @@ export interface ToolSummary {
 // ---------------------------------------------------------------------------
 
 export type AccountGroup = {
-  /** Stable key `${owner}:${connection}`. */
+  /** Stable key `${owner}:${integration}:${connection}`. */
   readonly key: string;
   readonly owner: Owner;
+  readonly integration: string;
   readonly connection: string;
   /** Section header, e.g. "Personal · axiom-mcp". */
   readonly label: string;
@@ -69,14 +73,18 @@ export type AccountGroup = {
  * Pure — unit-testable without React.
  */
 export const buildAccountGroups = (tools: readonly ToolSummary[]): readonly AccountGroup[] => {
-  const byKey = new Map<string, { owner: Owner; connection: string; tools: ToolSummary[] }>();
+  const byKey = new Map<
+    string,
+    { owner: Owner; integration: string; connection: string; tools: ToolSummary[] }
+  >();
   for (const tool of tools) {
     const owner: Owner = tool.owner ?? "org";
+    const integration = tool.integration ?? "";
     const connection = tool.connection ?? "";
-    const key = `${owner}:${connection}`;
+    const key = `${owner}:${integration}:${connection}`;
     let group = byKey.get(key);
     if (!group) {
-      group = { owner, connection, tools: [] };
+      group = { owner, integration, connection, tools: [] };
       byKey.set(key, group);
     }
     group.tools.push(tool);
@@ -85,14 +93,20 @@ export const buildAccountGroups = (tools: readonly ToolSummary[]): readonly Acco
   const ownerRank = (owner: Owner): number => (owner === "org" ? 0 : 1);
   return [...byKey.values()]
     .sort(
-      (a, b) => ownerRank(a.owner) - ownerRank(b.owner) || a.connection.localeCompare(b.connection),
+      (a, b) =>
+        ownerRank(a.owner) - ownerRank(b.owner) ||
+        a.integration.localeCompare(b.integration) ||
+        a.connection.localeCompare(b.connection),
     )
     .map((group) => ({
-      key: `${group.owner}:${group.connection}`,
+      key: `${group.owner}:${group.integration}:${group.connection}`,
       owner: group.owner,
+      integration: group.integration,
       connection: group.connection,
       label: group.connection
-        ? `${ownerLabel(group.owner)} · ${group.connection}`
+        ? `${ownerLabel(group.owner)} · ${
+            group.integration ? `${group.integration} / ` : ""
+          }${group.connection}`
         : ownerLabel(group.owner),
       tools: group.tools,
     }));
@@ -283,6 +297,8 @@ export function ToolTree(props: {
    *  emit the tool's full dotted id; group rows emit `prefix.*`. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  /** Maps the displayed row path into the persisted policy pattern. */
+  patternForDisplay?: (displayPattern: string) => string;
   /** Sorted user-authored policies (most-precedent first). Used to
    *  decide whether a node has its own exact-pattern user rule today
    *  (so the menu can show a "Clear" option). Optional — when absent,
@@ -300,6 +316,7 @@ export function ToolTree(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay = toPolicyPattern,
     policies,
     groupByConnection,
   } = props;
@@ -358,6 +375,7 @@ export function ToolTree(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay,
     exactPatterns,
     search,
     terms,
@@ -404,7 +422,9 @@ export function ToolTree(props: {
                   </Badge>
                 ) : null}
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-                  {group.connection || ownerDisplay.label(group.owner)}
+                  {group.integration && group.connection
+                    ? `${group.integration} / ${group.connection}`
+                    : group.connection || ownerDisplay.label(group.owner)}
                 </span>
                 <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
                   {group.tools.length}
@@ -433,6 +453,7 @@ function ToolTreeBody(props: {
   onSelect: (toolId: string) => void;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactPatterns: ReadonlyMap<string, ToolPolicyAction>;
   search: string;
   terms: readonly string[];
@@ -444,6 +465,7 @@ function ToolTreeBody(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay,
     exactPatterns,
     search,
     terms,
@@ -510,7 +532,8 @@ function ToolTreeBody(props: {
             search={search}
             onSetPolicy={onSetPolicy}
             onClearPolicy={onClearPolicy}
-            exactRule={exactPatterns.get(toPolicyPattern(row.tool.name))}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(row.tool.name))}
           />
         ) : (
           <ToolGroupRow
@@ -524,7 +547,8 @@ function ToolTreeBody(props: {
             search={search}
             onSetPolicy={onSetPolicy}
             onClearPolicy={onClearPolicy}
-            exactRule={exactPatterns.get(toPolicyPattern(`${row.path}.*`))}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(`${row.path}.*`))}
           />
         ),
       )}
@@ -610,6 +634,7 @@ function ToolGroupRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const showActions = !!props.onSetPolicy;
@@ -647,7 +672,7 @@ function ToolGroupRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={toPolicyPattern(`${props.path}.*`)}
+            pattern={props.patternForDisplay(`${props.path}.*`)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}
@@ -668,6 +693,7 @@ function ToolLeafRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const label = props.tool.name.split(".").pop() ?? props.tool.name;
@@ -719,7 +745,7 @@ function ToolLeafRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={toPolicyPattern(props.tool.name)}
+            pattern={props.patternForDisplay(props.tool.name)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}

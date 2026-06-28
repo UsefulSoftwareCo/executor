@@ -99,6 +99,12 @@ export type { ToolPolicyAction } from "./core-schema";
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 
+export {
+  decodeOAuthCallbackState,
+  encodeOAuthCallbackState,
+  type OAuthCallbackState,
+} from "./oauth";
+
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).
 export {
   type OAuthGrant,
@@ -127,6 +133,7 @@ export { InternalError } from "./api-errors";
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
   DEFAULT_EXECUTOR_SERVER_USERNAME,
+  EXECUTOR_ORG_SELECTOR_HEADER,
   apiBaseUrlForServerOrigin,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,

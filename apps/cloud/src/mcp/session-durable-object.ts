@@ -32,14 +32,17 @@ import {
 } from "@executor-js/cloudflare/mcp/durable-object";
 import { buildExecuteDescription } from "@executor-js/execution";
 
-// The DO only needs the neutral boot-scoped service (WorkOSClient). It never
-// bills, so it does NOT depend on any billing service — `CloudExecutionStackLayer`
-// here is the no-op-decorator (Autumn-free) stack. It imports the focused
-// `CoreSharedServices` root (beside `WorkOSClient`), NOT `../api/layers`, so the
-// DO bundle stays small and free of the whole HTTP API assembly. (This used to
-// require a dedicated `core-shared-services.ts` leaf to keep `auth/handlers.ts` →
-// `@tanstack/react-start` out of the DO bundle; that coupling is gone now that
-// `handlers.ts` queues cookies through `SessionAuthLive` instead.)
+// The DO meters executions just like the HTTP `/api/*` plane: it builds its
+// engine with `CloudMeteredExecutionStackLayer`, so every MCP execution is
+// tracked to Autumn (the MCP server is the primary execution surface, so leaving
+// it unmetered silently dropped the bulk of real usage). The billing service
+// (`AutumnService.Default`) is provided LOCALLY to the metered stack below, so
+// the DO still imports the focused `CoreSharedServices` root (beside
+// `WorkOSClient`), NOT `../api/layers`, and its bundle stays free of the whole
+// HTTP API assembly. (This used to require a dedicated `core-shared-services.ts`
+// leaf to keep `auth/handlers.ts` -> `@tanstack/react-start` out of the DO
+// bundle; that coupling is gone now that `handlers.ts` queues cookies through
+// `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
 import { resolveOrganization } from "../auth/organization";
@@ -50,7 +53,9 @@ import {
   type DrizzleDb,
   type DbServiceShape,
 } from "../db/db";
-import { CloudExecutionStackLayer, makeExecutionStack } from "../engine/execution-stack";
+import { makeExecutionStack } from "../engine/execution-stack";
+import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
+import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import { captureCause as reportCause } from "../observability";
 
@@ -172,6 +177,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         organizationName: org.name,
         organizationSlug: org.slug,
         userId: token.userId,
+        resource: token.resource,
         elicitationMode: token.elicitationMode,
       } satisfies SessionMeta;
     }).pipe(
@@ -193,8 +199,15 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
+        { mcpResource: sessionMeta.resource },
       ).pipe(
-        Effect.provide(CloudExecutionStackLayer),
+        // The metered stack tracks each execution to Autumn. It requires
+        // `AutumnService | DbService`; `AutumnService.Default` is provided here
+        // (it only reads `env`, no further deps), and `DbService` flows from the
+        // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
+        // billing service degrades to a no-op tracker, so this stays inert in
+        // cloud dev/preview environments that run without a billing backend.
+        Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
         Effect.withSpan("McpSessionDO.makeExecutionStack"),
       );
       // Build the description here so `executor.connections.list()` stays under
@@ -217,6 +230,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
                     origin: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
                     executionId,
                     sessionId: self.sessionId,
+                    organizationSlug: sessionMeta.organizationSlug,
                   }),
               }
             : { mode: sessionElicitationMode },

@@ -2,8 +2,10 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { BookOpen, ExternalLink } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import {
@@ -19,7 +21,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
-import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
 // ---------------------------------------------------------------------------
@@ -47,13 +49,30 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
   { to: "/policies", label: "Policies" },
+  { to: "/toolkits", label: "Toolkits" },
 ];
+
+/** Canonical public docs (Mintlify). Same-origin on cloud (executor.sh proxies
+ *  `/docs`); the correct external target for self-host / Cloudflare / local,
+ *  whose `/docs` is Swagger UI rather than the product docs. Hosts can override
+ *  via {@link ShellProps.docsUrl}. */
+export const DEFAULT_DOCS_URL = "https://executor.sh/docs";
 
 // Scope-relative path -> the route id under the optional org segment
 // ("/" -> "/{-$orgSlug}", "/policies" -> "/{-$orgSlug}/policies"). Loosely
 // typed on purpose: host-specific items ("/admin", "/billing") resolve against
 // the host's own route tree, which this package can't see.
 const orgScopedTo = (to: string): string => (to === "/" ? "/{-$orgSlug}" : `/{-$orgSlug}${to}`);
+
+const normalizePluginPagePath = (path: string): string => {
+  if (!path || path === "/") return "/";
+  return path.startsWith("/") ? path : `/${path}`;
+};
+
+const pluginPageNavPath = (pluginId: string, path: string): string => {
+  const normalized = normalizePluginPagePath(path);
+  return normalized === "/" ? `/plugins/${pluginId}/` : `/plugins/${pluginId}${normalized}`;
+};
 
 /** The pathname with the active org-slug prefix stripped, for active-state
  *  comparisons against scope-relative paths. */
@@ -76,6 +95,8 @@ export interface ShellProps {
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
   readonly supportSlot?: ReactNode;
+  /** Docs link target; defaults to {@link DEFAULT_DOCS_URL}. Opens in a new tab. */
+  readonly docsUrl?: string;
   /** Replaces the routed `<Outlet />` (the org-slug gate's in-shell 404). */
   readonly content?: ReactNode;
 }
@@ -85,7 +106,7 @@ export interface ShellProps {
 function Brand(props: { onNavigate?: () => void }) {
   return (
     <Link to="/{-$orgSlug}" onClick={props.onNavigate} className="flex items-center gap-1.5">
-      <span className="font-display text-base tracking-tight text-foreground">executor</span>
+      <span className="font-mono text-sm font-medium tracking-tight text-foreground">executor</span>
       <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
         Beta
       </span>
@@ -109,6 +130,30 @@ function NavItem(props: { to: string; label: string; active: boolean; onNavigate
     >
       {props.label}
     </Link>
+  );
+}
+
+// ── DocsLink ───────────────────────────────────────────────────────────────
+
+/** External link to the documentation. Lives in the sidebar footer (always
+ *  visible, outside the scrollable nav) so docs are reachable from inside the
+ *  app, not only the marketing site. */
+function DocsLink(props: { href: string; onNavigate?: () => void }) {
+  return (
+    <a
+      href={props.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => {
+        trackEvent("docs_opened", { surface: "sidebar" });
+        props.onNavigate?.();
+      }}
+      className="group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-active/60 hover:text-foreground"
+    >
+      <BookOpen className="size-4 shrink-0" />
+      <span className="flex-1">Docs</span>
+      <ExternalLink className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </a>
   );
 }
 
@@ -164,6 +209,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
                     { id: slug, kind: integration.kind, name, url: integration.displayUrl },
                     integrationPlugins,
                   )}
+                  sourceId={slug}
                   url={
                     integration.displayUrl ??
                     integrationInferredUrl({ id: slug, name }) ??
@@ -276,7 +322,20 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
 function SidebarContent(
   props: ShellProps & { pathname: string; onNavigate?: () => void; showBrand?: boolean },
 ) {
-  const navItems = props.navItems ?? defaultShellNavItems;
+  const plugins = useClientPlugins();
+  const pluginNavItems = plugins.flatMap((plugin) =>
+    (plugin.pages ?? []).flatMap((page) =>
+      page.nav
+        ? [
+            {
+              to: pluginPageNavPath(plugin.id, page.path),
+              label: page.nav.label,
+            },
+          ]
+        : [],
+    ),
+  );
+  const navItems = [...(props.navItems ?? defaultShellNavItems), ...pluginNavItems];
   return (
     <>
       {props.showBrand !== false && (
@@ -302,6 +361,10 @@ function SidebarContent(
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
+
+      <div className="shrink-0 border-t border-sidebar-border p-2">
+        <DocsLink href={props.docsUrl ?? DEFAULT_DOCS_URL} onNavigate={props.onNavigate} />
+      </div>
 
       {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
 

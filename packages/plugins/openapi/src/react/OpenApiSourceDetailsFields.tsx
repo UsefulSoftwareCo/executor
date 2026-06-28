@@ -104,9 +104,7 @@ export function OpenApiSourceDetailsFields(props: {
             )}
 
             {props.baseUrlMissingMessage && !props.baseUrl && (
-              <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                {props.baseUrlMissingMessage}
-              </p>
+              <p className="text-[11px] text-muted-foreground">{props.baseUrlMissingMessage}</p>
             )}
             {props.baseUrlHint && (
               <p className="text-[11px] text-muted-foreground">{props.baseUrlHint}</p>

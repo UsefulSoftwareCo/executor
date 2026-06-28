@@ -141,12 +141,13 @@ const forwardToExistingSession = (
   sessionId: string,
   peek: boolean,
   token: VerifiedTokenHeaders,
+  resource: McpDispatchInput["resource"],
 ): Effect.Effect<Response> =>
   Effect.gen(function* () {
     const stub = config.getStub(sessionId);
     const propagation = yield* currentPropagationHeaders(request);
     const propagated = withPropagationHeaders(
-      withVerifiedIdentityHeaders(request, token),
+      withVerifiedIdentityHeaders(request, token, resource),
       propagation,
     );
     const raw = yield* Effect.promise(() => stub.handleRequest(propagated)).pipe(
@@ -168,6 +169,7 @@ const createSession = (
   config: DurableObjectStoreConfig,
   request: Request,
   token: VerifiedTokenHeaders,
+  resource: McpDispatchInput["resource"],
 ): Effect.Effect<Response> =>
   Effect.gen(function* () {
     const stub = config.newStub();
@@ -177,6 +179,7 @@ const createSession = (
         {
           organizationId: token.organizationId,
           userId: token.accountId,
+          resource,
           elicitationMode: readElicitationMode(request),
           // The public origin the client reached us at — lets the DO derive a web
           // base URL with no static config (we read the real URL, not a spoofable
@@ -187,7 +190,7 @@ const createSession = (
       ),
     );
     const propagated = withPropagationHeaders(
-      withVerifiedIdentityHeaders(request, token),
+      withVerifiedIdentityHeaders(request, token, resource),
       propagation,
     );
     const raw = yield* Effect.promise(() => stub.handleRequest(propagated)).pipe(
@@ -236,6 +239,7 @@ export const makeDurableObjectMcpSessionStore = (
     dispatch: ({
       request,
       principal,
+      resource,
       sessionId,
     }: McpDispatchInput): Effect.Effect<McpDispatchResult> => {
       const token: VerifiedTokenHeaders = {
@@ -243,8 +247,15 @@ export const makeDurableObjectMcpSessionStore = (
         organizationId: principal.organizationId,
       };
       return sessionId
-        ? forwardToExistingSession(config, request, sessionId, request.method !== "GET", token)
-        : createSession(config, request, token);
+        ? forwardToExistingSession(
+            config,
+            request,
+            sessionId,
+            request.method !== "GET",
+            token,
+            resource,
+          )
+        : createSession(config, request, token, resource);
     },
     dispose: (sessionId, request) => clearExistingSession(config, sessionId, request),
   });

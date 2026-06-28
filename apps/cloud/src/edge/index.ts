@@ -9,3 +9,4 @@ export { marketingMiddleware } from "./marketing";
 export { sentryTunnelMiddleware } from "./sentry-tunnel";
 export { posthogProxyMiddleware } from "./posthog";
 export { docsProxyMiddleware } from "./docs";
+export { openAiAppsChallengeMiddleware } from "./openai-apps-challenge";

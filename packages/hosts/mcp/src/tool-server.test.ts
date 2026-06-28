@@ -815,6 +815,33 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("surfaces a code syntax error descriptively, not as an opaque internal error", async () => {
+    // The runtime classifies a genuine parse error (a compile failure in
+    // the user's own code) onto the success channel as ExecuteResult.error.
+    // It must reach the model verbatim so it can self-correct, in contrast
+    // to a genuine Effect failure, which stays opaque (see the
+    // "execution failure stays opaque" test that asserts the masked form).
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: null,
+          error: 'Unexpected token, expected "," (1:54)',
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "const { items } = await tools.search({ query: 'x' }" },
+      });
+      expect(result.isError).toBe(true);
+      const text = textOf(result);
+      expect(text).toContain("Unexpected token");
+      expect(text).toContain("(1:54)");
+      expect(text).not.toContain("Internal tool error");
+    });
+  });
+
   it("resume tool is hidden in native elicitation mode", async () => {
     await withNativeClient(makeStubEngine({}), ELICITATION_CAPS, async (client) => {
       const { tools } = await client.listTools();

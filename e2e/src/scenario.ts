@@ -21,6 +21,7 @@ import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import type { Target as TargetShape } from "./target";
 import { resolveTarget } from "../targets/registry";
 import { makeApiSurface } from "./surfaces/api";
+import { makeAutumnSurface } from "./surfaces/autumn";
 import { makeBrowserSurface } from "./surfaces/browser";
 import { makeCliSurface } from "./surfaces/cli";
 import { makeMcpSurface } from "./surfaces/mcp";
@@ -28,6 +29,7 @@ import { makeTelemetrySurface } from "./surfaces/telemetry";
 import { completeOAuthConsent, hasOpenCode, makeOpenCodeHome, warmUp } from "./clients/opencode";
 import {
   Api,
+  Autumn,
   Billing,
   Browser,
   Cli,
@@ -62,6 +64,7 @@ type AllServices =
   | Browser
   | Mcp
   | Billing
+  | Autumn
   | OpenCode
   | TtlControl
   | Restart
@@ -99,6 +102,9 @@ const contextFor = (target: TargetShape, dir: string): Context.Context<AllServic
   }
   if (process.env.E2E_MOTEL_URL) {
     context = Context.add(context, Telemetry, makeTelemetrySurface(process.env.E2E_MOTEL_URL));
+  }
+  if (process.env.E2E_AUTUMN_URL) {
+    context = Context.add(context, Autumn, makeAutumnSurface(process.env.E2E_AUTUMN_URL));
   }
   return context;
 };

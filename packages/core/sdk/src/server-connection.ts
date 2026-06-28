@@ -2,6 +2,7 @@ import { Option, Schema } from "effect";
 
 export const DEFAULT_EXECUTOR_SERVER_ORIGIN = "http://127.0.0.1:4000";
 export const DEFAULT_EXECUTOR_SERVER_USERNAME = "executor";
+export const EXECUTOR_ORG_SELECTOR_HEADER = "x-executor-organization";
 
 export type ExecutorServerConnectionKind = "http" | "desktop-sidecar";
 export type ExecutorLocalServerKind = "cli-daemon" | "desktop-sidecar" | "foreground";

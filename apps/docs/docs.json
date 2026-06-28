@@ -10,14 +10,14 @@
     "default": "system"
   },
   "colors": {
-    "primary": "#008f6c",
-    "light": "#00c29f",
-    "dark": "#007556"
+    "primary": "#111111",
+    "light": "#ededed",
+    "dark": "#0a0a0a"
   },
   "background": {
     "color": {
-      "light": "#fafaf7",
-      "dark": "#0d0d10"
+      "light": "#ffffff",
+      "dark": "#0a0a0a"
     }
   },
   "favicon": "/favicon.png",

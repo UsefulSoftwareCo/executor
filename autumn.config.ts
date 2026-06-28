@@ -67,6 +67,11 @@ export const team = plan({
     amount: 150,
     interval: "month",
   },
+  freeTrial: {
+    durationLength: 14,
+    durationType: "day",
+    cardRequired: true,
+  },
   items: [
     item({
       featureId: executions.id,

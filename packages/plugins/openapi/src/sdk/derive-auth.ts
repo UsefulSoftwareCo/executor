@@ -57,9 +57,12 @@ export const resolvedOAuthScopes = (
 
 // ---------------------------------------------------------------------------
 // Auth-template builders — turn a preview preset into the integration's stored
-// `Authentication` template (v2). The header preset becomes an `apiKey` template
-// whose secret header value renders the resolved credential via `variable(token)`;
-// the oauth2 preset becomes an `oauth` template carrying the provider endpoints.
+// `Authentication` template (v2). A single-header preset becomes an `apiKey`
+// template whose secret header value renders from the conventional `token`
+// input. A multi-header preset gets one input per header, matching OpenAPI's
+// security-strategy semantics where multiple schemes in one object are required
+// together. The oauth2 preset becomes an `oauth` template carrying the provider
+// endpoints.
 // ---------------------------------------------------------------------------
 
 const headerPrefix = (preset: HeaderPreset, headerName: string): string | undefined => {
@@ -71,19 +74,49 @@ const headerPrefix = (preset: HeaderPreset, headerName: string): string | undefi
   return undefined;
 };
 
+const slugifyVariable = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const variablesForHeaders = (headerNames: readonly string[]): ReadonlyMap<string, string> => {
+  const variables = new Map<string, string>();
+  if (headerNames.length <= 1) return variables;
+
+  const taken = new Set<string>();
+  for (const headerName of headerNames) {
+    const base = slugifyVariable(headerName) || "input";
+    let variable = base;
+    for (let suffix = 2; taken.has(variable); suffix += 1) {
+      variable = `${base}_${suffix}`;
+    }
+    taken.add(variable);
+    variables.set(headerName, variable);
+  }
+  return variables;
+};
+
 const apiKeyTemplateFromHeaderPreset = (
   preset: HeaderPreset,
   slug: AuthTemplateSlug,
-): APIKeyAuthentication => ({
-  slug,
-  kind: "apikey",
-  // Every secret header shares the one credential input (the canonical
-  // `token`, stored as an absent placement variable).
-  placements: preset.secretHeaders.map((headerName) => {
-    const prefix = headerPrefix(preset, headerName);
-    return { carrier: "header" as const, name: headerName, ...(prefix ? { prefix } : {}) };
-  }),
-});
+): APIKeyAuthentication => {
+  const variables = variablesForHeaders(preset.secretHeaders);
+  return {
+    slug,
+    kind: "apikey",
+    placements: preset.secretHeaders.map((headerName) => {
+      const prefix = headerPrefix(preset, headerName);
+      const variable = variables.get(headerName);
+      return {
+        carrier: "header" as const,
+        name: headerName,
+        ...(prefix ? { prefix } : {}),
+        ...(variable ? { variable } : {}),
+      };
+    }),
+  };
+};
 
 const oauthTemplateFromPreset = (
   preset: OAuth2Preset,

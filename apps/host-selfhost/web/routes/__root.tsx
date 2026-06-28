@@ -11,8 +11,8 @@ import { Shell, defaultShellNavItems } from "@executor-js/react/multiplayer/shel
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 
 import { authClient } from "../auth-client";
-import { DevicePage } from "../device";
-import { McpConsentPage } from "../mcp-consent";
+import { DevicePage } from "../chromeless/device-page";
+import { McpConsentPage } from "../chromeless/mcp-consent-page";
 import { LoginPage } from "../login";
 import { SetupPage } from "../setup";
 import { fetchNeedsSetup } from "../setup-status";

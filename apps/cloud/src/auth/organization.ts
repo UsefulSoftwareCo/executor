@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
+import { EXECUTOR_ORG_SELECTOR_HEADER } from "@executor-js/sdk/shared";
 
 import { UserStoreService } from "./context";
 import { WorkOSClient } from "./workos";
@@ -96,7 +97,7 @@ export const authorizeOrganization = (userId: string, organizationId: string) =>
 // silently re-scopes the other. Scoping per-request from the URL makes each
 // tab independent.
 
-export const ORG_SELECTOR_HEADER = "x-executor-organization";
+export const ORG_SELECTOR_HEADER = EXECUTOR_ORG_SELECTOR_HEADER;
 
 /** The URL-pinned org selector for a request, or `null` to fall back to the session. */
 export const orgSelectorFromRequest = (request: Request): string | null =>

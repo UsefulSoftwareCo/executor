@@ -5,6 +5,7 @@ import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
+import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 // ---------------------------------------------------------------------------
 // Plugin list for the Cloudflare web build. The Vite `executorVitePlugin` reads
@@ -16,13 +17,14 @@ import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 // ---------------------------------------------------------------------------
 
 export default defineExecutorConfig({
-  plugins: () =>
+  plugins: ({ activeToolkitSlug }: { readonly activeToolkitSlug?: string } = {}) =>
     [
       openApiHttpPlugin(),
       googleHttpPlugin(),
       microsoftHttpPlugin(),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
+      toolkitsPlugin({ activeToolkitSlug }),
       encryptedSecretsPlugin({ key: process.env.EXECUTOR_SECRET_KEY ?? "build-time-placeholder" }),
     ] as const,
 });

@@ -1,5 +1,54 @@
 # executor
 
+## 1.5.21
+
+### Patch Changes
+
+- [#1134](https://github.com/RhysSullivan/executor/pull/1134) [`78aa871`](https://github.com/RhysSullivan/executor/commit/78aa8710d774d552d6030eca060c5e72f0899461) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix OAuth callbacks in cloud so they preserve the URL-selected organization when the session cookie points at another org.
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.21
+  - @executor-js/runtime-quickjs@1.5.21
+  - @executor-js/api@1.4.41
+
+## 1.5.20
+
+### Patch Changes
+
+- [#1132](https://github.com/RhysSullivan/executor/pull/1132) [`580fc7f`](https://github.com/RhysSullivan/executor/commit/580fc7f8b2615a0d7760b3a4daddf8d45673ef3f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the PostHog custom MCP OAuth setup flow so Add connection opens PostHog authorization instead of falling back to manual OAuth app registration.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.20
+  - @executor-js/runtime-quickjs@1.5.20
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.40
+
+## 1.5.19
+
+### Patch Changes
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Google media downloads (Drive file contents, exports, and other binary
+  endpoints) are now returned as binary responses instead of being decoded as
+  text, so files come back intact. Emit them with `emit(result.data)`.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - The CLI now validates that a URL is `http`/`https` before handing it to the
+  operating system's browser opener, and on Windows opens it via
+  `rundll32 url.dll,FileProtocolHandler` instead of `cmd /c start`. This removes a
+  path where a crafted URL could be interpreted as a shell command. `executor
+login` and the "open in browser" prompts behave the same for normal URLs.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hardened the hosted egress guard. Outbound requests from OAuth token exchanges,
+  MCP transports, and GraphQL/Google/Microsoft discovery now all route through the
+  guard, and the guard resolves DNS before connecting so a hostname that points at
+  a private or loopback address is blocked rather than only literal private IPs.
+  This tightens SSRF protection for hosted and cloud execution.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.19
+  - @executor-js/runtime-quickjs@1.5.19
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.39
+
 ## 1.5.18
 
 ### Patch Changes

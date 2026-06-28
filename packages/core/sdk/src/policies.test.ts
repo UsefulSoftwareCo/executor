@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Result } from "effect";
+import { Effect, Predicate, Result, Schema } from "effect";
 
 import { type ToolPolicyRow } from "./core-schema";
 import {
@@ -19,7 +19,7 @@ import {
   matchPattern,
   resolveToolPolicy,
 } from "./policies";
-import { definePlugin } from "./plugin";
+import { definePlugin, tool } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestExecutor } from "./testing";
 
@@ -508,6 +508,85 @@ describe("blocked tools", () => {
       expect(Result.isFailure(result)).toBe(true);
       if (!Result.isFailure(result)) return;
       expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+    }),
+  );
+});
+
+describe("active tool-policy provider", () => {
+  const staticPlugin = definePlugin(() => ({
+    id: "toolkit-fixture" as const,
+    storage: () => ({}),
+    staticSources: () => [
+      {
+        id: "toolkit-fixture.ctl",
+        kind: "control" as const,
+        name: "Toolkit Fixture",
+        tools: [
+          tool({
+            name: "allowed",
+            description: "allowed",
+            inputSchema: Schema.toStandardSchemaV1(
+              Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+            ),
+            execute: () => Effect.succeed("allowed"),
+          }),
+          tool({
+            name: "hidden",
+            description: "hidden",
+            inputSchema: Schema.toStandardSchemaV1(
+              Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+            ),
+            execute: () => Effect.succeed("hidden"),
+          }),
+        ],
+      },
+    ],
+  }))();
+
+  const policyProviderPlugin = definePlugin(() => ({
+    id: "toolkit-policy-provider" as const,
+    storage: () => ({}),
+    toolPolicyProvider: () => ({
+      list: () =>
+        Effect.succeed([
+          {
+            id: "allow-static",
+            pattern: "toolkit-fixture.ctl.allowed",
+            action: "approve" as const,
+            position: "a0",
+          },
+        ]),
+    }),
+  }))();
+
+  it.effect("uses provider rules as an allowlist for list, schema, and execute", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [staticPlugin, policyProviderPlugin] as const,
+      });
+
+      const tools = yield* executor.tools.list();
+      expect(tools.map((t) => String(t.address)).sort()).toEqual(["toolkit-fixture.ctl.allowed"]);
+
+      const allowedSchema = yield* executor.tools.schema(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+      );
+      expect(allowedSchema?.name).toBe("allowed");
+
+      const hiddenSchema = yield* executor.tools.schema(
+        ToolAddress.make("toolkit-fixture.ctl.hidden"),
+      );
+      expect(hiddenSchema).toBeNull();
+
+      const allowed = yield* executor.execute(ToolAddress.make("toolkit-fixture.ctl.allowed"), {});
+      expect(allowed).toBe("allowed");
+
+      const blocked = yield* Effect.result(
+        executor.execute(ToolAddress.make("toolkit-fixture.ctl.hidden"), {}),
+      );
+      expect(Result.isFailure(blocked)).toBe(true);
+      if (!Result.isFailure(blocked)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
     }),
   );
 });

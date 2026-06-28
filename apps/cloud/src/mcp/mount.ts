@@ -50,6 +50,7 @@ type McpRoute = {
    *  id), or `null` for the bare path. Resolved to an org id — and re-checked
    *  against live membership — in the auth provider. */
   readonly organizationId: string | null;
+  readonly toolkitSlug?: string;
 } | null;
 
 // A path segment counts as an org selector when it's the org's URL slug (the
@@ -60,12 +61,27 @@ type McpRoute = {
 const orgSelectorSegment = (segment: string | undefined): string | null =>
   segment && (segment.startsWith("org_") || isValidOrgSlug(segment)) ? segment : null;
 
-// Matches a trailing MCP endpoint — `mcp` (bare) or `<org>/mcp`. Returns the org
-// selector, `null` for the bare form, or `undefined` when the segments are neither.
-const matchMcpSuffix = (segments: readonly string[]): string | null | undefined => {
-  if (segments.length === 1 && segments[0] === "mcp") return null;
+type MatchedMcpSuffix = {
+  readonly organizationId: string | null;
+  readonly toolkitSlug?: string;
+};
+
+// Matches a trailing MCP endpoint: `mcp`, `mcp/toolkits/<slug>`, or either with
+// a leading org selector. Returns undefined when the segments are not MCP.
+const matchMcpSuffix = (segments: readonly string[]): MatchedMcpSuffix | undefined => {
+  if (segments.length === 1 && segments[0] === "mcp") return { organizationId: null };
+  if (segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits") {
+    const toolkitSlug = segments[2];
+    return toolkitSlug ? { organizationId: null, toolkitSlug } : undefined;
+  }
   if (segments.length === 2 && segments[1] === "mcp") {
-    return orgSelectorSegment(segments[0]) ?? undefined;
+    const organizationId = orgSelectorSegment(segments[0]);
+    return organizationId ? { organizationId } : undefined;
+  }
+  if (segments.length === 4 && segments[1] === "mcp" && segments[2] === "toolkits") {
+    const organizationId = orgSelectorSegment(segments[0]);
+    const toolkitSlug = segments[3];
+    return organizationId && toolkitSlug ? { organizationId, toolkitSlug } : undefined;
   }
   return undefined;
 };
@@ -93,22 +109,24 @@ export const classifyMcpPath = (pathname: string): McpRoute => {
   // org sits after the well-known prefix (RFC 9728), not at the path root.
   const prmPrefix = "/.well-known/oauth-protected-resource";
   if (pathname.startsWith(`${prmPrefix}/`)) {
-    const organizationId = matchMcpSuffix(segments.slice(2));
-    return organizationId === undefined
-      ? null
-      : { kind: "oauth-protected-resource", organizationId };
+    const matched = matchMcpSuffix(segments.slice(2));
+    return matched === undefined ? null : { kind: "oauth-protected-resource", ...matched };
   }
 
   // MCP transport: `/mcp` or `/<org>/mcp`.
-  const organizationId = matchMcpSuffix(segments);
-  return organizationId === undefined ? null : { kind: "mcp", organizationId };
+  const matched = matchMcpSuffix(segments);
+  return matched === undefined ? null : { kind: "mcp", ...matched };
 };
 
-const bareMcpPath = (kind: McpRouteKind): string =>
-  kind === "mcp"
-    ? MCP_PATH
-    : kind === "oauth-protected-resource"
-      ? PROTECTED_RESOURCE_METADATA_PATH
+const bareMcpPath = (route: Exclude<McpRoute, null>): string =>
+  route.kind === "mcp"
+    ? route.toolkitSlug
+      ? `${MCP_PATH}/toolkits/${route.toolkitSlug}`
+      : MCP_PATH
+    : route.kind === "oauth-protected-resource"
+      ? route.toolkitSlug
+        ? `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/${route.toolkitSlug}`
+        : PROTECTED_RESOURCE_METADATA_PATH
       : AUTHORIZATION_SERVER_METADATA_PATH;
 
 /**
@@ -125,7 +143,7 @@ export const prepareMcpOrgScope = (request: Request): Request => {
   const url = new URL(request.url);
   const route = classifyMcpPath(url.pathname);
   if (route === null) return request;
-  const bare = bareMcpPath(route.kind);
+  const bare = bareMcpPath(route);
   if (url.pathname === bare && !request.headers.has(MCP_ORGANIZATION_HEADER)) return request;
   url.pathname = bare;
   const rewritten = new Request(url, request);

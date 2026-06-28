@@ -188,8 +188,8 @@ describe("makeApiLive (prod handler factory) request scoping", () => {
     // has built the per-request layer. We don't care about the response —
     // only that the layer was built once per request. `/integrations` is a
     // v2 protected route (the old `/scope` group was removed).
-    await handler(new Request("http://test.local/integrations"));
-    await handler(new Request("http://test.local/integrations"));
+    await handler(new Request("http://test.local/integrations"), Context.empty());
+    await handler(new Request("http://test.local/integrations"), Context.empty());
 
     expect(counts.acquires).toBe(2);
     expect(counts.releases).toBe(2);

@@ -57,6 +57,25 @@ export const principalOwns = (owner: Principal, principal: Principal): boolean =
   owner.accountId === principal.accountId && owner.organizationId === principal.organizationId;
 
 // ---------------------------------------------------------------------------
+// Shared MCP resource identity.
+//
+// The default `/mcp` endpoint and named sub-resources such as
+// `/mcp/toolkits/<slug>` share auth and transport machinery, but a serving
+// session belongs to the exact resource path that minted it. This keeps a
+// leaked/reused `mcp-session-id` from crossing from one exposed capability set
+// into another.
+// ---------------------------------------------------------------------------
+
+export type McpResource =
+  | { readonly kind: "default" }
+  | { readonly kind: "toolkit"; readonly slug: string };
+
+export const defaultMcpResource: McpResource = { kind: "default" };
+
+export const mcpResourceKey = (resource: McpResource): string =>
+  resource.kind === "default" ? "default" : `toolkit:${resource.slug}`;
+
+// ---------------------------------------------------------------------------
 // AuthOutcome — the result of `McpAuthProvider.authenticate`.
 //
 // A typed, never-failing discriminated union (NOT `Principal | null`, NOT an
@@ -210,6 +229,7 @@ export class McpAuthProvider extends Context.Service<
 export interface McpDispatchInput {
   readonly request: Request;
   readonly principal: Principal;
+  readonly resource: McpResource;
   readonly sessionId: string | null;
   readonly method: string;
 }

@@ -86,3 +86,11 @@ export const hasFileExtension = (pathname: string): boolean => {
  */
 export const isUnauthenticatedOAuthCallbackPath = (pathname: string): boolean =>
   /^\/api\/oauth\/callback(\/|$)/.test(pathname);
+
+export const isUnauthenticatedOAuthClientMetadataPath = (pathname: string): boolean =>
+  pathname === "/api/oauth/client-id-metadata.json" ||
+  /^\/api\/oauth\/client-id-metadata\/[^/]+\.json$/.test(pathname);
+
+export const isUnauthenticatedOAuthPath = (pathname: string): boolean =>
+  isUnauthenticatedOAuthCallbackPath(pathname) ||
+  isUnauthenticatedOAuthClientMetadataPath(pathname);

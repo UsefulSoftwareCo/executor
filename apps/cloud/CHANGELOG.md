@@ -1,5 +1,69 @@
 # @executor-js/cloud
 
+## 1.4.39
+
+### Patch Changes
+
+- Updated dependencies [[`4b361b9`](https://github.com/RhysSullivan/executor/commit/4b361b9f7220f679f582137f5375b29c3b72f919)]:
+  - @executor-js/plugin-openapi@1.5.21
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-google@1.5.20
+  - @executor-js/plugin-microsoft@1.5.20
+  - @executor-js/sdk@1.5.21
+  - @executor-js/runtime-quickjs@1.5.21
+  - @executor-js/execution@1.5.21
+  - @executor-js/plugin-graphql@1.5.21
+  - @executor-js/plugin-mcp@1.5.21
+  - @executor-js/api@1.4.41
+  - @executor-js/vite-plugin@0.0.38
+  - @executor-js/cloudflare@0.0.20
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-toolkits@1.5.13
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.41
+
+## 1.4.38
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.20
+  - @executor-js/runtime-quickjs@1.5.20
+  - @executor-js/execution@1.5.20
+  - @executor-js/plugin-graphql@1.5.20
+  - @executor-js/plugin-mcp@1.5.20
+  - @executor-js/plugin-openapi@1.5.20
+  - @executor-js/api@1.4.40
+  - @executor-js/vite-plugin@0.0.37
+  - @executor-js/cloudflare@0.0.19
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-google@1.5.19
+  - @executor-js/plugin-microsoft@1.5.19
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.40
+
+## 1.4.37
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.19
+  - @executor-js/runtime-quickjs@1.5.19
+  - @executor-js/execution@1.5.19
+  - @executor-js/plugin-graphql@1.5.19
+  - @executor-js/plugin-mcp@1.5.19
+  - @executor-js/plugin-openapi@1.5.19
+  - @executor-js/api@1.4.39
+  - @executor-js/vite-plugin@0.0.36
+  - @executor-js/cloudflare@0.0.18
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-google@1.5.18
+  - @executor-js/plugin-microsoft@1.5.18
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.39
+
 ## 1.4.36
 
 ### Patch Changes

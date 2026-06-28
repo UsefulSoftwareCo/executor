@@ -172,6 +172,7 @@ export function ToolDetail(props: {
    *  applies a user rule to this tool's exact id. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay?: (displayPattern: string) => string;
   /** Run-tab wiring. When `integration` + `runToolName` are provided, a third
    *  "Run" tab hosts the per-connection tool tester. */
   integration?: IntegrationSlug;
@@ -187,6 +188,7 @@ export function ToolDetail(props: {
   const canRun = props.integration != null && props.runToolName != null;
   // Don't strand the user on the Run tab when this ToolDetail has no run wiring.
   const activeTab = tab === "run" && !canRun ? "schema" : tab;
+  const isBlocked = props.policy?.action === "block";
 
   const data = useMemo(() => {
     if (!AsyncResult.isSuccess(toolContract)) return null;
@@ -244,6 +246,7 @@ export function ToolDetail(props: {
               policy={props.policy}
               onSetPolicy={props.onSetPolicy}
               onClearPolicy={props.onClearPolicy}
+              patternForDisplay={props.patternForDisplay}
             />
           </div>
           {data?.description && <ToolDescription description={data.description} />}
@@ -300,48 +303,59 @@ export function ToolDetail(props: {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        {AsyncResult.match(toolContract, {
-          onInitial: () => <div className="p-5 text-sm text-muted-foreground">Loading…</div>,
-          onFailure: () => <div className="p-5 text-sm text-destructive">Something went wrong</div>,
-          onSuccess: () =>
-            activeTab === "run" && props.integration && props.runToolName ? (
-              <div className="px-5 py-5">
-                <ToolRunPanel
-                  integration={props.integration}
-                  toolName={props.runToolName}
-                  connections={props.connections ?? []}
-                  initialConnectionName={props.initialConnectionName}
-                />
-              </div>
-            ) : activeTab === "schema" ? (
-              <div className="px-5 py-5 space-y-5">
-                {data?.inputSchema ? (
-                  <SchemaExplorer
-                    schema={data.inputSchema}
-                    schemaDefinitions={data.schemaDefinitions}
-                    title="Parameters"
-                  />
-                ) : (
-                  <EmptySection title="Parameters" message="None" />
-                )}
-                {data?.outputSchema ? (
-                  <SchemaExplorer
-                    schema={data.outputSchema}
-                    schemaDefinitions={data.schemaDefinitions}
-                    title="Response"
-                  />
-                ) : (
-                  <EmptySection title="Response" message="None" />
-                )}
-              </div>
-            ) : (
-              <ToolTypeScriptPanel
-                inputTypeScript={data?.inputTypeScript ?? null}
-                outputTypeScript={data?.outputTypeScript ?? null}
-                definitions={data?.definitions ?? []}
-              />
+        {isBlocked ? (
+          <div className="px-5 py-5">
+            <EmptySection
+              title="Blocked"
+              message="This tool is not available through the current toolkit."
+            />
+          </div>
+        ) : (
+          AsyncResult.match(toolContract, {
+            onInitial: () => <div className="p-5 text-sm text-muted-foreground">Loading…</div>,
+            onFailure: () => (
+              <div className="p-5 text-sm text-destructive">Something went wrong</div>
             ),
-        })}
+            onSuccess: () =>
+              activeTab === "run" && props.integration && props.runToolName ? (
+                <div className="px-5 py-5">
+                  <ToolRunPanel
+                    integration={props.integration}
+                    toolName={props.runToolName}
+                    connections={props.connections ?? []}
+                    initialConnectionName={props.initialConnectionName}
+                  />
+                </div>
+              ) : activeTab === "schema" ? (
+                <div className="px-5 py-5 space-y-5">
+                  {data?.inputSchema ? (
+                    <SchemaExplorer
+                      schema={data.inputSchema}
+                      schemaDefinitions={data.schemaDefinitions}
+                      title="Parameters"
+                    />
+                  ) : (
+                    <EmptySection title="Parameters" message="None" />
+                  )}
+                  {data?.outputSchema ? (
+                    <SchemaExplorer
+                      schema={data.outputSchema}
+                      schemaDefinitions={data.schemaDefinitions}
+                      title="Response"
+                    />
+                  ) : (
+                    <EmptySection title="Response" message="None" />
+                  )}
+                </div>
+              ) : (
+                <ToolTypeScriptPanel
+                  inputTypeScript={data?.inputTypeScript ?? null}
+                  outputTypeScript={data?.outputTypeScript ?? null}
+                  definitions={data?.definitions ?? []}
+                />
+              ),
+          })
+        )}
       </div>
     </div>
   );
@@ -400,12 +414,15 @@ function PolicyBadgeMenu(props: {
   policy?: EffectivePolicy;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay?: (displayPattern: string) => string;
 }) {
   const interactive = !!props.onSetPolicy;
   // The same pattern bridge the tree rows apply — the pattern WRITTEN and the
   // pattern LOOKED UP must be the same string, or the menu authors rules that
   // never match and can't see its own rule afterward.
-  const pattern = props.staticTool ? props.toolName : toPolicyPattern(props.toolName);
+  const pattern = props.staticTool
+    ? props.toolName
+    : (props.patternForDisplay ?? toPolicyPattern)(props.toolName);
   // The "Clear" affordance only makes sense when there's a user rule
   // pinned to this exact tool id — clearing a wildcard rule from a
   // single tool's detail header would silently affect siblings.

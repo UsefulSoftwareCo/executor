@@ -9,20 +9,21 @@
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Clean minimal palette */
-  --color-surface: #fafaf7;
-  --color-surface-2: #f3f3ee;
-  --color-ink: #0d0d10;
-  --color-ink-2: #4a4a4e;
-  --color-ink-3: #8a8a8e;
-  --color-rule: rgba(13, 13, 16, 0.07);
-  --color-rule-strong: rgba(13, 13, 16, 0.14);
+  /* Registry-grade grayscale palette, matched to the app design system.
+     No brand hue: accent resolves to near-black so it reads as ink, not color. */
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
+  --color-ink: #111111;
+  --color-ink-2: #666666;
+  --color-ink-3: #888888;
+  --color-rule: #eaeaea;
+  --color-rule-strong: #d4d4d4;
 
-  --color-accent: #635bff;
-  --color-accent-hover: #5048e6;
+  --color-accent: #0a0a0a;
+  --color-accent-hover: #333333;
 }
 
 html {
@@ -75,13 +76,14 @@ body {
   z-index: 0;
 }
 
-/* Italic serif accent: pairs with sharp Geist display */
+/* Was an italic-serif violet accent; neutralized to match the grayscale,
+   no-serif system. The headline now reads as one uniform Geist phrase. */
 .serif-italic {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: var(--color-accent);
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
 }
 
 /* Page-load reveals */
@@ -691,29 +693,17 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--color-ink-3);
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-rule);
-  border-radius: 999px;
-  padding: 3px 9px;
 }
 .cap-card:hover {
   background: var(--color-surface);
 }
-.cap-card .cap-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--color-accent) 9%, white);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
-  color: var(--color-accent);
-  margin-bottom: 0.35rem;
-}
-.cap-card .cap-icon svg {
-  width: 17px;
-  height: 17px;
+.cap-card .cap-num {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-3);
+  margin-bottom: 0.75rem;
 }
 .cap-card h3 {
   font-size: 16px;
@@ -1072,22 +1062,10 @@ body {
 /* Hero glow (launch-ui): a soft accent bloom sitting behind the beam
    card, warming the off-white surface without fighting the graph
    paper. Purely decorative, never interactive. */
+/* Decorative hero glow removed: the grayscale system gets its depth from
+   hairlines and tone, not colored blurs. */
 .hero-glow {
-  position: absolute;
-  left: 50%;
-  top: 54%;
-  width: min(720px, 86%);
-  height: 340px;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(
-    closest-side,
-    color-mix(in srgb, var(--color-accent) 15%, transparent),
-    transparent 100%
-  );
-  filter: blur(36px);
-  opacity: 0.5;
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
 /* Hero announcement badge (launch-ui): a pill above the headline that
@@ -1518,4 +1496,138 @@ body {
   .cbloat-bar__fill {
     transition: none;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   BLOG: editorial prose for Markdown-rendered posts (/blog/[slug]).
+   Reads off the same tokens as the rest of the site (ink / accent /
+   rule / surface) so posts stay on-brand without a separate palette.
+   ═══════════════════════════════════════════════════════════════ */
+.blog-prose {
+  color: color-mix(in srgb, var(--color-ink) 88%, transparent);
+  font-size: 17px;
+  line-height: 1.75;
+  letter-spacing: -0.011em;
+}
+.blog-prose > :first-child {
+  margin-top: 0;
+}
+.blog-prose p {
+  margin: 1.25rem 0;
+  text-wrap: pretty;
+}
+.blog-prose h2 {
+  margin-top: 2.75rem;
+  margin-bottom: 0.9rem;
+  font-family: var(--font-sans);
+  font-size: clamp(1.4rem, 2.6vw, 1.7rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--color-ink);
+}
+.blog-prose h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.18rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+.blog-prose ul,
+.blog-prose ol {
+  margin: 1.25rem 0;
+  padding-left: 0;
+  list-style: none;
+}
+.blog-prose li {
+  position: relative;
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.blog-prose ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.78rem;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  opacity: 0.75;
+}
+.blog-prose ol {
+  counter-reset: blog-ol;
+}
+.blog-prose ol > li {
+  counter-increment: blog-ol;
+}
+.blog-prose ol > li::before {
+  content: counter(blog-ol) ".";
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+.blog-prose a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  text-underline-offset: 3px;
+  transition:
+    color 0.15s ease,
+    text-decoration-color 0.15s ease;
+}
+.blog-prose a:hover {
+  color: var(--color-accent-hover);
+  text-decoration-color: var(--color-accent-hover);
+}
+.blog-prose strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.blog-prose em {
+  font-style: italic;
+}
+.blog-prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  color: var(--color-ink-2);
+  font-style: italic;
+}
+.blog-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+}
+.blog-prose pre {
+  margin: 1.5rem 0;
+  padding: 1.1rem 1.25rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.blog-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.blog-prose hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-rule);
+}
+.blog-prose h2 + p,
+.blog-prose h3 + p {
+  margin-top: 0;
 }

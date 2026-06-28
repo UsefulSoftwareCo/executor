@@ -61,6 +61,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
       organizationName: this.cfConfig.organizationName,
       organizationSlug: this.cfConfig.organizationSlug,
       userId: token.userId,
+      resource: token.resource,
       elicitationMode: token.elicitationMode,
     } satisfies SessionMeta);
   }
@@ -79,6 +80,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
+        { mcpResource: sessionMeta.resource },
       ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into
@@ -108,6 +110,7 @@ export class McpSessionDO extends McpSessionDOBase<CfSessionDbHandle> {
                     origin: origin ?? "https://unconfigured-origin.invalid",
                     executionId,
                     sessionId: self.sessionId,
+                    organizationSlug: sessionMeta.organizationSlug,
                   });
                 },
               }

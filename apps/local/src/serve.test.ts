@@ -134,6 +134,25 @@ describe("startServer bearer auth", () => {
     expect(response.status).toBe(200);
   });
 
+  it("serves the CIMD client metadata document without a bearer", async () => {
+    const baseUrl = await startTestServer();
+    const documentUrl = `${baseUrl}/api/oauth/client-id-metadata/local.json`;
+    const response = await fetch(documentUrl);
+    expect(response.status).toBe(200);
+    const metadata = (await response.json()) as {
+      readonly client_id: string;
+      readonly redirect_uris: readonly string[];
+      readonly application_type: string;
+    };
+    expect(metadata.client_id).toBe(documentUrl);
+    expect(metadata.redirect_uris).toEqual([
+      "http://127.0.0.1/api/oauth/callback",
+      "http://localhost/api/oauth/callback",
+      "http://[::1]/api/oauth/callback",
+    ]);
+    expect(metadata.application_type).toBe("native");
+  });
+
   it("requires the bearer token on the OAuth await poll", async () => {
     const baseUrl = await startTestServer();
     const response = await fetch(`${baseUrl}/api/oauth/await/session-1`);

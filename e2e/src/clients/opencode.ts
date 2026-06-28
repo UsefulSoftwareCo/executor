@@ -66,10 +66,15 @@ export const makeOpenCodeHome = (
         : {}),
     }),
   );
-  // OpenCode launches the OAuth URL via `open`; the shim records it instead.
-  writeFileSync(join(binDir, "open"), `#!/bin/sh\necho "$@" >> ${openedUrlsFile}\nexit 0\n`, {
-    mode: 0o755,
-  });
+  // OpenCode launches the OAuth URL via the platform browser opener; the shim
+  // records it instead. macOS uses `open`; Linux uses `xdg-open` (and a few
+  // fallback names), so shim them all to the same recorder — otherwise the URL
+  // is never captured on Linux and consent never completes.
+  for (const opener of ["open", "xdg-open", "www-browser", "x-www-browser"]) {
+    writeFileSync(join(binDir, opener), `#!/bin/sh\necho "$@" >> ${openedUrlsFile}\nexit 0\n`, {
+      mode: 0o755,
+    });
+  }
 
   return {
     projectDir,

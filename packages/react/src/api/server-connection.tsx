@@ -2,6 +2,7 @@ import * as React from "react";
 import { isValidOrgSlug } from "@executor-js/api";
 import {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
+  EXECUTOR_ORG_SELECTOR_HEADER,
   getExecutorServerAuthorizationHeader as getAuthorizationHeaderForConnection,
   normalizeExecutorServerConnection,
   originFromApiBaseUrl,
@@ -11,6 +12,7 @@ import {
 
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
+  EXECUTOR_ORG_SELECTOR_HEADER,
   apiBaseUrlForServerOrigin,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
@@ -87,7 +89,7 @@ let activeConnection = resolveInitialExecutorServerConnection();
 // `/login`, …) are NOT valid slugs, so a bare path sends no header and the
 // server falls back to the session org. Hosts without slugs (self-host,
 // cloudflare) never produce one either.
-export const EXECUTOR_ORG_HEADER = "x-executor-organization";
+export const EXECUTOR_ORG_HEADER = EXECUTOR_ORG_SELECTOR_HEADER;
 
 export const getActiveOrgSlug = (): string | null => {
   const pathname = globalThis.window?.location?.pathname;

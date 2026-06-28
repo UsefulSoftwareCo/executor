@@ -6,17 +6,21 @@ describe("stripMcpOrgSegment", () => {
   it("strips a single org segment before /mcp", () => {
     expect(stripMcpOrgSegment("/iI9idP7BZcWpg9wW8cit3xE4r4dFSnHj/mcp")).toBe("/mcp");
     expect(stripMcpOrgSegment("/org_123/mcp")).toBe("/mcp");
+    expect(stripMcpOrgSegment("/org_123/mcp/toolkits/deploy")).toBe("/mcp/toolkits/deploy");
   });
 
   it("strips the org segment from the protected-resource discovery path", () => {
     expect(stripMcpOrgSegment("/.well-known/oauth-protected-resource/abc123/mcp")).toBe(
-      "/.well-known/oauth-protected-resource/mcp",
+      "/.well-known/oauth-protected-resource",
     );
+    expect(
+      stripMcpOrgSegment("/.well-known/oauth-protected-resource/abc123/mcp/toolkits/deploy"),
+    ).toBe("/.well-known/oauth-protected-resource/mcp/toolkits/deploy");
   });
 
   it("leaves the bare paths untouched", () => {
     expect(stripMcpOrgSegment("/mcp")).toBeNull();
-    expect(stripMcpOrgSegment("/.well-known/oauth-protected-resource/mcp")).toBeNull();
+    expect(stripMcpOrgSegment("/mcp/toolkits/deploy")).toBeNull();
     expect(stripMcpOrgSegment("/.well-known/oauth-authorization-server")).toBeNull();
   });
 

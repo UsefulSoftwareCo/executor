@@ -48,4 +48,13 @@ describe("OAuth web origin resolution", () => {
       }),
     ).toBe("https://executor.sh/api/oauth/callback");
   });
+
+  it("does not put org routing in OAuth redirect URLs", () => {
+    const redirectUri = buildOAuthRedirectUri({
+      webBaseUrl: "https://executor.sh",
+      oauthCallbackPath: "/api/oauth/callback",
+    });
+
+    expect(new URL(redirectUri ?? "").search).toBe("");
+  });
 });

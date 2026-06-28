@@ -106,7 +106,8 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
       routes: [
         // CLI device-login discovery, must precede the /api/auth/* wildcard
         // below (Better Auth would otherwise 404 it). The verification page it
-        // points at (/device) is a console SPA route (web/device.tsx).
+        // points at (/device) is a console SPA route
+        // (web/chromeless/device-page.tsx).
         HttpRouter.add("GET", "/api/auth/cli-login", cliLoginHandler),
         // Better Auth owns the rest of /api/auth/*, the full path reaches it.
         HttpRouter.add("*", "/api/auth/*", HttpEffect.fromWebHandler(authHandler)),

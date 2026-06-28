@@ -8,6 +8,7 @@ import { Context, type Effect } from "effect";
 
 import type { Target as TargetShape } from "./target";
 import type { ApiSurface } from "./surfaces/api";
+import type { AutumnSurface } from "./surfaces/autumn";
 import type { BrowserSurface } from "./surfaces/browser";
 import type { CliSurface } from "./surfaces/cli";
 import type { McpSurface } from "./surfaces/mcp";
@@ -34,6 +35,10 @@ export class Mcp extends Context.Service<Mcp, McpSurface>()("e2e/mcp-oauth") {}
 
 /** Marker: billing limits are enforced on this target. */
 export class Billing extends Context.Service<Billing, true>()("e2e/billing") {}
+
+/** Read the usage events the target tracked to its billing backend (present
+ *  when the suite booted the Autumn emulator — E2E_AUTUMN_URL; cloud-only). */
+export class Autumn extends Context.Service<Autumn, AutumnSurface>()("e2e/autumn") {}
 
 /** Query the suite's OTLP trace store for spans the target actually exported
  *  (present when the suite booted motel — E2E_MOTEL_URL). */

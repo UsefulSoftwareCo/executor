@@ -5,6 +5,7 @@ import { AuthContext } from "@executor-js/api/server";
 import { env } from "cloudflare:workers";
 import { WorkOSClient } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
+import { resolveOrganization } from "../auth/organization";
 import { Forbidden, OrgHttpApi } from "./api";
 
 // ---------------------------------------------------------------------------
@@ -89,13 +90,16 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
           return yield* new Forbidden();
         }
 
+        const org = yield* resolveOrganization(auth.organizationId).pipe(
+          Effect.catchCause(() => Effect.succeed(null)),
+        );
+        const returnPath = org?.slug ? `/${org.slug}/org` : "/org";
         const workos = yield* WorkOSClient;
-        // WorkOS requires an ABSOLUTE returnUrl — fall back to the pinned origin
-        // (matching every other VITE_PUBLIC_SITE_URL site in this host), not a
-        // bare relative path that WorkOS would reject.
+        // WorkOS requires an absolute returnUrl. Keep the URL org slug in that
+        // return path so the browser comes back to the same selected org.
         const { link } = yield* workos.generateDomainVerificationPortalLink(
           auth.organizationId,
-          `${env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh"}/org`,
+          `${env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh"}${returnPath}`,
         );
         return { link };
       }),

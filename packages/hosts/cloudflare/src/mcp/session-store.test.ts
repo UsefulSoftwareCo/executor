@@ -13,13 +13,20 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit } from "effect";
 
-import { McpSessionStore, type McpDispatchResult, type Principal } from "@executor-js/host-mcp";
+import {
+  McpSessionStore,
+  defaultMcpResource,
+  type McpDispatchResult,
+  type Principal,
+} from "@executor-js/host-mcp";
 
 import {
   DO_RELOCATION_MAX_RETRIES,
   makeDurableObjectMcpSessionStore,
+  type McpSessionInit,
   type McpSessionDOStub,
 } from "./session-store";
+import { INTERNAL_RESOURCE_KEY_HEADER } from "./do-headers";
 
 const RELOCATION_ERROR = "cannot access storage because object has moved to a different machine";
 
@@ -55,6 +62,7 @@ const dispatchCreate = (stub: McpSessionDOStub): Effect.Effect<McpDispatchResult
     return yield* store.dispatch({
       request: initializeRequest(),
       principal: TEST_PRINCIPAL,
+      resource: defaultMcpResource,
       sessionId: null,
       method: "POST",
     });
@@ -68,6 +76,76 @@ const failureText = (exit: Exit.Exit<McpDispatchResult>): string =>
   Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
 
 describe("makeDurableObjectMcpSessionStore — DO-relocation retry", () => {
+  it.live("passes the requested MCP resource into session init", () =>
+    Effect.gen(function* () {
+      let initMeta: McpSessionInit | undefined;
+      const stub: McpSessionDOStub = {
+        init: (meta) => {
+          initMeta = meta;
+          return Promise.resolve();
+        },
+        handleRequest: () => Promise.resolve(okResponse()),
+        clearSession: () => Promise.resolve(),
+      };
+
+      const result = yield* Effect.gen(function* () {
+        const store = yield* McpSessionStore;
+        return yield* store.dispatch({
+          request: initializeRequest(),
+          principal: TEST_PRINCIPAL,
+          resource: { kind: "toolkit", slug: "deploy" },
+          sessionId: null,
+          method: "POST",
+        });
+      }).pipe(
+        Effect.provide(
+          makeDurableObjectMcpSessionStore({ newStub: () => stub, getStub: () => stub }),
+        ),
+      );
+
+      expect(result).toBeInstanceOf(Response);
+      expect(initMeta?.resource, "the DO session is keyed to the requested resource").toEqual({
+        kind: "toolkit",
+        slug: "deploy",
+      });
+    }),
+  );
+
+  it.live("stamps the requested MCP resource on forwarded session requests", () =>
+    Effect.gen(function* () {
+      let forwardedResourceKey: string | null = null;
+      const stub: McpSessionDOStub = {
+        init: () => Promise.resolve(),
+        handleRequest: (request) => {
+          forwardedResourceKey = request.headers.get(INTERNAL_RESOURCE_KEY_HEADER);
+          return Promise.resolve(okResponse());
+        },
+        clearSession: () => Promise.resolve(),
+      };
+
+      const result = yield* Effect.gen(function* () {
+        const store = yield* McpSessionStore;
+        return yield* store.dispatch({
+          request: initializeRequest(),
+          principal: TEST_PRINCIPAL,
+          resource: { kind: "toolkit", slug: "deploy" },
+          sessionId: "existing-session",
+          method: "POST",
+        });
+      }).pipe(
+        Effect.provide(
+          makeDurableObjectMcpSessionStore({ newStub: () => stub, getStub: () => stub }),
+        ),
+      );
+
+      expect(result).toBeInstanceOf(Response);
+      expect(
+        forwardedResourceKey,
+        "the DO can reject a session id reused on another resource",
+      ).toBe("toolkit:deploy");
+    }),
+  );
+
   it.live("retries mcp.do.init past a relocation, then returns the DO response", () =>
     Effect.gen(function* () {
       let initCalls = 0;

@@ -48,8 +48,8 @@ working instance of X" — read them before inventing a boot path.
   screenshots, `session.mp4` + `trace.zip` for browser scenarios, and the
   scenario source as `test.ts`.
 - `cd e2e && bun run serve` builds the viewer and serves the scenario ×
-  target matrix over HTTP, bound to all interfaces (reachable over the
-  tailnet). It prefers port 8901 but walks forward to the next free port if
+  target matrix over HTTP, bound to all interfaces. It prefers port 8901
+  but walks forward to the next free port if
   that's taken (so concurrent worktrees, or a leaked previous viewer, never
   wedge each other) — read the printed `e2e viewer → …` URL for the actual
   port. `PORT=…` pins a port explicitly and fails loudly if it's busy. The
@@ -77,14 +77,14 @@ emulator ledger — develop interactively, then crystallize the journey into
 a scenario.
 
 ```sh
-bun run cli up selfhost --share   # boot, reachable over the tailnet, stays up
-bun run cli up cloud --share      # emulated WorkOS+Autumn, tailscale-HTTPS fronted
+bun run cli up selfhost --share   # boot, shared, stays up
+bun run cli up cloud --share      # emulated WorkOS+Autumn
 bun run cli status                # what's running, URLs, creds
 bun run cli identity selfhost     # fresh identity (headers / cookies / creds)
 bun run cli api selfhost tools.list
 bun run cli mcp selfhost call execute '{"code":"return 1+1;"}'
 bun run cli ledger cloud workos   # what hit the emulator
-bun run cli down selfhost         # tear down (also removes tailscale serves)
+bun run cli down selfhost         # tear down
 ```
 
 Instances persist until `down` — `up --share` IS the "touch it" handoff
@@ -92,15 +92,6 @@ artifact, and the seeding direction too: boot, drive the product into a
 state (API/MCP/UI), hand across the URL. State files in `e2e/.dev/` mark
 deliberate long-lived instances (vs leaks); attach scenarios to a running
 instance with `E2E_<TARGET>_URL`.
-
-Why cloud `--share` is more involved (encoded in the CLI, kept here for
-when you hit it manually): the cloud app sets `secure: true` auth cookies,
-so login breaks over plain http from any non-localhost origin ("Invalid
-login state"). Both the app AND the WorkOS emulator get fronted with
-`tailscale serve` HTTPS, the emulator advertises its public URL on both
-sides (its `baseUrl` and the app's `WORKOS_API_URL` — the browser-facing
-authorize URL derives from the latter), and Vite must allow the public
-hostname (`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`).
 
 ## Environment gotchas (learned the hard way)
 
@@ -113,10 +104,6 @@ hostname (`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`).
   (symptom: behavior matching old code only in dev servers, while unit
   tests pass). Kill the server, clear `node_modules/.vite` /
   `.tanstack`-adjacent caches, reboot.
-- The real Tailscale CLI on this machine is
-  `/opt/homebrew/opt/tailscale/bin/tailscale`; `/usr/local/bin/tailscale`
-  is a broken shim pointing at a deleted app. The tailnet IP is on the
-  `utun` interface (100.x.y.z) if the CLI fails.
 - `bun.lock` conflicts on rebase: take either side, re-run `bun install`,
   never hand-merge.
 - Long-lived demo servers you left up for the user look like leaks to

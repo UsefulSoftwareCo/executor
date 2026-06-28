@@ -35,6 +35,23 @@ const insertIntegration = (
     ],
   });
 
+const insertIntegrationRawConfig = (
+  client: SqliteDataMigrationClient,
+  row: {
+    readonly rowId: string;
+    readonly tenant: string;
+    readonly slug: string;
+    readonly pluginId: string;
+    readonly config: string;
+  },
+) =>
+  client.execute({
+    sql: `INSERT INTO integration
+      (row_id, tenant, slug, plugin_id, name, description, config, can_remove, can_refresh, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+    args: [row.rowId, row.tenant, row.slug, row.pluginId, row.slug, row.slug, row.config, now, now],
+  });
+
 const insertBlob = (
   client: SqliteDataMigrationClient,
   row: {
@@ -84,7 +101,11 @@ const insertOperationStorage = (
 
 const insertTool = (
   client: SqliteDataMigrationClient,
-  row: { readonly tenant: string; readonly pluginId: string; readonly integration: string },
+  row: {
+    readonly tenant: string;
+    readonly pluginId: string;
+    readonly integration: string;
+  },
 ) =>
   client.execute({
     sql: `INSERT INTO tool
@@ -95,7 +116,11 @@ const insertTool = (
 
 const insertDefinition = (
   client: SqliteDataMigrationClient,
-  row: { readonly tenant: string; readonly pluginId: string; readonly integration: string },
+  row: {
+    readonly tenant: string;
+    readonly pluginId: string;
+    readonly integration: string;
+  },
 ) =>
   client.execute({
     sql: `INSERT INTO definition
@@ -105,6 +130,31 @@ const insertDefinition = (
   });
 
 describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
+  it.effect("skips malformed legacy integration config rows", () =>
+    Effect.gen(function* () {
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
+
+      yield* Effect.promise(() =>
+        insertIntegrationRawConfig(db.client, {
+          rowId: "malformed-row",
+          tenant: "org_1",
+          slug: "broken",
+          pluginId: "openapi",
+          config: "",
+        }),
+      );
+
+      expect(yield* runSqliteGoogleOpenApiOwnershipMigration(db.client)).toBe(0);
+
+      const integrations = yield* Effect.promise(() =>
+        db.client.execute("SELECT slug, plugin_id, config FROM integration"),
+      );
+      expect(integrations.rows).toEqual([{ slug: "broken", plugin_id: "openapi", config: "" }]);
+
+      yield* Effect.promise(() => db.close());
+    }),
+  );
+
   it.effect("moves OpenAPI-owned Google bundle rows to the Google plugin", () =>
     Effect.gen(function* () {
       const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
@@ -128,7 +178,10 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
           tenant: "org_1",
           slug: "stripe",
           pluginId: "openapi",
-          config: { specHash: "stripehash", sourceUrl: "https://stripe.example/openapi.json" },
+          config: {
+            specHash: "stripehash",
+            sourceUrl: "https://stripe.example/openapi.json",
+          },
         }),
       );
       yield* Effect.promise(() =>
@@ -156,10 +209,18 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
           }),
         );
         yield* Effect.promise(() =>
-          insertTool(client, { tenant: "org_1", pluginId: "openapi", integration }),
+          insertTool(client, {
+            tenant: "org_1",
+            pluginId: "openapi",
+            integration,
+          }),
         );
         yield* Effect.promise(() =>
-          insertDefinition(client, { tenant: "org_1", pluginId: "openapi", integration }),
+          insertDefinition(client, {
+            tenant: "org_1",
+            pluginId: "openapi",
+            integration,
+          }),
         );
       }
 

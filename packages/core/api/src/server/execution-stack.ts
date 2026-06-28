@@ -26,6 +26,7 @@
 import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
+import type { McpResource } from "@executor-js/host-mcp";
 import type { AnyPlugin, Executor, StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
@@ -95,6 +96,7 @@ export const makeExecutionStack = <
   accountId: string,
   organizationId: string,
   organizationName: string,
+  options?: { readonly mcpResource?: McpResource },
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
   StorageFailure,
@@ -105,6 +107,7 @@ export const makeExecutionStack = <
       accountId,
       organizationId,
       organizationName,
+      { plugins: { mcpResource: options?.mcpResource } },
     );
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;

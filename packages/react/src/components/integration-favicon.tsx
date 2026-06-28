@@ -160,6 +160,28 @@ export function integrationPresetIconUrl(
   return preset?.icon ?? null;
 }
 
+// Resolution cascade for the rendered favicon: first non-null, non-failed of an
+// explicit preset icon, the bundled local icon for a known source id, then a
+// favicon-service URL derived from the source URL. The built-in executor source
+// has no preset icon and no URL, so it resolves ONLY through the sourceId branch:
+// callers that drop sourceId fall through to the neutral BoxIcon placeholder.
+export function integrationFaviconSrc(args: {
+  icon?: string | null;
+  sourceId?: string;
+  url?: string;
+  size: number;
+  failedSrcs?: readonly string[];
+}): string | null {
+  const failedSrcs = args.failedSrcs ?? [];
+  return (
+    [
+      args.icon ?? null,
+      integrationLocalIconUrl(args.sourceId),
+      integrationFaviconUrl(args.url, args.size),
+    ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
+  );
+}
+
 export function IntegrationFavicon({
   icon,
   sourceId,
@@ -172,10 +194,7 @@ export function IntegrationFavicon({
   size?: number;
 }) {
   const [failedSrcs, setFailedSrcs] = useState<readonly string[]>([]);
-  const src =
-    [icon ?? null, integrationLocalIconUrl(sourceId), integrationFaviconUrl(url, size)].find(
-      (candidate) => candidate !== null && !failedSrcs.includes(candidate),
-    ) ?? null;
+  const src = integrationFaviconSrc({ icon, sourceId, url, size, failedSrcs });
 
   if (!src) {
     return (

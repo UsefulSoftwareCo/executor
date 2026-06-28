@@ -23,6 +23,7 @@ export {
 export {
   OAuthTestServer,
   serveOAuthTestServer,
+  scopesFromAuthorizeUrl,
   OAuthTestServerAddressError,
   OAuthTestServerFlowError,
   type OAuthAuthorizationCompletion,

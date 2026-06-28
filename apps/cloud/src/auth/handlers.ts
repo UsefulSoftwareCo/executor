@@ -1,6 +1,7 @@
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { Duration, Effect, Predicate } from "effect";
+import { isValidOrgSlug } from "@executor-js/api";
 
 import {
   AUTH_PATHS,
@@ -25,7 +26,12 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
-import { authorizeOrganization, resolveOrganization } from "./organization";
+import {
+  ORG_SELECTOR_HEADER,
+  authorizeOrganization,
+  authorizeOrganizationSelector,
+  resolveOrganization,
+} from "./organization";
 import type {
   McpSessionApprovalResult,
   McpSessionResumeApprovalResult,
@@ -82,14 +88,37 @@ const timingSafeEqual = (a: string, b: string): boolean => {
   return diff === 0;
 };
 
-const requireSessionOrganizationId = Effect.gen(function* () {
+const requestHeaders = Effect.map(HttpServerRequest.HttpServerRequest.asEffect(), (req) => ({
+  ...req.headers,
+}));
+
+const firstPathSegment = (path: string): string | null => {
+  const pathname = path.split(/[?#]/, 1)[0] ?? "";
+  const segment = pathname.split("/")[1];
+  return segment && isValidOrgSlug(segment) ? segment : null;
+};
+
+const requestedOrgSelectorFromReturnTo = (returnTo: string): string | null =>
+  firstPathSegment(returnTo);
+
+const requireSelectedOrganization = Effect.gen(function* () {
   const session = yield* SessionContext;
-  if (!session.organizationId) {
+  const headers = yield* requestHeaders;
+  const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+  if (!selector) {
     return yield* new NoOrganization();
   }
+
+  const org = yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
+    Effect.catch(() => Effect.fail(new NoOrganization())),
+  );
+  if (!org) {
+    return yield* new NoOrganization();
+  }
+
   return {
     ...session,
-    organizationId: session.organizationId,
+    organizationId: org.id,
   };
 });
 
@@ -194,37 +223,46 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
 
           let sealedSession = result.sealedSession;
 
-          // If the auth response didn't surface an org but the user is already
-          // an *active* member of one, rehydrate the session with it. Pending
-          // memberships (which represent unaccepted invitations on WorkOS's
-          // side) are skipped — refreshing into one 400s, and silently
-          // attaching an unaccepted org would also bypass invite consent.
-          // If they have no active memberships, leave the session org-less —
-          // AuthGate's onboarding flow surfaces pending invites and the
-          // create-org form. We never auto-create organizations on login.
-          if (!result.organizationId && sealedSession) {
+          // Resume where the SSR gate interrupted them. The state passed the
+          // CSRF check above whenever it's present, but it's still a
+          // round-tripped value, so the returnTo inside it is re-validated like
+          // any other untrusted path.
+          const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
+          const requestedOrgSelector = requestedOrgSelectorFromReturnTo(returnTo);
+          const requestedOrg = requestedOrgSelector
+            ? yield* authorizeOrganizationSelector(result.user.id, requestedOrgSelector).pipe(
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
+
+          // Prefer the org in the URL that sent the user to login. If the URL
+          // is bare, or not an org route, fall back to WorkOS's org and then to
+          // the first active membership for org-less sessions. Pending
+          // memberships are skipped because refreshing into one 400s and would
+          // bypass invite consent.
+          let targetOrganizationId = requestedOrg?.id ?? result.organizationId ?? null;
+          if (!targetOrganizationId && !requestedOrgSelector) {
             const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");
-            if (existingActive) {
-              // Best-effort refresh — if WorkOS rejects (e.g. the membership
-              // was just revoked), fall through to an org-less session rather
-              // than 500ing the entire callback.
-              const refreshed = yield* workos
-                .refreshSession(sealedSession, existingActive.organizationId)
-                .pipe(Effect.orElseSucceed(() => null));
-              if (refreshed) sealedSession = refreshed;
-            }
+            targetOrganizationId = existingActive?.organizationId ?? null;
+          }
+
+          if (
+            targetOrganizationId &&
+            targetOrganizationId !== result.organizationId &&
+            sealedSession
+          ) {
+            // Best-effort refresh: if WorkOS rejects, fall through with the
+            // original session instead of 500ing the entire callback.
+            const refreshed = yield* workos
+              .refreshSession(sealedSession, targetOrganizationId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (refreshed) sealedSession = refreshed;
           }
 
           if (!sealedSession) {
             return HttpServerResponse.text("Failed to create session", { status: 500 });
           }
-
-          // Resume where the SSR gate interrupted them. The state passed the
-          // CSRF check above whenever it's present, but it's still a
-          // round-tripped value — so the returnTo inside it is re-validated
-          // like any other untrusted path.
-          const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
 
           return deleteResponseCookie(
             setResponseCookie(
@@ -489,7 +527,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       )
       .handle("getMcpPaused", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* requireSessionOrganizationId;
+          const owner = yield* requireSelectedOrganization;
           const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
           const result = yield* Effect.promise(
             () =>
@@ -511,7 +549,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       )
       .handle("resumeMcpExecution", ({ params, payload }) =>
         Effect.gen(function* () {
-          const owner = yield* requireSessionOrganizationId;
+          const owner = yield* requireSelectedOrganization;
           const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
           const result = yield* Effect.promise(
             () =>

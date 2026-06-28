@@ -50,6 +50,7 @@ const MCP_PATH = "/mcp";
 export const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 export const PROTECTED_RESOURCE_METADATA_URL = `${RESOURCE_ORIGIN}${PROTECTED_RESOURCE_METADATA_PATH}`;
 export const RESOURCE_URL = `${RESOURCE_ORIGIN}${MCP_PATH}`;
+const TOOLKIT_SEGMENT = "/toolkits/";
 
 // ---------------------------------------------------------------------------
 // Org-scoped MCP (the URL pins an org: `/org_xxx/mcp`)
@@ -68,17 +69,39 @@ export const MCP_ORGANIZATION_HEADER = "x-executor-mcp-organization";
 export const mcpOrganizationFromRequest = (request: Request): string | null =>
   request.headers.get(MCP_ORGANIZATION_HEADER);
 
+/** The toolkit slug selected by `/mcp/toolkits/:slug` or its metadata doc. */
+export const toolkitSlugFromRequest = (request: Request): string | null => {
+  const pathname = new URL(request.url).pathname;
+  const index = pathname.indexOf(TOOLKIT_SEGMENT);
+  if (index < 0) return null;
+  const slug = pathname.slice(index + TOOLKIT_SEGMENT.length).split("/", 1)[0];
+  return slug && slug.length > 0 ? slug : null;
+};
+
+const toolkitMcpPath = (toolkitSlug: string | null): string =>
+  toolkitSlug ? `${MCP_PATH}/toolkits/${toolkitSlug}` : MCP_PATH;
+
 /** The MCP resource URL for an org selector (`…/acme/mcp` slug or legacy
  *  `…/org_xxx/mcp` id — echoed verbatim so it matches the URL the client
  *  used), or the bare resource. */
-export const resourceUrlFor = (organizationSelector: string | null): string =>
-  organizationSelector ? `${RESOURCE_ORIGIN}/${organizationSelector}${MCP_PATH}` : RESOURCE_URL;
+export const resourceUrlFor = (
+  organizationSelector: string | null,
+  toolkitSlug: string | null = null,
+): string =>
+  organizationSelector
+    ? `${RESOURCE_ORIGIN}/${organizationSelector}${toolkitMcpPath(toolkitSlug)}`
+    : `${RESOURCE_ORIGIN}${toolkitMcpPath(toolkitSlug)}`;
 
 /** The protected-resource-metadata URL for an org selector, or the bare one. */
-export const protectedResourceMetadataUrlFor = (organizationSelector: string | null): string =>
-  organizationSelector
-    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationSelector}/mcp`
-    : PROTECTED_RESOURCE_METADATA_URL;
+export const protectedResourceMetadataUrlFor = (
+  organizationSelector: string | null,
+  toolkitSlug: string | null = null,
+): string => {
+  const toolkitSuffix = toolkitSlug ? `/toolkits/${toolkitSlug}` : "";
+  return organizationSelector
+    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationSelector}/mcp${toolkitSuffix}`
+    : `${PROTECTED_RESOURCE_METADATA_URL}${toolkitSuffix}`;
+};
 
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
 
@@ -117,10 +140,11 @@ export const mcpUnauthorized = (
 export const bearerChallengeFor = (
   result: McpUnauthorizedResult,
   organizationId: string | null = null,
+  toolkitSlug: string | null = null,
 ): string =>
   bearerChallenge(
     { reason: result.reason, description: result.description },
-    protectedResourceMetadataUrlFor(organizationId),
+    protectedResourceMetadataUrlFor(organizationId, toolkitSlug),
   );
 
 // ---------------------------------------------------------------------------

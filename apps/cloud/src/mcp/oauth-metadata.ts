@@ -17,9 +17,12 @@ const jsonWebResponse = (body: unknown, status = 200): Response =>
 // The `resource` reflects the URL-pinned org (`…/org_xxx/mcp`) when present, so a
 // client that discovered metadata via the org-scoped well-known doc gets back the
 // matching org-scoped resource id; the bare path yields the bare resource.
-export const protectedResourceMetadataResponse = (organizationId: string | null = null): Response =>
+export const protectedResourceMetadataResponse = (
+  organizationId: string | null = null,
+  toolkitSlug: string | null = null,
+): Response =>
   jsonWebResponse({
-    resource: resourceUrlFor(organizationId),
+    resource: resourceUrlFor(organizationId, toolkitSlug),
     authorization_servers: [AUTHKIT_DOMAIN],
     bearer_methods_supported: ["header"],
     // Spec-faithful clients (OpenCode, mcporter) request exactly what is

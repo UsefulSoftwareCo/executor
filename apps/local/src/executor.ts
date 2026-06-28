@@ -58,33 +58,40 @@ const resolvePluginConfigPath = (scopeDir: string): string => join(scopeDir, "ex
 // Static config wins on conflict, matching the Vite plugin.
 type LocalPlugins = readonly AnyPlugin[];
 
-const loadLocalPlugins = Effect.gen(function* () {
-  const cwd = process.env.EXECUTOR_SCOPE_DIR || process.cwd();
-  const staticPlugins = executorConfig.plugins();
-  const dynamicPlugins =
-    (yield* Effect.promise(() => loadPluginsFromJsonc({ path: resolvePluginConfigPath(cwd) }))) ??
-    [];
+export interface LocalExecutorOptions {
+  readonly activeToolkitSlug?: string;
+}
 
-  const staticPackageNames = new Set(
-    staticPlugins.map((plugin) => plugin.packageName).filter((name): name is string => !!name),
-  );
-  const dedupedDynamic = dynamicPlugins.filter((plugin) => {
-    if (plugin.packageName && staticPackageNames.has(plugin.packageName)) {
-      console.warn(
-        `[executor] plugin "${plugin.packageName}" appears in both ` +
-          `executor.config.ts and executor.jsonc#plugins. The static ` +
-          `entry wins; the jsonc entry is ignored.`,
-      );
-      return false;
-    }
-    return true;
+const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
+  Effect.gen(function* () {
+    const cwd = process.env.EXECUTOR_SCOPE_DIR || process.cwd();
+    const staticPlugins = executorConfig.plugins({
+      activeToolkitSlug: options.activeToolkitSlug,
+    });
+    const dynamicPlugins =
+      (yield* Effect.promise(() => loadPluginsFromJsonc({ path: resolvePluginConfigPath(cwd) }))) ??
+      [];
+
+    const staticPackageNames = new Set(
+      staticPlugins.map((plugin) => plugin.packageName).filter((name): name is string => !!name),
+    );
+    const dedupedDynamic = dynamicPlugins.filter((plugin) => {
+      if (plugin.packageName && staticPackageNames.has(plugin.packageName)) {
+        console.warn(
+          `[executor] plugin "${plugin.packageName}" appears in both ` +
+            `executor.config.ts and executor.jsonc#plugins. The static ` +
+            `entry wins; the jsonc entry is ignored.`,
+        );
+        return false;
+      }
+      return true;
+    });
+
+    return {
+      cwd,
+      plugins: [...staticPlugins, ...dedupedDynamic] as LocalPlugins,
+    };
   });
-
-  return {
-    cwd,
-    plugins: [...staticPlugins, ...dedupedDynamic] as LocalPlugins,
-  };
-});
 
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
@@ -135,12 +142,12 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
-const createLocalExecutorLayer = () => {
+const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
   const storage = resolveStorage();
 
   return Layer.effect(LocalExecutorTag)(
     Effect.gen(function* () {
-      const { cwd, plugins } = yield* loadLocalPlugins;
+      const { cwd, plugins } = yield* loadLocalPlugins(options);
       const tenantId = makeTenantId(cwd);
       const tables = collectTables();
 
@@ -181,7 +188,11 @@ const createLocalExecutorLayer = () => {
       // without touching the data.
       yield* runSqliteDataMigrations(sqlite.client, localDataMigrations).pipe(
         Effect.mapError(
-          (cause) => new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
+          (cause) =>
+            new LocalExecutorCreateError({
+              message: CREATE_SQLITE_ERROR_MESSAGE,
+              cause,
+            }),
         ),
       );
 
@@ -244,8 +255,8 @@ const createLocalExecutorLayer = () => {
   );
 };
 
-export const createExecutorHandle = async () => {
-  const layer = createLocalExecutorLayer();
+export const createExecutorHandle = async (options: LocalExecutorOptions = {}) => {
+  const layer = createLocalExecutorLayer(options);
   const runtime = ManagedRuntime.make(layer);
   const bundle = await runtime.runPromise(LocalExecutorTag.asEffect());
 

@@ -43,6 +43,7 @@ import {
   mcpOrganizationFromRequest,
   protectedResourceMetadataUrlFor,
   PROTECTED_RESOURCE_METADATA_PATH,
+  toolkitSlugFromRequest,
   McpAuth,
   McpAuthLive,
   McpOrganizationAuth,
@@ -57,6 +58,7 @@ import {
 } from "./oauth-metadata";
 
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
+const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
@@ -94,7 +96,22 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // The bare path is the only one mounted; `prepareMcpOrgScope` rewrites an
         // org-scoped discovery doc onto it and pins the org in the header we read.
         handler: (request) =>
-          Effect.succeed(protectedResourceMetadataResponse(mcpOrganizationFromRequest(request))),
+          Effect.succeed(
+            protectedResourceMetadataResponse(
+              mcpOrganizationFromRequest(request),
+              toolkitSlugFromRequest(request),
+            ),
+          ),
+      },
+      {
+        path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
+        handler: (request) =>
+          Effect.succeed(
+            protectedResourceMetadataResponse(
+              mcpOrganizationFromRequest(request),
+              toolkitSlugFromRequest(request),
+            ),
+          ),
       },
       {
         path: AUTHORIZATION_SERVER_METADATA_PATH,
@@ -103,7 +120,10 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
     ];
 
     const resourceMetadataUrl = (request: Request): string =>
-      protectedResourceMetadataUrlFor(mcpOrganizationFromRequest(request));
+      protectedResourceMetadataUrlFor(
+        mcpOrganizationFromRequest(request),
+        toolkitSlugFromRequest(request),
+      );
 
     /**
      * Resolve a verified bearer to a final AuthOutcome by running the live org
@@ -160,7 +180,15 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         return finishAuthorized(request, result.token);
       }
       return annotateMcpRequest(request, { token: null, parseBody: false }).pipe(
-        Effect.as(unauthorized(bearerChallengeFor(result, mcpOrganizationFromRequest(request)))),
+        Effect.as(
+          unauthorized(
+            bearerChallengeFor(
+              result,
+              mcpOrganizationFromRequest(request),
+              toolkitSlugFromRequest(request),
+            ),
+          ),
+        ),
       );
     };
 

@@ -24,7 +24,7 @@
 //                          identical; only the rendering differs.
 //   - `plugins`          — the host's plugin tuple (typed extension Services).
 //   - `stackLayer`       — the host's `makeExecutionStack` seam Layer (cloud:
-//                          `CloudExecutionStackLayer`; self-host:
+//                          `CloudMeteredExecutionStackLayer`; self-host:
 //                          `SelfHostExecutionStackLayer`).
 //
 // `LongLived` is the boot-scoped context captured at layer-build time (the

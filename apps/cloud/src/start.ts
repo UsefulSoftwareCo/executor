@@ -1,14 +1,17 @@
 import { createMiddleware, createStart } from "@tanstack/react-start";
+import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
 import { cloudApiHandler } from "./app";
 import { isAppOwnedPath } from "./app-paths";
 import { authGateMiddleware } from "./auth/ssr-gate";
 import { parseCookie } from "./auth/cookies";
+import { ORG_SELECTOR_HEADER } from "./auth/organization";
 import { loginPath } from "./auth/return-to";
 import { prepareMcpOrgScope } from "./mcp/mount";
 import {
   docsProxyMiddleware,
   marketingMiddleware,
+  openAiAppsChallengeMiddleware,
   posthogProxyMiddleware,
   sentryTunnelMiddleware,
 } from "./edge";
@@ -39,6 +42,17 @@ const getApp = () => (app ??= cloudApiHandler());
 const SESSION_COOKIE = "wos-session";
 const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
+const oauthCallbackOrgScopedRequest = (request: Request): Request => {
+  const url = new URL(request.url);
+  const callbackState = decodeOAuthCallbackState(url.searchParams.get("state"));
+  if (callbackState === null) return request;
+  url.searchParams.set("state", callbackState.state);
+  const rewritten = new Request(url, request);
+  const headers = new Headers(rewritten.headers);
+  headers.set(ORG_SELECTOR_HEADER, callbackState.orgSlug);
+  return new Request(rewritten, { headers });
+};
+
 const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
     if (
@@ -66,7 +80,11 @@ const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).serv
 // else, including `/api/*`).
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
-    if (isAppOwnedPath(pathname)) return getApp().handler(prepareMcpOrgScope(request));
+    if (isAppOwnedPath(pathname)) {
+      const scopedRequest =
+        pathname === OAUTH_CALLBACK_PATH ? oauthCallbackOrgScopedRequest(request) : request;
+      return getApp().handler(prepareMcpOrgScope(scopedRequest));
+    }
     return next();
   },
 );
@@ -83,6 +101,7 @@ const appRequestMiddleware = createMiddleware({ type: "request" }).server(
 // load-bearing.
 export const startInstance = createStart(() => ({
   requestMiddleware: [
+    openAiAppsChallengeMiddleware,
     marketingMiddleware,
     docsProxyMiddleware,
     sentryTunnelMiddleware,

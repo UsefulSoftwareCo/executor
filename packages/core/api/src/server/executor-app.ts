@@ -74,6 +74,7 @@ import {
   toApiHandler,
   type ApiHandler,
 } from "./host-foundation";
+import { makeOAuthClientIdMetadataRoute } from "./oauth-client-metadata";
 
 // A fully-resolved route/app Layer with its channels erased. Used at the
 // assembly boundaries (mirrors `toApiHandler`'s loose typing): each host's
@@ -562,7 +563,10 @@ export const make = <
   // `provideMerge(boot)` resolves the seams' residual requirements (the
   // long-lived DB handle, the control-plane services); the runtime contract is
   // the same — every route requirement is provided.
-  const routeLayers: AppRouteLayer[] = [apiLive];
+  const routeLayers: AppRouteLayer[] = [
+    makeOAuthClientIdMetadataRoute(config.mountPrefix) as AppRouteLayer,
+    apiLive,
+  ];
   if (mcpRouteLive) routeLayers.push(mcpRouteLive);
   for (const route of extensionRoutes) routeLayers.push(route);
 

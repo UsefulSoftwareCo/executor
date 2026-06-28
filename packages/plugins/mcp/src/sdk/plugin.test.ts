@@ -18,6 +18,7 @@ import {
 import {
   makeTestConfig,
   memoryCredentialsPlugin,
+  scopesFromAuthorizeUrl,
   serveOAuthTestServer,
   serveTestHttpApp,
 } from "@executor-js/sdk/testing";
@@ -500,6 +501,52 @@ describe("mcpPlugin", () => {
 
       expect(merged.map((method) => method.slug)).toEqual(["oauth2", "header"]);
     }),
+  );
+
+  it.effect("oauth.start discovers scopes for an MCP oauth method", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["channels:history", "users:read"],
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "Slack MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "slack_mcp",
+          authenticationTemplate: [{ kind: "oauth2" }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("slack-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("slack-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("slack_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "channels:history",
+          "users:read",
+        ]);
+      }),
+    ),
   );
 
   // When discovery fails (auth, network, etc.) the connection still lands with

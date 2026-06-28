@@ -278,9 +278,7 @@ function PropertyRow(props: {
           <p className={typeClasses}>{typeLabel}</p>
           {!hideRequiredBadge &&
             (required ? (
-              <p className="text-xs leading-5 font-medium text-orange-600 dark:text-orange-400">
-                required
-              </p>
+              <p className="text-xs leading-5 font-medium text-muted-foreground">required</p>
             ) : (
               <p className="text-xs leading-5 text-muted-foreground">optional</p>
             ))}

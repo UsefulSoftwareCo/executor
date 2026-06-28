@@ -46,10 +46,19 @@ export { useAtomValue, useAtomSet, useAtomMount, useAtomRefresh } from "@effect/
 // alongside the host's own UI.
 // ---------------------------------------------------------------------------
 
+export interface PluginPageProps {
+  /** Plugin-relative route params captured from `PageDecl.path` segments. */
+  readonly params: Readonly<Record<string, string>>;
+  /** The normalized plugin-relative URL path that matched this page. */
+  readonly path: string;
+  /** The plugin id from `/plugins/$pluginId/...`. */
+  readonly pluginId: string;
+}
+
 export interface PageDecl {
   /** Path relative to the plugin's mount point, e.g. `/`, `/edit/$id`. */
   readonly path: string;
-  readonly component: ComponentType;
+  readonly component: ComponentType<PluginPageProps>;
   /** Optional sidebar nav metadata — the host renders these alongside its
    *  own nav links. Omit to register a page without a nav entry. */
   readonly nav?: {

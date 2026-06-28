@@ -39,11 +39,9 @@ export type McpExecutionStackLayer = Layer.Layer<
 export const makeMcpBuildServer =
   (executionStack: McpExecutionStackLayer): McpBuildServer =>
   (principal: Principal, options?: McpBuildServerOptions) =>
-    makeExecutionStack(
-      principal.accountId,
-      principal.organizationId,
-      principal.organizationName,
-    ).pipe(
+    makeExecutionStack(principal.accountId, principal.organizationId, principal.organizationName, {
+      mcpResource: options?.resource,
+    }).pipe(
       Effect.map(({ engine }) => engine),
       // Pin browser-handoff URLs to the principal's org slug when present;
       // absent slug leaves the service unprovided and the URL stays bare.

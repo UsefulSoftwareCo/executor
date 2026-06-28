@@ -42,6 +42,7 @@ function BillingPage() {
   );
   const isCanceling = activePlan?.customerEligibility?.canceling ?? false;
   const isSwitching = isCanceling && scheduledPlan != null;
+  const isTrialing = activePlan?.customerEligibility?.trialing ?? false;
 
   const displayPlan = isSwitching ? scheduledPlan : activePlan;
   const planId = displayPlan?.id ?? "free";
@@ -68,15 +69,12 @@ function BillingPage() {
           <div>
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium text-foreground leading-none">{planName}</p>
-              {isSwitching && (
-                <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                  Switching
-                </Badge>
-              )}
+              {isSwitching && <Badge className="bg-muted text-muted-foreground">Switching</Badge>}
               {isCanceling && !isSwitching && (
-                <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                  Canceling
-                </Badge>
+                <Badge className="bg-muted text-muted-foreground">Canceling</Badge>
+              )}
+              {isTrialing && !isCanceling && (
+                <Badge className="bg-primary/10 text-primary">Free trial</Badge>
               )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground leading-none">
@@ -84,9 +82,11 @@ function BillingPage() {
                 ? `Starts ${new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
                 : isCanceling && sub?.currentPeriodEnd
                   ? `Access until ${new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
-                  : sub?.currentPeriodEnd
-                    ? `Renews ${new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
-                    : tagline}
+                  : isTrialing && sub?.currentPeriodEnd
+                    ? `Trial ends, then billing starts ${new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
+                    : sub?.currentPeriodEnd
+                      ? `Renews ${new Date(sub.currentPeriodEnd).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
+                      : tagline}
             </p>
           </div>
           <div className="flex items-center gap-2">

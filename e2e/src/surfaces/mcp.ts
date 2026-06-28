@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { Effect } from "effect";
 
 import { createRuntime, type Runtime } from "@executor-js/mcporter";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { appendTraces } from "../trace-harvest";
 import type { Identity, Target } from "../target";
@@ -160,7 +162,7 @@ export interface McpSurface {
   readonly url: string;
   readonly session: (
     identity: Identity,
-    options?: { readonly elicitationMode?: McpElicitationMode },
+    options?: { readonly elicitationMode?: McpElicitationMode; readonly url?: string },
   ) => McpSession;
   /**
    * Mint a real MCP bearer headlessly: protected-resource discovery →
@@ -188,6 +190,17 @@ interface TokenResponse {
   readonly access_token?: string;
 }
 
+const jsonFrom = async <T>(response: Response, label: string): Promise<T> => {
+  const text = await response.text();
+  if (!text) {
+    throw new Error(`${label}: empty response body (status ${response.status})`);
+  }
+  if (!response.ok) {
+    throw new Error(`${label}: request failed (status ${response.status}): ${text}`);
+  }
+  return JSON.parse(text) as T;
+};
+
 const mintBearerFlow = async (target: Target, email: string): Promise<string> => {
   const consent = target.mcpConsent?.({
     label: email,
@@ -196,21 +209,31 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
   if (!consent) throw new Error(`target ${target.name} has no mcpConsent strategy`);
 
   const mcpPath = new URL(target.mcpUrl).pathname;
-  const resource = (await (
-    await fetch(new URL(`/.well-known/oauth-protected-resource${mcpPath}`, target.baseUrl))
-  ).json()) as { authorization_servers?: ReadonlyArray<string> };
+  let resourceResponse = await fetch(
+    new URL(`/.well-known/oauth-protected-resource${mcpPath}`, target.baseUrl),
+  );
+  if (resourceResponse.status === 404) {
+    resourceResponse = await fetch(
+      new URL("/.well-known/oauth-protected-resource", target.baseUrl),
+    );
+  }
+  const resource = await jsonFrom<{ authorization_servers?: ReadonlyArray<string> }>(
+    resourceResponse,
+    "mintBearer: protected-resource metadata",
+  );
   const issuer = resource.authorization_servers?.[0];
   if (!issuer) throw new Error("mintBearer: no authorization server advertised");
-  const metadata = (await (
-    await fetch(new URL("/.well-known/oauth-authorization-server", issuer))
-  ).json()) as {
+  const metadata = await jsonFrom<{
     readonly authorization_endpoint: string;
     readonly token_endpoint: string;
     readonly registration_endpoint: string;
-  };
+  }>(
+    await fetch(new URL("/.well-known/oauth-authorization-server", issuer)),
+    "mintBearer: authorization-server metadata",
+  );
 
   const redirectUri = "http://127.0.0.1:9/callback";
-  const registered = (await (
+  const registered = await jsonFrom<{ readonly client_id: string }>(
     await fetch(metadata.registration_endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -221,8 +244,9 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
         response_types: ["code"],
         token_endpoint_auth_method: "none",
       }),
-    })
-  ).json()) as { readonly client_id: string };
+    }),
+    "mintBearer: dynamic client registration",
+  );
 
   const verifier = randomBytes(32).toString("base64url");
   const authorizeUrl = new URL(metadata.authorization_endpoint);
@@ -240,7 +264,7 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
     redirectUrl: redirectUri,
   });
 
-  const token = (await (
+  const token = await jsonFrom<TokenResponse>(
     await fetch(metadata.token_endpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -251,8 +275,9 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
         client_id: registered.client_id,
         code_verifier: verifier,
       }),
-    })
-  ).json()) as TokenResponse;
+    }),
+    "mintBearer: token exchange",
+  );
   if (!token.access_token) throw new Error("mintBearer: token exchange returned no token");
   return token.access_token;
 };
@@ -261,7 +286,8 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
   url: target.mcpUrl,
   mintBearer: (email) => Effect.promise(() => mintBearerFlow(target, email)),
   session: (identity, options) => {
-    if (runDir) installTraceparentFetch(target.mcpUrl, runDir);
+    const mcpUrl = options?.url ?? target.mcpUrl;
+    if (runDir) installTraceparentFetch(mcpUrl, runDir);
     // mcporter caches OAuth tokens (and the DCR client) per server NAME, so a
     // constant name would let a later session reuse an earlier identity's token
     // — landing in the wrong org. A unique name per session keeps each
@@ -272,8 +298,67 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
     // `?elicitation_mode=` query on the MCP endpoint — so a paused execution
     // yields an approvalUrl instead of letting the model resume inline.
     const sessionUrl = options?.elicitationMode
-      ? `${target.mcpUrl}?elicitation_mode=${options.elicitationMode}`
-      : target.mcpUrl;
+      ? `${mcpUrl}?elicitation_mode=${options.elicitationMode}`
+      : mcpUrl;
+
+    if (target.name === "cloudflare") {
+      let clientPromise: Promise<Client> | undefined;
+      const client = () => {
+        if (!clientPromise) {
+          clientPromise = (async () => {
+            const directClient = new Client(
+              { name: serverName, version: "1.0.0" },
+              { capabilities: {} },
+            );
+            const transport = new StreamableHTTPClientTransport(new URL(sessionUrl), {
+              requestInit: { headers: identity.headers ?? {} },
+            });
+            await directClient.connect(transport);
+            return directClient;
+          })();
+        }
+        return clientPromise;
+      };
+
+      const listTools = () =>
+        Effect.promise(async () => {
+          const listed = await (await client()).listTools();
+          return listed.tools.map((tool) => tool.name);
+        });
+
+      const call = (name: string, args: Record<string, unknown> = {}) =>
+        Effect.promise(async (): Promise<McpCallResult> => {
+          const raw = await (await client()).callTool({ name, arguments: args });
+          const isError = Boolean((raw as { isError?: boolean })?.isError);
+          return { raw, text: textOf(raw), ok: !isError };
+        });
+
+      return {
+        listTools,
+        describeTools: () =>
+          Effect.promise(async (): Promise<ReadonlyArray<McpToolDef>> => {
+            const listed = await (await client()).listTools();
+            return listed.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description ?? "",
+            }));
+          }),
+        call,
+        approvePaused: (text, content = {}) =>
+          Effect.suspend(() => {
+            const match = /\bexecutionId:\s*(\S+)/.exec(text);
+            if (!match)
+              return Effect.die(new Error("approvePaused: executionId not found in text"));
+            return call("resume", {
+              executionId: match[1],
+              action: "accept",
+              content: JSON.stringify(content),
+            });
+          }),
+        awaitResume: (executionId) => call("resume", { executionId }),
+      };
+    }
+
     let runtimePromise: Promise<Runtime> | undefined;
     let connected = false;
 

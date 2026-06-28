@@ -104,7 +104,7 @@ export const CreateOrgPage = () => {
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Step 1 of 2
           </p>
-          <h1 className="font-serif text-3xl">
+          <h1 className="font-sans text-3xl font-semibold">
             {count > 0 ? "You've been invited" : "Create your organization"}
           </h1>
           {count === 0 && (

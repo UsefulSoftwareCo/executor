@@ -33,8 +33,9 @@ import {
   NonProtectedApi,
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
-import { OrgAuthLive, SessionAuthLive } from "../auth/middleware-live";
+import { SessionAuthLive } from "../auth/middleware-live";
 import { OrgApi, OrgHttpApi } from "../org/api";
+import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
 import { AutumnService } from "../extensions/billing/service";
 import { DbService } from "../db/db";
@@ -79,11 +80,13 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     Layer.provide(apiPrefixedRouter),
   );
 
-  // Cloud-only WorkOS domain-verification routes; `OrgAuth` enforces an
-  // authenticated org session. No per-request DB scoping needed.
+  // Cloud-only WorkOS domain-verification routes; the auth middleware resolves
+  // the URL org selector header before falling back to the session org, so slug
+  // lookup needs the same request-scoped UserStoreService as other org-scoped
+  // APIs.
   const OrgRoutes = HttpApiBuilder.layer(OrgHttpApi).pipe(
     Layer.provide(OrgHandlers),
-    Layer.provideMerge(OrgAuthLive),
+    Layer.provide(orgAuthMiddleware(rsLive)),
     Layer.provideMerge(AutumnService.Default),
     Layer.provide(apiPrefixedRouter),
   );

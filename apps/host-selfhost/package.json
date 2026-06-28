@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/host-selfhost",
-  "version": "0.0.17",
+  "version": "0.0.20",
   "private": true,
   "type": "module",
   "exports": {
@@ -32,6 +32,7 @@
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",

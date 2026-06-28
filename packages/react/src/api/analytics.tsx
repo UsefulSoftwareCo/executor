@@ -139,6 +139,9 @@ export interface AnalyticsEvents {
     plugin_key?: string;
   };
 
+  // ── Docs / help ──────────────────────────────────────────────────────────
+  docs_opened: { surface: "sidebar" };
+
   // ── Cloud: auth & onboarding ─────────────────────────────────────────────
   login_cta_clicked: {};
   signed_out: {};

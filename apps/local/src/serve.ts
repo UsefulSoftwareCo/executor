@@ -11,6 +11,7 @@ import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
 import type { Subprocess } from "bun";
 import { setOAuthCompletionListener } from "@executor-js/api";
+import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
 import { loadOrMintLocalAuthToken } from "./auth";
 import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
 import { startIntegrationsRefresh } from "./integrations";
@@ -19,7 +20,8 @@ import {
   DEFAULT_ALLOWED_HOSTS,
   hasFileExtension,
   isAllowedOrigin,
-  isUnauthenticatedOAuthCallbackPath,
+  isUnauthenticatedOAuthClientMetadataPath,
+  isUnauthenticatedOAuthPath,
   makeIsAuthorized,
   normalizeCredential,
 } from "./serve-shared";
@@ -34,6 +36,23 @@ const htmlResponse = (file: Bun.BunFile): Response =>
   new Response(file, {
     headers: { "content-type": "text/html", "cache-control": "no-store" },
   });
+
+const oauthClientMetadataResponse = (requestUrl: string, webRequest: Request): Response =>
+  new Response(
+    JSON.stringify(
+      oauthClientIdMetadataDocumentFromRequest({
+        requestUrl,
+        webRequest,
+        mountPrefix: "/api",
+      }),
+    ),
+    {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=300",
+      },
+    },
+  );
 
 function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHandler> {
   const routes: Record<string, StaticHandler> = {};
@@ -50,7 +69,9 @@ function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHan
           routePath === "/index.html"
             ? htmlResponse(file)
             : new Response(file, {
-                headers: { "content-type": file.type || "application/octet-stream" },
+                headers: {
+                  "content-type": file.type || "application/octet-stream",
+                },
               });
       }
     }
@@ -70,7 +91,9 @@ function embeddedToStaticRoutes(embedded: Record<string, string>): Record<string
       key === "index.html"
         ? htmlResponse(file)
         : new Response(file, {
-            headers: { "content-type": file.type || "application/octet-stream" },
+            headers: {
+              "content-type": file.type || "application/octet-stream",
+            },
           });
   }
   return routes;
@@ -90,7 +113,11 @@ interface ViteChild {
 }
 
 async function allocatePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const probe = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response(),
+  });
   const port = probe.port ?? 0;
   probe.stop(true);
   return port;
@@ -339,12 +366,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         return withCors(new Response("ok", { headers: { "content-type": "text/plain" } }));
       }
 
-      // OAuth provider callbacks are hit by the user's external browser and
-      // can't carry our bearer. The OAuth `state` parameter is the security
-      // gate — see isUnauthenticatedOAuthCallbackPath. Everything else under
+      // OAuth callbacks and CIMD documents are reached by the external
+      // provider, which cannot carry our local bearer. Everything else under
       // /api and /mcp requires the bearer.
-      const skipAuth = isUnauthenticatedOAuthCallbackPath(url.pathname);
-      const isGatedSurface = url.pathname.startsWith("/api") || url.pathname.startsWith("/mcp");
+      const skipAuth = isUnauthenticatedOAuthPath(url.pathname);
+      const isMcpPath = url.pathname === "/mcp" || url.pathname.startsWith("/mcp/");
+      const isGatedSurface = url.pathname.startsWith("/api") || isMcpPath;
 
       if (isGatedSurface && !skipAuth && !isAuthorized(req)) {
         return withCors(
@@ -355,7 +382,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         );
       }
 
-      if (url.pathname.startsWith("/mcp")) {
+      if (isUnauthenticatedOAuthClientMetadataPath(url.pathname) && req.method === "GET") {
+        return withCors(oauthClientMetadataResponse(`${url.pathname}${url.search}`, req));
+      }
+
+      if (isMcpPath) {
         return withCors(await handlers.mcp.handleRequest(req));
       }
 

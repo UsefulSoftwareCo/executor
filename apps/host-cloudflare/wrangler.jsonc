@@ -12,7 +12,7 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/mcp", "/mcp/*"],
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/.well-known/*"],
   },
   // D1 is the app's SQLite store (the DbProvider seam). `wrangler deploy`
   // auto-provisions it on first deploy; replace database_id after that, or run

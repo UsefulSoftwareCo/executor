@@ -2,11 +2,13 @@ import { Effect, Match, Predicate } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
+  defaultMcpResource,
   McpAuthProvider,
   McpErrorReporter,
   McpSessionStore,
   type AuthOutcome,
   type McpDispatchResult,
+  type McpResource,
 } from "./seams";
 
 // ---------------------------------------------------------------------------
@@ -14,7 +16,8 @@ import {
 //
 // Routes:
 //   GET <provider-declared discovery paths>  -> McpAuthProvider metadata
-//   *   /mcp                                  -> authenticate -> dispatch
+//   *   /mcp                                  -> authenticate -> dispatch(default)
+//   *   /mcp/toolkits/:toolkitSlug            -> authenticate -> dispatch(toolkit)
 //
 // The provider DECLARES the discovery paths it owns (at least the protected-
 // resource metadata document) via `McpAuthProvider.discoveryRoutes`; the
@@ -24,8 +27,8 @@ import {
 // WorkOS, external). The envelope only needs the provider's discovery routes,
 // resource-metadata URL, and authenticate.
 //
-// The envelope hard-codes ONLY the `/mcp` path and CORS. Everything else —
-// every `/.well-known/*` path, the resource-metadata URL, the authn/authz
+// The envelope hard-codes ONLY the MCP serving paths and CORS. Everything else
+// — every `/.well-known/*` path, the resource-metadata URL, the authn/authz
 // semantics, and the entire session lifecycle (create + forward + ownership) —
 // comes from the two seams.
 //
@@ -38,6 +41,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const MCP_PATH = "/mcp";
+const TOOLKIT_MCP_PATH = "/mcp/toolkits/:toolkitSlug";
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
@@ -170,69 +174,67 @@ const renderDispatchError = (lookup: "not-found" | "forbidden"): Response =>
     ? jsonRpcResponse(404, -32001, "Session not found")
     : jsonRpcResponse(403, -32003, "MCP session does not belong to the current bearer");
 
-/** Dispatch a `/mcp` request through authenticate -> store.dispatch -> transport. */
-const mcpDispatch = Effect.gen(function* () {
-  const httpRequest = yield* HttpServerRequest.HttpServerRequest;
-  const auth = yield* McpAuthProvider;
-  const store = yield* McpSessionStore;
-  const request = yield* toWebRequest(httpRequest);
+/** Dispatch an MCP request through authenticate -> store.dispatch -> transport. */
+const mcpDispatch = (resource: McpResource) =>
+  Effect.gen(function* () {
+    const httpRequest = yield* HttpServerRequest.HttpServerRequest;
+    const auth = yield* McpAuthProvider;
+    const store = yield* McpSessionStore;
+    const request = yield* toWebRequest(httpRequest);
 
-  // CORS preflight: answer before auth so unauthenticated clients can probe.
-  if (request.method === "OPTIONS") {
-    return HttpServerResponse.raw(corsPreflightResponse());
-  }
-
-  // Streamable-HTTP only defines GET/POST/DELETE on the endpoint. Any other
-  // method (PUT/PATCH/…) is rejected with a JSON-RPC 405 BEFORE auth/dispatch —
-  // otherwise it would fall through and spin up a session engine for a method
-  // the transport can't serve.
-  if (!ALLOWED_MCP_METHODS.has(request.method)) {
-    return HttpServerResponse.raw(jsonRpcResponse(405, -32001, "Method not allowed"));
-  }
-
-  const sessionId = request.headers.get("mcp-session-id");
-
-  // Authenticate (and, for session-aware providers, authorize) on EVERY
-  // request. On a non-Authenticated outcome:
-  //   - Forbidden  -> dispose the live session first (cloud tears down a DO
-  //                   whose org access was revoked), then render the 403. The
-  //                   inbound request is forwarded so the store can propagate
-  //                   the request's W3C trace context onto the teardown RPC.
-  //   - other      -> render directly.
-  const outcome = yield* auth.authenticate(request);
-  if (!Predicate.isTagged(outcome, "Authenticated")) {
-    if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
-      yield* store.dispose(sessionId, request);
+    // CORS preflight: answer before auth so unauthenticated clients can probe.
+    if (request.method === "OPTIONS") {
+      return HttpServerResponse.raw(corsPreflightResponse());
     }
-    return HttpServerResponse.raw(renderAuthError(auth, request, outcome));
-  }
-  const principal = outcome.principal;
 
-  // No session id: per the streamable-HTTP transport contract, only POST opens
-  // a session. A GET needs an existing id (400); a DELETE on nothing is a
-  // no-op (204). Both short-circuit BEFORE dispatch so the store never spins up
-  // an engine for a bare GET/DELETE.
-  if (!sessionId) {
-    if (request.method === "GET") {
-      return HttpServerResponse.raw(
-        jsonRpcResponse(400, -32000, "mcp-session-id header required for SSE"),
-      );
+    // Streamable-HTTP only defines GET/POST/DELETE on the endpoint. Any other
+    // method (PUT/PATCH/…) is rejected with a JSON-RPC 405 BEFORE auth/dispatch —
+    // otherwise it would fall through and spin up a session engine for a method
+    // the transport can't serve.
+    if (!ALLOWED_MCP_METHODS.has(request.method)) {
+      return HttpServerResponse.raw(jsonRpcResponse(405, -32001, "Method not allowed"));
     }
-    if (request.method === "DELETE") {
-      return HttpServerResponse.raw(
-        new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } }),
-      );
-    }
-  }
 
-  const result: McpDispatchResult = yield* store.dispatch({
-    request,
-    principal,
-    sessionId,
-    method: request.method,
+    const sessionId = request.headers.get("mcp-session-id");
+
+    // Authenticate (and, for session-aware providers, authorize) on EVERY
+    // request. Non-authenticated outcomes render directly. Session teardown is
+    // only safe after the store can validate the authenticated principal and MCP
+    // resource; an auth-level Forbidden may not carry either.
+    const outcome = yield* auth.authenticate(request);
+    if (!Predicate.isTagged(outcome, "Authenticated")) {
+      return HttpServerResponse.raw(renderAuthError(auth, request, outcome));
+    }
+    const principal = outcome.principal;
+
+    // No session id: per the streamable-HTTP transport contract, only POST opens
+    // a session. A GET needs an existing id (400); a DELETE on nothing is a
+    // no-op (204). Both short-circuit BEFORE dispatch so the store never spins up
+    // an engine for a bare GET/DELETE.
+    if (!sessionId) {
+      if (request.method === "GET") {
+        return HttpServerResponse.raw(
+          jsonRpcResponse(400, -32000, "mcp-session-id header required for SSE"),
+        );
+      }
+      if (request.method === "DELETE") {
+        return HttpServerResponse.raw(
+          new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } }),
+        );
+      }
+    }
+
+    const result: McpDispatchResult = yield* store.dispatch({
+      request,
+      principal,
+      resource,
+      sessionId,
+      method: request.method,
+    });
+    return HttpServerResponse.raw(
+      result instanceof Response ? result : renderDispatchError(result),
+    );
   });
-  return HttpServerResponse.raw(result instanceof Response ? result : renderDispatchError(result));
-});
 
 /**
  * The `/mcp` route. Wraps {@link mcpDispatch} in a top-level `catchCause`: a
@@ -242,15 +244,22 @@ const mcpDispatch = Effect.gen(function* () {
  * otherwise, since the envelope returns a `Response`) and rendered as a stable
  * JSON-RPC 500 -32603 + CORS, rather than a bare platform 500 with no body.
  */
-const mcpRoute = mcpDispatch.pipe(
-  Effect.catchCause((cause) =>
-    Effect.gen(function* () {
-      const reporter = yield* McpErrorReporter;
-      yield* reporter.report(cause);
-      return HttpServerResponse.raw(jsonRpcResponse(500, -32603, "Internal server error"));
-    }),
-  ),
-);
+const mcpRoute = (resource: McpResource) =>
+  mcpDispatch(resource).pipe(
+    Effect.catchCause((cause) =>
+      Effect.gen(function* () {
+        const reporter = yield* McpErrorReporter;
+        yield* reporter.report(cause);
+        return HttpServerResponse.raw(jsonRpcResponse(500, -32603, "Internal server error"));
+      }),
+    ),
+  );
+
+const toolkitMcpRoute = Effect.gen(function* () {
+  const params = yield* HttpRouter.params;
+  const slug = params.toolkitSlug;
+  return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource);
+});
 
 /**
  * The shared MCP serving routes, as an `HttpRouter.use` Layer. A host merges
@@ -273,6 +282,7 @@ export const McpServingRoutes = HttpRouter.use((router) =>
         Effect.sync(() => HttpServerResponse.raw(corsPreflightResponse())),
       );
     }
-    yield* router.add("*", MCP_PATH, mcpRoute);
+    yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
+    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute);
   }),
 );

@@ -1,7 +1,6 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import { WorkOSError } from "../auth/errors";
-import { OrgAuth } from "../auth/middleware";
 
 // ---------------------------------------------------------------------------
 // Cloud-local org API — the WorkOS domain-verification surface only. Members /
@@ -59,5 +58,5 @@ export class OrgApi extends HttpApiGroup.make("org")
     }),
   ) {}
 
-/** Org API with org-level auth — requires authenticated session with an org. */
-export const OrgHttpApi = HttpApi.make("org").add(OrgApi).middleware(OrgAuth);
+/** Org API with org-level auth supplied by the router middleware in auth-middleware.ts. */
+export const OrgHttpApi = HttpApi.make("org").add(OrgApi);

@@ -9,15 +9,21 @@ import { routeTree } from "./routes/routeTree.gen";
 // added without a consoleRoutes() entry, or vice versa — apps would silently
 // lack a route that this package's pages link to. Lock them together.
 
-const collectPaths = (route: unknown): ReadonlyArray<string> => {
+const collectPaths = (route: unknown, parentId = ""): ReadonlyArray<string> => {
   const node = route as {
     options?: { id?: string };
     children?: ReadonlyArray<unknown>;
   };
   const children = node.children ?? [];
   const id = node.options?.id;
-  const own = typeof id === "string" ? [id] : [];
-  return [...own, ...children.flatMap(collectPaths)];
+  const resolved =
+    typeof id === "string"
+      ? parentId && !id.startsWith(`/${ORG_SLUG_SEGMENT}`)
+        ? `${parentId.replace(/\/$/, "")}${id}`
+        : id
+      : parentId;
+  const own = typeof id === "string" ? [resolved] : [];
+  return [...own, ...children.flatMap((child) => collectPaths(child, resolved))];
 };
 
 // The generated ids are the scope-relative contract paths nested under the

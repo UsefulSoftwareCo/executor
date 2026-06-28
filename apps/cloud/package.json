@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cloud",
-  "version": "1.4.36",
+  "version": "1.4.39",
   "private": true,
   "type": "module",
   "scripts": {
@@ -46,6 +46,7 @@
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/plugin-toolkits": "workspace:*",
     "@executor-js/plugin-workos-vault": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-dynamic-worker": "workspace:*",

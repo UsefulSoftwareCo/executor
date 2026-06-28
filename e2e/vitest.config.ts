@@ -49,6 +49,7 @@ export default defineConfig({
         include: [
           "scenarios/browser-approval.test.ts",
           "scenarios/microsoft-graph-full.test.ts",
+          "scenarios/toolkits-mcp.test.ts",
           "cloudflare/**/*.test.ts",
         ],
         fileParallelism: false,

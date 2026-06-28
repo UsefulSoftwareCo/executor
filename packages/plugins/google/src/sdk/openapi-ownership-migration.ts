@@ -4,7 +4,7 @@ import { DataMigrationError, type SqliteDataMigrationClient } from "@executor-js
 const MIGRATION_NAME = "2026-06-20-google-openapi-ownership";
 const googleOpenApiCandidate = (alias?: string): string => {
   const column = (name: string) => (alias ? `${alias}.${name}` : name);
-  return `${column("plugin_id")} = 'openapi' AND ${column("config")} IS NOT NULL AND json_type(${column("config")}, '$.googleDiscoveryUrls') = 'array'`;
+  return `${column("plugin_id")} = 'openapi' AND ${column("config")} IS NOT NULL AND json_valid(${column("config")}) AND json_type(${column("config")}, '$.googleDiscoveryUrls') = 'array'`;
 };
 
 const execute = (

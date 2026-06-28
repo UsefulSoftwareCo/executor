@@ -3,7 +3,7 @@ import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { makeLocalApiHandler } from "./app";
-import { getExecutorBundle } from "./executor";
+import { createExecutorHandle, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,23 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     executor,
     codeExecutor: makeQuickJsExecutor(),
   });
-  const mcp = createMcpRequestHandler({ engine });
+  const mcp = createMcpRequestHandler({
+    defaultConfig: { engine },
+    createConfigForResource: async (resource) => {
+      if (resource.kind === "default") return { config: { engine } };
+      const handle = await createExecutorHandle({
+        activeToolkitSlug: resource.slug,
+      });
+      const toolkitEngine = createExecutionEngine({
+        executor: handle.executor,
+        codeExecutor: makeQuickJsExecutor(),
+      });
+      return {
+        config: { engine: toolkitEngine },
+        close: handle.dispose,
+      };
+    },
+  });
 
   return { api: apiHandler, mcp };
 };

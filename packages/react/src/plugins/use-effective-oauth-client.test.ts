@@ -96,6 +96,19 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched).toEqual([]);
   });
 
+  it("with requireEndpointMatch and no endpoints, matches NOTHING (drives the register CTA)", () => {
+    // A server-targeting integration (MCP, endpoints discovered at connect) must
+    // not auto-select an unrelated provider's app just because nothing was
+    // declared to filter on.
+    const result = selectClientsForEndpoints([google, spotify], { requireEndpointMatch: true });
+    expect(result.endpointMatched).toBe(false);
+    expect(result.matched).toEqual([]);
+    expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
+      "google-app",
+      "spotify-app",
+    ]);
+  });
+
   it("matches local-dev MCP by exact host when tldts cannot resolve a root domain", () => {
     const local = app("local-mcp", {
       authorizationUrl: "http://localhost:8787/authorize",

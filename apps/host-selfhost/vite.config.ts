@@ -66,8 +66,8 @@ function executorApiPlugin(): Plugin {
           rawUrl = `${pathname}${original.search}`;
         }
         // Match on PATHNAME, not a raw-URL prefix: `/mcp` must NOT swallow the
-        // SPA route `/mcp-consent` (nor its source module `/mcp-consent.tsx`),
-        // or the dev server misroutes them to the API handler and they 404.
+        // SPA route `/mcp-consent`, or the dev server misroutes it to the API
+        // handler and returns a 404.
         const path = new URL(rawUrl, devOrigin).pathname;
         const handled =
           path === "/api" ||
