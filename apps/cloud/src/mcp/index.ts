@@ -1,19 +1,15 @@
 // ---------------------------------------------------------------------------
-// Cloud MCP — the three provider seams behind the shared host-mcp envelope,
-// named to match the app composition root's `mcp: { auth, sessions, reporter }`:
+// Cloud MCP — the auth seam behind the shared host-mcp envelope, slotted into
+// the app composition root's `mcp: { auth }`:
 //
-//   - auth     -> cloudMcpAuth     (WorkOS JWT + API-key + org-liveness + the
-//                                   two OAuth discovery docs)
-//   - sessions -> cloudMcpSessions (the Durable-Object session dispatch)
-//   - reporter -> cloudMcpReporter (forwards request-orchestration defects to
-//                                   Sentry + the dev console)
+//   - auth -> cloudMcpAuth (WorkOS JWT + API-key + org-liveness + the two OAuth
+//                           discovery docs)
 //
-// These three are what `app.ts`'s `ExecutorApp.make` slots into its `mcp`
-// providers; the unified app handler serves /mcp from the app layer (like
-// self-host), so start.ts no longer hand-mounts MCP. The MCP-path predicate +
-// test-worker envelope builder live in `./mount` (`classifyMcpPath` /
-// `makeMcpWebHandler`), imported directly there. The MCP session Durable Object
-// class itself stays a platform-side export (server.ts) and imports its
+// `server.ts` intercepts `/mcp` transport for the hibernatable Agent bridge, so
+// the app envelope mounts only cloud's OAuth discovery docs (no `sessions` or
+// `reporter` seam). The MCP-path predicate lives in `./mount` (`classifyMcpPath`
+// / `prepareMcpOrgScope`), imported directly there. The MCP session Durable
+// Object class itself stays a platform-side export (server.ts) and imports its
 // siblings directly, NOT this barrel, to keep the DO bundle react-start-free.
 // ---------------------------------------------------------------------------
 
@@ -21,5 +17,3 @@
 // its `McpAuth`/`McpOrganizationAuth` seams provided internally), shaped as the
 // `Layer<McpAuthProvider, never, IdentityProvider>` `ExecutorApp.make` expects.
 export { cloudMcpAuth } from "./auth-provider";
-export { cloudMcpSessionStoreLayer as cloudMcpSessions } from "./session-store";
-export { cloudMcpReporter } from "./reporter";

@@ -1,43 +1,20 @@
 // ---------------------------------------------------------------------------
-// Cloud MCP front — test-worker helpers for the shared, provider-neutral
-// host-mcp serving envelope (@executor-js/host-mcp) behind cloud's two seams.
+// Cloud MCP front — the MCP-path predicate + org-scope rewrite shared by
+// `server.ts`'s request dispatch.
 // ---------------------------------------------------------------------------
 //
 // PRODUCTION serves /mcp through `server.ts`'s hibernatable Agent bridge.
-// Discovery docs still flow through `app.ts`'s unified `ExecutorApp.make`
-// handler, dispatched by start.ts alongside /api. This module is the TEST-WORKER
-// counterpart: it exposes the two pieces `test-worker.ts` needs to build the
-// legacy envelope with swapped auth seams —
-//   - `makeMcpWebHandler` — bind `McpServingRoutes` to a web handler over a
-//     given auth provider + seam requirements + telemetry runtime, mirroring the
-//     self-host mount (`HttpRouter.toWebHandler`).
+// Discovery docs flow through `app.ts`'s unified `ExecutorApp.make` handler
+// (the `auth` seam's discovery routes). This module exposes:
 //   - `classifyMcpPath`   — the "is this an MCP path?" predicate (`/mcp` + the
-//     two discovery docs) that start.ts's dispatch and the test worker share.
-//
-// Cloud's two envelope seams:
-//   - McpAuthProvider  -> cloudMcpAuthProviderLayer (WorkOS JWT + API key +
-//     per-request org-liveness + the two OAuth discovery docs)
-//   - McpSessionStore  -> cloudMcpSessionStoreLayer (Durable-Object dispatch)
-//
-// Streaming passthrough — the DO returns a `Response` whose body is a
-// `ReadableStream` (SSE). The envelope wraps it with `HttpServerResponse.raw`,
-// which passes the `Response` body through unchanged.
+//     two discovery docs, plus their org-scoped variants).
+//   - `prepareMcpOrgScope` — rewrite an org-scoped MCP request to the bare path
+//     the handler routes, carrying the URL-pinned org in an internal header.
 // ---------------------------------------------------------------------------
 
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { Layer } from "effect";
-
 import { isValidOrgSlug } from "@executor-js/api";
-import { McpServingRoutes } from "@executor-js/host-mcp";
 
-import {
-  McpAuth,
-  McpOrganizationAuth,
-  MCP_ORGANIZATION_HEADER,
-  PROTECTED_RESOURCE_METADATA_PATH,
-} from "./auth";
-import { cloudMcpReporter } from "./reporter";
-import { cloudMcpSessionStoreLayer } from "./session-store";
+import { MCP_ORGANIZATION_HEADER, PROTECTED_RESOURCE_METADATA_PATH } from "./auth";
 
 const MCP_PATH = "/mcp";
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
@@ -134,46 +111,8 @@ export const prepareMcpOrgScope = (request: Request): Request => {
   return rewritten;
 };
 
-/**
- * Build the envelope web handler from the shared `McpServingRoutes` Layer,
- * provided cloud's two seams. Mirrors the self-host mount (apps/host-selfhost
- * api.ts): `HttpRouter.provideRequest` clears the route handlers' per-request
- * seam requirements, the build-time `Layer.provide(McpAuthProviderLive)`
- * satisfies the `HttpRouter.use` callback's read of `discoveryRoutes`, and
- * `HttpServer.layerServices` supplies the platform services for the web
- * handler binding.
- *
- * `seamsRequirements` resolves the McpAuth + McpOrganizationAuth tags the
- * provider reads; `runtime` (the WebSdk telemetry layer) is provided to the
- * WHOLE router so every route-handler span lands on cloud's tracer — the same
- * tracer the old `mcpApp` was provided.
- *
- * Exported so the test worker can build the same handler with test seam Layers.
- */
-export const makeMcpWebHandler = <SeamsError = never>(options: {
-  readonly authProvider: Layer.Layer<
-    import("@executor-js/host-mcp").McpAuthProvider,
-    never,
-    McpAuth | McpOrganizationAuth
-  >;
-  readonly seamsRequirements: Layer.Layer<McpAuth | McpOrganizationAuth, SeamsError>;
-  readonly runtime: Layer.Layer<never>;
-}): ((request: Request) => Promise<Response>) => {
-  const McpAuthProviderLive = options.authProvider.pipe(Layer.provide(options.seamsRequirements));
-  const McpSeams = Layer.mergeAll(McpAuthProviderLive, cloudMcpSessionStoreLayer, cloudMcpReporter);
-  const McpRouteLive = McpServingRoutes.pipe(
-    HttpRouter.provideRequest(McpSeams),
-    Layer.provide(McpAuthProviderLive),
-  );
-  return HttpRouter.toWebHandler(
-    McpRouteLive.pipe(
-      Layer.provideMerge(Layer.mergeAll(options.runtime, HttpServer.layerServices)),
-    ),
-  ).handler;
-};
-
-// Production no longer mounts /mcp here. `server.ts` intercepts MCP transport
-// requests for the hibernatable Agent bridge, while `ExecutorApp.make` continues
-// serving discovery docs. `classifyMcpPath` + `makeMcpWebHandler` remain because
-// the workerd/miniflare test worker (`test-worker.ts`) builds the same envelope
-// with swapped auth seams and classifies MCP paths with the identical predicate.
+// Production no longer mounts the /mcp transport here. `server.ts` intercepts MCP
+// transport requests for the hibernatable Agent bridge, while `ExecutorApp.make`
+// serves the OAuth discovery docs through the `auth` seam's discovery routes.
+// `classifyMcpPath` + `prepareMcpOrgScope` remain because `server.ts`'s request
+// dispatch uses them to recognize and normalize MCP paths.

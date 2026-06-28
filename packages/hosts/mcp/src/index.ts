@@ -33,4 +33,4 @@ export {
   type McpDispatchResult,
 } from "./seams";
 
-export { McpServingRoutes, jsonRpcErrorBody } from "./envelope";
+export { McpServingRoutes, McpDiscoveryRoutes, jsonRpcErrorBody } from "./envelope";

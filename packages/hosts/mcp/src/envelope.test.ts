@@ -19,6 +19,7 @@ import {
   McpErrorReporter,
   McpErrorReporterNoop,
   McpServingRoutes,
+  McpDiscoveryRoutes,
   McpSessionStore,
   type McpDispatchResult,
   type Principal,
@@ -131,5 +132,47 @@ describe("McpServingRoutes envelope", () => {
     const captures = await Effect.runPromise(Ref.get(reported));
     expect(captures).toHaveLength(1);
     expect(captures[0]).toContain("induced defect");
+  });
+});
+
+describe("McpDiscoveryRoutes (discovery-only, no session store)", () => {
+  // Builds with the auth seam ALONE — no McpSessionStore. This is the cloud
+  // shape: the Agent bridge serves /mcp transport, the envelope only publishes
+  // the provider's OAuth discovery docs. If this required McpSessionStore it
+  // would not compile, so the build itself is part of the assertion.
+  const discoveryHandler = (): ((request: Request) => Promise<Response>) =>
+    HttpRouter.toWebHandler(
+      McpDiscoveryRoutes.pipe(
+        Layer.provide(AuthProviderLive),
+        Layer.provideMerge(HttpServer.layerServices),
+      ),
+    ).handler;
+
+  it("serves the provider discovery document on GET", async () => {
+    const handler = discoveryHandler();
+    const response = await handler(new Request(`https://host.test${DISCOVERY_PATH}`));
+    expect(response.status).toBe(200);
+    expect((await response.json()) as { ok: boolean }).toEqual({ ok: true });
+  });
+
+  it("answers an OPTIONS preflight on a discovery path with 204 + CORS", async () => {
+    const handler = discoveryHandler();
+    const response = await handler(
+      new Request(`https://host.test${DISCOVERY_PATH}`, { method: "OPTIONS" }),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("does NOT mount the /mcp transport route", async () => {
+    const handler = discoveryHandler();
+    const response = await handler(
+      new Request("https://host.test/mcp", {
+        method: "POST",
+        headers: { authorization: "Bearer x", "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    expect(response.status).toBe(404);
   });
 });

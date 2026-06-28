@@ -12,7 +12,7 @@ import { workosAccountMiddleware } from "./account/account-api";
 import { ApiKeyService } from "./auth/api-keys";
 import { cloudIdentityFailureStrategy, workosIdentityLayer } from "./auth/workos-auth-provider";
 import { DbService } from "./db/db";
-import { cloudMcpAuth, cloudMcpReporter, cloudMcpSessions } from "./mcp";
+import { cloudMcpAuth } from "./mcp";
 import { McpSessionDO } from "./mcp/session-durable-object";
 import { ErrorCaptureLive } from "./observability";
 import { AutumnService } from "./extensions/billing/service";
@@ -89,10 +89,13 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
       // Billing-as-extension #1: the usage-metering decorator (reads AutumnService).
       decorator: CloudMeteringEngineDecorator,
     },
+    // No `sessions` seam: `server.ts` intercepts `/mcp` transport for the
+    // hibernatable Agent bridge, so the app envelope mounts only cloud's OAuth
+    // discovery docs (via the `auth` seam). No `reporter` either: it only wrapped
+    // the envelope's `/mcp` transport route, which cloud no longer serves here
+    // (the Agent DO captures its own defects via Sentry in `server.ts`).
     mcp: {
       auth: cloudMcpAuth,
-      sessions: cloudMcpSessions,
-      reporter: cloudMcpReporter,
     },
     plugins: { provider: CloudPluginsProvider, config: CloudHostConfig },
     errorCapture: ErrorCaptureLive,

@@ -276,3 +276,27 @@ export const McpServingRoutes = HttpRouter.use((router) =>
     yield* router.add("*", MCP_PATH, mcpRoute);
   }),
 );
+
+/**
+ * The discovery-only subset of {@link McpServingRoutes}: the provider-declared
+ * `/.well-known/oauth-*` GET routes plus their CORS preflight, and NOTHING on
+ * `/mcp`. Requires only the {@link McpAuthProvider} seam, not {@link McpSessionStore}.
+ *
+ * For a host whose `/mcp` transport is served outside this envelope (the
+ * Cloudflare Agent bridge intercepts `/mcp` before the app handler) but that
+ * still needs to publish its OAuth metadata docs. Such a host wires the `auth`
+ * seam without a `sessions` seam.
+ */
+export const McpDiscoveryRoutes = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    const auth = yield* McpAuthProvider;
+    for (const route of auth.discoveryRoutes) {
+      yield* router.add("GET", route.path, discoveryRoute(route.handler));
+      yield* router.add(
+        "OPTIONS",
+        route.path,
+        Effect.sync(() => HttpServerResponse.raw(corsPreflightResponse())),
+      );
+    }
+  }),
+);

@@ -8,33 +8,13 @@
       "types": "./src/blob-store.ts",
       "default": "./src/blob-store.ts"
     },
-    "./mcp/worker-transport": {
-      "types": "./src/mcp/worker-transport.ts",
-      "default": "./src/mcp/worker-transport.ts"
-    },
     "./mcp/do-headers": {
       "types": "./src/mcp/do-headers.ts",
       "default": "./src/mcp/do-headers.ts"
     },
-    "./mcp/response-peek": {
-      "types": "./src/mcp/response-peek.ts",
-      "default": "./src/mcp/response-peek.ts"
-    },
-    "./mcp/session-store": {
-      "types": "./src/mcp/session-store.ts",
-      "default": "./src/mcp/session-store.ts"
-    },
-    "./mcp/durable-object": {
-      "types": "./src/mcp/session-durable-object.ts",
-      "default": "./src/mcp/session-durable-object.ts"
-    },
     "./mcp/agent-durable-object": {
       "types": "./src/mcp/agent-session-durable-object.ts",
       "default": "./src/mcp/agent-session-durable-object.ts"
-    },
-    "./mcp/request-id-queue": {
-      "types": "./src/mcp/request-id-queue.ts",
-      "default": "./src/mcp/request-id-queue.ts"
     }
   },
   "scripts": {

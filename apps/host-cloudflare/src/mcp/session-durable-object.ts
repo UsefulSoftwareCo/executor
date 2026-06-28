@@ -17,7 +17,7 @@ import { preloadQuickJs } from "../quickjs";
 
 // ---------------------------------------------------------------------------
 // Cloudflare (self-host) MCP Session Durable Object — the host-cloudflare
-// binding of the shared `McpSessionDOBase` (@executor-js/cloudflare). Identical
+// binding of the shared `McpAgentSessionDOBase` (@executor-js/cloudflare). Identical
 // base to cloud; the ONLY differences are the injected dependencies:
 //   - openSessionDb     → a long-lived D1 `ExecutorDbHandle` (same FumaDB
 //                         assembly the HTTP path uses), adapted to the base's

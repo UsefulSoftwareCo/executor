@@ -49,6 +49,7 @@ import type { PluginsProvider } from "./scoped-executor";
 import { requestScopedMiddleware } from "./request-scoped";
 import {
   McpServingRoutes,
+  McpDiscoveryRoutes,
   McpErrorReporterNoop,
   type McpAuthProvider,
   type McpErrorReporter,
@@ -127,8 +128,12 @@ export interface EngineProviders<REngine = never> {
 export interface McpProviders<RMcpAuth = never> {
   /** Resolve a request to an MCP `AuthOutcome` + declare the discovery routes. */
   readonly auth: Layer.Layer<McpAuthProvider, never, RMcpAuth>;
-  /** Owns the entire serving-session lifecycle (in-process Map vs DO). */
-  readonly sessions: Layer.Layer<McpSessionStore>;
+  /**
+   * Owns the entire serving-session lifecycle (in-process Map vs DO). Optional:
+   * a host that serves `/mcp` transport outside this envelope (the Cloudflare
+   * Agent bridge) omits it, and only the discovery routes are mounted.
+   */
+  readonly sessions?: Layer.Layer<McpSessionStore>;
   /** Forward an orchestration defect to the host's capture; default no-op. */
   readonly reporter?: Layer.Layer<McpErrorReporter>;
 }
@@ -605,6 +610,12 @@ const buildMcpRoutes = <RMcpAuth>(
   const mcpAuthLive = (mcp.auth as Layer.Layer<McpAuthProvider, never, IdentityProvider>).pipe(
     Layer.provide(identity),
   );
+  // No session store: the host serves `/mcp` transport elsewhere (the Cloudflare
+  // Agent bridge), so mount only the auth-declared discovery routes. The discovery
+  // handlers are captured from the auth seam at build, so no per-request seams.
+  if (!mcp.sessions) {
+    return McpDiscoveryRoutes.pipe(Layer.provide(mcpAuthLive));
+  }
   const mcpSeams = Layer.mergeAll(mcpAuthLive, mcp.sessions, mcp.reporter ?? McpErrorReporterNoop);
   return McpServingRoutes.pipe(HttpRouter.provideRequest(mcpSeams), Layer.provide(mcpAuthLive));
 };
