@@ -6,7 +6,7 @@ Executor is an open-source integration layer for AI agents. Configure every
 integration once (MCP servers, OpenAPI specs, GraphQL APIs) with authentication
 and per-tool policies, then use that one catalog from any MCP-compatible agent.
 
-[Website](https://executor.sh) · [Documentation](https://executor.sh/docs) · [Discord](https://discord.gg/eF29HBHwM6) · Backed by Y Combinator
+[Website](https://executor.sh) · [Documentation](https://executor.sh/docs) · [Discord](https://discord.gg/eF29HBHwM6)
 
 [https://github.com/user-attachments/assets/11225f83-e848-42ba-99b2-a993bcc88dad](https://github.com/user-attachments/assets/11225f83-e848-42ba-99b2-a993bcc88dad)
 
