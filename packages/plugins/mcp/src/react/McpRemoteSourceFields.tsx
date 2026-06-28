@@ -78,21 +78,21 @@ export function McpRemoteSourceFields(props: {
               {props.preview.connected ? (
                 <Badge
                   variant="outline"
-                  className="border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400"
+                  className="border-border bg-muted text-[10px] text-foreground"
                 >
                   Connected
                 </Badge>
               ) : props.preview.requiresOAuth ? (
                 <Badge
                   variant="outline"
-                  className="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-400"
+                  className="border-border bg-muted text-[10px] text-muted-foreground"
                 >
                   OAuth required
                 </Badge>
               ) : (
                 <Badge
                   variant="outline"
-                  className="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-400"
+                  className="border-border bg-muted text-[10px] text-muted-foreground"
                 >
                   Auth required
                 </Badge>

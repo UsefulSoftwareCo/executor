@@ -37,8 +37,8 @@ export const POLICY_INDICATOR_COLOR: Record<
   ToolPolicyAction,
   { readonly dot: string; readonly ring: string }
 > = {
-  approve: { dot: "bg-emerald-500", ring: "ring-emerald-500/70" },
-  require_approval: { dot: "bg-amber-500", ring: "ring-amber-500/70" },
+  approve: { dot: "bg-foreground", ring: "ring-foreground/40" },
+  require_approval: { dot: "bg-muted-foreground", ring: "ring-muted-foreground/40" },
   block: { dot: "bg-destructive", ring: "ring-destructive/70" },
 };
 

@@ -79,10 +79,7 @@ function AccountRow(props: {
         <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
           <span className="truncate">{displayLabel}</span>
           {needsReconsent ? (
-            <Badge
-              variant="outline"
-              className="shrink-0 border-amber-500/40 text-amber-700 dark:text-amber-400"
-            >
+            <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
               Reconnect to grant access
             </Badge>
           ) : null}
@@ -93,7 +90,7 @@ function AccountRow(props: {
           </CardStackEntryDescription>
         ) : null}
         {needsReconsent ? (
-          <CardStackEntryDescription className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+          <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
             This integration now needs access this connection wasn't granted.
           </CardStackEntryDescription>
         ) : null}

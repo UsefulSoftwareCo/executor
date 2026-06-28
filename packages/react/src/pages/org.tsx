@@ -331,9 +331,7 @@ export function OrgPage(props: {
                             <Badge className="bg-muted text-muted-foreground">You</Badge>
                           )}
                           {member.status === "pending" && (
-                            <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                              Invited
-                            </Badge>
+                            <Badge className="bg-muted text-muted-foreground">Invited</Badge>
                           )}
                         </div>
                         {member.name && (

@@ -177,9 +177,9 @@ function DomainCard({ domain: d, onDelete }: { domain: DomainData; onDelete: () 
             <Badge
               className={
                 isVerified
-                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  ? "bg-muted text-foreground"
                   : isPending
-                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                    ? "bg-muted text-muted-foreground"
                     : "bg-destructive/10 text-destructive"
               }
             >

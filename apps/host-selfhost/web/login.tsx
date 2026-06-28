@@ -49,7 +49,7 @@ export const LoginPage = () => {
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
       <div className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-6 shadow-sm">
         <div className="space-y-1 text-center">
-          <h1 className="font-display text-2xl tracking-tight text-foreground">Executor</h1>
+          <h1 className="font-mono text-2xl tracking-tight text-foreground">Executor</h1>
           <p className="text-sm text-muted-foreground">
             {mode === "signin" ? "Sign in to your instance" : "Join with your invite code"}
           </p>

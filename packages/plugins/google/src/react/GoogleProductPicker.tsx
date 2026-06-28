@@ -72,10 +72,7 @@ type GoogleProductPickerProps = {
 
 const AudienceWarningChip = ({ audience }: { audience: GoogleOpenApiOAuthAudience }) =>
   audience === "workspace-admin" ? (
-    <Badge
-      variant="outline"
-      className="shrink-0 border-amber-500/40 text-amber-700 dark:text-amber-400"
-    >
+    <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
       <TriangleAlert className="size-3" />
       Admin only
     </Badge>

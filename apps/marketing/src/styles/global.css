@@ -9,20 +9,21 @@
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Clean minimal palette */
-  --color-surface: #fafaf7;
-  --color-surface-2: #f3f3ee;
-  --color-ink: #0d0d10;
-  --color-ink-2: #4a4a4e;
-  --color-ink-3: #8a8a8e;
-  --color-rule: rgba(13, 13, 16, 0.07);
-  --color-rule-strong: rgba(13, 13, 16, 0.14);
+  /* Registry-grade grayscale palette, matched to the app design system.
+     No brand hue: accent resolves to near-black so it reads as ink, not color. */
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
+  --color-ink: #111111;
+  --color-ink-2: #666666;
+  --color-ink-3: #888888;
+  --color-rule: #eaeaea;
+  --color-rule-strong: #d4d4d4;
 
-  --color-accent: #635bff;
-  --color-accent-hover: #5048e6;
+  --color-accent: #0a0a0a;
+  --color-accent-hover: #333333;
 }
 
 html {
@@ -75,13 +76,14 @@ body {
   z-index: 0;
 }
 
-/* Italic serif accent: pairs with sharp Geist display */
+/* Was an italic-serif violet accent; neutralized to match the grayscale,
+   no-serif system. The headline now reads as one uniform Geist phrase. */
 .serif-italic {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: var(--color-accent);
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
 }
 
 /* Page-load reveals */
@@ -1072,22 +1074,10 @@ body {
 /* Hero glow (launch-ui): a soft accent bloom sitting behind the beam
    card, warming the off-white surface without fighting the graph
    paper. Purely decorative, never interactive. */
+/* Decorative hero glow removed: the grayscale system gets its depth from
+   hairlines and tone, not colored blurs. */
 .hero-glow {
-  position: absolute;
-  left: 50%;
-  top: 54%;
-  width: min(720px, 86%);
-  height: 340px;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(
-    closest-side,
-    color-mix(in srgb, var(--color-accent) 15%, transparent),
-    transparent 100%
-  );
-  filter: blur(36px);
-  opacity: 0.5;
-  pointer-events: none;
-  z-index: 0;
+  display: none;
 }
 
 /* Hero announcement badge (launch-ui): a pill above the headline that

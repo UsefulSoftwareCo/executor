@@ -435,7 +435,7 @@ export function OAuthClientForm(props: {
           onClick={() => setShowEndpoints(true)}
           className="h-auto w-full justify-start gap-2 px-3 py-2 text-xs font-normal text-muted-foreground"
         >
-          <span className="text-emerald-500">✓</span>
+          <span className="text-foreground">✓</span>
           Endpoints set from {integrationName}
           <span className="ml-auto font-medium text-foreground">Edit</span>
         </Button>

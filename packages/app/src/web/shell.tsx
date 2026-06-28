@@ -352,7 +352,9 @@ function SidebarContent(props: {
             to="/{-$orgSlug}"
             className="desktop-macos-no-drag flex shrink-0 items-center gap-1.5"
           >
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
+            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
+              executor
+            </span>
             <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
               Beta
             </span>
@@ -507,7 +509,7 @@ export function Shell() {
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
               <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-                <span className="font-display text-base tracking-tight text-foreground">
+                <span className="font-mono text-sm font-medium tracking-tight text-foreground">
                   executor
                 </span>
                 <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
@@ -569,7 +571,9 @@ export function Shell() {
             </svg>
           </Button>
           <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
+            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
+              executor
+            </span>
           </Link>
           <div className="w-8 shrink-0" />
         </div>

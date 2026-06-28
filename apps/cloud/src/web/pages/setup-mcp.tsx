@@ -62,7 +62,7 @@ export const SetupMcpPage = () => {
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Step 2 of 2
           </p>
-          <h1 className="font-serif text-3xl">Connect your MCP client</h1>
+          <h1 className="font-sans font-semibold text-3xl">Connect your MCP client</h1>
           <p className="text-sm text-muted-foreground">
             Executor exposes your sources, secrets, and tools to any MCP-compatible agent. Copy the
             URL into your client, or run the install command.

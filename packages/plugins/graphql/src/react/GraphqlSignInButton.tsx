@@ -69,7 +69,7 @@ export default function GraphqlSignInButton(props: {
   return (
     <div className="space-y-2">
       {isConnected && (
-        <p className="text-xs text-emerald-600 dark:text-emerald-400">
+        <p className="text-xs text-foreground">
           Connected in {ownerDisplay.label(connectionOwner)}
           {existingForOwner?.identityLabel ? ` as ${existingForOwner.identityLabel}` : ""}.
         </p>

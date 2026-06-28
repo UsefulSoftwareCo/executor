@@ -68,15 +68,9 @@ function BillingPage() {
           <div>
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium text-foreground leading-none">{planName}</p>
-              {isSwitching && (
-                <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                  Switching
-                </Badge>
-              )}
+              {isSwitching && <Badge className="bg-muted text-muted-foreground">Switching</Badge>}
               {isCanceling && !isSwitching && (
-                <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                  Canceling
-                </Badge>
+                <Badge className="bg-muted text-muted-foreground">Canceling</Badge>
               )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground leading-none">

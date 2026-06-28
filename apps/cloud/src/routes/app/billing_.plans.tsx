@@ -137,9 +137,9 @@ function PlansPage() {
                   className={[
                     "flex flex-col rounded-xl border p-5",
                     isCurrent
-                      ? "border-emerald-500/30 bg-emerald-500/[0.03]"
+                      ? "border-border bg-muted"
                       : isScheduled
-                        ? "border-emerald-500/30 bg-emerald-500/[0.03]"
+                        ? "border-border bg-muted"
                         : "border-border",
                   ].join(" ")}
                 >
@@ -147,21 +147,11 @@ function PlansPage() {
                     <p className="text-base font-semibold text-foreground leading-none">
                       {plan.name}
                     </p>
-                    {isCurrent && (
-                      <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                        Your plan
-                      </Badge>
-                    )}
+                    {isCurrent && <Badge className="bg-muted text-foreground">Your plan</Badge>}
                     {isCanceling && (
-                      <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                        Canceling
-                      </Badge>
+                      <Badge className="bg-muted text-muted-foreground">Canceling</Badge>
                     )}
-                    {isScheduled && (
-                      <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                        Scheduled
-                      </Badge>
-                    )}
+                    {isScheduled && <Badge className="bg-muted text-foreground">Scheduled</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">{meta.tagline}</p>
 

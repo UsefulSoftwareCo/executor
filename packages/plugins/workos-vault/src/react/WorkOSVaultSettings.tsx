@@ -5,7 +5,7 @@ export default function WorkOSVaultSettings() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="text-xs font-semibold text-foreground leading-none">WorkOS Vault</h3>
-            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 leading-none">
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground leading-none">
               Active
             </span>
           </div>

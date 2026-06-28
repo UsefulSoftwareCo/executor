@@ -106,7 +106,7 @@ export interface ShellProps {
 function Brand(props: { onNavigate?: () => void }) {
   return (
     <Link to="/{-$orgSlug}" onClick={props.onNavigate} className="flex items-center gap-1.5">
-      <span className="font-display text-base tracking-tight text-foreground">executor</span>
+      <span className="font-mono text-sm font-medium tracking-tight text-foreground">executor</span>
       <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
         Beta
       </span>

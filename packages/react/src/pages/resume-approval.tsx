@@ -281,10 +281,8 @@ export function ResumeApprovalPageView(props: {
         )}
 
         {done && (
-          <div className="mx-5 mb-4 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-3 py-2">
-            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
-              {actionLabel[status.action]} sent
-            </p>
+          <div className="mx-5 mb-4 rounded-md border border-border bg-muted px-3 py-2">
+            <p className="text-sm font-medium text-foreground">{actionLabel[status.action]} sent</p>
             <p className="mt-1 text-sm text-muted-foreground">
               Return to your agent and let it continue.
             </p>
