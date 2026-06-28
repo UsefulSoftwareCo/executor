@@ -15,7 +15,7 @@ import {
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
 
 import { cloudMcpAuth } from "./auth-provider";
-import { McpSessionDO } from "./session-durable-object";
+import { McpSessionDOSqlite } from "./session-durable-object";
 
 interface McpAgentSessionStub {
   readonly validateMcpSessionOwner: (identity: {
@@ -111,7 +111,7 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
-  const serve = McpSessionDO.serve("/mcp", {
+  const serve = McpSessionDOSqlite.serve("/mcp", {
     binding: "MCP_SESSION",
     transport: "streamable-http",
   });

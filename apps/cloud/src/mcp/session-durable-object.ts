@@ -157,7 +157,7 @@ const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
 // Durable Object
 // ---------------------------------------------------------------------------
 
-export class McpSessionDO extends McpAgentSessionDOBase<Env, CloudSessionDbHandle> {
+export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionDbHandle> {
   protected override openSessionDb(): CloudSessionDbHandle {
     return makeDbHandle({
       idleTimeout: LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS,
@@ -181,7 +181,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<Env, CloudSessionDbHandl
         elicitationMode: token.elicitationMode,
       } satisfies SessionMeta;
     }).pipe(
-      Effect.withSpan("McpSessionDO.resolveSessionMeta"),
+      Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
       Effect.provide(makeSessionServices(dbHandle)),
       Effect.ensuring(Effect.promise(() => dbHandle.end())),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a vanished org is a defect; the worker already verified the bearer
@@ -208,7 +208,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<Env, CloudSessionDbHandl
         // billing service degrades to a no-op tracker, so this stays inert in
         // cloud dev/preview environments that run without a billing backend.
         Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
-        Effect.withSpan("McpSessionDO.makeExecutionStack"),
+        Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
       );
       // Build the description here so `executor.connections.list()` stays under
       // the DO startup span and the MCP SDK receives a concrete string instead
@@ -235,10 +235,10 @@ export class McpSessionDO extends McpAgentSessionDOBase<Env, CloudSessionDbHandl
                   }),
               }
             : { mode: sessionElicitationMode },
-      }).pipe(Effect.withSpan("McpSessionDO.createExecutorMcpServer"));
+      }).pipe(Effect.withSpan("McpSessionDOSqlite.createExecutorMcpServer"));
       return { mcpServer, engine } satisfies BuiltMcpServer;
     }).pipe(
-      Effect.withSpan("McpSessionDO.buildMcpServer"),
+      Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),
       Effect.provide(makeSessionServices(dbHandle)),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: runtime-build failures surface as the base's tapCause/cleanup defect
       Effect.orDie,

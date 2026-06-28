@@ -12,7 +12,7 @@ import handler from "@tanstack/react-start/server-entry";
 import { isAppOwnedPath } from "./app-paths";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
-import { McpSessionDO as McpSessionDOBase } from "./mcp/session-durable-object";
+import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import { browserTracesResponse } from "./observability/browser-traces";
 import { flushTracerProvider, installTracerProvider } from "./observability/telemetry";
 
@@ -41,7 +41,7 @@ const sentryOptions = (env: Env) => ({
 // not a global fetch wrapper.
 // ---------------------------------------------------------------------------
 
-export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
+export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
   sentryOptions,
   McpSessionDOBase,
 );

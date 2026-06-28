@@ -13,7 +13,7 @@ import { ApiKeyService } from "./auth/api-keys";
 import { cloudIdentityFailureStrategy, workosIdentityLayer } from "./auth/workos-auth-provider";
 import { DbService } from "./db/db";
 import { cloudMcpAuth } from "./mcp";
-import { McpSessionDO } from "./mcp/session-durable-object";
+import { McpSessionDOSqlite } from "./mcp/session-durable-object";
 import { ErrorCaptureLive } from "./observability";
 import { AutumnService } from "./extensions/billing/service";
 import {
@@ -112,7 +112,7 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
     failure: cloudIdentityFailureStrategy,
     // The MCP session Durable Object class — a top-level Workers export a Layer
     // can't return; surfaced so `server.ts` can re-export it.
-    mcpExport: McpSessionDO,
+    mcpExport: McpSessionDOSqlite,
   },
   // The long-lived (boot-scoped) context provideMerge'd under everything: the
   // WorkOS control plane (the raw `WorkOSClient` + `ApiKeyService` the per-request
@@ -135,7 +135,7 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
   requestScoped: RequestScopedServicesLive,
 });
 
-export { McpSessionDO };
+export { McpSessionDOSqlite };
 
 export const CloudAppLayer = appLayer;
 export const cloudMcpExport = mcpExport;
