@@ -38,6 +38,7 @@ import {
   type IntrospectionResult,
   type IntrospectionType,
   type IntrospectionField,
+  type IntrospectionInputValue,
   type IntrospectionTypeRef,
 } from "./introspect";
 import { extract } from "./extract";
@@ -217,13 +218,40 @@ const unwrapTypeName = (ref: IntrospectionTypeRef): string => {
   return "Unknown";
 };
 
+// Bound the auto-generated selection so a huge schema (GitLab has 4000+ types)
+// does not produce an unbounded operation: cap recursion depth and the number
+// of fields emitted per level.
+const MAX_SELECTION_DEPTH = 2;
+const MAX_FIELDS_PER_LEVEL = 12;
+
+// Composite (output) types require a sub-selection; leaves (scalars/enums) must
+// not have one. Anything we cannot resolve in the type map is treated as a leaf
+// (custom scalars live in the map as SCALAR; truly-unknown types are rare).
+const isCompositeType = (
+  ref: IntrospectionTypeRef,
+  types: ReadonlyMap<string, IntrospectionType>,
+): boolean => {
+  const kind = types.get(unwrapTypeName(ref))?.kind;
+  return kind === "OBJECT" || kind === "INTERFACE" || kind === "UNION";
+};
+
+// A nested field whose argument is non-null without a default cannot be selected
+// by the generator: it has no value to pass and emitting the field without the
+// argument is invalid (e.g. GitLab's `metadata.featureFlags(names:)`). Required
+// root-field arguments are different: those are threaded as operation variables
+// (and surfaced on the tool's input schema) in `buildOperationStringForField`.
+const hasRequiredArgWithoutDefault = (field: IntrospectionField): boolean =>
+  field.args.some(
+    (arg: IntrospectionInputValue) => arg.type.kind === "NON_NULL" && arg.defaultValue == null,
+  );
+
 const buildSelectionSet = (
   ref: IntrospectionTypeRef,
   types: ReadonlyMap<string, IntrospectionType>,
   depth: number,
   seen: Set<string>,
 ): string => {
-  if (depth > 2) return "";
+  if (depth > MAX_SELECTION_DEPTH) return "";
 
   const leafName = unwrapTypeName(ref);
   if (seen.has(leafName)) return "";
@@ -236,13 +264,25 @@ const buildSelectionSet = (
 
   seen.add(leafName);
 
-  const subFields = objectType.fields
-    .filter((f: IntrospectionField) => !f.name.startsWith("__"))
-    .slice(0, 12)
-    .map((f: IntrospectionField) => {
+  const subFields: string[] = [];
+  for (const f of objectType.fields) {
+    if (subFields.length >= MAX_FIELDS_PER_LEVEL) break;
+    if (f.name.startsWith("__")) continue;
+    // Cannot synthesize a value for a required nested argument: skip the field
+    // rather than emit an invalid selection.
+    if (hasRequiredArgWithoutDefault(f)) continue;
+
+    if (isCompositeType(f.type, types)) {
+      // A composite field MUST have a sub-selection. When the recursion yields
+      // nothing (depth cap, cycle guard, or every child skipped) we drop the
+      // field instead of emitting it bare (which the server rejects).
       const sub = buildSelectionSet(f.type, types, depth + 1, seen);
-      return sub ? `${f.name} ${sub}` : f.name;
-    });
+      if (sub) subFields.push(`${f.name} ${sub}`);
+    } else {
+      // Scalar / enum leaf: select it directly.
+      subFields.push(f.name);
+    }
+  }
 
   seen.delete(leafName);
 

@@ -28,6 +28,7 @@ import { endpointForTelemetry } from "./invoke";
 import { introspect } from "./introspect";
 import type { IntrospectionResult } from "./introspect";
 import {
+  makeGitlab1146Schema,
   makeGreetingGraphqlSchema,
   serveGraphqlFailureTestServer,
   serveGraphqlTestServer,
@@ -882,6 +883,74 @@ describe("graphqlPlugin detect URL-token fallback", () => {
       const executor = yield* makeExecutor();
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
       expect(results.find((r) => r.kind === "graphql")).toBeUndefined();
+    }),
+  );
+});
+
+// Issue #1146: against a large, real-world schema (GitLab) the auto-generated
+// operations were invalid GraphQL and every call against a rich object type
+// failed validation. These drive the real plugin (live introspection -> operation
+// generation -> invocation) against a GitLab-shaped graphql-yoga server, which
+// validates with graphql-js exactly like the @emulators/gitlab surface. A clean
+// `ok: true` therefore proves the generated operation is valid GraphQL.
+describe("graphqlPlugin generates valid operations against rich schemas (#1146)", () => {
+  const gitlabServer = serveGraphqlTestServer({ schema: makeGitlab1146Schema() });
+
+  const lastQuery = (requests: { readonly payload: { readonly query?: string } }[]): string =>
+    requests[requests.length - 1]?.payload.query ?? "";
+
+  it.effect("query.metadata: drops the nested field whose required argument it cannot fill", () =>
+    Effect.gen(function* () {
+      const server = yield* gitlabServer;
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({ endpoint: server.endpoint, slug: "gitlab" });
+      yield* createOrgConnection(executor, {
+        integration: "gitlab",
+        name: "main",
+        template: "none",
+        value: "unused",
+      });
+
+      yield* server.clearRequests;
+      const result = yield* executor.execute(toolAddr("gitlab", "main", "query.metadata"), {});
+
+      // Valid GraphQL: the server accepts and resolves it (no validation errors).
+      expect(result).toMatchObject({ ok: true });
+      // `featureFlags(names: [String!]!)` has a required arg the generator cannot
+      // supply, so it is omitted rather than emitted without arguments.
+      const query = lastQuery(yield* server.requests);
+      expect(query).not.toContain("featureFlags");
+      // Fields it CAN select are still present (no over-pruning).
+      expect(query).toContain("kas {");
+    }),
+  );
+
+  it.effect("query.currentUser: never emits a composite field without a sub-selection", () =>
+    Effect.gen(function* () {
+      const server = yield* gitlabServer;
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({ endpoint: server.endpoint, slug: "gitlab2" });
+      yield* createOrgConnection(executor, {
+        integration: "gitlab2",
+        name: "main",
+        template: "none",
+        value: "unused",
+      });
+
+      yield* server.clearRequests;
+      const result = yield* executor.execute(toolAddr("gitlab2", "main", "query.currentUser"), {});
+
+      expect(result).toMatchObject({ ok: true });
+      const query = lastQuery(yield* server.requests);
+      // The connection is traversed (proves recursion still works)...
+      expect(query).toContain("mergeRequests {");
+      expect(query).toContain("nodes {");
+      // ...but composite leaves past the depth cap (`author`, `assignees`) are
+      // dropped instead of being emitted bare, which the server would reject.
+      expect(query).not.toContain("author");
+      expect(query).not.toContain("assignees");
     }),
   );
 });
