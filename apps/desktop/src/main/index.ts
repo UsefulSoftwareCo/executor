@@ -846,9 +846,18 @@ const installApplicationMenu = () => {
       { role: "quit" },
     ],
   };
+  // The close-window accelerator (Cmd+W on macOS, Ctrl+W elsewhere) lives on
+  // the `close` role, which the File menu carries. The Window menu's role only
+  // provides Minimize/Zoom/Front, so without an explicit File menu nothing
+  // binds Cmd+W and the window can't be closed from the keyboard.
+  const fileMenu: MenuItemConstructorOptions = {
+    label: "File",
+    submenu: [{ role: "close" }],
+  };
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       appMenu,
+      fileMenu,
       { role: "editMenu" },
       { role: "viewMenu" },
       { role: "windowMenu" },
