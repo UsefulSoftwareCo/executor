@@ -207,9 +207,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
         // billing service degrades to a no-op tracker, so this stays inert in
         // cloud dev/preview environments that run without a billing backend.
-        Effect.provide(
-          CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default)),
-        ),
+        Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
         Effect.withSpan("McpSessionDO.makeExecutionStack"),
       );
       // Build the description here so `executor.connections.list()` stays under

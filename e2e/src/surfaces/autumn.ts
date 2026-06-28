@@ -61,7 +61,9 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
         }>;
       };
       return (body.list ?? [])
-        .filter((event) => event.customer_id === query.customerId && event.feature_id === query.featureId)
+        .filter(
+          (event) => event.customer_id === query.customerId && event.feature_id === query.featureId,
+        )
         .map((event) => ({
           customerId: event.customer_id,
           featureId: event.feature_id,
