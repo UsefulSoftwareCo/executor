@@ -215,8 +215,10 @@ export function ToolRunPanel(props: {
 
     // Read-only invoke: pass the validated args through as JSON. Empty
     // `reactivityKeys` — invoking a tool doesn't mutate `tools.list`.
+    // `autoApprove` because the operator clicked Run: that IS the approval, so
+    // an approval-gated tool should run here instead of dead-ending on a pause.
     const code = `return await tools[${JSON.stringify(addressNoPrefix)}](${JSON.stringify(parsed)});`;
-    const exit = await doExecute({ payload: { code }, reactivityKeys: [] });
+    const exit = await doExecute({ payload: { code, autoApprove: true }, reactivityKeys: [] });
     setRunning(false);
 
     if (Exit.isFailure(exit)) {

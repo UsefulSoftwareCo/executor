@@ -1346,6 +1346,26 @@ describe("pause/resume with multiple elicitations", () => {
     { timeout: 10000 },
   );
 
+  it.effect(
+    "autoApprove runs an eliciting tool to completion instead of pausing",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
+        const code = "return await tools.api.org.main.singleApproval({});";
+
+        // Same tool that pauses without autoApprove (see the tests above) runs
+        // straight through when the caller is the approver: no pause, no
+        // executionId to resume, just the side effect's result.
+        const outcome = yield* engine.executeWithPause(code, { autoApprove: true });
+        expect(outcome.status, "autoApprove never pauses").toBe("completed");
+        if (outcome.status !== "completed") return;
+        expect(outcome.result.error).toBeUndefined();
+        expect(outcome.result.result).toMatchObject({ ok: true });
+      }),
+    { timeout: 10000 },
+  );
+
   // live clock: the sandbox timeout is a real timer, so the test must
   // actually wait for it rather than suspend on the virtual TestClock.
   it.live(

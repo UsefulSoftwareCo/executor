@@ -41,7 +41,10 @@ export type ExecutionEngine = {
     code: string,
     options: { readonly onElicitation: ElicitationHandler },
   ) => Promise<ExecuteResult>;
-  readonly executeWithPause: (code: string) => Promise<ExecutionResult>;
+  readonly executeWithPause: (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) => Promise<ExecutionResult>;
   readonly resume: (
     executionId: string,
     response: ResumeResponse,
@@ -149,7 +152,7 @@ export const toPromiseExecutionEngine = <E extends Cause.YieldableError>(
           Effect.tryPromise(() => options.onElicitation(ctx)).pipe(Effect.orDie),
       }),
     ),
-  executeWithPause: (code) => Effect.runPromise(engine.executeWithPause(code)),
+  executeWithPause: (code, options) => Effect.runPromise(engine.executeWithPause(code, options)),
   resume: (executionId, response) => Effect.runPromise(engine.resume(executionId, response)),
   getPausedExecution: (executionId) => Effect.runPromise(engine.getPausedExecution(executionId)),
   getDescription: () => Effect.runPromise(engine.getDescription),

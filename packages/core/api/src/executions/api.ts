@@ -9,6 +9,10 @@ import { InternalError } from "@executor-js/sdk/shared";
 
 const ExecuteRequest = Schema.Struct({
   code: Schema.String,
+  // When true the caller is the human approver: approval-gated tools run to
+  // completion instead of pausing. Set by the operator-facing Run/Test panel,
+  // where clicking Run is itself the approval. `block` policies still apply.
+  autoApprove: Schema.optional(Schema.Boolean),
 });
 
 const CompletedResult = Schema.Struct({

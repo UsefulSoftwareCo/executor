@@ -34,7 +34,9 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
       capture(
         Effect.gen(function* () {
           const engine = yield* ExecutionEngineService;
-          const outcome = yield* captureEngineError(engine.executeWithPause(payload.code));
+          const outcome = yield* captureEngineError(
+            engine.executeWithPause(payload.code, { autoApprove: payload.autoApprove }),
+          );
 
           if (outcome.status === "completed") {
             const formatted = formatExecuteResult(outcome.result);

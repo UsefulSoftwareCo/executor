@@ -53,6 +53,10 @@ export type ResumeResponse = {
   readonly content?: Record<string, unknown>;
 };
 
+// Auto-accept every elicitation. Used by the `autoApprove` path where the
+// caller is itself the human approver (the operator-facing Run/Test panel).
+const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
+
 // ---------------------------------------------------------------------------
 // Result formatting
 // ---------------------------------------------------------------------------
@@ -370,8 +374,17 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    * Execute code, intercepting the first elicitation as a pause point.
    * Use this when the host doesn't support inline elicitation.
    * Returns either a completed result or a paused execution that can be resumed.
+   *
+   * `options.autoApprove` treats the caller as the human in the loop: every
+   * elicitation is accepted inline, so an approval-gated tool runs to
+   * completion instead of pausing. The operator-facing Run/Test panel sets
+   * this because clicking Run IS the approval. `block` policies still fail
+   * before any elicitation, so this never bypasses a hard block.
    */
-  readonly executeWithPause: (code: string) => Effect.Effect<ExecutionResult, E>;
+  readonly executeWithPause: (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) => Effect.Effect<ExecutionResult, E>;
 
   /**
    * Resume a paused execution. Returns a completed result, a new pause, or
@@ -455,11 +468,23 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    * The sandbox is forked as a daemon because paused executions can outlive the
    * caller scope that returned the first pause, such as an HTTP request handler.
    */
-  const startPausableExecution = Effect.fn("mcp.execute")(function* (code: string) {
+  const startPausableExecution = Effect.fn("mcp.execute")(function* (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) {
     yield* Effect.annotateCurrentSpan({
       "mcp.execute.mode": "pausable",
       "mcp.execute.code_length": code.length,
     });
+
+    // Operator-approved invoke: run through the inline path with an accept-all
+    // handler so an approval gate resolves itself instead of pausing. Never
+    // pauses, so the caller always gets a completed result.
+    if (options?.autoApprove) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.auto_approve": true });
+      const result = yield* runInlineExecution(code, { onElicitation: acceptAllHandler });
+      return { status: "completed", result } satisfies ExecutionResult;
+    }
 
     // Queue preserves pauses that arrive before the previous approval has
     // returned to the caller, which can happen with concurrent tool calls.
