@@ -106,8 +106,13 @@ export function PlacementLine(props: { readonly placement: Placement; readonly m
       : placement.carrier === "env"
         ? `${placement.name || "TOKEN"}=`
         : `?${placement.name || "api_key"}=`;
+  // Plain inline (not inline-flex): flex trims the whitespace at the edges of
+  // each child, which would drop the space after "Authorization:" and the
+  // trailing space carried by a prefix like "Bearer ", rendering
+  // "Authorization:Bearer••••••". whitespace-pre-wrap keeps those spaces while
+  // still allowing the line to wrap.
   return (
-    <span className="inline-flex items-center font-mono text-xs text-muted-foreground">
+    <span className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
       {lead}
       {placement.prefix ? (
         <span className="text-muted-foreground/60">{placement.prefix}</span>
