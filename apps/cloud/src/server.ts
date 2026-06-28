@@ -41,11 +41,7 @@ const sentryOptions = (env: Env) => ({
 // not a global fetch wrapper.
 // ---------------------------------------------------------------------------
 
-// Exported under `McpSessionDOSqlite` (not `McpSessionDO`) to match the SQLite
-// class migration in wrangler.jsonc: the Agents (`McpAgent`) base needs a
-// SQLite-backed DO, and the original KV-backed `McpSessionDO` class cannot be
-// converted in place, so it is deleted and replaced by this new class.
-export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
+export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
   sentryOptions,
   McpSessionDOBase,
 );
