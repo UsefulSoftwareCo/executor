@@ -9,7 +9,12 @@ import {
   type Connection,
 } from "@executor-js/sdk/shared";
 
-import { missingScopes, oauthReconnectPayload, reconnectMode } from "./oauth-reconnect";
+import {
+  missingScopes,
+  oauthReconnectPayload,
+  reconnectMode,
+  reconsentRequiredScopes,
+} from "./oauth-reconnect";
 
 const connection = (overrides: Partial<Connection> = {}): Connection => ({
   owner: "user",
@@ -107,5 +112,31 @@ describe("missingScopes (Part 2 informational subset warning)", () => {
         ],
       ),
     ).toEqual([]);
+  });
+});
+
+describe("reconsentRequiredScopes", () => {
+  it("treats spec-derived oauth scopes as NOT required (opportunistic catalog)", () => {
+    // An OpenAPI source (e.g. PostHog) declares the full per-operation scope
+    // catalog. A narrower grant is healthy and must not nag for reconnect.
+    expect(
+      reconsentRequiredScopes({
+        source: "spec",
+        oauth: { scopes: ["insight:read", "insight:write", "person:read"] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps custom (user-configured) oauth scopes required", () => {
+    expect(
+      reconsentRequiredScopes({
+        source: "custom",
+        oauth: { scopes: ["read", "write"] },
+      }),
+    ).toEqual(["read", "write"]);
+  });
+
+  it("returns undefined when there is no oauth method", () => {
+    expect(reconsentRequiredScopes(undefined)).toBeUndefined();
   });
 });

@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { IntegrationSlug, type Connection, type Owner } from "@executor-js/sdk/shared";
+import {
+  IntegrationSlug,
+  type Connection,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { toast } from "sonner";
 
@@ -22,6 +26,7 @@ import {
   connectionNeedsReconsent,
   oauthReconnectPayload,
   reconnectMode,
+  reconsentRequiredScopes,
 } from "../plugins/oauth-reconnect";
 import { useOAuthPopupFlow } from "../plugins/oauth-sign-in";
 import { AddAccountModal } from "./add-account-modal";
@@ -79,7 +84,10 @@ function AccountRow(props: {
         <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
           <span className="truncate">{displayLabel}</span>
           {needsReconsent ? (
-            <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
+            <Badge
+              variant="outline"
+              className="shrink-0 border-border text-muted-foreground"
+            >
               Reconnect to grant access
             </Badge>
           ) : null}
@@ -91,7 +99,8 @@ function AccountRow(props: {
         ) : null}
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
-            This integration now needs access this connection wasn't granted.
+            This connection wasn't granted all the access this integration now
+            needs.
           </CardStackEntryDescription>
         ) : null}
       </CardStackEntryContent>
@@ -120,7 +129,11 @@ function AccountRow(props: {
             <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
               Reconnect
             </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" className="text-sm" onClick={props.onRemove}>
+            <DropdownMenuItem
+              variant="destructive"
+              className="text-sm"
+              onClick={props.onRemove}
+            >
               Remove
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -142,7 +155,9 @@ function OwnerAccounts(props: {
   readonly declaredScopes: readonly string[] | undefined;
 }) {
   const { integration, owner } = props;
-  const connections = useAtomValue(connectionsForIntegrationAtom({ integration, owner }));
+  const connections = useAtomValue(
+    connectionsForIntegrationAtom({ integration, owner }),
+  );
   const doRemove = useAtomSet(removeConnectionOptimistic(owner), {
     mode: "promiseExit",
   });
@@ -159,7 +174,9 @@ function OwnerAccounts(props: {
     startErrorMessage: "Failed to reconnect",
   });
 
-  const rows: readonly Connection[] = AsyncResult.isSuccess(connections) ? connections.value : [];
+  const rows: readonly Connection[] = AsyncResult.isSuccess(connections)
+    ? connections.value
+    : [];
   if (rows.length === 0) return null;
 
   const handleReconnect = async (connection: Connection) => {
@@ -168,7 +185,8 @@ function OwnerAccounts(props: {
     if (reconnectMode(connection) === "oauth") {
       const method = props.methods.find(
         (candidate: AuthMethod) =>
-          candidate.kind === "oauth" && String(candidate.template) === String(connection.template),
+          candidate.kind === "oauth" &&
+          String(candidate.template) === String(connection.template),
       );
       if (
         method?.oauth?.supportsDynamicRegistration === true ||
@@ -275,13 +293,18 @@ function OwnerAccounts(props: {
 
   return (
     <CardStack>
-      {props.showOwnerLabels ? <CardStackHeader>{ownerLabel(owner)}</CardStackHeader> : null}
+      {props.showOwnerLabels ? (
+        <CardStackHeader>{ownerLabel(owner)}</CardStackHeader>
+      ) : null}
       <CardStackContent>
         {rows.map((connection: Connection) => (
           <AccountRow
             key={`${connection.owner}:${connection.integration}:${connection.name}`}
             connection={connection}
-            needsReconsent={connectionNeedsReconsent(connection, props.declaredScopes)}
+            needsReconsent={connectionNeedsReconsent(
+              connection,
+              props.declaredScopes,
+            )}
             showOwnerLabel={props.showOwnerLabels}
             onEdit={() => props.onEdit(connection)}
             onReconnect={() => void handleReconnect(connection)}
@@ -312,10 +335,14 @@ export function AccountsSection(props: {
     removeCustomMethod,
   } = props;
   const [adding, setAdding] = useState(false);
-  const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
-  const [reconnectHandoff, setReconnectHandoff] = useState<IntegrationAccountHandoff | null>(null);
+  const [editingConnection, setEditingConnection] = useState<Connection | null>(
+    null,
+  );
+  const [reconnectHandoff, setReconnectHandoff] =
+    useState<IntegrationAccountHandoff | null>(null);
   const ownerDisplay = useOwnerDisplay();
-  const canAddConnection = methods.length > 0 || createCustomMethod !== undefined;
+  const canAddConnection =
+    methods.length > 0 || createCustomMethod !== undefined;
 
   useEffect(() => {
     if (accountHandoff) {
@@ -326,11 +353,20 @@ export function AccountsSection(props: {
   // The integration's declared oauth scopes — what connections need granted. A
   // connection granted fewer is flagged to reconnect (e.g. after a service was
   // added widened the consent).
-  const declaredScopes = methods.find((m: AuthMethod) => m.kind === "oauth")?.oauth?.scopes;
+  //
+  // Spec-derived oauth scopes are the full per-operation catalog union (e.g. an
+  // OpenAPI source like PostHog declares hundreds of scopes). Those are requested
+  // broadly but not individually required: a provider that narrows the grant to
+  // the user's actual access is healthy, not in need of reconnect. So only treat
+  // CUSTOM (user-configured) scopes as required here; never the spec catalog.
+  const oauthMethod = methods.find((m: AuthMethod) => m.kind === "oauth");
+  const declaredScopes = reconsentRequiredScopes(oauthMethod);
 
   // Read both owners to decide between the grouped view and the empty CTA. The
   // grouped sub-components re-read these (effect-atom dedupes) and self-hide.
-  const orgConnections = useAtomValue(connectionsForIntegrationAtom({ integration, owner: "org" }));
+  const orgConnections = useAtomValue(
+    connectionsForIntegrationAtom({ integration, owner: "org" }),
+  );
   const userConnections = useAtomValue(
     connectionsForIntegrationAtom({ integration, owner: "user" }),
   );
@@ -341,12 +377,18 @@ export function AccountsSection(props: {
   useAtomSet(addConnectionOptimistic("user"));
 
   const totalCount = useMemo(() => {
-    const orgRows = AsyncResult.isSuccess(orgConnections) ? orgConnections.value.length : 0;
-    const userRows = AsyncResult.isSuccess(userConnections) ? userConnections.value.length : 0;
+    const orgRows = AsyncResult.isSuccess(orgConnections)
+      ? orgConnections.value.length
+      : 0;
+    const userRows = AsyncResult.isSuccess(userConnections)
+      ? userConnections.value.length
+      : 0;
     return orgRows + userRows;
   }, [orgConnections, userConnections]);
 
-  const loading = !AsyncResult.isSuccess(orgConnections) && !AsyncResult.isSuccess(userConnections);
+  const loading =
+    !AsyncResult.isSuccess(orgConnections) &&
+    !AsyncResult.isSuccess(userConnections);
 
   const modalState = reconnectHandoff ?? accountHandoff;
   const modal = (
@@ -378,7 +420,9 @@ export function AccountsSection(props: {
           onClick={() => {
             trackEvent("connection_add_opened", {
               integration_slug: String(integration),
-              has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
+              has_oauth_method: methods.some(
+                (m: AuthMethod) => m.kind === "oauth",
+              ),
               has_api_key_method: methods.some(
                 (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
               ),
@@ -398,7 +442,9 @@ export function AccountsSection(props: {
         </div>
       ) : totalCount === 0 ? (
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
-          <p className="text-sm font-medium text-foreground">No connections yet</p>
+          <p className="text-sm font-medium text-foreground">
+            No connections yet
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
             Add a connection to make this integration's tools available.
           </p>
@@ -409,7 +455,9 @@ export function AccountsSection(props: {
             onClick={() => {
               trackEvent("connection_add_opened", {
                 integration_slug: String(integration),
-                has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
+                has_oauth_method: methods.some(
+                  (m: AuthMethod) => m.kind === "oauth",
+                ),
                 has_api_key_method: methods.some(
                   (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
                 ),
