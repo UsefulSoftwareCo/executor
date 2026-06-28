@@ -45,6 +45,7 @@ for (const step of steps) {
 const ciBranch = process.env.WORKERS_CI_BRANCH;
 if (process.env.WORKERS_CI === "1" && ciBranch && ciBranch !== "main") {
   const cfgUrl = new URL("../dist/server/wrangler.json", import.meta.url);
+  // oxlint-disable-next-line executor/no-json-parse -- build script, not domain code; wrangler emits plain JSON
   const cfg = JSON.parse(readFileSync(cfgUrl, "utf8"));
   if (Array.isArray(cfg.migrations) && cfg.migrations.length > 0) {
     delete cfg.migrations;
