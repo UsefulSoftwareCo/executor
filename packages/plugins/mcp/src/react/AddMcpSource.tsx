@@ -17,7 +17,6 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
-import { Spinner } from "@executor-js/react/components/spinner";
 import { TagInput } from "@executor-js/react/components/tag-input";
 import {
   integrationDisplayNameFromStdio,
@@ -473,14 +472,8 @@ export default function AddMcpSource(props: {
               Cancel
             </Button>
             {(probe || isProbing) && (
-              <Button type="button" onClick={handleAddRemote} disabled={!canAdd}>
-                {isAdding ? (
-                  <>
-                    <Spinner className="size-3.5" /> Adding…
-                  </>
-                ) : (
-                  "Add source"
-                )}
+              <Button type="button" onClick={handleAddRemote} disabled={!canAdd} loading={isAdding}>
+                Add source
               </Button>
             )}
           </FloatActions>
@@ -546,15 +539,10 @@ export default function AddMcpSource(props: {
             <Button
               type="button"
               onClick={handleAddStdio}
-              disabled={!stdioCommand.trim() || stdioAdding || stdioSlugExists}
+              disabled={!stdioCommand.trim() || stdioSlugExists}
+              loading={stdioAdding}
             >
-              {stdioAdding ? (
-                <>
-                  <Spinner className="size-3.5" /> Adding…
-                </>
-              ) : (
-                "Add source"
-              )}
+              Add source
             </Button>
           </FloatActions>
         </>

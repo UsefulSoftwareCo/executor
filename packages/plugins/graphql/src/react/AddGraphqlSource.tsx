@@ -16,7 +16,6 @@ import {
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
 import { FloatActions } from "@executor-js/react/components/float-actions";
-import { Spinner } from "@executor-js/react/components/spinner";
 import {
   addIntegrationErrorMessage,
   FormErrorAlert,
@@ -156,9 +155,8 @@ export default function AddGraphqlSource(props: {
         <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>
           Cancel
         </Button>
-        <Button onClick={() => void handleAdd()} disabled={!canAdd}>
-          {adding && <Spinner className="size-3.5" />}
-          {adding ? "Adding..." : "Add source"}
+        <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
+          Add source
         </Button>
       </FloatActions>
     </div>

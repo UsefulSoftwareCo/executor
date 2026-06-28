@@ -21,7 +21,7 @@ import { CardStack, CardStackContent } from "@executor-js/react/components/card-
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Textarea } from "@executor-js/react/components/textarea";
-import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
+import { IOSSpinner } from "@executor-js/react/components/spinner";
 import {
   addIntegrationErrorMessage,
   errorMessageFromExit,
@@ -368,9 +368,8 @@ export default function AddOpenApiSource(props: {
           Cancel
         </Button>
         {preview && (
-          <Button onClick={() => void handleAdd()} disabled={!canAdd || adding}>
-            {adding && <Spinner className="size-3.5" />}
-            {adding ? "Adding..." : "Add integration"}
+          <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
+            Add integration
           </Button>
         )}
       </FloatActions>

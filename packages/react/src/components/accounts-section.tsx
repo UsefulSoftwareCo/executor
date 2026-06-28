@@ -348,6 +348,23 @@ export function AccountsSection(props: {
 
   const loading = !AsyncResult.isSuccess(orgConnections) && !AsyncResult.isSuccess(userConnections);
 
+  // When there are zero connections the dashed empty-state card below carries
+  // its own "Add connection" CTA, so the header button would be a redundant
+  // second copy of the same action. Show the header button only outside that
+  // state (populated, or still loading).
+  const showEmptyState = !loading && totalCount === 0;
+
+  const openAddConnection = () => {
+    trackEvent("connection_add_opened", {
+      integration_slug: String(integration),
+      has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
+      has_api_key_method: methods.some(
+        (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
+      ),
+    });
+    setAdding(true);
+  };
+
   const modalState = reconnectHandoff ?? accountHandoff;
   const modal = (
     <AddAccountModal
@@ -371,24 +388,17 @@ export function AccountsSection(props: {
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Connections
         </h3>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            trackEvent("connection_add_opened", {
-              integration_slug: String(integration),
-              has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
-              has_api_key_method: methods.some(
-                (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
-              ),
-            });
-            setAdding(true);
-          }}
-          disabled={!canAddConnection}
-        >
-          Add connection
-        </Button>
+        {!showEmptyState ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={openAddConnection}
+            disabled={!canAddConnection}
+          >
+            Add connection
+          </Button>
+        ) : null}
       </div>
 
       {loading ? (
@@ -396,7 +406,7 @@ export function AccountsSection(props: {
           <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
           <p className="text-sm text-muted-foreground">Loading accounts…</p>
         </div>
-      ) : totalCount === 0 ? (
+      ) : showEmptyState ? (
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">
           <p className="text-sm font-medium text-foreground">No connections yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -406,19 +416,10 @@ export function AccountsSection(props: {
             type="button"
             className="mt-4"
             size="sm"
-            onClick={() => {
-              trackEvent("connection_add_opened", {
-                integration_slug: String(integration),
-                has_oauth_method: methods.some((m: AuthMethod) => m.kind === "oauth"),
-                has_api_key_method: methods.some(
-                  (m: AuthMethod) => m.kind !== "oauth" && m.kind !== "none",
-                ),
-              });
-              setAdding(true);
-            }}
+            onClick={openAddConnection}
             disabled={!canAddConnection}
           >
-            Add a connection
+            Add connection
           </Button>
         </div>
       ) : (

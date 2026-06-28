@@ -9,7 +9,6 @@ import {
 } from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
 import { FloatActions } from "@executor-js/react/components/float-actions";
-import { Spinner } from "@executor-js/react/components/spinner";
 import {
   addIntegrationErrorMessage,
   FormErrorAlert,
@@ -147,9 +146,8 @@ export default function AddMicrosoftSource(props: {
         <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>
           Cancel
         </Button>
-        <Button onClick={() => void handleAdd()} disabled={!canAdd || adding}>
-          {adding && <Spinner className="size-3.5" />}
-          {adding ? "Adding..." : "Connect Microsoft"}
+        <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
+          Connect Microsoft
         </Button>
       </FloatActions>
     </div>
