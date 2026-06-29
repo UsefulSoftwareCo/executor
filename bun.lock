@@ -467,7 +467,7 @@
     },
     "packages/core/cli": {
       "name": "@executor-js/cli",
-      "version": "0.2.29",
+      "version": "0.2.30",
       "bin": {
         "executor-sdk": "./dist/index.js",
       },

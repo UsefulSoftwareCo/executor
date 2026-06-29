@@ -1,6 +1,6 @@
 # @executor-js/cli
 
-## 0.2.29
+## 0.2.30
 
 ### Patch Changes
 
