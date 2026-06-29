@@ -72,8 +72,12 @@ export type McpResource =
 
 export const defaultMcpResource: McpResource = { kind: "default" };
 
-export const mcpResourceKey = (resource: McpResource): string =>
-  resource.kind === "default" ? "default" : `toolkit:${resource.slug}`;
+// Tolerates a missing resource (null/undefined): sessions persisted before
+// scoped toolkits existed have no `resource` field, and every such session was
+// minted against the default `/mcp` endpoint, so a missing resource keys to
+// "default". Keeping this guard here means no caller can throw on legacy data.
+export const mcpResourceKey = (resource: McpResource | null | undefined): string =>
+  resource && resource.kind !== "default" ? `toolkit:${resource.slug}` : "default";
 
 // ---------------------------------------------------------------------------
 // AuthOutcome — the result of `McpAuthProvider.authenticate`.

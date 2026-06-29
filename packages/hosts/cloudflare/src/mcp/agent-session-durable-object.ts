@@ -14,7 +14,7 @@ import {
   PAUSED_APPROVAL_TIMEOUT_MS,
   type PausedExecutionHooks,
 } from "@executor-js/host-mcp/tool-server";
-import type { McpResource } from "@executor-js/host-mcp";
+import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import {
@@ -290,7 +290,13 @@ export abstract class McpAgentSessionDOBase<
     return Effect.promise(async () => {
       if (this.sessionMeta) return this.sessionMeta;
       const stored = await this.ctx.storage.get<SessionMeta>(SESSION_META_KEY);
-      this.sessionMeta = stored ?? null;
+      // Backfill `resource` for sessions persisted before scoped toolkits added
+      // the field. Their stored meta has no `resource`, and every such session
+      // was minted against the default `/mcp` endpoint, so default it here
+      // rather than let owner validation read `.kind` off undefined.
+      this.sessionMeta = stored
+        ? { ...stored, resource: stored.resource ?? defaultMcpResource }
+        : null;
       return this.sessionMeta;
     }).pipe(Effect.withSpan("mcp.session.load_meta"));
   }
