@@ -12,6 +12,7 @@ import {
 import {
   AuthTemplateSlug,
   ConnectionName,
+  definePlugin,
   IntegrationSlug,
   OAuthClientSlug,
   ToolAddress,
@@ -40,6 +41,22 @@ import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 // elicitation.test.ts + owner-isolation.test.ts.
 
 const TEMPLATE = AuthTemplateSlug.make("none");
+
+const malformedMcpConfigSeedPlugin = definePlugin(() => ({
+  id: "malformedMcpConfigSeed" as const,
+  storage: () => ({}),
+  extension: (ctx) => ({
+    seedMalformedMcpConfig: (slug: string) =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make(slug),
+        name: "Malformed MCP config",
+        description: "Malformed MCP config",
+        config: { transport: "stdio", command: 123 },
+        canRemove: true,
+        canRefresh: true,
+      }),
+  }),
+}));
 
 const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
 const JsonRpcRequest = Schema.Struct({
@@ -713,6 +730,27 @@ describe("mcpPlugin", () => {
           authenticationTemplate: [{ slug: "none", kind: "none" }],
         }),
       );
+      expect(Result.isFailure(result)).toBe(true);
+      const failure = Result.isFailure(result) ? result.failure : undefined;
+      expect(Predicate.isTagged(failure, "IntegrationNotFoundError")).toBe(true);
+    }),
+  );
+
+  it.effect("configureServer returns IntegrationNotFoundError for malformed stored configs", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [malformedMcpConfigSeedPlugin(), mcpPlugin()] as const }),
+      );
+      yield* executor.malformedMcpConfigSeed.seedMalformedMcpConfig("malformed_mcp");
+
+      const result = yield* Effect.result(
+        executor.mcp.configureServer("malformed_mcp", {
+          transport: "stdio",
+          command: process.execPath,
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      );
+
       expect(Result.isFailure(result)).toBe(true);
       const failure = Result.isFailure(result) ? result.failure : undefined;
       expect(Predicate.isTagged(failure, "IntegrationNotFoundError")).toBe(true);
