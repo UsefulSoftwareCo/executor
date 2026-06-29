@@ -7,8 +7,6 @@
 //   bun scripts/cli.ts api <target> <group.endpoint> [json]
 //   bun scripts/cli.ts mcp <target> tools | call <tool> [json]
 //   bun scripts/cli.ts ledger <target> [workos|autumn]
-//   bun scripts/cli.ts browse <target> <step…>   (goto/click/see/…; show|undo|reset)
-//   bun scripts/cli.ts promote <target> "<scenario name>"
 //   bun scripts/cli.ts logs <target>
 //   bun scripts/cli.ts down <target>
 //
@@ -26,9 +24,6 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import type { JourneyFile } from "../src/journey/codegen";
-import type { Role, Step } from "../src/journey/steps";
 
 const e2eDir = fileURLToPath(new URL("..", import.meta.url));
 const devDir = join(e2eDir, ".dev");
@@ -448,308 +443,6 @@ const ledger = async (targetName: string, service = "workos") => {
   console.log(JSON.stringify(entries, null, 2));
 };
 
-// --- browser journeys ------------------------------------------------------
-// Drive a live instance's web UI step by step. Each step appends to a journey
-// file and REPLAYS the whole flow from a clean browser, so what you build is, at
-// every moment, exactly what `promote` emits as a scenario — develop the flow,
-// then crystallize it (e2e/AGENTS.md) with no translation gap. The agent can't
-// see the screen, so every step returns the page's interactive controls (the
-// vocabulary the next step is written against) plus a screenshot for a human.
-
-const journeyPaths = (target: string) => ({
-  file: join(devDir, `${target}.journey.json`),
-  shotsDir: join(devDir, `${target}.journey`),
-});
-
-const readJourney = (target: string): JourneyFile => {
-  try {
-    return JSON.parse(readFileSync(journeyPaths(target).file, "utf8")) as JourneyFile;
-  } catch {
-    return { target, org: true, steps: [] };
-  }
-};
-
-const writeJourney = (journey: JourneyFile) => {
-  mkdirSync(devDir, { recursive: true });
-  writeFileSync(journeyPaths(journey.target).file, JSON.stringify(journey, null, 1));
-};
-
-const STEP_ROLES = new Set<Role>([
-  "link",
-  "button",
-  "heading",
-  "textbox",
-  "tab",
-  "menuitem",
-  "checkbox",
-]);
-
-/** One CLI step verb → a Step. The verbs are deliberately plain English so the
- * journey reads like instructions: goto / click / click-text / fill / press /
- * see / at-url / run / request. */
-const parseStep = (
-  verb: string,
-  args: ReadonlyArray<string>,
-  opts: { readonly label?: string; readonly contains?: string },
-): Step => {
-  const withLabel = opts.label ? { label: opts.label } : {};
-  const withContains = opts.contains !== undefined ? { contains: opts.contains } : {};
-  switch (verb) {
-    case "goto": {
-      const path = args[0];
-      if (!path) throw new Error("usage: browse <target> goto <path>   (e.g. goto /)");
-      return { kind: "goto", path, ...withLabel };
-    }
-    case "click": {
-      const role = args[0];
-      const name = args.slice(1).join(" ");
-      if (!role || !name) {
-        throw new Error(
-          "usage: browse <target> click <role> <name>   (role: " + [...STEP_ROLES].join("|") + ")",
-        );
-      }
-      if (!STEP_ROLES.has(role as Role)) throw new Error(`unknown role ${JSON.stringify(role)}`);
-      return { kind: "clickRole", role: role as Role, name, ...withLabel };
-    }
-    case "click-text": {
-      const text = args.join(" ");
-      if (!text) throw new Error("usage: browse <target> click-text <text>");
-      return { kind: "clickText", text, ...withLabel };
-    }
-    case "fill": {
-      const field = args[0];
-      const value = args.slice(1).join(" ");
-      if (!field || args.length < 2) throw new Error("usage: browse <target> fill <field> <value>");
-      return { kind: "fill", field, value, ...withLabel };
-    }
-    case "press": {
-      const key = args[0];
-      if (!key) throw new Error("usage: browse <target> press <key>   (e.g. press Enter)");
-      return { kind: "press", key, ...withLabel };
-    }
-    case "see": {
-      const text = args.join(" ");
-      if (!text)
-        throw new Error("usage: browse <target> see <text>   (asserts the text is visible)");
-      return { kind: "expectText", text, ...withLabel };
-    }
-    case "at-url": {
-      const contains = args[0];
-      if (!contains) throw new Error("usage: browse <target> at-url <substring>");
-      return { kind: "expectUrl", contains, ...withLabel };
-    }
-    case "run": {
-      const command = args.join(" ");
-      if (!command) {
-        throw new Error(
-          'usage: browse <target> run "<command>" [--contains <text>]   ({base} = the instance URL)',
-        );
-      }
-      return { kind: "run", command, ...withContains, ...withLabel };
-    }
-    case "request": {
-      const method = (args[0] ?? "").toUpperCase();
-      const path = args[1];
-      if (!method || !path) {
-        throw new Error("usage: browse <target> request <METHOD> <path> [--contains <text>]");
-      }
-      return { kind: "request", method, path, ...withContains, ...withLabel };
-    }
-    default:
-      throw new Error(
-        `unknown step ${JSON.stringify(verb)} — goto | click | click-text | fill | press | see | at-url | run | request`,
-      );
-  }
-};
-
-const printJourney = (journey: JourneyFile) => {
-  if (journey.steps.length === 0) return console.log(`${journey.target}: empty journey`);
-  console.log(`${journey.target} journey (${journey.steps.length} steps, org=${journey.org}):`);
-  journey.steps.forEach((step, index) => {
-    console.log(`  ${String(index + 1).padStart(2)}. ${stepLabelOf(step)}`);
-  });
-};
-
-// A local copy of the label default so printing doesn't pull in the browser
-// module (which imports playwright). Kept trivially in sync with steps.ts.
-const stepLabelOf = (step: Step): string => {
-  if (step.label) return step.label;
-  if (step.kind === "goto") return `goto ${step.path}`;
-  if (step.kind === "clickRole") return `click ${step.role} ${JSON.stringify(step.name)}`;
-  if (step.kind === "clickText") return `click-text ${JSON.stringify(step.text)}`;
-  if (step.kind === "fill") return `fill ${JSON.stringify(step.field)}`;
-  if (step.kind === "press") return `press ${step.key}`;
-  if (step.kind === "expectText") return `see ${JSON.stringify(step.text)}`;
-  if (step.kind === "expectUrl") return `at-url ${JSON.stringify(step.contains)}`;
-  if (step.kind === "run") {
-    return `run ${JSON.stringify(step.command)}${step.contains ? ` → ${JSON.stringify(step.contains)}` : ""}`;
-  }
-  return `request ${step.method} ${step.path}${step.contains ? ` → ${JSON.stringify(step.contains)}` : ""}`;
-};
-
-const browse = async (raw: ReadonlyArray<string>) => {
-  const target = raw[0];
-  if (!target) throw new Error("usage: browse <target> <step…>  (or show | undo | reset)");
-
-  // Re-parse tokens here: --label takes a value, which the top-level flag/arg
-  // split would mangle.
-  let label: string | undefined;
-  let contains: string | undefined;
-  const positional: string[] = [];
-  const bools = new Set<string>();
-  const tokens = raw.slice(1);
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
-    if (token === "--label") {
-      label = tokens[++i];
-      continue;
-    }
-    if (token.startsWith("--label=")) {
-      label = token.slice("--label=".length);
-      continue;
-    }
-    if (token === "--contains") {
-      contains = tokens[++i];
-      continue;
-    }
-    if (token.startsWith("--contains=")) {
-      contains = token.slice("--contains=".length);
-      continue;
-    }
-    if (token.startsWith("--")) {
-      bools.add(token);
-      continue;
-    }
-    positional.push(token);
-  }
-
-  const verb = positional[0];
-  const { file, shotsDir } = journeyPaths(target);
-  let journey = readJourney(target);
-
-  if (verb === "show") return printJourney(journey);
-  if (verb === "reset") {
-    rmSync(file, { force: true });
-    rmSync(shotsDir, { recursive: true, force: true });
-    return console.log(`${target}: journey reset`);
-  }
-  if (!verb) throw new Error("usage: browse <target> <step…>  (or show | undo | reset)");
-
-  // The flow runs as ONE minted identity per replay — same as the generated
-  // test mints one per run, so a stateful journey behaves identically.
-  const { target: resolved } = await loadTarget(target);
-  const identity = await runEffect<import("../src/target").Identity>(
-    resolved.newIdentity(journey.org ? undefined : { org: false }),
-  );
-  const { replayJourney } = await import("../src/journey/run");
-
-  let steps = [...journey.steps];
-  if (verb === "undo") {
-    if (steps.length === 0) throw new Error("nothing to undo");
-    steps = steps.slice(0, -1);
-  } else {
-    if (steps.length === 0 && bools.has("--no-org")) journey = { ...journey, org: false };
-    steps = [...steps, parseStep(verb, positional.slice(1), { label, contains })];
-  }
-
-  mkdirSync(shotsDir, { recursive: true });
-  const shot = join(shotsDir, `${String(steps.length).padStart(2, "0")}.png`);
-  const observation = await replayJourney(resolved, identity, steps, { screenshotPath: shot });
-
-  if (observation.failedStep) {
-    const failed = observation.failedStep;
-    const isNew = verb !== "undo" && failed.index === steps.length - 1;
-    console.log(
-      `✗ ${isNew ? "this step" : `step ${failed.index + 1} (${stepLabelOf(steps[failed.index]!)})`} failed — journey unchanged.`,
-    );
-    console.log(`  ${failed.error.split("\n")[0]}`);
-    console.log(`  screenshot: ${observation.screenshotPath}`);
-    return;
-  }
-
-  journey = { ...journey, steps };
-  writeJourney(journey);
-
-  console.log(`→ ${observation.url}  ${JSON.stringify(observation.title)}`);
-  console.log(`  screenshot: ${observation.screenshotPath}`);
-  if (observation.lastOutput) {
-    const lines = observation.lastOutput.split("\n").slice(0, 12);
-    console.log("output:");
-    for (const line of lines) console.log(`  ${line}`);
-  }
-  printJourney(journey);
-  if (observation.controls.length > 0) {
-    console.log("controls on the page (role · name):");
-    for (const control of observation.controls.slice(0, 40)) {
-      console.log(`  ${control.role.padEnd(9)} ${control.name}`);
-    }
-    if (observation.controls.length > 40) {
-      console.log(`  … ${observation.controls.length - 40} more`);
-    }
-  }
-};
-
-const promote = async (raw: ReadonlyArray<string>) => {
-  const target = raw[0];
-  const positional = raw.slice(1).filter((arg) => !arg.startsWith("--"));
-  const name = positional[0];
-  const noRun = raw.includes("--no-run");
-  if (!target || !name) {
-    throw new Error('usage: promote <target> "<scenario name>" [--no-run]');
-  }
-  const journey = readJourney(target);
-  if (journey.steps.length === 0) {
-    throw new Error(`no journey for ${target} — build one with \`browse ${target} …\` first`);
-  }
-  const { codegenScenario, journeyHasAssertion, journeyHasBrowserStep } =
-    await import("../src/journey/codegen");
-  if (!journeyHasBrowserStep(journey)) {
-    throw new Error(
-      "this journey is all terminal/HTTP steps — `promote` generates browser-anchored scenarios. Add a browser step, or write a CLI/API test directly.",
-    );
-  }
-  if (!journeyHasAssertion(journey)) {
-    throw new Error(
-      "this journey has no assertion (a `see`, `at-url`, `request`, or `run --contains` step), so the scenario would prove nothing. Add one, then promote.",
-    );
-  }
-
-  const source = codegenScenario(name, journey);
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  // Scope the file to the target's own dir (cloud/, selfhost/) so it runs only
-  // where its UI selectors apply, not on every cross-target host.
-  const relFile = join(target, `${slug}.gen.test.ts`);
-  writeFileSync(join(e2eDir, relFile), source);
-  console.log(`wrote ${relFile}  (${journey.steps.length} steps from the ${target} journey)`);
-
-  const urlKey = `E2E_${target.toUpperCase()}_URL`;
-  const url = readState(target)?.env?.[urlKey];
-  if (noRun || !url) {
-    console.log(
-      `run it against the live instance:\n  ${urlKey}=<url> bunx vitest run --project ${target} ${relFile}`,
-    );
-    return;
-  }
-
-  console.log(`running it against the live instance (${url}) …`);
-  const proc = spawn("bunx", ["vitest", "run", "--project", target, relFile], {
-    cwd: e2eDir,
-    stdio: "inherit",
-    env: { ...process.env, [urlKey]: url },
-  });
-  const code: number = await new Promise((resolve) => proc.on("exit", (c) => resolve(c ?? 1)));
-  const slugDir = join("runs", target, slug);
-  console.log(
-    code === 0
-      ? `\n✓ passed. Artifacts (test.ts, result.json, session.mp4/film.mp4): e2e/${slugDir}\n  view: cd e2e && bun run serve  →  #/${target}/${slug}`
-      : `\n✗ the generated test failed (exit ${code}). The flow that passed live did not pass as a committed test — inspect ${relFile} and e2e/${slugDir}.`,
-  );
-};
-
 // --- lifecycle commands ----------------------------------------------------
 
 const status = () => {
@@ -815,23 +508,8 @@ const HELP = `e2e dev CLI — the scenario primitives, interactive (see e2e/AGEN
   api <target> <group.endpoint> [json]   typed API call as a fresh identity
   mcp <target> tools | call <tool> [json]   MCP session call
   ledger <target> [workos|autumn]   the emulator's request ledger (cloud)
-  browse <target> <step>     drive the live web UI, one step at a time; each step
-                             replays the whole flow and prints the page's controls
-                             steps: goto <path> | click <role> <name> | click-text <text>
-                                    | fill <field> <value> | press <key>
-                                    | see <text> | at-url <substring>
-                                    | run "<cmd>" | request <METHOD> <path>
-                             flags: --label "…", --no-org, --contains <text>
-                             ({base} in a run command = the instance URL)
-                             browse <target> show | undo | reset
-  promote <target> "<name>"  turn the recorded journey into a committed scenario
-                             (<target>/<slug>.gen.test.ts) and run it  (--no-run)
   logs <target>              dump the instance's dev-server log
   down <target>              tear down (kills servers, removes tailscale serves)
-
-A browser journey IS the scenario: develop the flow with \`browse\`, then
-\`promote\` it. The generated test drives the same surface, so a reviewer judges
-it by reading the test and watching its video.
 
 Instances live in e2e/.dev/<target>.json — a state file marks a DELIBERATE
 long-lived instance. Use the booted instance for e2e too:
@@ -856,10 +534,6 @@ const main = async () => {
       return mcpCall(args[0] ?? "", args[1], args.slice(2));
     case "ledger":
       return ledger(args[0] ?? "", args[1]);
-    case "browse":
-      return browse(rest);
-    case "promote":
-      return promote(rest);
     case "logs":
       return logs(args[0] ?? "");
     case "down":

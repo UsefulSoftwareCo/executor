@@ -130,38 +130,6 @@ When handing results to the user, follow the evidence contract in the root
 [AGENTS.md](../AGENTS.md) (direct run links + a live instance + what to try);
 [RUNNING.md](../RUNNING.md) has the current sharing/demo mechanics.
 
-## Authoring from a live browser (`browse` → `promote`)
-
-You don't have to hand-write a browser scenario. Drive a running instance's web
-UI one step at a time, then turn the recorded journey into a committed scenario.
-The generated test drives the same Browser surface the exploration drove, so it
-is the real test, not a transcript of one — develop the flow, then crystallize
-it.
-
-```sh
-cd e2e
-bun run cli up cloud                            # a live instance to develop against
-bun run cli browse cloud goto /                 # each step REPLAYS the whole flow from a
-bun run cli browse cloud click link Policies    # clean browser and prints the page's controls
-bun run cli browse cloud at-url /policies       # (role · name) + a screenshot, so the next
-bun run cli browse cloud see "No policies yet"  # step is written against what's actually there
-bun run cli promote cloud "Policies · a fresh workspace has none"
-```
-
-Each `browse` replays every step so far, so what you are building is, at every
-moment, exactly what `promote` emits — a step that doesn't reproduce fails here,
-not in CI. Steps: `goto <path>`, `click <role> <name>`, `click-text <text>`,
-`fill <field> <value>`, `press <key>`, and the assertions `see <text>` /
-`at-url <substring>`. `--label "…"` names a step (it becomes the `step(...)`
-group); `browse <target> show | undo | reset` manages the journey.
-
-`promote` writes `<target>/<slug>.gen.test.ts` and runs it against the live
-instance, producing the usual run artifacts (session.mp4, step screenshots,
-trace). A journey with no assertion is refused — a scenario must prove
-something. From then on the file is an ordinary scenario: edit it, add API/MCP
-checks, drop the `.gen` once it's yours. The journey itself lives in
-`.dev/<target>.journey.json` (gitignored), not the repo.
-
 ## Desktop targets (the app on real OSes, filmed)
 
 The packaged desktop app runs as its own targets, each landing in its own
