@@ -14,6 +14,7 @@ import { IntegrationIconWithAccount } from "@executor-js/react/components/integr
 import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { SidebarUpdateCard } from "@executor-js/react/components/update-card";
+import { Wordmark } from "@executor-js/react/components/wordmark";
 import { ServerConnectionMenu } from "./server-connection-menu";
 
 // ── Env ─────────────────────────────────────────────────────────────────
@@ -161,16 +162,8 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
     <>
       {props.showBrand !== false && (
         <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
-          <Link
-            to="/{-$orgSlug}"
-            className="desktop-macos-no-drag flex shrink-0 items-center gap-1.5"
-          >
-            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
-              executor
-            </span>
-            <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
-              Beta
-            </span>
+          <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex shrink-0 items-center">
+            <Wordmark />
           </Link>
           <div className="desktop-macos-no-drag ml-auto flex min-w-0 flex-1 justify-end pl-3">
             <ServerConnectionMenu variant="header" />
@@ -312,21 +305,16 @@ export function Shell() {
             onClick={() => setMobileSidebarOpen(false)}
           />
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
-            <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
-              <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-                <span className="font-mono text-sm font-medium tracking-tight text-foreground">
-                  executor
-                </span>
-                <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
-                  Beta
-                </span>
+            <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
+              <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center">
+                <Wordmark />
               </Link>
               <Button
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Close navigation"
                 onClick={() => setMobileSidebarOpen(false)}
-                className="text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
+                className="desktop-macos-no-drag text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
               >
                 <svg viewBox="0 0 16 16" className="size-3.5">
                   <path
@@ -356,14 +344,16 @@ export function Shell() {
             the top and their borders line up with the sidebar header. */}
         <div className="desktop-macos-main-titlebar" />
 
-        {/* Mobile top bar */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
+        {/* Mobile top bar. The desktop-macos-titlebar offset keeps the
+            far-left hamburger clear of the native traffic lights when the macOS
+            window is forced below the md breakpoint (issue #1125). */}
+        <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
           <Button
             variant="outline"
             size="icon-sm"
             aria-label="Open navigation"
             onClick={() => setMobileSidebarOpen(true)}
-            className="bg-card hover:bg-accent/50"
+            className="desktop-macos-no-drag bg-card hover:bg-accent/50"
           >
             <svg viewBox="0 0 16 16" className="size-4">
               <path
@@ -374,10 +364,8 @@ export function Shell() {
               />
             </svg>
           </Button>
-          <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
-            <span className="font-mono text-sm font-medium tracking-tight text-foreground">
-              executor
-            </span>
+          <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center">
+            <Wordmark />
           </Link>
           <div className="w-8 shrink-0" />
         </div>
