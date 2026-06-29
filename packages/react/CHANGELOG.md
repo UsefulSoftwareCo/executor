@@ -1,5 +1,17 @@
 # @executor-js/react
 
+## 1.5.0
+
+### Minor Changes
+
+- [#1182](https://github.com/RhysSullivan/executor/pull/1182) [`b6c8968`](https://github.com/RhysSullivan/executor/commit/b6c8968c2a3dd3cf8d8b2fa5ecdbd2a1f9cad4f2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Notify when a newer Executor is published. The CLI now prints an "update available" line under its ready banner, and the web shell's sidebar update card works for real (a new `/v1/app/npm/dist-tags` endpoint backs it). In the desktop app the card shows a native "Restart to update" action wired to the in-app updater instead of the npm command. The check is best-effort and offline-safe, and can be disabled with `EXECUTOR_DISABLE_UPDATE_CHECK`.
+
+### Patch Changes
+
+- Updated dependencies [[`fd29abe`](https://github.com/RhysSullivan/executor/commit/fd29abe23a329e8e8c50ce185bfc23f58a5348d0), [`b6c8968`](https://github.com/RhysSullivan/executor/commit/b6c8968c2a3dd3cf8d8b2fa5ecdbd2a1f9cad4f2)]:
+  - @executor-js/api@1.5.0
+  - @executor-js/sdk@2.0.0
+
 ## 1.4.42
 
 ### Patch Changes

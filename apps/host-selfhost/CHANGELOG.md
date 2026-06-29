@@ -1,5 +1,25 @@
 # @executor-js/host-selfhost
 
+## 0.0.22
+
+### Patch Changes
+
+- Updated dependencies [[`fd29abe`](https://github.com/RhysSullivan/executor/commit/fd29abe23a329e8e8c50ce185bfc23f58a5348d0), [`cc94666`](https://github.com/RhysSullivan/executor/commit/cc94666fa6adf5a0c7ceb667b3797334020327b1), [`b6c8968`](https://github.com/RhysSullivan/executor/commit/b6c8968c2a3dd3cf8d8b2fa5ecdbd2a1f9cad4f2)]:
+  - @executor-js/api@1.5.0
+  - @executor-js/plugin-graphql@2.0.0
+  - @executor-js/react@1.5.0
+  - @executor-js/plugin-google@2.0.0
+  - @executor-js/plugin-mcp@2.0.0
+  - @executor-js/plugin-microsoft@2.0.0
+  - @executor-js/plugin-openapi@2.0.0
+  - @executor-js/plugin-toolkits@2.0.0
+  - @executor-js/app@1.4.4
+  - @executor-js/sdk@2.0.0
+  - @executor-js/runtime-quickjs@2.0.0
+  - @executor-js/execution@2.0.0
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-encrypted-secrets@0.0.22
+
 ## 0.0.21
 
 ### Patch Changes

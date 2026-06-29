@@ -1,5 +1,23 @@
 # executor
 
+## 2.0.0
+
+### Minor Changes
+
+- [#1182](https://github.com/RhysSullivan/executor/pull/1182) [`b6c8968`](https://github.com/RhysSullivan/executor/commit/b6c8968c2a3dd3cf8d8b2fa5ecdbd2a1f9cad4f2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Notify when a newer Executor is published. The CLI now prints an "update available" line under its ready banner, and the web shell's sidebar update card works for real (a new `/v1/app/npm/dist-tags` endpoint backs it). In the desktop app the card shows a native "Restart to update" action wired to the in-app updater instead of the npm command. The check is best-effort and offline-safe, and can be disabled with `EXECUTOR_DISABLE_UPDATE_CHECK`.
+
+### Patch Changes
+
+- [#1170](https://github.com/RhysSullivan/executor/pull/1170) [`0de0106`](https://github.com/RhysSullivan/executor/commit/0de0106771aa8997db72f0ce3a619ac4920ccfcd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add a test seam to skip the first-run "keep Executor running in the background?" consent dialog under automation, matching the existing `confirmResetState` seam. Set `EXECUTOR_TEST_AUTO_CONFIRM_BACKGROUND_SERVICE=1` to keep the background service or any other value to decline. When the variable is unset the dialog is shown exactly as before. Native dialogs cannot be answered from CDP or Playwright, so a packaged first-run boot under automation previously blocked at this prompt with no way to proceed.
+
+- [#1169](https://github.com/RhysSullivan/executor/pull/1169) [`94647f1`](https://github.com/RhysSullivan/executor/commit/94647f1fc33e57d2eb159f929f95d9e9f6ad60cd) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the desktop app failing to start its local server when the generated auth token begins with a dash. The token is `randomBytes(32).toString("base64url")`, which can start with "-", and the packaged app passed it to the bundled CLI as a separate argument (`--auth-token`, then the token). The CLI then read the leading-dash token as an unknown flag, printed its help, and exited, so the desktop showed a fatal "local Executor server crashed during startup" dialog. This was persistent (the token is saved) and cross-platform, affecting roughly 1 in 64 fresh installs. The token is now passed in the combined `--auth-token=<value>` form so a leading dash is treated as the value.
+
+- Updated dependencies [[`fd29abe`](https://github.com/RhysSullivan/executor/commit/fd29abe23a329e8e8c50ce185bfc23f58a5348d0), [`b6c8968`](https://github.com/RhysSullivan/executor/commit/b6c8968c2a3dd3cf8d8b2fa5ecdbd2a1f9cad4f2)]:
+  - @executor-js/api@1.5.0
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@2.0.0
+  - @executor-js/runtime-quickjs@2.0.0
+
 ## 1.5.22
 
 ### Patch Changes

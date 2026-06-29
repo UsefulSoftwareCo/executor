@@ -19,7 +19,7 @@ it safely.
 
 The bet: as work shifts toward agents acting through software, every company needs one layer
 where anything a human could do is callable — auditable, across every account — and where new
-capability is *composed* on a shared substrate, not rebuilt per integration. One primitive
+capability is _composed_ on a shared substrate, not rebuilt per integration. One primitive
 unlocks the whole slice: catalog + auth + tools + scoping + UI + workflows + storage.
 
 It runs the same two ways from one codebase: an **in-process SDK** (no server, single-player,
@@ -40,12 +40,12 @@ multiplayer must be powerful; neither carries the other's weight.
 - **Secret** — never lives in Executor and never reaches the agent. A connection holds a
   `SecretRef` (a pointer — `op://`, `keychain://`, `env://`, `vault://`); a provider resolves it
   at call time, in trusted space, behind a proxy.
-- **Scope** — placement and identity. An ordered, merged set (see *Scopes*). Every record is
+- **Scope** — placement and identity. An ordered, merged set (see _Scopes_). Every record is
   placed in a scope.
 - **Policy** — gates execution (allow / require-approval / block). Attached to sources and
-  connections (see *Policies*).
+  connections (see _Policies_).
 - **Plugin** — registers sources, tools, providers, storage, surfaces. The one open extension
-  seam (see *The model*).
+  seam (see _The model_).
 - **Manager / Invoker** — the core runtime roles: a manager owns a source's tools and config; an
   invoker executes a tool through the right connection and proxy.
 
@@ -58,10 +58,10 @@ extension seam**, and **surfaces** that expose it.
 **connections**; **scopes**; **policies/guardrails**; and `scope()` — narrow the executor to a
 subset, the seam everything composes through.
 
-**First-party capabilities** are a fixed, known set, included or omitted as modules — *not* a
+**First-party capabilities** are a fixed, known set, included or omitted as modules — _not_ a
 generic plugin registry: toolkits, the MCP host, generative UI, workflows, storage, skills,
 audit/runs, the internal-apps catalog. They're separable but they don't go through an abstract
-plugin contract, because nobody outside you needs to add a new *kind* of them.
+plugin contract, because nobody outside you needs to add a new _kind_ of them.
 
 **One open plugin seam: sources.** There are thousands of APIs; you'll never enumerate them; you
 want others to add them. That is where an open contract (`resolveTools` / `invokeTool`) earns its
@@ -83,17 +83,17 @@ coordinates, not bespoke subsystems — this is what keeps the breadth tractable
 - **lifetime** — ephemeral (a turn/session) / durable (deployed, addressable, re-openable)
 - **origin** — imported (a spec) / authored (code) / invoked-inline (produced by a call)
 - **surface** — in-process / MCP / HTTP / CLI / trigger / web
-- **delivery** — inline value / handle / embedded resource / deep link *(negotiated by client
-  capability)*
+- **delivery** — inline value / handle / embedded resource / deep link _(negotiated by client
+  capability)_
 
 Two rules fall out and dissolve most "how does X compose" confusion:
 
-1. **Artifacts vs surfaces.** What you *build* (kind) is separate from how it's *reached*
+1. **Artifacts vs surfaces.** What you _build_ (kind) is separate from how it's _reached_
    (surface). Build once; a surface projects it. A workflow defined once is reachable via cron,
    MCP, or in-process. A view defined once renders standalone or returns over MCP. Not everything
    fits every surface (a workflow isn't a slow tool; a UI isn't an HTTP handler).
 2. **Rich outputs negotiate delivery.** Too big or too rich for the channel → return a
-   *reference* the client resolves per its capability. A large result → a **storage handle**. A
+   _reference_ the client resolves per its capability. A large result → a **storage handle**. A
    UI → an **embedded UI resource** if the client renders it (MCP apps), else a **deep link**
    into the web app. UI is not special; it's a rich output under the same rules as everything.
 
@@ -105,24 +105,25 @@ policies per scope; and create temporary scopes. Single-player is one scope; mul
 same model with more entries.
 
 Three fixed merge rules, nothing configurable:
+
 - **visibility = union** (you see everything placed in any scope you hold);
 - **guardrails/policy = deny-union, outer-wins** (an outer scope's `block` can't be weakened
   inward; mandatory flows in);
 - **scalars/config/secret-overrides = innermost-wins** (the nearest scope to the actor wins).
 
 `org | user` is just the **two-element case** of this. The current codebase collapsed scopes to
-fixed org/user; the direction is to model it as an *ordered list that today has two entries*, so
+fixed org/user; the direction is to model it as an _ordered list that today has two entries_, so
 the resolver is already the general one and inserting a "team" or "environment" level later is
 additive, not a rewrite — added demand-driven, only when a real case needs the middle level.
 
 **Why scopes are a dimension, not indirection.** A past mistake (the credential-binding model:
 credential / slot / binding as separate objects wired together) caused an overcorrection that
 flattened scopes along with killing bindings. The lesson: **fuse indirection, keep dimensions.**
-A binding is a layer whose only job is to *connect* two things — fuse it away (born-wired
+A binding is a layer whose only job is to _connect_ two things — fuse it away (born-wired
 connections did this). A scope is a property that varies independently and meaningfully — keep
 it; flatten it and it leaks back as workarounds. Placement stays a **direct, inline property** on
 each record (the way `scope` already sits on a connection); never reintroduce an object whose job
-is to *attach* a record to a scope.
+is to _attach_ a record to a scope.
 
 ## Connections, secrets & auth
 
@@ -131,7 +132,7 @@ is to *attach* a record to a scope.
 - **Multiple accounts per source per scope** (distinct names). Per-member auth (each connects
   their own) and team-level shared auth (one credential placed in an outer scope) are both just
   placement.
-- **Auth template vs credential.** A source declares *how* it authenticates (OAuth / bearer /
+- **Auth template vs credential.** A source declares _how_ it authenticates (OAuth / bearer /
   API key — a discriminated set); each connection fills that template.
 - **Secrets never reach the agent.** Resolved by a provider at call time, in trusted space,
   behind a **tool-proxy** — credentials never enter agent or sandbox code. **No escape hatch:** a
@@ -147,18 +148,18 @@ Each kind is added through the **one open seam** (`resolveTools` + `invokeTool`)
 later **direct database** and **email**. The plugin owns the opaque config and raw spec; the core
 reasons over a **normalized manifest** (schemas, side-effect class, auth template, data labels,
 required capabilities, an LLM-authored description). **Spec auto-refresh** tracks upstream drift
-and **must never auto-expand authority** — new operations appear *ungranted until reviewed*.
+and **must never auto-expand authority** — new operations appear _ungranted until reviewed_.
 
 An **integrations registry** lets people discover and add sources.
 
 ## Policies
 
 Policies gate **execution** — `approve` / `require_approval` / `block` — and are distinct from
-toolkits (which gate visibility). Resolution is *most-restrictive-wins*; **plugin defaults** let
+toolkits (which gate visibility). Resolution is _most-restrictive-wins_; **plugin defaults** let
 a source ship a tool pre-marked `require_approval` (destructive detection), with `approve` as the
 override when an import wrongly flags a safe action.
 
-How people actually use them today (real usage): glob patterns over the address, where *every*
+How people actually use them today (real usage): glob patterns over the address, where _every_
 rule targets a **source** and wildcards the scope/connection (`stripe_api.*.*.disputes.*`,
 `pscale.*.*.execute_write_query`) — i.e. faking structural targeting because there's nowhere to
 attach it. The direction:
@@ -166,7 +167,7 @@ attach it. The direction:
 - **Kill the global glob list. Attach policy to the source and connection records** — the two
   structural levels. **Connection overrides source** (innermost-wins), with **scope authority
   layered on top** (outer/org mandatory, can't be weakened inward).
-- Fixing a mis-flagged tool becomes `approve` *on that source/connection*, directly.
+- Fixing a mis-flagged tool becomes `approve` _on that source/connection_, directly.
 - **Toolkits carry no policy** — they're pure curation and inherit whatever source/connection
   policies apply to the tools they expose. This dissolves the old global-vs-toolkit merge
   conflict.
@@ -175,7 +176,7 @@ attach it. The direction:
 
 A **toolkit is pure curation** — a named subset of tools (a `ToolSet`) that yields a **scoped
 view** of the executor. Used for **per-agent capability control**: lock down exactly what an
-added agent can reach (a background firewall-monitor agent gets *only* a monitor tool and an
+added agent can reach (a background firewall-monitor agent gets _only_ a monitor tool and an
 update-firewall tool, and nothing that builds). **`toolkits.list` feeds a consent screen** — the
 grantable slices an agent or OAuth flow requests. Single-player keeps toolkits too.
 
@@ -198,7 +199,7 @@ no advisory mode — the local isolate and the cloud worker enforce the same mem
 You build once; surfaces project.
 
 - **In-process** — `execute`, the SDK path. No server.
-- **MCP** — a scoped endpoint (`/mcp?toolkit=...`) over a *scoped executor*; the host
+- **MCP** — a scoped endpoint (`/mcp?toolkit=...`) over a _scoped executor_; the host
   authenticates → resolves the toolkit → `scope()` → hands the narrowed executor to the MCP
   server, which never sees a toolkit. Default shape is **meta-tools** (`search` + `describe` +
   `execute` + `run_code`) so a huge catalog doesn't blow context, with a direct-tools opt-out.
@@ -209,7 +210,7 @@ You build once; surfaces project.
 - **MCP channels** — talk back to the agent mid-tool-call (the "Claude Code over Discord"
   pattern), for human-in-the-loop and elicitation.
 - **HTTP** — any capability projected as a route, after policy/auth/versioning/CORS.
-- **CLI** — the same operations from the terminal (see *Distribution*).
+- **CLI** — the same operations from the terminal (see _Distribution_).
 - **Triggers** — a schedule (cron) or an event that fires an artifact.
 - **Web app** — the UI-capable surface where views render and deep links land.
 
@@ -221,13 +222,13 @@ You build once; surfaces project.
   SDK** for everything added.
 - **Workflows.** Multi-step sequences of tool calls with **durable run semantics**, built ideally
   on `use workflow` (or Cloudflare Workflows). User-defined entry points; **cron + event
-  triggers**; infrastructure-as-code. A step *is* a catalog tool call.
+  triggers**; infrastructure-as-code. A step _is_ a catalog tool call.
 - **Generative UI.** A **view** governed by lifetime × delivery: ephemeral (the agent calls
   `render`) or durable (an authored dashboard). Rich UI runs in a sandbox; it calls only the
   tools its scope grants, proxied server-side, never holding credentials.
 - **Skills.** Shared, code-authored knowledge — the company knowledge base as code — that agents
   draw on, that **surfaces in tool search**, and can **run tools inline** to cut round-trips.
-  Served off MCP and from a `.well-known`. File-backed (see *Authoring model*).
+  Served off MCP and from a `.well-known`. File-backed (see _Authoring model_).
 - **Internal apps catalog & custom UI snippets.** Store and share custom UI and internal apps.
 - **Configure Executor via Executor** — managing sources, connections, scopes, policies,
   toolkits is itself done through tools.
@@ -277,7 +278,7 @@ it**: audit log, human-in-the-loop approvals, workflow runs, and resumability/de
 
 Pause a call and require a human before it proceeds: **MCP elicitation**, a **gated `resume`
 tool** (the user simply doesn't always allow it), a **resume URL**, or an **MCP channel**
-talk-back mid-call. A gated call returns a *pending* Run with a resume reference.
+talk-back mid-call. A gated call returns a _pending_ Run with a resume reference.
 
 ## Sandbox & runtime
 
@@ -291,7 +292,7 @@ whatever it needs; ship instructions (skills) as part of Executor.
 ## Distribution, the CLI & remotes
 
 The `executor` CLI is **three things at once**: the **local runtime** (run a full instance and
-start using it), the **control plane** (local *and* remote, same commands), and an
+start using it), the **control plane** (local _and_ remote, same commands), and an
 **agent-facing surface**. Distribution surfaces are all "local": `executor` (CLI), `executor
 service install` (daemon), `executor web` (web app) — one instance, delivered differently.
 
@@ -325,7 +326,7 @@ Cloudflare Artifacts, local SQLite for hosted storage.
 
 ## Architecture
 
-Built on **Effect**. The same SDK is in-memory *and* client/server; SDK-only users need no
+Built on **Effect**. The same SDK is in-memory _and_ client/server; SDK-only users need no
 server; serving is a standard Web `Request → Response` handler. The discipline that keeps breadth
 cheap is the **seam discipline**: the platform owns generic concerns (auth, caching, retries,
 schema, rendering, transport, the Run); a plugin owns only the source-specific resolve/invoke.
@@ -358,8 +359,8 @@ schema, rendering, transport, the Run); a plugin owns only the source-specific r
   substrate-generic and source-specific code.
 - **Vision mode vs build mode.** This document is vision mode — generativity ("and then you'd
   want X") is the point. In **build mode, every "and then you'd want X" is a YAGNI to defer**, not
-  a dependency to satisfy. Build the smallest thing useful on its own; let the next be *pulled* by
-  real pain, not *pushed* by imagined composition. The tell that you've slipped back to vision
+  a dependency to satisfy. Build the smallest thing useful on its own; let the next be _pulled_ by
+  real pain, not _pushed_ by imagined composition. The tell that you've slipped back to vision
   mode: the next step needs two other things built first. (Example: v1 skills = read a folder,
   expose `skills.search` + `skills.get`. No scopes, toolkits, environments, or git required.)
 
@@ -368,7 +369,7 @@ schema, rendering, transport, the Run); a plugin owns only the source-specific r
 - **The shared-data loop.** "Every morning at 9am, load my GitHub issues into SQLite": a
   scheduled workflow writes to storage; a generative-UI front end reads it live; you chat with the
   agent over the same data. One substrate, three readers.
-- **The scoped agent.** "An agent I can message that can *only* update my calendar." A toolkit
+- **The scoped agent.** "An agent I can message that can _only_ update my calendar." A toolkit
   exposes a one-tool slice; the agent connects to a scoped MCP endpoint; it physically cannot
   reach anything else.
 
