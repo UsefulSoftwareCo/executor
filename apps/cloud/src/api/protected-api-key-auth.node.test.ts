@@ -87,6 +87,7 @@ describe("protected API key auth", () => {
         accountId: "user_123",
         organizationId: "org_123",
         organizationName: "Org org_123",
+        organizationSlug: "org-slug-org_123",
         email: "",
         name: null,
         avatarUrl: null,
