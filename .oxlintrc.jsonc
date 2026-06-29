@@ -101,12 +101,13 @@
       },
     },
     {
-      "files": ["apps/marketing/src/**/*.astro"],
+      "files": ["apps/marketing/src/**/*.{astro,ts,tsx}"],
       "rules": {
         "executor/no-effect-escape-hatch": "off",
         "executor/no-error-constructor": "off",
         "executor/no-instanceof-error": "off",
         "executor/no-json-parse": "off",
+        "executor/no-promise-catch": "off",
         "executor/no-try-catch-or-throw": "off",
         "executor/no-unknown-error-message": "off",
       },

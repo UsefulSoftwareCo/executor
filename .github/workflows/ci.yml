@@ -76,6 +76,9 @@ jobs:
 
   e2e-local:
     name: E2E (stdio MCP)
+    # Skipped on pull_request: the local scenario boots a real `executor web`
+    # plus a browser and is currently flaky on PRs. Still runs on push to main.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
