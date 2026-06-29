@@ -231,7 +231,7 @@ export function execute(
   const {
     db,
     provider,
-    relationMode = provider === "mssql" ? "fumadb" : "foreign-keys",
+    relationMode = provider === "mssql" ? "@executor-js/fumadb" : "foreign-keys",
   } = config;
 
   function createTable(
@@ -254,7 +254,7 @@ export function execute(
     }
 
     for (const foreignKey of table.foreignKeys) {
-      if (relationMode === "fumadb") break;
+      if (relationMode === "@executor-js/fumadb") break;
       const compiled = compileForeignKey(foreignKey, "sql");
 
       builder = builder.addForeignKeyConstraint(

@@ -4,10 +4,11 @@ import * as path from "node:path";
 
 import {
   definePlugin,
+  ProviderItemId,
+  ProviderKey,
   StorageError,
-  type PluginCtx,
-  type SecretProvider,
-} from "@executor-js/sdk/core";
+  type CredentialProvider,
+} from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
 // XDG data dir resolution
@@ -34,12 +35,15 @@ const authFilePath = (overrideDir?: string): string => path.join(authDir(overrid
 // ---------------------------------------------------------------------------
 // Schema for the auth file
 //
-// Top-level keys are scope IDs, values are { secretId: secretValue } maps.
-//   { "web-a1b2c3d4": { "github-token": "ghp_xxx" } }
+// v2: the file is a FLAT map of opaque provider item id -> value.
+//   { "github-token": "ghp_xxx" }
+// The v1 per-scope partition (`{ scopeId: { secretId: value } }`) is gone:
+// the connection row owns the (tenant, owner, subject) partition, and the
+// provider only ever sees an opaque `ProviderItemId`.
 // ---------------------------------------------------------------------------
 
-const ScopedAuthFile = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.String));
-const decodeScopedAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(ScopedAuthFile));
+const FlatAuthFile = Schema.Record(Schema.String, Schema.String);
+const decodeFlatAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(FlatAuthFile));
 
 // ---------------------------------------------------------------------------
 // File I/O with restricted permissions
@@ -58,37 +62,28 @@ const toStorageError =
   (cause: unknown): StorageError =>
     new StorageError({ message, cause });
 
-const readFullFile = (
-  filePath: string,
-): Effect.Effect<Record<string, Record<string, string>>, StorageError> => {
+const readAll = (filePath: string): Effect.Effect<Record<string, string>, StorageError> => {
   if (!fs.existsSync(filePath)) return Effect.succeed({});
   return Effect.try({
     try: () => fs.readFileSync(filePath, "utf-8"),
     catch: toStorageError("Failed to read auth file"),
   }).pipe(
     Effect.catchIf(
-      (error) => isFileNotFoundCause(error.cause),
+      (error: StorageError) => isFileNotFoundCause(error.cause),
       () => Effect.succeed(""),
     ),
-    Effect.flatMap((raw) =>
+    Effect.flatMap((raw: string) =>
       raw === ""
-        ? Effect.succeed({})
-        : decodeScopedAuthFile(raw).pipe(
+        ? Effect.succeed<Record<string, string>>({})
+        : decodeFlatAuthFile(raw).pipe(
             Effect.mapError(toStorageError("Failed to parse auth file")),
           ),
     ),
   );
 };
 
-const readScopeSecrets = (
+const writeAll = (
   filePath: string,
-  scopeId: string,
-): Effect.Effect<Record<string, string>, StorageError> =>
-  readFullFile(filePath).pipe(Effect.map((file) => file[scopeId] ?? {}));
-
-const writeScopeSecrets = (
-  filePath: string,
-  scopeId: string,
   secrets: Record<string, string>,
 ): Effect.Effect<void, StorageError> => {
   const dir = path.dirname(filePath);
@@ -100,14 +95,8 @@ const writeScopeSecrets = (
         catch: toStorageError("Failed to create auth directory"),
       });
     }
-    const full = yield* readFullFile(filePath);
-    if (Object.keys(secrets).length === 0) {
-      delete full[scopeId];
-    } else {
-      full[scopeId] = secrets;
-    }
     yield* Effect.try({
-      try: () => fs.writeFileSync(tmp, JSON.stringify(full, null, 2), { mode: 0o600 }),
+      try: () => fs.writeFileSync(tmp, JSON.stringify(secrets, null, 2), { mode: 0o600 }),
       catch: toStorageError("Failed to write temporary auth file"),
     });
     yield* Effect.try({
@@ -137,57 +126,51 @@ const makeFileSecretsExtension = (options: FileSecretsPluginConfig | undefined) 
 export type FileSecretsExtension = ReturnType<typeof makeFileSecretsExtension>;
 
 // ---------------------------------------------------------------------------
-// Provider factory (internal)
+// CredentialProvider — flat opaque-id storage in auth.json.
+//
+// v2: no scope partitioning. Each `ProviderItemId` is a flat top-level key in
+// the file; the connection row that references it owns the (tenant, owner,
+// subject) partition. `delete` returns void; absence is not an error.
 // ---------------------------------------------------------------------------
 
-// Scope arg is honored at every call: the auth.json is partitioned by
-// scope id, so read/write/delete route to `file[scope][secretId]`. The
-// provider is a singleton per executor; scope routing happens via the
-// arg passed from the executor's secrets facade.
-//
-// `list` enumerates the innermost scope the provider was configured
-// for — the executor's fallback/list path passes scope separately but
-// the SecretProvider.list signature is scope-agnostic. That's fine for
-// the current use: `list` feeds `secrets.list()` which already walks
-// the stack at the caller layer. Innermost-first is the display default.
-const makeScopedProvider = (filePath: string, listScope: string): SecretProvider => ({
-  key: "file",
+const FILE_PROVIDER_KEY = ProviderKey.make("file");
+
+const makeFileProvider = (filePath: string): CredentialProvider => ({
+  key: FILE_PROVIDER_KEY,
   writable: true,
 
-  get: (secretId, scope) =>
-    readScopeSecrets(filePath, scope).pipe(Effect.map((data) => data[secretId] ?? null)),
+  get: (id: ProviderItemId) => readAll(filePath).pipe(Effect.map((data) => data[id] ?? null)),
 
-  has: (secretId, scope) =>
-    readScopeSecrets(filePath, scope).pipe(Effect.map((data) => secretId in data)),
+  has: (id: ProviderItemId) => readAll(filePath).pipe(Effect.map((data) => id in data)),
 
-  set: (secretId, value, scope) =>
+  set: (id: ProviderItemId, value: string) =>
     Effect.gen(function* () {
-      const data = yield* readScopeSecrets(filePath, scope);
-      data[secretId] = value;
-      yield* writeScopeSecrets(filePath, scope, data);
+      const data = yield* readAll(filePath);
+      data[id] = value;
+      yield* writeAll(filePath, data);
     }),
 
-  delete: (secretId, scope) =>
+  delete: (id: ProviderItemId) =>
     Effect.gen(function* () {
-      const data = yield* readScopeSecrets(filePath, scope);
-      const had = secretId in data;
-      delete data[secretId];
-      if (had) yield* writeScopeSecrets(filePath, scope, data);
-      return had;
+      const data = yield* readAll(filePath);
+      if (id in data) {
+        delete data[id];
+        yield* writeAll(filePath, data);
+      }
     }),
 
   list: () =>
-    readScopeSecrets(filePath, listScope).pipe(
-      Effect.map((data) => Object.keys(data).map((k) => ({ id: k, name: k }))),
+    readAll(filePath).pipe(
+      Effect.map((data) => Object.keys(data).map((k) => ({ id: ProviderItemId.make(k), name: k }))),
     ),
 });
 
 // ---------------------------------------------------------------------------
 // Plugin definition
 //
-// Compute the scoped file path identically in `extension` (for `filePath`)
-// and `secretProviders` (for the provider's read/write). Both receive ctx
-// and both are called once per createExecutor.
+// Compute the file path identically in `extension` (for `filePath`) and
+// `credentialProviders` (for the provider's read/write). Both are called once
+// per createExecutor.
 // ---------------------------------------------------------------------------
 
 const resolveFilePath = (config: FileSecretsPluginConfig | undefined): string =>
@@ -199,9 +182,7 @@ export const fileSecretsPlugin = definePlugin((options?: FileSecretsPluginConfig
 
   extension: () => makeFileSecretsExtension(options),
 
-  secretProviders: (ctx: PluginCtx<unknown>) => [
-    // list() falls back to the innermost scope for display; per-call
-    // get/set/delete honor the scope arg threaded from the secrets facade.
-    makeScopedProvider(resolveFilePath(options), ctx.scopes[0]!.id),
+  credentialProviders: (): readonly CredentialProvider[] => [
+    makeFileProvider(resolveFilePath(options)),
   ],
 }));

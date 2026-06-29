@@ -251,6 +251,77 @@ export const makeGreetingGraphqlSchema = (
   });
 };
 
+// A small GitLab-shaped schema that reproduces the two failure modes from issue
+// #1146 when the plugin auto-generates selection sets against it:
+//   1. `metadata.featureFlags(names: [String!]!)` has a REQUIRED nested argument
+//      the generator cannot fill.
+//   2. `currentUser` nests connections deep enough that composite leaf fields
+//      (`author`, `assignees`) sit past the recursion depth cap, so a naive
+//      generator emits them with no sub-selection.
+// graphql-yoga validates with graphql-js, exactly like the @emulators/gitlab
+// surface, so a generated operation that validates clean here is valid GraphQL.
+export const makeGitlab1146Schema = (): GraphQLSchema =>
+  createSchema<GraphqlTestContext>({
+    typeDefs: /* GraphQL */ `
+      type Query {
+        metadata: Metadata
+        currentUser: User
+      }
+
+      type Metadata {
+        version: String
+        revision: String
+        enterprise: Boolean
+        featureFlags(names: [String!]!): [FeatureFlag!]!
+        kas: Kas
+      }
+
+      type FeatureFlag {
+        name: String
+        enabled: Boolean
+      }
+
+      type Kas {
+        enabled: Boolean
+        externalUrl: String
+      }
+
+      type User {
+        active: Boolean
+        admin: Boolean
+        mergeRequests: MergeRequestConnection
+      }
+
+      type MergeRequestConnection {
+        count: Int
+        nodes: [MergeRequest!]
+        pageInfo: PageInfo
+      }
+
+      type PageInfo {
+        hasNextPage: Boolean
+        endCursor: String
+      }
+
+      type MergeRequest {
+        id: ID
+        title: String
+        author: Author
+        assignees: AssigneeConnection
+      }
+
+      type Author {
+        name: String
+        username: String
+      }
+
+      type AssigneeConnection {
+        count: Int
+        nodes: [Author!]
+      }
+    `,
+  });
+
 export const TestLayers = {
   greeting: () => GraphqlTestServer.layer({ schema: makeGreetingGraphqlSchema() }),
   greetingWithOAuth: () =>

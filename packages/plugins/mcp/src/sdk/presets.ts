@@ -25,6 +25,14 @@ export type McpPreset = McpRemotePreset | McpStdioPreset;
 
 export const mcpPresets: readonly McpPreset[] = [
   {
+    id: "emulate-mcp",
+    name: "Emulate MCP",
+    summary: "Deterministic MCP fixtures for validating native text and image content.",
+    url: "https://emulators.dev/mcp/query/mcp?token=demo-token",
+    endpoint: "https://emulators.dev/mcp/query/mcp?token=demo-token",
+    icon: "https://emulators.dev/favicon.ico",
+  },
+  {
     id: "deepwiki",
     name: "DeepWiki",
     summary: "Search and read documentation from any GitHub repo.",
@@ -111,7 +119,7 @@ export const mcpPresets: readonly McpPreset[] = [
     summary: "Error monitoring, issues, and performance data.",
     url: "https://mcp.sentry.dev/mcp",
     endpoint: "https://mcp.sentry.dev/mcp",
-    icon: "https://sentry-brand.storage.googleapis.com/sentry-glyph-black.png",
+    icon: "https://svgl.app/library/sentry.svg",
   },
   {
     id: "cloudflare",

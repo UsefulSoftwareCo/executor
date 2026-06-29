@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { Slot } from "radix-ui";
 
 import { cn } from "../lib/utils";
+import { Spinner } from "./spinner";
 
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -41,21 +42,44 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
+  loading = false,
+  disabled,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean;
+    /** Show a centered spinner while keeping the label's footprint, so the
+     *  button (and any row it sits in) does not change width on entering the
+     *  loading state. Ignored with `asChild` (Slot requires a single child). */
+    loading?: boolean;
   }) {
   const Comp = asChild ? Slot.Root : "button";
+  const showLoading = loading && !asChild;
 
   return (
     <Comp
       data-slot="button"
       data-variant={variant}
       data-size={size}
-      className={cn(buttonVariants({ variant, size, className }))}
+      data-loading={showLoading ? "" : undefined}
+      className={cn(buttonVariants({ variant, size, className }), showLoading && "relative")}
+      disabled={disabled || loading}
       {...props}
-    />
+    >
+      {showLoading ? (
+        <>
+          {/* Reserve the label's width so the box stays the same size; overlay
+              the spinner centered on top. */}
+          <span className="invisible">{children}</span>
+          <span className="absolute inset-0 flex items-center justify-center">
+            <Spinner className="size-3.5" />
+          </span>
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   );
 }
 

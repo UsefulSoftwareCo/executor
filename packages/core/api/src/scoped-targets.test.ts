@@ -4,23 +4,39 @@ import { describe, expect, it } from "@effect/vitest";
 import { Context, Effect, Layer } from "effect";
 
 import {
-  ConnectionId,
-  CreateConnectionInput,
-  Scope,
-  ScopeId,
-  SecretId,
-  SetSecretInput,
-  TokenMaterial,
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ToolName,
   createExecutor,
   definePlugin,
   type Executor,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
-import { memorySecretsPlugin } from "@executor-js/sdk/testing";
+import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { ExecutorApi } from "./api";
 import { observabilityMiddleware } from "./observability";
 import { CoreHandlers, ExecutionEngineService, ExecutorService } from "./server";
+
+// ---------------------------------------------------------------------------
+// v2 owner-scoped API behaviour.
+//
+// v1's "explicit target scope" tests gated writes by a route scope vs a payload
+// `targetScope`, and exercised the `[user, org]` scope-stack shadowing rules.
+// v2 has neither: the executor binds `{ tenant, subject }` from auth, addresses
+// name their owner explicitly (`tools.<int>.<owner>.<conn>.<tool>`), and there is
+// no shadowing (D12) — an org connection and a user connection are DISTINCT rows
+// with distinct addresses. These ports keep the spirit (writes target an owner,
+// owner rows are independent) against the real v2 surface.
+// ---------------------------------------------------------------------------
+
+// removed: "policy update uses the row target scope instead of the route read
+//   scope" — v2 policies have no route read-scope vs payload target-scope split;
+//   they are owner-scoped. The owner-scoped create/update path is covered below.
+// removed: "OAuth start requires the route scope to match the requested token
+//   scope" and "OAuth complete requires the route scope to match the pending
+//   session scope" — v2 OAuth carries no scope segment; start/complete are stubbed
+//   in the SDK (milestone 2) and have no scope-matching gate to assert.
 
 const webHandlerFor = (executor: Executor) =>
   Effect.acquireRelease(
@@ -47,37 +63,42 @@ const handlerContextFor = (executor: Executor) =>
     Context.add(ExecutionEngineService, {} as ExecutionEngineService["Service"]),
   );
 
-const scope = (id: ScopeId, name: string) => Scope.make({ id, name, createdAt: new Date() });
+const INTEGRATION = IntegrationSlug.make("vercel");
 
-const toScopeRows = (rows: unknown): ReadonlyArray<{ readonly scope_id: string }> =>
-  rows as ReadonlyArray<{ readonly scope_id: string }>;
-
-const connectionProviderPlugin = definePlugin(() => ({
-  id: "test-connection-provider" as const,
+// A plugin that owns the `vercel` integration and produces one tool per
+// connection so the per-connection address scheme is exercised.
+const vercelPlugin = definePlugin(() => ({
+  id: "vercel" as const,
   storage: () => ({}),
-  connectionProviders: [{ key: "memory-connection" }],
-}));
+  resolveTools: () =>
+    Effect.succeed({
+      tools: [{ name: ToolName.make("deploy"), description: "deploy" }],
+    }),
+  invokeTool: () => Effect.succeed({ ok: true }),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: INTEGRATION,
+        description: "Vercel",
+        config: {},
+      }),
+  }),
+}))();
 
-describe("core API explicit target scopes", () => {
-  it.effect("policy update uses the row target scope instead of the route read scope", () =>
+describe("core API owner-scoped writes (v2)", () => {
+  it.effect("policy create + update target an explicit owner", () =>
     Effect.gen(function* () {
-      const userScope = ScopeId.make("api-user");
-      const orgScope = ScopeId.make("api-org");
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: [scope(userScope, "user"), scope(orgScope, "org")],
-        }),
-      );
+      const executor = yield* createExecutor(makeTestConfig({}));
       const web = yield* webHandlerFor(executor);
       const context = handlerContextFor(executor);
 
       const createResponse = yield* Effect.promise(() =>
         web.handler(
-          new Request(`http://localhost/scopes/${userScope}/policies`, {
+          new Request("http://localhost/policies", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              targetScope: orgScope,
+              owner: "org",
               pattern: "vercel.*",
               action: "require_approval",
             }),
@@ -86,21 +107,17 @@ describe("core API explicit target scopes", () => {
         ),
       );
       expect(createResponse.status).toBe(200);
-      const created = (yield* Effect.promise(() => createResponse.json())) as { id: string };
+      const created = (yield* Effect.promise(() => createResponse.json())) as {
+        id: string;
+      };
 
       const updateResponse = yield* Effect.promise(() =>
         web.handler(
-          new Request(
-            `http://localhost/scopes/${userScope}/policies/${encodeURIComponent(created.id)}`,
-            {
-              method: "PATCH",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                targetScope: orgScope,
-                action: "block",
-              }),
-            },
-          ),
+          new Request(`http://localhost/policies/${encodeURIComponent(created.id)}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ owner: "org", action: "block" }),
+          }),
           context,
         ),
       );
@@ -109,63 +126,41 @@ describe("core API explicit target scopes", () => {
       const policies = yield* executor.policies.list();
       expect(policies[0]).toMatchObject({
         id: created.id,
-        scopeId: orgScope,
+        owner: "org",
         action: "block",
       });
     }),
   );
 
-  it.effect("connection remove deletes the route target scope row, not the innermost row", () =>
+  it.effect("connection remove deletes the named owner row, not the other owner", () =>
     Effect.gen(function* () {
-      const userScope = ScopeId.make("api-user");
-      const orgScope = ScopeId.make("api-org");
       const config = makeTestConfig({
-        scopes: [scope(userScope, "user"), scope(orgScope, "org")],
-        plugins: [memorySecretsPlugin(), connectionProviderPlugin()] as const,
+        plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
       });
       const executor = yield* createExecutor(config);
+      yield* executor.vercel.seed();
       const web = yield* webHandlerFor(executor);
       const context = handlerContextFor(executor);
-      const connectionId = ConnectionId.make("shared-connection");
 
-      yield* executor.connections.create(
-        CreateConnectionInput.make({
-          id: connectionId,
-          scope: orgScope,
-          provider: "memory-connection",
-          identityLabel: "Org connection",
-          accessToken: TokenMaterial.make({
-            secretId: SecretId.make("org-shared-connection.access_token"),
-            name: "Org access token",
-            value: "org-token",
-          }),
-          refreshToken: null,
-          expiresAt: null,
-          oauthScope: null,
-          providerState: null,
-        }),
-      );
-      yield* executor.connections.create(
-        CreateConnectionInput.make({
-          id: connectionId,
-          scope: userScope,
-          provider: "memory-connection",
-          identityLabel: "User connection",
-          accessToken: TokenMaterial.make({
-            secretId: SecretId.make("user-shared-connection.access_token"),
-            name: "User access token",
-            value: "user-token",
-          }),
-          refreshToken: null,
-          expiresAt: null,
-          oauthScope: null,
-          providerState: null,
-        }),
-      );
+      const name = ConnectionName.make("default");
+      yield* executor.connections.create({
+        owner: "org",
+        name,
+        integration: INTEGRATION,
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "org-token",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name,
+        integration: INTEGRATION,
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "user-token",
+      });
 
       const response = yield* Effect.promise(() =>
         web.handler(
-          new Request(`http://localhost/scopes/${orgScope}/connections/${connectionId}`, {
+          new Request(`http://localhost/connections/org/${INTEGRATION}/${name}`, {
             method: "DELETE",
           }),
           context,
@@ -173,122 +168,92 @@ describe("core API explicit target scopes", () => {
       );
 
       expect(response.status).toBe(200);
-      const rows = toScopeRows(
-        yield* Effect.promise(() =>
-          config.db.findMany("connection", {
-            where: (b) => b("id", "=", connectionId),
-          }),
-        ),
-      );
-      expect(rows.map((row) => row.scope_id).sort()).toEqual([String(userScope)]);
+      // The org row is gone; the user row survives (no shadowing — distinct rows).
+      const remaining = yield* executor.connections.list({
+        integration: INTEGRATION,
+      });
+      expect(remaining.map((c) => c.owner).sort()).toEqual(["user"]);
     }),
   );
 
-  it.effect("OAuth start requires the route scope to match the requested token scope", () =>
+  it.effect("connection create accepts pasted values payloads", () =>
     Effect.gen(function* () {
-      const userScope = ScopeId.make("api-user");
-      const orgScope = ScopeId.make("api-org");
       const config = makeTestConfig({
-        scopes: [scope(userScope, "user"), scope(orgScope, "org")],
-        plugins: [memorySecretsPlugin(), connectionProviderPlugin()] as const,
+        plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
       });
       const executor = yield* createExecutor(config);
+      yield* executor.vercel.seed();
       const web = yield* webHandlerFor(executor);
       const context = handlerContextFor(executor);
 
       const response = yield* Effect.promise(() =>
         web.handler(
-          new Request(`http://localhost/scopes/${userScope}/oauth/start`, {
+          new Request("http://localhost/connections", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              endpoint: "https://api.example.com",
-              redirectUrl: "https://app.example.com/oauth/callback",
-              connectionId: "example-oauth",
-              tokenScope: orgScope,
-              pluginId: "test-connection-provider",
-              strategy: {
-                kind: "authorization-code",
-                authorizationEndpoint: "https://auth.example.com/oauth/authorize",
-                tokenEndpoint: "https://auth.example.com/oauth/token",
-                clientIdSecretId: "client-id",
-                clientSecretSecretId: null,
-                scopes: [],
-              },
+              owner: "user",
+              name: "api-key",
+              integration: "vercel",
+              template: "apiKey",
+              values: { token: "user-token" },
             }),
           }),
           context,
         ),
       );
 
-      expect(response.status).toBe(400);
-      const sessions = yield* Effect.promise(() => config.db.findMany("oauth2_session"));
-      expect(sessions).toEqual([]);
+      expect(response.status).toBe(200);
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly owner: string;
+        readonly name: string;
+        readonly provider: string;
+      };
+      expect(body).toMatchObject({
+        owner: "user",
+        name: "apiKey",
+        provider: "memory",
+      });
     }),
   );
 
-  it.effect("OAuth complete requires the route scope to match the pending session scope", () =>
+  it.effect("connection list returns both owners' rows under one integration", () =>
     Effect.gen(function* () {
-      const userScope = ScopeId.make("api-user");
-      const orgScope = ScopeId.make("api-org");
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: [scope(userScope, "user"), scope(orgScope, "org")],
-          plugins: [memorySecretsPlugin(), connectionProviderPlugin()] as const,
-        }),
-      );
+      const config = makeTestConfig({
+        plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
+      });
+      const executor = yield* createExecutor(config);
+      yield* executor.vercel.seed();
       const web = yield* webHandlerFor(executor);
       const context = handlerContextFor(executor);
 
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("client-id"),
-          scope: userScope,
-          name: "Client ID",
-          value: "client-id-value",
-        }),
-      );
-      const started = yield* executor.oauth.start({
-        endpoint: "https://api.example.com",
-        redirectUrl: "https://app.example.com/oauth/callback",
-        connectionId: "example-oauth",
-        tokenScope: String(userScope),
-        pluginId: "test-connection-provider",
-        strategy: {
-          kind: "authorization-code",
-          authorizationEndpoint: "https://auth.example.com/oauth/authorize",
-          tokenEndpoint: "https://auth.example.com/oauth/token",
-          clientIdSecretId: "client-id",
-          clientSecretSecretId: null,
-          scopes: [],
-        },
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("default"),
+        integration: INTEGRATION,
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "org-token",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: INTEGRATION,
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "user-token",
       });
 
       const response = yield* Effect.promise(() =>
-        web.handler(
-          new Request(`http://localhost/scopes/${orgScope}/oauth/complete`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ state: started.sessionId, code: "code" }),
-          }),
-          context,
-        ),
+        web.handler(new Request("http://localhost/connections", { method: "GET" }), context),
       );
-
-      expect(response.status).toBe(404);
-      const row = yield* executor.oauth
-        .complete({
-          state: started.sessionId,
-          tokenScope: String(orgScope),
-          error: "cancelled",
-        })
-        .pipe(
-          Effect.match({
-            onFailure: (error) => error,
-            onSuccess: () => null,
-          }),
-        );
-      expect(row).toMatchObject({ _tag: "OAuthSessionNotFoundError" });
+      expect(response.status).toBe(200);
+      const body = (yield* Effect.promise(() => response.json())) as ReadonlyArray<{
+        readonly owner: string;
+        readonly name: string;
+      }>;
+      expect(body.map((c) => `${c.owner}:${c.name}`).sort()).toEqual([
+        "org:default",
+        "user:personal",
+      ]);
     }),
   );
 });

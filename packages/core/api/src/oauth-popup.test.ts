@@ -174,8 +174,13 @@ describe("runOAuthCallback", () => {
     expect(html).toContain("s1");
   });
 
-  it("passes code and error through to the complete callback verbatim", async () => {
-    const received: Array<{ state: string; code: string | null; error: string | null }> = [];
+  it("passes code, error, and the regional domain through to the complete callback", async () => {
+    const received: Array<{
+      state: string;
+      code: string | null;
+      error: string | null;
+      callbackDomain: string | null;
+    }> = [];
     await Effect.runPromise(
       runOAuthCallback<GoogleAuth, never, never>({
         complete: (params) => {
@@ -186,17 +191,21 @@ describe("runOAuthCallback", () => {
             refreshTokenSecretId: null,
           });
         },
-        urlParams: { state: "s1", code: "code1", error: null },
+        // Multi-site providers (Datadog) echo the org's region back as `domain`,
+        // which `runOAuthCallback` surfaces as `callbackDomain`.
+        urlParams: { state: "s1", code: "code1", error: null, domain: "us5.datadoghq.com" },
         toErrorMessage: () => ({ short: "" }),
         channelName: "c",
       }),
     );
-    expect(received).toEqual([{ state: "s1", code: "code1", error: null }]);
+    expect(received).toEqual([
+      { state: "s1", code: "code1", error: null, callbackDomain: "us5.datadoghq.com" },
+    ]);
   });
 
-  it("prefers `error` over `error_description` but falls back when absent", async () => {
-    const received: Array<{ state: string; code: string | null; error: string | null }> = [];
-    const complete = (params: { state: string; code: string | null; error: string | null }) => {
+  it("falls back to `site` for the regional domain and defaults to null", async () => {
+    const received: Array<{ callbackDomain: string | null }> = [];
+    const complete = (params: { callbackDomain: string | null }) => {
       received.push(params);
       return Effect.succeed({
         kind: "oauth2" as const,
@@ -204,24 +213,55 @@ describe("runOAuthCallback", () => {
         refreshTokenSecretId: null,
       });
     };
+    // `site` is the full-origin variant; used only when `domain` is absent.
     await Effect.runPromise(
       runOAuthCallback<GoogleAuth, never, never>({
         complete,
-        urlParams: { state: "s1", error: "access_denied" },
+        urlParams: { state: "s1", code: "c", site: "https://eu1.datadoghq.com" },
         toErrorMessage: () => ({ short: "" }),
         channelName: "c",
       }),
     );
+    // No region hints at all -> null (standard single-site providers).
     await Effect.runPromise(
       runOAuthCallback<GoogleAuth, never, never>({
         complete,
-        urlParams: { state: "s2", error_description: "user cancelled" },
+        urlParams: { state: "s2", code: "c" },
         toErrorMessage: () => ({ short: "" }),
         channelName: "c",
       }),
     );
-    expect(received[0]!.error).toBe("access_denied");
-    expect(received[1]!.error).toBe("user cancelled");
+    expect(received[0]!.callbackDomain).toBe("https://eu1.datadoghq.com");
+    expect(received[1]!.callbackDomain).toBeNull();
+  });
+
+  it("renders provider OAuth errors without invoking completeOAuth", async () => {
+    let completeCalls = 0;
+    const complete = () => {
+      completeCalls += 1;
+      return Effect.succeed({
+        kind: "oauth2" as const,
+        accessTokenSecretId: "s",
+        refreshTokenSecretId: null,
+      });
+    };
+    const html = await Effect.runPromise(
+      runOAuthCallback<GoogleAuth, never, never>({
+        complete,
+        urlParams: {
+          state: "s1",
+          error: "invalid_scope",
+          error_description: "unknown scope wizard_session:write",
+        },
+        toErrorMessage: () => ({ short: "" }),
+        channelName: "c",
+      }),
+    );
+    expect(completeCalls).toBe(0);
+    expect(html).toContain("<title>Connection failed</title>");
+    expect(html).toContain("OAuth provider rejected authorization");
+    expect(html).toContain("invalid_scope");
+    expect(html).toContain("unknown scope wizard_session:write");
   });
 
   it("renders a failure popup when completeOAuth fails and uses toErrorMessage", async () => {

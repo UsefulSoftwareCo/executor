@@ -64,4 +64,22 @@ paths: {}
       expect(error).toHaveProperty("message", "OpenAPI document must parse to an object");
     }),
   );
+
+  it.effect("parses Graph-sized YAML OpenAPI documents", () =>
+    Effect.gen(function* () {
+      const largeDescription = "x".repeat(36 * 1024 * 1024);
+      const doc = yield* parse(
+        `openapi: 3.0.0
+info:
+  title: Large Test
+  version: 1.0.0
+  description: "${largeDescription}"
+paths: {}
+`,
+      );
+
+      expect(doc.info.title).toBe("Large Test");
+      expect(doc.info.description).toHaveLength(largeDescription.length);
+    }),
+  );
 });

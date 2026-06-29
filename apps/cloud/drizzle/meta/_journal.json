@@ -5,134 +5,57 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1776367874348,
-      "tag": "0000_lame_rage",
+      "when": 1780729919110,
+      "tag": "0000_v2_baseline",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1776678968180,
-      "tag": "0001_harsh_meltdown",
+      "when": 1780991784259,
+      "tag": "0001_illegal_wolverine",
       "breakpoints": true
     },
     {
       "idx": 2,
       "version": "7",
-      "when": 1776709954401,
-      "tag": "0002_fat_white_tiger",
+      "when": 1781220171898,
+      "tag": "0002_unwrap_openapi_output_envelope",
       "breakpoints": true
     },
     {
       "idx": 3,
       "version": "7",
-      "when": 1776728656793,
-      "tag": "0003_add_connections",
+      "when": 1781283644753,
+      "tag": "0003_friendly_monster_badoon",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "7",
-      "when": 1776997871000,
-      "tag": "0004_openapi_source_bindings",
+      "when": 1781375837041,
+      "tag": "0004_nervous_quasar",
       "breakpoints": true
     },
     {
       "idx": 5,
       "version": "7",
-      "when": 1777000000000,
-      "tag": "0005_drop_connection_kind",
+      "when": 1781491100009,
+      "tag": "0005_integration_descriptions",
       "breakpoints": true
     },
     {
       "idx": 6,
       "version": "7",
-      "when": 1777444003590,
-      "tag": "0006_add_tool_policy",
+      "when": 1781994790376,
+      "tag": "0006_google_openapi_ownership",
       "breakpoints": true
     },
     {
       "idx": 7,
       "version": "7",
-      "when": 1777567556847,
-      "tag": "0007_military_young_avengers",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1778004191000,
-      "tag": "0008_normalize_plugin_secret_refs",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1778128200000,
-      "tag": "0009_scoped_credentials_cutover",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1778177700000,
-      "tag": "0010_repair_mcp_connection_binding_scopes",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1778178300000,
-      "tag": "0011_repair_openapi_connection_binding_scopes",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1778179000000,
-      "tag": "0012_repair_openapi_secret_binding_scopes",
-      "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "7",
-      "when": 1778179800000,
-      "tag": "0013_cleanup_orphan_oauth_rows",
-      "breakpoints": true
-    },
-    {
-      "idx": 14,
-      "version": "7",
-      "when": 1778192434062,
-      "tag": "0014_repair_openapi_oauth_cutover_residue",
-      "breakpoints": true
-    },
-    {
-      "idx": 15,
-      "version": "7",
-      "when": 1778192434063,
-      "tag": "0015_add_credential_binding_secret_scope",
-      "breakpoints": true
-    },
-    {
-      "idx": 16,
-      "version": "7",
-      "when": 1778781460169,
-      "tag": "0016_fumadb_cutover",
-      "breakpoints": true
-    },
-    {
-      "idx": 17,
-      "version": "7",
-      "when": 1779087600000,
-      "tag": "0017_plugin_storage_sources",
-      "breakpoints": true
-    },
-    {
-      "idx": 18,
-      "version": "7",
-      "when": 1779199200000,
-      "tag": "0018_repair_openapi_oauth_authorization_url",
+      "when": 1782149425764,
+      "tag": "0007_red_dragon_lord",
       "breakpoints": true
     }
   ]

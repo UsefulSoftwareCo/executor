@@ -1,57 +1,57 @@
+// ---------------------------------------------------------------------------
+// OpenAPI plugin — v2 behaviour.
+//
+// Ported from the v1 suite to the v2 data model. The v1-only coverage (scope
+// shadowing, secret-backed credential slots, sources.configure binding
+// lifecycle, OAuth2 source-config slots, usagesForSecret, configFile mirroring)
+// is removed — those surfaces no longer exist in v2. See the inline
+// `// removed:` notes. The behaviours that survive (preview, static control
+// tools, addSpec → per-connection tools, invoke + transport envelope, auth
+// template rendering, removeSpec) are exercised against the v2 surface:
+// addSpec registers an integration, a connection produces the tools, and the
+// full `tools.<integration>.<owner>.<connection>.<tool>` address is executed.
+// ---------------------------------------------------------------------------
+
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
   createExecutor,
-  definePlugin,
-  type FumaDb,
-  RemoveSecretInput,
-  Scope,
-  ScopeId,
-  SecretId,
-  SetSecretInput,
-  SetSourceCredentialBindingInput,
-  RemoveSourceCredentialBindingInput,
-  type InvokeOptions,
-  type SecretProvider,
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationAlreadyExistsError,
+  IntegrationSlug,
+  ToolAddress,
 } from "@executor-js/sdk";
-import { makeTestConfig, memorySecretsPlugin } from "@executor-js/sdk/testing";
-import type { ConfigFileSink } from "@executor-js/config";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const TEST_SCOPE = "test-scope";
-import { openApiPlugin } from "./plugin";
-import { ConfiguredHeaderBinding, OAuth2SourceConfig } from "./types";
 import {
-  addOpenApiTestSource,
+  makeTestConfig,
+  makeTestWorkspaceHarness,
+  memoryCredentialsPlugin,
+  serveTestHttpApp,
+  typeCheckOutputTypeScript,
+} from "@executor-js/sdk/testing";
+
+import { openApiPlugin } from "./plugin";
+import { type AuthenticationInput } from "./types";
+import {
+  addOpenApiTestConnection,
   makeOpenApiHttpApiTestSourceConfig,
+  serveMutableOpenApiSpecTestServer,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
 
-const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
 
-type FumaQueryCall = {
-  readonly method: "findFirst" | "findMany";
-  readonly table: string;
-};
-
-const recordFumaQueries = (db: FumaDb, calls: FumaQueryCall[]): FumaDb =>
-  new Proxy(db, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (prop !== "findFirst" && prop !== "findMany") return value;
-      return (table: string, ...args: readonly unknown[]) => {
-        calls.push({ method: prop, table });
-        return (value as (tableName: string, ...innerArgs: readonly unknown[]) => unknown).call(
-          target,
-          table,
-          ...args,
-        );
-      };
-    },
-  });
+const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
+  [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
 
 // ---------------------------------------------------------------------------
 // Define a test API with Effect HttpApi
@@ -61,13 +61,11 @@ const Item = Schema.Struct({
   id: Schema.Number,
   name: Schema.String,
 });
-type Item = typeof Item.Type;
 
 const EchoHeaders = Schema.Struct({
   authorization: Schema.optional(Schema.String),
-  "x-static": Schema.optional(Schema.String),
+  "x-api-key": Schema.optional(Schema.String),
 });
-type EchoHeaders = typeof EchoHeaders.Type;
 
 class QueryValidationError extends Schema.TaggedErrorClass<QueryValidationError>()(
   "QueryValidationError",
@@ -78,6 +76,12 @@ class QueryValidationError extends Schema.TaggedErrorClass<QueryValidationError>
 
 const ItemsGroup = HttpApiGroup.make("items")
   .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }))
+  .add(
+    HttpApiEndpoint.post("createItem", "/items", {
+      payload: Schema.Struct({ name: Schema.String }),
+      success: Item,
+    }),
+  )
   .add(
     HttpApiEndpoint.get("getItem", "/items/:itemId", {
       params: Schema.Struct({ itemId: Schema.NumberFromString }),
@@ -99,22 +103,109 @@ const ItemsGroup = HttpApiGroup.make("items")
 
 const TestApi = HttpApi.make("testApi").add(ItemsGroup);
 
-type TestApiSourceOptions = Omit<
-  Parameters<typeof makeOpenApiHttpApiTestSourceConfig>[1],
-  "scope"
-> & {
-  readonly scope?: string;
+const testApiSpecText = () => {
+  const spec = makeOpenApiHttpApiTestSourceConfig(TestApi, {}).spec;
+  if (spec.kind === "blob") return spec.value;
+  return spec.url;
 };
 
-const testApiSourceConfig = (options: TestApiSourceOptions = {}) =>
-  makeOpenApiHttpApiTestSourceConfig(TestApi, {
-    scope: TEST_SCOPE,
-    ...options,
-  });
+const MICROSOFT_GRAPH_V1_OPERATION_COUNT = 16_548;
 
-const testApiSpec = () => {
-  const spec = testApiSourceConfig().spec;
-  return spec.kind === "blob" ? spec.value : spec.url;
+const microsoftGraphScaleSpecText = () => {
+  const paths: Record<string, unknown> = {};
+  for (let index = 0; index < MICROSOFT_GRAPH_V1_OPERATION_COUNT; index += 1) {
+    paths[`/users/{userId}/messages/${index}`] = {
+      get: {
+        operationId: `users_messages_list_${index}`,
+        tags: [`Graph category ${index % 37}`],
+        summary: `List synthetic Graph messages ${index}`,
+        parameters: [
+          {
+            name: "userId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "$top",
+            in: "query",
+            schema: { type: "integer", format: "int32" },
+          },
+          {
+            name: "$select",
+            in: "query",
+            style: "form",
+            explode: false,
+            schema: { type: "array", items: { type: "string" } },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/MessageCollectionResponse" },
+              },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  return JSON.stringify({
+    openapi: "3.0.0",
+    info: {
+      title: "Microsoft Graph Scale Fixture",
+      version: "v1.0",
+      description: "Synthetic Graph-scale fixture for generic OpenAPI imports.",
+    },
+    servers: [{ url: "https://graph.microsoft.com/v1.0" }],
+    security: [{ MicrosoftGraph: ["User.Read", "Mail.Read"] }],
+    components: {
+      securitySchemes: {
+        MicrosoftGraph: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+              tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+              scopes: {
+                "User.Read": "Read user profile",
+                "Mail.Read": "Read user mail",
+              },
+            },
+            clientCredentials: {
+              tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+              scopes: {
+                ".default": "Application permissions",
+              },
+            },
+          },
+        },
+      },
+      schemas: {
+        Message: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            subject: { type: "string" },
+            receivedDateTime: { type: "string", format: "date-time" },
+          },
+        },
+        MessageCollectionResponse: {
+          type: "object",
+          properties: {
+            value: {
+              type: "array",
+              items: { $ref: "#/components/schemas/Message" },
+            },
+          },
+        },
+      },
+    },
+    paths,
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +221,9 @@ const ITEMS = [
 const ItemsGroupLive = HttpApiBuilder.group(TestApi, "items", (handlers) =>
   handlers
     .handle("listItems", () => Effect.succeed(ITEMS.map((item) => Item.make(item))))
+    .handle("createItem", (req) =>
+      Effect.succeed(Item.make({ id: ITEMS.length + 1, name: req.payload.name })),
+    )
     .handle("getItem", (req) =>
       Effect.succeed(
         Item.make(
@@ -145,7 +239,7 @@ const ItemsGroupLive = HttpApiBuilder.group(TestApi, "items", (handlers) =>
         const req = yield* HttpServerRequest.HttpServerRequest;
         return EchoHeaders.make({
           authorization: req.headers["authorization"],
-          "x-static": req.headers["x-static"],
+          "x-api-key": req.headers["x-api-key"],
         });
       }),
     )
@@ -164,35 +258,78 @@ const servePluginTestApi = () =>
     handlersLayer: ItemsGroupLive,
   });
 
-const serveSpecRequiringHeader = () => {
-  const state = { requests: 0, lastToken: null as string | null };
-  return serveOpenApiHttpApiTestServer({
-    api: TestApi,
-    handlersLayer: ItemsGroupLive,
-    transformSpec: (spec) => {
-      const { servers: _servers, ...rest } = spec;
-      return rest;
-    },
-    guardSpecRequest: (request) =>
-      Effect.sync(() => {
-        state.requests++;
-        state.lastToken = request.headers["x-spec-token"] ?? null;
-        if (state.requests === 1) {
-          return null;
-        }
-        if (state.lastToken !== "org-token") {
-          return HttpServerResponse.jsonUnsafe({ error: "missing token" }, { status: 401 });
-        }
-        return null;
-      }),
-  }).pipe(
-    Effect.map((server) => ({
-      specUrl: server.specUrl,
-      requestCount: () => state.requests,
-      lastToken: () => state.lastToken,
-    })),
-  );
+// An apiKey auth template that places the connection value into `x-api-key`.
+const apiKeyTemplate: AuthenticationInput = {
+  slug: AuthTemplateSlug.make("apiKey"),
+  type: "apiKey",
+  headers: { "x-api-key": [{ type: "variable" as const, name: "token" }] },
 };
+
+// An oauth template — the connection value renders as a bearer token.
+const oauthTemplate: AuthenticationInput = {
+  slug: AuthTemplateSlug.make("oauth"),
+  kind: "oauth2",
+  authorizationUrl: "https://auth.example.test/authorize",
+  tokenUrl: "https://auth.example.test/token",
+  scopes: ["read"],
+};
+
+const serveOAuthDiscoverableOpenApiSpec = () =>
+  Effect.gen(function* () {
+    let baseUrl = "";
+    const server = yield* serveTestHttpApp((request) => {
+      if (request.url.includes("/api/schema")) {
+        return Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            openapi: "3.0.0",
+            info: { title: "PostHog-like API", version: "1.0.0" },
+            paths: {
+              "/api/projects/": {
+                get: {
+                  operationId: "projects_list",
+                  security: [{ PersonalAPIKeyAuth: ["project:read", "wizard_session:write"] }],
+                  responses: { "200": { description: "OK" } },
+                },
+              },
+            },
+            components: {
+              securitySchemes: {
+                PersonalAPIKeyAuth: { type: "http", scheme: "bearer" },
+              },
+            },
+          }),
+        );
+      }
+      if (request.url.includes("/.well-known/oauth-protected-resource")) {
+        return Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            resource: baseUrl,
+            authorization_servers: [baseUrl],
+            scopes_supported: ["project:read"],
+          }),
+        );
+      }
+      if (request.url.includes("/.well-known/oauth-authorization-server")) {
+        return Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            issuer: baseUrl,
+            authorization_endpoint: `${baseUrl}/oauth/authorize/`,
+            token_endpoint: `${baseUrl}/oauth/token/`,
+            registration_endpoint: `${baseUrl}/oauth/register/`,
+            client_id_metadata_document_supported: true,
+            response_types_supported: ["code"],
+            grant_types_supported: ["authorization_code"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+            scopes_supported: ["project:read"],
+          }),
+        );
+      }
+      return Effect.succeed(HttpServerResponse.text("not found", { status: 404 }));
+    });
+    baseUrl = server.baseUrl;
+    return server;
+  });
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -204,14 +341,7 @@ describe("OpenAPI Plugin", () => {
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
 
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: server.httpClientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
         const preview = yield* executor.openapi.previewSpec(server.specJson);
 
@@ -221,69 +351,82 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
-  it.effect("registers static openapi executor tools", () =>
+  it.effect("previewSpec discovers OAuth metadata from a URL-hosted bearer spec", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthDiscoverableOpenApiSpec();
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: testPlugins(server.httpClientLayer) }),
+        );
+
+        const preview = yield* executor.openapi.previewSpec(server.url("/api/schema/"));
+
+        expect(preview.headerPresets.map((preset) => preset.label)).toContain("Bearer Token");
+        expect(preview.oauth2Presets).toHaveLength(1);
+        const oauth = preview.oauth2Presets[0]!;
+        expect(oauth.securitySchemeName).toBe("DiscoveredOAuth2");
+        expect(oauth.flow).toBe("authorizationCode");
+        expect(oauth.tokenUrl).toBe(`${server.baseUrl}/oauth/token/`);
+        expect(Option.getOrNull(oauth.resource)).toBe(server.baseUrl);
+        expect(oauth.supportsClientIdMetadataDocument).toBe(true);
+        expect(oauth.scopes).toEqual({ "project:read": "" });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "url", url: server.url("/api/schema/") },
+          slug: "posthog_like",
+          baseUrl: server.baseUrl,
+        });
+        const config = yield* executor.openapi.getConfig("posthog_like");
+        expect(
+          (config?.authenticationTemplate ?? []).map((template) => ({
+            slug: String(template.slug),
+            kind: template.kind,
+            ...(template.kind === "oauth2"
+              ? {
+                  resource: template.resource ?? null,
+                  supportsClientIdMetadataDocument:
+                    template.supportsClientIdMetadataDocument === true,
+                }
+              : {}),
+          })),
+        ).toEqual([
+          { slug: "apikey-0", kind: "apikey" },
+          {
+            slug: "oauth-DiscoveredOAuth2",
+            kind: "oauth2",
+            resource: server.baseUrl,
+            supportsClientIdMetadataDocument: true,
+          },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("exposes static openapi executor control tools via execute", () =>
     Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      const tools = yield* executor.tools.list();
-      const ids = tools.map((t) => t.id);
-      expect(ids).toContain("executor.openapi.previewSpec");
-      expect(ids).toContain("executor.openapi.getSource");
-      expect(ids).toContain("executor.openapi.addSource");
-      expect(ids).toContain("executor.openapi.configureSource");
+      // v2: static control tools are NOT part of `tools.list()` (that's the
+      // persisted per-connection catalog) and aren't `tools.schema()`-resolvable;
+      // they're dispatched by `execute`. Their presence is observable by a
+      // successful invocation rather than a catalog listing.
+      // removed: tools.list() / getSource / configureSource assertions — those
+      // listed v1 static source rows and credential-slot control tools.
+      const preview = yield* executor.execute(ToolAddress.make("executor.openapi.previewSpec"), {
+        spec: testApiSpecText(),
+      });
+      expect(preview).toMatchObject({ ok: true });
     }),
   );
 
-  it.effect("lists executor as the static runtime source", () =>
+  it.effect("invokes static previewSpec through executor.execute", () =>
     Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      const sources = yield* executor.sources.list();
-      expect(sources.find((s) => s.id === "openapi")).toBeUndefined();
-      const control = sources.find((s) => s.id === "executor");
-      expect(control).toBeDefined();
-      expect(control!.runtime).toBe(true);
-      expect(control!.canRemove).toBe(false);
-    }),
-  );
-
-  it.effect("invokes static previewSpec through executor.tools.invoke", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
       const preview = unwrapInvocation(
-        yield* executor.tools.invoke(
-          "executor.openapi.previewSpec",
-          { spec: testApiSpec() },
-          autoApprove,
-        ),
+        yield* executor.execute(ToolAddress.make("executor.openapi.previewSpec"), {
+          spec: testApiSpecText(),
+        }),
       ).data as { operationCount: number; operations?: unknown };
 
       expect(preview.operationCount).toBeGreaterThanOrEqual(2);
@@ -291,93 +434,30 @@ describe("OpenAPI Plugin", () => {
     }),
   );
 
-  it.effect("describes static previewSpec output from Standard Schema", () =>
+  // removed: "describes static previewSpec / addSpec output from Standard Schema"
+  // — `tools.schema(address)` only resolves persisted per-connection tool rows
+  // in v2 (the address must parse to the 5-segment
+  // `tools.<integration>.<owner>.<connection>.<tool>` form). Static control
+  // tools live outside the catalog and have no schema-view surface, so these
+  // schema-introspection assertions no longer apply.
+
+  it.effect("invokes static addSpec through executor.execute", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
-        }),
-      );
-
-      const schema = yield* executor.tools.schema("executor.openapi.previewSpec");
-
-      expect(schema).not.toBeNull();
-      expect(schema!.outputTypeScript).toContain("servers:");
-      expect(schema!.outputTypeScript).toContain("securitySchemes:");
-      expect(schema!.outputTypeScript).toContain("oauth2Presets:");
-      expect(schema!.outputTypeScript).toContain("title: string | null");
-      expect(schema!.outputTypeScript).not.toContain("operations:");
-      expect(schema!.outputTypeScript).not.toContain("_tag");
-    }),
-  );
-
-  it.effect("describes static addSource parameters from Standard Schema", () =>
-    Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
-        }),
-      );
-
-      const schema = yield* executor.tools.schema("executor.openapi.addSource");
-
-      expect(schema).not.toBeNull();
-      expect(schema!.inputTypeScript).not.toContain("scope: string");
-      expect(schema!.inputTypeScript).toContain('kind: "url"');
-      expect(
-        (schema!.inputSchema as { properties?: Record<string, unknown> }).properties,
-      ).not.toHaveProperty("credentialTargetScope");
-      expect(schema!.inputTypeScript).not.toBe("Record<string, unknown>");
-    }),
-  );
-
-  it.effect("invokes static addSource through executor.tools.invoke", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const userScope = ScopeId.make("static-user");
-      const orgScope = ScopeId.make("static-org");
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: [
-            Scope.make({ id: userScope, name: "user", createdAt: new Date() }),
-            Scope.make({ id: orgScope, name: "org", createdAt: new Date() }),
-          ],
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
       const result = unwrapInvocation(
-        yield* executor.tools.invoke(
-          "executor.openapi.addSource",
-          (({ scope: _scope, ...input }) => input)(
-            testApiSourceConfig({ scope: "org", namespace: "runtime" }),
-          ),
-          autoApprove,
-        ),
-      ).data as { sourceId: string; source: { id: string; scope: string }; toolCount: number };
+        yield* executor.execute(ToolAddress.make("executor.openapi.addSpec"), {
+          spec: { kind: "blob", value: testApiSpecText() },
+          slug: "runtime",
+        }),
+      ).data as { slug: string; toolCount: number };
 
-      expect(result).toEqual({
-        sourceId: "runtime",
-        source: { id: "runtime", scope: String(orgScope) },
-        toolCount: 4,
-      });
-      expect(yield* executor.openapi.getSource("runtime", String(userScope))).toBeNull();
-      expect((yield* executor.openapi.getSource("runtime", String(orgScope)))?.scope).toBe(
-        orgScope,
-      );
-      const inspected = unwrapInvocation(
-        yield* executor.tools.invoke(
-          "executor.openapi.getSource",
-          { namespace: "runtime", scope: "org" },
-          autoApprove,
-        ),
-      ).data as { source: { namespace: string; scope: string } | null };
-      expect(inspected.source).toMatchObject({ namespace: "runtime", scope: String(orgScope) });
-      expect((yield* executor.tools.list()).map((t) => t.id)).toContain("runtime.items.listItems");
+      expect(result.slug).toBe("runtime");
+      expect(result.toolCount).toBeGreaterThanOrEqual(2);
+
+      const integration = yield* executor.openapi.getIntegration("runtime");
+      expect(integration?.slug).toBe(IntegrationSlug.make("runtime"));
+      expect((yield* executor.integrations.list()).map((i) => String(i.slug))).toContain("runtime");
     }),
   );
 
@@ -386,7 +466,7 @@ describe("OpenAPI Plugin", () => {
       const config = makeTestConfig({ plugins: [openApiPlugin()] as const });
       const executor = yield* createExecutor(config);
 
-      const result = yield* executor.tools.invoke("executor.openapi.previewSpec", {
+      const result = yield* executor.execute(ToolAddress.make("executor.openapi.previewSpec"), {
         spec: "not openapi",
       });
 
@@ -402,445 +482,126 @@ describe("OpenAPI Plugin", () => {
     }),
   );
 
-  it.effect("requires approval before adding a source through the runtime tool", () =>
+  it.effect("requires approval before adding an integration through the runtime tool", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({ plugins: [openApiPlugin()] as const }),
       );
 
-      const declined = yield* executor.tools
-        .invoke(
-          "executor.openapi.addSource",
-          (({ scope: _scope, ...input }) => input)(
-            testApiSourceConfig({ namespace: "runtime_declined" }),
-          ),
-          {
-            onElicitation: () => Effect.succeed({ action: "decline" as const }),
-          },
+      const declined = yield* executor
+        .execute(
+          ToolAddress.make("executor.openapi.addSpec"),
+          { spec: { kind: "blob", value: testApiSpecText() }, slug: "runtime_declined" },
+          { onElicitation: () => Effect.succeed({ action: "decline" as const }) },
         )
         .pipe(Effect.flip);
 
       expect(Predicate.isTagged(declined, "ElicitationDeclinedError")).toBe(true);
-      expect(yield* executor.openapi.getSource("runtime_declined", TEST_SCOPE)).toBeNull();
-      expect((yield* executor.tools.list()).map((t) => t.id)).not.toContain(
-        "runtime_declined.items.listItems",
-      );
+      expect(yield* executor.openapi.getIntegration("runtime_declined")).toBeNull();
     }),
   );
 
-  it.effect("adds an org source whose direct credentials are owned by the user scope", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const userScope = ScopeId.make("openapi-user");
-      const orgScope = ScopeId.make("openapi-org");
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: [
-            Scope.make({
-              id: userScope,
-              name: "user",
-              createdAt: new Date(),
-            }),
-            Scope.make({ id: orgScope, name: "org", createdAt: new Date() }),
-          ],
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("user-query-token"),
-          scope: userScope,
-          name: "User query token",
-          value: "user-token",
-        }),
-      );
-
-      const input = testApiSourceConfig({
-        scope: String(orgScope),
-        namespace: "org_direct_user_credential",
-        queryParams: { token: { kind: "secret" } },
-      });
-
-      yield* executor.openapi.addSpec(input);
-
-      const bindings = yield* executor.sources.listBindings({
-        source: { id: "org_direct_user_credential", scope: orgScope },
-      });
-      expect(bindings).toEqual([]);
-    }),
-  );
-
-  it.effect("sources.configure removes bindings for credential slots no longer present", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("old-token"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "Old token",
-          value: "old-secret",
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "stale_binding",
-          baseUrl: "",
-          headers: {
-            "X-Old": { kind: "secret" },
-          },
-        }),
-      );
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "stale_binding", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: "header:x-old",
-          value: { kind: "secret", secretId: SecretId.make("old-token") },
-        }),
-      );
-
-      yield* executor.sources.configure({
-        source: { id: "stale_binding", scope: ScopeId.make(TEST_SCOPE) },
-        scope: ScopeId.make(TEST_SCOPE),
-        type: "openapi",
-        config: { scope: TEST_SCOPE, headers: {} },
-      });
-
-      const bindings = yield* executor.sources.listBindings({
-        source: { id: "stale_binding", scope: ScopeId.make(TEST_SCOPE) },
-      });
-      expect(bindings).toEqual([]);
-    }),
-  );
-
-  it.effect("sources.configure removes stale OAuth2 bindings when the OAuth template changes", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("old-client-id"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "Old client ID",
-          value: "client-id",
-        }),
-      );
-
-      const oldOAuth = OAuth2SourceConfig.make({
-        kind: "oauth2",
-        securitySchemeName: "old",
-        flow: "authorizationCode",
-        tokenUrl: "https://auth.example.com/token",
-        authorizationUrl: "https://auth.example.com/authorize",
-        clientIdSlot: "oauth2:old:client-id",
-        clientSecretSlot: null,
-        connectionSlot: "oauth2:old:connection",
-        scopes: ["read"],
-      });
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "stale_oauth",
-          baseUrl: "",
-          oauth2: oldOAuth,
-        }),
-      );
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "stale_oauth", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: oldOAuth.clientIdSlot,
-          value: { kind: "secret", secretId: SecretId.make("old-client-id") },
-        }),
-      );
-
-      yield* executor.sources.configure({
-        source: { id: "stale_oauth", scope: ScopeId.make(TEST_SCOPE) },
-        scope: ScopeId.make(TEST_SCOPE),
-        type: "openapi",
-        config: {
-          scope: TEST_SCOPE,
-          oauth2: {
-            clientId: { kind: "secret", secretId: "old-client-id" },
-          },
-          oauth2Source: OAuth2SourceConfig.make({
-            kind: "oauth2",
-            securitySchemeName: "new",
-            flow: "authorizationCode",
-            tokenUrl: "https://auth.example.com/token",
-            authorizationUrl: "https://auth.example.com/authorize",
-            clientIdSlot: "oauth2:new:client-id",
-            clientSecretSlot: null,
-            connectionSlot: "oauth2:new:connection",
-            scopes: ["read"],
-          }),
-        },
-      });
-
-      const bindings = yield* executor.sources.listBindings({
-        source: { id: "stale_oauth", scope: ScopeId.make(TEST_SCOPE) },
-      });
-      expect(bindings.some((binding) => binding.slotKey === oldOAuth.clientIdSlot)).toBe(false);
-    }),
-  );
-
-  it.effect("resolves secret-backed headers at invocation time", () =>
+  it.effect("registers tools from an OpenAPI spec on connection create", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const clientLayer = FetchHttpClient.layer;
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: clientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
-        yield* executor.secrets.set(
-          SetSecretInput.make({
-            id: SecretId.make("test-api-token"),
-            scope: ScopeId.make(TEST_SCOPE),
-            name: "Test API Token",
-            value: "secret-value-123",
-          }),
-        );
-
-        yield* addOpenApiTestSource(executor, server, {
-          scope: TEST_SCOPE,
-          namespace: "authed",
-          headers: {
-            "X-Static": "hello",
-          },
-        });
-        const configured = yield* executor.openapi.configure(
-          { id: "authed", scope: TEST_SCOPE },
-          {
-            scope: ScopeId.make(TEST_SCOPE),
-            headers: {
-              Authorization: {
-                kind: "secret",
-                secretId: "test-api-token",
-                prefix: "Bearer ",
-              },
-            },
-          },
-        );
-
-        const result = unwrapInvocation(
-          yield* executor.tools.invoke("authed.items.echoHeaders", {}, autoApprove),
-        );
-
-        expect(configured.map((binding) => binding.slotKey)).toEqual(["header:authorization"]);
-        expect(result.error).toBeNull();
-        const data = result.data as { authorization?: string; "x-static"?: string };
-        expect(data.authorization).toBe("Bearer secret-value-123");
-        expect(data["x-static"]).toBe("hello");
+        const tools = yield* executor.tools.list();
+        const names = tools.map((t) => String(t.name));
+        // dots in the structured path flatten to `__` in the address segment.
+        expect(names).toContain("items.listItems");
+        expect(names).toContain("items.getItem");
+        expect(String(conn.address("items.listItems"))).toBe("tools.test.org.main.items.listItems");
       }),
     ),
-  );
-
-  it.effect("addSpec declares secret-backed header shape without a credential value", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("config-sync-token"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "Config-sync token",
-          value: "secret-from-jsonc",
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "default_target_scope",
-          baseUrl: "",
-          headers: {
-            Authorization: {
-              kind: "secret",
-              prefix: "Bearer ",
-            },
-          },
-        }),
-      );
-
-      const bindings = yield* executor.sources.listBindings({
-        source: { id: "default_target_scope", scope: ScopeId.make(TEST_SCOPE) },
-      });
-      expect(bindings).toEqual([]);
-    }),
-  );
-
-  it.effect("fails clearly when a secret is missing", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* servePluginTestApi();
-        const clientLayer = FetchHttpClient.layer;
-        const secretStore = new Map<string, string>();
-        const key = (scope: string, id: string) => `${scope}\u0000${id}`;
-        const provider: SecretProvider = {
-          key: "memory",
-          writable: true,
-          get: (id, scope) => Effect.sync(() => secretStore.get(key(scope, id)) ?? null),
-          set: (id, value, scope) =>
-            Effect.sync(() => {
-              secretStore.set(key(scope, id), value);
-            }),
-          delete: (id, scope) => Effect.sync(() => secretStore.delete(key(scope, id))),
-        };
-        const staleSecretPlugin = definePlugin(() => ({
-          id: "stale-secret" as const,
-          storage: () => ({}),
-          secretProviders: [provider],
-        }));
-
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: clientLayer }),
-              staleSecretPlugin(),
-            ] as const,
-          }),
-        );
-        yield* executor.secrets.set(
-          SetSecretInput.make({
-            id: SecretId.make("missing-token"),
-            scope: ScopeId.make(TEST_SCOPE),
-            name: "Missing token",
-            value: "initial-value",
-          }),
-        );
-
-        yield* addOpenApiTestSource(executor, server, {
-          scope: TEST_SCOPE,
-          namespace: "noauth",
-          headers: {
-            Authorization: ConfiguredHeaderBinding.make({
-              kind: "binding",
-              slot: "header:authorization",
-              prefix: "Bearer ",
-            }),
-          },
-        });
-        yield* executor.sources.setBinding(
-          SetSourceCredentialBindingInput.make({
-            source: { id: "noauth", scope: ScopeId.make(TEST_SCOPE) },
-            scope: ScopeId.make(TEST_SCOPE),
-            slotKey: "header:authorization",
-            value: { kind: "secret", secretId: SecretId.make("missing-token") },
-          }),
-        );
-        secretStore.delete(key(TEST_SCOPE, "missing-token"));
-
-        const result = yield* executor.tools.invoke("noauth.items.listItems", {}, autoApprove);
-
-        expect(result).toMatchObject({
-          ok: false,
-          error: {
-            code: "credential_secret_missing",
-            message: expect.stringContaining("missing-token"),
-            details: {
-              category: "authentication",
-              recovery: {
-                createSecretTool: "executor.coreTools.secrets.create",
-                secretsUrl: "https://executor.sh/secrets",
-              },
-            },
-          },
-        });
-      }),
-    ),
-  );
-
-  it.effect("registers tools from an OpenAPI spec", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      const result = yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "test",
-          baseUrl: "",
-        }),
-      );
-
-      expect(result.toolCount).toBeGreaterThanOrEqual(2);
-
-      const tools = yield* executor.tools.list();
-      const names = tools.map((t) => t.name);
-      expect(names).toContain("items.listItems");
-      expect(names).toContain("items.getItem");
-    }),
   );
 
   it.effect("invokes listItems", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const clientLayer = FetchHttpClient.layer;
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: clientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-        yield* addOpenApiTestSource(executor, server, {
-          scope: TEST_SCOPE,
-          namespace: "test",
-        });
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
         const result = unwrapInvocation(
-          yield* executor.tools.invoke("test.items.listItems", {}, autoApprove),
+          yield* executor.execute(conn.address("items.listItems"), {}),
         );
         expect(result.error).toBeNull();
         expect(result.data).toEqual(ITEMS);
+      }),
+    ),
+  );
+
+  it.effect("requires approval for POST operation annotations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
+        const calls = { count: 0 };
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            conn.address("items.createItem"),
+            { body: { name: "New item" } },
+            {
+              onElicitation: () =>
+                Effect.sync(() => {
+                  calls.count++;
+                  return { action: "accept" as const, content: {} };
+                }),
+            },
+          ),
+        );
+
+        expect(calls.count).toBe(1);
+        expect(result.error).toBeNull();
+        expect(result.data).toEqual({ id: 4, name: "New item" });
+      }),
+    ),
+  );
+
+  it.effect("describes OpenAPI invocation results payload-first with http meta beside data", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
+
+        // The persisted output schema is the upstream response body only —
+        // no {status, headers, data} transport envelope around it.
+        const schema = yield* executor.tools.schema(conn.address("items.listItems"));
+        expect(schema?.outputTypeScript).not.toContain("headers:");
+        expect(schema?.outputTypeScript).toContain("name");
+
+        const result = yield* executor.execute(conn.address("items.listItems"), {});
+        const diagnostics = typeCheckOutputTypeScript(
+          {
+            outputTypeScript: `{ ok: true; data: ${schema?.outputTypeScript ?? "unknown"}; http?: { status: number; headers: { [k: string]: string; } } } | { ok: false; error: ToolError }`,
+            typeScriptDefinitions: {
+              ...(schema?.typeScriptDefinitions ?? {}),
+              ToolError: TOOL_ERROR_TYPESCRIPT,
+            },
+          },
+          result,
+          {
+            consumerSource: [
+              "if (invokedOutput.ok) {",
+              "  const items = invokedOutput.data;",
+              "  items.map((item) => item.name);",
+              "  const status: number | undefined = invokedOutput.http?.status;",
+              "  const link: string | undefined = invokedOutput.http?.headers['link'];",
+              "}",
+            ].join("\n"),
+          },
+        );
+
+        expect(diagnostics).toEqual([]);
       }),
     ),
   );
@@ -849,23 +610,12 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const clientLayer = FetchHttpClient.layer;
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: clientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-        yield* addOpenApiTestSource(executor, server, {
-          scope: TEST_SCOPE,
-          namespace: "test",
-        });
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
         const result = unwrapInvocation(
-          yield* executor.tools.invoke("test.items.getItem", { itemId: "2" }, autoApprove),
+          yield* executor.execute(conn.address("items.getItem"), { itemId: "2" }),
         );
         expect(result.error).toBeNull();
         expect(result.data).toEqual({ id: 2, name: "Gadget" });
@@ -877,32 +627,17 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const clientLayer = FetchHttpClient.layer;
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            plugins: [
-              openApiPlugin({ httpClientLayer: clientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-        yield* addOpenApiTestSource(executor, server, {
-          scope: TEST_SCOPE,
-          namespace: "records",
-        });
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "records" });
 
         const result = unwrapInvocation(
-          yield* executor.tools.invoke(
-            "records.items.queryRows",
-            {
-              entryTypeId: "18538",
-              query: JSON.stringify([{ DisplayName: "Example" }]),
-              limit: 10,
-              skip: 0,
-            },
-            autoApprove,
-          ),
+          yield* executor.execute(conn.address("items.queryRows"), {
+            entryTypeId: "18538",
+            query: JSON.stringify([{ DisplayName: "Example" }]),
+            limit: 10,
+            skip: 0,
+          }),
         );
 
         expect(result.data).toBeNull();
@@ -915,701 +650,546 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
-  it.effect("removeSpec cleans up registered tools", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "removable",
-          baseUrl: "",
-        }),
-      );
-
-      expect((yield* executor.tools.list()).length).toBeGreaterThan(2);
-
-      yield* executor.openapi.removeSpec("removable", TEST_SCOPE);
-
-      const remaining = yield* executor.tools.list();
-      const ids = remaining.map((t) => t.id).sort();
-      expect(ids).toEqual([
-        "executor.openapi.addSource",
-        "executor.openapi.configureSource",
-        "executor.openapi.getSource",
-        "executor.openapi.previewSpec",
-      ]);
-    }),
-  );
-
-  it.effect("executor.sources.remove writes back to configFile (engine-level remove)", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const removeCalls: string[] = [];
-      const upsertCalls: string[] = [];
-      const configFile: ConfigFileSink = {
-        upsertSource: (source) =>
-          Effect.sync(() => {
-            upsertCalls.push(source.namespace ?? "");
-          }),
-        removeSource: (namespace) =>
-          Effect.sync(() => {
-            removeCalls.push(namespace);
-          }),
-      };
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer, configFile }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "removable",
-          baseUrl: "",
-        }),
-      );
-      expect(upsertCalls).toEqual(["removable"]);
-
-      yield* executor.sources.remove({
-        id: "removable",
-        targetScope: TEST_SCOPE,
-      });
-
-      expect(removeCalls).toEqual(["removable"]);
-    }),
-  );
-
-  it.effect("source bindings list returns [] for a removed source", () =>
-    // Regression: the React bindings atom revalidates after a removeSpec
-    // (sourceWriteKeys invalidate it) before unmount. The store used to
-    // throw StorageError("source does not exist"), which surfaced to the
-    // browser as a 500. A removed source has no bindings — return [].
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "removable",
-          baseUrl: "",
-        }),
-      );
-      yield* executor.openapi.removeSpec("removable", TEST_SCOPE);
-
-      const bindings = yield* executor.sources.listBindings({
-        source: { id: "removable", scope: ScopeId.make(TEST_SCOPE) },
-      });
-      expect(bindings).toEqual([]);
-    }),
-  );
-
   // -------------------------------------------------------------------------
-  // Multi-scope shadowing — regression suite covering the bug class where
-  // store reads/writes that don't pin scope_id collapse onto whichever visible
-  // row wins first. Each
-  // scenario is reproducible against the pre-fix store.
+  // Auth template rendering (D11): the resolved connection value renders into
+  // the integration's auth template — apiKey into a header, oauth as a bearer.
   // -------------------------------------------------------------------------
 
-  const ORG_SCOPE = ScopeId.make("org-scope");
-  const USER_SCOPE = ScopeId.make("user-scope");
-
-  const stackedScopes = [
-    Scope.make({ id: USER_SCOPE, name: "user", createdAt: new Date() }),
-    Scope.make({ id: ORG_SCOPE, name: "org", createdAt: new Date() }),
-  ] as const;
-
-  it.effect("shadowed addSpec does not wipe the outer-scope source", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: stackedScopes,
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      // Org-level base source
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(ORG_SCOPE),
-          namespace: "shared",
-          baseUrl: "",
-          name: "Org Source",
-        }),
-      );
-
-      // Per-user shadow with the same namespace
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(USER_SCOPE),
-          namespace: "shared",
-          baseUrl: null,
-          name: "User Source",
-        }),
-      );
-
-      const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
-      const orgView = yield* executor.openapi.getSource("shared", String(ORG_SCOPE));
-
-      // Both rows must coexist — innermost-wins reads come from the
-      // executor; the store's scope-pinned getters return the exact row.
-      expect(userView?.name).toBe("User Source");
-      expect(userView?.scope).toBe(String(USER_SCOPE));
-      expect(orgView?.name).toBe("Org Source");
-      expect(orgView?.scope).toBe(String(ORG_SCOPE));
-    }),
-  );
-
-  it.effect("getSource resolves inherited config without listing every OpenAPI source", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-      const config = makeTestConfig({
-        scopes: stackedScopes,
-        plugins: [openApiPlugin({ httpClientLayer: clientLayer }), memorySecretsPlugin()] as const,
-      });
-      const queryCalls: FumaQueryCall[] = [];
-
-      const executor = yield* createExecutor({
-        ...config,
-        db: recordFumaQueries(config.db, queryCalls),
-      });
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(ORG_SCOPE),
-          namespace: "shared",
-          baseUrl: "https://org.example.com",
-          name: "Org Source",
-        }),
-      );
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(USER_SCOPE),
-          namespace: "shared",
-          baseUrl: null,
-          name: "User Source",
-        }),
-      );
-
-      queryCalls.length = 0;
-      const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
-
-      expect(userView?.config.baseUrl).toBe("https://org.example.com");
-      expect(
-        queryCalls.some((call) => call.method === "findMany" && call.table === "plugin_storage"),
-      ).toBe(false);
-    }),
-  );
-
-  it.effect("removeSpec on user shadow leaves the org row intact", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: stackedScopes,
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(ORG_SCOPE),
-          namespace: "shared",
-          baseUrl: "",
-          name: "Org Source",
-        }),
-      );
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(USER_SCOPE),
-          namespace: "shared",
-          baseUrl: null,
-          name: "User Source",
-        }),
-      );
-
-      yield* executor.openapi.removeSpec("shared", String(USER_SCOPE));
-
-      const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
-      const orgView = yield* executor.openapi.getSource("shared", String(ORG_SCOPE));
-
-      expect(userView).toBeNull();
-      expect(orgView?.name).toBe("Org Source");
-    }),
-  );
-
-  it.effect("sources.configure on user shadow cannot override the inherited base URL", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          scopes: stackedScopes,
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(ORG_SCOPE),
-          namespace: "shared",
-          baseUrl: "https://org.example.com",
-          name: "Org Source",
-        }),
-      );
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          scope: String(USER_SCOPE),
-          namespace: "shared",
-          baseUrl: null,
-          name: "User Source",
-        }),
-      );
-
-      const updateResult = yield* executor.sources
-        .configure({
-          source: { id: "shared", scope: USER_SCOPE },
-          scope: USER_SCOPE,
-          type: "openapi",
-          config: {
-            scope: String(USER_SCOPE),
-            name: "User Renamed",
-            baseUrl: "https://user-new.example.com",
-          },
-        })
-        .pipe(
-          Effect.match({
-            onFailure: (error) => error,
-            onSuccess: () => null,
-          }),
-        );
-
-      const userView = yield* executor.openapi.getSource("shared", String(USER_SCOPE));
-      const orgView = yield* executor.openapi.getSource("shared", String(ORG_SCOPE));
-
-      expect(updateResult).toMatchObject({ _tag: "StorageError" });
-      expect(userView?.name).toBe("User Source");
-      expect(userView?.config.baseUrl).toBe("https://org.example.com");
-      expect(orgView?.name).toBe("Org Source");
-      expect(orgView?.config.baseUrl).toBe("https://org.example.com");
-    }),
-  );
-
-  it.effect("addSpec on user shadow cannot override the inherited base URL", () =>
+  it.effect("applies an apiKey auth template to the outbound request", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(
-          makeTestConfig({
-            scopes: stackedScopes,
-            plugins: [
-              openApiPlugin({ httpClientLayer: server.httpClientLayer }),
-              memorySecretsPlugin(),
-            ] as const,
-          }),
-        );
-
-        yield* executor.secrets.set(
-          SetSecretInput.make({
-            id: SecretId.make("org-api-token"),
-            scope: ORG_SCOPE,
-            name: "Org API token",
-            value: "org-secret",
-          }),
-        );
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
-          scope: String(ORG_SCOPE),
-          name: "Shadow Auth",
-          namespace: "shadow_auth",
-          baseUrl: "https://org.example.com",
-          headers: {
-            Authorization: { kind: "secret", prefix: "Bearer " },
-          },
+          slug: "auth_api",
+          baseUrl: server.baseUrl,
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("auth_api"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
         });
 
-        const addResult = yield* executor.openapi
-          .addSpec({
-            spec: { kind: "blob", value: server.specJson },
-            scope: String(USER_SCOPE),
-            namespace: "shadow_auth",
-            baseUrl: server.baseUrl,
-            name: "User Shadow",
-          })
-          .pipe(
-            Effect.match({
-              onFailure: (error) => error,
-              onSuccess: () => null,
-            }),
-          );
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            ToolAddress.make("tools.auth_api.org.main.items.echoHeaders"),
+            {},
+          ),
+        ).data as { "x-api-key"?: string };
 
-        expect(addResult).toMatchObject({ _tag: "OpenApiOAuthError" });
+        expect(result["x-api-key"]).toBe("secret-key-123");
       }),
     ),
   );
 
+  it.effect("applies an oauth auth template as a bearer Authorization header", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: server.specJson },
+          slug: "oauth_api",
+          baseUrl: server.baseUrl,
+          authenticationTemplate: [oauthTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("oauth_api"),
+          template: AuthTemplateSlug.make("oauth"),
+          value: "access-token-abc",
+        });
+
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            ToolAddress.make("tools.oauth_api.org.main.items.echoHeaders"),
+            {},
+          ),
+        ).data as { authorization?: string };
+
+        expect(result.authorization).toBe("Bearer access-token-abc");
+      }),
+    ),
+  );
+
+  it.effect("addSpec derives auth methods from the spec's security schemes by default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // The spec declares bearer auth; the caller passes NO template — the
+        // agentic add path (MCP/API) does exactly this. Without server-side
+        // derivation the integration is auth-less and its Add-connection
+        // modal is a dead end (e2e/scenarios/connect-handoff.test.ts).
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithBearer = JSON.stringify({
+          ...spec,
+          components: {
+            ...(spec.components as Record<string, unknown> | undefined),
+            securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
+          },
+          security: [{ auth_token: [] }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithBearer },
+          slug: "derived_auth_api",
+          baseUrl: server.baseUrl,
+        });
+
+        // The derived template is persisted on the integration…
+        const config = yield* executor.openapi.getConfig("derived_auth_api");
+        const derived = config?.authenticationTemplate ?? [];
+        expect(derived.map((a) => ({ slug: String(a.slug), kind: a.kind }))).toEqual([
+          { slug: "apikey-0", kind: "apikey" },
+        ]);
+
+        // …and it renders a pasted credential as a bearer Authorization header.
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("derived_auth_api"),
+          template: AuthTemplateSlug.make("apikey-0"),
+          value: "pasted-token-xyz",
+        });
+        const result = unwrapInvocation(
+          yield* executor.execute(
+            ToolAddress.make("tools.derived_auth_api.org.main.items.echoHeaders"),
+            {},
+          ),
+        ).data as { authorization?: string };
+        expect(result.authorization).toBe("Bearer pasted-token-xyz");
+      }),
+    ),
+  );
+
+  it.effect("addSpec omits baseUrl and resolves the host per call from the spec's servers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // No baseUrl override: the spec declares `servers`, so the host is
+        // resolved per call from the operation's servers rather than baked into
+        // the connection config. `baseUrl: null` suppresses the test helper's
+        // default connection-level override.
+        const conn = yield* addOpenApiTestConnection(executor, server, {
+          slug: "per_call_host",
+          baseUrl: null,
+        });
+
+        // The override is absent…
+        const config = yield* executor.openapi.getConfig("per_call_host");
+        expect(config?.baseUrl).toBeUndefined();
+
+        // …yet the integration is still invocable: the request reaches the
+        // spec's server host with no baked baseUrl.
+        const result = unwrapInvocation(
+          yield* executor.execute(conn.address("items.listItems"), {}),
+        );
+        expect(result.error).toBeNull();
+        expect(result.data).toEqual(ITEMS);
+      }),
+    ),
+  );
+
+  it.effect("addSpec treats an explicit empty authenticationTemplate as no auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // The add page sends [] when the user deletes every detected method.
+        // That intent must survive — deriving methods back from the spec here
+        // would silently override the user's choice.
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithBearer = JSON.stringify({
+          ...spec,
+          components: {
+            ...(spec.components as Record<string, unknown> | undefined),
+            securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
+          },
+          security: [{ auth_token: [] }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithBearer },
+          slug: "no_auth_api",
+          baseUrl: server.baseUrl,
+          authenticationTemplate: [],
+        });
+
+        const config = yield* executor.openapi.getConfig("no_auth_api");
+        expect(config?.authenticationTemplate ?? []).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("addSpec accepts Graph-sized OpenAPI blobs", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const largeDescription = "x".repeat(36 * 1024 * 1024);
+
+      const added = yield* executor.openapi.addSpec({
+        spec: {
+          kind: "blob",
+          value: `openapi: 3.0.0
+info:
+  title: Large Test
+  version: 1.0.0
+  description: "${largeDescription}"
+servers:
+  - url: https://example.com
+paths:
+  /me:
+    get:
+      operationId: getMe
+      responses:
+        "200":
+          description: OK
+`,
+        },
+        slug: "large_api",
+      });
+
+      expect(added.toolCount).toBe(1);
+    }),
+  );
+
   it.effect(
-    "refreshing a user shadow uses inherited spec-fetch credentials without copying them",
+    "addSpec accepts Microsoft Graph-scale operation catalogs from one spec",
     () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const server = yield* serveSpecRequiringHeader();
-          const config = makeTestConfig({
-            scopes: stackedScopes,
-            plugins: [openApiPlugin(), memorySecretsPlugin()] as const,
-          });
-          const executor = yield* createExecutor(config);
-          const db = config.db;
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-          yield* executor.secrets.set(
-            SetSecretInput.make({
-              id: SecretId.make("org-spec-token"),
-              scope: ORG_SCOPE,
-              name: "Org spec token",
-              value: "org-token",
+        const added = yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: microsoftGraphScaleSpecText() },
+          slug: "microsoft_graph_scale",
+          authenticationTemplate: [],
+        });
+
+        expect(added.toolCount).toBe(MICROSOFT_GRAPH_V1_OPERATION_COUNT);
+      }),
+    30_000,
+  );
+
+  it.effect("removeSpec cleans up the integration and its tools", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        yield* addOpenApiTestConnection(executor, server, { slug: "removable" });
+        expect((yield* executor.tools.list()).map((t) => String(t.name))).toContain(
+          "items.listItems",
+        );
+
+        yield* executor.openapi.removeSpec("removable");
+
+        expect(yield* executor.openapi.getIntegration("removable")).toBeNull();
+        // The persisted per-connection tool catalog is now empty; static control
+        // tools still appear in the merged tool list.
+        const remaining = (yield* executor.tools.list())
+          .map((t) => String(t.address))
+          .filter((address) => address.startsWith("tools.removable."));
+        expect(remaining).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("addSpec blocks re-adding an existing slug with IntegrationAlreadyExistsError", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // First add carries an apiKey auth template + a distinctive description.
+        // A silent upsert on re-add would clobber both.
+        const first = yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: server.specJson },
+          slug: "dup_api",
+          baseUrl: server.baseUrl,
+          description: "original",
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        expect(String(first.slug)).toBe("dup_api");
+
+        // Re-adding the same slug must FAIL, not silently upsert/clobber. The
+        // re-add intentionally drops the auth template and changes the
+        // description so a clobber would be observable below.
+        const error = yield* executor.openapi
+          .addSpec({
+            spec: { kind: "blob", value: server.specJson },
+            slug: "dup_api",
+            baseUrl: server.baseUrl,
+            description: "clobbered",
+          })
+          .pipe(Effect.flip);
+
+        expect(Predicate.isTagged(error, "IntegrationAlreadyExistsError")).toBe(true);
+        expect(String((error as IntegrationAlreadyExistsError).slug)).toBe("dup_api");
+
+        // The original integration must be untouched: same description, same
+        // tool count, and the apiKey auth template still present (not clobbered
+        // by the rejected re-add's empty template).
+        const integration = yield* executor.openapi.getIntegration("dup_api");
+        expect(integration?.description).toBe("original");
+
+        const config = yield* executor.openapi.getConfig("dup_api");
+        expect(config?.authenticationTemplate?.map((a) => String(a.slug))).toEqual(["apiKey"]);
+
+        // A connection still produces the original tools (proves putOperations
+        // was not re-run / the operation rows survive).
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("dup_api"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
+        });
+        const tools = (yield* executor.tools.list()).filter(
+          (t) => String(t.address).split(".")[1] === "dup_api",
+        );
+        expect(tools.length).toBe(first.toolCount);
+      }),
+    ),
+  );
+
+  it.effect("updateSpec re-fetches the source URL and rebuilds tools in place", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A spec server whose document can change between fetches — the
+        // "upstream API shipped a new version" scenario.
+        // The mutable spec server is a real 127.0.0.1 listener — reach it over
+        // the default fetch-based client, like production would.
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const added = yield* executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "evolving",
+          baseUrl: specServer.baseUrl,
+          description: "curated by hand",
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("evolving"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
+        });
+        const before = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.evolving."))
+          .map((t) => String(t.name));
+        expect(before).toContain("items.listItems");
+        expect(before).toContain("items.queryRows");
+
+        // Upstream evolves: queryRows is gone, a new widgets group appears.
+        const EvolvedItemsGroup = HttpApiGroup.make("items")
+          .add(HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }))
+          .add(
+            HttpApiEndpoint.post("createItem", "/items", {
+              payload: Schema.Struct({ name: Schema.String }),
+              success: Item,
             }),
-          );
+          )
+          .add(
+            HttpApiEndpoint.get("getItem", "/items/:itemId", {
+              params: Schema.Struct({ itemId: Schema.NumberFromString }),
+              success: Item,
+            }),
+          )
+          .add(HttpApiEndpoint.get("echoHeaders", "/echo-headers", { success: EchoHeaders }));
+        const WidgetsGroup = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
+        );
+        const EvolvedApi = HttpApi.make("testApi").add(EvolvedItemsGroup).add(WidgetsGroup);
+        yield* specServer.setApi(EvolvedApi);
 
-          yield* executor.openapi.addSpec({
-            spec: { kind: "url", url: server.specUrl },
-            scope: String(ORG_SCOPE),
-            name: "Shared Spec Fetch",
-            namespace: "shared_spec_fetch",
-            baseUrl: "https://api.example.test",
-            specFetchCredentials: {
-              headers: {
-                "X-Spec-Token": { kind: "secret" },
+        const result = yield* executor.openapi.updateSpec("evolving");
+
+        expect(result.addedTools).toEqual(["widgets.listWidgets"]);
+        expect(result.removedTools).toEqual(["items.queryRows"]);
+        expect(result.toolCount).toBe(added.toolCount); // -1 +1
+
+        // The connection's tool catalog reflects the new spec without any
+        // remove/re-add: new tool present, removed tool gone.
+        const after = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.evolving."))
+          .map((t) => String(t.name));
+        expect(after).toContain("widgets.listWidgets");
+        expect(after).not.toContain("items.queryRows");
+
+        // Everything user-curated survives: description, auth template, and
+        // the connection itself.
+        const integration = yield* executor.openapi.getIntegration("evolving");
+        expect(integration?.description).toBe("curated by hand");
+        const config = yield* executor.openapi.getConfig("evolving");
+        expect(config?.authenticationTemplate?.map((a) => String(a.slug))).toEqual(["apiKey"]);
+        expect(config?.baseUrl).toBe(specServer.baseUrl);
+        const connections = yield* executor.connections.list({
+          integration: IntegrationSlug.make("evolving"),
+        });
+        expect(connections.map((c) => String(c.name))).toEqual(["main"]);
+      }),
+    ),
+  );
+
+  it.effect("updateSpec accepts new inline content for blob-sourced integrations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        yield* addOpenApiTestConnection(executor, server, { slug: "pasted" });
+
+        // A pasted-blob integration has no source URL — re-fetch must say so.
+        const refetchError = yield* executor.openapi.updateSpec("pasted").pipe(Effect.flip);
+        expect(Predicate.isTagged(refetchError, "OpenApiParseError")).toBe(true);
+
+        // But providing the updated content works, and the catalog follows.
+        const SpecJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+        const parsed = yield* Schema.decodeUnknownEffect(SpecJson)(server.specJson);
+        const evolved = {
+          ...parsed,
+          paths: {
+            ...(parsed.paths as Record<string, unknown>),
+            "/widgets": {
+              get: {
+                operationId: "widgets/list",
+                responses: { "200": { description: "ok" } },
               },
             },
-          });
-          yield* executor.sources.setBinding(
-            SetSourceCredentialBindingInput.make({
-              source: { id: "shared_spec_fetch", scope: ORG_SCOPE },
-              scope: ORG_SCOPE,
-              slotKey: "spec_fetch_header:x-spec-token",
-              value: { kind: "secret", secretId: SecretId.make("org-spec-token") },
-            }),
-          );
-          yield* executor.openapi.addSpec(
-            testApiSourceConfig({
-              scope: String(USER_SCOPE),
-              namespace: "shared_spec_fetch",
-              baseUrl: null,
-              name: "User Shadow",
-            }),
-          );
-
-          const userRowsBefore = yield* Effect.promise(() =>
-            db.findMany("plugin_storage", {
-              where: (b) =>
-                b.and(
-                  b("scope_id", "=", String(USER_SCOPE)),
-                  b("plugin_id", "=", "openapi"),
-                  b("collection", "=", "source"),
-                  b("key", "=", "shared_spec_fetch"),
-                ),
-            }),
-          );
-          const userConfigBefore = userRowsBefore[0]?.data as
-            | { readonly config?: { readonly specFetchCredentials?: unknown } }
-            | undefined;
-          expect(userConfigBefore?.config?.specFetchCredentials).toBeUndefined();
-
-          const requestsBefore = server.requestCount();
-          yield* executor.sources.refresh({
-            id: "shared_spec_fetch",
-            targetScope: String(USER_SCOPE),
-          });
-
-          expect(server.requestCount()).toBeGreaterThan(requestsBefore);
-          expect(server.lastToken()).toBe("org-token");
-          const orgRowsAfter = yield* Effect.promise(() =>
-            db.findMany("plugin_storage", {
-              where: (b) =>
-                b.and(
-                  b("scope_id", "=", String(ORG_SCOPE)),
-                  b("plugin_id", "=", "openapi"),
-                  b("collection", "=", "source"),
-                  b("key", "=", "shared_spec_fetch"),
-                ),
-            }),
-          );
-          const userRowsAfter = yield* Effect.promise(() =>
-            db.findMany("plugin_storage", {
-              where: (b) =>
-                b.and(
-                  b("scope_id", "=", String(USER_SCOPE)),
-                  b("plugin_id", "=", "openapi"),
-                  b("collection", "=", "source"),
-                  b("key", "=", "shared_spec_fetch"),
-                ),
-            }),
-          );
-          const orgConfigAfter = orgRowsAfter[0]?.data as
-            | {
-                readonly config?: {
-                  readonly specFetchCredentials?: {
-                    readonly headers?: Readonly<Record<string, unknown>>;
-                  };
-                };
-              }
-            | undefined;
-          const userConfigAfter = userRowsAfter[0]?.data as
-            | { readonly config?: { readonly specFetchCredentials?: unknown } }
-            | undefined;
-          expect(orgConfigAfter?.config?.specFetchCredentials?.headers).toHaveProperty(
-            "X-Spec-Token",
-          );
-          expect(userConfigAfter?.config?.specFetchCredentials).toBeUndefined();
-        }),
-      ),
-  );
-
-  it.effect("addSpec persists OAuth2 source slots with no live connection yet", () =>
-    Effect.gen(function* () {
-      const clientLayer = FetchHttpClient.layer;
-
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [
-            openApiPlugin({ httpClientLayer: clientLayer }),
-            memorySecretsPlugin(),
-          ] as const,
-        }),
-      );
-
-      // A team-shared client id secret, but no live connection for this
-      // scope — the admin is saving the source and deferring sign-in
-      // to individual users.
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("acme-client-id"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "Acme Client ID",
-          value: "client-abc",
-        }),
-      );
-
-      const deferredAuth = OAuth2SourceConfig.make({
-        kind: "oauth2",
-        securitySchemeName: "oauth2",
-        flow: "authorizationCode",
-        tokenUrl: "https://auth.example.com/token",
-        authorizationUrl: "https://auth.example.com/authorize",
-        clientIdSlot: "oauth2:oauth2:client-id",
-        clientSecretSlot: null,
-        connectionSlot: "oauth2:oauth2:connection",
-        scopes: ["read:items"],
-      });
-
-      const result = yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "deferred",
-          baseUrl: "https://api.example.com",
-          oauth2: deferredAuth,
-        }),
-      );
-
-      expect(result.toolCount).toBeGreaterThan(0);
-
-      const stored = yield* executor.openapi.getSource("deferred", TEST_SCOPE);
-      expect(stored).not.toBeNull();
-      expect(stored?.config.oauth2?.flow).toBe("authorizationCode");
-      expect(stored?.config.oauth2?.connectionSlot).toBe("oauth2:oauth2:connection");
-      expect(stored?.config.oauth2?.clientIdSlot).toBe("oauth2:oauth2:client-id");
-
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "deferred", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: stored!.config.oauth2!.clientIdSlot,
-          value: {
-            kind: "secret",
-            secretId: SecretId.make("acme-client-id"),
           },
-        }),
-      );
+        };
+        const result = yield* executor.openapi.updateSpec("pasted", {
+          spec: {
+            kind: "blob",
+            value: yield* Schema.encodeUnknownEffect(SpecJson)(evolved),
+          },
+        });
+        expect(result.addedTools).toEqual(["widgets.list"]);
+        expect(result.removedTools).toEqual([]);
 
-      const clientIdBinding = yield* executor.sources
-        .listBindings({ source: { id: "deferred", scope: ScopeId.make(TEST_SCOPE) } })
-        .pipe(
-          Effect.map(
-            (bindings) =>
-              bindings.find((binding) => binding.slotKey === stored!.config.oauth2!.clientIdSlot) ??
-              null,
-          ),
+        const after = (yield* executor.tools.list())
+          .filter((t) => String(t.address).startsWith("tools.pasted."))
+          .map((t) => String(t.name));
+        expect(after).toContain("widgets.list");
+      }),
+    ),
+  );
+
+  it.effect("updateSpec propagates to OTHER subjects' personal connections", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Two members of one workspace, each with a PERSONAL connection on
+        // the shared integration, against one on-disk database. The owner
+        // policy stops A's updateSpec from rewriting B's tool rows directly —
+        // B's catalog must converge lazily on B's own next read.
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const dataDir = mkdtempSync(join(tmpdir(), "openapi-update-spec-multiuser-"));
+        const tenant = "shared-tenant";
+        const plugins = testPlugins();
+
+        const alice = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "alice",
+          dataDir,
+        });
+        yield* alice.executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "shared",
+          baseUrl: specServer.baseUrl,
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* alice.executor.connections.create({
+          owner: "user",
+          name: ConnectionName.make("mine"),
+          integration: IntegrationSlug.make("shared"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "alice-key",
+        });
+
+        const bob = yield* makeTestWorkspaceHarness({
+          plugins,
+          tenant,
+          subject: "bob",
+          dataDir,
+        });
+        yield* bob.executor.connections.create({
+          owner: "user",
+          name: ConnectionName.make("mine"),
+          integration: IntegrationSlug.make("shared"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "bob-key",
+        });
+        const bobToolNames = () =>
+          Effect.map(bob.executor.tools.list(), (tools) =>
+            tools
+              .filter((t) => String(t.address).startsWith("tools.shared.user.mine."))
+              .map((t) => String(t.name))
+              .sort(),
+          );
+        expect(yield* bobToolNames()).toContain("items.queryRows");
+
+        // Alice updates the spec; queryRows disappears, widgets appears. Her
+        // update can only rebuild HER visible connections.
+        const EvolvedItems = HttpApiGroup.make("items").add(
+          HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }),
         );
-      expect(clientIdBinding?.value).toEqual({
-        kind: "secret",
-        secretId: SecretId.make("acme-client-id"),
-        secretScopeId: ScopeId.make(TEST_SCOPE),
-      });
-
-      const connectionBinding = yield* executor.sources
-        .listBindings({ source: { id: "deferred", scope: ScopeId.make(TEST_SCOPE) } })
-        .pipe(
-          Effect.map(
-            (bindings) =>
-              bindings.find(
-                (binding) => binding.slotKey === stored!.config.oauth2!.connectionSlot,
-              ) ?? null,
-          ),
+        const Widgets = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
         );
-      expect(connectionBinding).toBeNull();
+        yield* specServer.setApi(HttpApi.make("testApi").add(EvolvedItems).add(Widgets));
+        yield* alice.executor.openapi.updateSpec("shared");
 
-      // Tools should be listed even without a live connection; invocation
-      // is what requires the token, not registration.
-      const tools = yield* executor.tools.list();
-      expect(tools.some((t) => t.id.startsWith("deferred."))).toBe(true);
-    }),
+        // Bob's next ordinary read converges his personal catalog — no
+        // remove/re-add, no action from Bob.
+        const bobAfter = yield* bobToolNames();
+        expect(bobAfter).toContain("widgets.listWidgets");
+        expect(bobAfter).not.toContain("items.queryRows");
+      }),
+    ),
   );
 
-  // -------------------------------------------------------------------------
-  // Usage tracking — OpenAPI credential slots are core credential_binding
-  // rows, so usages/removal restrictions come from one shared path.
-  // -------------------------------------------------------------------------
-
-  it.effect("usagesForSecret aggregates header and query-param slot bindings", () =>
+  it.effect("updateSpec on an unknown slug fails with IntegrationNotFoundError", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [memorySecretsPlugin(), openApiPlugin()] as const,
-        }),
-      );
-
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("api-key"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "API Key",
-          value: "abc123",
-          provider: "memory",
-        }),
-      );
-
-      // Add a source whose query params are canonicalized to a credential slot.
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "with_secret",
-          baseUrl: "http://example.com",
-          queryParams: { token: { kind: "secret" } },
-        }),
-      );
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "with_secret", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: "query_param:token",
-          value: { kind: "secret", secretId: SecretId.make("api-key") },
-        }),
-      );
-
-      // Configure a slot binding pointing at the same secret.
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "with_secret", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: "header:authorization",
-          value: { kind: "secret", secretId: SecretId.make("api-key") },
-        }),
-      );
-
-      const usages = yield* executor.secrets.usages(SecretId.make("api-key"));
-      expect(usages.length).toBe(2);
-      const slots = usages.map((u) => u.slot).sort();
-      expect(slots).toEqual(["header:authorization", "query_param:token"]);
-      expect(usages.every((u) => u.pluginId === "openapi")).toBe(true);
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const error = yield* executor.openapi.updateSpec("missing").pipe(Effect.flip);
+      expect(Predicate.isTagged(error, "IntegrationNotFoundError")).toBe(true);
     }),
   );
 
-  it.effect("secrets.remove refuses while an openapi binding still uses it", () =>
-    Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [memorySecretsPlugin(), openApiPlugin()] as const,
-        }),
-      );
-      yield* executor.secrets.set(
-        SetSecretInput.make({
-          id: SecretId.make("locked"),
-          scope: ScopeId.make(TEST_SCOPE),
-          name: "Locked",
-          value: "v",
-          provider: "memory",
-        }),
-      );
-
-      yield* executor.openapi.addSpec(
-        testApiSourceConfig({
-          namespace: "ref",
-          baseUrl: "http://example.com",
-        }),
-      );
-      yield* executor.sources.setBinding(
-        SetSourceCredentialBindingInput.make({
-          source: { id: "ref", scope: ScopeId.make(TEST_SCOPE) },
-          scope: ScopeId.make(TEST_SCOPE),
-          slotKey: "header:authorization",
-          value: { kind: "secret", secretId: SecretId.make("locked") },
-        }),
-      );
-
-      const failure = yield* executor.secrets
-        .remove(
-          RemoveSecretInput.make({
-            id: SecretId.make("locked"),
-            targetScope: ScopeId.make(TEST_SCOPE),
-          }),
-        )
-        .pipe(Effect.flip);
-      expect(Predicate.isTagged(failure, "SecretInUseError")).toBe(true);
-
-      // Detach the binding, then remove succeeds.
-      yield* executor.sources.removeBinding(
-        RemoveSourceCredentialBindingInput.make({
-          source: { id: "ref", scope: ScopeId.make(TEST_SCOPE) },
-          slotKey: "header:authorization",
-          scope: ScopeId.make(TEST_SCOPE),
-        }),
-      );
-      yield* executor.secrets.remove(
-        RemoveSecretInput.make({
-          id: SecretId.make("locked"),
-          targetScope: ScopeId.make(TEST_SCOPE),
-        }),
-      );
-    }),
-  );
+  // removed: the v1-only behaviours below have no v2 equivalent —
+  //  - "adds an org source whose direct credentials are owned by the user scope"
+  //  - "sources.configure removes bindings for credential slots no longer present"
+  //  - "sources.configure removes stale OAuth2 bindings when the OAuth template changes"
+  //  - "resolves secret-backed headers at invocation time"
+  //  - "addSpec declares secret-backed header shape without a credential value"
+  //  - "fails clearly when a secret is missing"
+  //  - "executor.sources.remove writes back to configFile"
+  //  - "source bindings list returns [] for a removed source"
+  //  - "shadowed addSpec does not wipe the outer-scope source"
+  //  - "getSource resolves inherited config without listing every OpenAPI source"
+  //  - "removeSpec on user shadow leaves the org row intact"
+  //  - "sources.configure / addSpec on user shadow cannot override inherited base URL"
+  //  - "addSpec persists OAuth2 source slots with no live connection yet"
+  //  - "usagesForSecret aggregates header and query-param slot bindings"
+  //  - "secrets.remove refuses while an openapi binding still uses it"
+  // These all exercised the scope stack + secret/credential-binding/StoredSource
+  // credential machinery that the v2 model deletes: secrets are gone, a
+  // connection IS the credential, sources became integrations with an opaque
+  // config, and the scope stack collapsed to a single owner. Auth is now applied
+  // through the integration's `authenticationTemplate` (covered above).
 });

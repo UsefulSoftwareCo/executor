@@ -1,21 +1,21 @@
 import { lazy } from "react";
-import type { SourcePlugin } from "@executor-js/sdk/client";
+import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { openApiPresets } from "../sdk/presets";
 
 const importAdd = () => import("./AddOpenApiSource");
-const importEdit = () => import("./EditOpenApiSource");
-const importSummary = () => import("./OpenApiSourceSummary");
+const importEditSheet = () => import("./UpdateSpecSection");
+const importAccounts = () => import("./OpenApiAccountsPanel");
 
-export const openApiSourcePlugin: SourcePlugin = {
+export const openApiIntegrationPlugin: IntegrationPlugin = {
   key: "openapi",
   label: "OpenAPI",
   add: lazy(importAdd),
-  edit: lazy(importEdit),
-  summary: lazy(importSummary),
+  editSheet: lazy(importEditSheet),
+  accounts: lazy(importAccounts),
   presets: openApiPresets,
   preload: () => {
     void importAdd();
-    void importEdit();
-    void importSummary();
+    void importEditSheet();
+    void importAccounts();
   },
 };

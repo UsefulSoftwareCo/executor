@@ -45,7 +45,12 @@ personal-notes/
 *.har.executor
 executor.har
 .executor/
-apps/local/.executor-dev/
+# Per-app dev runtime data dirs (local SQLite DB + generated secret.key) — never
+# commit. Glob covers .executor-dev (cloud/cloudflare dev) AND .executor-selfhost
+# (the self-host data dir) and any future .executor-<role> dir.
+.executor-*/
+# Belt-and-suspenders: never commit a generated session/at-rest key, wherever it lands.
+secret.key
 
 # desktop app build artifacts
 apps/desktop/resources/
@@ -53,7 +58,21 @@ apps/desktop/resources/
 # cloud local dev database
 .pglite
 apps/cloud/.dev-db/
-.claude/
+apps/cloud/.e2e-db/
+
+# e2e suite: generated run artifacts + throwaway target state (the * also
+# covers ad-hoc variants like .e2e-stub-db-manual from debugging boots)
+e2e/runs/
+apps/cloud/.e2e-stub-db*/
+apps/host-selfhost/.e2e-data*/
+
+# playwright e2e artifacts
+test-results/
+playwright-report/
+.last-run.json
+# .claude is local agent state (worktrees, settings), EXCEPT checked-in skills
+.claude/*
+!.claude/skills/
 .nitro/
 .output/
 .tanstack/
@@ -85,7 +104,14 @@ executor.jsonc
 MISTAKES.md
 DESIRES.md
 LEARNINGS.md
+
+# Agent scratch scripts (workspace-resolvable alternative to /tmp)
+scratch/
 .alchemy/
 
 # Pi coding agent
 .pi/
+
+# Throwaway UX prototype (not part of the app)
+ux-demo/
+

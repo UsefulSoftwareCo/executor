@@ -4,13 +4,22 @@ import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validatio
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation/types";
 
 import {
+  AuthTemplateSlug,
+  ConnectionName,
   createExecutor,
   FormElicitation,
   ElicitationResponse,
+  IntegrationSlug,
   isToolResult,
+  ToolAddress,
   type InvokeOptions,
+  type Tool,
 } from "@executor-js/sdk";
-import { makeTestConfig, typeCheckOutputTypeScript } from "@executor-js/sdk/testing";
+import {
+  makeTestConfig,
+  memoryCredentialsPlugin,
+  typeCheckOutputTypeScript,
+} from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 import { makeElicitationMcpServer, serveMcpServer } from "../testing";
@@ -37,28 +46,42 @@ const expectToolResultOkData = (result: unknown): unknown => {
   return (result as { readonly ok: true; readonly data: unknown }).data;
 };
 
+const INTEG = IntegrationSlug.make("test_mcp");
+const CONNECTION = ConnectionName.make("main");
+const TEMPLATE = AuthTemplateSlug.make("none");
+
 // ---------------------------------------------------------------------------
-// Helper — create executor with MCP plugin pointed at test server
+// Helper — register an MCP integration pointed at the test server and create
+// an (open) connection so its tools are produced.
 // ---------------------------------------------------------------------------
 
 const makeTestExecutor = (serverUrl: string) =>
   createExecutor(
-    makeTestConfig({
-      plugins: [mcpPlugin()] as const,
-    }),
+    makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
   ).pipe(
     Effect.tap((executor) =>
-      executor.mcp.addSource({
-        transport: "remote",
-        scope: "test-scope",
-        name: "test-mcp",
-        endpoint: serverUrl,
+      Effect.gen(function* () {
+        yield* executor.mcp.addServer({
+          name: "test-mcp",
+          endpoint: serverUrl,
+          slug: String(INTEG),
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONNECTION,
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "",
+        });
       }),
     ),
   );
 
+const findTool = (tools: readonly Tool[], name: string): Tool =>
+  tools.find((t) => String(t.name) === name)!;
+
 // ---------------------------------------------------------------------------
-// Tests — everything goes through executor.tools.invoke()
+// Tests — everything goes through executor.execute()
 // ---------------------------------------------------------------------------
 
 describe("MCP elicitation (end-to-end)", () => {
@@ -68,8 +91,7 @@ describe("MCP elicitation (end-to-end)", () => {
       const executor = yield* makeTestExecutor(server.url);
 
       const tools = yield* executor.tools.list();
-      const gatedEcho = tools.find((t) => t.name === "gated_echo");
-      expect(gatedEcho).toBeDefined();
+      const gatedEcho = findTool(tools, "gated_echo");
 
       const elicitationMessages: string[] = [];
 
@@ -87,13 +109,12 @@ describe("MCP elicitation (end-to-end)", () => {
         },
       };
 
-      const result = yield* executor.tools.invoke(gatedEcho!.id, { value: "hello" }, options);
+      const result = yield* executor.execute(gatedEcho.address, { value: "hello" }, options);
 
       expect(result).toMatchObject({
         ok: true,
         data: { content: [{ type: "text", text: "approved:hello" }] },
       });
-      // At least one elicitation should be the MCP server's form
       expect(elicitationMessages.length).toBeGreaterThanOrEqual(1);
       expect(elicitationMessages.some((m) => m.includes('Approve echo for "hello"?'))).toBe(true);
     }),
@@ -104,12 +125,10 @@ describe("MCP elicitation (end-to-end)", () => {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
-      const gatedEcho = tools.find((t) => t.name === "gated_echo")!;
+      const gatedEcho = findTool(tools, "gated_echo");
 
-      // MCP tools have requiresApproval: false — only the MCP server's
-      // mid-invocation elicitation reaches the handler, and we decline it.
-      const result = yield* executor.tools.invoke(
-        gatedEcho.id,
+      const result = yield* executor.execute(
+        gatedEcho.address,
         { value: "nope" },
         {
           onElicitation: () => Effect.succeed(ElicitationResponse.make({ action: "decline" })),
@@ -128,10 +147,10 @@ describe("MCP elicitation (end-to-end)", () => {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
-      const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
+      const simpleEcho = findTool(tools, "simple_echo");
 
-      const result = yield* executor.tools.invoke(
-        simpleEcho.id,
+      const result = yield* executor.execute(
+        simpleEcho.address,
         { value: "plain" },
         { onElicitation: "accept-all" },
       );
@@ -148,8 +167,8 @@ describe("MCP elicitation (end-to-end)", () => {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
-      const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
-      const schema = yield* executor.tools.schema(simpleEcho.id);
+      const simpleEcho = findTool(tools, "simple_echo");
+      const schema = yield* executor.tools.schema(simpleEcho.address);
 
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
@@ -184,8 +203,8 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputTypeScript).toContain('type: "text"');
       expect(schema?.outputTypeScript).toContain("structuredContent?: { [k: string]: unknown; }");
 
-      const result = yield* executor.tools.invoke(
-        simpleEcho.id,
+      const result = yield* executor.execute(
+        simpleEcho.address,
         { value: "plain" },
         { onElicitation: "accept-all" },
       );
@@ -201,8 +220,8 @@ describe("MCP elicitation (end-to-end)", () => {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
-      const structuredEcho = tools.find((t) => t.name === "structured_echo")!;
-      const schema = yield* executor.tools.schema(structuredEcho.id);
+      const structuredEcho = findTool(tools, "structured_echo");
+      const schema = yield* executor.tools.schema(structuredEcho.address);
 
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
@@ -222,8 +241,8 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("value: string");
 
-      const result = yield* executor.tools.invoke(
-        structuredEcho.id,
+      const result = yield* executor.execute(
+        structuredEcho.address,
         { value: "plain" },
         { onElicitation: "accept-all" },
       );
@@ -242,25 +261,19 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("refreshSource keeps MCP outputSchema nested under structuredContent", () =>
+  it.effect("connections.refresh keeps MCP outputSchema nested under structuredContent", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [mcpPlugin()] as const,
-        }),
-      );
+      const executor = yield* makeTestExecutor(server.url);
 
-      yield* executor.mcp.addSource({
-        transport: "remote",
-        scope: "test-scope",
-        name: "test-mcp",
-        namespace: "schema_refresh",
-        endpoint: server.url,
+      yield* executor.connections.refresh({
+        owner: "org",
+        integration: INTEG,
+        name: CONNECTION,
       });
-      yield* executor.mcp.refreshSource("schema_refresh", "test-scope");
 
-      const schema = yield* executor.tools.schema("schema_refresh.structured_echo");
+      const address = ToolAddress.make("tools.test_mcp.org.main.structured_echo");
+      const schema = yield* executor.tools.schema(address);
       expect(schema?.outputSchema).toMatchObject({
         type: "object",
         properties: {
@@ -278,8 +291,8 @@ describe("MCP elicitation (end-to-end)", () => {
       expect(schema?.outputTypeScript).toContain("structuredContent");
       expect(schema?.outputTypeScript).toContain("upper: string");
 
-      const result = yield* executor.tools.invoke(
-        "schema_refresh.structured_echo",
+      const result = yield* executor.execute(
+        address,
         { value: "plain" },
         { onElicitation: "accept-all" },
       );
@@ -288,47 +301,39 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("addSource preserves the configured display name over server metadata", () =>
+  it.effect("addServer preserves the configured display name as the integration description", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
-      const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [mcpPlugin()] as const,
-        }),
-      );
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
 
-      yield* executor.mcp.addSource({
-        transport: "remote",
-        scope: "test-scope",
+      yield* executor.mcp.addServer({
         name: "Gmail",
         endpoint: server.url,
-        namespace: "gmail",
+        slug: "gmail",
       });
 
-      const sources = yield* executor.sources.list();
-      const source = sources.find((s) => s.id === "gmail");
-
-      expect(source?.name).toBe("Gmail");
+      const integration = yield* executor.integrations.get(IntegrationSlug.make("gmail"));
+      expect(integration?.description).toBe("Gmail");
     }),
   );
 
-  it.effect("handler receives correct toolId, args, and FormElicitation schema", () =>
+  it.effect("handler receives correct address, args, and FormElicitation schema", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
-      const gatedEcho = tools.find((t) => t.name === "gated_echo")!;
+      const gatedEcho = findTool(tools, "gated_echo");
 
-      let capturedToolId: string | undefined;
+      let capturedAddress: string | undefined;
       let capturedArgs: unknown;
       let capturedRequest: unknown;
 
-      yield* executor.tools.invoke(
-        gatedEcho.id,
+      yield* executor.execute(
+        gatedEcho.address,
         { value: "ctx-test" },
         {
           onElicitation: (ctx) => {
-            capturedToolId = ctx.toolId;
+            capturedAddress = String(ctx.address);
             capturedArgs = ctx.args;
             capturedRequest = ctx.request;
             return Effect.succeed(
@@ -341,7 +346,7 @@ describe("MCP elicitation (end-to-end)", () => {
         },
       );
 
-      expect(capturedToolId).toBe(gatedEcho.id);
+      expect(capturedAddress).toBe(String(gatedEcho.address));
       expect(capturedArgs).toEqual({ value: "ctx-test" });
       expect(isFormElicitation(capturedRequest)).toBe(true);
 
@@ -357,49 +362,8 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.effect("connection is reused across multiple tool calls to the same source", () =>
-    Effect.gen(function* () {
-      const server = yield* serveElicitationTestServer;
-      const executor = yield* makeTestExecutor(server.url);
-      const tools = yield* executor.tools.list();
-      const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
-      const gatedEcho = tools.find((t) => t.name === "gated_echo")!;
-
-      // addSource created 1 session during discovery
-      expect(server.sessionCount()).toBeGreaterThanOrEqual(1);
-
-      // First tool call — may create a new session (discovery used a
-      // different connection that was closed)
-      yield* executor.tools.invoke(
-        simpleEcho.id,
-        { value: "call-1" },
-        { onElicitation: "accept-all" },
-      );
-      const sessionsAfterFirst = server.sessionCount();
-
-      // Second call to a different tool on the same source — should reuse
-      yield* executor.tools.invoke(
-        simpleEcho.id,
-        { value: "call-2" },
-        { onElicitation: "accept-all" },
-      );
-      expect(server.sessionCount()).toBe(sessionsAfterFirst);
-
-      // Third call to yet another tool on the same source — still reused
-      yield* executor.tools.invoke(
-        gatedEcho.id,
-        { value: "call-3" },
-        {
-          onElicitation: () =>
-            Effect.succeed(
-              ElicitationResponse.make({
-                action: "accept",
-                content: { approved: true },
-              }),
-            ),
-        },
-      );
-      expect(server.sessionCount()).toBe(sessionsAfterFirst);
-    }),
-  );
+  // removed: "connection is reused across multiple tool calls" — v2 does not
+  // cache MCP client connections across invocations (Hyperdrive request-scoped
+  // rule; each invoke dials and closes its own connection). Session reuse is no
+  // longer a property of the plugin, so the assertion no longer applies.
 });

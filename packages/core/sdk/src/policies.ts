@@ -1,45 +1,42 @@
 // ---------------------------------------------------------------------------
 // Tool policies — pattern matcher + policy resolution. Pure functions; the
-// executor stitches them into `tools.list`, `tools.invoke`, and the public
+// executor stitches them into `tools.list`, `execute`, and the public
 // `executor.policies` CRUD surface. Plugins consume the same surface.
+//
+// v2: policies are owner-scoped (org | user) instead of scope-stacked. Each
+// owner contributes its first matching rule by local position; the final answer
+// is the most restrictive matched action across owners, so a user preference
+// cannot weaken an org guardrail (org = outer, user = inner).
 // ---------------------------------------------------------------------------
 
 import { Match, Schema } from "effect";
 
 import type { ToolPolicyAction, ToolPolicyRow } from "./core-schema";
-import { PolicyId, ScopeId } from "./ids";
-
-// ---------------------------------------------------------------------------
-// Public projection — what callers see when they list policies. Strips the
-// raw `scope_id` to a readable `scopeId`, hides `created_at` typing
-// inconsistencies between adapters, and re-tags `id` as a `PolicyId`.
-// ---------------------------------------------------------------------------
+import { Owner, PolicyId } from "./ids";
 
 export interface ToolPolicy {
   readonly id: PolicyId;
-  readonly scopeId: ScopeId;
+  readonly owner: Owner;
   readonly pattern: string;
   readonly action: ToolPolicyAction;
-  /** Fractional-indexing key. Lower lex order = higher precedence.
-   *  Use `generateKeyBetween(a, b)` from the `fractional-indexing`
-   *  package to produce a key that sits between two existing rows. */
+  /** Fractional-indexing key. Lower lex order = higher precedence. */
   readonly position: string;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
 
 export interface CreateToolPolicyInput {
-  readonly targetScope: string;
+  readonly owner: Owner;
   readonly pattern: string;
+  /** Optional explicit position. Defaults to a key above the current minimum
+   *  (top of the owner's list; highest precedence). */
   readonly action: ToolPolicyAction;
-  /** Optional explicit position. Defaults to a key above the current
-   *  minimum (top of the scope's list; highest precedence). */
   readonly position?: string;
 }
 
 export interface UpdateToolPolicyInput {
   readonly id: string;
-  readonly targetScope: string;
+  readonly owner: Owner;
   readonly pattern?: string;
   readonly action?: ToolPolicyAction;
   readonly position?: string;
@@ -47,13 +44,11 @@ export interface UpdateToolPolicyInput {
 
 export interface RemoveToolPolicyInput {
   readonly id: string;
-  readonly targetScope: string;
+  readonly owner: Owner;
 }
 
 // ---------------------------------------------------------------------------
-// Match result — what `resolveToolPolicy` returns when a rule fires. Carries
-// the matched pattern so error messages and approval prompts can show the
-// user *which* rule produced the gate ("matched policy: vercel.dns.*").
+// Match result.
 // ---------------------------------------------------------------------------
 
 export interface PolicyMatch {
@@ -62,53 +57,50 @@ export interface PolicyMatch {
   readonly policyId: string;
 }
 
-// ---------------------------------------------------------------------------
-// Effective policy — the single answer to "what happens when this tool is
-// invoked?". Combines the user policy layer with the plugin's default
-// `requiresApproval` annotation. Callers (UI, agents, telemetry) shouldn't
-// need to know the layering — they ask once and render one thing.
-//
-// `source` distinguishes user-authored rules from plugin-derived defaults
-// purely for display ("Matched: vercel.*" vs "Plugin default"). The
-// `action` is what actually drives behavior at invoke time.
-// ---------------------------------------------------------------------------
-
 export type PolicySource = "user" | "plugin-default";
 
 export interface EffectivePolicy {
   readonly action: ToolPolicyAction;
   readonly source: PolicySource;
-  /** Matched pattern; populated only when `source === "user"`. */
   readonly pattern?: string;
-  /** Policy row id; populated only when `source === "user"`. */
   readonly policyId?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Pattern matching. v1 grammar:
-//   - universal:    `*`                     matches every tool id
-//   - exact:        `vercel.dns.create`     matches only that id
-//   - subtree:      `vercel.dns.*`          matches anything starting with `vercel.dns.`
-//   - plugin-wide:  `vercel.*`              matches anything starting with `vercel.`
-// `*` is only meaningful as a complete trailing segment (or as the
-// entire pattern). Patterns without a wildcard are exact-id matches.
+// Pattern matching. Grammar (matched against the full tool address
+// `<integration>.<owner>.<connection>.<tool>` or a shorter form the executor
+// passes in):
+//   - universal:        `*`
+//   - exact:            `vercel.dns.create`
+//   - subtree (trailing `*`):  `vercel.dns.*` — the literal prefix plus anything deeper
+//   - plugin-wide:      `vercel.*`
+//   - mid-segment `*`:  `vercel.*.*.dns.create` — each NON-trailing `*` matches
+//                       EXACTLY ONE segment (e.g. wildcard the owner/connection
+//                       segments to target a tool across every connection).
+// A `*` is always a complete segment: mid-pattern it consumes one segment,
+// trailing it is a subtree. Partial wildcards (`me*`) and a leading `*` (other
+// than the universal `*`) are rejected by `isValidPattern`.
 // ---------------------------------------------------------------------------
 
 export const matchPattern = (pattern: string, toolId: string): boolean => {
   if (pattern === "*") return true;
-  if (pattern === toolId) return true;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    if (prefix.length === 0) return false;
-    return toolId === prefix || toolId.startsWith(`${prefix}.`);
+  const patternSegments = pattern.split(".");
+  const toolSegments = toolId.split(".");
+  for (let i = 0; i < patternSegments.length; i++) {
+    const seg = patternSegments[i]!;
+    if (seg === "*") {
+      // Trailing `*` is a subtree: the literal prefix already matched, so the
+      // address matches at this position and anything deeper (or nothing).
+      if (i === patternSegments.length - 1) return toolSegments.length >= i;
+      // A non-trailing `*` consumes EXACTLY ONE segment; one must exist here.
+      if (i >= toolSegments.length) return false;
+      continue;
+    }
+    if (i >= toolSegments.length || toolSegments[i] !== seg) return false;
   }
-  return false;
+  // Pattern exhausted with no trailing `*`: an exact match requires equal length.
+  return patternSegments.length === toolSegments.length;
 };
-
-// ---------------------------------------------------------------------------
-// Pattern validation — rejects shapes the matcher can't handle. Used by the
-// CRUD path so a malformed rule never lands in the table.
-// ---------------------------------------------------------------------------
 
 export const isValidPattern = (pattern: string): boolean => {
   if (pattern.length === 0) return false;
@@ -116,29 +108,24 @@ export const isValidPattern = (pattern: string): boolean => {
   if (pattern.startsWith(".") || pattern.endsWith(".")) return false;
   if (pattern.includes("..")) return false;
   if (pattern.startsWith("*")) return false;
-  // `*` is only valid as the entire trailing segment.
   const segments = pattern.split(".");
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]!;
     if (seg.length === 0) return false;
+    // A `*` segment must be the WHOLE segment — no partial wildcards (`me*`).
+    // A `*` is valid mid-pattern (one segment) or trailing (subtree).
     if (seg.includes("*") && seg !== "*") return false;
-    if (seg === "*" && i !== segments.length - 1) return false;
   }
   return true;
 };
 
 // ---------------------------------------------------------------------------
-// Resolution — each scope contributes its first matching rule by local
-// position. The final answer is the most restrictive matched action across
-// those scopes, so an inner preference cannot weaken an outer guardrail.
-// Caller passes a `scopeRank` function so the resolver doesn't need to know
-// the executor's scope stack shape.
+// Resolution — each owner contributes its first matching rule by local
+// position; the most restrictive matched action across owners wins. Caller
+// passes an `ownerRank` so the resolver doesn't need to know which owner is
+// the outer guardrail.
 // ---------------------------------------------------------------------------
 
-// Lex compare on fractional-indexing key, then id as a stable tiebreak.
-// Two rows with identical `position` (racing inserts that picked the same
-// `generateKeyBetween(null, min)` from independent clients) would otherwise
-// flip on every refetch.
 export const comparePolicyRow = (
   a: Pick<ToolPolicyRow, "position" | "id">,
   b: Pick<ToolPolicyRow, "position" | "id">,
@@ -173,20 +160,20 @@ const moreRestrictive = <T extends { readonly action: ToolPolicyAction }>(
 export const resolveToolPolicy = (
   toolId: string,
   policies: readonly ToolPolicyRow[],
-  scopeRank: (row: Pick<ToolPolicyRow, "scope_id">) => number,
+  ownerRank: (row: Pick<ToolPolicyRow, "owner">) => number,
 ): PolicyMatch | undefined => {
   if (policies.length === 0) return undefined;
   const sorted = [...policies].sort((a, b) => {
-    const sa = scopeRank(a);
-    const sb = scopeRank(b);
+    const sa = ownerRank(a);
+    const sb = ownerRank(b);
     if (sa !== sb) return sa - sb;
     return comparePolicyRow(a, b);
   });
-  const firstMatchByScope = new Map<string, PolicyMatch>();
+  const firstMatchByOwner = new Map<string, PolicyMatch>();
   for (const row of sorted) {
-    if (firstMatchByScope.has(row.scope_id)) continue;
+    if (firstMatchByOwner.has(row.owner)) continue;
     if (matchPattern(row.pattern, toolId)) {
-      firstMatchByScope.set(row.scope_id, {
+      firstMatchByOwner.set(row.owner, {
         action: row.action as ToolPolicyAction,
         pattern: row.pattern,
         policyId: row.id,
@@ -194,24 +181,14 @@ export const resolveToolPolicy = (
     }
   }
   let selected: PolicyMatch | undefined;
-  for (const match of firstMatchByScope.values()) {
+  for (const match of firstMatchByOwner.values()) {
     selected = moreRestrictive(selected, match);
   }
   return selected;
 };
 
 // ---------------------------------------------------------------------------
-// Layered resolution — one call returns the effective policy combining
-// user-authored rules and the plugin's default `requiresApproval`
-// annotation. Use this anywhere a UI / agent / log needs the final answer
-// without knowing about the layering.
-//
-// Two flavors:
-//   - `resolveEffectivePolicy` takes raw rows + a scopeRank, mirrors
-//      `resolveToolPolicy`. Used server-side.
-//   - `effectivePolicyFromSorted` takes a pre-sorted list of public
-//      `ToolPolicy` projections; for clients that already received
-//      policies in evaluation order from the API.
+// Layered resolution — user-authored rules + plugin default `requiresApproval`.
 // ---------------------------------------------------------------------------
 
 const liftPlugin = (defaultRequiresApproval: boolean | undefined): EffectivePolicy =>
@@ -229,25 +206,25 @@ const liftUser = (match: PolicyMatch): EffectivePolicy => ({
 export const resolveEffectivePolicy = (
   toolId: string,
   policies: readonly ToolPolicyRow[],
-  scopeRank: (row: Pick<ToolPolicyRow, "scope_id">) => number,
+  ownerRank: (row: Pick<ToolPolicyRow, "owner">) => number,
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
-  const match = resolveToolPolicy(toolId, policies, scopeRank);
+  const match = resolveToolPolicy(toolId, policies, ownerRank);
   return match ? liftUser(match) : liftPlugin(defaultRequiresApproval);
 };
 
 export const effectivePolicyFromSorted = (
   toolId: string,
   sortedPolicies: readonly (Pick<ToolPolicy, "pattern" | "action" | "id"> &
-    Partial<Pick<ToolPolicy, "scopeId">>)[],
+    Partial<Pick<ToolPolicy, "owner">>)[],
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
-  const firstMatchByScope = new Map<string, EffectivePolicy>();
+  const firstMatchByOwner = new Map<string, EffectivePolicy>();
   for (const p of sortedPolicies) {
-    const scopeKey = "scopeId" in p && p.scopeId ? String(p.scopeId) : "__flat__";
-    if (firstMatchByScope.has(scopeKey)) continue;
+    const ownerKey = "owner" in p && p.owner ? String(p.owner) : "__flat__";
+    if (firstMatchByOwner.has(ownerKey)) continue;
     if (matchPattern(p.pattern, toolId)) {
-      firstMatchByScope.set(scopeKey, {
+      firstMatchByOwner.set(ownerKey, {
         action: p.action,
         source: "user",
         pattern: p.pattern,
@@ -256,7 +233,7 @@ export const effectivePolicyFromSorted = (
     }
   }
   let selected: EffectivePolicy | undefined;
-  for (const match of firstMatchByScope.values()) {
+  for (const match of firstMatchByOwner.values()) {
     selected = moreRestrictive(selected, match);
   }
   return selected ?? liftPlugin(defaultRequiresApproval);
@@ -268,17 +245,12 @@ export const effectivePolicyFromSorted = (
 
 export const rowToToolPolicy = (row: ToolPolicyRow): ToolPolicy => ({
   id: PolicyId.make(row.id),
-  scopeId: ScopeId.make(row.scope_id),
+  owner: row.owner as Owner,
   pattern: row.pattern,
   action: row.action as ToolPolicyAction,
   position: row.position,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
-
-// ---------------------------------------------------------------------------
-// Schema for the action enum — useful for HTTP edges that want to validate
-// inputs with effect/Schema.
-// ---------------------------------------------------------------------------
 
 export const ToolPolicyActionSchema = Schema.Literals(["approve", "require_approval", "block"]);

@@ -30,7 +30,6 @@ const IGNORE_DIRS = new Set([
   "build",
   ".local",
   ".changeset",
-  "integrationsdotsh",
 ]);
 
 // Files we intentionally leave alone — they contain `Schema.Class` strings as

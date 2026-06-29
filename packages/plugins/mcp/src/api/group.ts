@@ -1,154 +1,184 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { InternalError, ScopeId, SecretBackedMap } from "@executor-js/sdk/shared";
+import {
+  IntegrationSlug,
+  InternalError,
+  IntegrationAlreadyExistsError,
+} from "@executor-js/sdk/shared";
 
 import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
-import { McpStoredSourceSchema } from "../sdk/stored-source";
-import { McpConfiguredValueInput, McpConnectionAuthInput, McpCredentialInput } from "../sdk/types";
-import { OAuth2SourceConfig } from "@executor-js/sdk/http-source";
+import {
+  McpAuthMethod,
+  McpAuthMethodInput,
+  McpAuthShorthand,
+  McpIntegrationConfig,
+} from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Params
 // ---------------------------------------------------------------------------
 
-const ScopeParams = { scopeId: ScopeId };
-const SourceParams = { scopeId: ScopeId, namespace: Schema.String };
+const SlugParams = { slug: IntegrationSlug };
 
 const StringMap = Schema.Record(Schema.String, Schema.String);
+
 // ---------------------------------------------------------------------------
-// Add source — discriminated union on transport
+// Add server — discriminated union on transport. An MCP server is registered
+// as an integration; connections (credentials) are created separately through
+// the core connections / oauth surface.
 // ---------------------------------------------------------------------------
 
-const AddRemoteSourcePayload = Schema.Struct({
-  transport: Schema.Literal("remote"),
+const AddRemoteServerPayload = Schema.Struct({
+  transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Agent-visible catalog description. Defaults to the display name. */
+  description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
-  namespace: Schema.optional(Schema.String),
-  queryParams: Schema.optional(Schema.Record(Schema.String, McpConfiguredValueInput)),
-  headers: Schema.optional(Schema.Record(Schema.String, McpConfiguredValueInput)),
-  oauth2: Schema.optional(OAuth2SourceConfig),
-  credentials: Schema.optional(
-    Schema.Struct({
-      scope: ScopeId,
-      headers: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
-      queryParams: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
-      auth: Schema.optional(McpConnectionAuthInput),
-    }),
-  ),
+  slug: Schema.optional(Schema.String),
+  queryParams: Schema.optional(StringMap),
+  headers: Schema.optional(StringMap),
+  /** Declared auth methods a connection can be applied through. */
+  authenticationTemplate: Schema.optional(Schema.Array(McpAuthMethodInput)),
+  /** Single-method shorthand (legacy callers); ignored when
+   *  `authenticationTemplate` is present. */
+  auth: Schema.optional(McpAuthShorthand),
 });
 
-const AddStdioSourcePayload = Schema.Struct({
+const AddStdioServerPayload = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
+  /** Declare the secret env vars this server needs, by name. Their values are
+   *  supplied as the connection's secrets (the connect step), not here. */
+  envVars: Schema.optional(Schema.Array(Schema.String)),
+  /** One-shot secret env values (programmatic). The UI sends `envVars`. */
   env: Schema.optional(StringMap),
   cwd: Schema.optional(Schema.String),
-  namespace: Schema.optional(Schema.String),
+  slug: Schema.optional(Schema.String),
 });
 
-const AddSourcePayload = Schema.Union([AddRemoteSourcePayload, AddStdioSourcePayload]);
+const AddServerPayload = Schema.Union([AddRemoteServerPayload, AddStdioServerPayload]);
 
 const ProbeEndpointPayload = Schema.Struct({
   endpoint: Schema.String,
-  headers: Schema.optional(SecretBackedMap),
-  queryParams: Schema.optional(SecretBackedMap),
+  headers: Schema.optional(StringMap),
+  queryParams: Schema.optional(StringMap),
 });
 
 const ProbeEndpointResponse = Schema.Struct({
   connected: Schema.Boolean,
+  requiresAuthentication: Schema.Boolean,
   requiresOAuth: Schema.Boolean,
   supportsDynamicRegistration: Schema.Boolean,
   name: Schema.String,
-  namespace: Schema.String,
+  slug: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
   serverName: Schema.NullOr(Schema.String),
-});
-
-const NamespacePayload = Schema.Struct({
-  namespace: Schema.String,
+  /** Server `instructions` from initialize — prefills the description field. */
+  instructions: Schema.NullOr(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
 // Responses
 // ---------------------------------------------------------------------------
 
-const AddSourceResponse = Schema.Struct({
-  toolCount: Schema.Number,
-  namespace: Schema.String,
+const AddServerResponse = Schema.Struct({
+  slug: Schema.String,
 });
 
-const RefreshSourceResponse = Schema.Struct({
-  toolCount: Schema.Number,
-});
-
-const RemoveSourceResponse = Schema.Struct({
+const RemoveServerResponse = Schema.Struct({
   removed: Schema.Boolean,
 });
+
+const ConfigureServerPayload = Schema.Struct({
+  config: McpIntegrationConfig,
+});
+
+const ConfigureServerResponse = Schema.Struct({
+  config: McpIntegrationConfig,
+});
+
+// The configureAuth payload/response — custom auth methods to merge-append
+// onto the integration's `authenticationTemplate` (or `replace` the set).
+// Mirrors the GraphQL/OpenAPI configure endpoints.
+const ConfigureAuthPayload = Schema.Struct({
+  authenticationTemplate: Schema.Array(McpAuthMethodInput),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
+});
+
+const ConfigureAuthResponse = Schema.Struct({
+  authenticationTemplate: Schema.Array(McpAuthMethod),
+});
+
+const GetServerResponse = Schema.NullOr(
+  Schema.Struct({
+    slug: IntegrationSlug,
+    description: Schema.String,
+    kind: Schema.String,
+    canRemove: Schema.Boolean,
+    canRefresh: Schema.Boolean,
+    config: McpIntegrationConfig,
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Group
 //
-// Plugin SDK errors (McpOAuthError etc.) are declared once at the group
-// level via `.addError(...)` — every endpoint inherits them. The errors
-// themselves carry their HTTP status via `HttpApiSchema.annotations`
-// in errors.ts, so handlers just `return yield* ext.foo(...)` and the
-// schema encodes whatever it gets.
-//
-// 5xx is handled at the API level: `CoreExecutorApi.addError(InternalError)`
-// adds a single shared opaque-by-schema 500 surface to every endpoint in
-// the entire API. Defects are captured + downgraded to it by an
-// HttpApiBuilder middleware (see apps/cloud/src/observability.ts).
-// No per-handler wrapping, no per-plugin InternalError.
+// Integrations are tenant-level (no scope segment); plugin domain errors carry
+// their own `HttpApiSchema` status (4xx). `InternalError` is the shared opaque
+// 500 translated at the HTTP edge.
 // ---------------------------------------------------------------------------
 
 export const McpGroup = HttpApiGroup.make("mcp")
   .add(
-    HttpApiEndpoint.post("probeEndpoint", "/scopes/:scopeId/mcp/probe", {
-      params: ScopeParams,
+    HttpApiEndpoint.post("probeEndpoint", "/mcp/probe", {
       payload: ProbeEndpointPayload,
       success: ProbeEndpointResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   )
   .add(
-    HttpApiEndpoint.post("addSource", "/scopes/:scopeId/mcp/sources", {
-      params: ScopeParams,
-      payload: AddSourcePayload,
-      success: AddSourceResponse,
+    HttpApiEndpoint.post("addServer", "/mcp/servers", {
+      payload: AddServerPayload,
+      success: AddServerResponse,
+      error: [
+        InternalError,
+        McpConnectionError,
+        McpToolDiscoveryError,
+        IntegrationAlreadyExistsError,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("removeServer", "/mcp/servers/:slug", {
+      params: SlugParams,
+      success: RemoveServerResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   )
   .add(
-    HttpApiEndpoint.post("removeSource", "/scopes/:scopeId/mcp/sources/remove", {
-      params: ScopeParams,
-      payload: NamespacePayload,
-      success: RemoveSourceResponse,
+    HttpApiEndpoint.get("getServer", "/mcp/servers/:slug", {
+      params: SlugParams,
+      success: GetServerResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   )
   .add(
-    HttpApiEndpoint.post("refreshSource", "/scopes/:scopeId/mcp/sources/refresh", {
-      params: ScopeParams,
-      payload: NamespacePayload,
-      success: RefreshSourceResponse,
+    HttpApiEndpoint.post("configureServer", "/mcp/servers/:slug/config", {
+      params: SlugParams,
+      payload: ConfigureServerPayload,
+      success: ConfigureServerResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   )
   .add(
-    HttpApiEndpoint.get("getSource", "/scopes/:scopeId/mcp/sources/:namespace", {
-      params: SourceParams,
-      success: Schema.NullOr(McpStoredSourceSchema),
+    HttpApiEndpoint.post("configureAuth", "/mcp/servers/:slug/auth", {
+      params: SlugParams,
+      payload: ConfigureAuthPayload,
+      success: ConfigureAuthResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
     }),
   );
-// Errors declared once at the group level — every endpoint inherits.
-// Plugin domain errors carry their own HttpApiSchema status (4xx);
-// `InternalError` is the shared opaque 500 translated at the HTTP
-// edge by `withCapture`. We only list errors an MCP *group*
-// endpoint can surface: `McpInvocationError` is thrown inside
-// `invokeTool` which is reached via the core `tools.invoke`
-// endpoint, not any MCP-group endpoint, so it doesn't belong here.
-// OAuth errors live on the shared `/oauth/*` group in `@executor-js/api`
-// now — the MCP group only declares its own plugin-domain errors.

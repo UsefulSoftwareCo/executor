@@ -13,7 +13,7 @@ import {
   type McpPluginContribution,
   type McpPluginRegisterContext,
   type McpToolResult,
-} from "@executor-js/host-mcp";
+} from "@executor-js/host-mcp/tool-server";
 import { loadDynamicUiShellHtml } from "./shell-html";
 
 type ToggleableMcpRegistration = {

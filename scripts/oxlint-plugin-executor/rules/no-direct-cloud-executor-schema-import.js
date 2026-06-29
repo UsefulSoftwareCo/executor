@@ -3,20 +3,15 @@ import { getPropertyName, isIdentifier, toRepoRelative, unwrapExpression } from 
 const message =
   "Do not access cloud executor tables directly outside DB schema wiring. Executor-domain table access must go through the scoped SDK adapter so scope_id filtering cannot be skipped.";
 
-const allowedFiles = new Set([
-  "apps/cloud/src/services/db.ts",
-  "apps/cloud/src/services/db.schema.test.ts",
-]);
+const allowedFiles = new Set(["apps/cloud/src/db/db.ts", "apps/cloud/src/db/db.schema.test.ts"]);
 
 const isCloudSource = (filename) => toRepoRelative(filename).startsWith("apps/cloud/src/");
 
 const isDirectExecutorSchemaImport = (specifier) =>
   specifier === "./executor-schema" ||
   specifier === "./executor-schema.ts" ||
-  specifier === "../services/executor-schema" ||
-  specifier === "../services/executor-schema.ts" ||
-  specifier.endsWith("/services/executor-schema") ||
-  specifier.endsWith("/services/executor-schema.ts");
+  specifier.endsWith("/db/executor-schema") ||
+  specifier.endsWith("/db/executor-schema.ts");
 
 const coreTableNames = new Set([
   "source",

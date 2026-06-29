@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 
-import { definePlugin, type PluginCtx, type SecretProvider } from "@executor-js/sdk/core";
+import { definePlugin, type CredentialProvider, type PluginCtx } from "@executor-js/sdk";
 
 import {
   deletePassword,
@@ -10,7 +10,7 @@ import {
   resolveServiceName,
   setPassword,
 } from "./keyring";
-import { makeKeychainProvider, scopedKeychainServiceName } from "./provider";
+import { makeKeychainProvider } from "./provider";
 
 // Probe the keychain by writing and then deleting a sentinel entry. A
 // read-only probe isn't enough — on some Linux environments (WSL2,
@@ -50,10 +50,10 @@ export type KeychainExtension = ReturnType<typeof makeKeychainExtension>;
 // ---------------------------------------------------------------------------
 
 const makeKeychainExtension = (
-  ctx: PluginCtx<unknown>,
+  _ctx: PluginCtx<unknown>,
   options: KeychainPluginConfig | undefined,
 ) => {
-  const baseServiceName = resolveServiceName(options?.serviceName);
+  const serviceName = resolveServiceName(options?.serviceName);
   return {
     /** Human-readable name for the keychain on this platform */
     displayName: displayName(),
@@ -61,21 +61,13 @@ const makeKeychainExtension = (
     /** Whether the current platform supports system keychain */
     isSupported: isSupportedPlatform(),
 
-    /** Check if a secret exists in the system keychain */
+    /** Check if a secret exists in the system keychain. `id` is the opaque
+     *  provider item id (the keychain account); v2 has no scope partitioning. */
     has: (id: string) =>
-      Effect.gen(function* () {
-        for (const scope of ctx.scopes) {
-          const exists = yield* getPassword(
-            scopedKeychainServiceName(baseServiceName, scope.id),
-            id,
-          ).pipe(
-            Effect.map((v) => v !== null),
-            Effect.orElseSucceed(() => false),
-          );
-          if (exists) return true;
-        }
-        return false;
-      }),
+      getPassword(serviceName, id).pipe(
+        Effect.map((value: string | null) => value !== null),
+        Effect.orElseSucceed(() => false),
+      ),
   };
 };
 
@@ -83,17 +75,14 @@ export const keychainPlugin = definePlugin((options?: KeychainPluginConfig) => (
   id: "keychain" as const,
   storage: () => ({}),
 
-  extension: (ctx): KeychainExtension => makeKeychainExtension(ctx, options),
+  extension: (ctx: PluginCtx<unknown>): KeychainExtension => makeKeychainExtension(ctx, options),
 
-  secretProviders: (ctx): Effect.Effect<readonly SecretProvider[]> =>
+  credentialProviders: (): Effect.Effect<readonly CredentialProvider[]> =>
     Effect.gen(function* () {
-      const baseServiceName = resolveServiceName(options?.serviceName);
-      const probeServiceName = scopedKeychainServiceName(baseServiceName, ctx.scopes[0]!.id);
+      const serviceName = resolveServiceName(options?.serviceName);
       const account = probeAccount();
-      const reachable = yield* setPassword(probeServiceName, account, PROBE_VALUE).pipe(
-        Effect.andThen(
-          deletePassword(probeServiceName, account).pipe(Effect.catch(() => Effect.void)),
-        ),
+      const reachable = yield* setPassword(serviceName, account, PROBE_VALUE).pipe(
+        Effect.andThen(deletePassword(serviceName, account).pipe(Effect.catch(() => Effect.void))),
         Effect.as(true),
         Effect.catch(() =>
           Effect.logWarning("keychain unavailable, skipping provider registration").pipe(
@@ -101,6 +90,6 @@ export const keychainPlugin = definePlugin((options?: KeychainPluginConfig) => (
           ),
         ),
       );
-      return reachable ? [makeKeychainProvider(baseServiceName)] : [];
+      return reachable ? [makeKeychainProvider(serviceName)] : [];
     }),
 }));

@@ -1,0 +1,182 @@
+---
+import Layout from "./Layout.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  date: Date;
+  author: string;
+  authorHandle: string;
+  authorRole: string;
+  authorAvatar: string;
+}
+
+const {
+  title,
+  description,
+  date,
+  author,
+  authorHandle,
+  authorRole,
+  authorAvatar,
+} = Astro.props;
+
+const GH = "https://github.com/RhysSullivan/executor";
+const authorX = `https://x.com/${authorHandle}`;
+
+const formattedDate = date.toLocaleDateString("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  // Frontmatter dates are bare YYYY-MM-DD (parsed as UTC midnight); format in
+  // UTC so the displayed day matches the date the author wrote, regardless of
+  // the build/runtime timezone.
+  timeZone: "UTC",
+});
+const isoDate = date.toISOString();
+---
+
+<Layout title={`${title} — Executor`} description={description}>
+  <main class="bg-soft relative min-h-dvh antialiased">
+    {/* Graph-paper pattern + fade behind the header, matching the homepage */}
+    <div
+      class="pattern-bg pattern-graph"
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:1;pointer-events:none;"
+    >
+    </div>
+    <div
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:2;pointer-events:none;background:linear-gradient(180deg,transparent 0%,transparent 55%,var(--color-surface) 100%);"
+    >
+    </div>
+
+    <div class="relative z-10">
+      {/* ─── NAV ─── */}
+      <nav>
+        <div
+          class="mx-auto flex h-14 max-w-[1200px] items-center justify-between px-6 sm:px-10"
+        >
+          <a href="/" class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-5 w-5" />
+            <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink"
+              >executor</span
+            >
+          </a>
+          <div class="flex items-center gap-5">
+            <a
+              href="/blog"
+              class="text-[14px] font-medium text-ink-2 transition-colors hover:text-ink"
+              >Blog</a
+            >
+            <a
+              href="https://executor.sh/docs"
+              class="hidden text-[14px] font-medium text-ink-2 transition-colors hover:text-ink sm:inline"
+              >Docs</a
+            >
+            <a
+              href={GH}
+              class="text-[14px] font-medium text-ink-2 transition-colors hover:text-ink"
+              >GitHub</a
+            >
+            <a href="/#install" class="btn-primary">Get started →</a>
+          </div>
+        </div>
+      </nav>
+
+      {/* ─── HEADER ─── */}
+      <section class="px-6 pt-16 pb-10 sm:px-10 sm:pt-24 sm:pb-14">
+        <div class="mx-auto max-w-[720px]">
+          <a
+            href="/blog"
+            class="eyebrow inline-flex items-center gap-1.5 transition-colors hover:text-ink-2"
+            >← Blog</a
+          >
+          <h1
+            class="mt-5 text-[clamp(2.2rem,5vw,3.6rem)] font-semibold leading-[1.05] tracking-[-0.025em] text-ink text-balance"
+          >
+            {title}
+          </h1>
+          <p class="mt-5 text-[17px] leading-[1.6] text-ink-2 text-pretty">
+            {description}
+          </p>
+          <div class="mt-8 flex items-center gap-3">
+            <a
+              href={authorX}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="shrink-0"
+              aria-label={`${author} on X`}
+            >
+              <img
+                src={authorAvatar}
+                alt={author}
+                width="44"
+                height="44"
+                loading="lazy"
+                class="h-11 w-11 rounded-full object-cover ring-1 ring-rule"
+              />
+            </a>
+            <div class="min-w-0">
+              <a
+                href={authorX}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-[15px] font-semibold text-ink transition-colors hover:text-accent"
+                >{author}</a
+              >
+              <div class="mt-0.5 text-[13px] leading-snug text-ink-3">
+                {authorRole} · <time datetime={isoDate}>{formattedDate}</time>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── ARTICLE ─── */}
+      <section class="px-6 pt-2 pb-20 sm:px-10 sm:pb-28">
+        <article class="blog-prose mx-auto max-w-[720px]">
+          <slot />
+        </article>
+      </section>
+
+      {/* ─── BOTTOM CTA ─── */}
+      <section class="border-t border-rule py-16 sm:py-20">
+        <div class="mx-auto max-w-[720px] px-6 text-center sm:px-10">
+          <h2 class="section-title mx-auto mb-7 max-w-[20ch]">
+            Connect any agent to <span class="serif-italic">everything</span>.
+          </h2>
+          <div class="flex flex-wrap items-center justify-center gap-3">
+            <a href="/#install" class="btn-primary btn-primary--hero"
+              >Get started →</a
+            >
+            <a href={GH} class="btn-secondary">Star on GitHub</a>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FOOTER ─── */}
+      <footer class="border-t border-rule py-10">
+        <div
+          class="mx-auto flex max-w-[1200px] flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center sm:px-10"
+        >
+          <div class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-4 w-4 opacity-80" />
+            <span class="text-[13px] font-medium text-ink-2">executor</span>
+            <span class="ml-2 text-[12px] text-ink-3"
+              >© {new Date().getFullYear()}</span
+            >
+          </div>
+          <div class="flex items-center gap-6 text-[13px] text-ink-2">
+            <a href="/blog" class="transition-colors hover:text-ink">Blog</a>
+            <a
+              href="https://executor.sh/docs"
+              class="transition-colors hover:text-ink">Docs</a
+            >
+            <a href={GH} class="transition-colors hover:text-ink">GitHub</a>
+            <a href="/privacy" class="transition-colors hover:text-ink">Privacy</a>
+            <a href="/terms" class="transition-colors hover:text-ink">Terms</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </main>
+</Layout>

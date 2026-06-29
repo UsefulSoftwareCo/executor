@@ -1,0 +1,11 @@
+/* Logo wordmark: Geist Mono, matching the app console and marketing wordmark.
+   The navbar default is a bold sans; the mono wordmark is the brand signature,
+   so set the mono family at medium weight with no extra tracking. */
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap");
+
+.nav-logo,
+.nav-logo * {
+  font-family: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+}

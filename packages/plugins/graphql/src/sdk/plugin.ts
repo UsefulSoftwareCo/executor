@@ -3,33 +3,34 @@ import type { Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
 import {
-  type CredentialBindingRef,
-  type CredentialBindingValue,
-  definePlugin,
-  tool,
-  defaultSourceInstallScopeId,
-  ScopeId,
-  SourceDetectionResult,
-  StorageError,
-  ToolResult,
   authToolFailure,
+  AuthTemplateSlug,
+  definePlugin,
+  IntegrationAlreadyExistsError,
+  IntegrationDetectionResult,
+  IntegrationSlug,
+  mergeAuthTemplates,
+  sha256Hex,
+  ToolName,
+  ToolResult,
+  type AuthMethodDescriptor,
+  type IntegrationConfig,
+  type IntegrationRecord,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
-  type ToolRow,
+  type ToolDef,
 } from "@executor-js/sdk/core";
-import {
-  compileHttpNamedCredentialMap,
-  OAuth2SourceConfig,
-  httpCredentialInputToBindingValue,
-  type HttpConfiguredValueInput,
-} from "@executor-js/sdk/http-source";
 
 import {
-  headersToConfigValues,
-  type ConfigFileSink,
-  type GraphqlSourceConfig as GraphqlConfigEntry,
-} from "@executor-js/config";
+  TOKEN_VARIABLE,
+  describeApiKeyAuthMethod,
+  describeNoneAuthMethod,
+  oauthBearerPlacement,
+  renderAuthPlacements,
+  requiredPlacementVariables,
+  type RenderedAuthPlacements,
+} from "@executor-js/sdk/http-auth";
 
 import {
   introspect,
@@ -37,6 +38,7 @@ import {
   type IntrospectionResult,
   type IntrospectionType,
   type IntrospectionField,
+  type IntrospectionInputValue,
   type IntrospectionTypeRef,
 } from "./introspect";
 import { extract } from "./extract";
@@ -45,35 +47,25 @@ import {
   GraphqlIntrospectionError,
   GraphqlInvocationError,
 } from "./errors";
-import { invokeWithLayer } from "./invoke";
+import { effectiveOperationString, invokeWithLayer } from "./invoke";
+import { validateOperationString } from "./validate-selection";
 import { graphqlPresets } from "./presets";
+import { makeDefaultGraphqlStore, type GraphqlStore, type StoredOperation } from "./store";
 import {
-  graphqlSchema,
-  makeDefaultGraphqlStore,
-  type GraphqlStore,
-  type StoredGraphqlSource,
-  type StoredOperation,
-} from "./store";
-import {
+  GraphqlAuthMethodInput,
+  decodeGraphqlIntegrationConfig,
+  decodeGraphqlIntegrationConfigOption,
   ExtractedField,
-  GraphqlConfiguredValueInput as GraphqlConfiguredValueInputSchema,
-  GRAPHQL_OAUTH_CONNECTION_SLOT,
-  GraphqlCredentialInput as GraphqlCredentialInputSchema,
-  GraphqlSourceAuthInput as GraphqlSourceAuthInputSchema,
-  graphqlHeaderSlot,
-  graphqlQueryParamSlot,
+  GraphqlIntegrationConfig,
+  expandGraphqlAuthMethodInputs,
+  normalizeGraphqlAuthMethods,
   OperationBinding,
-  type ConfiguredGraphqlCredentialValue,
-  type GraphqlConfiguredValueInput,
-  type GraphqlCredentialInput,
-  type GraphqlSourceAuth,
-  type HeaderValue as HeaderValueValue,
-  type GraphqlSourceAuthInput,
+  type GraphqlAuthMethod,
   type GraphqlOperationKind,
 } from "./types";
 
 // ---------------------------------------------------------------------------
-// Plugin config
+// GraphQL error-body decoding (for invocation responses)
 // ---------------------------------------------------------------------------
 
 const GraphqlErrorBody = Schema.Struct({ message: Schema.String });
@@ -89,105 +81,78 @@ const extractGraphqlErrorMessage = (errors: readonly unknown[]): string | undefi
     .map((error) => Option.getOrUndefined(decodeGraphqlErrorBody(error))?.message)
     .find((message) => message !== undefined && message.length > 0);
 
-export type HeaderValue = HeaderValueValue;
-export type GraphqlCredentialValue = ConfiguredGraphqlCredentialValue;
+const GRAPHQL_PLUGIN_ID = "graphql";
 
-export interface GraphqlSourceConfig {
-  /** The GraphQL endpoint URL */
-  readonly endpoint: string;
-  /**
-   * Executor scope id that owns this source row. Must be one of the
-   * executor's configured scopes. Typical shape: an admin adds the
-   * source at the outermost (organization) scope so it's visible to
-   * every inner (per-user) scope via fall-through reads.
-   */
-  readonly scope: string;
-  /** Display name for the source. */
-  readonly name: string;
-  /** Optional: introspection JSON text (if endpoint doesn't support introspection) */
-  readonly introspectionJson?: string;
-  /** Namespace for the tools. */
-  readonly namespace: string;
-  /** Headers applied to every request. Secret entries declare source-owned slots. */
-  readonly headers?: Record<string, GraphqlConfiguredValueInput>;
-  /** Query parameters applied to every request. Secret entries declare source-owned slots. */
-  readonly queryParams?: Record<string, GraphqlConfiguredValueInput>;
-  /** Optional OAuth2 credential used as a Bearer token for every request. */
-  readonly oauth2?: OAuth2SourceConfig;
-  /** Initial credential bindings used while adding and introspecting this source. */
-  readonly credentials?: GraphqlInitialCredentialsInput;
-}
+// ---------------------------------------------------------------------------
+// Extension input shapes
+// ---------------------------------------------------------------------------
 
-const GraphqlInitialCredentialsInputSchema = Schema.Struct({
-  scope: Schema.String,
-  headers: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
-  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
-  auth: Schema.optional(GraphqlSourceAuthInputSchema),
-});
-type GraphqlInitialCredentialsInput = typeof GraphqlInitialCredentialsInputSchema.Type;
-
-const StaticAddSourceInputSchema = Schema.Struct({
+/** Register a GraphQL integration in the catalog. `endpoint` is the GraphQL URL;
+ *  `slug` (defaulted from the endpoint) is the catalog id; `introspectionJson`
+ *  supplies the schema when the endpoint disables live introspection; `headers`
+ *  / `queryParams` are static and also applied to add-time introspection;
+ *  `authenticationTemplate` declares the auth methods a connection can apply
+ *  through. */
+const GraphqlAddIntegrationInputSchema = Schema.Struct({
   endpoint: Schema.String,
-  name: Schema.String,
+  slug: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  /** Agent-visible catalog description. Falls back to the introspected
+   *  schema's own description, then the display name. */
+  description: Schema.optional(Schema.String),
   introspectionJson: Schema.optional(Schema.String),
-  namespace: Schema.String,
-  headers: Schema.optional(Schema.Record(Schema.String, GraphqlConfiguredValueInputSchema)),
-  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlConfiguredValueInputSchema)),
-  oauth2: Schema.optional(OAuth2SourceConfig),
-  credentials: Schema.optional(GraphqlInitialCredentialsInputSchema),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  authenticationTemplate: Schema.optional(Schema.Array(GraphqlAuthMethodInput)),
 });
-const SourceConfigureInputSchema = Schema.Struct({
+export type GraphqlAddIntegrationInput = typeof GraphqlAddIntegrationInputSchema.Type;
+
+const GraphqlConfigureInputSchema = Schema.Struct({
   name: Schema.optional(Schema.String),
   endpoint: Schema.optional(Schema.String),
-  headers: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
-  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInputSchema)),
-  auth: Schema.optional(GraphqlSourceAuthInputSchema),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  authenticationTemplate: Schema.optional(Schema.Array(GraphqlAuthMethodInput)),
 });
-const StaticConfigureSourceInputSchema = Schema.Struct({
-  source: Schema.Struct({
-    id: Schema.String,
-    scope: Schema.String,
-  }),
-  scope: Schema.String,
-  ...SourceConfigureInputSchema.fields,
+export type GraphqlConfigureInput = typeof GraphqlConfigureInputSchema.Type;
+
+/** Input for the custom-method-create flow (HTTP `POST /graphql/integrations/
+ *  :slug/config`). Unlike `configure` (which REPLACES the whole config for the
+ *  generic repair path), `configureAuth` MERGE-APPENDS these methods onto the
+ *  integration's existing `authenticationTemplate`, mirroring OpenAPI's
+ *  `configure`. */
+const GraphqlConfigureAuthInputSchema = Schema.Struct({
+  authenticationTemplate: Schema.Array(GraphqlAuthMethodInput),
+  mode: Schema.optional(Schema.Literals(["merge", "replace"])),
 });
-const StaticConfigureSourceOutputSchema = Schema.Struct({
-  configured: Schema.Boolean,
+export type GraphqlConfigureAuthInput = typeof GraphqlConfigureAuthInputSchema.Type;
+
+// ---------------------------------------------------------------------------
+// Static control-tool schemas
+// ---------------------------------------------------------------------------
+
+const StaticAddIntegrationOutputSchema = Schema.Struct({
+  slug: Schema.String,
+  name: Schema.String,
 });
-const StaticGetSourceInputSchema = Schema.Struct({
-  namespace: Schema.String,
-  scope: Schema.String,
+const StaticGetIntegrationInputSchema = Schema.Struct({
+  slug: Schema.String,
 });
-const StaticGetSourceOutputSchema = Schema.Struct({
-  source: Schema.NullOr(Schema.Unknown),
+const StaticGetIntegrationOutputSchema = Schema.Struct({
+  integration: Schema.NullOr(Schema.Unknown),
 });
 
-const StaticAddSourceInputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(StaticAddSourceInputSchema),
+const StaticAddIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(GraphqlAddIntegrationInputSchema),
 );
-const StaticAddSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(
-    Schema.Struct({
-      namespace: Schema.String,
-      source: Schema.Struct({
-        id: Schema.String,
-        scope: Schema.String,
-      }),
-      toolCount: Schema.Number,
-    }),
-  ),
+const StaticAddIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticAddIntegrationOutputSchema),
 );
-const StaticGetSourceInputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(StaticGetSourceInputSchema),
+const StaticGetIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticGetIntegrationInputSchema),
 );
-const StaticGetSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(StaticGetSourceOutputSchema),
-);
-const StaticConfigureSourceInputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(StaticConfigureSourceInputSchema),
-);
-const StaticConfigureSourceOutputStandardSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(StaticConfigureSourceOutputSchema),
+const StaticGetIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(StaticGetIntegrationOutputSchema),
 );
 
 const graphqlToolFailure = (code: string, message: string, details?: unknown) =>
@@ -201,13 +166,11 @@ const graphqlAuthToolFailure = (failure: GraphqlAuthRequiredError) =>
   authToolFailure({
     code: failure.code,
     message: failure.message,
-    source: { id: failure.sourceId, scope: failure.sourceScope },
+    source: { id: failure.integration, scope: failure.owner },
     credential: {
       kind: failure.credentialKind,
       ...(failure.credentialLabel ? { label: failure.credentialLabel } : {}),
-      ...(failure.slotKey ? { slotKey: failure.slotKey } : {}),
-      ...(failure.secretId ? { secretId: failure.secretId } : {}),
-      ...(failure.connectionId ? { connectionId: failure.connectionId } : {}),
+      connectionId: failure.connection,
     },
     ...(failure.status !== undefined ? { status: failure.status } : {}),
     ...(failure.details !== undefined
@@ -218,52 +181,22 @@ const graphqlAuthToolFailure = (failure: GraphqlAuthRequiredError) =>
           },
         }
       : {}),
-    recovery: { configureSourceTool: "executor.graphql.configureSource" },
   });
-
-const resolveStaticScopeInput = (
-  ctx: { readonly scopes: readonly { readonly id: ScopeId; readonly name: string }[] },
-  value: string,
-): string =>
-  String(
-    ctx.scopes.find((scope) => scope.name === value || String(scope.id) === value)?.id ?? value,
-  );
-
-// ---------------------------------------------------------------------------
-// Plugin extension
-// ---------------------------------------------------------------------------
-
-export interface GraphqlSourceRef {
-  readonly id: string;
-  readonly scope: string;
-}
-
-export interface GraphqlConfigureSourceInput {
-  readonly scope: string;
-  readonly name?: string;
-  readonly endpoint?: string;
-  readonly headers?: Record<string, GraphqlCredentialInput>;
-  readonly queryParams?: Record<string, GraphqlCredentialInput>;
-  readonly auth?: GraphqlSourceAuthInput;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Match `token` as a separator-bounded run inside a URL hostname or path,
- *  used as a low-confidence detection hint when introspection fails.
- *  Boundary chars are everything non-alphanumeric, so `/api/graphql`,
- *  `graphql.example.com`, `graphql-api`, and `graphql_v2` all match while
- *  `graphqlserver` and `/graphqlite` do not. */
+ *  used as a low-confidence detection hint when introspection fails. */
 const urlMatchesToken = (url: URL, token: string): boolean => {
   const re = new RegExp(`(?:^|[^a-z0-9])${token}(?:$|[^a-z0-9])`, "i");
   return re.test(url.hostname) || re.test(url.pathname);
 };
 
-/** Derive a namespace from an endpoint URL */
-const namespaceFromEndpoint = (endpoint: string): string => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL construction throws; this helper intentionally falls back to the stable default namespace
+/** Derive an integration slug from an endpoint URL. */
+const slugFromEndpoint = (endpoint: string): string => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL construction throws; this helper intentionally falls back to the stable default slug
   try {
     const url = new URL(endpoint);
     return url.hostname.replace(/[^a-z0-9]+/gi, "_").toLowerCase();
@@ -286,44 +219,86 @@ const unwrapTypeName = (ref: IntrospectionTypeRef): string => {
   return "Unknown";
 };
 
-const buildSelectionSet = (
+// Composite (output) types require a sub-selection; leaves (scalars/enums) must
+// not have one. Anything we cannot resolve in the type map is treated as a leaf
+// (custom scalars live in the map as SCALAR; truly-unknown types are rare).
+const isCompositeType = (
   ref: IntrospectionTypeRef,
   types: ReadonlyMap<string, IntrospectionType>,
-  depth: number,
-  seen: Set<string>,
-): string => {
-  if (depth > 2) return "";
-
-  const leafName = unwrapTypeName(ref);
-  if (seen.has(leafName)) return "";
-
-  const objectType = types.get(leafName);
-  if (!objectType?.fields) return "";
-
-  const kind = objectType.kind;
-  if (kind === "SCALAR" || kind === "ENUM") return "";
-
-  seen.add(leafName);
-
-  const subFields = objectType.fields
-    .filter((f) => !f.name.startsWith("__"))
-    .slice(0, 12)
-    .map((f) => {
-      const sub = buildSelectionSet(f.type, types, depth + 1, seen);
-      return sub ? `${f.name} ${sub}` : f.name;
-    });
-
-  seen.delete(leafName);
-
-  return subFields.length > 0 ? `{ ${subFields.join(" ")} }` : "";
+): boolean => {
+  const kind = types.get(unwrapTypeName(ref))?.kind;
+  return kind === "OBJECT" || kind === "INTERFACE" || kind === "UNION";
 };
+
+// A field whose argument is non-null without a default cannot be selected by the
+// generator: it has no value to pass and emitting the field without the argument
+// is invalid (e.g. GitLab's `metadata.featureFlags(names:)`). Root-field required
+// arguments are different: those are threaded as operation variables (and
+// surfaced on the tool's input schema) in `buildOperationStringForField`.
+const hasRequiredArgWithoutDefault = (field: IntrospectionField): boolean =>
+  field.args.some(
+    (arg: IntrospectionInputValue) => arg.type.kind === "NON_NULL" && arg.defaultValue == null,
+  );
+
+// Build the DEFAULT selection set for a field's return type: every scalar/enum
+// leaf the generator can select without arguments. It deliberately does NOT
+// recurse into composite fields or guess at nested selections, for two reasons:
+//   - A real schema (GitLab has 4000+ types) makes any recursive auto-expansion
+//     either arbitrary (which N fields? how deep?) or so large the server
+//     rejects it for exceeding its query-complexity budget.
+//   - A bounded-but-arbitrary selection silently freezes a partial view at sync
+//     time. Instead, callers that want nested or list data pass an explicit
+//     `select` (see buildOperationStringForField / invoke), so the choice of
+//     deeper fields is the caller's, not a guess baked into the tool.
+// The result is always valid: selecting only leaves never needs a sub-selection,
+// and a composite type with no selectable leaves falls back to `__typename`.
+const buildDefaultSelectionSet = (
+  ref: IntrospectionTypeRef,
+  types: ReadonlyMap<string, IntrospectionType>,
+): string => {
+  const objectType = types.get(unwrapTypeName(ref));
+  if (!objectType?.fields) return ""; // scalar / enum / unknown: no selection
+  if (objectType.kind === "SCALAR" || objectType.kind === "ENUM") return "";
+
+  const leaves = objectType.fields
+    .filter(
+      (f: IntrospectionField) =>
+        !f.name.startsWith("__") &&
+        !hasRequiredArgWithoutDefault(f) &&
+        !isCompositeType(f.type, types),
+    )
+    .map((f: IntrospectionField) => f.name);
+
+  // A composite type MUST have a non-empty selection; `__typename` is a leaf
+  // that exists on every composite, so it is a safe minimal fallback.
+  return leaves.length > 0 ? `{ ${leaves.join(" ")} }` : "{ __typename }";
+};
+
+// Name every generated operation: some servers reject anonymous operations, and
+// APM tooling keys traces off the operation name. Field names are already valid
+// GraphQL name tokens, so the upper-cased field name is a safe operation name.
+const operationNameForField = (fieldName: string): string =>
+  fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+
+interface BuiltOperation {
+  /** The operation with the default (scalar-leaf) selection. */
+  readonly operationString: string;
+  /** Everything up to (not including) the field's selection set:
+   *  `query Op($a: T) { field(a: $a)`. A caller-supplied `select` is wrapped as
+   *  `{ <select> }` and spliced between this prefix and the suffix at invoke
+   *  time, so the selection can be chosen per call without re-introspecting. */
+  readonly operationPrefix: string;
+  /** Closes the operation: ` }`. */
+  readonly operationSuffix: string;
+}
 
 const buildOperationStringForField = (
   kind: GraphqlOperationKind,
   field: IntrospectionField,
   types: ReadonlyMap<string, IntrospectionType>,
-): string => {
+): BuiltOperation => {
   const opType = kind === "query" ? "query" : "mutation";
+  const opName = operationNameForField(field.name);
 
   const varDefs = field.args.map((arg) => {
     const typeName = formatTypeRef(arg.type);
@@ -331,20 +306,46 @@ const buildOperationStringForField = (
   });
 
   const argPasses = field.args.map((arg) => `${arg.name}: $${arg.name}`);
-  const selectionSet = buildSelectionSet(field.type, types, 0, new Set());
+  const defaultSelection = buildDefaultSelectionSet(field.type, types);
 
   const varDefsStr = varDefs.length > 0 ? `(${varDefs.join(", ")})` : "";
   const argPassStr = argPasses.length > 0 ? `(${argPasses.join(", ")})` : "";
 
-  return `${opType}${varDefsStr} { ${field.name}${argPassStr}${selectionSet ? ` ${selectionSet}` : ""} }`;
+  const operationPrefix = `${opType} ${opName}${varDefsStr} { ${field.name}${argPassStr}`;
+  const operationSuffix = ` }`;
+  const operationString = `${operationPrefix}${defaultSelection ? ` ${defaultSelection}` : ""}${operationSuffix}`;
+
+  return { operationString, operationPrefix, operationSuffix };
 };
 
 interface PreparedOperation {
-  readonly toolPath: string;
+  readonly toolName: string;
   readonly description: string;
   readonly inputSchema: unknown;
   readonly binding: OperationBinding;
 }
+
+// Surface an optional `select` input on every tool so a caller can choose the
+// return fields per call. The default operation selects only scalar leaves; to
+// fetch nested or list data the caller passes a GraphQL selection set here, which
+// is spliced into the operation at invoke time. A real field argument named
+// `select` (rare) is left untouched.
+const withSelectInput = (inputSchema: unknown, returnTypeName: string): unknown => {
+  const base =
+    inputSchema && typeof inputSchema === "object"
+      ? (inputSchema as Record<string, unknown>)
+      : { type: "object", properties: {} };
+  const properties = {
+    ...((base.properties as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (!("select" in properties)) {
+    properties.select = {
+      type: "string",
+      description: `Optional GraphQL selection set for the \`${returnTypeName}\` return type. Overrides the default, which selects only scalar fields. Provide the fields to return, with sub-selections for nested objects and arguments where required, e.g. "id name items { id title }". Omit for the default.`,
+    };
+  }
+  return { ...base, type: "object", properties };
+};
 
 const prepareOperations = (
   fields: readonly ExtractedField[],
@@ -371,7 +372,10 @@ const prepareOperations = (
 
   return fields.map((extracted) => {
     const prefix = extracted.kind === "mutation" ? "mutation" : "query";
-    const toolPath = `${prefix}.${extracted.fieldName}`;
+    // A tool's name keeps its `<kind>.<field>` path (e.g. `query.hello`,
+    // `mutation.setGreeting`). The address grammar treats `<tool>` as the
+    // trailing remainder (see parseToolAddress), so the dot nests naturally.
+    const toolName = `${prefix}.${extracted.fieldName}`;
     const description = Option.getOrElse(
       extracted.description,
       () => `GraphQL ${extracted.kind}: ${extracted.fieldName} -> ${extracted.returnTypeName}`,
@@ -379,21 +383,31 @@ const prepareOperations = (
 
     const key = `${extracted.kind}.${extracted.fieldName}`;
     const entry = fieldMap.get(key);
-    const operationString = entry
+    const built = entry
       ? buildOperationStringForField(entry.kind, entry.field, typeMap)
-      : `${extracted.kind} { ${extracted.fieldName} }`;
+      : {
+          operationString: `${extracted.kind} ${operationNameForField(extracted.fieldName)} { ${extracted.fieldName} }`,
+          operationPrefix: undefined,
+          operationSuffix: undefined,
+        };
 
     const binding = OperationBinding.make({
       kind: extracted.kind,
       fieldName: extracted.fieldName,
-      operationString,
+      operationString: built.operationString,
       variableNames: extracted.arguments.map((a) => a.name),
+      ...(built.operationPrefix !== undefined && built.operationSuffix !== undefined
+        ? { operationPrefix: built.operationPrefix, operationSuffix: built.operationSuffix }
+        : {}),
     });
 
     return {
-      toolPath,
+      toolName,
       description,
-      inputSchema: Option.getOrUndefined(extracted.inputSchema),
+      inputSchema: withSelectInput(
+        Option.getOrUndefined(extracted.inputSchema),
+        extracted.returnTypeName,
+      ),
       binding,
     };
   });
@@ -410,819 +424,694 @@ const annotationsFor = (binding: OperationBinding): ToolAnnotations => {
 };
 
 // ---------------------------------------------------------------------------
-// Plugin factory
+// Auth method rendering (D11) — apply the connection's resolved values through
+// the method the connection references. An oauth2 method is the conventional
+// bearer placement (with the method's optional header/prefix override) over
+// the resolved access token; an apikey method renders its declared placements.
 // ---------------------------------------------------------------------------
 
-export interface GraphqlPluginOptions {
-  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
-  /** If provided, source add/remove is mirrored to executor.jsonc
-   *  (best-effort — file errors are logged, not raised). */
-  readonly configFile?: ConfigFileSink;
-}
-
-const toGraphqlConfigEntry = (
-  namespace: string,
-  config: GraphqlSourceConfig,
-): GraphqlConfigEntry => {
-  const headers: Record<string, HeaderValue> = {};
-  for (const [name, value] of Object.entries(config.headers ?? {})) {
-    if (typeof value === "string" || !("kind" in value)) {
-      headers[name] = value;
-    }
+const renderGraphqlAuthMethod = (
+  method: GraphqlAuthMethod,
+  values: Record<string, string | null>,
+): RenderedAuthPlacements => {
+  if (method.kind === "apikey") return renderAuthPlacements(method.placements, values);
+  if (method.kind === "oauth2") {
+    return renderAuthPlacements([oauthBearerPlacement(method.header, method.prefix)], values);
   }
-  return {
-    kind: "graphql",
-    endpoint: config.endpoint,
-    introspectionJson: config.introspectionJson,
-    namespace,
-    headers: headersToConfigValues(Object.keys(headers).length > 0 ? headers : undefined),
-  };
+  return { headers: {}, queryParams: {} };
 };
 
-const GRAPHQL_PLUGIN_ID = "graphql";
+// ---------------------------------------------------------------------------
+// Introspection — produce operations from a config (live or stored JSON).
+// ---------------------------------------------------------------------------
 
-const scopeRanks = (ctx: PluginCtx<GraphqlStore>): ReadonlyMap<string, number> =>
-  new Map(ctx.scopes.map((scope, index) => [String(scope.id), index]));
+const buildToolDefs = (prepared: readonly PreparedOperation[]): readonly ToolDef[] =>
+  prepared.map((p) => ({
+    name: ToolName.make(p.toolName),
+    description: p.description,
+    inputSchema: p.inputSchema,
+    annotations: annotationsFor(p.binding),
+  }));
 
-const scopeRank = (ranks: ReadonlyMap<string, number>, scopeId: string): number =>
-  ranks.get(scopeId) ?? Infinity;
+const toStoredOperations = (
+  slug: IntegrationSlug,
+  prepared: readonly PreparedOperation[],
+): StoredOperation[] =>
+  prepared.map((p) => ({
+    toolName: p.toolName,
+    integration: String(slug),
+    binding: p.binding,
+  }));
 
-const resolveGraphqlSourceBinding = (
-  ctx: PluginCtx<GraphqlStore>,
-  sourceId: string,
-  sourceScope: string,
-  slot: string,
-): Effect.Effect<CredentialBindingRef | null, StorageFailure> =>
-  Effect.gen(function* () {
-    const ranks = scopeRanks(ctx);
-    const sourceSourceRank = scopeRank(ranks, sourceScope);
-    if (sourceSourceRank === Infinity) return null;
-    const bindings = yield* ctx.credentialBindings.listForSource({
-      pluginId: GRAPHQL_PLUGIN_ID,
-      sourceId,
-      sourceScope: ScopeId.make(sourceScope),
-    });
-    const binding = bindings
-      .filter(
-        (candidate) =>
-          candidate.slotKey === slot && scopeRank(ranks, candidate.scopeId) <= sourceSourceRank,
-      )
-      .sort((a, b) => scopeRank(ranks, a.scopeId) - scopeRank(ranks, b.scopeId))[0];
-    return binding ?? null;
-  });
-
-const validateGraphqlBindingTarget = (
-  ctx: PluginCtx<GraphqlStore>,
-  input: {
-    readonly sourceScope: string;
-    readonly targetScope: string;
-    readonly sourceId: string;
-  },
-): Effect.Effect<void, StorageFailure> =>
-  Effect.gen(function* () {
-    const ranks = scopeRanks(ctx);
-    const sourceSourceRank = scopeRank(ranks, input.sourceScope);
-    const targetRank = scopeRank(ranks, input.targetScope);
-    const scopeList = `[${ctx.scopes.map((s) => s.id).join(", ")}]`;
-    if (sourceSourceRank === Infinity) {
-      return yield* new StorageError({
-        message:
-          `GraphQL source binding references source scope "${input.sourceScope}" ` +
-          `which is not in the executor's scope stack ${scopeList}.`,
-        cause: undefined,
-      });
-    }
-    if (targetRank === Infinity) {
-      return yield* new StorageError({
-        message:
-          `GraphQL source binding targets scope "${input.targetScope}" which is not ` +
-          `in the executor's scope stack ${scopeList}.`,
-        cause: undefined,
-      });
-    }
-    if (targetRank > sourceSourceRank) {
-      return yield* new StorageError({
-        message:
-          `GraphQL source bindings for "${input.sourceId}" cannot be written at ` +
-          `outer scope "${input.targetScope}" because the base source lives at ` +
-          `"${input.sourceScope}"`,
-        cause: undefined,
-      });
-    }
-  });
-
-const canonicalizeCredentialMap = compileHttpNamedCredentialMap;
-
-const canonicalizeConfiguredValueMap = (
-  values: Record<string, GraphqlConfiguredValueInput> | undefined,
-  slotForName: (name: string) => string,
-): Record<string, ConfiguredGraphqlCredentialValue> => {
-  const next: Record<string, ConfiguredGraphqlCredentialValue> = {};
-  for (const [name, value] of Object.entries(values ?? {})) {
-    if (typeof value === "string") {
-      next[name] = value;
-      continue;
-    }
-    next[name] = {
-      kind: "binding",
-      slot: slotForName(name),
-      prefix: value.prefix,
-    };
+/** Render an integration's static + resolved-credential auth onto introspection
+ *  headers/query params. Connection-create / tool-generation introspection runs
+ *  with the connection's credential (exactly how its tools are invoked), so an
+ *  auth-required endpoint introspects successfully here rather than at add-time. */
+const introspectHeadersForConnection = (
+  config: GraphqlIntegrationConfig,
+  values: Record<string, string | null>,
+  templateSlug: AuthTemplateSlug | null,
+): RenderedAuthPlacements => {
+  const headers: Record<string, string> = { ...(config.headers ?? {}) };
+  const queryParams: Record<string, string> = { ...(config.queryParams ?? {}) };
+  // Render the exact method the connection references; with no slug
+  // (connection row not yet persisted) fall back to the first declared.
+  const method =
+    (templateSlug !== null
+      ? config.authenticationTemplate.find(
+          (m: GraphqlAuthMethod) => m.slug === String(templateSlug),
+        )
+      : undefined) ?? config.authenticationTemplate[0];
+  if (method) {
+    const rendered = renderGraphqlAuthMethod(method, values);
+    Object.assign(headers, rendered.headers);
+    Object.assign(queryParams, rendered.queryParams);
   }
-  return next;
+  return { headers, queryParams };
 };
 
-const resolveConfiguredValueMap = (
-  values: Record<string, HttpConfiguredValueInput> | undefined,
-): Record<string, string> | undefined => {
-  if (!values) return undefined;
-  const resolved: Record<string, string> = {};
-  for (const [name, value] of Object.entries(values)) {
-    if (typeof value === "string") resolved[name] = value;
-  }
-  return Object.keys(resolved).length > 0 ? resolved : undefined;
-};
+/** Resolve a config's introspection snapshot text from the plugin blob store
+ *  (`introspectionHash`). Null when the integration has no snapshot (live
+ *  introspection territory). Pre-blob rows that inlined the JSON are
+ *  rewritten by the introspection-to-blob migrations before this code reads
+ *  them. */
+const loadIntrospectionJson = (
+  storage: GraphqlStore,
+  config: GraphqlIntegrationConfig,
+): Effect.Effect<string | null, StorageFailure> =>
+  config.introspectionHash != null
+    ? storage.getIntrospection(config.introspectionHash)
+    : Effect.succeed(null);
 
-const authFromOAuth2Source = (oauth2: OAuth2SourceConfig | undefined): GraphqlSourceAuth =>
-  oauth2 ? { kind: "oauth2", connectionSlot: oauth2.connectionSlot } : { kind: "none" };
-
-const canonicalizeAuth = (
-  auth: GraphqlSourceAuthInput | undefined,
-): {
-  readonly auth: GraphqlSourceAuth;
-  readonly bindings: ReadonlyArray<{
-    readonly slot: string;
-    readonly value: CredentialBindingValue;
-    readonly targetScope?: string;
-  }>;
-} => {
-  if (!auth || "kind" in auth || !auth.oauth2) return { auth: { kind: "none" }, bindings: [] };
-  const connection = auth.oauth2.connection;
-  return {
-    auth: { kind: "oauth2", connectionSlot: GRAPHQL_OAUTH_CONNECTION_SLOT },
-    bindings: connection
-      ? [
-          {
-            slot: GRAPHQL_OAUTH_CONNECTION_SLOT,
-            value: httpCredentialInputToBindingValue(connection),
-          },
-        ]
-      : [],
-  };
-};
-
-const resolveInitialCredentialValueMap = (
-  ctx: PluginCtx<GraphqlStore>,
-  values: Record<string, ConfiguredGraphqlCredentialValue>,
-  bindings: ReadonlyArray<{ readonly slot: string; readonly value: CredentialBindingValue }>,
-  targetScope: string,
-): Effect.Effect<Record<string, string> | undefined, GraphqlIntrospectionError | StorageFailure> =>
-  Effect.gen(function* () {
-    const bySlot = new Map(bindings.map((binding) => [binding.slot, binding.value] as const));
-    const resolved: Record<string, string> = {};
-    for (const [name, value] of Object.entries(values)) {
-      if (typeof value === "string") {
-        resolved[name] = value;
-        continue;
-      }
-      const binding = bySlot.get(value.slot);
-      if (binding?.kind === "secret") {
-        const secret = yield* ctx.secrets
-          .getAtScope(binding.secretId, binding.secretScopeId ?? ScopeId.make(targetScope))
-          .pipe(
-            Effect.catchTag("SecretOwnedByConnectionError", () =>
-              Effect.fail(
-                new GraphqlIntrospectionError({
-                  message: `Secret not found for ${name}`,
-                }),
-              ),
-            ),
-          );
-        if (secret === null) {
-          return yield* new GraphqlIntrospectionError({
-            message: `Missing secret "${binding.secretId}" for ${name}`,
-          });
-        }
-        resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
-        continue;
-      }
-      if (binding?.kind === "text") {
-        resolved[name] = value.prefix ? `${value.prefix}${binding.text}` : binding.text;
-      }
-    }
-    return Object.keys(resolved).length > 0 ? resolved : undefined;
-  });
-
-const resolveInitialOAuthHeaders = (
-  ctx: PluginCtx<GraphqlStore>,
-  bindings: ReadonlyArray<{ readonly slot: string; readonly value: CredentialBindingValue }>,
-  targetScope: string,
-): Effect.Effect<Record<string, string> | undefined, GraphqlIntrospectionError | StorageFailure> =>
-  Effect.gen(function* () {
-    const connection = bindings.find(
-      (binding) =>
-        binding.slot === GRAPHQL_OAUTH_CONNECTION_SLOT && binding.value.kind === "connection",
-    );
-    if (!connection || connection.value.kind !== "connection") return undefined;
-    const connectionId = connection.value.connectionId;
-    const accessToken = yield* ctx.connections
-      .accessTokenAtScope(connectionId, ScopeId.make(targetScope))
-      .pipe(
-        Effect.mapError(
-          ({ message }) =>
-            new GraphqlIntrospectionError({
-              message: `Failed to resolve OAuth connection "${connectionId}": ${message}`,
-            }),
-        ),
-      );
-    return { Authorization: `Bearer ${accessToken}` };
-  });
-
-const resolveGraphqlBindingValueMap = (
-  ctx: PluginCtx<GraphqlStore>,
-  values: Record<string, ConfiguredGraphqlCredentialValue> | undefined,
-  params: {
-    readonly sourceId: string;
-    readonly sourceScope: string;
-    readonly missingLabel: string;
-  },
-): Effect.Effect<Record<string, string> | undefined, GraphqlAuthRequiredError | StorageFailure> =>
-  Effect.gen(function* () {
-    if (!values) return undefined;
-    const resolved: Record<string, string> = {};
-    for (const [name, value] of Object.entries(values)) {
-      if (typeof value === "string") {
-        resolved[name] = value;
-        continue;
-      }
-      const binding = yield* resolveGraphqlSourceBinding(
-        ctx,
-        params.sourceId,
-        params.sourceScope,
-        value.slot,
-      );
-      if (binding?.value.kind === "secret") {
-        const secretBinding = binding.value;
-        const secret = yield* ctx.secrets.getAtScope(secretBinding.secretId, binding.scopeId).pipe(
-          Effect.catchTag("SecretOwnedByConnectionError", () =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "credential_secret_missing",
-                sourceId: params.sourceId,
-                sourceScope: params.sourceScope,
-                credentialKind: "secret",
-                credentialLabel: name,
-                slotKey: value.slot,
-                secretId: String(secretBinding.secretId),
-                message: `Secret not found for ${params.missingLabel} "${name}"`,
-              }),
-            ),
-          ),
-        );
-        if (secret === null) {
-          return yield* new GraphqlAuthRequiredError({
-            code: "credential_secret_missing",
-            sourceId: params.sourceId,
-            sourceScope: params.sourceScope,
-            credentialKind: "secret",
-            credentialLabel: name,
-            slotKey: value.slot,
-            secretId: String(secretBinding.secretId),
-            message: `Missing secret "${secretBinding.secretId}" for ${params.missingLabel} "${name}"`,
-          });
-        }
-        resolved[name] = value.prefix ? `${value.prefix}${secret}` : secret;
-        continue;
-      }
-      if (binding?.value.kind === "text") {
-        resolved[name] = value.prefix ? `${value.prefix}${binding.value.text}` : binding.value.text;
-        continue;
-      }
-      return yield* new GraphqlAuthRequiredError({
-        code: "credential_binding_missing",
-        sourceId: params.sourceId,
-        sourceScope: params.sourceScope,
-        credentialKind: "secret",
-        credentialLabel: name,
-        slotKey: value.slot,
-        message: `Missing binding for ${params.missingLabel} "${name}"`,
-      });
-    }
-    return Object.keys(resolved).length > 0 ? resolved : undefined;
-  });
-
-const resolveGraphqlStoredOAuthHeader = (
-  ctx: PluginCtx<GraphqlStore>,
-  sourceId: string,
-  sourceScope: string,
-  auth: GraphqlSourceAuth | undefined,
-) =>
-  Effect.gen(function* () {
-    if (!auth || auth.kind === "none") return undefined;
-    const binding = yield* resolveGraphqlSourceBinding(
-      ctx,
-      sourceId,
-      sourceScope,
-      auth.connectionSlot,
-    );
-    if (binding?.value.kind !== "connection") {
-      return yield* new GraphqlAuthRequiredError({
-        code: "oauth_connection_missing",
-        sourceId,
-        sourceScope,
-        credentialKind: "connection",
-        credentialLabel: "OAuth sign-in",
-        slotKey: auth.connectionSlot,
-        message: `Missing OAuth connection binding for GraphQL source "${sourceId}"`,
-      });
-    }
-    const connectionId = binding.value.connectionId;
-    const accessToken = yield* ctx.connections
-      .accessTokenAtScope(connectionId, binding.scopeId)
-      .pipe(
-        Effect.catchTags({
-          ConnectionReauthRequiredError: ({ message, connectionId }) =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "oauth_reauth_required",
-                sourceId,
-                sourceScope,
-                credentialKind: "oauth",
-                credentialLabel: "OAuth sign-in",
-                slotKey: auth.connectionSlot,
-                connectionId: String(connectionId),
-                message: `OAuth connection "${connectionId}" needs re-authentication: ${message}`,
-              }),
-            ),
-          ConnectionNotFoundError: ({ connectionId }) =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "oauth_connection_missing",
-                sourceId,
-                sourceScope,
-                credentialKind: "connection",
-                credentialLabel: "OAuth sign-in",
-                slotKey: auth.connectionSlot,
-                connectionId: String(connectionId),
-                message: `OAuth connection "${connectionId}" was not found for GraphQL source "${sourceId}"`,
-              }),
-            ),
-          ConnectionProviderNotRegisteredError: ({ provider }) =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "oauth_connection_failed",
-                sourceId,
-                sourceScope,
-                credentialKind: "oauth",
-                credentialLabel: "OAuth sign-in",
-                slotKey: auth.connectionSlot,
-                connectionId: String(connectionId),
-                message: `OAuth provider "${provider}" is not registered`,
-              }),
-            ),
-          ConnectionRefreshNotSupportedError: ({ provider, connectionId }) =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "oauth_connection_failed",
-                sourceId,
-                sourceScope,
-                credentialKind: "oauth",
-                credentialLabel: "OAuth sign-in",
-                slotKey: auth.connectionSlot,
-                connectionId: String(connectionId),
-                message: `OAuth provider "${provider}" cannot refresh connection "${connectionId}"`,
-              }),
-            ),
-          ConnectionRefreshError: ({ message, connectionId }) =>
-            Effect.fail(
-              new GraphqlAuthRequiredError({
-                code: "oauth_connection_failed",
-                sourceId,
-                sourceScope,
-                credentialKind: "oauth",
-                credentialLabel: "OAuth sign-in",
-                slotKey: auth.connectionSlot,
-                connectionId: String(connectionId),
-                message: `OAuth connection "${connectionId}" refresh failed: ${message}`,
-              }),
-            ),
-        }),
-      );
-    return { Authorization: `Bearer ${accessToken}` };
-  });
-
-const makeGraphqlExtension = (
-  ctx: PluginCtx<GraphqlStore>,
+/** Introspect a config live or from its stored snapshot, applying connection
+ *  auth. A non-null `introspectionJson` (loaded via `loadIntrospectionJson`)
+ *  short-circuits the network; otherwise this introspects the endpoint with
+ *  the rendered credential. */
+const introspectForConnection = (
+  config: GraphqlIntegrationConfig,
+  introspectionJson: string | null,
+  values: Record<string, string | null>,
+  templateSlug: AuthTemplateSlug | null,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
-  configFile: ConfigFileSink | undefined,
-) => {
-  const addSourceInternal = (config: GraphqlSourceConfig) =>
-    ctx.transaction(
-      Effect.gen(function* () {
-        const namespace = config.namespace;
-        const canonicalHeaders = canonicalizeConfiguredValueMap(config.headers, graphqlHeaderSlot);
-        const canonicalQueryParams = canonicalizeConfiguredValueMap(
-          config.queryParams,
-          graphqlQueryParamSlot,
-        );
-        const initialHeaders =
-          config.credentials?.headers !== undefined
-            ? canonicalizeCredentialMap(config.credentials.headers, graphqlHeaderSlot)
-            : null;
-        const initialQueryParams =
-          config.credentials?.queryParams !== undefined
-            ? canonicalizeCredentialMap(config.credentials.queryParams, graphqlQueryParamSlot)
-            : null;
-        const initialAuth =
-          config.credentials?.auth !== undefined ? canonicalizeAuth(config.credentials.auth) : null;
-        const auth = config.oauth2
-          ? authFromOAuth2Source(config.oauth2)
-          : (initialAuth?.auth ?? { kind: "none" });
-        const initialBindings = [
-          ...(initialHeaders?.bindings ?? []),
-          ...(initialQueryParams?.bindings ?? []),
-          ...(initialAuth?.bindings ?? []),
-        ];
-        const initialScope = config.credentials?.scope;
-        if (initialScope && initialBindings.length > 0) {
-          yield* validateGraphqlBindingTarget(ctx, {
-            sourceId: namespace,
-            sourceScope: config.scope,
-            targetScope: initialScope,
-          });
-        }
+): Effect.Effect<IntrospectionResult, GraphqlIntrospectionError> => {
+  if (introspectionJson != null) {
+    return parseIntrospectionJson(introspectionJson);
+  }
+  const auth = introspectHeadersForConnection(config, values, templateSlug);
+  return introspect(
+    config.endpoint,
+    Object.keys(auth.headers).length > 0 ? auth.headers : undefined,
+    Object.keys(auth.queryParams).length > 0 ? auth.queryParams : undefined,
+  ).pipe(Effect.provide(httpClientLayer));
+};
 
-        let introspectionResult: IntrospectionResult;
-        if (config.introspectionJson) {
-          introspectionResult = yield* parseIntrospectionJson(config.introspectionJson);
-        } else {
-          const resolvedInitialHeaders =
-            initialHeaders && initialScope
-              ? yield* resolveInitialCredentialValueMap(
-                  ctx,
-                  canonicalHeaders,
-                  initialHeaders.bindings,
-                  initialScope,
-                )
-              : undefined;
-          const resolvedOAuthHeaders =
-            initialAuth && initialScope
-              ? yield* resolveInitialOAuthHeaders(ctx, initialAuth.bindings, initialScope)
-              : undefined;
-          const resolvedHeaders = {
-            ...(resolveConfiguredValueMap(config.headers) ?? {}),
-            ...(resolvedInitialHeaders ?? {}),
-            ...(resolvedOAuthHeaders ?? {}),
-          };
-          const resolvedInitialQueryParams =
-            initialQueryParams && initialScope
-              ? yield* resolveInitialCredentialValueMap(
-                  ctx,
-                  canonicalQueryParams,
-                  initialQueryParams.bindings,
-                  initialScope,
-                )
-              : undefined;
-          const resolvedQueryParams = {
-            ...(resolveConfiguredValueMap(config.queryParams) ?? {}),
-            ...(resolvedInitialQueryParams ?? {}),
-          };
-          introspectionResult = yield* introspect(
-            config.endpoint,
-            Object.keys(resolvedHeaders).length > 0 ? resolvedHeaders : undefined,
-            Object.keys(resolvedQueryParams).length > 0 ? resolvedQueryParams : undefined,
-          ).pipe(Effect.provide(httpClientLayer));
-        }
-
-        const { result, definitions } = yield* extract(introspectionResult);
-        const prepared = prepareOperations(result.fields, introspectionResult);
-
-        const displayName = config.name?.trim() || namespace;
-
-        const storedSource: StoredGraphqlSource = {
-          namespace,
-          scope: config.scope,
-          name: displayName,
-          endpoint: config.endpoint,
-          headers: canonicalHeaders,
-          queryParams: canonicalQueryParams,
-          auth,
-        };
-
-        const storedOps: StoredOperation[] = prepared.map((p) => ({
-          toolId: `${namespace}.${p.toolPath}`,
-          sourceId: namespace,
-          binding: p.binding,
-        }));
-
-        yield* ctx.storage.upsertSource(storedSource, storedOps);
-        yield* ctx.core.sources.register({
-          id: namespace,
-          scope: config.scope,
-          kind: "graphql",
-          name: displayName,
-          url: config.endpoint,
-          canRemove: true,
-          canRefresh: false,
-          canEdit: true,
-          tools: prepared.map((p) => ({
-            name: p.toolPath,
-            description: p.description,
-            inputSchema: p.inputSchema,
-          })),
-        });
-        if (initialScope && initialBindings.length > 0) {
-          yield* ctx.credentialBindings.replaceForSource({
-            targetScope: ScopeId.make(initialScope),
-            pluginId: GRAPHQL_PLUGIN_ID,
-            sourceId: namespace,
-            sourceScope: ScopeId.make(config.scope),
-            slotPrefixes: [
-              ...(config.credentials?.headers !== undefined ? ["header:"] : []),
-              ...(config.credentials?.queryParams !== undefined ? ["query_param:"] : []),
-              ...(config.credentials?.auth !== undefined ? ["auth:"] : []),
-            ],
-            bindings: initialBindings.map((binding) => ({
-              slotKey: binding.slot,
-              value: binding.value,
-            })),
-          });
-        }
-
-        if (Object.keys(definitions).length > 0) {
-          yield* ctx.core.definitions.register({
-            sourceId: namespace,
-            scope: config.scope,
-            definitions,
-          });
-        }
-
-        return { toolCount: prepared.length, namespace };
-      }),
+/** Introspect an integration's endpoint (with this connection's credential),
+ *  prepare its operations, persist the bindings, and return them. Invoked from
+ *  `invokeTool` on a cache miss — i.e. when an integration was registered
+ *  without an add-time schema and its bindings haven't been produced yet. */
+const materializeOperations = (
+  ctx: PluginCtx<GraphqlStore>,
+  integration: string,
+  config: GraphqlIntegrationConfig,
+  credential: {
+    readonly template: AuthTemplateSlug;
+    readonly values: Record<string, string | null>;
+  },
+  httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+): Effect.Effect<readonly StoredOperation[], GraphqlIntrospectionError | StorageFailure> =>
+  Effect.gen(function* () {
+    // Render the exact method this connection references (we have its slug
+    // here, unlike `resolveTools`) so an auth-required endpoint introspects.
+    const method = config.authenticationTemplate.find(
+      (m: GraphqlAuthMethod) => m.slug === String(credential.template),
     );
+    const headers: Record<string, string> = { ...(config.headers ?? {}) };
+    const queryParams: Record<string, string> = {
+      ...(config.queryParams ?? {}),
+    };
+    if (method) {
+      const rendered = renderGraphqlAuthMethod(method, credential.values);
+      Object.assign(headers, rendered.headers);
+      Object.assign(queryParams, rendered.queryParams);
+    }
 
-  const configureSource = (
-    namespace: string,
-    scope: string,
-    targetScope: string,
-    input: Omit<GraphqlConfigureSourceInput, "scope">,
-  ) =>
-    Effect.gen(function* () {
-      const existing = yield* ctx.storage.getSource(namespace, scope);
-      if (!existing) return;
-      const canonicalHeaders =
-        input.headers !== undefined
-          ? canonicalizeCredentialMap(input.headers, graphqlHeaderSlot)
-          : null;
-      const canonicalQueryParams =
-        input.queryParams !== undefined
-          ? canonicalizeCredentialMap(input.queryParams, graphqlQueryParamSlot)
-          : null;
-      const canonicalAuth = input.auth !== undefined ? canonicalizeAuth(input.auth) : null;
-      const directBindings = [
-        ...(canonicalHeaders?.bindings ?? []),
-        ...(canonicalQueryParams?.bindings ?? []),
-        ...(canonicalAuth?.bindings ?? []),
-      ];
-      if (directBindings.length > 0) {
-        yield* validateGraphqlBindingTarget(ctx, {
-          sourceId: namespace,
-          sourceScope: scope,
-          targetScope,
-        });
-      }
-      const affectedPrefixes = [
-        ...(input.headers !== undefined ? ["header:"] : []),
-        ...(input.queryParams !== undefined ? ["query_param:"] : []),
-        ...(input.auth !== undefined ? ["auth:"] : []),
-      ];
-      yield* ctx.transaction(
-        Effect.gen(function* () {
-          yield* ctx.storage.updateSourceMeta(namespace, scope, {
-            name: input.name?.trim() || undefined,
-            endpoint: input.endpoint,
-            headers: canonicalHeaders?.values,
-            queryParams: canonicalQueryParams?.values,
-            auth: canonicalAuth?.auth,
-          });
-          if (affectedPrefixes.length > 0 || directBindings.length > 0) {
-            yield* ctx.credentialBindings.replaceForSource({
-              targetScope: ScopeId.make(targetScope),
-              pluginId: GRAPHQL_PLUGIN_ID,
-              sourceId: namespace,
-              sourceScope: ScopeId.make(scope),
-              slotPrefixes: affectedPrefixes,
-              bindings: directBindings.map((binding) => ({
-                slotKey: binding.slot,
-                value: binding.value,
-              })),
-            });
-          }
+    const introspectionJson = yield* loadIntrospectionJson(ctx.storage, config);
+    const introspection =
+      introspectionJson != null
+        ? yield* parseIntrospectionJson(introspectionJson)
+        : yield* introspect(
+            config.endpoint,
+            Object.keys(headers).length > 0 ? headers : undefined,
+            Object.keys(queryParams).length > 0 ? queryParams : undefined,
+          ).pipe(Effect.provide(httpClientLayer));
+
+    const { result } = yield* extract(introspection).pipe(
+      Effect.catch(() =>
+        Effect.succeed({
+          result: { fields: [] as readonly ExtractedField[] },
+        } as {
+          readonly result: { readonly fields: readonly ExtractedField[] };
         }),
-      );
+      ),
+    );
+    const prepared = prepareOperations(result.fields, introspection);
+    const stored = toStoredOperations(IntegrationSlug.make(integration), prepared);
+    yield* ctx.storage.replaceOperations(integration, stored);
+    return stored;
+  });
+
+// ---------------------------------------------------------------------------
+// Declared auth methods — project the stored `authenticationTemplate` into the
+// catalog's plugin-agnostic `AuthMethodDescriptor[]`. Pure/sync and tolerant of
+// a malformed or foreign config blob (returns `[]`). GraphQL has no accounts
+// slot of its own, so this projection is what surfaces declared + custom methods
+// through the catalog's `authMethods` to the hub / Add-account flows. Exported
+// for tests.
+//
+//   none   → a no-auth method carrying no credential inputs
+//   apikey → carried placements (headers / query params) verbatim
+//   oauth2 → one oauth method (no resolved endpoints; graphql renders the
+//            connection value as a bearer at invoke time).
+// ---------------------------------------------------------------------------
+
+export const describeGraphqlAuthMethods = (
+  record: IntegrationRecord,
+): readonly AuthMethodDescriptor[] => {
+  const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
+  if (!config) return [];
+  return config.authenticationTemplate.map((method: GraphqlAuthMethod): AuthMethodDescriptor => {
+    if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
+    if (method.kind === "oauth2") {
+      return {
+        id: method.slug,
+        label: "OAuth",
+        kind: "oauth",
+        template: method.slug,
+        oauth: {},
+      };
+    }
+    return describeNoneAuthMethod(method.slug);
+  });
+};
+
+export const describeGraphqlIntegrationDisplay = (
+  record: IntegrationRecord,
+): { readonly url?: string } => {
+  const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
+  return { url: config?.endpoint };
+};
+
+// ---------------------------------------------------------------------------
+// Plugin extension
+// ---------------------------------------------------------------------------
+
+// The extension only registers integrations (and parses any pre-supplied
+// introspection JSON offline). Live introspection — the only thing that needed
+// an HTTP layer — is deferred to `resolveTools` / `invokeTool`, so the extension
+// no longer takes one.
+const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
+  const buildConfig = (input: GraphqlAddIntegrationInput): GraphqlIntegrationConfig =>
+    GraphqlIntegrationConfig.make({
+      endpoint: input.endpoint,
+      name: input.name?.trim() || slugFromEndpoint(input.endpoint),
+      ...(input.headers !== undefined ? { headers: input.headers } : {}),
+      ...(input.queryParams !== undefined ? { queryParams: input.queryParams } : {}),
+      authenticationTemplate: input.authenticationTemplate
+        ? normalizeGraphqlAuthMethods(input.authenticationTemplate)
+        : [],
     });
 
-  return {
-    addSource: (config: GraphqlSourceConfig) =>
-      addSourceInternal(config).pipe(
-        Effect.tap((result) =>
-          configFile
-            ? configFile.upsertSource(toGraphqlConfigEntry(result.namespace, config))
-            : Effect.void,
-        ),
-      ),
+  /** Register the integration in the catalog. Registering a source is a
+   *  catalog statement ("we use this GraphQL endpoint now") and MUST NOT make a
+   *  network call or require auth — exactly like MCP defers discovery. Live
+   *  introspection (and the operation bindings it yields) is deferred to
+   *  connection-create / tool-generation (`resolveTools`) and tool invocation
+   *  (`invokeTool`), where a connection's credential is available.
+   *
+   *  When the caller pre-supplies `introspectionJson`, the schema is already in
+   *  hand, so we parse it offline (no network) and persist the operation
+   *  bindings up front. */
+  const addIntegrationInternal = (input: GraphqlAddIntegrationInput) =>
+    Effect.gen(function* () {
+      const slug = IntegrationSlug.make(input.slug ?? slugFromEndpoint(input.endpoint));
 
-    removeSource: (namespace: string, scope: string) =>
-      Effect.gen(function* () {
+      // Block re-adding an existing slug. The core `integrations.register`
+      // primitive upserts (so boot re-registration is idempotent), but an
+      // explicit add must NOT silently clobber an existing integration's tools,
+      // connections, and policies. To add more auth, update the existing one.
+      const existing = yield* ctx.core.integrations.get(slug);
+      if (existing) {
+        return yield* new IntegrationAlreadyExistsError({ slug });
+      }
+
+      return yield* addIntegrationTransaction(input, slug);
+    });
+
+  const addIntegrationTransaction = (input: GraphqlAddIntegrationInput, slug: IntegrationSlug) =>
+    Effect.gen(function* () {
+      const baseConfig = buildConfig(input);
+
+      // No pre-supplied schema → register WITHOUT introspecting. Tools (and
+      // their operation bindings) are produced lazily when a connection is
+      // created (`resolveTools`) / a tool is first invoked (`invokeTool`),
+      // using that connection's credential.
+      if (input.introspectionJson === undefined) {
         yield* ctx.transaction(
-          Effect.gen(function* () {
-            yield* ctx.credentialBindings.removeForSource({
-              pluginId: GRAPHQL_PLUGIN_ID,
-              sourceId: namespace,
-              sourceScope: ScopeId.make(scope),
-            });
-            yield* ctx.storage.removeSource(namespace, scope);
-            yield* ctx.core.sources.unregister({ id: namespace, targetScope: scope });
+          ctx.core.integrations.register({
+            slug,
+            name: baseConfig.name,
+            description: input.description?.trim() || baseConfig.name,
+            config: baseConfig,
+            canRemove: true,
+            canRefresh: true,
           }),
         );
-        if (configFile) {
-          yield* configFile.removeSource(namespace);
-        }
+        return { slug: String(slug), name: baseConfig.name, toolCount: 0 };
+      }
+
+      // Pre-supplied introspection JSON: parse it offline (no network) and
+      // persist the operation bindings + snapshot so production stays offline.
+      const introspection = yield* parseIntrospectionJson(input.introspectionJson);
+      const { result } = yield* extract(introspection);
+      const prepared = prepareOperations(result.fields, introspection);
+
+      // Snapshot the resolved schema so tool production never needs a live
+      // HTTP layer (D6: tools are spec-derived and identical per connection).
+      // The snapshot text goes to the plugin blob store (content-addressed,
+      // written OUTSIDE the transaction — re-puts are idempotent and an
+      // aborted register leaves only an unreferenced blob), and the config
+      // carries only its hash.
+      const snapshotJson = JSON.stringify({ data: introspection });
+      const introspectionHash = yield* sha256Hex(snapshotJson);
+      const config = GraphqlIntegrationConfig.make({
+        ...baseConfig,
+        introspectionHash,
+      });
+
+      yield* ctx.storage.putIntrospection(introspectionHash, snapshotJson);
+
+      yield* ctx.transaction(
+        Effect.gen(function* () {
+          yield* ctx.storage.replaceOperations(String(slug), toStoredOperations(slug, prepared));
+
+          // Prefill order: caller's description, then the schema's own
+          // description (present when introspection ran with schema
+          // descriptions), then the display name.
+          const schemaDescription =
+            typeof (introspection as { description?: unknown }).description === "string"
+              ? ((introspection as { description?: string }).description ?? "").trim()
+              : "";
+          yield* ctx.core.integrations.register({
+            slug,
+            name: config.name,
+            description: input.description?.trim() || schemaDescription || config.name,
+            config,
+            canRemove: true,
+            canRefresh: true,
+          });
+        }),
+      );
+
+      return {
+        slug: String(slug),
+        name: config.name,
+        toolCount: prepared.length,
+      };
+    });
+
+  const configureIntegration = (slug: string, input: GraphqlConfigureInput) =>
+    Effect.gen(function* () {
+      const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));
+      if (!record) return;
+      const current = Option.getOrElse(
+        // best-effort: re-decode the stored config, falling back to an
+        // endpoint-only config if it was never set.
+        yield* decodeGraphqlIntegrationConfig(record.config).pipe(Effect.option),
+        () =>
+          GraphqlIntegrationConfig.make({
+            endpoint: "",
+            name: record.description,
+            authenticationTemplate: [],
+          }),
+      );
+
+      const next = GraphqlIntegrationConfig.make({
+        endpoint: input.endpoint ?? current.endpoint,
+        name: input.name?.trim() || current.name,
+        ...(current.introspectionHash !== undefined
+          ? { introspectionHash: current.introspectionHash }
+          : {}),
+        ...((input.headers ?? current.headers) !== undefined
+          ? { headers: input.headers ?? current.headers }
+          : {}),
+        ...((input.queryParams ?? current.queryParams) !== undefined
+          ? { queryParams: input.queryParams ?? current.queryParams }
+          : {}),
+        authenticationTemplate: input.authenticationTemplate
+          ? normalizeGraphqlAuthMethods(input.authenticationTemplate)
+          : current.authenticationTemplate,
+      });
+
+      yield* ctx.core.integrations.update(IntegrationSlug.make(slug), {
+        description: next.name,
+        config: next,
+      });
+    });
+
+  /** Read the integration's decoded config (or `null` when absent / malformed).
+   *  Surfaces `authenticationTemplate` for the configure / custom-method UX. */
+  const getConfig = (
+    slug: string,
+  ): Effect.Effect<GraphqlIntegrationConfig | null, StorageFailure> =>
+    ctx.core.integrations
+      .get(IntegrationSlug.make(slug))
+      .pipe(
+        Effect.map((record) =>
+          record ? Option.getOrNull(decodeGraphqlIntegrationConfigOption(record.config)) : null,
+        ),
+      );
+
+  /** Merge-append custom auth methods onto the integration's existing
+   *  `authenticationTemplate`. Returns the merged array. A no-op (returns `[]`)
+   *  for an unknown slug or undecodable config. */
+  const configureAuthMethods = (
+    slug: string,
+    input: GraphqlConfigureAuthInput,
+  ): Effect.Effect<readonly GraphqlAuthMethod[], StorageFailure> =>
+    ctx.transaction(
+      Effect.gen(function* () {
+        const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));
+        if (!record) return [] as readonly GraphqlAuthMethod[];
+        const current = Option.getOrNull(decodeGraphqlIntegrationConfigOption(record.config));
+        if (!current) return [] as readonly GraphqlAuthMethod[];
+
+        // Replace mode declares the full set — backfill kind-based slugs.
+        // Merge mode appends: `mergeAuthTemplates` replaces on slug match and
+        // assigns fresh `custom_<id>` slugs to slug-less entries, so a custom
+        // method never silently displaces a declared one.
+        const merged =
+          input.mode === "replace"
+            ? normalizeGraphqlAuthMethods(input.authenticationTemplate)
+            : mergeAuthTemplates(
+                current.authenticationTemplate,
+                expandGraphqlAuthMethodInputs(
+                  input.authenticationTemplate,
+                ) as readonly GraphqlAuthMethod[],
+              );
+
+        const next = GraphqlIntegrationConfig.make({
+          ...current,
+          authenticationTemplate: merged,
+        });
+
+        yield* ctx.core.integrations.update(IntegrationSlug.make(slug), {
+          config: next,
+        });
+
+        return merged;
       }),
+    );
 
-    getSource: (namespace: string, scope: string) => ctx.storage.getSource(namespace, scope),
+  return {
+    /** Register a GraphQL integration (introspects + persists operations). */
+    addIntegration: (input: GraphqlAddIntegrationInput) => addIntegrationInternal(input),
 
-    configureSource,
+    /** Read the integration's stored config. */
+    getIntegration: (slug: string) =>
+      ctx.core.integrations
+        .get(IntegrationSlug.make(slug))
+        .pipe(Effect.map((record) => (record ? record.config : null))),
 
-    configure: (source: GraphqlSourceRef, input: GraphqlConfigureSourceInput) =>
-      configureSource(source.id, source.scope, input.scope, input),
+    /** Read the integration's decoded config (auth templates surfaced). */
+    getConfig,
+
+    /** Merge-append custom auth methods (custom-method-create flow). */
+    configureAuth: configureAuthMethods,
+
+    removeIntegration: (slug: string) =>
+      ctx.transaction(
+        Effect.gen(function* () {
+          yield* ctx.storage.removeOperations(slug);
+          yield* ctx.core.integrations
+            .remove(IntegrationSlug.make(slug))
+            .pipe(Effect.catchTag("IntegrationRemovalNotAllowedError", () => Effect.void));
+        }),
+      ),
+
+    configure: configureIntegration,
   };
 };
 
 export type GraphqlPluginExtension = ReturnType<typeof makeGraphqlExtension>;
 
+// ---------------------------------------------------------------------------
+// Plugin factory
+// ---------------------------------------------------------------------------
+
+export interface GraphqlPluginOptions {
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
+}
+
 export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
   return {
-    id: "graphql" as const,
+    id: GRAPHQL_PLUGIN_ID as "graphql",
     packageName: "@executor-js/plugin-graphql",
-    sourcePresets: graphqlPresets,
-    schema: graphqlSchema,
+    integrationPresets: graphqlPresets.map((preset) => ({
+      id: preset.id,
+      name: preset.name,
+      summary: preset.summary,
+      url: preset.url,
+      endpoint: preset.endpoint,
+      ...(preset.icon ? { icon: preset.icon } : {}),
+      ...(preset.featured ? { featured: preset.featured } : {}),
+    })),
     storage: (deps): GraphqlStore => makeDefaultGraphqlStore(deps),
 
-    extension: (ctx) =>
-      makeGraphqlExtension(
-        ctx,
-        options?.httpClientLayer ?? ctx.httpClientLayer,
-        options?.configFile,
-      ),
+    extension: (ctx: PluginCtx<GraphqlStore>) => makeGraphqlExtension(ctx),
 
-    sourceConfigure: {
+    integrationConfigure: {
       type: "graphql",
-      schema: SourceConfigureInputSchema,
-      configure: ({ ctx, sourceId, sourceScope, targetScope, config }) =>
-        makeGraphqlExtension(
-          ctx,
-          options?.httpClientLayer ?? ctx.httpClientLayer,
-          options?.configFile,
-        ).configureSource(
-          sourceId,
-          sourceScope,
-          targetScope,
-          config as GraphqlConfigureSourceInput,
-        ),
+      schema: GraphqlConfigureInputSchema,
+      configure: ({ ctx, integration, config }) =>
+        makeGraphqlExtension(ctx).configure(String(integration), config as GraphqlConfigureInput),
     },
 
-    staticSources: (self) => [
+    describeAuthMethods: describeGraphqlAuthMethods,
+    describeIntegrationDisplay: describeGraphqlIntegrationDisplay,
+
+    staticSources: (self: GraphqlPluginExtension) => [
       {
         id: "graphql",
         kind: "executor",
         name: "GraphQL",
         tools: [
-          tool({
-            name: "getSource",
+          {
+            name: "getIntegration",
             description:
-              "Inspect an existing GraphQL source, including endpoint, auth mode, configured headers/query params, and credential slots. Use this before repairing an existing source with `graphql.configureSource`, `secrets.create`, or `oauth.start`.",
-            inputSchema: StaticGetSourceInputStandardSchema,
-            outputSchema: StaticGetSourceOutputStandardSchema,
-            execute: (input, { ctx }) =>
-              Effect.map(
-                self.getSource(input.namespace, resolveStaticScopeInput(ctx, input.scope)),
-                (source) => ToolResult.ok({ source }),
-              ),
-          }),
-          tool({
-            name: "addSource",
+              "Inspect an existing GraphQL integration, including endpoint, static headers/query params, and auth templates. Use this before repairing an integration with `graphql.configure` or creating a connection.",
+            inputSchema: StaticGetIntegrationInputStandardSchema,
+            outputSchema: StaticGetIntegrationOutputStandardSchema,
+            handler: ({ args }) => {
+              const input = args as typeof StaticGetIntegrationInputSchema.Type;
+              return Effect.map(self.getIntegration(input.slug), (integration) =>
+                ToolResult.ok({ integration }),
+              );
+            },
+          },
+          {
+            name: "addIntegration",
             description:
-              "Add a GraphQL endpoint and register its operations as tools. Executor chooses the source install scope (local scope locally, organization scope in cloud) and returns it as `source`. For API keys or bearer tokens, first call `executor.coreTools.secrets.create` at the user's chosen credential scope and pass secret refs through `credentials`. For OAuth, start the browser flow with `executor.coreTools.oauth.start` using `credentialScope` set to the user's chosen personal or organization credential scope, verify completion with `connections.list`, then bind the connection through `credentials` or `graphql.configureSource`.",
+              "Add a GraphQL endpoint to the catalog and register its operations. Introspects the endpoint (or uses provided introspection JSON). After adding, create an owner-scoped connection against the integration to materialize its per-connection tools. For API keys / bearer tokens, declare an `authenticationTemplate` and create a connection whose value is the token.",
             annotations: {
               requiresApproval: true,
-              approvalDescription: "Add a GraphQL source",
+              approvalDescription: "Add a GraphQL integration",
             },
-            inputSchema: StaticAddSourceInputStandardSchema,
-            outputSchema: StaticAddSourceOutputStandardSchema,
-            execute: (input, { ctx }) => {
-              const sourceScope = defaultSourceInstallScopeId(ctx.scopes);
-              if (sourceScope === null) {
-                return Effect.succeed(
-                  graphqlToolFailure(
-                    "source_scope_unavailable",
-                    "Cannot add a GraphQL source because this executor has no source install scope.",
-                  ),
-                );
-              }
-              return self.addSource({ ...input, scope: sourceScope }).pipe(
-                Effect.map((result) =>
-                  ToolResult.ok({
-                    ...result,
-                    source: { id: result.namespace, scope: sourceScope },
-                  }),
-                ),
+            inputSchema: StaticAddIntegrationInputStandardSchema,
+            outputSchema: StaticAddIntegrationOutputStandardSchema,
+            handler: ({ args }) => {
+              const input = args as GraphqlAddIntegrationInput;
+              return self.addIntegration(input).pipe(
+                Effect.map((result) => ToolResult.ok({ slug: result.slug, name: result.name })),
                 Effect.catchTags({
                   GraphqlIntrospectionError: ({ message }) =>
                     Effect.succeed(graphqlToolFailure("graphql_introspection_failed", message)),
                   GraphqlExtractionError: ({ message }) =>
                     Effect.succeed(graphqlToolFailure("graphql_extraction_failed", message)),
+                  IntegrationAlreadyExistsError: ({ slug }: IntegrationAlreadyExistsError) =>
+                    Effect.succeed(
+                      graphqlToolFailure(
+                        "integration_already_exists",
+                        `Integration ${slug} already exists; update it instead of re-adding.`,
+                      ),
+                    ),
                 }),
               );
             },
-          }),
-          tool({
-            name: "configureSource",
-            description:
-              'Configure an existing GraphQL source with concrete fields. Use `source` returned by `graphql.addSource` or `sources.list`. The top-level `scope` is the credential target scope for bindings; in cloud, choose the user or organization credential scope deliberately. Pass secret refs as `{kind:"secret", secretId}` and OAuth connections as `{kind:"connection", connectionId}`.',
-            annotations: {
-              requiresApproval: true,
-              approvalDescription: "Configure a GraphQL source",
-            },
-            inputSchema: StaticConfigureSourceInputStandardSchema,
-            outputSchema: StaticConfigureSourceOutputStandardSchema,
-            execute: (input, { ctx }) => {
-              const { source, ...config } = input as typeof StaticConfigureSourceInputSchema.Type;
-              const sourceScope = resolveStaticScopeInput(ctx, source.scope);
-              const targetScope = resolveStaticScopeInput(ctx, config.scope);
-              return Effect.as(
-                self.configure(
-                  { id: source.id, scope: sourceScope },
-                  { ...config, scope: targetScope },
-                ),
-                ToolResult.ok({ configured: true }),
-              );
-            },
-          }),
+          },
         ],
       },
     ],
 
-    invokeTool: ({ ctx, toolRow, args }) =>
+    // -----------------------------------------------------------------------
+    // Per-connection tool production. THIS is where a GraphQL integration is
+    // introspected — when a connection is created (or refreshed), with that
+    // connection's credential — yielding one ToolDef per operation. Registering
+    // the integration in the catalog makes no network call; discovery is
+    // deferred to here, exactly how MCP defers tool discovery to connect time.
+    // The introspected schema is identical across connections, so `invokeTool`
+    // re-derives the same operation bindings; only the credential differs.
+    // -----------------------------------------------------------------------
+    resolveTools: ({
+      config,
+      template,
+      storage,
+      getValues,
+      httpClientLayer,
+    }: {
+      readonly config: IntegrationConfig;
+      readonly template: AuthTemplateSlug | null;
+      readonly storage: GraphqlStore;
+      readonly getValues: () => Effect.Effect<Record<string, string | null>, unknown>;
+      readonly httpClientLayer: Layer.Layer<HttpClient.HttpClient>;
+    }) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeGraphqlIntegrationConfig(config).pipe(Effect.option);
+        if (Option.isNone(decoded)) return { tools: [] };
+        const graphqlConfig = decoded.value;
+        const introspectionJson = yield* loadIntrospectionJson(storage, graphqlConfig);
+        // Live introspection (no stored snapshot) needs the connection's
+        // credential inputs for auth-required endpoints; resolve them lazily.
+        const values =
+          introspectionJson == null
+            ? yield* getValues().pipe(
+                Effect.catch(() => Effect.succeed({} as Record<string, string | null>)),
+              )
+            : ({} as Record<string, string | null>);
+        const introspection = yield* introspectForConnection(
+          graphqlConfig,
+          introspectionJson,
+          values,
+          template,
+          options?.httpClientLayer ?? httpClientLayer,
+        ).pipe(Effect.option);
+        if (Option.isNone(introspection)) return { tools: [] };
+        const extracted = yield* extract(introspection.value).pipe(Effect.option);
+        if (Option.isNone(extracted)) return { tools: [] };
+        const prepared = prepareOperations(extracted.value.result.fields, introspection.value);
+        return {
+          tools: buildToolDefs(prepared),
+          definitions: extracted.value.definitions,
+        };
+      }).pipe(Effect.catch(() => Effect.succeed({ tools: [] as readonly ToolDef[] }))),
+
+    // -----------------------------------------------------------------------
+    // Invoke one of a connection's tools. Look up the operation by integration
+    // + tool name, render the credential through the connection's auth
+    // template, and execute the GraphQL request.
+    // -----------------------------------------------------------------------
+    invokeTool: ({ ctx, toolRow, credential, args }) =>
       Effect.gen(function* () {
         const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
-        // toolRow.scope_id is the resolved owning scope of the tool
-        // (innermost-wins from the executor's stack). The matching
-        // GraphQL operation + source plugin-storage rows live at the same
-        // scope, so pin every store lookup to it instead of relying on
-        // stack-wide scope fall-through.
-        const toolScope = toolRow.scope_id;
-        const op = yield* ctx.storage.getOperationByToolId(toolRow.id, toolScope);
+        const integration = toolRow.integration;
+        const toolName = toolRow.name;
+
+        const config = yield* decodeGraphqlIntegrationConfig(credential.config).pipe(
+          Effect.mapError(
+            () =>
+              new GraphqlInvocationError({
+                message: `Invalid GraphQL integration config for "${integration}"`,
+                statusCode: Option.none(),
+              }),
+          ),
+        );
+
+        // Operation bindings are produced lazily for integrations registered
+        // without an add-time schema (no network at catalog registration). On a
+        // cache miss, introspect with this connection's credential, persist the
+        // bindings, then resolve the requested tool — discovery/persistence are
+        // deferred to first use, mirroring MCP.
+        let op = yield* ctx.storage.getOperation(integration, toolName);
+        if (!op) {
+          op = yield* materializeOperations(
+            ctx,
+            integration,
+            config,
+            credential,
+            httpClientLayer,
+          ).pipe(Effect.map((ops) => ops.find((o) => o.toolName === toolName) ?? null));
+        }
         if (!op) {
           return yield* new GraphqlInvocationError({
-            message: `No GraphQL operation found for tool "${toolRow.id}"`,
-            statusCode: Option.none(),
-          });
-        }
-        const source = yield* ctx.storage.getSource(op.sourceId, toolScope);
-        if (!source) {
-          return yield* new GraphqlInvocationError({
-            message: `No GraphQL source found for "${op.sourceId}"`,
+            message: `No GraphQL operation found for tool "${integration}.${toolName}"`,
             statusCode: Option.none(),
           });
         }
 
-        const resolvedHeaders =
-          (yield* resolveGraphqlBindingValueMap(ctx, source.headers, {
-            sourceId: source.namespace,
-            sourceScope: source.scope,
-            missingLabel: "header",
-          })) ?? {};
-        const resolvedQueryParams =
-          (yield* resolveGraphqlBindingValueMap(ctx, source.queryParams, {
-            sourceId: source.namespace,
-            sourceScope: source.scope,
-            missingLabel: "query parameter",
-          })) ?? {};
-        const oauthHeader = yield* resolveGraphqlStoredOAuthHeader(
-          ctx,
-          source.namespace,
-          source.scope,
-          source.auth,
+        // Parse-check a caller-supplied `select` locally, before any network
+        // call: reject a malformed selection (and any attempt to break out of the
+        // field's selection set) with a precise error instead of a confusing
+        // server response. Field- and argument-level validity is left to the
+        // server, which returns verbatim errors.
+        const selectArg = (args as Record<string, unknown> | undefined)?.select;
+        if (typeof selectArg === "string" && selectArg.trim().length > 0) {
+          const operationString = effectiveOperationString(
+            op.binding,
+            (args ?? {}) as Record<string, unknown>,
+          );
+          const selectionErrors = validateOperationString(operationString);
+          if (selectionErrors.length > 0) {
+            return ToolResult.fail({
+              code: "graphql_invalid_selection",
+              message: selectionErrors[0]!,
+              details: { errors: selectionErrors },
+            });
+          }
+        }
+
+        const headers: Record<string, string> = { ...(config.headers ?? {}) };
+        const queryParams: Record<string, string> = {
+          ...(config.queryParams ?? {}),
+        };
+
+        const method = config.authenticationTemplate.find(
+          (m: GraphqlAuthMethod) => m.slug === String(credential.template),
         );
-        Object.assign(resolvedHeaders, oauthHeader ?? {});
+        if (method && method.kind !== "none") {
+          // A method with unresolved inputs fails the invocation explicitly
+          // instead of dialing unauthenticated. oauth2 requires the resolved
+          // access token (`token`); apikey requires every placement variable.
+          const missing = (
+            method.kind === "oauth2"
+              ? [TOKEN_VARIABLE]
+              : requiredPlacementVariables(method.placements)
+          ).filter((variable) => credential.values[variable] == null);
+          if (missing.length > 0) {
+            return yield* new GraphqlAuthRequiredError({
+              code:
+                method.kind === "oauth2" ? "oauth_connection_missing" : "connection_value_missing",
+              message:
+                method.kind === "oauth2"
+                  ? `Missing OAuth connection value for GraphQL integration "${integration}" (connection "${credential.connection}")`
+                  : `Missing credential value for GraphQL integration "${integration}" (connection "${credential.connection}") for input(s): ${missing.join(", ")}`,
+              owner: credential.owner,
+              integration,
+              connection: String(credential.connection),
+              credentialKind: method.kind === "oauth2" ? "oauth" : "secret",
+              credentialLabel: method.kind === "oauth2" ? "OAuth sign-in" : "API key",
+              template: String(credential.template),
+            });
+          }
+          const rendered = renderGraphqlAuthMethod(method, credential.values);
+          Object.assign(headers, rendered.headers);
+          Object.assign(queryParams, rendered.queryParams);
+        }
 
         const result = yield* invokeWithLayer(
           op.binding,
           (args ?? {}) as Record<string, unknown>,
-          source.endpoint,
-          resolvedHeaders,
-          resolvedQueryParams,
+          config.endpoint,
+          headers,
+          queryParams,
           httpClientLayer,
         );
 
@@ -1238,10 +1127,10 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         if (result.status < 200 || result.status >= 300) {
           if (result.status === 401 || result.status === 403) {
             return authToolFailure({
-              code: "credential_rejected",
+              code: "connection_rejected",
               status: result.status,
-              message: `Upstream rejected credentials for GraphQL source "${source.namespace}" with HTTP ${result.status}. Re-authenticate or update the source credentials before retrying this tool.`,
-              source: { id: source.namespace, scope: source.scope },
+              message: `Upstream rejected credentials for GraphQL integration "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection before retrying this tool.`,
+              source: { id: integration, scope: credential.owner },
               credential: { kind: "upstream", label: "Upstream authorization" },
               upstream: {
                 status: result.status,
@@ -1250,7 +1139,6 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
                   errors: result.errors,
                 },
               },
-              recovery: { configureSourceTool: "executor.graphql.configureSource" },
             });
           }
           return ToolResult.fail({
@@ -1271,65 +1159,12 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         ),
       ),
 
-    resolveAnnotations: ({ ctx, sourceId, toolRows }) =>
-      Effect.gen(function* () {
-        // toolRows for a single (plugin_id, source_id) group can still
-        // straddle multiple scopes when the source is shadowed (e.g. an
-        // org-level GraphQL source plus a per-user override that
-        // re-registers the same tool ids). Run one listOperationsBySource
-        // per distinct scope so each lookup pins {source_id, scope_id}
-        // and we don't fall through to the wrong scope's bindings.
-        const scopes = new Set<string>();
-        for (const row of toolRows as readonly ToolRow[]) {
-          scopes.add(row.scope_id);
-        }
-        // One listOperationsBySource per scope is independent storage
-        // work; run them in parallel so a shadowed source doesn't
-        // serialise two ~200ms reads back-to-back in the caller's
-        // `executor.tools.list.annotations` span.
-        const entries = yield* Effect.forEach(
-          [...scopes],
-          (scope) =>
-            Effect.gen(function* () {
-              const ops = yield* ctx.storage.listOperationsBySource(sourceId, scope);
-              const byId = new Map<string, OperationBinding>();
-              for (const op of ops) byId.set(op.toolId, op.binding);
-              return [scope, byId] as const;
-            }),
-          { concurrency: "unbounded" },
-        );
-        const byScope = new Map<string, Map<string, OperationBinding>>(entries);
+    // Per-connection cleanup. Operation bindings are catalog-level (shared
+    // across an integration's connections), so removing a single connection
+    // leaves them in place; the executor drops the connection's tool rows.
+    removeConnection: () => Effect.void,
 
-        const out: Record<string, ToolAnnotations> = {};
-        for (const row of toolRows as readonly ToolRow[]) {
-          const binding = byScope.get(row.scope_id)?.get(row.id);
-          if (binding) out[row.id] = annotationsFor(binding);
-        }
-        return out;
-      }),
-
-    removeSource: ({ ctx, sourceId, scope }) =>
-      Effect.gen(function* () {
-        yield* ctx.transaction(
-          Effect.gen(function* () {
-            yield* ctx.credentialBindings.removeForSource({
-              pluginId: GRAPHQL_PLUGIN_ID,
-              sourceId,
-              sourceScope: ScopeId.make(scope),
-            });
-            yield* ctx.storage.removeSource(sourceId, scope);
-          }),
-        );
-        if (options?.configFile) {
-          yield* options.configFile.removeSource(sourceId);
-        }
-      }),
-
-    usagesForSecret: () => Effect.succeed([]),
-
-    usagesForConnection: () => Effect.succeed([]),
-
-    detect: ({ ctx, url }) =>
+    detect: ({ ctx, url }: { readonly ctx: PluginCtx<GraphqlStore>; readonly url: string }) =>
       Effect.gen(function* () {
         const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
         const trimmed = url.trim();
@@ -1346,38 +1181,35 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           Effect.catch(() => Effect.succeed(false)),
         );
 
-        const name = namespaceFromEndpoint(trimmed);
+        const slug = slugFromEndpoint(trimmed);
 
         if (ok) {
-          return SourceDetectionResult.make({
+          return IntegrationDetectionResult.make({
             kind: "graphql",
             confidence: "high",
             endpoint: trimmed,
-            name,
-            namespace: name,
+            name: slug,
+            slug,
           });
         }
 
-        // Low-confidence URL-token fallback. Introspection can fail for
-        // many reasons (auth, CORS, the endpoint disabled introspection
-        // in production, transport errors). When the URL itself
-        // strongly implies GraphQL, surface a candidate so the user
-        // can still pick it from the detect dropdown.
+        // Low-confidence URL-token fallback. Introspection can fail for many
+        // reasons (auth, CORS, the endpoint disabled introspection, transport
+        // errors). When the URL itself strongly implies GraphQL, surface a
+        // candidate so the user can still pick it.
         if (urlMatchesToken(parsed.value, "graphql")) {
-          return SourceDetectionResult.make({
+          return IntegrationDetectionResult.make({
             kind: "graphql",
             confidence: "low",
             endpoint: trimmed,
-            name,
-            namespace: name,
+            name: slug,
+            slug,
           });
         }
 
         return null;
       }),
   };
-  // HTTP transport (routes/handlers/extensionService) is layered on by
-  // the api-aware factory in `@executor-js/plugin-graphql/api`. Hosts that
-  // want the HTTP surface import the plugin from there; SDK-only
-  // consumers stay on this entry and avoid the server-only deps.
+  // HTTP transport (routes/handlers/extensionService) is layered on by the
+  // api-aware factory in `@executor-js/plugin-graphql/api`.
 });

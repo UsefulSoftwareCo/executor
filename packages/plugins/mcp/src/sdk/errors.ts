@@ -1,10 +1,7 @@
-// MCP plugin tagged errors. Each carries an `HttpApiSchema` annotation so
-// it can be `.addError(...)` directly on the API group — handlers return
-// these and HttpApi encodes them as 4xx responses with a typed body. No
-// per-handler sanitisation step.
+// MCP plugin tagged errors. API-facing errors carry `HttpApiSchema`
+// annotations so they can be `.addError(...)` directly on the API group.
 
 import { Data, Schema } from "effect";
-import type { AuthToolFailureCode } from "@executor-js/sdk/core";
 
 export class McpConnectionError extends Schema.TaggedErrorClass<McpConnectionError>()(
   "McpConnectionError",
@@ -24,14 +21,20 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
   { httpApiStatus: 400 },
 ) {}
 
-export class McpInvocationError extends Schema.TaggedErrorClass<McpInvocationError>()(
-  "McpInvocationError",
-  {
-    toolName: Schema.String,
-    message: Schema.String,
-  },
-  { httpApiStatus: 400 },
-) {}
+// Internal only: core wraps non-auth failures as ToolInvocationError.cause, so
+// this must carry only sanitized invocation metadata. Raw SDK causes can contain
+// upstream bodies/challenges and should not leave the invoke catch block.
+export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
+  readonly toolName: string;
+  readonly message: string;
+  readonly status?: number;
+}> {}
+
+export class McpOAuthReauthorizationRequired extends Data.TaggedError(
+  "McpOAuthReauthorizationRequired",
+)<{
+  readonly message: string;
+}> {}
 
 export class McpOAuthError extends Schema.TaggedErrorClass<McpOAuthError>()(
   "McpOAuthError",
@@ -40,18 +43,3 @@ export class McpOAuthError extends Schema.TaggedErrorClass<McpOAuthError>()(
   },
   { httpApiStatus: 400 },
 ) {}
-
-export class McpAuthRequiredError extends Data.TaggedError("McpAuthRequiredError")<{
-  readonly code: AuthToolFailureCode;
-  readonly message: string;
-  readonly sourceId: string;
-  readonly sourceScope: string;
-  readonly credentialKind: "secret" | "connection" | "oauth" | "upstream";
-  readonly credentialLabel?: string;
-  readonly slotKey?: string;
-  readonly secretId?: string;
-  readonly connectionId?: string;
-  readonly status?: number;
-  readonly details?: unknown;
-  readonly cause?: unknown;
-}> {}

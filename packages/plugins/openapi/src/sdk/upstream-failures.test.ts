@@ -27,14 +27,15 @@ import type { AddressInfo } from "node:net";
 
 import {
   createExecutor,
-  definePlugin,
-  type InvokeOptions,
-  type SecretProvider,
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ToolAddress,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 import {
+  addOpenApiTestConnection,
   makeOpenApiHttpApiTestSourceConfig,
-  makeOpenApiTestSourceConfig,
   type OpenApiTestServerShape,
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
@@ -42,29 +43,12 @@ import {
 
 import { openApiPlugin } from "./plugin";
 
-const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
-const TEST_SCOPE = "test-scope";
+const testPlugins = () =>
+  [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
 
-const memoryProvider: SecretProvider = (() => {
-  const store = new Map<string, string>();
-  return {
-    key: "memory",
-    writable: true,
-    get: (id, scope) => Effect.sync(() => store.get(`${scope}:${id}`) ?? null),
-    set: (id, value, scope) =>
-      Effect.sync(() => {
-        store.set(`${scope}:${id}`, value);
-      }),
-    delete: (id, scope) => Effect.sync(() => store.delete(`${scope}:${id}`)),
-    list: () => Effect.sync(() => []),
-  };
-})();
-
-const memorySecretsPlugin = definePlugin(() => ({
-  id: "memory-secrets" as const,
-  storage: () => ({}),
-  secretProviders: [memoryProvider],
-}));
+// `/things` GET op `listThings` under group "things" → tool path
+// `things.listThings`, used verbatim (dots and all) as the address tool segment.
+const LIST_THINGS = "things.listThings";
 
 type ResponseScript = (req: {
   url: string;
@@ -128,43 +112,30 @@ const FailureApi = HttpApi.make("failuresTest")
   .add(ThingsGroup)
   .annotateMerge(OpenApi.annotations({ title: "FailuresTest", version: "1.0.0" }));
 
+// Build an executor + connection from the FailureApi HttpApi against an
+// arbitrary baseUrl (used for the Node-transport socket-drop / slow cases).
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(
-      makeTestConfig({
-        plugins: [
-          openApiPlugin({ httpClientLayer: FetchHttpClient.layer }),
-          memorySecretsPlugin(),
-        ] as const,
-      }),
-    );
+    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
     yield* executor.openapi.addSpec(
-      makeOpenApiHttpApiTestSourceConfig(FailureApi, {
-        scope: TEST_SCOPE,
-        namespace: "f",
-        baseUrl,
-      }),
+      makeOpenApiHttpApiTestSourceConfig(FailureApi, { slug: "f", baseUrl }),
     );
-    return executor;
+    yield* executor.connections.create({
+      owner: "org",
+      name: ConnectionName.make("main"),
+      integration: IntegrationSlug.make("f"),
+      template: AuthTemplateSlug.make("apiKey"),
+      value: "token",
+    });
+    const address = ToolAddress.make(`tools.f.org.main.${LIST_THINGS}`);
+    return { executor, address };
   });
 
 const buildExecutorForOpenApiServer = (server: OpenApiTestServerShape) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(
-      makeTestConfig({
-        plugins: [
-          openApiPlugin({ httpClientLayer: FetchHttpClient.layer }),
-          memorySecretsPlugin(),
-        ] as const,
-      }),
-    );
-    yield* executor.openapi.addSpec(
-      makeOpenApiTestSourceConfig(server, {
-        scope: TEST_SCOPE,
-        namespace: "f",
-      }),
-    );
-    return executor;
+    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const conn = yield* addOpenApiTestConnection(executor, server, { slug: "f" });
+    return { executor, address: conn.address(LIST_THINGS) };
   });
 
 describe("OpenAPI upstream failure modes", () => {
@@ -180,11 +151,9 @@ describe("OpenAPI upstream failure modes", () => {
         headers: { "content-type": "application/json" },
         body: '{"error":{"code":"internal","message":"db timeout"}}',
       }));
-      const executor = yield* buildExecutorForOpenApiServer(server);
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 
-      const exit = yield* executor.tools
-        .invoke("f.things.listThings", {}, autoApprove)
-        .pipe(Effect.exit);
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
 
       const text = Exit.match(exit, {
         onFailure: (cause) => JSON.stringify(cause),
@@ -209,11 +178,9 @@ describe("OpenAPI upstream failure modes", () => {
         headers: { "content-type": "application/json" },
         body: '{"error":{"field":"name","reason":"too_short"}}',
       }));
-      const executor = yield* buildExecutorForOpenApiServer(server);
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 
-      const exit = yield* executor.tools
-        .invoke("f.things.listThings", {}, autoApprove)
-        .pipe(Effect.exit);
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
 
       const text = Exit.match(exit, {
         onFailure: (cause) => JSON.stringify(cause),
@@ -224,21 +191,21 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
-  it.effect("upstream 401 is classified as credential_rejected", () =>
+  it.effect("upstream 401 is classified as connection_rejected", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
         status: 401,
         headers: { "content-type": "application/json" },
         body: '{"error":{"message":"invalid token"}}',
       }));
-      const executor = yield* buildExecutorForOpenApiServer(server);
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 
-      const result = yield* executor.tools.invoke("f.things.listThings", {}, autoApprove);
+      const result = yield* executor.execute(address, {});
 
       expect(result).toMatchObject({
         ok: false,
         error: {
-          code: "credential_rejected",
+          code: "connection_rejected",
           status: 401,
           message: expect.stringContaining("Upstream rejected credentials"),
           details: {
@@ -259,15 +226,13 @@ describe("OpenAPI upstream failure modes", () => {
         headers: { "content-type": "application/json" },
         body: "not json at all <<<<",
       }));
-      const executor = yield* buildExecutorForOpenApiServer(server);
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 
       // Whatever happens, the test asserts it doesn't produce a defect or
       // hang — either the plugin returns a value (raw text / passthrough)
       // or it surfaces a tagged failure. Both are acceptable; what's not
       // is silently throwing in a way that escapes the Effect.
-      const exit = yield* executor.tools
-        .invoke("f.things.listThings", {}, autoApprove)
-        .pipe(Effect.exit);
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
 
       // Don't over-specify — just verify the runtime didn't crash and
       // the result is observable.
@@ -278,11 +243,9 @@ describe("OpenAPI upstream failure modes", () => {
   it.effect("upstream connection drop mid-response surfaces as a failure", () =>
     Effect.gen(function* () {
       const { baseUrl } = yield* startDroppingServer();
-      const executor = yield* buildExecutor(baseUrl);
+      const { executor, address } = yield* buildExecutor(baseUrl);
 
-      const exit = yield* executor.tools
-        .invoke("f.things.listThings", {}, autoApprove)
-        .pipe(Effect.exit);
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
     }),
@@ -295,11 +258,9 @@ describe("OpenAPI upstream failure modes", () => {
         headers: { "content-type": "text/html" },
         body: "<html><body>Service Unavailable</body></html>",
       }));
-      const executor = yield* buildExecutorForOpenApiServer(server);
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 
-      const exit = yield* executor.tools
-        .invoke("f.things.listThings", {}, autoApprove)
-        .pipe(Effect.exit);
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
 
       // Must be observable — either the plugin coerces (string) or fails;
       // the smoke-test guarantees no defect.
@@ -330,11 +291,9 @@ describe("OpenAPI upstream failure modes", () => {
         (s) => Effect.sync(() => s.close()),
       );
       const { baseUrl } = yield* slowServer;
-      const executor = yield* buildExecutor(baseUrl);
+      const { executor, address } = yield* buildExecutor(baseUrl);
 
-      const result = unwrapInvocation(
-        yield* executor.tools.invoke("f.things.listThings", {}, autoApprove),
-      );
+      const result = unwrapInvocation(yield* executor.execute(address, {}));
       expect(result.data).toEqual([]);
     }),
   );

@@ -1,17 +1,27 @@
 import { RegistryProvider } from "@effect/atom-react";
 import * as React from "react";
+
 import { FrontendErrorReporterProvider, type FrontendErrorReporter } from "./error-reporting";
-import { ScopeProvider } from "./scope-context";
+import {
+  ExecutorServerConnectionProvider,
+  useExecutorServerConnection,
+  type ExecutorServerConnectionInput,
+} from "./server-connection";
+
+function ExecutorRegistryProvider(props: React.PropsWithChildren) {
+  const connection = useExecutorServerConnection();
+  return <RegistryProvider key={connection.key}>{props.children}</RegistryProvider>;
+}
 
 export const ExecutorProvider = (
   props: React.PropsWithChildren<{
-    fallback?: React.ReactNode;
+    connection?: ExecutorServerConnectionInput;
     onHandledError?: FrontendErrorReporter;
   }>,
 ) => (
   <FrontendErrorReporterProvider reporter={props.onHandledError}>
-    <RegistryProvider>
-      <ScopeProvider fallback={props.fallback}>{props.children}</ScopeProvider>
-    </RegistryProvider>
+    <ExecutorServerConnectionProvider connection={props.connection}>
+      <ExecutorRegistryProvider>{props.children}</ExecutorRegistryProvider>
+    </ExecutorServerConnectionProvider>
   </FrontendErrorReporterProvider>
 );

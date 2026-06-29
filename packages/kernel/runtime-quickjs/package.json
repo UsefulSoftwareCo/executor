@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/runtime-quickjs",
-  "version": "1.4.32",
+  "version": "1.5.25",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/kernel/runtime-quickjs",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -38,15 +38,18 @@
   },
   "dependencies": {
     "@executor-js/codemode-core": "workspace:*",
-    "effect": "catalog:",
     "quickjs-emscripten": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

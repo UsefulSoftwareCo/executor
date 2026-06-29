@@ -9,8 +9,7 @@
 // `configFile` sink, which is keyed to the active scope cwd and so can't
 // be constructed at module-eval time). Deps are optional — the
 // packaging and static tooling call `plugins()` with no args (they read
-// `plugin.schema` / `plugin.packageName` only); runtime callers pass concrete
-// deps.
+// `plugin.packageName` only); runtime callers pass concrete deps.
 //
 // Each app declares its own deps shape inline on the factory parameter
 // — TS infers `TDeps` from there, so apps don't reach into the SDK's

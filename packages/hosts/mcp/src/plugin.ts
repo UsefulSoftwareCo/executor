@@ -1,13 +1,13 @@
 import { Effect } from "effect";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import type { ClientCapabilities, ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 import type * as Cause from "effect/Cause";
 
 import type { AnyPlugin } from "@executor-js/sdk";
 import type { ExecutionEngine } from "@executor-js/execution";
 
 export type McpToolResult = {
-  content: Array<{ type: "text"; text: string }>;
+  content: ContentBlock[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };

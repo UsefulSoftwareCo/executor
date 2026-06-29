@@ -1,0 +1,51 @@
+name: Preview sweep
+
+# Safety net for the per-PR previews (.github/workflows/preview.yml): force
+# pushes, cancelled runs, or teardown failures can orphan a preview stack.
+# Nightly, list every deployed preview and destroy any whose PR is no longer
+# open. A second pass (sweep-e2e) cleans up after the e2e harness on the same
+# account: crashed suite runs leak executor-e2e-* stacks, and synthetic OTP
+# logins permanently occupy Zero Trust seats.
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    name: Destroy previews for closed PRs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Sweep
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for pr in $(bun apps/host-cloudflare/scripts/preview.ts list | jq -r '.[].pr'); do
+            state="$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || echo UNKNOWN)"
+            if [ "$state" != "OPEN" ]; then
+              echo "PR #$pr is $state — destroying its preview"
+              bun apps/host-cloudflare/scripts/preview.ts destroy --pr "$pr"
+            else
+              echo "PR #$pr is open — keeping its preview"
+            fi
+          done
+
+      - name: Sweep e2e leftovers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}
+        run: bun apps/host-cloudflare/scripts/preview.ts sweep-e2e

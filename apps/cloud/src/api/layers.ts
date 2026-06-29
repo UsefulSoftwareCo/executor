@@ -2,24 +2,26 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServer } from "effect/unstable/http";
 import { Layer } from "effect";
 
-import { OrgAuthLive, SessionAuthLive } from "../auth/middleware-live";
-import { ApiKeyService } from "../auth/api-keys";
+import { makeProtectedApiLayer, requestScopedMiddleware } from "@executor-js/api/server";
+
+import { SessionAuthLive } from "../auth/middleware-live";
 import { UserStoreService } from "../auth/context";
 import {
   CloudAuthPublicHandlers,
   CloudSessionAuthHandlers,
   NonProtectedApi,
 } from "../auth/handlers";
-import { DbService } from "../services/db";
-import { TelemetryLive } from "../services/telemetry";
-import { OrgHttpApi } from "../org/compose";
+import { DbService } from "../db/db";
+import { WorkerTelemetryLive } from "../observability/telemetry";
+import { OrgHttpApi } from "../org/api";
+import { orgAuthMiddleware } from "../org/auth-middleware";
 import { OrgHandlers } from "../org/handlers";
+import { ErrorCaptureLive } from "../observability";
 
-import { CoreSharedServices } from "./core-shared-services";
-import { ProtectedCloudApi, RouterConfig } from "./protected-layers";
-import { requestScopedMiddleware } from "./request-scoped";
+import { AutumnService } from "../extensions/billing/service";
 
-export { CoreSharedServices, ProtectedCloudApi, RouterConfig };
+import { cloudPlugins } from "../plugins";
+import { CoreSharedServices } from "../auth/workos";
 
 const DbLive = DbService.Live;
 const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
@@ -36,7 +38,7 @@ export const RequestScopedServicesLive = Layer.mergeAll(DbLive, UserStoreLive);
 export const BootSharedServices = Layer.mergeAll(
   CoreSharedServices,
   HttpServer.layerServices,
-  TelemetryLive,
+  WorkerTelemetryLive,
 );
 
 // Routes that don't require an authenticated org session — login,
@@ -48,25 +50,71 @@ export const BootSharedServices = Layer.mergeAll(
 // without per-request scoping the postgres.js socket pins to the worker's
 // boot scope and Cloudflare Workers' I/O isolation kills the second
 // request.
+//
+// `AutumnService.Default` is provided HERE because the `createOrganization`
+// handler reads it for the free-organizations-per-user limit gate — one of the
+// few app-only billing touchpoints. (It is NOT on the neutral boot core.)
 export const makeNonProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
   HttpApiBuilder.layer(NonProtectedApi).pipe(
     Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
-    Layer.provideMerge(ApiKeyService.WorkOS),
     Layer.provide(requestScopedMiddleware(rsLive).layer),
     Layer.provideMerge(SessionAuthLive),
+    Layer.provideMerge(AutumnService.Default),
   );
 
-// Routes scoped to a specific org (membership management, switching, etc.).
-// Auth is enforced by `OrgAuth` middleware declared on `OrgHttpApi`.
+// Cloud-only WorkOS domain-verification routes. Auth is enforced by a router
+// middleware that resolves the URL org selector header before falling back to
+// the session org, so slug lookup uses the same per-request UserStoreService as
+// the account and protected APIs. The `getDomainVerificationLink` handler also
+// gates on billing, so `AutumnService.Default` is provided here, not on the
+// neutral boot core.
 export const makeOrgApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
   HttpApiBuilder.layer(OrgHttpApi).pipe(
     Layer.provide(OrgHandlers),
-    Layer.provide(requestScopedMiddleware(rsLive).layer),
-    Layer.provideMerge(OrgAuthLive),
+    Layer.provide(orgAuthMiddleware(rsLive)),
+    Layer.provideMerge(AutumnService.Default),
   );
 
-// Default exports use the production per-request layer. Existing callers
-// that import `NonProtectedApiLive`/`OrgApiLive` continue to work; the
-// `make*` factories exist for tests that need to swap in a fake.
+// Default export uses the production per-request layer. Existing callers that
+// import `NonProtectedApiLive` continue to work; the `make*` factory exists for
+// tests that need to swap in a fake.
 export const NonProtectedApiLive = makeNonProtectedApiLive(RequestScopedServicesLive);
 export const OrgApiLive = makeOrgApiLive(RequestScopedServicesLive);
+
+// ---------------------------------------------------------------------------
+// Protected API
+// ---------------------------------------------------------------------------
+//
+// `ProtectedCloudApi` deliberately does NOT declare `.middleware(OrgAuth)`
+// — auth + per-request execution stack construction live in a single
+// `HttpRouter` middleware (`ExecutionStackMiddleware` in `./protected.ts`)
+// which has the right ordering to provide `AuthContext` AND the executor
+// services to handlers. Putting auth on the API as `HttpApiMiddleware` ran
+// it INSIDE the router middleware (wrong order), and added a second auth
+// pass on top of the existing one in `protected.ts`'s outer effect. The
+// router-middleware approach folds both into one place.
+//
+// The shared `makeProtectedApiLayer` assembles the protected API the same way
+// every host does: `composePluginApi(cloudPlugins)` ->
+// `observabilityMiddleware` -> `HttpApiBuilder.layer` provided with
+// `CoreHandlers` + `composePluginHandlerLayer(cloudPlugins)` + the host's
+// `ErrorCapture` + `RouterConfigLive`. Cloud serves at root (no prefixed
+// router) and passes the Sentry-backed `ErrorCaptureLive` (provided ABOVE the
+// handler + middleware layers, so the `capture(...)` translation path AND the
+// observability middleware's defect catchall both resolve the same Sentry
+// implementation).
+//
+// `api` is precisely typed (`HttpApi<…, CoreGroups | PluginGroups<typeof
+// cloudPlugins>>`); test harness clients type via
+// `HttpApiClient.ForApi<typeof ProtectedCloudApi>` with no per-plugin imports.
+// `handlers` is the late-binding plugin handler Layer (each plugin's
+// `extensionService` Tag stays a requirement, satisfied per-request by
+// `ExecutionStackMiddleware` in `./protected.ts`). `RouterConfigLive` is
+// folded into `.layer` here; the rest of the router (`makeApiLive` in
+// `./router.ts`, `./protected.ts`, the test harness) re-provides the same
+// shared `RouterConfigLive` directly.
+const protectedApi = makeProtectedApiLayer(cloudPlugins, { errorCapture: ErrorCaptureLive });
+
+export const ProtectedCloudApi = protectedApi.api;
+export const ProtectedCloudApiHandlers = protectedApi.handlers;
+export const ProtectedCloudApiLive = protectedApi.layer;

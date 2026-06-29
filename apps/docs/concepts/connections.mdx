@@ -1,0 +1,11 @@
+---
+title: Connections
+description: "A connection is a configured instance of an integration. One integration can have many connections."
+---
+
+A **connection** is a configured instance of an [integration](/concepts/integrations).
+A single integration can have many connections: the same API authenticated for two
+different accounts, say.
+
+A connection doesn't have to be authenticated: public APIs and public MCP servers can be
+connected with no credentials. Executor runs tool calls in a sandbox, so the agent can never access the credentials.

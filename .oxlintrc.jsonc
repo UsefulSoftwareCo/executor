@@ -37,10 +37,19 @@
       "error",
       {
         "forbid": [
-          { "element": "button", "message": "Use <Button> from @executor/react" },
+          {
+            "element": "button",
+            "message": "Use <Button> from @executor/react",
+          },
           { "element": "input", "message": "Use <Input> from @executor/react" },
-          { "element": "textarea", "message": "Use <Textarea> from @executor/react" },
-          { "element": "select", "message": "Use <Select> or <NativeSelect> from @executor/react" },
+          {
+            "element": "textarea",
+            "message": "Use <Textarea> from @executor/react",
+          },
+          {
+            "element": "select",
+            "message": "Use <Select> or <NativeSelect> from @executor/react",
+          },
           { "element": "table", "message": "Use <Table> from @executor/react" },
           { "element": "label", "message": "Use <Label> from @executor/react" },
         ],
@@ -53,6 +62,7 @@
         "apps/cli/src/**/*.{ts,tsx}",
         "apps/desktop/src/main.ts",
         "scripts/**/*.{ts,js}",
+        "apps/*/scripts/**/*.{ts,js}",
         "packages/kernel/runtime-*/src/**/*.{ts,tsx,js,mjs}",
       ],
       "rules": {
@@ -63,6 +73,29 @@
         "executor/no-promise-catch": "off",
         "executor/no-promise-reject": "off",
         "executor/no-switch-statement": "off",
+        "executor/no-try-catch-or-throw": "off",
+        "executor/no-unknown-error-message": "off",
+      },
+    },
+    {
+      // The e2e harness internals are adapter boundaries over promise-native
+      // drivers (Playwright, PTY, mcporter, raw HTTP) plus build tooling (the
+      // run viewer); they normalize untyped failures into the recorded
+      // transcript. Scenario code (e2e/scenarios, e2e/cloud, …) stays strict.
+      "files": ["e2e/**/*.{ts,tsx}"],
+      "rules": {
+        // The viewer is standalone tooling — it deliberately doesn't pull the
+        // product design system or Effect in.
+        "react/forbid-elements": "off",
+        "executor/no-switch-statement": "off",
+        "executor/no-effect-escape-hatch": "off",
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-instanceof-tagged-error": "off",
+        "executor/no-json-parse": "off",
+        "executor/no-manual-tag-check": "off",
+        "executor/no-promise-catch": "off",
+        "executor/no-redundant-primitive-cast": "off",
         "executor/no-try-catch-or-throw": "off",
         "executor/no-unknown-error-message": "off",
       },
@@ -135,7 +168,10 @@
     ".turbo/",
     ".worktrees/",
     "dist/",
-    "integrationsdotsh/",
+    "vendor/",
+    "emulators/",
+    "e2e/runs/",
+    "e2e/desktop-packaged/linux-vm/repro.mjs",
     "node_modules/",
     "packages/core/fumadb/",
     "packages/core/sdk/src/vendor/json-schema-to-typescript/",

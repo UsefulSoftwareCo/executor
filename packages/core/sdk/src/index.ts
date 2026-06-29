@@ -1,11 +1,9 @@
 // ---------------------------------------------------------------------------
-// @executor-js/sdk — public surface
+// @executor-js/sdk — public surface (v2)
 // ---------------------------------------------------------------------------
 
 // Re-export the Effect/Schema/HttpApi primitives plugin authors need so a
-// plugin can be written importing only from `@executor-js/sdk`. Authors who
-// want to reach for additional Effect APIs keep importing from `effect/*`
-// directly — these re-exports are the curated minimum.
+// plugin can be written importing only from `@executor-js/sdk`.
 export { Context, Effect, Layer, Schema, Data, Option } from "effect";
 export {
   HttpApi,
@@ -18,11 +16,17 @@ export {
 } from "effect/unstable/httpapi";
 
 // FumaDB integration.
-export { fumadb } from "fumadb";
-export type { FumaDB } from "fumadb";
-export type { AbstractQuery, Condition, ConditionBuilder } from "fumadb/query";
-export { column, idColumn, schema as fumaSchema, table } from "fumadb/schema";
-export type { AnyColumn, AnySchema, AnyTable, Column, Schema as FumaSchema } from "fumadb/schema";
+export { fumadb } from "@executor-js/fumadb";
+export type { FumaDB } from "@executor-js/fumadb";
+export type { AbstractQuery, Condition, ConditionBuilder } from "@executor-js/fumadb/query";
+export { column, idColumn, schema as fumaSchema, table } from "@executor-js/fumadb/schema";
+export type {
+  AnyColumn,
+  AnySchema,
+  AnyTable,
+  Column,
+  Schema as FumaSchema,
+} from "@executor-js/fumadb/schema";
 
 export type {
   FumaDb,
@@ -34,85 +38,112 @@ export type {
 } from "./fuma-runtime";
 export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
 
-// Storage-layer typed errors are still exported so plugin code can catchTag
-// `UniqueViolationError`, but FumaDB itself is the storage API.
+// IDs (branded) — the v2 set.
+export {
+  IntegrationSlug,
+  AuthTemplateSlug,
+  ConnectionName,
+  OAuthClientSlug,
+  OAuthState,
+  ProviderKey,
+  ProviderItemId,
+  ConnectionAddress,
+  ToolAddress,
+  ToolName,
+  ElicitationId,
+  PolicyId,
+  Tenant,
+  Subject,
+  Owner,
+} from "./ids";
+export { connectionIdentifier, isConnectionIdentifier } from "./connection-name-identifier";
 
-// IDs (branded)
-export { ScopeId, ToolId, SecretId, PolicyId, ConnectionId, CredentialBindingId } from "./ids";
-
-// Scope
-export { Scope, defaultSourceInstallScopeId } from "./scope";
-
-// Errors (tagged)
+// Errors (tagged) — the ExecuteError set + integration lifecycle.
 export {
   ToolNotFoundError,
   ToolInvocationError,
   ToolBlockedError,
   NoHandlerError,
-  SourceNotFoundError,
-  SourceRemovalNotAllowedError,
   PluginNotLoadedError,
-  SecretNotFoundError,
-  SecretResolutionError,
-  SecretOwnedByConnectionError,
-  SecretInUseError,
+  IntegrationNotFoundError,
+  IntegrationAlreadyExistsError,
+  IntegrationRemovalNotAllowedError,
   ConnectionNotFoundError,
-  ConnectionProviderNotRegisteredError,
-  ConnectionRefreshNotSupportedError,
-  ConnectionReauthRequiredError,
-  ConnectionInUseError,
+  CredentialProviderNotRegisteredError,
+  CredentialResolutionError,
+  type ExecuteError,
   type ExecutorError,
 } from "./errors";
 
-// Public projections
-export {
-  ToolSchema,
-  SourceDetectionResult,
-  type RefreshSourceInput,
-  type RemoveSourceInput,
-  type Source,
-  type Tool,
-  type ToolListFilter,
-} from "./types";
+// Integration / connection / tool domain contracts.
+export type {
+  AuthMethodDescriptor,
+  AuthMethodOAuthDescriptor,
+  AuthPlacementDescriptor,
+  Integration,
+  IntegrationConfig,
+  IntegrationDisplayDescriptor,
+  RegisterIntegrationInput,
+} from "./integration";
+export { freshCustomAuthSlug, mergeAuthTemplates } from "./integration";
+export type {
+  Connection,
+  ConnectionRef,
+  ConnectionValueInput,
+  CreateConnectionInput,
+  UpdateConnectionInput,
+} from "./connection";
+export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 
-// Core schema
+// Credential providers.
+export type { CredentialProvider, ProviderEntry } from "./provider";
+
+// Public projections / detection.
+export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+
+// Core schema.
 export {
   bigintColumn,
   boolColumn,
   coreSchema,
+  coreTables,
   dateColumn,
   isToolPolicyAction,
   jsonColumn,
+  keyColumn,
   nullableBigintColumn,
   nullableJsonColumn,
+  nullableKeyColumn,
   nullableTextColumn,
-  scopedExecutorTable,
   textColumn,
   TOOL_POLICY_ACTIONS,
   type CoreSchema,
-  type SourceInput,
-  type SourceInputTool,
-  type SourceRow,
-  type ToolRow,
-  type DefinitionRow,
-  type SecretRow,
+  type IntegrationRow,
   type ConnectionRow,
-  type PluginStorageRow,
-  type CredentialBindingRow,
+  type OAuthClientRow,
+  type OAuthSessionRow,
+  type ToolRow,
+  type ToolInvocationRow,
+  type DefinitionRow,
   type ToolPolicyRow,
+  type PluginStorageRow,
+  type BlobRow,
   type ToolPolicyAction,
-  type DefinitionsInput,
-  type ToolAnnotations,
 } from "./core-schema";
 
-// Tool policies
+// Owner policy.
+export {
+  ORG_SUBJECT,
+  executorOwnerPolicyName,
+  executorUnscopedPolicyName,
+  type ExecutorOwnerPolicyContext,
+} from "./owner-policy";
+
+// Tool policies.
 export {
   matchPattern,
   isValidPattern,
-  resolveToolPolicy,
-  resolveEffectivePolicy,
   effectivePolicyFromSorted,
-  rowToToolPolicy,
   ToolPolicyActionSchema,
   type ToolPolicy,
   type CreateToolPolicyInput,
@@ -123,62 +154,7 @@ export {
   type PolicySource,
 } from "./policies";
 
-// Secrets
-export { SecretRef, SetSecretInput, RemoveSecretInput, type SecretProvider } from "./secrets";
-
-export {
-  SecretBackedMap,
-  SecretBackedValue,
-  isSecretBackedRef,
-  resolveSecretBackedMap,
-  type ResolveSecretBackedMapOptions,
-} from "./secret-backed-value";
-
-export {
-  CredentialBindingKind,
-  CredentialBindingValue,
-  ConfiguredCredentialBinding,
-  ConfiguredCredentialValue,
-  ScopedSecretCredentialInput,
-  CredentialBindingRef,
-  CredentialBindingSlotInput,
-  RemoveCredentialBindingInput,
-  RemoveSourceCredentialBindingInput,
-  ReplaceCredentialBindingValue,
-  ReplaceCredentialBindingsInput,
-  ReplaceSourceCredentialBindingsInput,
-  CredentialBindingResolutionStatus,
-  ResolvedCredentialSlot,
-  SetSourceCredentialBindingInput,
-  SourceCredentialBindingSource,
-  SourceCredentialBindingSourceInput,
-  SourceCredentialBindingSlotInput,
-  credentialBindingId,
-  credentialSlotKey,
-  credentialSlotPart,
-  credentialBindingRowToRef,
-  credentialBindingValueFromRow,
-  type CredentialBindingsFacade,
-} from "./credential-bindings";
-
-// Usage tracking — secret/connection refs across plugins
-export { Usage, type UsagesForSecretInput, type UsagesForConnectionInput } from "./usages";
-
-// Connections
-export {
-  ConnectionRef,
-  ConnectionProviderState,
-  CreateConnectionInput,
-  RemoveConnectionInput,
-  UpdateConnectionTokensInput,
-  TokenMaterial,
-  ConnectionRefreshError,
-  type ConnectionProvider,
-  type ConnectionRefreshInput,
-  type ConnectionRefreshResult,
-} from "./connections";
-
-// Elicitation
+// Elicitation.
 export {
   FormElicitation,
   UrlElicitation,
@@ -188,93 +164,102 @@ export {
   type ElicitationRequest,
   type ElicitationHandler,
   type ElicitationContext,
+  type OnElicitation,
+  type InvokeOptions,
 } from "./elicitation";
 
-// Blob store
+// Blob store — the plugin-facing contract (`BlobStore`/`PluginBlobStore`)
+// plus the platform-neutral backends (`makeFumaBlobStore` default,
+// `makeInMemoryBlobStore` for tests). Platform-specific backends live with
+// their host (R2: `@executor-js/cloudflare/blob-store`).
 export {
+  pluginBlobStore,
+  makeInMemoryBlobStore,
+  makeFumaBlobStore,
+  sha256Hex,
   type BlobStore,
   type PluginBlobStore,
-  pluginBlobStore,
-  makeFumaBlobStore,
-  makeInMemoryBlobStore,
+  type OwnerPartitions,
 } from "./blob";
 
-// OAuth 2.1
+// Plugin storage.
 export {
-  type OAuthService,
-  type OAuthStrategy,
-  type OAuthDynamicDcrStrategy,
-  type OAuthAuthorizationCodeStrategy,
-  type OAuthClientCredentialsStrategy,
-  type OAuthProviderState,
-  type OAuthProbeInput,
-  type OAuthProbeResult,
-  type OAuthStartInput,
-  type OAuthStartResult,
-  type OAuthCompleteInput,
-  type OAuthCompleteResult,
-  OAuthProbeError,
-  OAuthStartError,
-  OAuthCompleteError,
-  OAuthSessionNotFoundError,
+  definePluginStorageCollection,
+  pluginStorageId,
+  type PluginStorageCollectionDefinition,
+  type PluginStorageCollectionFacade,
+  type PluginStorageCollectionIndexedField,
+  type PluginStorageCollectionKeyInput,
+  type PluginStorageCollectionListInput,
+  type PluginStorageCollectionOrderBy,
+  type PluginStorageCollectionPutInput,
+  type PluginStorageCollectionQueryInput,
+  type PluginStorageCollectionScopedKeyInput,
+  type PluginStorageCollectionWhere,
+  type PluginStorageConfig,
+  type PluginStorageEntry,
+  type PluginStorageFacade,
+  type PluginStorageIndexField,
+  type PluginStorageIndexSpec,
+  type PluginStorageKeyInput,
+  type PluginStorageListInput,
+  type PluginStoragePutInput,
+  type PluginStorageRuntimeCollectionDefinition,
+  type PluginStorageRuntimeIndexSpec,
+  type PluginStorageSchema,
+  type PluginStorageSchemaType,
+  type PluginStorageScopedKeyInput,
+  type PluginStorageWhereFilter,
+  type PluginStorageWhereValue,
+} from "./plugin-storage";
+
+// OAuth (v2 contracts).
+export {
   OAUTH2_PROVIDER_KEY,
   OAUTH2_SESSION_TTL_MS,
-  OAuthStrategy as OAuthStrategySchema,
-  OAuthProviderState as OAuthProviderStateSchema,
-  OAuthDynamicDcrStrategy as OAuthDynamicDcrStrategySchema,
-  OAuthAuthorizationCodeStrategy as OAuthAuthorizationCodeStrategySchema,
-  OAuthClientCredentialsStrategy as OAuthClientCredentialsStrategySchema,
+  decodeOAuthCallbackState,
+  encodeOAuthCallbackState,
+  type OAuthCallbackState,
 } from "./oauth";
-
 export {
-  OAuth2Error,
-  OAUTH2_DEFAULT_TIMEOUT_MS,
-  OAUTH2_REFRESH_SKEW_MS,
-  assertSupportedOAuthEndpointUrl,
-  buildAuthorizationUrl,
-  createPkceCodeChallenge,
-  createPkceCodeVerifier,
-  exchangeAuthorizationCode,
-  exchangeClientCredentials,
-  isSupportedOAuthEndpointUrl,
-  refreshAccessToken,
-  shouldRefreshToken,
-  type OAuth2TokenResponse,
-  type BuildAuthorizationUrlInput,
-  type ClientAuthMethod,
-  type ExchangeAuthorizationCodeInput,
-  type ExchangeClientCredentialsInput,
-  type RefreshAccessTokenInput,
-} from "./oauth-helpers";
-
-export { makeOAuth2Service, type OAuthServiceDeps } from "./oauth-service";
-
-export {
-  HostedOutboundRequestBlocked,
-  makeHostedHttpClientLayer,
-  validateHostedOutboundUrl,
-  type HostedHttpClientOptions,
-} from "./hosted-http-client";
-
-export {
-  OAuthDiscoveryError,
-  OAuthAuthorizationServerMetadataSchema,
-  OAuthClientInformationSchema,
-  OAuthProtectedResourceMetadataSchema,
-  beginDynamicAuthorization,
-  discoverAuthorizationServerMetadata,
-  discoverProtectedResourceMetadata,
-  registerDynamicClient,
-  type BeginDynamicAuthorizationInput,
-  type DiscoveryRequestOptions,
-  type DynamicAuthorizationState,
-  type DynamicAuthorizationStartResult,
-  type DynamicClientMetadata,
-  type OAuthAuthorizationServerMetadata,
-  type OAuthClientInformation,
-  type OAuthProtectedResourceMetadata,
+  OAuthStartError,
+  OAuthCompleteError,
+  OAuthProbeError,
+  OAuthRegisterDynamicError,
+  OAuthSessionNotFoundError,
+  type OAuthGrant,
+  type OAuthAuthentication,
+  type OAuthClient,
+  type OAuthClientSummary,
+  type CreateOAuthClientInput,
   type RegisterDynamicClientInput,
-} from "./oauth-discovery";
+  type ConnectResult,
+  type OAuthStartInput,
+  type OAuthCompleteInput,
+  type OAuthProbeInput,
+  type OAuthProbeResult,
+  type OAuthService,
+} from "./oauth-client";
+
+// NOTE: the OAuth 2.1 implementation helpers (`./oauth-helpers`,
+// `makeOAuthService` in `./oauth-service`, discovery in `./oauth-discovery`)
+// are SDK-internal — consumed only by `createExecutor`. The hosted HTTP client
+// builder is host-internal and reachable via `@executor-js/sdk/host-internal`.
+
+export {
+  DEFAULT_EXECUTOR_SERVER_ORIGIN,
+  DEFAULT_EXECUTOR_SERVER_USERNAME,
+  EXECUTOR_ORG_SELECTOR_HEADER,
+  apiBaseUrlForServerOrigin,
+  getExecutorServerAuthorizationHeader,
+  normalizeExecutorServerConnection,
+  normalizeExecutorServerOrigin,
+  originFromApiBaseUrl,
+  type ExecutorServerAuth,
+  type ExecutorServerConnection,
+  type ExecutorServerConnectionInput,
+  type ExecutorServerConnectionKind,
+} from "./server-connection";
 
 export {
   OAUTH_POPUP_MESSAGE_TYPE,
@@ -282,7 +267,7 @@ export {
   isOAuthPopupResult,
 } from "./oauth-popup-types";
 
-// Plugin definition
+// Plugin definition.
 export {
   type Plugin,
   type PluginSpec,
@@ -291,78 +276,92 @@ export {
   type ConfiguredPlugin,
   type AnyPlugin,
   type StorageDeps,
+  type OwnerBinding,
+  type ToolPolicyProvider,
+  type ToolPolicyProviderRule,
+  type IntegrationRecord,
   type StaticSourceDecl,
   type StaticToolDecl,
   type StaticToolSchema,
   type StaticToolExecuteContext,
   type StaticToolHandlerInput,
   type StaticToolInput,
-  type ConfigureSourceHandlerInput,
+  type ConfigureIntegrationHandlerInput,
   type InvokeToolInput,
-  type SourceLifecycleInput,
-  type SourceConfigureDecl,
-  type SecretListEntry,
+  type ConnectionLifecycleInput,
+  type IntegrationConfigureDecl,
+  type IntegrationConfigureSchema,
+  type IntegrationPreset,
+  type IntegrationPresetCatalogEntry,
+  type ResolveToolsInput,
+  type ResolveToolsResult,
+  type ToolInvocationCredential,
   type Elicit,
   definePlugin,
   tool,
 } from "./plugin";
-export {
-  pluginStorageId,
-  type PluginStorageEntry,
-  type PluginStorageFacade,
-  type PluginStorageKeyInput,
-  type PluginStorageListInput,
-  type PluginStoragePutInput,
-  type PluginStorageScopedKeyInput,
-} from "./plugin-storage";
 
-// Executor
+// Executor.
+//
+// `collectTables` is host/tooling-only (cli schema cmd, kernel worker,
+// local/cloud DB bring-up). Its definition stays here because `createExecutor`
+// uses it; the host surface (`@executor-js/api/server`) re-exports it.
 export {
   type Executor,
   type ExecutorConfig,
   type ExecutorDb,
   type ExecutorDbFactory,
   type ExecutorDbInput,
-  type OnElicitation,
-  type InvokeOptions,
+  type ParsedToolAddress,
   createExecutor,
   collectTables,
+  parseToolAddress,
+  connectionAddress,
+  toolAddress,
 } from "./executor";
 
-// Built-in core-tools plugin (scopes.list, secrets.list, secrets.create
-// with URL elicitation). Auto-registered by createExecutor when
-// `coreTools` is set on the config; also exportable for callers who
-// want to register it manually.
-export { coreToolsPlugin, type CoreToolsPluginOptions } from "./core-tools";
-
-// CLI / runtime config
+// CLI / runtime config.
 export {
   defineExecutorConfig,
   type ExecutorCliConfig,
   type ExecutorPluginsFactory,
 } from "./config";
 
-// JSON schema $ref helpers (used by openapi for $defs handling)
-export { hoistDefinitions, collectRefs, reattachDefs, normalizeRefs } from "./schema-refs";
-
-// TypeScript preview generation from JSON schemas
-export {
-  schemaToTypeScriptPreview,
-  schemaToTypeScriptPreviewWithDefs,
-  buildToolTypeScriptPreview,
-  type TypeScriptRenderOptions,
-  type TypeScriptSchemaPreview,
-} from "./schema-types";
+// The one TS-preview generator plugins assert against.
+export { buildToolTypeScriptPreview } from "./schema-types";
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
 export { InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
-// The `Tool` value namespace exposes `Tool.ok` / `Tool.fail` constructors;
-// the `Tool` type alias from `./types` is a separate row projection.
-// TypeScript permits the two to share a name because one is purely a
-// value and the other purely a type.
-export { ToolResult, isToolResult, type ToolError } from "./tool-result";
+export {
+  ToolFileSchema,
+  ToolFileJsonSchema,
+  ToolResult,
+  annotateToolResultOutcome,
+  isToolFile,
+  isToolResult,
+  type ToolFile,
+  type ToolFile as ToolFileValue,
+  type ToolError,
+  type ToolHttpMeta,
+} from "./tool-result";
+
+// Stamped boot-time data-migration ledger for the libSQL-backed apps.
+export {
+  DataMigrationError,
+  DuplicateDataMigrationError,
+  runSqliteDataMigrations,
+  sqliteDataMigration,
+  type SqliteDataMigration,
+  type SqliteDataMigrationClient,
+} from "./sqlite-data-migrations";
+// Shared inline-config-field → blob-table migration body; the protocol
+// plugins bind their field names and export the ledger entries.
+export {
+  runSqliteConfigBlobMigration,
+  type SqliteConfigBlobMigrationOptions,
+} from "./sqlite-config-blob-migration";
 export {
   authToolFailure,
   type AuthToolFailureCode,

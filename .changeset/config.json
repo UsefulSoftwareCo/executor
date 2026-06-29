@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.1.3/schema.json",
-  "changelog": false,
+  "changelog": ["@changesets/changelog-github", { "repo": "RhysSullivan/executor" }],
   "commit": false,
   "fixed": [
     [
@@ -11,7 +11,6 @@
       "@executor-js/config",
       "executor",
       "@executor-js/plugin-file-secrets",
-      "@executor-js/plugin-google-discovery",
       "@executor-js/plugin-graphql",
       "@executor-js/plugin-keychain",
       "@executor-js/plugin-mcp",
@@ -26,6 +25,9 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
+    "onlyUpdatePeerDependentsWhenOutOfRange": true
+  },
   "ignore": [
     "@executor-js/local",
     "@executor-js/host-mcp",

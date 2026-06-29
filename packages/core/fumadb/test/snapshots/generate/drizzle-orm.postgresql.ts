@@ -1,5 +1,5 @@
 import { pgTable, varchar, foreignKey, text, customType } from "drizzle-orm/pg-core"
-import { createId } from "fumadb/cuid"
+import { createId } from "@executor-js/fumadb/cuid"
 import { relations } from "drizzle-orm"
 
 export const users = pgTable("users", {

@@ -15,7 +15,7 @@ const withSslMode = (url: string): string => {
 };
 
 export default defineConfig({
-  schema: ["./src/services/schema.ts", "./src/services/executor-schema.ts"],
+  schema: ["./src/db/schema.ts", "./src/db/executor-schema.ts"],
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {

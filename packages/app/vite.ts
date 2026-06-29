@@ -5,6 +5,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
 
+import { routes } from "./tsr.routes.ts";
+
 const APP_ROOT = fileURLToPath(new URL("./", import.meta.url));
 
 interface AppPluginOptions {
@@ -58,6 +60,9 @@ export default function appPlugin(options: AppPluginOptions = {}): PluginOption[
       autoCodeSplitting: true,
       routesDirectory: fileURLToPath(new URL("./src/routes", import.meta.url)),
       generatedRouteTree: fileURLToPath(new URL("./src/routeTree.gen.ts", import.meta.url)),
+      // The route tree definition lives in tsr.routes.ts (shared with
+      // packages/react's routes:gen so a CLI regen matches dev/build).
+      virtualRouteConfig: routes,
     }),
     ...react(),
   ];

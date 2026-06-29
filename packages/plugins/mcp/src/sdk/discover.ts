@@ -55,6 +55,7 @@ export const discoverTools = (
 
     const manifest = extractManifestFromListToolsResult(listResult, {
       serverInfo: connection.client.getServerVersion?.(),
+      instructions: connection.client.getInstructions?.(),
     });
 
     // Close the connection after discovery

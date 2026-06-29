@@ -61,7 +61,7 @@ export interface OAuthEndpointUrlPolicy {
   readonly allowHttp?: boolean;
 }
 
-const isLoopbackHttpUrl = (value: string): boolean => {
+export const isLoopbackHttpUrl = (value: string): boolean => {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
   if (url.protocol !== "http:") return false;
@@ -107,6 +107,10 @@ export const createPkceCodeVerifier = (): string => oauth.generateRandomCodeVeri
 export const createPkceCodeChallenge = (verifier: string): Promise<string> =>
   oauth.calculatePKCECodeChallenge(verifier);
 
+/** RFC 6749 `state` — an unguessable correlation token minted by `oauth.start`
+ *  and redeemed by `oauth.complete`. */
+export const createOAuthState = (): string => oauth.generateRandomState();
+
 // ---------------------------------------------------------------------------
 // Authorization URL builder
 // ---------------------------------------------------------------------------
@@ -140,6 +144,9 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
       input.endpointUrlPolicy,
     ),
   );
+  // Benign default kept by design: a single space is the RFC 6749 scope
+  // separator. Callers targeting a legacy comma-separated provider pass
+  // `scopeSeparator` explicitly (see the field's JSDoc).
   const separator = input.scopeSeparator ?? " ";
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUrl);
@@ -159,6 +166,101 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
     }
   }
   return url.toString();
+};
+
+/** Provider-specific authorize-URL extras that are NOT RFC 6749 params, so the
+ *  generic flow must add them per-provider (keyed off the authorization host).
+ *
+ *  Google: `access_type=offline` + `prompt=consent` are required to receive (and
+ *  keep receiving, across reconnects / scope changes) a REFRESH TOKEN — without
+ *  them Google issues an access-token-only grant that dies in ~1h and a
+ *  re-consent can silently keep the old scope set. Do not add
+ *  `include_granted_scopes=true` here: with historical grants on the same Google
+ *  consent app, Google folds those unrelated scopes into the new consent flow and
+ *  can fail inside accounts.google.com before returning to our callback. */
+export const providerAuthorizeExtras = (
+  authorizationUrl: string,
+): Readonly<Record<string, string>> => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input → no provider extras
+  try {
+    const host = new URL(authorizationUrl).host.toLowerCase();
+    if (host === "accounts.google.com") {
+      return { access_type: "offline", prompt: "consent" };
+    }
+  } catch {
+    // Unparseable authorization URL — let buildAuthorizationUrl surface the error.
+  }
+  return {};
+};
+
+// ---------------------------------------------------------------------------
+// Regional token-endpoint rebind
+//
+// Some authorization servers publish a single static metadata document that
+// advertises one region's token endpoint, but issue authorization codes that
+// are only redeemable at the *regional* host the user's org actually lives on.
+// The region comes back on the callback as a non-standard `domain` (or `site`)
+// query param: Datadog returns `domain=us5.datadoghq.com` while its metadata
+// statically advertises `app.datadoghq.com`. Redeeming the code at the
+// advertised host then fails with `invalid_grant`.
+//
+// `rebindTokenEndpointHostToCallbackDomain` swaps ONLY the hostname of the
+// configured token URL to the callback-supplied host, and ONLY when that host
+// is a sibling subdomain of the configured one (same parent after stripping the
+// leftmost DNS label, e.g. `app.datadoghq.com` and `us5.datadoghq.com` both
+// reduce to `datadoghq.com`). The token request carries the client secret, the
+// code, and the PKCE verifier, so an attacker-influenced `domain` must never be
+// able to point it at an arbitrary origin. Anything that fails the sibling
+// check, fails to parse, or isn't https falls back to the configured URL
+// unchanged.
+// ---------------------------------------------------------------------------
+
+const hostnameFromCallbackDomain = (callbackDomain: string): string | undefined => {
+  const trimmed = callbackDomain.trim();
+  if (trimmed.length === 0) return undefined;
+  // Datadog sends `domain` as a bare host and `site` as a full origin; accept
+  // either by tolerating an optional scheme, then taking only the hostname.
+  const candidate = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  if (!URL.canParse(candidate)) return undefined;
+  const url = new URL(candidate);
+  // A legitimate regional host carries no port, credentials, or path.
+  if (url.port !== "" || url.username !== "" || url.password !== "") return undefined;
+  if (url.pathname !== "/" && url.pathname !== "") return undefined;
+  return url.hostname.toLowerCase();
+};
+
+/** Parent domain after stripping the leftmost DNS label, or `undefined` when
+ *  the host has no sibling space (a single label, or a parent that is a bare
+ *  TLD). `app.datadoghq.com` -> `datadoghq.com`; `foo.com` -> undefined. */
+const siblingParentDomainOf = (hostname: string): string | undefined => {
+  const labels = hostname.split(".");
+  if (labels.length < 3) return undefined;
+  const parent = labels.slice(1).join(".");
+  // Require the parent to itself be multi-label so a 2-label configured host
+  // can never rebind across an entire TLD (e.g. foo.com -> bar.com).
+  return parent.includes(".") ? parent : undefined;
+};
+
+export const rebindTokenEndpointHostToCallbackDomain = (
+  configuredTokenUrl: string,
+  callbackDomain: string | null | undefined,
+): string => {
+  if (!callbackDomain) return configuredTokenUrl;
+  if (!URL.canParse(configuredTokenUrl)) return configuredTokenUrl;
+  const configured = new URL(configuredTokenUrl);
+  if (configured.protocol !== "https:") return configuredTokenUrl;
+  const targetHost = hostnameFromCallbackDomain(callbackDomain);
+  if (!targetHost) return configuredTokenUrl;
+  const configuredHost = configured.hostname.toLowerCase();
+  if (targetHost === configuredHost) return configuredTokenUrl;
+  const configuredParent = siblingParentDomainOf(configuredHost);
+  const targetParent = siblingParentDomainOf(targetHost);
+  if (!configuredParent || !targetParent || configuredParent !== targetParent) {
+    return configuredTokenUrl;
+  }
+  const rebound = new URL(configuredTokenUrl);
+  rebound.hostname = targetHost;
+  return rebound.toString();
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +372,17 @@ const failOAuth2WithHttpSummary = (cause: unknown): Effect.Effect<never, OAuth2E
 
 export type ClientAuthMethod = "body" | "basic";
 
+/**
+ * The token-endpoint client-auth transport used when a caller doesn't specify
+ * one. `"body"` is `client_secret_post` (the secret in the form body) — the
+ * method our DCR registers (`token_endpoint_auth_method: client_secret_post`)
+ * and the one every confidential client in the v2 model uses. EXPLICIT and
+ * documented rather than a hidden inline `?? "body"`: callers that need
+ * `client_secret_basic` pass `clientAuth: "basic"`. For PUBLIC clients (no
+ * secret) the method is irrelevant — `pickClientAuth` returns `None()`.
+ */
+export const DEFAULT_CLIENT_AUTH_METHOD: ClientAuthMethod = "body";
+
 const asFromTokenUrl = (
   tokenUrl: string,
   endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
@@ -304,10 +417,14 @@ const oauth4webapiRequestOptions = (
   targetUrl: string,
   timeoutMs: number | undefined,
   endpointUrlPolicy: OAuthEndpointUrlPolicy = {},
+  customFetch?: typeof globalThis.fetch,
 ): Record<string, unknown> => {
   const options: Record<string, unknown> = {
     signal: AbortSignal.timeout(timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS),
   };
+  if (customFetch) {
+    (options as { [oauth.customFetch]?: typeof globalThis.fetch })[oauth.customFetch] = customFetch;
+  }
   if (
     isLoopbackHttpUrl(targetUrl) ||
     (URL.canParse(targetUrl) &&
@@ -319,6 +436,13 @@ const oauth4webapiRequestOptions = (
   return options;
 };
 
+// Select the token-endpoint client authentication. The secret's presence is the
+// EXPLICIT public-vs-confidential discriminator in the v2 model: a registered
+// client either has a secret (confidential — authenticate it) or has none
+// (public PKCE — `None()`, RFC 7636). This is not a silent guess: `loadClient`
+// persists a non-empty secret for confidential clients and null/"" for public
+// ones, so an absent secret here unambiguously means "public client". The
+// `method` only chooses HOW a present secret is sent (post vs basic).
 const pickClientAuth = (
   clientSecret: string | null | undefined,
   method: ClientAuthMethod,
@@ -390,6 +514,7 @@ export type ExchangeAuthorizationCodeInput = {
   readonly resource?: string;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
 };
 
 export const exchangeAuthorizationCode = (
@@ -402,7 +527,10 @@ export const exchangeAuthorizationCode = (
         endpointUrlPolicy: input.endpointUrlPolicy,
       });
       const client: oauth.Client = { client_id: input.clientId };
-      const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
+      const clientAuth = pickClientAuth(
+        input.clientSecret,
+        input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+      );
       // `authorizationCodeGrantRequest` requires its `callbackParameters`
       // to have been returned from `validateAuthResponse`. Our public API
       // takes the `code` directly (the UI already validated `state` by
@@ -422,7 +550,12 @@ export const exchangeAuthorizationCode = (
         clientAuth,
         "authorization_code",
         params,
-        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
+        oauth4webapiRequestOptions(
+          input.tokenUrl,
+          input.timeoutMs,
+          input.endpointUrlPolicy,
+          input.fetch,
+        ),
       );
       return await processTokenEndpointResponse(as, client, response);
     },
@@ -440,8 +573,12 @@ export type ExchangeClientCredentialsInput = {
   readonly scopes?: readonly string[];
   readonly scopeSeparator?: string;
   readonly clientAuth?: ClientAuthMethod;
+  /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 requires this
+   *  on token requests when the client knows the protected resource. */
+  readonly resource?: string;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
 };
 
 export const exchangeClientCredentials = (
@@ -451,17 +588,28 @@ export const exchangeClientCredentials = (
     try: async () => {
       const as = asFromTokenUrl(input.tokenUrl, input.endpointUrlPolicy);
       const client: oauth.Client = { client_id: input.clientId };
-      const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
+      const clientAuth = pickClientAuth(
+        input.clientSecret,
+        input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+      );
       const params = new URLSearchParams();
       if (input.scopes && input.scopes.length > 0) {
         params.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
+      }
+      if (input.resource) {
+        params.set("resource", input.resource);
       }
       const response = await oauth.clientCredentialsGrantRequest(
         as,
         client,
         clientAuth,
         params,
-        oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
+        oauth4webapiRequestOptions(
+          input.tokenUrl,
+          input.timeoutMs,
+          input.endpointUrlPolicy,
+          input.fetch,
+        ),
       );
       const result = await oauth.processClientCredentialsResponse(as, client, response);
       return tokenResponseFrom(result);
@@ -489,6 +637,7 @@ export type RefreshAccessTokenInput = {
   readonly resource?: string;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
+  readonly fetch?: typeof globalThis.fetch;
 };
 
 export const refreshAccessToken = (
@@ -501,7 +650,10 @@ export const refreshAccessToken = (
         endpointUrlPolicy: input.endpointUrlPolicy,
       });
       const client: oauth.Client = { client_id: input.clientId };
-      const clientAuth = pickClientAuth(input.clientSecret, input.clientAuth ?? "body");
+      const clientAuth = pickClientAuth(
+        input.clientSecret,
+        input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+      );
       const extraParams = new URLSearchParams();
       if (input.scopes && input.scopes.length > 0) {
         extraParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
@@ -517,7 +669,12 @@ export const refreshAccessToken = (
         clientAuth,
         input.refreshToken,
         {
-          ...oauth4webapiRequestOptions(input.tokenUrl, input.timeoutMs, input.endpointUrlPolicy),
+          ...oauth4webapiRequestOptions(
+            input.tokenUrl,
+            input.timeoutMs,
+            input.endpointUrlPolicy,
+            input.fetch,
+          ),
           additionalParameters,
         },
       );

@@ -236,7 +236,7 @@ exports[`Real specs: Cloudflare API > preserves registered tool schema and TypeS
     "access_vnc_props",
     "access_warp_props",
   ],
-  "toolId": "cloudflare_api.accessApplications.accessApplicationsAddAnApplication",
+  "toolId": "tools.cloudflare_api.org.main.accessApplications.accessApplicationsAddAnApplication",
   "typeScriptDefinitionCount": 183,
   "typeScriptDefinitions": {
     "AccessAllowAllHeaders": "boolean",
@@ -4330,7 +4330,7 @@ exports[`Real specs: Vercel API > preserves registered tool schema and TypeScrip
   "schemaDefinitionNames": [
     "FlagJSONValue",
   ],
-  "toolId": "vercel_api.deployments.createDeployment",
+  "toolId": "tools.vercel_api.org.main.deployments.createDeployment",
   "typeScriptDefinitionCount": 3,
   "typeScriptDefinitions": {
     "FlagJSONValue": "string | number | FlagJSONValue[] | { [k: string]: FlagJSONValue; } | false | true | null",

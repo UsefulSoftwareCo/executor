@@ -7,7 +7,7 @@ import {
   OctagonXIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { Toaster as Sonner, type ToasterProps } from "sonner";
+import { Toaster as Sonner, toast, type ToasterProps } from "sonner";
 
 const Toaster = ({ ...props }: ToasterProps) => {
   return (
@@ -34,4 +34,4 @@ const Toaster = ({ ...props }: ToasterProps) => {
   );
 };
 
-export { Toaster };
+export { Toaster, toast };

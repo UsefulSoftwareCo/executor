@@ -22,16 +22,18 @@ export class GraphqlInvocationError extends Data.TaggedError("GraphqlInvocationE
   readonly cause?: unknown;
 }> {}
 
+/** A tool invocation could not produce a usable credential. Re-keyed for v2:
+ *  references the connection by (owner, integration, name) instead of a v1
+ *  source id + scope. */
 export class GraphqlAuthRequiredError extends Data.TaggedError("GraphqlAuthRequiredError")<{
   readonly code: AuthToolFailureCode;
   readonly message: string;
-  readonly sourceId: string;
-  readonly sourceScope: string;
-  readonly credentialKind: "secret" | "connection" | "oauth" | "upstream";
+  readonly owner: string;
+  readonly integration: string;
+  readonly connection: string;
+  readonly credentialKind: "secret" | "oauth" | "upstream";
   readonly credentialLabel?: string;
-  readonly slotKey?: string;
-  readonly secretId?: string;
-  readonly connectionId?: string;
+  readonly template?: string;
   readonly status?: number;
   readonly details?: unknown;
   readonly cause?: unknown;

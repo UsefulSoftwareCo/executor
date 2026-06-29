@@ -133,9 +133,8 @@ The same pattern is what every shipped `@executor-js/plugin-*` package does inte
 These plugin packages are published from the monorepo:
 
 - [`@executor-js/plugin-mcp`](https://www.npmjs.com/package/@executor-js/plugin-mcp) — Model Context Protocol sources (stdio + remote)
-- [`@executor-js/plugin-openapi`](https://www.npmjs.com/package/@executor-js/plugin-openapi) — OpenAPI specs as tools
+- [`@executor-js/plugin-openapi`](https://www.npmjs.com/package/@executor-js/plugin-openapi) — OpenAPI specs and Google Discovery documents as tools
 - [`@executor-js/plugin-graphql`](https://www.npmjs.com/package/@executor-js/plugin-graphql) — GraphQL endpoints as tools
-- [`@executor-js/plugin-google-discovery`](https://www.npmjs.com/package/@executor-js/plugin-google-discovery) — Google Discovery APIs
 - [`@executor-js/plugin-file-secrets`](https://www.npmjs.com/package/@executor-js/plugin-file-secrets) — file-backed secret store
 - [`@executor-js/plugin-keychain`](https://www.npmjs.com/package/@executor-js/plugin-keychain) — OS keychain secret store
 - [`@executor-js/plugin-onepassword`](https://www.npmjs.com/package/@executor-js/plugin-onepassword) — 1Password secret source

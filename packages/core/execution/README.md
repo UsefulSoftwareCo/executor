@@ -51,6 +51,25 @@ console.log(result);
 // { result: 12, logs: [...] }
 ```
 
+## Custom tool discovery
+
+`tools.search(...)` uses Executor's built-in lexical tool discovery by default. Hosts can provide their own implementation, such as an indexed or semantic search provider, without replacing the sandbox runtime:
+
+```ts
+import { createExecutionEngine, type ToolDiscoveryProvider } from "@executor-js/execution";
+
+const toolDiscoveryProvider: ToolDiscoveryProvider = {
+  searchTools: ({ query, namespace, limit, offset }) =>
+    mySearchIndex.searchTools({ query, namespace, limit, offset }),
+};
+
+const engine = createExecutionEngine({
+  executor,
+  codeExecutor: makeQuickJsExecutor(),
+  toolDiscoveryProvider,
+});
+```
+
 ## Pause/resume for elicitation
 
 When the host doesn't support inline elicitation, use `executeWithPause` to intercept the first request as a pause point:

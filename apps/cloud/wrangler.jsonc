@@ -20,14 +20,27 @@
     "bindings": [
       {
         "name": "MCP_SESSION",
-        "class_name": "McpSessionDO",
+        "class_name": "McpSessionDOSqlite",
       },
     ],
   },
+  // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
+  // stores state in SQLite. The original `McpSessionDO` was created on the
+  // key-value backend (`new_classes`) and cannot be converted in place. Cloudflare
+  // also refuses to delete a class in the same deploy that moves its binding (it
+  // validates the delete against the live binding), so v2 only CREATES the new
+  // SQLite class `McpSessionDOSqlite` and the `MCP_SESSION` binding moves to it.
+  // The old KV `McpSessionDO` is left orphaned (unbound, kept as a stub export in
+  // server.ts so the migration stays valid); it can be deleted in a later deploy
+  // now that nothing binds it. Session state is ephemeral, so nothing is lost.
   "migrations": [
     {
       "tag": "v1",
       "new_classes": ["McpSessionDO"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["McpSessionDOSqlite"],
     },
   ],
   "services": [
@@ -43,6 +56,14 @@
       "localConnectionString": "postgresql://postgres:postgres@127.0.0.1:5433/postgres",
     },
   ],
+  // Plugin blob seam backend (multi-MB resolved specs). Bucket must exist
+  // before deploy: `wrangler r2 bucket create executor-cloud-blobs`.
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "executor-cloud-blobs",
+    },
+  ],
   "placement": {
     "region": "aws:us-east-1",
   },
@@ -54,5 +75,12 @@
   "vars": {
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
     "VITE_PUBLIC_POSTHOG_KEY": "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL",
+    // Browser OTLP spans → same-origin, forwarded to Axiom by the worker
+    // (src/observability/browser-traces.ts). Relative on purpose: the
+    // client resolves it against the page origin, so previews work too.
+    "VITE_PUBLIC_OTLP_TRACES_URL": "/v1/traces",
+    // Per-session sampling: 1 = every signed-in session exports. Dial down
+    // (e.g. "0.1") if Axiom volume becomes a cost concern.
+    "VITE_PUBLIC_OTLP_SAMPLE_RATIO": "1",
   },
 }

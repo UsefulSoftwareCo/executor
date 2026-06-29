@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-keychain",
-  "version": "1.4.32",
+  "version": "1.5.25",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/keychain",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -45,14 +45,17 @@
   },
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
-    "@napi-rs/keyring": "^1.2.0",
-    "effect": "catalog:"
+    "@napi-rs/keyring": "^1.2.0"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

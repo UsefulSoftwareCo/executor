@@ -7,23 +7,27 @@ import {
   createRootRoute,
   useLocation,
   useNavigate,
+  useParams,
 } from "@tanstack/react-router";
 import { AutumnProvider } from "autumn-js/react";
 import posthog from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporting";
+import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
-import { Skeleton } from "@executor-js/react/components/skeleton";
+import { OrganizationProvider } from "@executor-js/react/api/organization-context";
+import { EXECUTOR_ORG_HEADER } from "@executor-js/react/api/server-connection";
+import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
+import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
+import { loginPath } from "../auth/return-to";
+import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
 import { SupportOptions } from "../web/components/support-options";
-import { LoginPage } from "../web/pages/login";
 import { Shell } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
-
-const ONBOARDING_PATHS = new Set(["/create-org", "/setup-mcp"]);
 
 if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_SENTRY_DSN) {
   Sentry.init({
@@ -56,6 +60,11 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
   });
 }
 
+const analyticsClient: AnalyticsClient | undefined =
+  typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_POSTHOG_KEY
+    ? (name, properties) => posthog.capture(name, properties)
+    : undefined;
+
 const captureFrontendError: FrontendErrorReporter = (error, context) => {
   Sentry.captureException(error, (scope) => {
     scope.setTag("executor.ui.surface", context.surface);
@@ -71,7 +80,49 @@ const captureFrontendError: FrontendErrorReporter = (error, context) => {
   });
 };
 
+function NotFoundPage() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6 py-10">
+      <section className="w-full max-w-md text-center">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">404</p>
+        <h1 className="mt-2 text-xl font-semibold text-foreground">Page not found</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          There&apos;s nothing at this address.
+        </p>
+        <a
+          href="/"
+          className="mt-6 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors"
+        >
+          Go home
+        </a>
+      </section>
+    </main>
+  );
+}
+
 export const Route = createRootRoute({
+  notFoundComponent: NotFoundPage,
+  // What the SSR gate attached to this document request (ssr-gate.ts →
+  // middleware context → serverContext). Loader data is dehydrated, so the
+  // client's first render sees the SAME values the server rendered with — the
+  // two can't disagree:
+  //   - authHint: the verified identity, seeding AuthProvider's initial state.
+  //   - origin:   the request origin, seeding the server connection so the
+  //               connect-card MCP URL SSRs as the real origin instead of the
+  //               127.0.0.1 client-side default (which would flash to the real
+  //               value at hydration).
+  // Client-side re-runs have no serverContext and return null; both consumers
+  // fall back gracefully (the hint is already held, the origin to the
+  // window-derived global).
+  loader: (opts) => {
+    const serverContext = (
+      opts as { serverContext?: { authHint?: AuthHint | null; origin?: string } }
+    ).serverContext;
+    return {
+      authHint: serverContext?.authHint ?? null,
+      origin: serverContext?.origin ?? null,
+    };
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -87,11 +138,10 @@ export const Route = createRootRoute({
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Instrument+Serif&family=JetBrains+Mono:wght@400;500&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap",
       },
       { rel: "stylesheet", href: appCss },
     ],
-    scripts: import.meta.env.DEV ? [{ src: "https://ui.sh/ui-picker.js" }] : [],
   }),
   component: RootComponent,
   shellComponent: RootDocument,
@@ -112,74 +162,24 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 }
 
 function RootComponent() {
+  const { authHint, origin } = Route.useLoaderData();
   return (
     <PostHogProvider client={posthog}>
-      <AuthProvider>
-        <AuthGate />
-      </AuthProvider>
+      <AnalyticsProvider client={analyticsClient}>
+        <AuthProvider initialHint={authHint}>
+          <AuthGate ssrOrigin={origin} />
+        </AuthProvider>
+      </AnalyticsProvider>
     </PostHogProvider>
   );
 }
 
-function ShellSkeleton() {
-  return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Desktop sidebar skeleton */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <div className="flex h-12 shrink-0 items-center border-b border-sidebar-border px-4">
-          <Skeleton className="h-4 w-20" />
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <Skeleton className="h-7 w-full rounded-md" />
-          <div className="mt-5 mb-2 px-2.5">
-            <Skeleton className="h-3 w-14" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Skeleton className="h-7 w-11/12 rounded-md" />
-            <Skeleton className="h-7 w-10/12 rounded-md" />
-            <Skeleton className="h-7 w-9/12 rounded-md" />
-          </div>
-        </nav>
-        <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <Skeleton className="size-7 rounded-full" />
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="h-3 w-16" />
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main content skeleton */}
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Mobile top bar */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
-          <Skeleton className="size-7 rounded-md" />
-          <Skeleton className="h-4 w-20" />
-          <div className="w-7 shrink-0" />
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-6 px-6 py-8">
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-6 w-40" />
-              <Skeleton className="h-4 w-64" />
-            </div>
-            <Skeleton className="h-8 w-28 rounded-md" />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-24 w-full rounded-lg" />
-            ))}
-          </div>
-        </div>
-      </main>
-    </div>
-  );
+// Neutral, layout-free placeholder for the moments no UI is correct yet: a
+// redirect in flight, or the (post-gate, near-impossible) hint-less verified
+// load. Never the app shell's silhouette — that bet is the bug this file's
+// gate exists to prevent.
+function BlankScreen() {
+  return <div className="h-screen bg-background" />;
 }
 
 function ShellErrorFallback() {
@@ -204,14 +204,28 @@ function ShellErrorFallback() {
   );
 }
 
-function AuthGate() {
+function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const isOnboardingRoute = ONBOARDING_PATHS.has(location.pathname);
+  const isPublicRoute = PUBLIC_PATHS.has(location.pathname);
+  // The org the URL names (the `{-$orgSlug}` segment), if any. `/account/me`
+  // is scoped to it, so `auth.organization` IS this org when the caller is a
+  // member — and `null` when the URL names an org they can't access.
+  const urlOrgSlug = (useParams({ strict: false }) as { orgSlug?: string }).orgSlug;
 
+  // The SSR gate already bounced fresh org-less document requests to
+  // /create-org; this catches the MID-SESSION transitions (org deleted,
+  // membership revoked → /account/me now reports no org). Only for BARE paths:
+  // an org-less result on a slugged URL is a wrong address (404 below), not a
+  // reason to send the user to onboarding.
   const needsOrgRedirect =
-    auth.status === "authenticated" && auth.organization == null && !isOnboardingRoute;
+    auth.status === "authenticated" &&
+    auth.organization == null &&
+    !urlOrgSlug &&
+    !isOnboardingRoute &&
+    !isPublicRoute;
 
   React.useEffect(() => {
     if (needsOrgRedirect) {
@@ -219,12 +233,28 @@ function AuthGate() {
     }
   }, [needsOrgRedirect, navigate]);
 
-  if (auth.status === "loading") {
-    return <ShellSkeleton />;
+  // The signed-out safety net behind the SSR gate: if a session dies while
+  // the SPA is already loaded (logout elsewhere, expiry), go to /login the
+  // same way a fresh document request would — keeping where they were.
+  const needsLoginRedirect = auth.status === "unauthenticated" && !isPublicRoute;
+  React.useEffect(() => {
+    if (needsLoginRedirect) {
+      window.location.assign(loginPath(`${location.pathname}${location.searchStr}`));
+    }
+  }, [needsLoginRedirect, location.pathname, location.searchStr]);
+
+  if (isPublicRoute) {
+    return <Outlet />;
   }
 
-  if (auth.status === "unauthenticated") {
-    return <LoginPage />;
+  // Every state that isn't "authenticated with an org, on a page that wants
+  // the shell" is a moment between redirects or an edge the gates make
+  // near-impossible (a verified user whose hint hasn't seeded yet). Neutral
+  // blank — the one placeholder that's correct whatever happens next. The
+  // app-shell skeleton this file used to render here is exactly the
+  // wrong-UI flash the SSR gate + hint exist to prevent.
+  if (auth.status === "loading" || auth.status === "unauthenticated") {
+    return <BlankScreen />;
   }
 
   if (isOnboardingRoute) {
@@ -232,17 +262,52 @@ function AuthGate() {
   }
 
   if (auth.organization == null) {
-    return <ShellSkeleton />;
+    // A URL naming an org this session can't access (`/account/me` returned no
+    // org for its slug) is a wrong address → the route 404, framed by nothing
+    // (the user isn't "in" any org here). A bare path with no org is a new
+    // user — the redirect effect above is taking them to onboarding.
+    return urlOrgSlug ? <NotFoundPage /> : <BlankScreen />;
   }
 
+  // Seed the server connection from the SSR origin so origin-derived UI (the
+  // connect card's MCP URL) renders the real host on the first paint instead
+  // of the 127.0.0.1 default the client-side global falls back to during SSR.
+  // Null on client loader re-runs → undefined → the window-derived global,
+  // which is the same origin, so the key never changes and nothing remounts.
+  const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
+  const activeSlug = auth.organization.slug;
+  // The org context's slug feeds the connect card's `/<slug>/mcp` install URL.
+  // Prefer the URL's slug over the session's: on first paint `auth.organization`
+  // comes from the SSR auth-hint (the COOKIE's org), so a multi-org user viewing
+  // /<orgB> while their cookie still points at orgA would briefly render orgA's
+  // slug in the copyable URL before /account/me (URL-scoped) corrects it. The
+  // URL slug is the actual request scope and is correct on the very first paint,
+  // so sourcing it from there removes that flash. Falls back to the session slug
+  // on a bare URL (which OrgSlugGate is about to canonicalize onto it anyway).
+  const scopeSlug = urlOrgSlug ?? activeSlug;
+  const billingHeaders = scopeSlug ? { [EXECUTOR_ORG_HEADER]: scopeSlug } : undefined;
+
   return (
-    <AutumnProvider pathPrefix="/api/autumn">
+    <AutumnProvider pathPrefix="/api/billing" headers={billingHeaders}>
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
-        <ExecutorProvider fallback={<ShellSkeleton />} onHandledError={captureFrontendError}>
-          <ExecutorPluginsProvider plugins={clientPlugins}>
-            <Shell />
-            <Toaster />
-          </ExecutorPluginsProvider>
+        <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
+          <React.Suspense fallback={<BlankScreen />}>
+            <ExecutorPluginsProvider plugins={clientPlugins}>
+              <OrganizationProvider
+                organizationId={auth.organization.id}
+                organizationSlug={scopeSlug}
+              >
+                {/* The org header scopes every request to the URL's org, so
+                    reaching here means the caller is a member of `activeSlug`
+                    (a foreign slug already 404'd above). The gate only keeps
+                    the URL canonical — bare → /<slug>. */}
+                <OrgSlugGate activeSlug={activeSlug}>
+                  <Shell />
+                  <Toaster />
+                </OrgSlugGate>
+              </OrganizationProvider>
+            </ExecutorPluginsProvider>
+          </React.Suspense>
         </ExecutorProvider>
       </Sentry.ErrorBoundary>
     </AutumnProvider>

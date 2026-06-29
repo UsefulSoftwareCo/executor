@@ -18,7 +18,13 @@ console.log(`[build] VITE_PUBLIC_ANALYTICS_PATH=${process.env.VITE_PUBLIC_ANALYT
 
 rmSync(new URL("../dist/", import.meta.url), { force: true, recursive: true });
 
-const steps = ["turbo run build --filter @executor-js/vite-plugin", "vite build"];
+const steps = [
+  // Workspace packages whose exports app code (or this very vite config)
+  // resolves from dist under Node — vite's config loader externalizes bare
+  // imports, so they must be built before vite starts.
+  "turbo run build --filter @executor-js/vite-plugin --filter @executor-js/react",
+  "vite build",
+];
 
 for (const step of steps) {
   const result = spawnSync(step, { stdio: "inherit", shell: true });

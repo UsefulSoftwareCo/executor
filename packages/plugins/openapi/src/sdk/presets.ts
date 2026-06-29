@@ -2,12 +2,12 @@ export interface OpenApiPreset {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
-  readonly url: string;
+  readonly url?: string;
   readonly icon?: string;
   readonly featured?: boolean;
 }
 
-export const openApiPresets: readonly OpenApiPreset[] = [
+const openApiOnlyPresets: readonly OpenApiPreset[] = [
   {
     id: "stripe",
     name: "Stripe",
@@ -21,7 +21,7 @@ export const openApiPresets: readonly OpenApiPreset[] = [
     name: "GitHub REST",
     summary: "Repos, issues, pull requests, actions, and users.",
     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-    icon: "https://github.com/favicon.ico",
+    icon: "https://svgl.app/library/github_dark.svg",
     featured: true,
   },
   {
@@ -43,7 +43,7 @@ export const openApiPresets: readonly OpenApiPreset[] = [
   {
     id: "neon",
     name: "Neon",
-    summary: "Serverless Postgres — projects, branches, and endpoints.",
+    summary: "Serverless Postgres: projects, branches, and endpoints.",
     url: "https://neon.tech/api_spec/release/v2.json",
     icon: "https://neon.tech/favicon/favicon.ico",
     featured: true,
@@ -53,7 +53,7 @@ export const openApiPresets: readonly OpenApiPreset[] = [
     name: "OpenAI",
     summary: "Models, files, responses, and fine-tuning.",
     url: "https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml",
-    icon: "https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/openai.svg",
+    icon: "https://svgl.app/library/openai_dark.svg",
     featured: true,
   },
   {
@@ -61,7 +61,15 @@ export const openApiPresets: readonly OpenApiPreset[] = [
     name: "Sentry",
     summary: "Error tracking, performance monitoring, and releases.",
     url: "https://raw.githubusercontent.com/getsentry/sentry-api-schema/main/openapi-derefed.json",
-    icon: "https://sentry-brand.storage.googleapis.com/sentry-glyph-black.png",
+    icon: "https://svgl.app/library/sentry.svg",
+    featured: true,
+  },
+  {
+    id: "posthog",
+    name: "PostHog",
+    summary: "Product analytics, events, feature flags, and insights.",
+    url: "https://us.posthog.com/api/schema/",
+    icon: "https://svgl.app/library/posthog.svg",
     featured: true,
   },
   {
@@ -111,7 +119,7 @@ export const openApiPresets: readonly OpenApiPreset[] = [
   {
     id: "petstore",
     name: "Petstore",
-    summary: "Classic OpenAPI demo — no auth required.",
+    summary: "Classic OpenAPI demo, no auth required.",
     url: "https://petstore3.swagger.io/api/v3/openapi.json",
     icon: "https://petstore3.swagger.io/favicon-32x32.png",
   },
@@ -134,6 +142,8 @@ export const openApiPresets: readonly OpenApiPreset[] = [
     name: "Spotify",
     summary: "Tracks, albums, playlists, library, and playback.",
     url: "https://raw.githubusercontent.com/sonallux/spotify-web-api/refs/heads/main/official-spotify-open-api.yml",
-    icon: "https://spotify.com/favicon.ico",
+    icon: "https://svgl.app/library/spotify.svg",
   },
 ];
+
+export const openApiPresets: readonly OpenApiPreset[] = openApiOnlyPresets;

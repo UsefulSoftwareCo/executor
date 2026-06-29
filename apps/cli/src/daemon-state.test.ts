@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import { BunServices } from "@effect/platform-bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import * as Effect from "effect/Effect";
 
 import {
@@ -44,7 +44,7 @@ describe("daemon host and scope identity", () => {
       process.chdir(workspace);
       process.env.EXECUTOR_SCOPE_DIR = "executor.jsonc";
 
-      expect(currentDaemonScopeId()).toBe(`scope:${join(workspace, "executor.jsonc")}`);
+      expect(currentDaemonScopeId()).toBe(`scope:${resolve("executor.jsonc")}`);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

@@ -18,6 +18,8 @@ export interface McpToolManifestEntry {
 export interface McpServerMetadata {
   readonly name: string | null;
   readonly version: string | null;
+  /** The server's `instructions` from initialize, when it sent any. */
+  readonly instructions: string | null;
 }
 
 export interface McpToolManifest {
@@ -82,7 +84,7 @@ export const joinToolPath = (namespace: string | undefined, toolId: string): str
 
 export const extractManifestFromListToolsResult = (
   listToolsResult: unknown,
-  metadata?: { serverInfo?: unknown },
+  metadata?: { serverInfo?: unknown; instructions?: string | undefined },
 ): McpToolManifest => {
   const seen = new Map<string, number>();
 
@@ -96,6 +98,7 @@ export const extractManifestFromListToolsResult = (
       (info): McpServerMetadata => ({
         name: info.name ?? null,
         version: info.version ?? null,
+        instructions: metadata?.instructions ?? null,
       }),
     ),
     Option.getOrNull,

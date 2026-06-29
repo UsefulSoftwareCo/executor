@@ -1,18 +1,18 @@
 import { lazy, type ComponentProps, type ComponentType } from "react";
-import type { SourcePlugin } from "@executor-js/sdk/client";
+import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { mcpPresets } from "../sdk/presets";
 
 const importAdd = () => import("./AddMcpSource");
-const importEdit = () => import("./EditMcpSource");
-const importSummary = () => import("./McpSourceSummary");
+const importEditSheet = () => import("./EditMcpSource");
+const importAccounts = () => import("./McpAccountsPanel");
 
 const LazyAddMcpSource = lazy(importAdd);
-const LazyEditMcpSource = lazy(importEdit);
-const LazyMcpSourceSummary = lazy(importSummary);
+const LazyEditMcpSheet = lazy(importEditSheet);
+const LazyMcpAccountsPanel = lazy(importAccounts);
 
-type AddProps = ComponentProps<SourcePlugin["add"]>;
+type AddProps = ComponentProps<IntegrationPlugin["add"]>;
 
-export interface McpSourcePluginOptions {
+export interface McpIntegrationPluginOptions {
   /**
    * Enable the stdio transport in the add-source UI (tab + presets).
    *
@@ -23,7 +23,9 @@ export interface McpSourcePluginOptions {
   readonly allowStdio?: boolean;
 }
 
-export const createMcpSourcePlugin = (options?: McpSourcePluginOptions): SourcePlugin => {
+export const createMcpIntegrationPlugin = (
+  options?: McpIntegrationPluginOptions,
+): IntegrationPlugin => {
   const allowStdio = options?.allowStdio ?? false;
 
   const AddWithFlag: ComponentType<AddProps> = (props) => (
@@ -40,16 +42,16 @@ export const createMcpSourcePlugin = (options?: McpSourcePluginOptions): SourceP
     key: "mcp",
     label: "MCP",
     add: AddWithFlag,
-    edit: LazyEditMcpSource,
-    summary: LazyMcpSourceSummary,
+    editSheet: LazyEditMcpSheet,
+    accounts: LazyMcpAccountsPanel,
     presets,
     preload: () => {
       void importAdd();
-      void importEdit();
-      void importSummary();
+      void importEditSheet();
+      void importAccounts();
     },
   };
 };
 
-/** @deprecated Use `createMcpSourcePlugin({ allowStdio })` instead. */
-export const mcpSourcePlugin: SourcePlugin = createMcpSourcePlugin();
+/** @deprecated Use `createMcpIntegrationPlugin({ allowStdio })` instead. */
+export const mcpIntegrationPlugin: IntegrationPlugin = createMcpIntegrationPlugin();

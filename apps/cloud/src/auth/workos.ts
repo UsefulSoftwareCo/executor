@@ -5,6 +5,7 @@
 import { env } from "cloudflare:workers";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
+import { parseCookie } from "./cookies";
 import { WorkOSError, tryPromiseService, withServiceLogging } from "./errors";
 
 const COOKIE_NAME = "wos-session";
@@ -106,9 +107,28 @@ export const collectRawWorkOSList = async (
   };
 };
 
-class WorkOSAuthConfigurationError extends Data.TaggedError("WorkOSAuthConfigurationError")<{
+class WorkOSConfigurationError extends Data.TaggedError("WorkOSConfigurationError")<{
   readonly message: string;
 }> {}
+
+/**
+ * Optional base-URL override for the WorkOS API (`WORKOS_API_URL`) — points
+ * the REAL SDK at a WorkOS emulator in tests/dev. Unset in production, where
+ * the SDK uses api.workos.com. Sealed-session crypto, JWKS verification, and
+ * every endpoint follow this host, so the whole auth stack runs against the
+ * emulator with zero code substitution.
+ */
+export const workosApiUrlOptions = (
+  url: string | undefined,
+): { apiHostname?: string; port?: number; https?: boolean } => {
+  if (!url) return {};
+  const parsed = new URL(url);
+  return {
+    apiHostname: parsed.hostname,
+    ...(parsed.port ? { port: Number(parsed.port) } : {}),
+    https: parsed.protocol === "https:",
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Service
@@ -120,12 +140,12 @@ const make = Effect.gen(function* () {
   const cookiePassword = env.WORKOS_COOKIE_PASSWORD;
 
   if (!cookiePassword || cookiePassword.length < 32) {
-    return yield* new WorkOSAuthConfigurationError({
+    return yield* new WorkOSConfigurationError({
       message: INVALID_COOKIE_PASSWORD_MESSAGE,
     });
   }
 
-  const workos = new WorkOS({ apiKey, clientId });
+  const workos = new WorkOS({ apiKey, clientId, ...workosApiUrlOptions(env.WORKOS_API_URL) });
 
   const use = <A>(fn: (wos: WorkOS) => Promise<A>) =>
     withServiceLogging(
@@ -403,22 +423,23 @@ const make = Effect.gen(function* () {
   };
 });
 
-export type WorkOSAuthService = Effect.Success<typeof make>;
+export type WorkOSClientService = Effect.Success<typeof make>;
 
-export class WorkOSAuth extends Context.Service<WorkOSAuth, WorkOSAuthService>()(
-  "@executor-js/cloud/WorkOSAuth",
+export class WorkOSClient extends Context.Service<WorkOSClient, WorkOSClientService>()(
+  "@executor-js/cloud/WorkOSClient",
 ) {
   static Default = Layer.effect(this)(make).pipe(
-    Layer.withSpan("WorkOSAuth", { attributes: { module: "WorkOSAuth" } }),
+    Layer.withSpan("WorkOSClient", { attributes: { module: "WorkOSClient" } }),
   );
 }
 
-const parseCookie = (cookieHeader: string | null, name: string): string | null => {
-  if (!cookieHeader) return null;
-  const match = cookieHeader
-    .split(";")
-    .map((c) => c.trim())
-    .find((c) => c.startsWith(`${name}=`));
-  if (!match) return null;
-  return match.slice(name.length + 1) || null;
-};
+// The boot-scoped WorkOS client root — the one neutral service the stateless
+// HTTP path AND the MCP session Durable Object both build on (each merges it
+// with its own DB + telemetry layers). Named here, beside the client it aliases,
+// so a focused backend consumer (the DO, the miniflare test worker) imports just
+// this root rather than the whole `api/layers.ts` HTTP assembly. It names NO
+// billing service, so the DO — which never bills — does not transitively require
+// one. (This used to live in a standalone `api/core-shared-services.ts` purely to
+// keep `@tanstack/react-start` out of the DO bundle; that coupling is gone now
+// that `handlers.ts` no longer imports react-start, so the alias moved home.)
+export const CoreSharedServices = WorkOSClient.Default;

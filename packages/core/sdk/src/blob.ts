@@ -18,6 +18,7 @@
 import { Effect } from "effect";
 
 import { StorageError, type IFumaClient } from "./fuma-runtime";
+import type { Owner } from "./ids";
 
 export interface BlobStore {
   readonly get: (namespace: string, key: string) => Effect.Effect<string | null, StorageError>;
@@ -40,77 +41,86 @@ export interface BlobStore {
 }
 
 export interface PluginBlobStore {
-  /** Walk the scope stack (innermost first) and return the first
-   *  non-null value for `key`. */
+  /** Read precedence: this subject's own (`user`) value first, then the
+   *  org-shared value. Returns the first non-null. */
   readonly get: (key: string) => Effect.Effect<string | null, StorageError>;
-  /** Write `value` under `key` at the named scope. Scope must be one
-   *  of the executor's configured scopes. */
+  /** Write `value` under `key` for the named owner (`"org"` shared, `"user"`
+   *  private). `"user"` requires the executor to be bound to a subject. */
   readonly put: (
     key: string,
     value: string,
-    options: { readonly scope: string },
+    options: { readonly owner: Owner },
   ) => Effect.Effect<void, StorageError>;
-  /** Delete `key` at the named scope. */
+  /** Delete `key` for the named owner. */
   readonly delete: (
     key: string,
-    options: { readonly scope: string },
+    options: { readonly owner: Owner },
   ) => Effect.Effect<void, StorageError>;
-  /** Walk the scope stack and return true if any scope has a value for `key`. */
+  /** True if either the user or org partition has a value for `key`. */
   readonly has: (key: string) => Effect.Effect<boolean, StorageError>;
 }
 
-const assertScope = (scope: string, scopes: readonly string[]): Effect.Effect<void, StorageError> =>
-  scopes.includes(scope)
-    ? Effect.void
-    : Effect.fail(
-        new StorageError({
-          message:
-            `Blob write targets scope "${scope}" which is not in the ` +
-            `executor's scope stack [${scopes.join(", ")}].`,
-          cause: undefined,
-        }),
-      );
+/** The owner partition strings an executor binding resolves to: the org
+ *  partition (always present) and this subject's user partition (null for a
+ *  pure-org executor). Reads walk `[user, org]`; writes target one. */
+export interface OwnerPartitions {
+  readonly org: string;
+  readonly user: string | null;
+}
 
-const nsFor = (scope: string, pluginId: string) => `${scope}/${pluginId}`;
+const nsFor = (partition: string, pluginId: string) => `${partition}/${pluginId}`;
 
 /**
- * Bind a `BlobStore` to a specific scope stack and plugin id. Reads
- * fall through the stack; writes require an explicit scope. Used by
- * the executor to build the `blobs` field handed to each plugin's
- * `storage` factory.
+ * Bind a `BlobStore` to an owner partitioning + plugin id. Reads fall through
+ * `[user, org]` (user first); writes target an explicit owner. Used by the
+ * executor to build the `blobs` field handed to each plugin's `storage` factory.
  */
 export const pluginBlobStore = (
   store: BlobStore,
-  scopes: readonly string[],
+  partitions: OwnerPartitions,
   pluginId: string,
-): PluginBlobStore => ({
-  get: (key) =>
-    Effect.gen(function* () {
-      const namespaces = scopes.map((s) => nsFor(s, pluginId));
-      const hits = yield* store.getMany(namespaces, key);
-      if (hits.size === 0) return null;
-      for (const ns of namespaces) {
-        const v = hits.get(ns);
-        if (v !== undefined) return v;
-      }
-      return null;
-    }),
-  put: (key, value, options) =>
-    Effect.flatMap(assertScope(options.scope, scopes), () =>
-      store.put(nsFor(options.scope, pluginId), key, value),
-    ),
-  delete: (key, options) =>
-    Effect.flatMap(assertScope(options.scope, scopes), () =>
-      store.delete(nsFor(options.scope, pluginId), key),
-    ),
-  has: (key) =>
-    store
-      .getMany(
-        scopes.map((s) => nsFor(s, pluginId)),
-        key,
-      )
-      .pipe(Effect.map((hits) => hits.size > 0)),
-});
+): PluginBlobStore => {
+  const readNamespaces = (): readonly string[] =>
+    (partitions.user == null ? [partitions.org] : [partitions.user, partitions.org]).map((p) =>
+      nsFor(p, pluginId),
+    );
+
+  const partitionFor = (owner: Owner): Effect.Effect<string, StorageError> => {
+    if (owner === "org") return Effect.succeed(partitions.org);
+    if (partitions.user == null) {
+      return Effect.fail(
+        new StorageError({
+          message: 'Blob write targets owner "user" but the executor has no subject.',
+          cause: undefined,
+        }),
+      );
+    }
+    return Effect.succeed(partitions.user);
+  };
+
+  return {
+    get: (key) =>
+      Effect.gen(function* () {
+        const namespaces = readNamespaces();
+        const hits = yield* store.getMany(namespaces, key);
+        if (hits.size === 0) return null;
+        for (const ns of namespaces) {
+          const v = hits.get(ns);
+          if (v !== undefined) return v;
+        }
+        return null;
+      }),
+    put: (key, value, options) =>
+      Effect.flatMap(partitionFor(options.owner), (partition) =>
+        store.put(nsFor(partition, pluginId), key, value),
+      ),
+    delete: (key, options) =>
+      Effect.flatMap(partitionFor(options.owner), (partition) =>
+        store.delete(nsFor(partition, pluginId), key),
+      ),
+    has: (key) => store.getMany(readNamespaces(), key).pipe(Effect.map((hits) => hits.size > 0)),
+  };
+};
 
 /**
  * Minimal in-memory BlobStore — good for tests and trivial hosts. Real
@@ -146,6 +156,17 @@ export const makeInMemoryBlobStore = (): BlobStore => {
     has: (ns, key) => Effect.sync(() => store.has(k(ns, key))),
   };
 };
+
+/** Hex SHA-256 of a UTF-8 string — the content-address key plugins use for
+ *  write-once blobs (`put(key(hash), …)` is then idempotent and orphaned
+ *  writes are harmless). Web Crypto, so it runs on Workers/Bun/Node alike. */
+export const sha256Hex = (text: string): Effect.Effect<string> =>
+  Effect.promise(async () => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+  });
 
 const blobId = (namespace: string, key: string): string => JSON.stringify([namespace, key]);
 

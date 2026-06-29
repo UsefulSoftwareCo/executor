@@ -11,6 +11,8 @@ let ipcNonce = "";
 
 /** @type {string[]} */
 const logs = [];
+/** @type {Array<Record<string, unknown>>} */
+let outputs = [];
 
 const writeIpcMessage = (message) => {
   const payload = `${IPC_PREFIX}${JSON.stringify(message)}\n`;
@@ -73,6 +75,86 @@ const formatLogArg = (value) => {
 
 const formatLogLine = (args) => args.map(formatLogArg).join(" ");
 
+const formatOutputText = (value) => {
+  if (typeof value === "undefined") {
+    return "undefined";
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
+
+const isToolFile = (value) =>
+  value &&
+  typeof value === "object" &&
+  // oxlint-disable-next-line executor/no-manual-tag-check -- boundary: Deno worker validates serialized ToolFile values before host schema normalization
+  value._tag === "ToolFile" &&
+  typeof value.mimeType === "string" &&
+  value.encoding === "base64" &&
+  typeof value.data === "string" &&
+  typeof value.byteLength === "number";
+
+const isMcpTextContentBlock = (value) =>
+  value && typeof value === "object" && value.type === "text" && typeof value.text === "string";
+
+const isMcpImageContentBlock = (value) =>
+  value &&
+  typeof value === "object" &&
+  value.type === "image" &&
+  typeof value.data === "string" &&
+  typeof value.mimeType === "string";
+
+const isMcpAudioContentBlock = (value) =>
+  value &&
+  typeof value === "object" &&
+  value.type === "audio" &&
+  typeof value.data === "string" &&
+  typeof value.mimeType === "string";
+
+const isMcpResourceContentBlock = (value) =>
+  value &&
+  typeof value === "object" &&
+  value.type === "resource" &&
+  value.resource &&
+  typeof value.resource === "object" &&
+  typeof value.resource.uri === "string" &&
+  (typeof value.resource.text === "string" || typeof value.resource.blob === "string");
+
+const isMcpResourceLinkContentBlock = (value) =>
+  value &&
+  typeof value === "object" &&
+  value.type === "resource_link" &&
+  typeof value.uri === "string" &&
+  typeof value.name === "string";
+
+const isMcpContentBlock = (value) =>
+  isMcpTextContentBlock(value) ||
+  isMcpImageContentBlock(value) ||
+  isMcpAudioContentBlock(value) ||
+  isMcpResourceContentBlock(value) ||
+  isMcpResourceLinkContentBlock(value);
+
+const emit = (value) => {
+  if (isToolFile(value)) {
+    outputs.push({ type: "file", file: value });
+    return;
+  }
+  if (isMcpContentBlock(value)) {
+    outputs.push({ type: "content", content: value });
+    return;
+  }
+  outputs.push({ type: "content", content: { type: "text", text: formatOutputText(value) } });
+};
+
 const sandboxConsole = {
   log: (...args) => {
     logs.push(`[log] ${formatLogLine(args)}`);
@@ -92,15 +174,18 @@ const sandboxConsole = {
 };
 
 const runUserCode = async (code) => {
+  outputs = [];
   const tools = createToolsProxy();
 
   const execute = new Function(
     "tools",
     "console",
+    "emit",
     `"use strict"; return (async () => {\n${code}\n})();`,
   );
 
-  return await execute(tools, sandboxConsole);
+  const result = await execute(tools, sandboxConsole, emit);
+  return { result, output: outputs.length > 0 ? outputs : undefined };
 };
 
 const handleStart = (message) => {
@@ -118,11 +203,12 @@ const handleStart = (message) => {
   ipcNonce = typeof message.nonce === "string" ? message.nonce : "";
 
   runUserCode(message.code)
-    .then((result) => {
+    .then(({ result, output }) => {
       writeIpcMessage({
         type: "completed",
         nonce: ipcNonce,
         result,
+        output,
         logs,
       });
     })
@@ -131,6 +217,7 @@ const handleStart = (message) => {
         type: "failed",
         nonce: ipcNonce,
         error: toErrorMessage(error),
+        output: outputs.length > 0 ? outputs : undefined,
         logs,
       });
     });

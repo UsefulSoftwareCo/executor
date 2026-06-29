@@ -96,6 +96,7 @@ describe("previewSpec OAuth2 extraction", () => {
         read: "Read access",
         write: "Write access",
       });
+      expect(preset.identityScopes).toBe("auto");
     }),
   );
 
@@ -126,6 +127,7 @@ describe("previewSpec OAuth2 extraction", () => {
       const cc = preview.oauth2Presets.find((p) => p.flow === "clientCredentials")!;
       expect(Option.isNone(cc.authorizationUrl)).toBe(true);
       expect(cc.scopes).toEqual({ "admin:read": "Admin read" });
+      expect(cc.identityScopes).toBe(false);
     }),
   );
 

@@ -3,7 +3,7 @@ export {
   getServerHandlers,
   disposeServerHandlers,
   type ServerHandlers,
-} from "./server/main";
+} from "./main";
 export {
   createExecutorHandle,
   disposeExecutor,
@@ -12,12 +12,18 @@ export {
   reloadExecutor,
   type ExecutorHandle,
   type LocalExecutor,
-} from "./server/executor";
-export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./server/mcp";
+} from "./executor";
+export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./mcp";
 export {
   isGeneratedUiMcpAppsEnabled,
   makeLocalEnvFeatureFlags,
   LocalEnvFeatureFlags,
-} from "./server/feature-flags";
+} from "./feature-flags";
 export { filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 export { startServer, type StartServerOptions, type ServerInstance } from "./serve";
+export {
+  DataDirOwnershipHeld,
+  findDataDirOwnershipHeld,
+  type DataDirOwnership,
+} from "./db/data-dir-ownership";
+export { loadOrMintLocalAuthToken, rotateLocalAuthToken, localAuthTokenPath } from "./auth";

@@ -289,6 +289,65 @@ export const makeGreetingMcpServer = (
   return server;
 };
 
+export const TEST_IMAGE_MIME_TYPE = "image/png";
+export const TEST_IMAGE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l8N1wwAAAABJRU5ErkJggg==";
+
+const testImageMetadata = () => ({
+  name: "mcp-image-fixture.png",
+  mimeType: TEST_IMAGE_MIME_TYPE,
+  byteLength: Buffer.from(TEST_IMAGE_PNG_BASE64, "base64").byteLength,
+});
+
+export const makeImageMcpServer = () => {
+  const server = new McpServer(
+    { name: "image-test-server", version: "1.0.0" },
+    { capabilities: {} },
+  );
+
+  server.registerTool(
+    "image_fixture",
+    {
+      description: "Returns a deterministic PNG as MCP image content",
+      inputSchema: {},
+    },
+    async () => ({
+      content: [
+        {
+          type: "image" as const,
+          data: TEST_IMAGE_PNG_BASE64,
+          mimeType: TEST_IMAGE_MIME_TYPE,
+        },
+      ],
+      structuredContent: testImageMetadata(),
+    }),
+  );
+
+  server.registerTool(
+    "image_fixture_with_metadata",
+    {
+      description: "Returns text metadata followed by MCP image content",
+      inputSchema: {},
+    },
+    async () => ({
+      content: [
+        {
+          type: "text" as const,
+          text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
+        },
+        {
+          type: "image" as const,
+          data: TEST_IMAGE_PNG_BASE64,
+          mimeType: TEST_IMAGE_MIME_TYPE,
+        },
+      ],
+      structuredContent: testImageMetadata(),
+    }),
+  );
+
+  return server;
+};
+
 export const makeEchoMcpServer = (
   options: {
     readonly name?: string;

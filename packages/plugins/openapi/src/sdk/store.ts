@@ -1,357 +1,220 @@
 import { Effect, Option, Predicate, Schema } from "effect";
 
 import {
-  type FumaTables,
   type PluginStorageEntry,
   type StorageDeps,
   type StorageFailure,
 } from "@executor-js/sdk/core";
 
-import {
-  ConfiguredHeaderBinding,
-  OAuth2SourceConfig,
-  OperationBinding,
-  type ConfiguredHeaderValue,
-} from "./types";
-export {
-  StoredSourceSchema,
-  type StoredSourceSchemaType,
-  headerBindingSlot,
-  oauth2ClientIdSlot,
-  oauth2ClientSecretSlot,
-  oauth2ConnectionSlot,
-  queryParamBindingSlot,
-} from "./source-contracts";
+import { OperationBinding } from "./types";
 
-export const openapiSchema = {} satisfies FumaTables;
-export type OpenapiSchema = typeof openapiSchema;
+// ---------------------------------------------------------------------------
+// OpenAPI plugin store (v2). The catalog row (integration.config) owns the
+// auth templates plus the spec's content hash; the resolved spec text itself
+// lives in the plugin blob store under `spec/<hash>` (it's multi-MB and only
+// a build input). This store keeps the per-operation invocation bindings
+// (method / path / params), keyed by integration slug, so `invokeTool` can map
+// a tool name back to its HTTP operation without re-parsing the spec on every
+// call. There are NO credential bindings, slots, or StoredSource credential
+// config here — those concepts are gone in v2.
+//
+// Operations are spec-derived (identical for every connection on an
+// integration), so they live under the org owner (the integration catalog is
+// tenant-level). The plugin storage facade partitions by owner; "org" keeps a
+// single shared copy per integration.
+// ---------------------------------------------------------------------------
 
-export interface SourceConfig {
-  readonly spec: string;
-  readonly sourceUrl?: string;
-  readonly baseUrl?: string;
-  readonly namespace?: string;
-  readonly headers?: Record<string, ConfiguredHeaderValue>;
-  readonly queryParams?: Record<string, ConfiguredHeaderValue>;
-  readonly specFetchCredentials?: OpenApiSpecFetchCredentials;
-  readonly oauth2?: OAuth2SourceConfig;
-}
-
-export interface OpenApiSpecFetchCredentials {
-  readonly headers?: Record<string, ConfiguredHeaderValue>;
-  readonly queryParams?: Record<string, ConfiguredHeaderValue>;
-}
-
-export interface StoredSource {
-  readonly namespace: string;
-  readonly scope: string;
-  readonly name: string;
-  readonly config: SourceConfig;
-}
-
-export interface StoredOperation {
-  readonly toolId: string;
-  readonly sourceId: string;
-  readonly binding: OperationBinding;
-}
-
-const SOURCE_COLLECTION = "source";
 const OPERATION_COLLECTION = "operation";
+const STORE_OWNER = "org" as const;
+const OPERATION_KEY_VERSION = "op";
 
 const encodeBinding = Schema.encodeSync(OperationBinding);
 const decodeBinding = Schema.decodeUnknownSync(OperationBinding);
 const decodeBindingJson = Schema.decodeUnknownSync(Schema.fromJsonString(OperationBinding));
 
-const decodeOAuth2SourceConfigOption = Schema.decodeUnknownOption(OAuth2SourceConfig);
-const decodeOAuth2SourceConfigJsonOption = Schema.decodeUnknownOption(
-  Schema.fromJsonString(OAuth2SourceConfig),
-);
-const encodeOAuth2SourceConfig = Schema.encodeSync(OAuth2SourceConfig);
-
-const NullableString = Schema.NullOr(Schema.String);
-const OptionalNullableString = Schema.optional(NullableString);
-const ConfiguredHeaderBindingStorage = Schema.Struct({
-  kind: Schema.Literal("binding"),
-  slot: Schema.String,
-  prefix: OptionalNullableString,
-});
-const ConfiguredHeaderValueStorage = Schema.Union([Schema.String, ConfiguredHeaderBindingStorage]);
-const ConfiguredHeaderMapStorage = Schema.Record(Schema.String, ConfiguredHeaderValueStorage);
-const SpecFetchCredentialsStorage = Schema.Struct({
-  headers: Schema.optional(ConfiguredHeaderMapStorage),
-  queryParams: Schema.optional(ConfiguredHeaderMapStorage),
-});
-const SourceConfigStorage = Schema.Struct({
-  spec: Schema.String,
-  sourceUrl: Schema.optional(Schema.String),
-  baseUrl: Schema.optional(Schema.String),
-  namespace: Schema.optional(Schema.String),
-  headers: Schema.optional(ConfiguredHeaderMapStorage),
-  queryParams: Schema.optional(ConfiguredHeaderMapStorage),
-  specFetchCredentials: Schema.optional(SpecFetchCredentialsStorage),
-  oauth2: Schema.optional(Schema.Unknown),
-});
-const SourceStorage = Schema.Struct({
-  namespace: Schema.String,
-  scope: Schema.String,
-  name: Schema.String,
-  config: SourceConfigStorage,
-});
-const OperationStorage = Schema.Struct({
-  toolId: Schema.String,
-  sourceId: Schema.String,
-  binding: Schema.Unknown,
-});
-const decodeSourceStorage = Schema.decodeUnknownOption(SourceStorage);
-const decodeOperationStorage = Schema.decodeUnknownOption(OperationStorage);
-
 const toJsonRecord = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 
-const normalizeStoredOAuth2 = (value: unknown): OAuth2SourceConfig | undefined => {
-  if (value == null) return undefined;
-  const sourceConfig =
-    typeof value === "string"
-      ? decodeOAuth2SourceConfigJsonOption(value)
-      : decodeOAuth2SourceConfigOption(value);
-  if (Option.isSome(sourceConfig)) return sourceConfig.value;
-  return undefined;
-};
-
-const normalizeConfiguredMap = (
-  values: Readonly<Record<string, typeof ConfiguredHeaderValueStorage.Type>> | undefined,
-): Record<string, ConfiguredHeaderValue> | undefined => {
-  if (!values) return undefined;
-  const normalized: Record<string, ConfiguredHeaderValue> = {};
-  for (const [name, value] of Object.entries(values)) {
-    if (typeof value === "string") {
-      normalized[name] = value;
-    } else {
-      normalized[name] =
-        value.prefix != null
-          ? ConfiguredHeaderBinding.make({
-              kind: "binding",
-              slot: value.slot,
-              prefix: value.prefix,
-            })
-          : ConfiguredHeaderBinding.make({
-              kind: "binding",
-              slot: value.slot,
-            });
-    }
-  }
-  return normalized;
-};
-
-const encodeSourceConfig = (config: SourceConfig): Record<string, unknown> => ({
-  spec: config.spec,
-  ...(config.sourceUrl ? { sourceUrl: config.sourceUrl } : {}),
-  ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
-  ...(config.namespace ? { namespace: config.namespace } : {}),
-  ...(config.headers ? { headers: config.headers } : {}),
-  ...(config.queryParams ? { queryParams: config.queryParams } : {}),
-  ...(config.specFetchCredentials ? { specFetchCredentials: config.specFetchCredentials } : {}),
-  ...(config.oauth2 ? { oauth2: toJsonRecord(encodeOAuth2SourceConfig(config.oauth2)) } : {}),
+const OperationStorage = Schema.Struct({
+  integration: Schema.String,
+  toolName: Schema.String,
+  binding: Schema.Unknown,
+  // Resolved tool description (operation description / summary / method+path
+  // fallback), persisted so the serve path can rebuild the tool def without
+  // re-parsing the spec. Optional: legacy rows predate it and resolve via the
+  // parse fallback.
+  description: Schema.optional(Schema.String),
 });
+const decodeOperationStorage = Schema.decodeUnknownOption(OperationStorage);
 
-const rowToSource = (row: PluginStorageEntry): StoredSource | null => {
-  const decoded = decodeSourceStorage(row.data);
-  if (Option.isNone(decoded)) return null;
-  const stored = decoded.value;
-  const oauth2 = normalizeStoredOAuth2(stored.config.oauth2);
-  return {
-    namespace: stored.namespace,
-    scope: stored.scope,
-    name: stored.name,
-    config: {
-      spec: stored.config.spec,
-      sourceUrl: stored.config.sourceUrl,
-      baseUrl: stored.config.baseUrl,
-      namespace: stored.config.namespace,
-      headers: normalizeConfiguredMap(stored.config.headers),
-      queryParams: normalizeConfiguredMap(stored.config.queryParams),
-      specFetchCredentials: stored.config.specFetchCredentials
-        ? {
-            headers: normalizeConfiguredMap(stored.config.specFetchCredentials.headers),
-            queryParams: normalizeConfiguredMap(stored.config.specFetchCredentials.queryParams),
-          }
-        : undefined,
-      oauth2,
-    },
-  };
-};
+export interface StoredOperation {
+  /** The integration slug this operation belongs to. */
+  readonly integration: string;
+  /** The tool name (the `<tool>` address segment) this operation backs. */
+  readonly toolName: string;
+  readonly binding: OperationBinding;
+  /** Resolved tool description, persisted alongside the binding so the serve
+   *  path can rebuild the tool def without re-parsing the spec. */
+  readonly description?: string;
+}
 
 const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
   const decoded = decodeOperationStorage(row.data);
   if (Option.isNone(decoded)) return null;
   const operation = decoded.value;
   return {
-    toolId: operation.toolId,
-    sourceId: operation.sourceId,
+    integration: operation.integration,
+    toolName: operation.toolName,
     binding: decodeBinding(
       typeof operation.binding === "string"
         ? decodeBindingJson(operation.binding)
         : operation.binding,
     ),
+    ...(operation.description !== undefined ? { description: operation.description } : {}),
   };
 };
 
+const stableKeyHash = (value: string): string => {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(36).padStart(13, "0");
+};
+
+const operationKey = (integration: string, toolName: string): string =>
+  `${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.${stableKeyHash(toolName)}`;
+
+const legacyOperationKey = (integration: string, toolName: string): string =>
+  `${integration}.${toolName}`;
+
+/** Blob key for a spec's content hash. Content-addressed so re-puts are
+ *  idempotent and identical specs share one blob per partition. */
+export const specBlobKey = (specHash: string): string => `spec/${specHash}`;
+
+/** Blob key for a spec's compiled `#/$defs/*` schemas, keyed by the same
+ *  content hash as the spec. The serve path reads this instead of re-parsing
+ *  the (potentially multi-MB) spec to rebuild the shared `definitions`. */
+export const defsBlobKey = (specHash: string): string => `defs/${specHash}`;
+
 export interface OpenapiStore {
-  readonly upsertSource: (
-    input: StoredSource,
+  /** Replace all stored operations for an integration. */
+  readonly putOperations: (
+    integration: string,
     operations: readonly StoredOperation[],
   ) => Effect.Effect<void, StorageFailure>;
-  readonly updateSourceMeta: (
-    namespace: string,
-    scope: string,
-    patch: {
-      readonly name?: string;
-      readonly baseUrl?: string;
-      readonly headers?: Record<string, ConfiguredHeaderValue>;
-      readonly queryParams?: Record<string, ConfiguredHeaderValue>;
-      readonly specFetchCredentials?: OpenApiSpecFetchCredentials;
-      readonly oauth2?: OAuth2SourceConfig;
-    },
+  /** Append operations without clearing existing ones. The caller is
+   *  responsible for `removeOperations` first when doing a full rebuild. Used
+   *  by the streaming compile path, which persists operations chunk by chunk so
+   *  a huge spec's bindings are never all materialized at once. */
+  readonly appendOperations: (
+    integration: string,
+    operations: readonly StoredOperation[],
   ) => Effect.Effect<void, StorageFailure>;
-  readonly getSource: (
-    namespace: string,
-    scope: string,
-  ) => Effect.Effect<StoredSource | null, StorageFailure>;
-  readonly listSources: () => Effect.Effect<readonly StoredSource[], StorageFailure>;
-  readonly getOperationByToolId: (
-    toolId: string,
-    scope: string,
+  /** Look up one operation by integration + tool name. */
+  readonly getOperation: (
+    integration: string,
+    toolName: string,
   ) => Effect.Effect<StoredOperation | null, StorageFailure>;
-  readonly listOperationsBySource: (
-    sourceId: string,
-    scope: string,
+  /** List every stored operation for an integration. */
+  readonly listOperations: (
+    integration: string,
   ) => Effect.Effect<readonly StoredOperation[], StorageFailure>;
-  readonly removeSource: (namespace: string, scope: string) => Effect.Effect<void, StorageFailure>;
+  /** Drop all stored operations for an integration. */
+  readonly removeOperations: (integration: string) => Effect.Effect<void, StorageFailure>;
+  /** Persist resolved spec text under its content hash. Org-owned and
+   *  content-addressed; never removed on integration removal because another
+   *  integration in the tenant may share the hash. */
+  readonly putSpec: (specHash: string, specText: string) => Effect.Effect<void, StorageFailure>;
+  /** Load spec text by content hash; null when no blob exists. */
+  readonly getSpec: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
+  /** Persist the compiled `#/$defs/*` JSON for a spec under its content hash.
+   *  Content-addressed like the spec blob; lets the serve path serve the shared
+   *  `definitions` without re-parsing the spec. */
+  readonly putDefs: (specHash: string, defsJson: string) => Effect.Effect<void, StorageFailure>;
+  /** Load the compiled `#/$defs/*` JSON by content hash; null when no blob
+   *  exists (legacy rows added before the defs blob). */
+  readonly getDefs: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
 }
 
-export const makeDefaultOpenapiStore = ({
-  pluginStorage,
-}: StorageDeps<OpenapiSchema>): OpenapiStore => {
-  const sourceData = (source: StoredSource) => ({
-    namespace: source.namespace,
-    scope: source.scope,
-    name: source.name,
-    config: encodeSourceConfig(source.config),
-  });
-
+export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): OpenapiStore => {
   const operationData = (operation: StoredOperation) => ({
-    toolId: operation.toolId,
-    sourceId: operation.sourceId,
+    integration: operation.integration,
+    toolName: operation.toolName,
     binding: toJsonRecord(encodeBinding(operation.binding)),
+    ...(operation.description !== undefined ? { description: operation.description } : {}),
   });
 
-  const listOperationRowsForSourceScope = (sourceId: string, scope: string) =>
+  const listRows = (integration: string) =>
     pluginStorage
-      .list({
-        collection: OPERATION_COLLECTION,
-        keyPrefix: `${sourceId}.`,
-      })
+      .list({ collection: OPERATION_COLLECTION })
       .pipe(
-        Effect.map((rows) =>
-          rows.filter(
-            (row) => String(row.scopeId) === scope && rowToOperation(row)?.sourceId === sourceId,
-          ),
+        Effect.map((rows: readonly PluginStorageEntry[]) =>
+          rows.filter((row) => rowToOperation(row)?.integration === integration),
         ),
       );
 
-  const removeOperationsForSourceScope = (sourceId: string, scope: string) =>
+  const removeOperations = (integration: string) =>
     Effect.gen(function* () {
-      const rows = yield* listOperationRowsForSourceScope(sourceId, scope);
-      for (const row of rows) {
-        yield* pluginStorage.remove({
-          scope,
-          collection: OPERATION_COLLECTION,
-          key: row.key,
-        });
-      }
-    });
-
-  const deleteSource = (namespace: string, scope: string) =>
-    Effect.gen(function* () {
-      yield* removeOperationsForSourceScope(namespace, scope);
-      yield* pluginStorage.remove({
-        scope,
-        collection: SOURCE_COLLECTION,
-        key: namespace,
+      const rows = yield* listRows(integration);
+      yield* pluginStorage.removeMany({
+        owner: STORE_OWNER,
+        entries: rows.map((row) => ({ collection: OPERATION_COLLECTION, key: row.key })),
       });
     });
 
+  const appendOperations = (integration: string, operations: readonly StoredOperation[]) =>
+    pluginStorage.putMany({
+      owner: STORE_OWNER,
+      entries: operations.map((operation) => ({
+        collection: OPERATION_COLLECTION,
+        key: operationKey(integration, operation.toolName),
+        data: operationData(operation),
+      })),
+    });
+
   return {
-    upsertSource: (input, operations) =>
+    putOperations: (integration, operations) =>
       Effect.gen(function* () {
-        yield* deleteSource(input.namespace, input.scope);
-        yield* pluginStorage.put({
-          scope: input.scope,
-          collection: SOURCE_COLLECTION,
-          key: input.namespace,
-          data: sourceData(input),
-        });
-        for (const operation of operations) {
-          yield* pluginStorage.put({
-            scope: input.scope,
-            collection: OPERATION_COLLECTION,
-            key: operation.toolId,
-            data: operationData(operation),
-          });
-        }
+        yield* removeOperations(integration);
+        yield* appendOperations(integration, operations);
       }),
 
-    updateSourceMeta: (namespace, scope, patch) =>
+    appendOperations,
+
+    getOperation: (integration, toolName) =>
       Effect.gen(function* () {
-        const existing = yield* pluginStorage.getAtScope({
-          scope,
-          collection: SOURCE_COLLECTION,
-          key: namespace,
+        const row = yield* pluginStorage.get({
+          collection: OPERATION_COLLECTION,
+          key: operationKey(integration, toolName),
         });
-        if (!existing) return;
-        const source = rowToSource(existing);
-        if (!source) return;
-        const next: StoredSource = {
-          ...source,
-          name: patch.name?.trim() || source.name,
-          config: {
-            ...source.config,
-            ...(patch.baseUrl !== undefined ? { baseUrl: patch.baseUrl } : {}),
-            ...(patch.headers !== undefined ? { headers: patch.headers } : {}),
-            ...(patch.queryParams !== undefined ? { queryParams: patch.queryParams } : {}),
-            ...(patch.specFetchCredentials !== undefined
-              ? { specFetchCredentials: patch.specFetchCredentials }
-              : {}),
-            ...(patch.oauth2 !== undefined ? { oauth2: patch.oauth2 } : {}),
-          },
-        };
-        yield* pluginStorage.put({
-          scope,
-          collection: SOURCE_COLLECTION,
-          key: namespace,
-          data: sourceData(next),
+        if (row) return rowToOperation(row);
+        const legacyKey = legacyOperationKey(integration, toolName);
+        if (legacyKey.length > 255) return null;
+        const legacyRow = yield* pluginStorage.get({
+          collection: OPERATION_COLLECTION,
+          key: legacyKey,
         });
+        return legacyRow ? rowToOperation(legacyRow) : null;
       }),
 
-    getSource: (namespace, scope) =>
-      pluginStorage
-        .getAtScope({ scope, collection: SOURCE_COLLECTION, key: namespace })
-        .pipe(Effect.map((row) => (row ? rowToSource(row) : null))),
-
-    listSources: () =>
-      pluginStorage
-        .list({ collection: SOURCE_COLLECTION })
-        .pipe(Effect.map((rows) => rows.map(rowToSource).filter(Predicate.isNotNull))),
-
-    getOperationByToolId: (toolId, scope) =>
-      pluginStorage
-        .getAtScope({ scope, collection: OPERATION_COLLECTION, key: toolId })
-        .pipe(Effect.map((row) => (row ? rowToOperation(row) : null))),
-
-    listOperationsBySource: (sourceId, scope) =>
-      listOperationRowsForSourceScope(sourceId, scope).pipe(
+    listOperations: (integration) =>
+      listRows(integration).pipe(
         Effect.map((rows) => rows.map(rowToOperation).filter(Predicate.isNotNull)),
       ),
 
-    removeSource: (namespace, scope) => deleteSource(namespace, scope),
+    removeOperations,
+
+    putSpec: (specHash, specText) =>
+      blobs.put(specBlobKey(specHash), specText, { owner: STORE_OWNER }),
+
+    getSpec: (specHash) => blobs.get(specBlobKey(specHash)),
+
+    putDefs: (specHash, defsJson) =>
+      blobs.put(defsBlobKey(specHash), defsJson, { owner: STORE_OWNER }),
+
+    getDefs: (specHash) => blobs.get(defsBlobKey(specHash)),
   };
 };

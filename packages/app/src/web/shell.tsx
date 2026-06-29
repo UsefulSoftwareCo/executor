@@ -1,15 +1,21 @@
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { sourcesAtom, sourcesOptimisticAtom, toolsAtom } from "@executor-js/react/api/atoms";
-import { useScope, useScopeInfo } from "@executor-js/react/api/scope-context";
+import type { Integration } from "@executor-js/sdk/shared";
+import {
+  integrationsAtom,
+  integrationsOptimisticAtom,
+  toolsAllAtom,
+} from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
-import { SourceFavicon } from "@executor-js/react/components/source-favicon";
+import { integrationPresetIconUrl } from "@executor-js/react/components/integration-favicon";
+import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
-import { useClientPlugins } from "@executor-js/sdk/client";
+import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
+import { SidebarUpdateCard } from "@executor-js/react/components/update-card";
+import { Wordmark } from "@executor-js/react/components/wordmark";
+import { ServerConnectionMenu } from "./server-connection-menu";
 
 // ── Env ─────────────────────────────────────────────────────────────────
 
@@ -23,179 +29,6 @@ const { VITE_APP_VERSION, VITE_GITHUB_URL } = (
     readonly env: AppMetaEnv;
   }
 ).env;
-
-// ── Version helpers ─────────────────────────────────────────────────────
-
-type UpdateChannel = "latest" | "beta";
-
-const EXECUTOR_DIST_TAGS_PATH = "/v1/app/npm/dist-tags";
-
-type ParsedVersion = {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  readonly prerelease: ReadonlyArray<string | number> | null;
-};
-
-const semverPattern =
-  /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<prerelease>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
-
-const resolveUpdateChannel = (version: string): UpdateChannel =>
-  version.includes("-beta.") ? "beta" : "latest";
-
-const parseVersion = (version: string): ParsedVersion | null => {
-  const match = version.trim().match(semverPattern);
-  if (!match?.groups) return null;
-  return {
-    major: Number(match.groups.major),
-    minor: Number(match.groups.minor),
-    patch: Number(match.groups.patch),
-    prerelease: match.groups.prerelease
-      ? match.groups.prerelease.split(".").map((id) => (/^\d+$/.test(id) ? Number(id) : id))
-      : null,
-  };
-};
-
-const comparePrereleaseIdentifiers = (
-  left: ReadonlyArray<string | number> | null,
-  right: ReadonlyArray<string | number> | null,
-): number => {
-  if (left === null && right === null) return 0;
-  if (left === null) return 1;
-  if (right === null) return -1;
-  const max = Math.max(left.length, right.length);
-  for (let i = 0; i < max; i++) {
-    const l = left[i];
-    const r = right[i];
-    if (l === undefined) return -1;
-    if (r === undefined) return 1;
-    if (l === r) continue;
-    if (typeof l === "number" && typeof r === "number") return l < r ? -1 : 1;
-    if (typeof l === "number") return -1;
-    if (typeof r === "number") return 1;
-    return l < r ? -1 : 1;
-  }
-  return 0;
-};
-
-const compareVersions = (left: string, right: string): number | null => {
-  const lv = parseVersion(left);
-  const rv = parseVersion(right);
-  if (!lv || !rv) return null;
-  if (lv.major !== rv.major) return lv.major < rv.major ? -1 : 1;
-  if (lv.minor !== rv.minor) return lv.minor < rv.minor ? -1 : 1;
-  if (lv.patch !== rv.patch) return lv.patch < rv.patch ? -1 : 1;
-  return comparePrereleaseIdentifiers(lv.prerelease, rv.prerelease);
-};
-
-// ── useLatestVersion ────────────────────────────────────────────────────
-
-function useLatestVersion(currentVersion: string) {
-  const channel = resolveUpdateChannel(currentVersion);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void Effect.runPromiseExit(
-      Effect.tryPromise({
-        try: async () => {
-          const res = await fetch(EXECUTOR_DIST_TAGS_PATH);
-          if (!res.ok) return null;
-          return (await res.json()) as Partial<Record<UpdateChannel, string>>;
-        },
-        catch: (cause) => cause,
-      }),
-    ).then((exit) => {
-      if (!cancelled && Exit.isSuccess(exit)) {
-        setLatestVersion(exit.value?.[channel] ?? null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [channel]);
-
-  const updateAvailable =
-    latestVersion !== null && compareVersions(currentVersion, latestVersion) === -1;
-
-  return { latestVersion, updateAvailable, channel };
-}
-
-// ── UpdateCard ──────────────────────────────────────────────────────────
-
-function UpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
-  const command = `npm i -g executor@${props.channel}`;
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(command).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  }, [command]);
-
-  return (
-    <div className="mx-2 mb-2 rounded-xl border border-primary/25 bg-primary/[0.06] p-3">
-      <div className="flex items-center gap-2">
-        <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15">
-          <svg viewBox="0 0 16 16" fill="none" className="size-3 text-primary">
-            <path
-              d="M8 3v7M5 7l3 3 3-3"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path d="M3 12h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-        </div>
-        <div className="min-w-0">
-          <p className="text-xs font-semibold text-foreground">Update available</p>
-          <p className="text-sm text-muted-foreground">v{props.latestVersion}</p>
-        </div>
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        onClick={handleCopy}
-        className="mt-2.5 flex w-full items-center justify-between gap-2 rounded-lg border-border/60 bg-background/50 px-2.5 py-1.5 text-left hover:bg-background/80"
-      >
-        <code className="truncate font-mono text-xs text-sidebar-foreground">{command}</code>
-        <span className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground">
-          {copied ? (
-            <svg viewBox="0 0 16 16" fill="none" className="size-3 text-primary">
-              <path
-                d="M3 8.5l3.5 3.5L13 4"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 16 16" fill="none" className="size-3">
-              <rect
-                x="5"
-                y="5"
-                width="8"
-                height="8"
-                rx="1.5"
-                stroke="currentColor"
-                strokeWidth="1.2"
-              />
-              <path
-                d="M3 11V3.5A.5.5 0 013.5 3H11"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-              />
-            </svg>
-          )}
-        </span>
-      </Button>
-    </div>
-  );
-}
 
 // ── NavItem ──────────────────────────────────────────────────────────────
 
@@ -246,7 +79,7 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
       {entries.map((entry) => (
         <Link
           key={entry.key}
-          to="/plugins/$pluginId/$"
+          to="/{-$orgSlug}/plugins/$pluginId/$"
           params={{ pluginId: entry.pluginId, _splat: entry.splat }}
           onClick={props.onNavigate}
           className={[
@@ -263,33 +96,35 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
   );
 }
 
-// ── SourceList ───────────────────────────────────────────────────────────
+// ── IntegrationList ───────────────────────────────────────────────────────────
 
-function SourceList(props: { pathname: string; onNavigate?: () => void }) {
-  const scopeId = useScope();
-  const sources = useAtomValue(sourcesOptimisticAtom(scopeId));
+function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
+  const integrations = useAtomValue(integrationsOptimisticAtom);
+  const integrationPlugins = useIntegrationPlugins();
 
-  return AsyncResult.match(sources, {
+  return AsyncResult.match(integrations, {
     onInitial: () => <div className="px-2.5 py-2 text-xs text-muted-foreground">Loading…</div>,
     onFailure: () => (
-      <div className="px-2.5 py-2 text-xs text-muted-foreground">No sources yet</div>
+      <div className="px-2.5 py-2 text-xs text-muted-foreground">No integrations yet</div>
     ),
-    onSuccess: ({ value }) =>
+    onSuccess: ({ value }: { readonly value: readonly Integration[] }) =>
       value.length === 0 ? (
         <div className="px-2.5 py-2 text-sm leading-relaxed text-muted-foreground">
-          No sources yet
+          No integrations yet
         </div>
       ) : (
         <div className="flex flex-col gap-px">
-          {value.map((s) => {
-            const detailPath = `/sources/${s.id}`;
+          {value.map((integration: Integration) => {
+            const slug = String(integration.slug);
+            const name = integration.name || slug;
+            const detailPath = `/integrations/${slug}`;
             const active =
               props.pathname === detailPath || props.pathname.startsWith(`${detailPath}/`);
             return (
               <Link
-                key={s.id}
-                to="/sources/$namespace"
-                params={{ namespace: s.id }}
+                key={slug}
+                to="/{-$orgSlug}/integrations/$namespace"
+                params={{ namespace: slug }}
                 onClick={props.onNavigate}
                 className={[
                   "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-colors",
@@ -298,11 +133,15 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
                     : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
                 ].join(" ")}
               >
-                <SourceFavicon sourceId={s.id} url={s.url} />
-                <span className="flex-1 truncate">{s.name}</span>
-                <span className="rounded bg-secondary/50 px-1 py-px text-xs font-medium text-muted-foreground">
-                  {s.kind}
-                </span>
+                <IntegrationIconWithAccount
+                  icon={integrationPresetIconUrl(
+                    { id: slug, kind: integration.kind },
+                    integrationPlugins,
+                  )}
+                  sourceId={slug}
+                  size="sm"
+                />
+                <span className="flex-1 truncate">{name}</span>
               </Link>
             );
           })}
@@ -311,70 +150,50 @@ function SourceList(props: { pathname: string; onNavigate?: () => void }) {
   });
 }
 
-// ── ScopeLabel ───────────────────────────────────────────────────────────
-
-function ScopeLabel() {
-  const { name } = useScopeInfo();
-  // Show just the last folder name, with full path as tooltip
-  const parts = name.replace(/[/\\]+$/, "").split(/[/\\]/);
-  const folder = parts[parts.length - 1] || name;
-
-  return (
-    <div className="mb-1.5 flex items-center gap-1.5 rounded-md px-2.5 py-1.5" title={name}>
-      <svg viewBox="0 0 16 16" fill="none" className="size-3.5 shrink-0 text-muted-foreground">
-        <path
-          d="M2 4.5C2 3.67 2.67 3 3.5 3h3.09a1 1 0 0 1 .7.29l1.42 1.42a1 1 0 0 0 .7.29H12.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"
-          stroke="currentColor"
-          strokeWidth="1.2"
-        />
-      </svg>
-      <span className="truncate text-xs font-medium text-foreground/80">{folder}</span>
-    </div>
-  );
-}
-
 // ── SidebarContent ───────────────────────────────────────────────────────
 
-function SidebarContent(props: {
-  pathname: string;
-  onNavigate?: () => void;
-  showBrand?: boolean;
-  updateAvailable: boolean;
-  latestVersion: string | null;
-  channel: UpdateChannel;
-}) {
+function SidebarContent(props: { pathname: string; onNavigate?: () => void; showBrand?: boolean }) {
   const isHome = props.pathname === "/";
   const isSecrets = props.pathname === "/secrets";
-  const isConnections = props.pathname === "/connections";
   const isPolicies = props.pathname === "/policies";
+  const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
 
   return (
     <>
       {props.showBrand !== false && (
-        <div className="flex h-12 shrink-0 items-center border-b border-sidebar-border px-4">
-          <Link to="/" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
-            <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
-              Beta
-            </span>
+        <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+          <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex shrink-0 items-center">
+            <Wordmark />
           </Link>
+          <div className="desktop-macos-no-drag ml-auto flex min-w-0 flex-1 justify-end pl-3">
+            <ServerConnectionMenu variant="header" />
+          </div>
         </div>
       )}
 
       <nav className="flex flex-1 flex-col overflow-y-auto p-2">
-        <ScopeLabel />
-        <NavItem to="/" label="Sources" active={isHome} onNavigate={props.onNavigate} />
         <NavItem
-          to="/connections"
-          label="Connections"
-          active={isConnections}
+          to="/{-$orgSlug}"
+          label="Integrations"
+          active={isHome}
           onNavigate={props.onNavigate}
         />
-        <NavItem to="/secrets" label="Secrets" active={isSecrets} onNavigate={props.onNavigate} />
         <NavItem
-          to="/policies"
+          to="/{-$orgSlug}/secrets"
+          label="Secrets"
+          active={isSecrets}
+          onNavigate={props.onNavigate}
+        />
+        <NavItem
+          to="/{-$orgSlug}/policies"
           label="Policies"
           active={isPolicies}
+          onNavigate={props.onNavigate}
+        />
+        <NavItem
+          to="/{-$orgSlug}/toolkits"
+          label="Toolkits"
+          active={isToolkits}
           onNavigate={props.onNavigate}
         />
 
@@ -382,19 +201,25 @@ function SidebarContent(props: {
 
         {/* Sources list */}
         <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          <span>Sources</span>
+          <span>Integrations</span>
         </div>
 
-        <SourceList pathname={props.pathname} onNavigate={props.onNavigate} />
+        <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
 
-      {props.updateAvailable && props.latestVersion && (
-        <UpdateCard latestVersion={props.latestVersion} channel={props.channel} />
-      )}
+      <SidebarUpdateCard />
 
       {/* Footer */}
       <div className="shrink-0 border-t border-sidebar-border px-4 py-2.5">
         <div className="flex flex-col gap-1.5 text-xs leading-none">
+          <a
+            href="https://executor.sh/docs"
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Docs
+          </a>
           <a
             href={`${VITE_GITHUB_URL}/issues`}
             target="_blank"
@@ -425,10 +250,8 @@ function SidebarContent(props: {
 export function Shell() {
   const location = useLocation();
   const pathname = location.pathname;
-  const scopeId = useScope();
-  const refreshSources = useAtomRefresh(sourcesAtom(scopeId));
-  const refreshTools = useAtomRefresh(toolsAtom(scopeId));
-  const { latestVersion, updateAvailable, channel } = useLatestVersion(VITE_APP_VERSION);
+  const refreshSources = useAtomRefresh(integrationsAtom);
+  const refreshTools = useAtomRefresh(toolsAllAtom);
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   if (lastPathname.current !== pathname) {
@@ -467,13 +290,8 @@ export function Shell() {
     <div className="flex h-screen overflow-hidden">
       <CommandPalette />
       {/* Desktop sidebar */}
-      <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <SidebarContent
-          pathname={pathname}
-          updateAvailable={updateAvailable}
-          latestVersion={latestVersion}
-          channel={channel}
-        />
+      <aside className="desktop-macos-sidebar hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
+        <SidebarContent pathname={pathname} />
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -487,21 +305,16 @@ export function Shell() {
             onClick={() => setMobileSidebarOpen(false)}
           />
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
-            <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
-              <Link to="/" className="flex items-center gap-1.5">
-                <span className="font-display text-base tracking-tight text-foreground">
-                  executor
-                </span>
-                <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
-                  Beta
-                </span>
+            <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
+              <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center">
+                <Wordmark />
               </Link>
               <Button
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Close navigation"
                 onClick={() => setMobileSidebarOpen(false)}
-                className="text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
+                className="desktop-macos-no-drag text-sidebar-foreground hover:bg-sidebar-active hover:text-foreground"
               >
                 <svg viewBox="0 0 16 16" className="size-3.5">
                   <path
@@ -517,24 +330,30 @@ export function Shell() {
               pathname={pathname}
               onNavigate={() => setMobileSidebarOpen(false)}
               showBrand={false}
-              updateAvailable={updateAvailable}
-              latestVersion={latestVersion}
-              channel={channel}
             />
           </div>
         </div>
       )}
 
       {/* Main content */}
-      <main className="flex min-h-0 flex-1 flex-col min-w-0 overflow-hidden">
-        {/* Mobile top bar */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
+      <main className="relative flex min-h-0 flex-1 flex-col min-w-0 overflow-hidden">
+        {/* Desktop (macOS frameless) draggable title-bar strip. Gives the main
+            area the same native window drag + double-click-to-zoom as the
+            sidebar header; hidden everywhere else via CSS. Overlays the top of
+            the main area (behind page content) so page headers stay flush with
+            the top and their borders line up with the sidebar header. */}
+        <div className="desktop-macos-main-titlebar" />
+
+        {/* Mobile top bar. The desktop-macos-titlebar offset keeps the
+            far-left hamburger clear of the native traffic lights when the macOS
+            window is forced below the md breakpoint (issue #1125). */}
+        <div className="desktop-macos-titlebar flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4 md:hidden">
           <Button
             variant="outline"
             size="icon-sm"
             aria-label="Open navigation"
             onClick={() => setMobileSidebarOpen(true)}
-            className="bg-card hover:bg-accent/50"
+            className="desktop-macos-no-drag bg-card hover:bg-accent/50"
           >
             <svg viewBox="0 0 16 16" className="size-4">
               <path
@@ -545,8 +364,8 @@ export function Shell() {
               />
             </svg>
           </Button>
-          <Link to="/" className="flex items-center gap-1.5">
-            <span className="font-display text-base tracking-tight text-foreground">executor</span>
+          <Link to="/{-$orgSlug}" className="desktop-macos-no-drag flex items-center">
+            <Wordmark />
           </Link>
           <div className="w-8 shrink-0" />
         </div>

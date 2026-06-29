@@ -1,3 +1,10 @@
 name = "executor-marketing"
 compatibility_date = "2026-04-22"
 compatibility_flags = ["nodejs_compat"]
+
+# Public build-time vars, the single source of truth. astro.config.mjs reads the
+# PUBLIC_ ones from here and inlines them into the client bundle (same approach
+# apps/cloud uses with its wrangler.jsonc vars). phc_ is a public PostHog project
+# key, shipped in client JS by design, so it belongs in committed config.
+[vars]
+PUBLIC_POSTHOG_KEY = "phc_nNLrNMALpRsfrEkZovUkfMxYbcJvHnsJHeoSPavprgLL"

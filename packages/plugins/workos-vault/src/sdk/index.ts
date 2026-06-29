@@ -15,12 +15,8 @@ export {
 } from "./plugin";
 export {
   WORKOS_VAULT_PROVIDER_KEY,
-  defaultWorkOSVaultContextForScope,
-  makeWorkOSVaultSecretProvider,
+  makeWorkOSVaultCredentialProvider,
   makeWorkosVaultStore,
-  workosVaultSchema,
-  type WorkOSVaultContextForScope,
-  type WorkOSVaultSecretProviderOptions,
-  type WorkosVaultSchema,
+  type WorkOSVaultCredentialProviderOptions,
   type WorkosVaultStore,
 } from "./secret-store";

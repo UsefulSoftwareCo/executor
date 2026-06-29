@@ -65,6 +65,7 @@ const WorkerCompletedMessage = Schema.Struct({
   type: Schema.Literal("completed"),
   nonce: Schema.String,
   result: Schema.Unknown,
+  output: Schema.optional(Schema.Array(Schema.Unknown)),
   logs: Schema.optional(Schema.Array(Schema.String)),
 });
 
@@ -72,6 +73,7 @@ const WorkerFailedMessage = Schema.Struct({
   type: Schema.Literal("failed"),
   nonce: Schema.String,
   error: Schema.String,
+  output: Schema.optional(Schema.Array(Schema.Unknown)),
   logs: Schema.optional(Schema.Array(Schema.String)),
 });
 
@@ -283,6 +285,10 @@ const executeInDeno = (
             case "completed": {
               yield* completeWith({
                 result: msg.result,
+                output:
+                  Array.isArray(msg.output) && msg.output.length > 0
+                    ? (msg.output as ExecuteResult["output"])
+                    : undefined,
                 logs: msg.logs as string[] | undefined,
               });
               return;
@@ -292,6 +298,10 @@ const executeInDeno = (
               yield* completeWith({
                 result: null,
                 error: msg.error,
+                output:
+                  Array.isArray(msg.output) && msg.output.length > 0
+                    ? (msg.output as ExecuteResult["output"])
+                    : undefined,
                 logs: msg.logs as string[] | undefined,
               });
               return;

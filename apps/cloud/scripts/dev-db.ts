@@ -17,8 +17,12 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = 5433;
-const DB_PATH = resolve(__dirname, "../.dev-db");
+// Port + data dir default to the dev values but are env-overridable so a second
+// throwaway instance (e.g. the Playwright e2e harness) can run alongside `bun dev`.
+const PORT = Number(process.env.DEV_DB_PORT ?? 5433);
+const DB_PATH = process.env.DEV_DB_PATH
+  ? resolve(process.env.DEV_DB_PATH)
+  : resolve(__dirname, "../.dev-db");
 const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 
 // Reap any orphan dev-db from a previous `bun dev` that didn't shut down

@@ -1,26 +1,27 @@
-import type { ScopeId } from "@executor-js/sdk/shared";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
 import { OnePasswordClient } from "./client";
 
-export const onepasswordWriteKeys = [ReactivityKey.secrets] as const;
+// 1Password is a CredentialProvider in v2 — its owner-scoped config lives in
+// the `providers` reactivity family (the v1 `secrets` key is gone).
+export const onepasswordWriteKeys = [ReactivityKey.providers] as const;
 
 // ---------------------------------------------------------------------------
 // Query atoms
+//
+// v2: the 1Password config is a single owner-partitioned binding the server
+// derives from the executor's owner — there are no owner path params here; the
+// server reads the acting owner from the executor binding.
 // ---------------------------------------------------------------------------
 
-export const onepasswordConfigAtom = (scopeId: ScopeId) =>
-  OnePasswordClient.query("onepassword", "getConfig", {
-    params: { scopeId },
-    timeToLive: "30 seconds",
-    reactivityKeys: [ReactivityKey.secrets],
-  });
+export const onepasswordConfigAtom = OnePasswordClient.query("onepassword", "getConfig", {
+  timeToLive: "30 seconds",
+  reactivityKeys: [ReactivityKey.providers],
+});
 
-export const onepasswordStatusAtom = (scopeId: ScopeId) =>
-  OnePasswordClient.query("onepassword", "status", {
-    params: { scopeId },
-    timeToLive: "15 seconds",
-    reactivityKeys: [ReactivityKey.secrets],
-  });
+export const onepasswordStatusAtom = OnePasswordClient.query("onepassword", "status", {
+  timeToLive: "15 seconds",
+  reactivityKeys: [ReactivityKey.providers],
+});
 
 // ---------------------------------------------------------------------------
 // Query atoms — vaults
@@ -29,13 +30,11 @@ export const onepasswordStatusAtom = (scopeId: ScopeId) =>
 export const onepasswordVaultsAtom = (
   authKind: "desktop-app" | "service-account",
   account: string,
-  scopeId: ScopeId,
 ) =>
   OnePasswordClient.query("onepassword", "listVaults", {
-    params: { scopeId },
     query: { authKind, account },
     timeToLive: "30 seconds",
-    reactivityKeys: [ReactivityKey.secrets],
+    reactivityKeys: [ReactivityKey.providers],
   });
 
 // ---------------------------------------------------------------------------

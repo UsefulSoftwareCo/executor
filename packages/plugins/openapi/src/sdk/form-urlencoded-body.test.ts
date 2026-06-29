@@ -18,43 +18,18 @@ import {
   HttpApiSchema,
 } from "effect/unstable/httpapi";
 
+import { createExecutor } from "@executor-js/sdk";
 import {
-  createExecutor,
-  definePlugin,
-  type InvokeOptions,
-  type SecretProvider,
-} from "@executor-js/sdk";
-import { makeTestWorkspaceLayer, TestWorkspace } from "@executor-js/sdk/testing";
+  makeTestWorkspaceLayer,
+  memoryCredentialsPlugin,
+  TestWorkspace,
+} from "@executor-js/sdk/testing";
 import {
-  addOpenApiTestSource,
+  addOpenApiTestConnection,
   serveOpenApiHttpApiTestServer,
 } from "@executor-js/plugin-openapi/testing";
 
 import { openApiPlugin } from "./plugin";
-
-const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
-const TEST_SCOPE = "test-scope";
-
-const memoryProvider: SecretProvider = (() => {
-  const store = new Map<string, string>();
-  return {
-    key: "memory",
-    writable: true,
-    get: (id, scope) => Effect.sync(() => store.get(`${scope}\u0000${id}`) ?? null),
-    set: (id, value, scope) =>
-      Effect.sync(() => {
-        store.set(`${scope}\u0000${id}`, value);
-      }),
-    delete: (id, scope) => Effect.sync(() => store.delete(`${scope}\u0000${id}`)),
-    list: () => Effect.sync(() => []),
-  };
-})();
-
-const memorySecretsPlugin = definePlugin(() => ({
-  id: "memory-secrets" as const,
-  storage: () => ({}),
-  secretProviders: [memoryProvider],
-}));
 
 type Captured = {
   contentType: string;
@@ -98,7 +73,7 @@ const startEchoServer = () =>
 
 const plugins = [
   openApiPlugin({ httpClientLayer: FetchHttpClient.layer }),
-  memorySecretsPlugin(),
+  memoryCredentialsPlugin(),
 ] as const;
 
 layer(
@@ -113,16 +88,11 @@ layer(
       const { config } = yield* TestWorkspace;
       const executor = yield* createExecutor({ ...config, plugins });
 
-      yield* addOpenApiTestSource(executor, server, {
-        scope: TEST_SCOPE,
-        namespace: "form",
-      });
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "form" });
 
-      yield* executor.tools.invoke(
-        "form.forms.submit",
-        { body: { name: "Acme", email: "a@b.com" } },
-        autoApprove,
-      );
+      yield* executor.execute(conn.address("forms.submit"), {
+        body: { name: "Acme", email: "a@b.com" },
+      });
 
       expect(captured.contentType).toBe("application/x-www-form-urlencoded");
       expect(captured.body).not.toBe("[object Object]");

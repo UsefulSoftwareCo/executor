@@ -57,8 +57,10 @@ export const McpAuthConfig = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("oauth2"),
     /** Stable id of the SDK Connection holding access + refresh token
-     *  material. Scope shadowing means the same id resolves per-user
-     *  via the executor's innermost-wins lookup. */
+     *  material. The connection names its owner explicitly (org or user),
+     *  so the id resolves to exactly one connection — no scope stack, no
+     *  per-user shadowing. Core resolves its value (refreshing oauth
+     *  tokens) at execute time via the connection's provider. */
     connectionId: Schema.String,
   }),
 ]);

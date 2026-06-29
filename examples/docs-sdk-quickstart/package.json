@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/example-docs-sdk-quickstart",
-  "version": "0.0.3",
+  "version": "0.0.28",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@executor-js/plugin-openapi": "workspace:*",
-    "@executor-js/sdk": "workspace:*"
+    "@executor-js/sdk": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

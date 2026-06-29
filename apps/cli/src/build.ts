@@ -161,6 +161,45 @@ const resolveKeyringNative = (t: Target): string | null => {
   }
 };
 
+/**
+ * Resolve the platform-specific `@libsql/<target>` native binding for a target.
+ *
+ * The local server's SQLite driver (libSQL) loads its `.node` via a dynamic
+ * `require('@libsql/<target>')`, which `bun build --compile` can't bundle into
+ * bunfs (same limitation as keyring). We copy the right `.node` next to the
+ * executor as `libsql.node`; main.ts redirects the bare require to it.
+ */
+const LIBSQL_NATIVE_VERSION = "0.5.29";
+const resolveLibsqlNative = (t: Target): string | null => {
+  const platformMap: Record<string, string> = {
+    "darwin-arm64": "darwin-arm64",
+    "darwin-x64": "darwin-x64",
+    // The compiled binary runs on Bun, which libSQL's loader treats as glibc
+    // (its musl->gnu workaround), so non-musl linux targets need the -gnu binding.
+    "linux-arm64": "linux-arm64-gnu",
+    "linux-x64": "linux-x64-gnu",
+    "linux-arm64-musl": "linux-arm64-musl",
+    "linux-x64-musl": "linux-x64-musl",
+    "win32-arm64": "win32-arm64-msvc",
+    "win32-x64": "win32-x64-msvc",
+  };
+  const key = [t.os, t.arch, t.abi].filter(Boolean).join("-");
+  const target = platformMap[key];
+  if (!target) return null;
+  const pkg = `@libsql/${target}`;
+  try {
+    const req = createRequire(join(repoRoot, "apps/local", "package.json"));
+    const pkgJson = req.resolve(`${pkg}/package.json`);
+    return join(dirname(pkgJson), "index.node");
+  } catch {
+    const bunPath = join(
+      repoRoot,
+      `node_modules/.bun/${pkg.replace("/", "+")}@${LIBSQL_NATIVE_VERSION}/node_modules/${pkg}/index.node`,
+    );
+    return existsSync(bunPath) ? bunPath : null;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Build mode
 // ---------------------------------------------------------------------------
@@ -213,13 +252,15 @@ const createEmbeddedWebUISource = async (mode: BuildMode) => {
 };
 
 // ---------------------------------------------------------------------------
-// Embedded drizzle migrations — inlined as text imports so drizzle's
+// Embedded legacy v1 drizzle migrations — inlined as text imports so drizzle's
 // `migrate()` (which reads a folder from disk) can be given a tmpdir
-// populated from the inlined contents at runtime.
+// populated from the inlined contents at runtime. The v1→v2 data migration
+// replays this chain to bring an older v1 database up to v1-final before
+// reading it (v2's own schema is created from FumaDB DDL, not this folder).
 // ---------------------------------------------------------------------------
 
 const createEmbeddedMigrationsSource = async () => {
-  const migrationsDir = resolve(webRoot, "drizzle");
+  const migrationsDir = resolve(webRoot, "drizzle-legacy-v1");
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: migrationsDir })))
     .map((f) => f.replaceAll("\\", "/"))
     .sort();
@@ -251,7 +292,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
   const meta = await readMetadata();
   const binaries: Record<string, string> = {};
   const embeddedWebUIPath = join(cliRoot, "src/embedded-web-ui.gen.ts");
-  const embeddedMigrationsPath = join(webRoot, "src/server/embedded-migrations.gen.ts");
+  const embeddedMigrationsPath = join(webRoot, "src/db/embedded-migrations.gen.ts");
 
   await rm(distDir, { recursive: true, force: true });
 
@@ -308,6 +349,13 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
       const keyringNative = resolveKeyringNative(target);
       if (keyringNative && existsSync(keyringNative)) {
         await cp(keyringNative, join(binDir, "keyring.node"));
+      }
+
+      // Copy the libSQL native binding next to executor — same bunfs limitation
+      // as keyring; main.ts redirects `require('@libsql/<plat>')` to it.
+      const libsqlNative = resolveLibsqlNative(target);
+      if (libsqlNative && existsSync(libsqlNative)) {
+        await cp(libsqlNative, join(binDir, "libsql.node"));
       }
 
       // Smoke test on current platform
@@ -453,18 +501,24 @@ const buildPreviewTarballs = async (binaries: Record<string, string>) => {
   }
 };
 
+// Resolve a comma-separated list of target package names (e.g.
+// "executor-windows-x64") to Targets. Shared by `--target` and the
+// EXECUTOR_PREVIEW_TARGETS env used by the preview-wrapper CI job.
 const resolveTargetsFromEnv = (env: string | undefined): Target[] => {
-  if (!env) throw new Error("EXECUTOR_PREVIEW_TARGETS must be set (comma-separated package names)");
+  if (!env) throw new Error("No build targets given (comma-separated package names)");
   const names = env
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const resolved = names.map((name) => {
     const match = ALL_TARGETS.find((t) => targetPackageName(t) === name);
-    if (!match) throw new Error(`Unknown preview target: ${name}`);
+    if (!match) {
+      const valid = ALL_TARGETS.map(targetPackageName).join(", ");
+      throw new Error(`Unknown build target: ${name}. Expected one of: ${valid}`);
+    }
     return match;
   });
-  if (resolved.length === 0) throw new Error("EXECUTOR_PREVIEW_TARGETS resolved to an empty list");
+  if (resolved.length === 0) throw new Error("Build target list resolved to empty");
   return resolved;
 };
 
@@ -871,6 +925,11 @@ const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
   options: {
     single: { type: "boolean", default: false },
+    // Build a specific target (or comma-separated set) by package name, e.g.
+    // `--target executor-windows-x64`. Used by the e2e VM harness to compile
+    // the guest's binary; without it `binary` builds the current platform
+    // (`--single`) or all targets.
+    target: { type: "string" },
     mode: { type: "string", default: "production" },
   },
   allowPositionals: true,
@@ -884,7 +943,11 @@ if (mode !== "production" && mode !== "development") {
 }
 
 if (command === "binary") {
-  const targets = values.single ? ALL_TARGETS.filter(isCurrentPlatform) : ALL_TARGETS;
+  const targets = values.target
+    ? resolveTargetsFromEnv(values.target)
+    : values.single
+      ? ALL_TARGETS.filter(isCurrentPlatform)
+      : ALL_TARGETS;
   const binaries = await buildBinaries(targets, mode);
   await buildWrapperPackage(binaries);
 } else if (command === "preview") {

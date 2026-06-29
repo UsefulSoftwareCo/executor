@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/cli",
-  "version": "0.2.4",
+  "version": "0.2.32",
   "description": "CLI for the executor SDK — schema generation, migrations",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/cli",
   "bugs": {
@@ -40,10 +40,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/fumadb": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "commander": "^12.1.0",
     "effect": "catalog:",
-    "fumadb": "workspace:*",
     "jiti": "^2.6.1"
   },
   "devDependencies": {

@@ -1,4 +1,10 @@
-export { mcpSourcePlugin, createMcpSourcePlugin } from "./source-plugin";
-export type { McpSourcePluginOptions } from "./source-plugin";
+export { mcpIntegrationPlugin, createMcpIntegrationPlugin } from "./source-plugin";
+export type { McpIntegrationPluginOptions } from "./source-plugin";
 export { McpClient } from "./client";
-export { probeMcpEndpoint, addMcpSource, removeMcpSource, refreshMcpSource } from "./atoms";
+export {
+  probeMcpEndpoint,
+  addMcpServer,
+  removeMcpServer,
+  configureMcpServer,
+  mcpServerAtom,
+} from "./atoms";

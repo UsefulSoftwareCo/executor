@@ -1,287 +1,162 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 
-import { useScope } from "@executor-js/react/api/scope-context";
-import { sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import {
-  HttpCredentialsEditor,
-  httpCredentialsValid,
-  serializeConfigureHttpCredentials,
-  serializeHttpCredentials,
-  serializeTemplateHttpCredentials,
-  type HttpCredentialsState,
-} from "@executor-js/react/plugins/http-credentials";
-import {
-  sourceDisplayNameFromUrl,
+  integrationDisplayNameFromUrl,
   slugifyNamespace,
-  useSourceIdentity,
-} from "@executor-js/react/plugins/source-identity";
-import {
-  oauthCallbackUrl,
-  oauthConnectionId,
-  useOAuthPopupFlow,
-  type OAuthCompletionPayload,
-} from "@executor-js/react/plugins/oauth-sign-in";
-import {
-  CredentialControlField,
-  CredentialUsageRow,
-  useCredentialTargetScope,
-} from "@executor-js/react/plugins/credential-target-scope";
-import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
+  useIntegrationIdentity,
+} from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
-import { FilterTabs } from "@executor-js/react/components/filter-tabs";
+import {
+  AuthMethodListEditor,
+  useAuthMethodList,
+  type AuthMethodRow,
+  type AuthMethodSeed,
+} from "@executor-js/react/components/auth-method-list-editor";
 import { FloatActions } from "@executor-js/react/components/float-actions";
-import { Spinner } from "@executor-js/react/components/spinner";
-import { addGraphqlSourceOptimistic } from "./atoms";
-import { initialGraphqlCredentials } from "./defaults";
+import {
+  addIntegrationErrorMessage,
+  FormErrorAlert,
+  SlugCollisionAlert,
+  useSlugAlreadyExists,
+} from "@executor-js/react/lib/integration-add";
+
+import { addGraphqlIntegrationOptimistic } from "./atoms";
 import { GraphqlSourceFields } from "./GraphqlSourceFields";
-import type { GraphqlConfiguredValueInput, GraphqlCredentialInput } from "../sdk/types";
+import { graphqlAuthMethodInputsFromPlacements } from "./auth-method-config";
+import type { GraphqlAuthMethodInput } from "../sdk/types";
 
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+// v2 GraphQL add flow: register the integration with its declared auth-method
+// LIST (the shared `AuthMethodListEditor` — GraphQL stays header/query apiKey;
+// OAuth is hidden), then route to the integration's detail hub. Connection
+// creation is no longer part of the add flow — accounts are added from the hub
+// (P6: add without auth, connect later).
 
-const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
-  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
-    onNone: () => fallback,
-    onSome: ({ message }) => message,
-  });
-
-type AuthMode = "none" | "oauth2";
+// GraphQL has no add-time detection, so the list starts empty (module constant
+// — a fresh [] every render would re-seed the list each render).
+const NO_SEEDS: readonly AuthMethodSeed[] = [];
 
 export default function AddGraphqlSource(props: {
-  onComplete: () => void;
+  onComplete: (slug?: string) => void;
   onCancel: () => void;
   initialUrl?: string;
 }) {
   const [endpoint, setEndpoint] = useState(props.initialUrl ?? "");
-  const identity = useSourceIdentity({
-    fallbackName: sourceDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
+  const [description, setDescription] = useState("");
+  const identity = useIntegrationIdentity({
+    fallbackName: integrationDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
   });
-  const [credentials, setCredentials] = useState<HttpCredentialsState>(initialGraphqlCredentials);
+  const authMethodList = useAuthMethodList(NO_SEEDS);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  const [authMode, setAuthMode] = useState<AuthMode>("none");
-  const [tokens, setTokens] = useState<OAuthCompletionPayload | null>(null);
 
-  const scopeId = useScope();
-  const { credentialTargetScope: requestCredentialTargetScope } = useCredentialTargetScope();
-  const {
-    credentialTargetScope: oauthCredentialTargetScope,
-    setCredentialTargetScope: setOAuthCredentialTargetScope,
-    credentialScopeOptions,
-  } = useCredentialTargetScope();
-  const doAdd = useAtomSet(addGraphqlSourceOptimistic(scopeId), {
+  const doAddIntegration = useAtomSet(addGraphqlIntegrationOptimistic, {
     mode: "promiseExit",
   });
-  const secretList = useSecretPickerSecrets();
-  const oauth = useOAuthPopupFlow({
-    popupName: "graphql-oauth",
-    startErrorMessage: "Failed to start OAuth",
-  });
 
-  const canAdd =
-    endpoint.trim().length > 0 &&
-    httpCredentialsValid(credentials) &&
-    (authMode === "none" || tokens !== null) &&
-    !oauth.busy;
+  // The methods to register: each apikey row declares ONE method carrying
+  // every named placement (header + query mix in a single method). Inputs
+  // omit slugs — the backend assigns carrier-derived ones. `none` rows
+  // register nothing.
+  const authenticationTemplate = useMemo<readonly GraphqlAuthMethodInput[]>(
+    () =>
+      authMethodList.rows.flatMap((row: AuthMethodRow) =>
+        row.value.kind === "apikey"
+          ? graphqlAuthMethodInputsFromPlacements(row.value.placements)
+          : [],
+      ),
+    [authMethodList.rows],
+  );
+
+  // Every apikey row needs at least one named placement; `none` rows are
+  // always valid.
+  const apiKeyComplete = authMethodList.rows.every(
+    (row: AuthMethodRow) =>
+      row.value.kind !== "apikey" ||
+      row.value.placements.some((placement) => placement.name.trim().length > 0),
+  );
+
+  const resolvedSlug = useMemo(
+    () =>
+      slugifyNamespace(identity.namespace) ||
+      slugifyNamespace(integrationDisplayNameFromUrl(endpoint.trim(), "GraphQL") ?? "") ||
+      "graphql",
+    [endpoint, identity.namespace],
+  );
+
+  // Pre-empt the API's `IntegrationAlreadyExistsError`: adding an integration
+  // whose slug already exists clobbers the existing one's connections/policies,
+  // so the API blocks it. Surface that here from the tenant-scoped catalog list.
+  const slugAlreadyExists = useSlugAlreadyExists(resolvedSlug);
+
+  const canAdd = endpoint.trim().length > 0 && apiKeyComplete && !adding && !slugAlreadyExists;
 
   const sourceIdentity = useCallback(() => {
     const trimmedEndpoint = endpoint.trim();
-    const namespace =
-      slugifyNamespace(identity.namespace) ||
-      slugifyNamespace(sourceDisplayNameFromUrl(trimmedEndpoint, "GraphQL") ?? "") ||
-      "graphql";
+    const slug = resolvedSlug;
     const displayName =
-      identity.name.trim() || sourceDisplayNameFromUrl(trimmedEndpoint, "GraphQL") || namespace;
-    return { trimmedEndpoint, namespace, displayName };
-  }, [endpoint, identity.name, identity.namespace]);
+      identity.name.trim() || integrationDisplayNameFromUrl(trimmedEndpoint, "GraphQL") || slug;
+    return { trimmedEndpoint, slug, displayName };
+  }, [endpoint, identity.name, resolvedSlug]);
 
-  const handleOAuth = useCallback(async () => {
-    if (!endpoint.trim() || !httpCredentialsValid(credentials)) return;
-    setAddError(null);
-    const { trimmedEndpoint, namespace, displayName } = sourceIdentity();
-    const { headers, queryParams } = serializeHttpCredentials(credentials);
-    await oauth.start({
-      payload: {
-        endpoint: trimmedEndpoint,
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(Object.keys(queryParams).length > 0 ? { queryParams } : {}),
-        redirectUrl: oauthCallbackUrl(),
-        connectionId: oauthConnectionId({ pluginId: "graphql", namespace }),
-        tokenScope: oauthCredentialTargetScope,
-        strategy: { kind: "dynamic-dcr" },
-        pluginId: "graphql",
-        identityLabel: `${displayName} OAuth`,
-      },
-      onSuccess: (result) => {
-        setTokens({
-          connectionId: result.connectionId,
-          expiresAt: result.expiresAt,
-          scope: result.scope,
-        });
-      },
-      onError: setAddError,
-    });
-  }, [endpoint, credentials, oauth, sourceIdentity, oauthCredentialTargetScope]);
-
-  const handleAdd = async () => {
+  const handleAdd = async (): Promise<void> => {
     setAdding(true);
     setAddError(null);
-    const { headers: templateHeaders, queryParams: templateQueryParams } =
-      serializeTemplateHttpCredentials(credentials);
-    const { headers: configureHeaders, queryParams: configureQueryParams } =
-      serializeConfigureHttpCredentials(credentials, requestCredentialTargetScope);
-    const hasInitialCredentials =
-      Object.keys(configureHeaders).length > 0 ||
-      Object.keys(configureQueryParams).length > 0 ||
-      (authMode === "oauth2" && tokens);
+    const { trimmedEndpoint, slug, displayName } = sourceIdentity();
 
-    const { trimmedEndpoint, namespace, displayName } = sourceIdentity();
-    const exit = await doAdd({
-      params: { scopeId },
+    const integrationExit = await doAddIntegration({
       payload: {
         endpoint: trimmedEndpoint,
+        slug,
         name: displayName,
-        namespace,
-        ...(Object.keys(templateHeaders).length > 0
-          ? { headers: templateHeaders as Record<string, GraphqlConfiguredValueInput> }
-          : {}),
-        ...(Object.keys(templateQueryParams).length > 0
-          ? {
-              queryParams: templateQueryParams as Record<string, GraphqlConfiguredValueInput>,
-            }
-          : {}),
-        ...(hasInitialCredentials
-          ? {
-              credentials: {
-                scope: requestCredentialTargetScope,
-                ...(Object.keys(configureHeaders).length > 0
-                  ? { headers: configureHeaders as Record<string, GraphqlCredentialInput> }
-                  : {}),
-                ...(Object.keys(configureQueryParams).length > 0
-                  ? {
-                      queryParams: configureQueryParams as Record<string, GraphqlCredentialInput>,
-                    }
-                  : {}),
-                ...(authMode === "oauth2" && tokens
-                  ? {
-                      auth: {
-                        oauth2: {
-                          connection: {
-                            kind: "connection" as const,
-                            connectionId: tokens.connectionId,
-                          },
-                        },
-                      },
-                    }
-                  : {}),
-              },
-            }
+        ...(description.trim().length > 0 ? { description: description.trim() } : {}),
+        ...(authenticationTemplate.length > 0
+          ? { authenticationTemplate: [...authenticationTemplate] }
           : {}),
       },
-      reactivityKeys: sourceWriteKeys,
+      reactivityKeys: integrationWriteKeys,
     });
-    if (Exit.isFailure(exit)) {
-      setAddError(errorMessageFromExit(exit, "Failed to add source"));
+    if (Exit.isFailure(integrationExit)) {
+      setAddError(addIntegrationErrorMessage(integrationExit, slug, "Failed to add source"));
       setAdding(false);
       return;
     }
-    props.onComplete();
+    const registeredSlug = integrationExit.value.slug;
+
+    props.onComplete(String(registeredSlug));
   };
 
   return (
     <div className="flex flex-1 flex-col gap-6">
       <h1 className="text-xl font-semibold text-foreground">Add GraphQL Source</h1>
 
-      <GraphqlSourceFields endpoint={endpoint} onEndpointChange={setEndpoint} identity={identity} />
-
-      <HttpCredentialsEditor
-        credentials={credentials}
-        onChange={setCredentials}
-        existingSecrets={secretList}
-        sourceName={identity.name}
-        targetScope={requestCredentialTargetScope}
-        credentialScopeOptions={credentialScopeOptions}
-        bindingScopeOptions={credentialScopeOptions}
+      <GraphqlSourceFields
+        endpoint={endpoint}
+        onEndpointChange={setEndpoint}
+        identity={identity}
+        description={description}
+        onDescriptionChange={setDescription}
       />
 
-      {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}
-      <section className="hidden space-y-2.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-foreground">Authentication</span>
-          <FilterTabs<AuthMode>
-            tabs={[
-              { value: "none", label: "None" },
-              { value: "oauth2", label: "OAuth" },
-            ]}
-            value={authMode}
-            onChange={(value) => {
-              setAuthMode(value);
-              setTokens(null);
-            }}
-          />
-        </div>
+      <AuthMethodListEditor
+        list={authMethodList}
+        allowedKinds={["none", "apikey"]}
+        emptyHint="No authentication declared. Add a method, or add the source without auth and connect an account from the integration page later."
+        footerHint="Every method here is registered with the source. Connect an account from the integration page after adding."
+      />
 
-        {authMode === "oauth2" && (
-          <CredentialUsageRow
-            value={oauthCredentialTargetScope}
-            options={credentialScopeOptions}
-            onChange={(targetScope) => {
-              setOAuthCredentialTargetScope(targetScope);
-              setTokens(null);
-            }}
-            label="Connection saved to"
-            help="Choose who can use the OAuth connection."
-          >
-            <CredentialControlField label="Connect via OAuth" help="Start the provider OAuth flow.">
-              <div className="flex min-h-9 items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
-                {tokens ? (
-                  <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                    Authenticated
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Not connected</span>
-                )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto h-7 px-2 text-xs"
-                  onClick={() => void handleOAuth()}
-                  disabled={!endpoint.trim() || !httpCredentialsValid(credentials) || oauth.busy}
-                >
-                  {oauth.busy ? "Signing in..." : tokens ? "Reconnect" : "Sign in"}
-                </Button>
-              </div>
-            </CredentialControlField>
-          </CredentialUsageRow>
-        )}
-      </section>
+      {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSlug} />}
 
-      {/* Error */}
-      {addError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <p className="text-[12px] text-destructive">{addError}</p>
-        </div>
-      )}
+      {addError && <FormErrorAlert message={addError} />}
 
       <FloatActions>
-        <Button
-          variant="ghost"
-          onClick={() => {
-            oauth.cancel();
-            props.onCancel();
-          }}
-          disabled={adding}
-        >
+        <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>
           Cancel
         </Button>
-        <Button onClick={handleAdd} disabled={!canAdd || adding}>
-          {adding && <Spinner className="size-3.5" />}
-          {adding ? "Adding..." : "Add source"}
+        <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
+          Add source
         </Button>
       </FloatActions>
     </div>

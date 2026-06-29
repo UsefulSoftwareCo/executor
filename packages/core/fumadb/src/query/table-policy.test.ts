@@ -2,14 +2,14 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "@effect/vitest";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Effect } from "effect";
-import { fumadb } from "fumadb";
+import { fumadb } from "@executor-js/fumadb";
 import {
   createDrizzleRuntimeSchemaFromTables,
   createDrizzleRuntimeSchemaSqlFromTables,
   drizzleAdapter,
-} from "fumadb/adapters/drizzle";
-import { withQueryContext, type AbstractQuery } from "fumadb/query";
-import { column, idColumn, schema, table } from "fumadb/schema";
+} from "@executor-js/fumadb/adapters/drizzle";
+import { withQueryContext, type AbstractQuery } from "@executor-js/fumadb/query";
+import { column, idColumn, schema, table } from "@executor-js/fumadb/schema";
 
 interface TenantPolicyContext {
   readonly allowedTenantIds: ReadonlySet<string>;

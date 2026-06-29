@@ -13,7 +13,7 @@ export {
   makeTestExecutor,
   makeTestWorkspaceHarness,
   makeTestWorkspaceLayer,
-  memorySecretsPlugin,
+  memoryCredentialsPlugin,
   TestWorkspace,
   type TestConfigOptions,
   type TestDatabaseBackend,
@@ -23,6 +23,7 @@ export {
 export {
   OAuthTestServer,
   serveOAuthTestServer,
+  scopesFromAuthorizeUrl,
   OAuthTestServerAddressError,
   OAuthTestServerFlowError,
   type OAuthAuthorizationCompletion,

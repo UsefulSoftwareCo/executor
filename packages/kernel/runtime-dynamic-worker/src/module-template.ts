@@ -4,9 +4,10 @@
  * The module exports a `WorkerEntrypoint` subclass with an `evaluate`
  * method that:
  * 1. Captures console output into `__logs`.
- * 2. Creates a recursive `tools` Proxy that dispatches calls via RPC.
- * 3. Executes the normalised user code with a `Promise.race` timeout.
- * 4. Returns `{ result, error?, logs }`.
+ * 2. Accumulates user-visible output from `text`, `file`, and `image`.
+ * 3. Creates a recursive `tools` Proxy that dispatches calls via RPC.
+ * 4. Executes the normalised user code with a `Promise.race` timeout.
+ * 5. Returns `{ result, output?, error?, logs }`.
  *
  * Tool args cross the dispatcher boundary via Workers RPC, not JSON, so
  * `Uint8Array` / `ArrayBuffer` survive intact. `Blob` / `File` aren't on
@@ -22,6 +23,7 @@ export const buildExecutorModule = (body: string, timeoutMs: number): string =>
     "export default class CodeExecutor extends WorkerEntrypoint {",
     "  async evaluate(__dispatcher) {",
     "    const __logs = [];",
+    "    const __outputs = [];",
     '    console.log = (...a) => { __logs.push(a.map(String).join(" ")); };',
     '    console.warn = (...a) => { __logs.push("[warn] " + a.map(String).join(" ")); };',
     '    console.error = (...a) => { __logs.push("[error] " + a.map(String).join(" ")); };',
@@ -58,6 +60,34 @@ export const buildExecutorModule = (body: string, timeoutMs: number): string =>
     "        }",
     "      }",
     "      return String(value);",
+    "    };",
+    "    const __formatOutputText = (value) => {",
+    "      if (typeof value === 'undefined') return 'undefined';",
+    "      if (value === null) return 'null';",
+    "      if (typeof value === 'string') return value;",
+    "      try {",
+    "        return JSON.stringify(value);",
+    "      } catch {",
+    "        return String(value);",
+    "      }",
+    "    };",
+    "    const __isToolFile = (value) => value && typeof value === 'object' && value._tag === 'ToolFile' && typeof value.mimeType === 'string' && value.encoding === 'base64' && typeof value.data === 'string' && typeof value.byteLength === 'number';",
+    "    const __isMcpTextContentBlock = (value) => value && typeof value === 'object' && value.type === 'text' && typeof value.text === 'string';",
+    "    const __isMcpImageContentBlock = (value) => value && typeof value === 'object' && value.type === 'image' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
+    "    const __isMcpAudioContentBlock = (value) => value && typeof value === 'object' && value.type === 'audio' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
+    "    const __isMcpResourceContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource' && value.resource && typeof value.resource === 'object' && typeof value.resource.uri === 'string' && (typeof value.resource.text === 'string' || typeof value.resource.blob === 'string');",
+    "    const __isMcpResourceLinkContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource_link' && typeof value.uri === 'string' && typeof value.name === 'string';",
+    "    const __isMcpContentBlock = (value) => __isMcpTextContentBlock(value) || __isMcpImageContentBlock(value) || __isMcpAudioContentBlock(value) || __isMcpResourceContentBlock(value) || __isMcpResourceLinkContentBlock(value);",
+    "    const emit = (value) => {",
+    "      if (__isToolFile(value)) {",
+    "        __outputs.push({ type: 'file', file: value });",
+    "        return;",
+    "      }",
+    "      if (__isMcpContentBlock(value)) {",
+    "        __outputs.push({ type: 'content', content: value });",
+    "        return;",
+    "      }",
+    "      __outputs.push({ type: 'content', content: { type: 'text', text: __formatOutputText(value) } });",
     "    };",
     "    const __serializeThrownError = (err) => {",
     "      const primary = __serializeErrorValue(err);",
@@ -173,9 +203,9 @@ export const buildExecutorModule = (body: string, timeoutMs: number): string =>
     `          setTimeout(() => reject(new Error("Execution timed out after ${timeoutMs}ms")), ${timeoutMs})`,
     "        ),",
     "      ]);",
-    "      return { result, logs: __logs };",
+    "      return { result, output: __outputs.length > 0 ? __outputs : undefined, logs: __logs };",
     "    } catch (err) {",
-    "      return { result: undefined, error: __serializeThrownError(err), logs: __logs };",
+    "      return { result: undefined, output: __outputs.length > 0 ? __outputs : undefined, error: __serializeThrownError(err), logs: __logs };",
     "    }",
     "  }",
     "}",

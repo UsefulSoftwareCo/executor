@@ -2,21 +2,37 @@ import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { effectivePolicyFromSorted } from "@executor-js/sdk/shared";
+import { ToolAddress, effectivePolicyFromSorted } from "@executor-js/sdk/shared";
 
-import { policiesOptimisticAtom, toolsAtom } from "../api/atoms";
-import { useScope } from "../hooks/use-scope";
+import { policiesOptimisticAtom, toolsAllAtom } from "../api/atoms";
 import { usePolicyActions } from "../hooks/use-policy-actions";
 import { ToolTree, type ToolSummary } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 
+// Dynamic tool policy patterns are derived from the connection-aware address.
+// Static tools (for example Executor's own tools) use their address directly.
+type ToolRow = {
+  readonly address: ToolAddress;
+  readonly integration: string;
+  readonly name: string;
+  readonly description: string;
+  readonly requiresApproval?: boolean;
+  readonly static?: boolean;
+};
+
+const policyId = (tool: ToolRow): string =>
+  tool.static ? String(tool.address) : `${tool.integration}.${tool.name}`;
+
 export function ToolsPage() {
-  const scopeId = useScope();
-  const tools = useAtomValue(toolsAtom(scopeId));
-  const policies = useAtomValue(policiesOptimisticAtom(scopeId));
-  const policyActions = usePolicyActions(scopeId);
+  // Merged across BOTH owners (omit-owner read). The page dedupes to one row per
+  // `<integration>.<tool>` policy id, so owner is irrelevant here — the global
+  // Tools page is a flat policy tree, not an account-grouped view. Policy writes
+  // still target a specific owner (Workspace default; see usePolicyActions).
+  const tools = useAtomValue(toolsAllAtom);
+  const policies = useAtomValue(policiesOptimisticAtom);
+  const policyActions = usePolicyActions("org");
 
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
 
@@ -35,23 +51,47 @@ export function ToolsPage() {
     [policyList],
   );
 
+  // Address + static flag per selection id, so the detail view can fetch the
+  // right schema for the selected `<integration>.<tool>` id and its policy
+  // badge can write the matching pattern form.
+  const selectionById = useMemo(() => {
+    const map = new Map<string, { readonly address: ToolAddress; readonly static: boolean }>();
+    if (!AsyncResult.isSuccess(tools)) return map;
+    for (const t of tools.value as readonly ToolRow[]) {
+      const id = policyId(t);
+      if (!map.has(id)) map.set(id, { address: t.address, static: t.static === true });
+    }
+    return map;
+  }, [tools]);
+
   const summaries: ToolSummary[] = useMemo(() => {
     if (!AsyncResult.isSuccess(tools)) return [];
-    return tools.value.map((t: { readonly id: string; readonly requiresApproval?: boolean }) => ({
-      id: t.id,
-      // Tree path + saved pattern must be the canonical tool id
-      // (`stripe_api.account.getAccount`), not the short `t.name`
-      // which strips the source prefix and would never match at
-      // resolution time.
-      name: t.id,
-      policy: effectivePolicyFromSorted(t.id, sortedPolicies, t.requiresApproval),
-    }));
+    const seen = new Set<string>();
+    const rows: ToolSummary[] = [];
+    for (const t of tools.value as readonly ToolRow[]) {
+      const id = policyId(t);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      // `id` is the connection-agnostic display id; match policies against the
+      // FULL address (`integration.owner.connection.tool`, the address minus its
+      // `tools.` prefix) so connection-aware rules resolve.
+      const matchId = String(t.address).replace(/^tools\./, "");
+      rows.push({
+        id,
+        name: id,
+        description: t.description,
+        policy: effectivePolicyFromSorted(matchId, sortedPolicies, t.requiresApproval),
+      });
+    }
+    return rows;
   }, [tools, sortedPolicies]);
 
   const selectedTool = useMemo(
     () => summaries.find((t) => t.id === selectedToolId) ?? null,
     [summaries, selectedToolId],
   );
+  const selection = selectedToolId ? (selectionById.get(selectedToolId) ?? null) : null;
+  const selectedAddress = selection?.address ?? null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -67,7 +107,7 @@ export function ToolsPage() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button asChild variant="outline" size="sm">
-            <Link to="/policies">Manage policies</Link>
+            <Link to="/{-$orgSlug}/policies">Manage policies</Link>
           </Button>
         </div>
       </div>
@@ -81,7 +121,7 @@ export function ToolsPage() {
               <div className="text-center">
                 <p className="text-sm font-medium text-foreground/70">No tools registered</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Add a source to start discovering tools.
+                  Add an integration to start discovering tools.
                 </p>
               </div>
             </div>
@@ -98,11 +138,11 @@ export function ToolsPage() {
                 />
               </div>
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                {selectedTool ? (
+                {selectedTool && selectedAddress ? (
                   <ToolDetail
-                    toolId={selectedTool.id}
+                    address={selectedAddress}
                     toolName={selectedTool.name}
-                    scopeId={scopeId}
+                    staticTool={selection?.static}
                     policy={selectedTool.policy}
                     onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
                     onClearPolicy={(pattern) => void policyActions.clear(pattern)}

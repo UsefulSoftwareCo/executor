@@ -1,43 +1,8 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { resolveSecretBackedMap } from "@executor-js/sdk/core";
 
 import { GraphqlInvocationError } from "./errors";
-import { type HeaderValue, type OperationBinding, InvocationResult } from "./types";
-
-// ---------------------------------------------------------------------------
-// Header resolution — resolves secret refs at invocation time
-// ---------------------------------------------------------------------------
-
-export const resolveHeaders = (
-  headers: Record<string, HeaderValue>,
-  secrets: { readonly get: (id: string) => Effect.Effect<string | null, unknown> },
-): Effect.Effect<Record<string, string>> => {
-  const entries = Object.entries(headers);
-  const secretCount = entries.reduce(
-    (acc, [, value]) => (typeof value === "string" ? acc : acc + 1),
-    0,
-  );
-  return resolveSecretBackedMap({
-    values: headers,
-    getSecret: (secretId) => secrets.get(secretId).pipe(Effect.catch(() => Effect.succeed(null))),
-    missing: "drop",
-    onMissing: (name) =>
-      new GraphqlInvocationError({
-        message: `Missing secret for header "${name}"`,
-        statusCode: Option.none(),
-      }),
-  }).pipe(
-    Effect.catch(() => Effect.succeed<Record<string, string> | undefined>(undefined)),
-    Effect.map((resolved) => resolved ?? {}),
-    Effect.withSpan("plugin.graphql.secret.resolve", {
-      attributes: {
-        "plugin.graphql.headers.total": entries.length,
-        "plugin.graphql.headers.secret_count": secretCount,
-      },
-    }),
-  );
-};
+import { type OperationBinding, InvocationResult } from "./types";
 
 const endpointWithQueryParams = (endpoint: string, queryParams: Record<string, string>): string => {
   if (Object.keys(queryParams).length === 0) return endpoint;
@@ -54,6 +19,25 @@ export const endpointForTelemetry = (endpoint: string): string => {
   url.search = "";
   url.hash = "";
   return url.toString();
+};
+
+/** The operation string to send for a call. A caller-supplied `select` overrides
+ *  the default scalar-leaf selection: it is spliced into the field's selection
+ *  set (`field { <select> }`) so nested/list data can be requested per call. Falls
+ *  back to the stored default operation when `select` is absent or the binding
+ *  predates the prefix/suffix split. `select` is a control input, never a GraphQL
+ *  variable. Shared with plugin.invokeTool so the validated string matches the
+ *  sent string exactly. */
+export const effectiveOperationString = (
+  operation: OperationBinding,
+  args: Record<string, unknown>,
+): string => {
+  const customSelect = typeof args.select === "string" ? args.select.trim() : "";
+  return customSelect.length > 0 &&
+    operation.operationPrefix != null &&
+    operation.operationSuffix != null
+    ? `${operation.operationPrefix} { ${customSelect} }${operation.operationSuffix}`
+    : operation.operationString;
 };
 
 // ---------------------------------------------------------------------------
@@ -106,10 +90,15 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     Object.assign(variables, args.variables);
   }
 
+  // `select` (a control input, not a GraphQL variable) is applied here and never
+  // enters `variables`. plugin.invokeTool validates this same string before we
+  // reach the network.
+  const operationString = effectiveOperationString(operation, args);
+
   let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
     HttpClientRequest.bodyJsonUnsafe({
-      query: operation.operationString,
+      query: operationString,
       variables: Object.keys(variables).length > 0 ? variables : undefined,
     }),
   );

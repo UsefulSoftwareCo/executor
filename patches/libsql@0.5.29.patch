@@ -1,0 +1,19 @@
+diff --git a/index.js b/index.js
+index e24987954ec427320f51fd8037f9754b60ffa363..30522619ea99c6f988315b192525b647888a08e9 100644
+--- a/index.js
++++ b/index.js
+@@ -4,6 +4,14 @@ const { load, currentTarget } = require("@neon-rs/load");
+ const { familySync, GLIBC, MUSL } = require("detect-libc");
+ 
+ function requireNative() {
++  // Executor patch: inside a `bun build --compile` binary the platform package
++  // `@libsql/<target>` isn't in bunfs and bun resolves this require natively
++  // (no JS module-resolver hook), so the normal walk fails. The Executor CLI
++  // copies the right `.node` next to the executable and points this env var at
++  // it; load it directly before the in-bunfs walk.
++  if (process.env.EXECUTOR_LIBSQL_NATIVE_PATH) {
++    return require(process.env.EXECUTOR_LIBSQL_NATIVE_PATH);
++  }
+   if (process.env.LIBSQL_JS_DEV) {
+     return load(__dirname)
+   }

@@ -1,7 +1,7 @@
 {
-  "name": "fumadb",
+  "name": "@executor-js/fumadb",
   "description": "A library for interacting with different databases for your package.",
-  "version": "0.3.0",
+  "version": "1.5.7",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RhysSullivan/executor.git",
@@ -88,11 +88,12 @@
     "build": "tsup && tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit",
-    "test": "vitest run src/**/*.test.ts test/generate.test.ts test/uuid.test.ts --passWithNoTests",
+    "test": "vitest run src test/generate.test.ts test/uuid.test.ts --passWithNoTests",
     "test:integration": "vitest run test/**/*.test.ts --passWithNoTests"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@libsql/client": "catalog:",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "catalog:",
     "@types/pg": "^8.20.0",

@@ -2,6 +2,7 @@ import {
   recoverExecutionBody,
   stripTypeScript,
   type CodeExecutor,
+  type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
 } from "@executor-js/codemode-core";
@@ -137,6 +138,36 @@ const buildExecutionSource = (code: string): string => {
     "  }",
     "};",
     "const __formatLogLine = (args) => args.map(__formatLogArg).join(' ');",
+    "const __outputs = [];",
+    "globalThis.__executor_outputs = __outputs;",
+    "const __formatOutputText = (value) => {",
+    "  if (typeof value === 'undefined') return 'undefined';",
+    "  if (value === null) return 'null';",
+    "  if (typeof value === 'string') return value;",
+    "  try {",
+    "    return JSON.stringify(value);",
+    "  } catch {",
+    "    return String(value);",
+    "  }",
+    "};",
+    "const __isToolFile = (value) => value && typeof value === 'object' && value._tag === 'ToolFile' && typeof value.mimeType === 'string' && value.encoding === 'base64' && typeof value.data === 'string' && typeof value.byteLength === 'number';",
+    "const __isMcpTextContentBlock = (value) => value && typeof value === 'object' && value.type === 'text' && typeof value.text === 'string';",
+    "const __isMcpImageContentBlock = (value) => value && typeof value === 'object' && value.type === 'image' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
+    "const __isMcpAudioContentBlock = (value) => value && typeof value === 'object' && value.type === 'audio' && typeof value.data === 'string' && typeof value.mimeType === 'string';",
+    "const __isMcpResourceContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource' && value.resource && typeof value.resource === 'object' && typeof value.resource.uri === 'string' && (typeof value.resource.text === 'string' || typeof value.resource.blob === 'string');",
+    "const __isMcpResourceLinkContentBlock = (value) => value && typeof value === 'object' && value.type === 'resource_link' && typeof value.uri === 'string' && typeof value.name === 'string';",
+    "const __isMcpContentBlock = (value) => __isMcpTextContentBlock(value) || __isMcpImageContentBlock(value) || __isMcpAudioContentBlock(value) || __isMcpResourceContentBlock(value) || __isMcpResourceLinkContentBlock(value);",
+    "const emit = (value) => {",
+    "  if (__isToolFile(value)) {",
+    "    __outputs.push({ type: 'file', file: value });",
+    "    return;",
+    "  }",
+    "  if (__isMcpContentBlock(value)) {",
+    "    __outputs.push({ type: 'content', content: value });",
+    "    return;",
+    "  }",
+    "  __outputs.push({ type: 'content', content: { type: 'text', text: __formatOutputText(value) } });",
+    "};",
     "const __makeToolsProxy = (path = []) => new Proxy(() => undefined, {",
     "  get(_target, prop) {",
     "    if (prop === 'then' || typeof prop === 'symbol') {",
@@ -176,6 +207,11 @@ const readPropDump = (context: QuickJSContext, handle: QuickJSHandle, key: strin
   } finally {
     prop.dispose();
   }
+};
+
+const readOutputItems = (context: QuickJSContext): ExecuteOutputItem[] | undefined => {
+  const output = readPropDump(context, context.global, "__executor_outputs");
+  return Array.isArray(output) && output.length > 0 ? (output as ExecuteOutputItem[]) : undefined;
 };
 
 const readResultState = (
@@ -385,6 +421,7 @@ const evaluateInQuickJs = async (
           return {
             result: null,
             error: timeoutMessage(timeoutMs),
+            output: readOutputItems(context),
             logs,
           } satisfies ExecuteResult;
         }
@@ -393,12 +430,14 @@ const evaluateInQuickJs = async (
           return {
             result: null,
             error: normalizeExecutionError(state.error, deadlineMs, timeoutMs),
+            output: readOutputItems(context),
             logs,
           } satisfies ExecuteResult;
         }
 
         return {
           result: state.value,
+          output: readOutputItems(context),
           logs,
         } satisfies ExecuteResult;
       } finally {

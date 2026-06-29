@@ -1,16 +1,17 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-
-import type { SecretOwnedByConnectionError, StorageFailure } from "@executor-js/sdk/core";
+import type { ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
+import { resolveServerUrl } from "./openapi-utils";
 import {
   type EncodingObject,
-  type HeaderValue,
+  type OperationFileHint,
   type OperationBinding,
   InvocationResult,
   type MediaBinding,
   type OperationParameter,
+  type ServerInfo,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,36 @@ const readParamValue = (args: Record<string, unknown>, param: OperationParameter
   return undefined;
 };
 
+const primitiveToString = (value: unknown): string =>
+  typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+
+// RFC 3986 §2.2 reserved chars. `allowReserved: true` leaves these
+// unencoded; default OAS behavior encodes everything non-unreserved.
+const RESERVED_UNENCODED_RE = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=]/;
+
+const encodeReservedAware = (raw: string, allowReserved: boolean): string => {
+  if (!allowReserved) return encodeURIComponent(raw);
+  // Walk char-by-char so the reserved set passes through as-is.
+  let out = "";
+  for (const ch of raw) {
+    out += RESERVED_UNENCODED_RE.test(ch) ? ch : encodeURIComponent(ch);
+  }
+  return out;
+};
+
+const queryParamValues = (value: unknown, param: OperationParameter): string[] => {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return [primitiveToString(value)];
+
+  const style = Option.getOrUndefined(param.style) ?? "form";
+  const explode = Option.getOrElse(param.explode, () => true);
+
+  if (explode) return value.map(primitiveToString);
+
+  const separator = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
+  return [value.map(primitiveToString).join(separator)];
+};
+
 // ---------------------------------------------------------------------------
 // Path resolution
 // ---------------------------------------------------------------------------
@@ -62,7 +93,12 @@ const resolvePath = Effect.fn("OpenApi.resolvePath")(function* (
       }
       continue;
     }
-    resolved = resolved.replaceAll(`{${param.name}}`, encodeURIComponent(String(value)));
+    const encoded = encodeReservedAware(
+      String(value),
+      Option.getOrElse(param.allowReserved, () => false),
+    );
+    resolved = resolved.replaceAll(`{${param.name}}`, encoded);
+    resolved = resolved.replaceAll(`{+${param.name}}`, encoded);
   }
 
   const remaining = [...resolved.matchAll(/\{([^{}]+)\}/g)]
@@ -90,70 +126,12 @@ const resolvePath = Effect.fn("OpenApi.resolvePath")(function* (
   return resolved;
 });
 
-// ---------------------------------------------------------------------------
-// Header resolution — resolves secret refs at invocation time
-// ---------------------------------------------------------------------------
-
-export const resolveHeaders = (
-  headers: Record<string, HeaderValue>,
-  secrets: {
-    readonly get: (
-      id: string,
-    ) => Effect.Effect<string | null, SecretOwnedByConnectionError | StorageFailure>;
-  },
-): Effect.Effect<Record<string, string>, OpenApiInvocationError | StorageFailure> => {
-  const entries = Object.entries(headers);
-  const secretCount = entries.reduce(
-    (acc, [, value]) => (typeof value === "string" ? acc : acc + 1),
-    0,
-  );
-  return Effect.gen(function* () {
-    // Fan out secret lookups: on every invocation, one or two headers
-    // typically each hit the secret store. Resolving them in parallel
-    // is a free wall-clock win — preserved order is only needed for
-    // the final assembly, not the fetches.
-    const values = yield* Effect.all(
-      entries.map(([name, value]) =>
-        typeof value === "string"
-          ? Effect.succeed({ name, value })
-          : secrets.get(value.secretId).pipe(
-              Effect.catchTag("SecretOwnedByConnectionError", () =>
-                Effect.fail(
-                  new OpenApiInvocationError({
-                    message: `Failed to resolve secret "${value.secretId}" for header "${name}"`,
-                    statusCode: Option.none(),
-                  }),
-                ),
-              ),
-              Effect.flatMap((secret) =>
-                secret === null
-                  ? Effect.fail(
-                      new OpenApiInvocationError({
-                        message: `Failed to resolve secret "${value.secretId}" for header "${name}"`,
-                        statusCode: Option.none(),
-                      }),
-                    )
-                  : Effect.succeed({
-                      name,
-                      value: value.prefix ? `${value.prefix}${secret}` : secret,
-                    }),
-              ),
-            ),
-      ),
-      { concurrency: "unbounded" },
-    );
-    const resolved: Record<string, string> = {};
-    for (const { name, value } of values) resolved[name] = value;
-    return resolved;
-  }).pipe(
-    Effect.withSpan("plugin.openapi.secret.resolve", {
-      attributes: {
-        "plugin.openapi.headers.total": entries.length,
-        "plugin.openapi.headers.secret_count": secretCount,
-      },
-    }),
-  );
-};
+// GitHub (and some other upstreams) reject requests that lack a User-Agent
+// header with a 403 ("Request forbidden by administrative rules"), which is
+// indistinguishable from a credential rejection downstream. Send a default so
+// those calls succeed. It is applied before operation header params and
+// resolved auth headers, so a spec- or connection-provided User-Agent wins.
+const DEFAULT_USER_AGENT = "executor";
 
 const applyHeaders = (
   request: HttpClientRequest.HttpClientRequest,
@@ -201,6 +179,121 @@ const isTextContentType = (ct: string | null | undefined): boolean =>
 const isOctetStream = (ct: string | null | undefined): boolean =>
   normalizeContentType(ct) === "application/octet-stream";
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+};
+
+const normalizeBase64 = (value: string, encoding: "base64" | "base64url"): string => {
+  const compact = value.replace(/\s/g, "");
+  const alphabet =
+    encoding === "base64url" ? compact.replace(/-/g, "+").replace(/_/g, "/") : compact;
+  const remainder = alphabet.length % 4;
+  return remainder === 0 ? alphabet : `${alphabet}${"=".repeat(4 - remainder)}`;
+};
+
+const byteLengthFromBase64 = (base64: string): number => {
+  const compact = base64.replace(/\s/g, "");
+  const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+};
+
+const isGenericMimeType = (mimeType: string): boolean =>
+  normalizeContentType(mimeType) === "application/octet-stream";
+
+const startsWithBytes = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
+  prefix.every((byte, index) => bytes[index] === byte);
+
+const isLikelyUtf8Text = (bytes: Uint8Array): boolean => {
+  if (bytes.length === 0) return false;
+  let text: string;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: TextDecoder throws while probing arbitrary binary content
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  let suspicious = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    const allowedControl = code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
+    if (code === 0x00) return false;
+    if (code < 0x20 && !allowedControl) suspicious += 1;
+  }
+  return suspicious / Math.max(1, text.length) <= 0.02;
+};
+
+const sniffMimeType = (bytes: Uint8Array): string | null => {
+  if (startsWithBytes(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  if (
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
+  ) {
+    return "image/gif";
+  }
+  if (
+    startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (startsWithBytes(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf";
+  if (
+    startsWithBytes(bytes, [0x50, 0x4b, 0x03, 0x04]) ||
+    startsWithBytes(bytes, [0x50, 0x4b, 0x05, 0x06]) ||
+    startsWithBytes(bytes, [0x50, 0x4b, 0x07, 0x08])
+  ) {
+    return "application/zip";
+  }
+  if (isLikelyUtf8Text(bytes)) return "text/plain";
+  return null;
+};
+
+const bytesFromBase64Prefix = (base64: string): Uint8Array => {
+  const prefix = base64.slice(0, Math.min(base64.length, 64));
+  const binary = atob(prefix);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const sniffMimeTypeFromBase64 = (base64: string): string | null =>
+  sniffMimeType(bytesFromBase64Prefix(base64));
+
+type DecodedBase64Body = { readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false };
+
+const base64ToUint8Array = (value: string): Uint8Array | null => {
+  let binary = "";
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: atob throws for invalid base64; invalid shapes are treated as non-byte input
+  try {
+    binary = atob(normalizeBase64(value, "base64"));
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const decodeBase64Body = (value: string): DecodedBase64Body => {
+  const bytes = base64ToUint8Array(value);
+  return bytes ? { ok: true, bytes } : { ok: false };
+};
+
 const toUint8Array = (value: unknown): Uint8Array | null => {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -212,6 +305,66 @@ const toUint8Array = (value: unknown): Uint8Array | null => {
     return new Uint8Array(value as readonly number[]);
   }
   return null;
+};
+
+const readNestedBodyBase64 = (value: unknown): unknown =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.prototype.hasOwnProperty.call(value, "bodyBase64")
+    ? (value as Record<string, unknown>).bodyBase64
+    : undefined;
+
+const readHintString = (option: OperationFileHint["dataField"], fallback: string): string =>
+  Option.getOrElse(option, () => fallback);
+
+const readHintMimeType = (hint: OperationFileHint, fallback: string): string =>
+  Option.getOrElse(hint.mimeType, () => fallback);
+
+const readHintEncoding = (hint: OperationFileHint): "base64" | "base64url" =>
+  Option.getOrElse(hint.encoding, () => "base64");
+
+const fileFromByteField = (body: unknown, hint: OperationFileHint): ToolFileValue | null => {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const dataField = readHintString(hint.dataField, "data");
+  const rawData = record[dataField];
+  if (typeof rawData !== "string") return null;
+
+  const data = normalizeBase64(rawData, readHintEncoding(hint));
+  const sizeField = Option.getOrUndefined(hint.sizeField);
+  const byteLength =
+    sizeField && typeof record[sizeField] === "number"
+      ? record[sizeField]
+      : byteLengthFromBase64(data);
+  const hintedMimeType = readHintMimeType(hint, "application/octet-stream");
+
+  return {
+    _tag: "ToolFile",
+    mimeType: isGenericMimeType(hintedMimeType)
+      ? (sniffMimeTypeFromBase64(data) ?? hintedMimeType)
+      : hintedMimeType,
+    encoding: "base64",
+    data,
+    byteLength,
+  };
+};
+
+const fileFromBinaryBytes = (
+  bytes: Uint8Array,
+  hint: OperationFileHint,
+  contentType: string | null | undefined,
+): ToolFileValue => {
+  const hintedMimeType = contentType ?? readHintMimeType(hint, "application/octet-stream");
+  return {
+    _tag: "ToolFile",
+    mimeType: isGenericMimeType(hintedMimeType)
+      ? (sniffMimeType(bytes) ?? hintedMimeType)
+      : hintedMimeType,
+    encoding: "base64",
+    data: bytesToBase64(bytes),
+    byteLength: bytes.byteLength,
+  };
 };
 
 type FormDataRecord = Parameters<typeof HttpClientRequest.bodyFormDataRecord>[1];
@@ -253,19 +406,9 @@ const resolveStyleExplode = (e: EncodingObject | undefined): StyleExplode => {
   };
 };
 
-// RFC 3986 §2.2 reserved chars. `allowReserved: true` leaves these
-// unencoded; default OAS behavior encodes everything non-unreserved.
-const RESERVED_UNENCODED_RE = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=]/;
-
 const encodeFormValue = (v: unknown, allowReserved: boolean): string => {
   const raw = typeof v === "object" && v !== null ? JSON.stringify(v) : String(v);
-  if (!allowReserved) return encodeURIComponent(raw);
-  // Walk char-by-char so the reserved set passes through as-is.
-  let out = "";
-  for (const ch of raw) {
-    out += RESERVED_UNENCODED_RE.test(ch) ? ch : encodeURIComponent(ch);
-  }
-  return out;
+  return encodeReservedAware(raw, allowReserved);
 };
 
 /**
@@ -525,6 +668,10 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
 
   let request = HttpClientRequest.make(operation.method.toUpperCase() as "GET")(path);
 
+  // Default first so operation header params and resolved auth headers below
+  // can override it; the upstream still gets a User-Agent if nothing else sets one.
+  request = HttpClientRequest.setHeader(request, "User-Agent", DEFAULT_USER_AGENT);
+
   for (const [name, value] of Object.entries(sourceQueryParams)) {
     request = HttpClientRequest.setUrlParam(request, name, value);
   }
@@ -532,8 +679,9 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   for (const param of operation.parameters) {
     if (param.location !== "query") continue;
     const value = readParamValue(args, param);
-    if (value === undefined || value === null) continue;
-    request = HttpClientRequest.setUrlParam(request, param.name, String(value));
+    for (const paramValue of queryParamValues(value, param)) {
+      request = HttpClientRequest.appendUrlParam(request, param.name, paramValue);
+    }
   }
 
   for (const param of operation.parameters) {
@@ -545,18 +693,110 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
 
   if (Option.isSome(operation.requestBody)) {
     const rb = operation.requestBody.value;
-    const bodyValue = args.body ?? args.input;
+    const contentsOpt = Option.getOrUndefined(rb.contents);
+    const requestedCt = typeof args.contentType === "string" ? args.contentType : undefined;
+    const octetStreamContent = contentsOpt?.find((c) => isOctetStream(c.contentType));
+    const bodyAcceptsOctetStream = Boolean(octetStreamContent) || isOctetStream(rb.contentType);
+    const hasBodyBase64 = Object.prototype.hasOwnProperty.call(args, "bodyBase64");
+    const bodyBase64Raw = args.bodyBase64;
+    const bodyBase64 =
+      typeof bodyBase64Raw === "string" ? decodeBase64Body(bodyBase64Raw) : undefined;
+
+    if (hasBodyBase64 && typeof bodyBase64Raw !== "string") {
+      return yield* new OpenApiInvocationError({
+        message: "`bodyBase64` must be a base64 string",
+        statusCode: Option.none(),
+      });
+    }
+    if (bodyBase64?.ok === false) {
+      return yield* new OpenApiInvocationError({
+        message: "`bodyBase64` is not valid base64",
+        statusCode: Option.none(),
+      });
+    }
+    if (bodyBase64?.ok === true && !bodyAcceptsOctetStream) {
+      return yield* new OpenApiInvocationError({
+        message: "`bodyBase64` requires an application/octet-stream request body",
+        statusCode: Option.none(),
+      });
+    }
+    if (bodyBase64?.ok === true && requestedCt && !isOctetStream(requestedCt)) {
+      return yield* new OpenApiInvocationError({
+        message: "`bodyBase64` requires an application/octet-stream contentType",
+        statusCode: Option.none(),
+      });
+    }
+
+    const rawBodyValue = args.body ?? args.input;
+    const nestedBodyBase64Raw = readNestedBodyBase64(rawBodyValue);
+    const hasNestedBodyBase64 = nestedBodyBase64Raw !== undefined;
+    const nestedBodyBase64 =
+      typeof nestedBodyBase64Raw === "string" ? decodeBase64Body(nestedBodyBase64Raw) : undefined;
+
+    if (hasNestedBodyBase64 && typeof nestedBodyBase64Raw !== "string") {
+      return yield* new OpenApiInvocationError({
+        message: "`body.bodyBase64` must be a base64 string",
+        statusCode: Option.none(),
+      });
+    }
+    if (nestedBodyBase64?.ok === false) {
+      return yield* new OpenApiInvocationError({
+        message: "`body.bodyBase64` is not valid base64",
+        statusCode: Option.none(),
+      });
+    }
+    if (nestedBodyBase64?.ok === true && !bodyAcceptsOctetStream) {
+      return yield* new OpenApiInvocationError({
+        message: "`body.bodyBase64` requires an application/octet-stream request body",
+        statusCode: Option.none(),
+      });
+    }
+    if (nestedBodyBase64?.ok === true && requestedCt && !isOctetStream(requestedCt)) {
+      return yield* new OpenApiInvocationError({
+        message: "`body.bodyBase64` requires an application/octet-stream contentType",
+        statusCode: Option.none(),
+      });
+    }
+
+    const binaryBody = bodyBase64?.ok === true ? bodyBase64 : nestedBodyBase64;
+    const bodyValue = binaryBody?.ok === true ? binaryBody.bytes : rawBodyValue;
+    if (rb.required && bodyValue === undefined) {
+      return yield* new OpenApiInvocationError({
+        message: bodyAcceptsOctetStream
+          ? "Missing required request body: provide `bodyBase64`"
+          : "Missing required request body",
+        statusCode: Option.none(),
+      });
+    }
     if (bodyValue !== undefined) {
       // Resolve which declared media type to use. When the spec declares
       // multiple, the caller can override via `args.contentType`; otherwise
       // we use the first-declared (spec author's preferred ordering).
-      const contentsOpt = Option.getOrUndefined(rb.contents);
-      const requestedCt = typeof args.contentType === "string" ? args.contentType : undefined;
       const selected: MediaBinding | undefined =
-        contentsOpt && requestedCt
-          ? contentsOpt.find((c) => c.contentType === requestedCt)
-          : undefined;
-      const chosenCt = selected?.contentType ?? rb.contentType;
+        binaryBody?.ok === true && octetStreamContent
+          ? octetStreamContent
+          : contentsOpt && requestedCt
+            ? contentsOpt.find((c) => c.contentType === requestedCt)
+            : undefined;
+      const chosenCt =
+        binaryBody?.ok === true && !octetStreamContent && isOctetStream(rb.contentType)
+          ? rb.contentType
+          : (selected?.contentType ?? rb.contentType);
+      // A `bodyBase64` arg already decoded to bytes above. A plain string
+      // `body` is the long-standing way callers pass (text) octet-stream
+      // upload content, and applyRequestBody sends it through as-is, so let it
+      // past. Only a genuinely non-byte, non-string shape (an object, say)
+      // can't be uploaded as octet-stream and needs `bodyBase64`.
+      if (
+        isOctetStream(chosenCt) &&
+        typeof bodyValue !== "string" &&
+        toUint8Array(bodyValue) === null
+      ) {
+        return yield* new OpenApiInvocationError({
+          message: "application/octet-stream request body must be bytes; provide `bodyBase64`",
+          statusCode: Option.none(),
+        });
+      }
       const chosenEncoding = selected
         ? Option.getOrUndefined(selected.encoding)
         : contentsOpt && contentsOpt[0]
@@ -594,28 +834,67 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         cause: err,
       }),
   );
+  const responseBodyBinding = Option.getOrUndefined(operation.responseBody);
+  const fileHint = responseBodyBinding
+    ? Option.getOrUndefined(responseBodyBinding.fileHint)
+    : undefined;
+  const ok = status >= 200 && status < 300;
   const responseBody: unknown =
     status === 204
       ? null
-      : isJsonContentType(contentType)
-        ? yield* response.json.pipe(
-            Effect.catch(() => response.text),
-            mapBodyError,
+      : ok && fileHint?.kind === "binaryResponse"
+        ? fileFromBinaryBytes(
+            new Uint8Array(yield* response.arrayBuffer.pipe(mapBodyError)),
+            fileHint,
+            contentType,
           )
-        : yield* response.text.pipe(mapBodyError);
+        : isJsonContentType(contentType)
+          ? yield* response.json.pipe(
+              Effect.catch(() => response.text),
+              mapBodyError,
+            )
+          : yield* response.text.pipe(mapBodyError);
 
-  const ok = status >= 200 && status < 300;
-
+  const dataBody =
+    ok && fileHint?.kind === "byteField"
+      ? (fileFromByteField(responseBody, fileHint) ?? responseBody)
+      : responseBody;
   return InvocationResult.make({
     status,
     headers: responseHeaders,
-    data: ok ? responseBody : null,
+    data: ok ? dataBody : null,
     error: ok ? null : responseBody,
   });
 });
 
+// Connection `baseUrl` wins; otherwise the call's chosen server (`server.url`, or
+// the first) resolved with its `{variables}` (call values, else spec defaults).
+const resolveRequestHost = (
+  servers: readonly ServerInfo[],
+  serverArg: unknown,
+  baseUrl: string,
+): string => {
+  if (baseUrl) return baseUrl;
+  if (servers.length === 0) return "";
+
+  const arg = (
+    typeof serverArg === "object" && serverArg !== null && !Array.isArray(serverArg)
+      ? serverArg
+      : {}
+  ) as { url?: unknown; variables?: unknown };
+  const chosen = servers.find((server) => server.url === arg.url) ?? servers[0]!;
+
+  const overrides: Record<string, string> = {};
+  if (typeof arg.variables === "object" && arg.variables !== null) {
+    for (const [name, value] of Object.entries(arg.variables as Record<string, unknown>)) {
+      if (value != null && value !== "") overrides[name] = String(value);
+    }
+  }
+  return resolveServerUrl(chosen.url, Option.getOrUndefined(chosen.variables), overrides);
+};
+
 // ---------------------------------------------------------------------------
-// Invoke with a provided HttpClient layer + optional baseUrl prefix
+// Invoke with a provided HttpClient layer + per-call host resolution
 // ---------------------------------------------------------------------------
 
 export const invokeWithLayer = (
@@ -626,23 +905,29 @@ export const invokeWithLayer = (
   sourceQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
 ) => {
-  const clientWithBaseUrl = baseUrl
+  const effectiveBaseUrl = resolveRequestHost(operation.servers ?? [], args.server, baseUrl);
+  const clientWithBaseUrl = effectiveBaseUrl
     ? Layer.effect(
         HttpClient.HttpClient,
         Effect.map(
           Effect.service(HttpClient.HttpClient),
-          HttpClient.mapRequest(HttpClientRequest.prependUrl(baseUrl)),
+          HttpClient.mapRequest(HttpClientRequest.prependUrl(effectiveBaseUrl)),
         ),
       ).pipe(Layer.provide(httpClientLayer))
     : httpClientLayer;
 
   return invoke(operation, args, resolvedHeaders, sourceQueryParams).pipe(
     Effect.provide(clientWithBaseUrl),
+    // `invoke` annotates http.status_code on ITS span (`OpenApi.invoke`,
+    // via Effect.fn) — annotateCurrentSpan inside it never reaches this
+    // wrapper span. Stamp the status here too so queries against
+    // `plugin.openapi.invoke` see the upstream outcome directly.
+    Effect.tap((result) => Effect.annotateCurrentSpan({ "http.status_code": result.status })),
     Effect.withSpan("plugin.openapi.invoke", {
       attributes: {
         "plugin.openapi.method": operation.method.toUpperCase(),
         "plugin.openapi.path_template": operation.pathTemplate,
-        "plugin.openapi.base_url": baseUrl,
+        "plugin.openapi.base_url": effectiveBaseUrl,
       },
     }),
   );

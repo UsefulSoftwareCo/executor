@@ -6,7 +6,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
+    "types": ["@cloudflare/workers-types"],
     "outDir": "dist",
     "rootDir": ".",
     "declaration": false,
@@ -22,5 +22,5 @@
       }
     ]
   },
-  "include": ["src", "vite.config.ts", "worker-configuration.d.ts", "test-types.d.ts"]
+  "include": ["src", "vite.config.ts", "worker-configuration.d.ts"]
 }

@@ -38,7 +38,7 @@ export function generateMigrationFromSchema(
   const {
     provider,
     relationMode = provider === "mssql" || provider === "mongodb"
-      ? "fumadb"
+      ? "@executor-js/fumadb"
       : "foreign-keys",
     dropUnusedTables = true,
     dropUnusedColumns = true,
@@ -205,7 +205,7 @@ export function generateMigrationFromSchema(
   ): Operation[] {
     const tableName = getName(newTable.names);
     const operations: Operation[] = [];
-    if (relationMode === "fumadb") return operations;
+    if (relationMode === "@executor-js/fumadb") return operations;
 
     for (const foreignKey of newTable.foreignKeys) {
       const compiled = compileForeignKey(foreignKey, "sql");

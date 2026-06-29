@@ -7,12 +7,12 @@
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
-    <!-- Electron reads NODE_OPTIONS / NODE_PATH at startup; the sidecar
+    <!-- Electron reads NODE_OPTIONS / NODE_PATH at startup; the bundled executor
          reads EXECUTOR_* env vars. Hardened runtime would strip them
          without this entitlement. -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
-    <!-- The Bun-compiled executor-sidecar binary inside Resources/sidecar/
+    <!-- The Bun-compiled executor binary inside Resources/executor/
          loads dylibs Apple's library validator doesn't recognize as part
          of the Electron bundle's signing chain. -->
     <key>com.apple.security.cs.disable-library-validation</key>

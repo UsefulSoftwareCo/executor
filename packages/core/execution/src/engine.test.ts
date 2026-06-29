@@ -85,3 +85,18 @@ describe("executeWithPause failure propagation", () => {
     }),
   );
 });
+
+describe("pausedExecutionCount", () => {
+  it.effect("starts at zero", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: succeedingExecutor,
+      });
+
+      expect(yield* engine.pausedExecutionCount()).toBe(0);
+      expect(yield* engine.hasPausedExecutions()).toBe(false);
+    }),
+  );
+});

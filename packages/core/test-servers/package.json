@@ -16,7 +16,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "effect": "catalog:",
     "graphql-yoga": "^5.17.0",
-    "zod": "^4.3.6"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",

@@ -1,0 +1,145 @@
+---
+export const prerender = true;
+import Layout from "../../layouts/Layout.astro";
+import { getCollection } from "astro:content";
+
+const GH = "https://github.com/RhysSullivan/executor";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.date.getTime() - a.data.date.getTime(),
+);
+
+const fmt = (date: Date) =>
+  date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    // Frontmatter dates are bare YYYY-MM-DD (UTC midnight); format in UTC so
+    // the displayed day matches what the author wrote regardless of timezone.
+    timeZone: "UTC",
+  });
+---
+
+<Layout
+  title="Blog — Executor"
+  description="Latest news and updates from Executor."
+>
+  <main class="bg-soft relative min-h-dvh antialiased">
+    <div
+      class="pattern-bg pattern-graph"
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:1;pointer-events:none;"
+    >
+    </div>
+    <div
+      style="position:absolute;top:0;left:0;right:0;height:60vh;z-index:2;pointer-events:none;background:linear-gradient(180deg,transparent 0%,transparent 55%,var(--color-surface) 100%);"
+    >
+    </div>
+
+    <div class="relative z-10">
+      {/* ─── NAV ─── */}
+      <nav>
+        <div
+          class="mx-auto flex h-14 max-w-[1200px] items-center justify-between px-6 sm:px-10"
+        >
+          <a href="/" class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-5 w-5" />
+            <span class="text-[15px] font-semibold tracking-[-0.01em] text-ink"
+              >executor</span
+            >
+          </a>
+          <div class="flex items-center gap-5">
+            <a
+              href="/blog"
+              class="text-[14px] font-medium text-ink transition-colors">Blog</a
+            >
+            <a
+              href="https://executor.sh/docs"
+              class="hidden text-[14px] font-medium text-ink-2 transition-colors hover:text-ink sm:inline"
+              >Docs</a
+            >
+            <a
+              href={GH}
+              class="text-[14px] font-medium text-ink-2 transition-colors hover:text-ink"
+              >GitHub</a
+            >
+            <a href="/#install" class="btn-primary">Get started →</a>
+          </div>
+        </div>
+      </nav>
+
+      {/* ─── HEADER ─── */}
+      <section class="px-6 pt-16 pb-10 sm:px-10 sm:pt-24 sm:pb-12">
+        <div class="mx-auto max-w-[760px]">
+          <h1
+            class="text-[clamp(2.4rem,5.6vw,4rem)] font-semibold leading-[1.02] tracking-[-0.025em] text-ink"
+          >
+            Blog
+          </h1>
+          <p class="mt-5 max-w-[54ch] text-[17px] leading-[1.6] text-ink-2 text-pretty">
+            Latest news and updates from Executor
+          </p>
+        </div>
+      </section>
+
+      {/* ─── POST LIST ─── */}
+      <section class="px-6 pb-24 sm:px-10 sm:pb-32">
+        <div class="mx-auto max-w-[760px]">
+          {
+            posts.length === 0 ? (
+              <p class="text-[15px] text-ink-3">No posts yet. Check back soon.</p>
+            ) : (
+              <ul class="flex flex-col gap-4">
+                {posts.map((post) => (
+                  <li>
+                    <a
+                      href={`/blog/${post.id}`}
+                      class="surface-card group block p-6 transition-colors sm:p-7"
+                    >
+                      <div class="mb-2 font-mono text-[12px] uppercase tracking-[0.14em] text-ink-3">
+                        {fmt(post.data.date)}
+                      </div>
+                      <h2 class="text-[20px] font-semibold tracking-[-0.01em] text-ink sm:text-[22px]">
+                        {post.data.title}
+                      </h2>
+                      <p class="mt-2 text-[14.5px] leading-[1.55] text-ink-2 text-pretty">
+                        {post.data.description}
+                      </p>
+                      <span class="mt-4 inline-flex items-center gap-1 text-[13.5px] font-medium text-ink-2 transition-colors group-hover:text-ink">
+                        Read post →
+                      </span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+        </div>
+      </section>
+
+      {/* ─── FOOTER ─── */}
+      <footer class="border-t border-rule py-10">
+        <div
+          class="mx-auto flex max-w-[1200px] flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center sm:px-10"
+        >
+          <div class="flex items-center gap-2.5">
+            <img src="/favicon-192.png" alt="" class="h-4 w-4 opacity-80" />
+            <span class="text-[13px] font-medium text-ink-2">executor</span>
+            <span class="ml-2 text-[12px] text-ink-3"
+              >© {new Date().getFullYear()}</span
+            >
+          </div>
+          <div class="flex items-center gap-6 text-[13px] text-ink-2">
+            <a href="/blog" class="transition-colors hover:text-ink">Blog</a>
+            <a
+              href="https://executor.sh/docs"
+              class="transition-colors hover:text-ink">Docs</a
+            >
+            <a href={GH} class="transition-colors hover:text-ink">GitHub</a>
+            <a href="/privacy" class="transition-colors hover:text-ink">Privacy</a>
+            <a href="/terms" class="transition-colors hover:text-ink">Terms</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </main>
+</Layout>

@@ -3,93 +3,98 @@ import { Effect } from "effect";
 
 import { StorageError } from "./fuma-runtime";
 
-import { makeInMemoryBlobStore, pluginBlobStore } from "./blob";
+import { makeInMemoryBlobStore, pluginBlobStore, type OwnerPartitions } from "./blob";
+
+// v2: owner partitions instead of a scope stack. Reads fall through
+// [user, org] (user = innermost); writes/deletes name an explicit owner.
+const partitions = (org: string, user: string | null): OwnerPartitions => ({
+  org,
+  user,
+});
 
 describe("pluginBlobStore", () => {
-  it.effect("get returns innermost scope's value when both scopes have one", () =>
+  it.effect("get returns user (innermost) value when both owners have one", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      yield* store.put("inner/my-plugin", "k", "inner-value");
-      yield* store.put("outer/my-plugin", "k", "outer-value");
+      yield* store.put("u/my-plugin", "k", "user-value");
+      yield* store.put("o/my-plugin", "k", "org-value");
 
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
+      const plugin = pluginBlobStore(store, partitions("o", "u"), "my-plugin");
       const value = yield* plugin.get("k");
-      expect(value).toBe("inner-value");
+      expect(value).toBe("user-value");
     }),
   );
 
-  it.effect("get falls through to outer scope when inner is empty", () =>
+  it.effect("get falls through to org when user partition is empty", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      yield* store.put("outer/my-plugin", "k", "outer-value");
+      yield* store.put("o/my-plugin", "k", "org-value");
 
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
+      const plugin = pluginBlobStore(store, partitions("o", "u"), "my-plugin");
       const value = yield* plugin.get("k");
-      expect(value).toBe("outer-value");
+      expect(value).toBe("org-value");
     }),
   );
 
-  it.effect("get returns null when no scope has the key", () =>
+  it.effect("get returns null when no owner has the key", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
+      const plugin = pluginBlobStore(store, partitions("o", "u"), "my-plugin");
       const value = yield* plugin.get("k");
       expect(value).toBeNull();
     }),
   );
 
-  it.effect("has returns true when any scope has the key", () =>
+  it.effect("has returns true when any owner has the key", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      yield* store.put("outer/my-plugin", "k", "v");
+      yield* store.put("o/my-plugin", "k", "v");
 
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
+      const plugin = pluginBlobStore(store, partitions("o", "u"), "my-plugin");
       const found = yield* plugin.has("k");
       expect(found).toBe(true);
     }),
   );
 
-  it.effect("has returns false when no scope has the key", () =>
+  it.effect("has returns false when no owner has the key", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
+      const plugin = pluginBlobStore(store, partitions("o", "u"), "my-plugin");
       const found = yield* plugin.has("k");
       expect(found).toBe(false);
     }),
   );
 
-  it.effect("namespaces are keyed by scope/pluginId — different plugins don't collide", () =>
+  it.effect("namespaces are keyed by partition/pluginId — different plugins don't collide", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      yield* store.put("inner/plugin-a", "k", "a-value");
-      yield* store.put("inner/plugin-b", "k", "b-value");
+      yield* store.put("u/plugin-a", "k", "a-value");
+      yield* store.put("u/plugin-b", "k", "b-value");
 
-      const pluginA = pluginBlobStore(store, ["inner"], "plugin-a");
-      const pluginB = pluginBlobStore(store, ["inner"], "plugin-b");
+      const pluginA = pluginBlobStore(store, partitions("o", "u"), "plugin-a");
+      const pluginB = pluginBlobStore(store, partitions("o", "u"), "plugin-b");
       expect(yield* pluginA.get("k")).toBe("a-value");
       expect(yield* pluginB.get("k")).toBe("b-value");
     }),
   );
 
-  it.effect("put rejects scope outside the stack", () =>
+  it.effect("put rejects owner:user when the executor has no subject", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      const plugin = pluginBlobStore(store, ["inner", "outer"], "my-plugin");
-      const err = yield* plugin.put("k", "v", { scope: "not-in-stack" }).pipe(Effect.flip);
+      // No user partition → owner:"user" writes fail.
+      const plugin = pluginBlobStore(store, partitions("o", null), "my-plugin");
+      const err = yield* plugin.put("k", "v", { owner: "user" }).pipe(Effect.flip);
       expect(err).toBeInstanceOf(StorageError);
-      expect(err).toMatchObject({
-        message: expect.stringContaining("not in the"),
-      });
       // Write must not have reached the store.
-      expect(yield* store.get("not-in-stack/my-plugin", "k")).toBeNull();
+      expect(yield* store.get("o/my-plugin", "k")).toBeNull();
     }),
   );
 
-  it.effect("delete rejects scope outside the stack", () =>
+  it.effect("delete rejects owner:user when the executor has no subject", () =>
     Effect.gen(function* () {
       const store = makeInMemoryBlobStore();
-      const plugin = pluginBlobStore(store, ["inner"], "my-plugin");
-      const err = yield* plugin.delete("k", { scope: "not-in-stack" }).pipe(Effect.flip);
+      const plugin = pluginBlobStore(store, partitions("o", null), "my-plugin");
+      const err = yield* plugin.delete("k", { owner: "user" }).pipe(Effect.flip);
       expect(err).toBeInstanceOf(StorageError);
     }),
   );

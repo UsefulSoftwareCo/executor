@@ -1,13 +1,20 @@
+// ---------------------------------------------------------------------------
+// Policies HTTP API — owner-scoped tool policies (v2).
+//
+// Policies gate tool invocation by pattern + action, scoped to an owner
+// (org | user) instead of a scope id. Org rules are the outer guardrail; the
+// most restrictive matched action across owners wins.
+// ---------------------------------------------------------------------------
+
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { InternalError, PolicyId, ScopeId, ToolPolicyActionSchema } from "@executor-js/sdk/shared";
+import { InternalError, Owner, PolicyId, ToolPolicyActionSchema } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Params
 // ---------------------------------------------------------------------------
 
-const ScopeParams = { scopeId: ScopeId };
-const PolicyParams = { scopeId: ScopeId, policyId: PolicyId };
+const PolicyParams = { policyId: PolicyId };
 
 // ---------------------------------------------------------------------------
 // Response / payload schemas
@@ -15,7 +22,7 @@ const PolicyParams = { scopeId: ScopeId, policyId: PolicyId };
 
 const ToolPolicyResponse = Schema.Struct({
   id: PolicyId,
-  scopeId: ScopeId,
+  owner: Owner,
   pattern: Schema.String,
   action: ToolPolicyActionSchema,
   position: Schema.String,
@@ -24,17 +31,21 @@ const ToolPolicyResponse = Schema.Struct({
 });
 
 const CreateToolPolicyPayload = Schema.Struct({
-  targetScope: ScopeId,
+  owner: Owner,
   pattern: Schema.String,
   action: ToolPolicyActionSchema,
   position: Schema.optional(Schema.String),
 });
 
 const UpdateToolPolicyPayload = Schema.Struct({
-  targetScope: ScopeId,
+  owner: Owner,
   pattern: Schema.optional(Schema.String),
   action: Schema.optional(ToolPolicyActionSchema),
   position: Schema.optional(Schema.String),
+});
+
+const RemoveToolPolicyPayload = Schema.Struct({
+  owner: Owner,
 });
 
 // ---------------------------------------------------------------------------
@@ -43,22 +54,20 @@ const UpdateToolPolicyPayload = Schema.Struct({
 
 export const PoliciesApi = HttpApiGroup.make("policies")
   .add(
-    HttpApiEndpoint.get("list", "/scopes/:scopeId/policies", {
-      params: ScopeParams,
+    HttpApiEndpoint.get("list", "/policies", {
       success: Schema.Array(ToolPolicyResponse),
       error: InternalError,
     }),
   )
   .add(
-    HttpApiEndpoint.post("create", "/scopes/:scopeId/policies", {
-      params: ScopeParams,
+    HttpApiEndpoint.post("create", "/policies", {
       payload: CreateToolPolicyPayload,
       success: ToolPolicyResponse,
       error: InternalError,
     }),
   )
   .add(
-    HttpApiEndpoint.patch("update", "/scopes/:scopeId/policies/:policyId", {
+    HttpApiEndpoint.patch("update", "/policies/:policyId", {
       params: PolicyParams,
       payload: UpdateToolPolicyPayload,
       success: ToolPolicyResponse,
@@ -66,8 +75,9 @@ export const PoliciesApi = HttpApiGroup.make("policies")
     }),
   )
   .add(
-    HttpApiEndpoint.delete("remove", "/scopes/:scopeId/policies/:policyId", {
+    HttpApiEndpoint.delete("remove", "/policies/:policyId", {
       params: PolicyParams,
+      payload: RemoveToolPolicyPayload,
       success: Schema.Struct({ removed: Schema.Boolean }),
       error: InternalError,
     }),

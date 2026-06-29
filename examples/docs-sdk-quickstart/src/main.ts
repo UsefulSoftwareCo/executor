@@ -1,7 +1,13 @@
 // This example is the source of truth for docs snippets on /sdk/quickstart.
 // Run `bun run docs:snippets` after editing docs:start/docs:end blocks.
-import { createExecutor } from "@executor-js/sdk/promise";
-import { openApiPlugin } from "@executor-js/plugin-openapi/promise";
+import { Effect } from "effect";
+import {
+  createExecutor,
+  ProviderItemId,
+  ProviderKey,
+  type CredentialProvider,
+} from "@executor-js/sdk/promise";
+import { openApiPlugin, variable } from "@executor-js/plugin-openapi/promise";
 
 const inventoryApi = {
   openapi: "3.0.0",
@@ -70,36 +76,74 @@ const inventoryApi = {
 };
 
 // docs:start create-executor
+// A connection stores its value in a writable credential provider. This tiny
+// in-memory store is enough for a script; production hosts swap in a durable
+// provider (keychain, 1Password, an encrypted DB store, …). Providers are
+// Effect-native, so `get`/`set` return `Effect`s.
+const memory = new Map<string, string>();
+const memoryProvider: CredentialProvider = {
+  key: ProviderKey.make("memory"),
+  writable: true,
+  get: (id: ProviderItemId) => Effect.sync(() => memory.get(String(id)) ?? null),
+  set: (id: ProviderItemId, value: string) =>
+    Effect.sync(() => {
+      memory.set(String(id), value);
+    }),
+};
+
 const executor = await createExecutor({
-  scopes: [{ id: "docs-workspace", name: "Docs Workspace" }],
   plugins: [openApiPlugin()],
+  providers: [memoryProvider],
   onElicitation: "accept-all",
 });
 // docs:end create-executor
 
-// docs:start add-source
+// docs:start add-integration
+// An integration is the API surface. The auth template declares where a
+// connection's credential is placed on each request — here, an `X-API-Key`
+// header. `variable("token")` is the slot the resolved credential renders into.
 await executor.openapi.addSpec({
-  namespace: "inventory",
-  scope: "docs-workspace",
-  name: "Inventory API",
+  slug: "inventory",
+  description: "Inventory API",
   baseUrl: "https://inventory.example.com",
   spec: {
     kind: "blob",
     value: JSON.stringify(inventoryApi),
   },
+  authenticationTemplate: [
+    {
+      slug: "apiKey",
+      type: "apiKey",
+      headers: { "X-API-Key": [variable("token")] },
+    },
+  ],
 });
-// docs:end add-source
+// docs:end add-integration
+
+// docs:start create-connection
+// Tools are produced per connection. A connection is the saved credential for
+// one integration; creating one with an inline `value` writes it to the default
+// writable provider and yields the integration's tools.
+await executor.connections.create({
+  owner: "org",
+  name: "default",
+  integration: "inventory",
+  template: "apiKey",
+  value: "inventory-api-key",
+});
+// docs:end create-connection
 
 // docs:start list-tools
-const tools = await executor.tools.list({ sourceId: "inventory" });
+const tools = await executor.tools.list({ integration: "inventory" });
 
 for (const tool of tools) {
-  console.log(`${tool.id}: ${tool.description}`);
+  console.log(`${tool.address}: ${tool.description}`);
 }
 // docs:end list-tools
 
 // docs:start inspect-schema
-const schema = await executor.tools.schema("inventory.listItems");
+const firstAddress = tools[0]?.address;
+const schema = firstAddress ? await executor.tools.schema(firstAddress) : null;
 
 console.log(schema?.inputTypeScript ?? "No input required");
 // docs:end inspect-schema

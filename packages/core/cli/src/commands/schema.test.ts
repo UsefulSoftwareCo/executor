@@ -35,8 +35,8 @@ describe("schema generate", () => {
 
           const generated = await readFile(join(cwd, "generated/executor-schema.ts"), "utf8");
           expect(generated).toContain("executor_cli_test");
-          expect(generated).toContain("source");
-          expect(generated).toContain("credential_binding");
+          expect(generated).toContain("integration");
+          expect(generated).toContain("connection");
         }),
       (cwd) => Effect.promise(() => rm(cwd, { recursive: true, force: true })),
     ),

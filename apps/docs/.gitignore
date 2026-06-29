@@ -1,0 +1,3 @@
+.mint/
+node_modules/
+*.log

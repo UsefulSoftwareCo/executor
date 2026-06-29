@@ -1,0 +1,151 @@
+---
+title: Self Hosted Cloudflare
+description: "Run Executor as a single Cloudflare Worker in your own account, with Cloudflare Access for auth and D1 for storage."
+---
+
+Executor runs as a single Cloudflare Worker. Authentication is handled entirely by
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+(there is no separate app login), storage is [D1](https://developers.cloudflare.com/d1/),
+tool code runs in QuickJS inside the Worker, and the web console, API, and MCP
+endpoint are all served from that one Worker.
+
+It is single-tenant: every Access-verified user belongs to the one configured org,
+and you manage members and credentials in Cloudflare Access rather than in the app.
+
+## Prerequisites
+
+- A Cloudflare account with Workers and Zero Trust (Access) enabled.
+- The [Executor repo](https://github.com/RhysSullivan/executor) checked out, with
+  dependencies installed (`bun install`).
+
+## Deploy
+
+From `apps/host-cloudflare`:
+
+```bash
+bunx wrangler login
+bun run deploy:setup
+```
+
+`deploy:setup` is idempotent: it creates or reuses the `executor` D1 database,
+writes its id into `wrangler.jsonc`, generates and uploads the `EXECUTOR_SECRET_KEY`
+secret, and deploys the Worker. It then prints the one remaining manual step.
+
+## Put it behind Cloudflare Access
+
+Until the Worker is behind an Access application, every API and MCP route returns
+`401`. In the Zero Trust dashboard:
+
+1. Go to **Access → Applications → Add an application → Self-hosted**.
+2. Set the application domain to `executor-cloudflare.<your-subdomain>.workers.dev`.
+3. Add an Access policy (for example, emails ending in `@yourcompany.com`).
+4. Copy the application **Audience (AUD)** tag, then redeploy with your Access settings:
+
+   ```bash
+   bunx wrangler deploy \
+     --var ACCESS_AUD:<aud> \
+     --var ACCESS_TEAM_DOMAIN:<your-team>.cloudflareaccess.com
+   ```
+
+   You can also set `ACCESS_AUD` and `ACCESS_TEAM_DOMAIN` in `wrangler.jsonc` and
+   redeploy.
+
+Now visiting the Worker prompts a Cloudflare Access login, and the Worker validates
+the issued JWT on every request.
+
+## Connect an agent
+
+The Worker serves a streamable-HTTP MCP endpoint at `/mcp`, gated by Access like the
+rest of the surfaces. Point your client at
+`https://executor-cloudflare.<your-subdomain>.workers.dev/mcp`.
+
+Because Access sits in front of the Worker, an MCP client that reaches `/mcp`
+without a valid Access credential is served Cloudflare's HTML login page instead of
+the endpoint. The streamable-HTTP client rejects that with
+`Streamable HTTP error: Unexpected content type: text/html`: that is the Access login
+page, not a Worker response. A browser passes Access via an interactive login, but an
+MCP client cannot follow that redirect, so it has to authenticate another way. Choose
+the path that matches your client.
+
+### For interactive clients: Managed OAuth (recommended)
+
+Cloudflare Access can run the MCP OAuth flow on the Worker's behalf, so a client
+like Claude authenticates with a normal login popup and no manual headers. The Worker
+keeps doing exactly what it already does (validate the `Cf-Access-Jwt-Assertion`); no
+code or redeploy is needed.
+
+1. Open the self-hosted Access application gating the Worker (the one from the
+   previous section).
+2. Enable **Managed OAuth** in the application's settings (the option that lets
+   non-browser clients authenticate over OAuth). With it on, Access answers an
+   unauthenticated `/mcp` request with an OAuth `401` challenge and serves the OAuth
+   discovery, authorize, and token endpoints itself, instead of the HTML login page.
+   Keep the Access application scoped to the whole Worker hostname (as set in the
+   previous section), not a single path like `/mcp`: the discovery probes clients
+   send to `/.well-known/oauth-authorization-server` and
+   `/.well-known/oauth-protected-resource` then land on Access too, which answers
+   them rather than letting them fall through to the Worker's SPA fallback (which the
+   Worker itself does not serve, so a path-scoped application would return HTML or
+   `404` there).
+3. Point your client at the `/mcp` URL with no extra configuration. On connect it
+   discovers the OAuth endpoints, opens a browser popup to log in through Access, and
+   Cloudflare injects the validated JWT into every subsequent request.
+
+   ```bash
+   npx add-mcp https://executor-cloudflare.<your-subdomain>.workers.dev/mcp \
+     --transport http --name executor
+   ```
+
+This is the same flow Cloudflare documents in
+[Secure MCP servers with Access](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/secure-mcp-servers/).
+
+If a client still won't start the OAuth flow after you enable Managed OAuth (it
+classifies `/mcp` as not an MCP endpoint, or you still hit the
+`Unexpected content type: text/html` error), its probe isn't consuming Access's
+`401` challenge. Fall back to the service-token path below: it authenticates with
+request headers and needs no client-side OAuth discovery, so it works regardless of
+how the client handles the challenge.
+
+### For headless clients: service token
+
+When no human is present to complete the OAuth popup (CI, a background agent),
+authenticate machine-to-machine with an Access service token instead.
+
+1. In the Zero Trust dashboard, go to **Access → Service Auth → Service Tokens →
+   Create Service Token**. Copy the **Client ID** and **Client Secret** (the secret
+   is shown once).
+2. On the Access application gating the Worker, add a policy with **Action: Service
+   Auth** that includes that service token (Include → Service Token → your token).
+   The `Service Auth` action lets the token through without an interactive IdP login.
+3. Configure your MCP client to send the token on every request as the
+   `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers. Access exchanges them
+   for the `Cf-Access-Jwt-Assertion` JWT (carrying the token's `common_name`) that
+   the Worker validates, exactly like a human login.
+
+   With [`add-mcp`](https://www.npmjs.com/package/add-mcp), which writes the config
+   for whichever agents it detects:
+
+   ```bash
+   npx add-mcp https://executor-cloudflare.<your-subdomain>.workers.dev/mcp \
+     --transport http --name executor \
+     --header "CF-Access-Client-Id: <client-id>.access" \
+     --header "CF-Access-Client-Secret: <client-secret>"
+   ```
+
+   For an `mcpServers` config block:
+
+   ```json
+   {
+     "executor": {
+       "type": "http",
+       "url": "https://executor-cloudflare.<your-subdomain>.workers.dev/mcp",
+       "headers": {
+         "CF-Access-Client-Id": "<client-id>.access",
+         "CF-Access-Client-Secret": "<client-secret>"
+       }
+     }
+   }
+   ```
+
+Once connected, see [MCP Proxy](/mcp-proxy) for how the endpoint exposes your
+integrations.

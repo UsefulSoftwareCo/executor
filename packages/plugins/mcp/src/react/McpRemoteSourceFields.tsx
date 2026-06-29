@@ -12,26 +12,33 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { FieldError } from "@executor-js/react/components/field";
 import { Input } from "@executor-js/react/components/input";
+import { Textarea } from "@executor-js/react/components/textarea";
 import { Skeleton } from "@executor-js/react/components/skeleton";
-import { SourceFavicon } from "@executor-js/react/components/source-favicon";
+import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 import { IOSSpinner } from "@executor-js/react/components/spinner";
 import { Button } from "@executor-js/react/components/button";
 import {
-  SourceIdentityFieldRows,
-  type SourceIdentity,
-} from "@executor-js/react/plugins/source-identity";
+  IntegrationIdentityFieldRows,
+  type IntegrationIdentity,
+} from "@executor-js/react/plugins/integration-identity";
 
 export type McpRemoteSourcePreview = {
   readonly name: string;
   readonly serverName: string | null;
   readonly connected: boolean;
+  readonly requiresAuthentication: boolean;
+  readonly requiresOAuth: boolean;
   readonly toolCount: number | null;
 };
 
 export function McpRemoteSourceFields(props: {
   readonly url: string;
   readonly onUrlChange: (url: string) => void;
-  readonly identity: SourceIdentity;
+  readonly identity: IntegrationIdentity;
+  /** The integration's agent-visible description (prefilled from the server's
+   *  `instructions` when the probe connected). */
+  readonly description?: string;
+  readonly onDescriptionChange?: (value: string) => void;
   readonly preview: McpRemoteSourcePreview | null;
   readonly probing?: boolean;
   readonly error?: string | null;
@@ -44,7 +51,11 @@ export function McpRemoteSourceFields(props: {
       ? props.preview.toolCount === null
         ? null
         : `${props.preview.toolCount} tool${props.preview.toolCount !== 1 ? "s" : ""} available`
-      : "OAuth required to discover tools"
+      : props.preview.requiresOAuth
+        ? "OAuth required to discover tools"
+        : props.preview.requiresAuthentication
+          ? "Authentication required to discover tools"
+          : "Ready to add"
     : null;
 
   if (props.preview) {
@@ -53,7 +64,7 @@ export function McpRemoteSourceFields(props: {
         <CardStackContent className="border-t-0">
           <CardStackEntry>
             <CardStackEntryMedia>
-              <SourceFavicon url={props.url} size={32} />
+              <IntegrationFavicon url={props.url} size={32} />
             </CardStackEntryMedia>
             <CardStackEntryContent>
               <CardStackEntryTitle>
@@ -67,25 +78,49 @@ export function McpRemoteSourceFields(props: {
               {props.preview.connected ? (
                 <Badge
                   variant="outline"
-                  className="border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400"
+                  className="border-border bg-muted text-[10px] text-foreground"
                 >
                   Connected
+                </Badge>
+              ) : props.preview.requiresOAuth ? (
+                <Badge
+                  variant="outline"
+                  className="border-border bg-muted text-[10px] text-muted-foreground"
+                >
+                  OAuth required
                 </Badge>
               ) : (
                 <Badge
                   variant="outline"
-                  className="border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-400"
+                  className="border-border bg-muted text-[10px] text-muted-foreground"
                 >
-                  OAuth required
+                  Auth required
                 </Badge>
               )}
             </CardStackEntryActions>
           </CardStackEntry>
-          <SourceIdentityFieldRows
+          <IntegrationIdentityFieldRows
             identity={props.identity}
             namePlaceholder="e.g. Linear"
             namespaceReadOnly={props.namespaceReadOnly}
           />
+          {props.onDescriptionChange && (
+            <CardStackEntryField label="Description">
+              <Textarea
+                value={props.description ?? ""}
+                onChange={(e) =>
+                  props.onDescriptionChange?.((e.target as HTMLTextAreaElement).value)
+                }
+                placeholder="What this server offers and when to reach for it"
+                rows={2}
+                maxRows={6}
+                className="text-sm"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Agent-visible. Prefilled from the server's instructions when it sends any.
+              </p>
+            </CardStackEntryField>
+          )}
           <CardStackEntryField label="Server URL">
             <Input
               value={props.url}

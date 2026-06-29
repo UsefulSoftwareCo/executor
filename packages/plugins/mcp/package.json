@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-mcp",
-  "version": "1.4.32",
+  "version": "1.5.25",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/mcp",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -66,8 +66,7 @@
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "effect": "catalog:",
-    "zod": "^4.3.6"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@effect/atom-react": "catalog:",
@@ -77,6 +76,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
@@ -86,6 +86,7 @@
     "@executor-js/api": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@tanstack/react-router": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:"
   },
   "peerDependenciesMeta": {

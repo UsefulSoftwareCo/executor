@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Vitest globalSetup — starts an in-process PGlite socket server so tests
 // running in the Cloudflare Workers runtime can connect to a real Postgres
-// via postgres.js. Port must match DATABASE_URL in wrangler.test.jsonc.
+// via postgres.js. Port must match DATABASE_URL in vitest.config.ts.
 // ---------------------------------------------------------------------------
 
 import { PGlite } from "@electric-sql/pglite";

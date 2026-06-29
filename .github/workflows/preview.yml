@@ -1,0 +1,117 @@
+name: Preview
+
+# Per-PR preview deploys of the Cloudflare host to a dedicated preview account.
+# Every same-repo PR gets its own isolated stack (Worker + D1 + Access app)
+# behind Cloudflare Access; it is torn down when the PR closes. Fork PRs are
+# skipped — they must not run with the deploy token.
+#
+# Required repo configuration:
+#   secret CLOUDFLARE_PREVIEW_API_TOKEN  — scoped token (Workers/D1/R2/Access edit)
+#   var    CLOUDFLARE_PREVIEW_ACCOUNT_ID — the preview Cloudflare account
+#   var    PREVIEW_ACCESS_TEAM_DOMAIN    — Zero Trust team domain
+#   var    PREVIEW_ACCESS_EMAILS         — comma-separated emails allowed through Access
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+jobs:
+  deploy:
+    name: Deploy preview
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - run: bun install --frozen-lockfile
+
+      - name: Deploy
+        id: deploy
+        working-directory: apps/host-cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}
+          PREVIEW_ACCESS_TEAM_DOMAIN: ${{ vars.PREVIEW_ACCESS_TEAM_DOMAIN }}
+          PREVIEW_ACCESS_EMAILS: ${{ vars.PREVIEW_ACCESS_EMAILS }}
+        run: bun scripts/preview.ts deploy --pr ${{ github.event.pull_request.number }}
+
+      - name: Comment preview URL
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        with:
+          script: |
+            const marker = "<!-- executor-preview -->";
+            const body = [
+              marker,
+              "### Cloudflare preview",
+              "",
+              `| | |`,
+              `|---|---|`,
+              `| Console | ${process.env.PREVIEW_URL} |`,
+              `| MCP | \`${process.env.PREVIEW_URL}/mcp\` |`,
+              `| Deployed commit | ${context.payload.pull_request.head.sha} |`,
+              "",
+              "Sign-in is Cloudflare Access (one-time PIN to an allowed email). " +
+                "The preview has its own database and encryption key; it is destroyed when this PR closes.",
+            ].join("\n");
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+  teardown:
+    name: Tear down preview
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      # destroy talks straight to the Cloudflare API — no install needed.
+      - name: Destroy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}
+        run: bun apps/host-cloudflare/scripts/preview.ts destroy --pr ${{ github.event.pull_request.number }}
+
+      - name: Mark comment as torn down
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "<!-- executor-preview -->";
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body: `${marker}\n### Cloudflare preview\n\nTorn down — the PR is closed.`,
+              });
+            }

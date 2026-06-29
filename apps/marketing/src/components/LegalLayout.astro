@@ -13,7 +13,7 @@ const { title, description, lastUpdated } = Astro.props;
 <Layout title={`${title} — Executor`} description={description}>
   <nav class="fixed top-0 z-50 w-full bg-surface/80 backdrop-blur-lg">
     <div class="mx-auto flex h-14 max-w-[1200px] items-center justify-between border-b border-rule px-6 sm:px-10">
-      <a href="/" class="font-display text-xl italic tracking-tight text-ink transition-colors hover:text-teal">
+      <a href="/" class="font-mono text-xl tracking-tight text-ink transition-colors hover:text-ink">
         executor
       </a>
       <div class="flex items-center gap-5 sm:gap-8">
@@ -28,8 +28,6 @@ const { title, description, lastUpdated } = Astro.props;
   </nav>
 
   <main class="relative overflow-hidden pt-14">
-    <div class="pointer-events-none absolute left-1/2 top-0 h-[420px] w-[760px] -translate-x-1/2 bg-teal/[0.05] blur-[140px]"></div>
-
     <section class="relative px-6 pb-10 pt-18 sm:px-10 sm:pb-16 sm:pt-24">
       <div class="mx-auto max-w-[720px]">
         <div class="mb-12 sm:mb-16">
@@ -53,7 +51,7 @@ const { title, description, lastUpdated } = Astro.props;
 
   <footer class="border-t border-rule py-10">
     <div class="mx-auto flex max-w-[1200px] items-center justify-between px-6 sm:px-10">
-      <span class="font-display text-sm italic text-ink-faint">executor</span>
+      <span class="font-mono text-sm text-ink-faint">executor</span>
       <div class="flex items-center gap-5 text-[13px]">
         <a href="/privacy" class="text-ink-faint transition-colors hover:text-ink">Privacy</a>
         <a href="/terms" class="text-ink-faint transition-colors hover:text-ink">Terms</a>

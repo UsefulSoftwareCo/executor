@@ -4,7 +4,8 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-import { cancelOAuth, startOAuth } from "../api/atoms";
+import { cancelOAuth, oauthConnectionCompleted, startOAuth } from "../api/atoms";
+import { trackEvent } from "../api/analytics";
 import { messageFromExit, messageFromUnknown, useReportHandledError } from "../api/error-reporting";
 import {
   openOAuthPopup,
@@ -12,6 +13,8 @@ import {
   reserveOAuthPopup,
   type OAuthPopupResult,
 } from "../api/oauth-popup";
+import { connectionWriteKeys } from "../api/reactivity-keys";
+import { getActiveOrgSlug } from "../api/server-connection";
 
 type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
@@ -28,28 +31,42 @@ const getDesktopBridge = (): DesktopBridge | null => {
 import { Button } from "../components/button";
 import {
   OAUTH_POPUP_MESSAGE_TYPE,
-  ConnectionId,
-  ScopeId,
-  type OAuthStrategy,
-  type SecretBackedValue,
+  OAuthState,
+  type AuthTemplateSlug,
+  type ConnectionName,
+  type IntegrationSlug,
+  type OAuthClientSlug,
+  type Owner,
 } from "@executor-js/sdk/shared";
 
+// ---------------------------------------------------------------------------
+// OAuth sign-in (v2). A registered OAuth client (`oauth.createClient`) is run by
+// `oauth.start` for one integration, minting an owner-scoped Connection. `start`
+// either returns the connection inline (`status: "connected"`) or a redirect
+// (`status: "redirect"` with an `authorizationUrl` + `state`); the popup
+// completes the redirect via the server `/oauth/callback`, then posts the result
+// back. `state` is the correlation token (the v1 session id).
+//
+// NOTE(v2): the server-side flow is stubbed (D18). The shapes below track the
+// v2 contract so this UI compiles; the plugin `/react` wave wires the buttons.
+// ---------------------------------------------------------------------------
+
 export type OAuthCompletionPayload = {
-  readonly connectionId: string;
-  readonly expiresAt: number | null;
-  readonly scope: string | null;
+  readonly connection: ConnectionName;
 };
 
 export type OAuthStartPayload = {
-  readonly endpoint: string;
-  readonly headers?: Record<string, SecretBackedValue>;
-  readonly queryParams?: Record<string, SecretBackedValue>;
-  readonly redirectUrl?: string;
-  readonly connectionId: string;
-  readonly tokenScope: string;
-  readonly strategy: OAuthStrategy;
-  readonly pluginId: string;
+  /** Registered OAuth client slug to run. */
+  readonly client: OAuthClientSlug;
+  /** Owner of `client` (a Personal connection may use a shared Workspace app). */
+  readonly clientOwner: Owner;
+  readonly owner: Owner;
+  /** Name for the connection the flow mints. */
+  readonly name: ConnectionName;
+  readonly integration: IntegrationSlug;
+  readonly template: AuthTemplateSlug;
   readonly identityLabel?: string;
+  readonly redirectUri?: string;
 };
 
 export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {
@@ -60,7 +77,8 @@ export type StartOAuthPopupInput<TPayload extends OAuthCompletionPayload> = {
 };
 
 export type OAuthAuthorizationStartResult = {
-  readonly sessionId: string;
+  /** OAuth correlation token (was the v1 session id). */
+  readonly state: string;
   readonly authorizationUrl: string | null;
 };
 
@@ -70,32 +88,51 @@ class OAuthAuthorizationStartError extends Data.TaggedError("OAuthAuthorizationS
 }> {}
 
 export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload> = {
-  readonly tokenScope: string;
+  readonly owner: Owner;
   readonly run: () => Promise<OAuthAuthorizationStartResult>;
   readonly onSuccess: (payload: TPayload) => void | Promise<void>;
-  readonly onError?: (error: string) => void;
+  readonly onError?: (error: string, details?: string) => void;
   readonly onAuthorizationStarted?: (result: OAuthAuthorizationStartResult) => void;
   readonly reportMetadata?: Record<string, string | number | boolean | null | undefined>;
 };
 
 export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
-  return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
+  if (typeof window === "undefined") return path;
+  return new URL(path, window.location.origin).toString();
 }
 
-export function oauthConnectionId(input: {
-  readonly pluginId: string;
-  readonly namespace: string;
-  readonly fallback?: string;
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH = "/api/oauth/client-id-metadata/default.json";
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH =
+  "/api/oauth/client-id-metadata/local.json";
+
+const configuredClientIdMetadataBaseUrl = (): string | undefined => {
+  const env = (
+    import.meta as ImportMeta & {
+      readonly env?: Record<string, string | undefined>;
+    }
+  ).env;
+  const value = env?.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL?.trim();
+  return value ? value : undefined;
+};
+
+export function oauthClientIdMetadataDocumentUrl(options?: {
+  readonly hostedBaseUrl?: string | null;
+  readonly path?: string;
 }): string {
-  const namespace = input.namespace || input.fallback || "default";
-  return `${input.pluginId}-oauth2-${namespace}`;
-}
+  const hostedBaseUrl = options?.hostedBaseUrl ?? configuredClientIdMetadataBaseUrl();
+  if (hostedBaseUrl) {
+    return new URL(OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH, hostedBaseUrl).toString();
+  }
 
-const oauthRouteParamsForTokenScope = (
-  tokenScope: string | ScopeId,
-): { readonly scopeId: ScopeId } => ({
-  scopeId: ScopeId.make(String(tokenScope)),
-});
+  const defaultPath = options?.path ?? OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH;
+  if (typeof window === "undefined") return defaultPath;
+  const orgSlug = getActiveOrgSlug();
+  const metadataPath = orgSlug
+    ? `/api/oauth/client-id-metadata/${encodeURIComponent(orgSlug)}.json`
+    : defaultPath;
+  const url = new URL(metadataPath, window.location.origin);
+  return url.toString();
+}
 
 export function useOAuthPopupFlow<
   TPayload extends OAuthCompletionPayload = OAuthCompletionPayload,
@@ -109,8 +146,8 @@ export function useOAuthPopupFlow<
   readonly startErrorMessage?: string;
 }) {
   const {
-    callbackPath,
     detectPopupClosed = true,
+    callbackPath,
     noAuthorizationUrlMessage,
     popupBlockedMessage,
     popupClosedMessage,
@@ -119,41 +156,36 @@ export function useOAuthPopupFlow<
   } = options;
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
   const doCancelOAuth = useAtomSet(cancelOAuth, { mode: "promiseExit" });
+  const doOAuthConnectionCompleted = useAtomSet(oauthConnectionCompleted, { mode: "promiseExit" });
   const reportHandledError = useReportHandledError();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
-  const sessionRef = useRef<{
-    readonly sessionId: string;
-    readonly tokenScope: string;
-  } | null>(null);
+  const sessionRef = useRef<{ readonly state: string } | null>(null);
 
   const cancelSession = useCallback(
-    (sessionId: string, tokenScope: string) => {
-      void doCancelOAuth({
-        params: oauthRouteParamsForTokenScope(tokenScope),
-        payload: { sessionId, tokenScope },
-      });
+    (state: string) => {
+      void doCancelOAuth({ payload: { state: OAuthState.make(state) } });
     },
     [doCancelOAuth],
   );
 
   const cancel = useCallback(() => {
-    const sessionId = sessionRef.current;
+    const session = sessionRef.current;
     cleanupRef.current?.();
     cleanupRef.current = null;
     sessionRef.current = null;
-    if (sessionId) cancelSession(sessionId.sessionId, sessionId.tokenScope);
+    if (session) cancelSession(session.state);
     setBusy(false);
   }, [cancelSession]);
 
   useEffect(
     () => () => {
-      const sessionId = sessionRef.current;
+      const session = sessionRef.current;
       cleanupRef.current?.();
       cleanupRef.current = null;
       sessionRef.current = null;
-      if (sessionId) cancelSession(sessionId.sessionId, sessionId.tokenScope);
+      if (session) cancelSession(session.state);
     },
     [cancelSession],
   );
@@ -164,12 +196,13 @@ export function useOAuthPopupFlow<
       setBusy(true);
       setError(null);
       const desktopBridge = getDesktopBridge();
-      // Desktop hosts open the auth URL in the user's real browser, so
-      // we skip the in-page popup reservation entirely and rely on the
-      // /api/oauth/await/:sessionId polling channel for the result.
+      // Desktop hosts open the auth URL in the user's real browser, so we skip
+      // the in-page popup reservation entirely and rely on the polling channel
+      // for the result.
       const reservedPopup = desktopBridge ? null : reserveOAuthPopup({ popupName });
       if (!desktopBridge && !reservedPopup) {
         const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
+        trackEvent("oauth_popup_blocked");
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -210,19 +243,35 @@ export function useOAuthPopupFlow<
         return;
       }
 
-      sessionRef.current = {
-        sessionId: response.sessionId,
-        tokenScope: input.tokenScope,
-      };
+      sessionRef.current = { state: response.state };
       input.onAuthorizationStarted?.(response);
       const handleResult = async (result: OAuthPopupResult<TPayload>) => {
         cleanupRef.current = null;
         sessionRef.current = null;
 
         if (!result.ok) {
+          trackEvent("oauth_completed", { success: false });
           setBusy(false);
           setError(result.error);
-          input.onError?.(result.error);
+          input.onError?.(result.error, result.errorDetails);
+          return;
+        }
+
+        const refreshExit = await doOAuthConnectionCompleted({
+          reactivityKeys: connectionWriteKeys,
+        });
+        if (Exit.isFailure(refreshExit)) {
+          const message = messageFromExit(refreshExit, "Failed to refresh connection");
+          reportHandledError(refreshExit.cause, {
+            surface: "oauth",
+            action: "refresh_connection",
+            message,
+            metadata: input.reportMetadata,
+          });
+          trackEvent("oauth_completed", { success: false });
+          setBusy(false);
+          setError(message);
+          input.onError?.(message);
           return;
         }
 
@@ -238,11 +287,13 @@ export function useOAuthPopupFlow<
             message,
             metadata: input.reportMetadata,
           });
+          trackEvent("oauth_completed", { success: false });
           setBusy(false);
           setError(message);
           input.onError?.(message);
           return;
         }
+        trackEvent("oauth_completed", { success: true });
         setBusy(false);
       };
       const handleClosed = () => {
@@ -253,6 +304,7 @@ export function useOAuthPopupFlow<
         // callback or TTL cleanup; only explicit cancel deletes the session.
         const message =
           popupClosedMessage ?? "Sign-in cancelled - popup was closed before completing the flow.";
+        trackEvent("oauth_completed", { success: false });
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -260,8 +312,9 @@ export function useOAuthPopupFlow<
       const handleOpenFailed = () => {
         cleanupRef.current = null;
         sessionRef.current = null;
-        cancelSession(response.sessionId, input.tokenScope);
+        cancelSession(response.state);
         const message = popupBlockedMessage ?? "Sign-in popup was blocked by the browser";
+        trackEvent("oauth_completed", { success: false });
         setBusy(false);
         setError(message);
         input.onError?.(message);
@@ -270,7 +323,7 @@ export function useOAuthPopupFlow<
       cleanupRef.current = desktopBridge
         ? openOAuthSystemBrowser<TPayload>({
             url: response.authorizationUrl,
-            sessionId: response.sessionId,
+            sessionId: response.state,
             openExternal: desktopBridge.openExternal,
             onResult: (result) => void handleResult(result),
             onOpenFailed: handleOpenFailed,
@@ -280,7 +333,7 @@ export function useOAuthPopupFlow<
             url: response.authorizationUrl,
             popupName,
             channelName: OAUTH_POPUP_MESSAGE_TYPE,
-            expectedSessionId: response.sessionId,
+            expectedSessionId: response.state,
             reservedPopup: reservedPopup ?? undefined,
             closedPollMs: detectPopupClosed ? undefined : null,
             onResult: (result) => void handleResult(result),
@@ -292,6 +345,7 @@ export function useOAuthPopupFlow<
       cancel,
       cancelSession,
       detectPopupClosed,
+      doOAuthConnectionCompleted,
       noAuthorizationUrlMessage,
       popupBlockedMessage,
       popupClosedMessage,
@@ -304,25 +358,37 @@ export function useOAuthPopupFlow<
   const start = useCallback(
     async (input: StartOAuthPopupInput<TPayload>) => {
       await openAuthorization({
-        tokenScope: input.payload.tokenScope,
+        owner: input.payload.owner,
         onSuccess: input.onSuccess,
         onError: input.onError,
         onAuthorizationStarted: input.onAuthorizationStarted,
         reportMetadata: {
-          pluginId: input.payload.pluginId,
-          connectionId: input.payload.connectionId,
-          tokenScope: input.payload.tokenScope,
+          client: String(input.payload.client),
+          integration: String(input.payload.integration),
+          name: String(input.payload.name),
+          owner: input.payload.owner,
         },
         run: () =>
           doStartOAuth({
-            params: oauthRouteParamsForTokenScope(input.payload.tokenScope),
             payload: {
-              ...input.payload,
-              redirectUrl: input.payload.redirectUrl ?? oauthCallbackUrl(callbackPath),
+              client: input.payload.client,
+              clientOwner: input.payload.clientOwner,
+              owner: input.payload.owner,
+              name: input.payload.name,
+              integration: input.payload.integration,
+              template: input.payload.template,
+              identityLabel: input.payload.identityLabel,
+              redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
             },
           }).then((exit) =>
             Exit.isSuccess(exit)
-              ? exit.value
+              ? // The redirect branch carries `authorizationUrl` + `state`; the
+                // inline "connected" (client_credentials) branch has no URL to
+                // open and no redirect, so `state` is intentionally empty — it
+                // is never read for an already-minted connection.
+                exit.value.status === "redirect"
+                ? { state: exit.value.state, authorizationUrl: exit.value.authorizationUrl }
+                : { state: "", authorizationUrl: null }
               : Effect.runPromise(
                   Effect.fail({
                     message: messageFromExit(exit, startErrorMessage ?? "Failed to start sign-in"),
@@ -367,99 +433,5 @@ export function OAuthSignInButton(props: {
             : (props.signInLabel ?? "Sign in")}
       </Button>
     </div>
-  );
-}
-
-export function SourceOAuthSignInButton(props: {
-  readonly popupName: string;
-  readonly pluginId: string;
-  readonly namespace: string;
-  readonly fallbackNamespace: string;
-  readonly endpoint: string;
-  readonly tokenScope: ScopeId;
-  readonly connectionId: string | null;
-  readonly sourceLabel: string;
-  readonly headers?: Record<string, SecretBackedValue>;
-  readonly queryParams?: Record<string, SecretBackedValue>;
-  readonly isConnected: boolean;
-  readonly onConnected: (connectionId: ConnectionId) => void | Promise<void>;
-  readonly detectPopupClosed?: boolean;
-  readonly reconnectingLabel?: string;
-  readonly signingInLabel?: string;
-  readonly reconnectLabel?: string;
-  readonly signInLabel?: string;
-}) {
-  const {
-    connectionId,
-    detectPopupClosed,
-    endpoint,
-    fallbackNamespace,
-    headers,
-    isConnected,
-    namespace,
-    onConnected,
-    pluginId,
-    popupName,
-    queryParams,
-    reconnectingLabel,
-    reconnectLabel,
-    signingInLabel,
-    signInLabel,
-    sourceLabel,
-    tokenScope,
-  } = props;
-  const oauth = useOAuthPopupFlow({
-    popupName,
-    detectPopupClosed,
-  });
-
-  const handleSignIn = useCallback(async () => {
-    await oauth.start({
-      payload: {
-        endpoint,
-        redirectUrl: oauthCallbackUrl(),
-        connectionId:
-          connectionId ??
-          oauthConnectionId({
-            pluginId,
-            namespace,
-            fallback: fallbackNamespace,
-          }),
-        headers,
-        queryParams,
-        tokenScope,
-        strategy: { kind: "dynamic-dcr" },
-        pluginId,
-        identityLabel: sourceLabel,
-      },
-      onSuccess: async (result: OAuthCompletionPayload) => {
-        await onConnected(ConnectionId.make(result.connectionId));
-      },
-    });
-  }, [
-    connectionId,
-    endpoint,
-    fallbackNamespace,
-    headers,
-    namespace,
-    oauth,
-    onConnected,
-    pluginId,
-    queryParams,
-    sourceLabel,
-    tokenScope,
-  ]);
-
-  return (
-    <OAuthSignInButton
-      busy={oauth.busy}
-      error={oauth.error}
-      isConnected={isConnected}
-      onSignIn={() => void handleSignIn()}
-      reconnectingLabel={reconnectingLabel}
-      reconnectLabel={reconnectLabel}
-      signingInLabel={signingInLabel}
-      signInLabel={signInLabel}
-    />
   );
 }

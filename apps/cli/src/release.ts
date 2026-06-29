@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -167,6 +167,30 @@ const githubReleaseExists = async (tag: string, repository: string): Promise<boo
   return (await proc.exited) === 0;
 };
 
+/** The CHANGELOG section Changesets generated for `version` (compiled from
+ *  `.changeset/*.md` bodies at Version Packages time) — the GitHub Release
+ *  body. Returns null when the section is missing so the caller can fall back
+ *  to GitHub's auto-generated notes. */
+const changelogSectionForVersion = async (version: string): Promise<string | null> => {
+  const changelogPath = resolve(cliRoot, "CHANGELOG.md");
+  if (!existsSync(changelogPath)) return null;
+  const lines = (await readFile(changelogPath, "utf8")).split("\n");
+  const start = lines.findIndex((line) => line.trim() === `## ${version}`);
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^## /.test(lines[i] ?? "")) {
+      end = i;
+      break;
+    }
+  }
+  const body = lines
+    .slice(start + 1, end)
+    .join("\n")
+    .trim();
+  return body.length > 0 ? body : null;
+};
+
 const syncGitHubRelease = async (input: {
   readonly tag: string;
   readonly channel: ReleaseChannel;
@@ -195,10 +219,7 @@ const syncGitHubRelease = async (input: {
     return;
   }
 
-  // Single rolling release-notes file. Historical release bodies live on
-  // GitHub Releases — we don't archive per-version copies in the repo.
-  const notesPath = resolve(cliRoot, "release-notes", "next.md");
-  const notesFile = existsSync(notesPath) ? notesPath : null;
+  const notes = await changelogSectionForVersion(input.tag.replace(/^v/, ""));
 
   // Draft until publish-desktop.yml finishes uploading installers and flips
   // it; otherwise /releases/latest/download/<desktop-asset> 404s during the
@@ -212,7 +233,7 @@ const syncGitHubRelease = async (input: {
     repository,
     "--title",
     input.tag,
-    ...(notesFile ? ["--notes-file", notesFile] : ["--generate-notes"]),
+    ...(notes ? ["--notes", notes] : ["--generate-notes"]),
     "--verify-tag",
     "--draft",
   ];

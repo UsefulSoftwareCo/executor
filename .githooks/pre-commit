@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Auto-format staged code with oxfmt before each commit, so the CI `format` job
+# (`oxfmt --check .`) can never fail on a commit that originated here. Activated
+# by `git config core.hooksPath .githooks`, which `bun run bootstrap` sets for
+# every fresh checkout / agent worktree.
+#
+# Behaviour: formats the staged JS/TS/JSON files in place and re-stages them.
+# oxfmt honours `.oxfmtrc.json` `ignorePatterns` even for explicitly-passed
+# paths, so generated/vendored files (bun.lock, routeTree.gen.ts, ...) are
+# skipped automatically.
+#
+# NUL-delimited end to end (handles spaces/newlines in paths) and compatible
+# with the bash 3.2 that ships on macOS, so no `mapfile`. A shell variable
+# cannot hold NUL bytes, so the staged list is read into an array directly.
+#
+# Caveat: a file that is only partially staged (staged hunk + a separate
+# unstaged hunk in the same file) gets fully re-staged after formatting. Agent
+# flows stage whole files (`git add -A`), so this is not a concern in practice.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+oxfmt="node_modules/.bin/oxfmt"
+if [[ ! -x "$oxfmt" ]]; then
+  echo "pre-commit: oxfmt not found ($oxfmt) - run 'bun run bootstrap'; skipping format." >&2
+  exit 0
+fi
+
+# Staged Added/Copied/Modified/Renamed files, restricted to extensions oxfmt
+# formats. Read NUL records into an array (no NUL-in-variable bug).
+files=()
+while IFS= read -r -d '' f; do
+  case "$f" in
+    *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.json | *.jsonc)
+      files+=("$f")
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+((${#files[@]})) || exit 0
+
+# Format in place, then re-stage whatever oxfmt may have rewritten.
+# --no-error-on-unmatched-pattern keeps the hook from failing when every staged
+# file is ignored by .oxfmtrc.json.
+"$oxfmt" --write --no-error-on-unmatched-pattern "${files[@]}"
+git add -- "${files[@]}"

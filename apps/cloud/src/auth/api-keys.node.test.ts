@@ -2,15 +2,15 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
 import { ApiKeyService } from "./api-keys";
-import { WorkOSAuth, type WorkOSAuthService } from "./workos";
+import { WorkOSClient, type WorkOSClientService } from "./workos";
 
-const stubWorkOS = (overrides: Partial<WorkOSAuthService>) =>
+const stubWorkOS = (overrides: Partial<WorkOSClientService>) =>
   Layer.succeed(
-    WorkOSAuth,
-    new Proxy({} as WorkOSAuthService, {
+    WorkOSClient,
+    new Proxy({} as WorkOSClientService, {
       get: (_target, prop) => {
-        if (prop in overrides) return overrides[prop as keyof WorkOSAuthService];
-        return () => Effect.die(`unexpected WorkOSAuth.${String(prop)} call`);
+        if (prop in overrides) return overrides[prop as keyof WorkOSClientService];
+        return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
       },
     }),
   );

@@ -40,6 +40,7 @@ export interface OAuthTestServerRequest {
   readonly path: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
+  readonly query: Readonly<Record<string, string>>;
 }
 
 export interface OAuthTestServerOptions {
@@ -50,7 +51,13 @@ export interface OAuthTestServerOptions {
   readonly defaultClientSecret?: string;
   readonly clients?: Readonly<Record<string, string | null>>;
   readonly scopes?: readonly string[];
+  readonly omitTokenResponseScopes?: readonly string[];
   readonly supportRefresh?: boolean;
+  /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
+   *  `/register` returns `400 invalid_redirect_uri` unless every requested
+   *  `redirect_uris` entry is approved. Mirrors authorization servers (e.g.
+   *  Vercel) that only accept loopback redirect URIs for anonymous DCR. */
+  readonly approveRedirectUri?: (uri: string) => boolean;
 }
 
 export interface OAuthTestServerShape {
@@ -387,6 +394,13 @@ const completeAuthorizationCodeTokenFlow =
       };
     });
 
+/** Parse the `scope` query param from an authorize URL into an ordered list
+ *  (empty when the parameter is absent or blank). */
+export const scopesFromAuthorizeUrl = (authorizationUrl: string): readonly string[] => {
+  const raw = new URL(authorizationUrl).searchParams.get("scope");
+  return raw == null || raw.length === 0 ? [] : raw.split(" ");
+};
+
 export const serveOAuthTestServer = (
   options: OAuthTestServerOptions = {},
 ): Effect.Effect<OAuthTestServerShape, OAuthTestServerAddressError, Scope.Scope> =>
@@ -399,6 +413,14 @@ export const serveOAuthTestServer = (
     };
     const supportRefresh = options.supportRefresh ?? true;
     const scopes = options.scopes ?? defaultScopes;
+    const omittedTokenResponseScopes = new Set(options.omitTokenResponseScopes ?? []);
+    const tokenResponseScope = (scope: string | null): string | undefined => {
+      if (!scope) return undefined;
+      const filtered = scope
+        .split(/\s+/)
+        .filter((item) => item.length > 0 && !omittedTokenResponseScopes.has(item));
+      return filtered.length > 0 ? filtered.join(" ") : undefined;
+    };
     const clients = new Map<string, ClientRecord>();
     const transactions = new Map<string, AuthorizationTransaction>();
     const authorizationCodes = new Map<string, AuthorizationCodeRecord>();
@@ -435,6 +457,7 @@ export const serveOAuthTestServer = (
             path: requestUrl.pathname,
             headers,
             body,
+            query: Object.fromEntries(requestUrl.searchParams.entries()),
           },
         ]);
 
@@ -485,6 +508,16 @@ export const serveOAuthTestServer = (
               ? `secret_${randomUUID()}`
               : null;
           const redirectUris = new Set(arrayOfStrings(json.redirect_uris));
+          if (
+            options.approveRedirectUri &&
+            [...redirectUris].some((uri) => !options.approveRedirectUri!(uri))
+          ) {
+            return oauthError(
+              400,
+              "invalid_redirect_uri",
+              "The provided redirect URIs are not approved for use by this authorization server.",
+            );
+          }
           clients.set(clientId, {
             clientSecret,
             redirectUris,
@@ -605,6 +638,7 @@ export const serveOAuthTestServer = (
               scope: record.scope,
               resource: record.resource,
             });
+            const scope = tokenResponseScope(record.scope);
             return jsonResponse(
               200,
               {
@@ -612,7 +646,7 @@ export const serveOAuthTestServer = (
                 refresh_token: refreshToken,
                 token_type: "Bearer",
                 expires_in: 3600,
-                ...(record.scope ? { scope: record.scope } : {}),
+                ...(scope ? { scope } : {}),
               },
               { "cache-control": "no-store" },
             );
@@ -632,6 +666,7 @@ export const serveOAuthTestServer = (
               issuedAccessTokens,
               (tokens) => new Set([...tokens, nextAccessToken]),
             );
+            const scope = tokenResponseScope(record.scope);
             return jsonResponse(
               200,
               {
@@ -639,7 +674,7 @@ export const serveOAuthTestServer = (
                 refresh_token: nextRefreshToken,
                 token_type: "Bearer",
                 expires_in: 3600,
-                ...(record.scope ? { scope: record.scope } : {}),
+                ...(scope ? { scope } : {}),
               },
               { "cache-control": "no-store" },
             );

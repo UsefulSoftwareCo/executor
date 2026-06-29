@@ -1,12 +1,17 @@
 import { Effect } from "effect";
 
-import { StorageError, type SecretProvider } from "@executor-js/sdk/core";
+import {
+  StorageError,
+  ProviderKey,
+  type CredentialProvider,
+  type ProviderItemId,
+} from "@executor-js/sdk";
 
 import type { KeychainError } from "./errors";
 import { getPassword, setPassword, deletePassword } from "./keyring";
 
 // ---------------------------------------------------------------------------
-// SecretProvider adapter — bridges keyring into SDK resolution chain
+// CredentialProvider adapter — bridges keyring into the v2 resolution chain.
 //
 // The underlying `@napi-rs/keyring` sync API encodes "no entry" as an
 // ordinary return value (`getPassword()` → `null`, `deletePassword()` →
@@ -17,6 +22,11 @@ import { getPassword, setPassword, deletePassword } from "./keyring";
 // an opaque `InternalError({ traceId })` — previously `orElseSucceed`
 // silently converted every failure into "nothing found", which made it
 // impossible to debug why secrets weren't resolving.
+//
+// v2: the provider sees only an opaque `ProviderItemId` (the keychain
+// account). There is NO scope arg — the connection row owns the (tenant,
+// owner, subject) partition. We use a single, flat keychain service name;
+// the connection's opaque id is the account that uniquely keys the entry.
 // ---------------------------------------------------------------------------
 
 const toStorageError = (cause: KeychainError) => {
@@ -25,24 +35,21 @@ const toStorageError = (cause: KeychainError) => {
   return new StorageError({ message: cause.message, cause: underlyingCause ?? cause });
 };
 
-export const scopedKeychainServiceName = (baseServiceName: string, scope: string): string =>
-  `${baseServiceName}/${scope}`;
+const KEYCHAIN_PROVIDER_KEY = ProviderKey.make("keychain");
 
-export const makeKeychainProvider = (baseServiceName: string): SecretProvider => ({
-  key: "keychain",
+export const makeKeychainProvider = (serviceName: string): CredentialProvider => ({
+  key: KEYCHAIN_PROVIDER_KEY,
   writable: true,
-  get: (secretId, scope) =>
-    getPassword(scopedKeychainServiceName(baseServiceName, scope), secretId).pipe(
+  get: (id: ProviderItemId) => getPassword(serviceName, id).pipe(Effect.mapError(toStorageError)),
+  has: (id: ProviderItemId) =>
+    getPassword(serviceName, id).pipe(
+      Effect.map((value: string | null) => value !== null),
       Effect.mapError(toStorageError),
     ),
-  set: (secretId, value, scope) =>
-    setPassword(scopedKeychainServiceName(baseServiceName, scope), secretId, value).pipe(
-      Effect.mapError(toStorageError),
-    ),
-  delete: (secretId, scope) =>
-    deletePassword(scopedKeychainServiceName(baseServiceName, scope), secretId).pipe(
-      Effect.mapError(toStorageError),
-    ),
-  // Keychain doesn't support enumerating — you need to know the account name
+  set: (id: ProviderItemId, value: string) =>
+    setPassword(serviceName, id, value).pipe(Effect.mapError(toStorageError)),
+  delete: (id: ProviderItemId) =>
+    deletePassword(serviceName, id).pipe(Effect.asVoid, Effect.mapError(toStorageError)),
+  // Keychain doesn't support enumerating — you need to know the account name.
   list: undefined,
 });

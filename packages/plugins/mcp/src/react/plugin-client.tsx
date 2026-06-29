@@ -12,7 +12,7 @@
 
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
-import { createMcpSourcePlugin } from "./source-plugin";
+import { createMcpIntegrationPlugin } from "./source-plugin";
 
 export interface McpClientConfig {
   /**
@@ -26,7 +26,7 @@ export interface McpClientConfig {
 export default function createMcpClientPlugin(config?: McpClientConfig) {
   return defineClientPlugin({
     id: "mcp" as const,
-    sourcePlugin: createMcpSourcePlugin({
+    integrationPlugin: createMcpIntegrationPlugin({
       allowStdio: config?.allowStdio ?? false,
     }),
   });

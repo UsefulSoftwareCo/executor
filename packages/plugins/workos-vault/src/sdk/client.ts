@@ -96,7 +96,21 @@ export interface WorkOSVaultPromiseApi {
 export interface WorkOSVaultCredentials {
   readonly apiKey: string;
   readonly clientId: string;
+  /** Optional WorkOS API base-URL override (e.g. a WorkOS emulator in tests). */
+  readonly apiUrl?: string;
 }
+
+const apiUrlOptions = (
+  url: string | undefined,
+): { apiHostname?: string; port?: number; https?: boolean } => {
+  if (!url) return {};
+  const parsed = new URL(url);
+  return {
+    apiHostname: parsed.hostname,
+    ...(parsed.port ? { port: Number(parsed.port) } : {}),
+    https: parsed.protocol === "https:",
+  };
+};
 
 interface WorkOSVaultUseOptions {
   readonly expectedErrorStatuses?: readonly number[];
@@ -205,6 +219,7 @@ export const makeConfiguredWorkOSVaultClient = (
         new WorkOSClient({
           apiKey: credentials.apiKey,
           clientId: credentials.clientId,
+          ...apiUrlOptions(credentials.apiUrl),
         }),
       ),
     catch: (cause) => new WorkOSVaultClientInstantiationError({ cause }),

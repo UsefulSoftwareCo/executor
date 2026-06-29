@@ -14,11 +14,18 @@ const ELECTRON_EXTERNALS = [
   "electron-store",
   "electron-updater",
   "electron-window-state",
+  "@sentry/electron",
+  "@sentry/electron/main",
 ];
 
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    define: {
+      // Crash-report DSN baked in at build time (publish-desktop.yml).
+      // Empty in local/dev builds → Sentry stays fully disabled.
+      __EXECUTOR_SENTRY_DSN__: JSON.stringify(process.env.DESKTOP_SENTRY_DSN ?? ""),
+    },
     build: {
       rollupOptions: {
         input: { index: "src/main/index.ts" },
@@ -47,6 +54,9 @@ export default defineConfig({
         process.env.npm_package_version ?? "0.0.0",
       ),
       "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
+      "import.meta.env.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL": JSON.stringify(
+        process.env.EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL ?? "https://executor.sh",
+      ),
     },
     resolve: {
       alias: {

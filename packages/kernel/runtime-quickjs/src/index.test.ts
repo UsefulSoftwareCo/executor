@@ -35,6 +35,87 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it.effect("accumulates helper output separately from returned data", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        const attachment = {
+          _tag: "ToolFile",
+          name: "photo.png",
+          mimeType: "image/png",
+          encoding: "base64",
+          data: "iVBORw0KGgo=",
+          byteLength: 8,
+        };
+        const values = [
+          emit("hello"),
+          emit(attachment),
+          emit({ type: "text", text: "mcp hello" }),
+          emit({ type: "image", data: "Zm9v", mimeType: "image/png" }),
+          emit({ type: "audio", data: "SUQz", mimeType: "audio/mpeg" }),
+          emit({
+            type: "resource",
+            resource: { uri: "executor-file:///report.pdf", mimeType: "application/pdf", blob: "JVBERg==" },
+          }),
+          emit({
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          }),
+          emit({ arbitrary: true }),
+        ];
+        return { values: values.map((value) => value === undefined), keptReturn: true };
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        values: [true, true, true, true, true, true, true, true],
+        keptReturn: true,
+      });
+      expect(result.output).toEqual([
+        { type: "content", content: { type: "text", text: "hello" } },
+        {
+          type: "file",
+          file: {
+            _tag: "ToolFile",
+            name: "photo.png",
+            mimeType: "image/png",
+            encoding: "base64",
+            data: "iVBORw0KGgo=",
+            byteLength: 8,
+          },
+        },
+        { type: "content", content: { type: "text", text: "mcp hello" } },
+        { type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/png" } },
+        { type: "content", content: { type: "audio", data: "SUQz", mimeType: "audio/mpeg" } },
+        {
+          type: "content",
+          content: {
+            type: "resource",
+            resource: {
+              uri: "executor-file:///report.pdf",
+              mimeType: "application/pdf",
+              blob: "JVBERg==",
+            },
+          },
+        },
+        {
+          type: "content",
+          content: {
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          },
+        },
+        { type: "content", content: { type: "text", text: '{"arbitrary":true}' } },
+      ]);
+    }),
+  );
+
   it.effect("recovers prose-wrapped fenced async arrow input", () =>
     Effect.gen(function* () {
       const result = yield* executor.execute(

@@ -193,6 +193,39 @@ describe("OpenAPI plugin", () => {
     }),
   );
 
+  it.effect("compileToolDefinitions honors explicit executor tool paths", () =>
+    Effect.gen(function* () {
+      const explicitSpec = {
+        openapi: "3.1.0",
+        info: { title: "Googleish", version: "1.0.0" },
+        paths: {
+          "/gmail/v1/users/{userId}/messages": {
+            get: {
+              operationId: "gmail.usersMessagesList",
+              "x-executor-toolPath": "users.messages.list",
+              parameters: [
+                {
+                  name: "userId",
+                  in: "path",
+                  required: true,
+                  schema: { type: "string" },
+                },
+              ],
+              responses: { "200": { description: "OK" } },
+            },
+          },
+        },
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const doc = yield* parse(JSON.stringify(explicitSpec));
+      const result = yield* extract(doc);
+      const defs = compileToolDefinitions(result.operations);
+
+      expect(defs.map((def) => def.toolPath)).toEqual(["users.messages.list"]);
+      expect(defs.map((def) => def.operation.operationId)).toEqual(["gmail.usersMessagesList"]);
+    }),
+  );
+
   it.effect("extracts server variables with enum and description", () =>
     Effect.gen(function* () {
       const specWithServerVars = pingSpecWithServers("Sentry", [

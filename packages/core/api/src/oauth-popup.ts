@@ -106,7 +106,16 @@ export const popupDocument = <TAuth>(
 ${detailsHtml}
 </main>
 <script>
-(()=>{const p=${serialized};try{if(window.opener)window.opener.postMessage(p,window.location.origin);if("BroadcastChannel"in window){const c=new BroadcastChannel("${escapedChannel}");c.postMessage(p);setTimeout(()=>c.close(),100)}}finally{if(p.ok)setTimeout(()=>window.close(),150)}})();
+(()=>{const p=${serialized};
+// Three same-origin completion channels, each isolated so one failing doesn't
+// block the others. postMessage is severed when the provider's consent page set
+// COOP (window.opener becomes null), and BroadcastChannel can be partitioned/
+// raced by the auto-close — so localStorage (a 'storage' event on the opener) is
+// the reliable fallback. The opener settles on whichever lands first.
+try{if(window.opener)window.opener.postMessage(p,window.location.origin)}catch(e){}
+try{if("BroadcastChannel"in window){const c=new BroadcastChannel("${escapedChannel}");c.postMessage(p);setTimeout(()=>c.close(),100)}}catch(e){}
+try{localStorage.setItem("${escapedChannel}",JSON.stringify(p))}catch(e){}
+if(p.ok)setTimeout(()=>window.close(),400);})();
 </script>
 </body></html>`;
 };
@@ -120,6 +129,10 @@ export type OAuthCallbackUrlParams = {
   readonly code?: string | null;
   readonly error?: string | null;
   readonly error_description?: string | null;
+  /** Non-standard regional host hints (Datadog: `domain` bare host, `site`
+   *  full origin) used to redeem the code at the org's region. */
+  readonly domain?: string | null;
+  readonly site?: string | null;
 };
 
 /** Short summary + optional full technical detail. */
@@ -134,11 +147,23 @@ export type RunOAuthCallbackInput<TAuth, E, R> = {
     readonly state: string;
     readonly code: string | null;
     readonly error: string | null;
+    readonly callbackDomain: string | null;
   }) => Effect.Effect<TAuth, E, R>;
   readonly urlParams: OAuthCallbackUrlParams;
   /** Map a plugin-specific error into a short summary and optional details. */
   readonly toErrorMessage: (error: unknown) => PopupErrorMessage;
   readonly channelName: string;
+};
+
+const providerErrorMessage = (params: OAuthCallbackUrlParams): PopupErrorMessage | null => {
+  const error = params.error ?? null;
+  const description = params.error_description ?? null;
+  const value = error ?? description;
+  if (!value) return null;
+  return {
+    short: "OAuth provider rejected authorization",
+    details: error && description && description !== error ? `${error}: ${description}` : value,
+  };
 };
 
 /**
@@ -151,34 +176,49 @@ export type RunOAuthCallbackInput<TAuth, E, R> = {
  */
 export const runOAuthCallback = <TAuth, E, R>(
   input: RunOAuthCallbackInput<TAuth, E, R>,
-): Effect.Effect<string, never, R> =>
-  input
-    .complete({
-      state: input.urlParams.state,
-      code: input.urlParams.code ?? null,
-      error: input.urlParams.error ?? input.urlParams.error_description ?? null,
-    })
-    .pipe(
-      Effect.map(
-        (auth): OAuthPopupResult<TAuth> => ({
-          type: OAUTH_POPUP_MESSAGE_TYPE,
-          ok: true,
-          sessionId: input.urlParams.state,
-          ...auth,
-        }),
-      ),
-      Effect.catchCause((cause) => {
-        const { short, details } = input.toErrorMessage(Cause.squash(cause));
-        return Effect.succeed<OAuthPopupResult<TAuth>>({
+): Effect.Effect<string, never, R> => {
+  const providerError = providerErrorMessage(input.urlParams);
+  const result =
+    providerError == null
+      ? input
+          .complete({
+            state: input.urlParams.state,
+            code: input.urlParams.code ?? null,
+            error: null,
+            callbackDomain: input.urlParams.domain ?? input.urlParams.site ?? null,
+          })
+          .pipe(
+            Effect.map(
+              (auth): OAuthPopupResult<TAuth> => ({
+                type: OAUTH_POPUP_MESSAGE_TYPE,
+                ok: true,
+                sessionId: input.urlParams.state,
+                ...auth,
+              }),
+            ),
+          )
+      : Effect.succeed<OAuthPopupResult<TAuth>>({
           type: OAUTH_POPUP_MESSAGE_TYPE,
           ok: false,
           sessionId: input.urlParams.state ?? null,
-          error: short,
-          ...(details && details !== short ? { errorDetails: details } : {}),
+          error: providerError.short,
+          ...(providerError.details ? { errorDetails: providerError.details } : {}),
         });
-      }),
-      Effect.tap((result) =>
-        Effect.sync(() => completionListener?.(result as OAuthPopupResult<unknown>)),
-      ),
-      Effect.map((result) => popupDocument(result, input.channelName)),
-    );
+
+  return result.pipe(
+    Effect.catchCause((cause) => {
+      const { short, details } = input.toErrorMessage(Cause.squash(cause));
+      return Effect.succeed<OAuthPopupResult<TAuth>>({
+        type: OAUTH_POPUP_MESSAGE_TYPE,
+        ok: false,
+        sessionId: input.urlParams.state ?? null,
+        error: short,
+        ...(details && details !== short ? { errorDetails: details } : {}),
+      });
+    }),
+    Effect.tap((result) =>
+      Effect.sync(() => completionListener?.(result as OAuthPopupResult<unknown>)),
+    ),
+    Effect.map((result) => popupDocument(result, input.channelName)),
+  );
+};

@@ -1,0 +1,69 @@
+name: Desktop app crash
+description: The Executor desktop app crashes, won't start, or shows a blank window.
+title: "[desktop] "
+labels: ["desktop", "crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please try the quick fixes in the pinned
+        **[Desktop app crashing? Start here](https://github.com/RhysSullivan/executor/issues?q=is%3Aissue+label%3Acrash-triage)**
+        guide — most crashes are fixed by updating to the latest version.
+        If you're still stuck, the details below help us pin it down fast.
+  - type: input
+    id: version
+    attributes:
+      label: Executor version
+      description: Shown in the About menu (or Settings page). Please update to the latest first if you can.
+      placeholder: "1.5.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: when
+    attributes:
+      label: When does it crash?
+      options:
+        - On launch — the app never opens
+        - Shortly after launch
+        - While doing something specific (describe below)
+        - Randomly during use
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What were you doing when it crashed? Does it happen every time?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics / logs
+      description: |
+        If the app opens far enough to show a menu, open the **Executor** menu → **Export Diagnostics…**
+        (or **Report a Problem…**) and attach the zip — it has everything we need and no secrets.
+
+        Otherwise, attach the log file directly:
+        - macOS: `~/Library/Logs/Executor/main.log`
+        - Windows: `%APPDATA%\Executor\logs\main.log`
+        - Linux: `~/.config/Executor/logs/main.log`
+
+        (Please don't attach anything from `~/.executor` — that's where your data and secrets live.)
+      placeholder: Drag the diagnostics zip or main.log here.
+  - type: input
+    id: run-id
+    attributes:
+      label: Run ID (optional)
+      description: If a crash report was sent, the Run ID from the diagnostics manifest helps us find it.

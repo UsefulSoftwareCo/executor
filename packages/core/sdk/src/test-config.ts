@@ -1,21 +1,20 @@
 import { Context, Effect, Layer } from "effect";
-import { withQueryContext } from "fumadb/query";
+import { withQueryContext } from "@executor-js/fumadb/query";
 import { collectTables, createExecutor, type Executor, type ExecutorConfig } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
-import { ScopeId } from "./ids";
+import { ProviderItemId, ProviderKey, Subject, Tenant } from "./ids";
 import { definePlugin, type AnyPlugin } from "./plugin";
-import { Scope } from "./scope";
-import type { ExecutorScopePolicyContext } from "./scope-policy";
-import type { SecretProvider } from "./secrets";
+import type { ExecutorOwnerPolicyContext } from "./owner-policy";
+import type { CredentialProvider } from "./provider";
 import type { SqliteTestFumaDb } from "./sqlite-test-db";
 
 // ---------------------------------------------------------------------------
 // makeTestConfig — build an ExecutorConfig backed by an in-memory FumaDB.
 // For unit tests, plugin authors validating their plugin, REPL experimentation.
-// No persistence unless a caller supplies `dataDir`.
 //
-// Defaults to a single-element scope stack ("test-scope") — tests that
-// need multi-scope behavior can pass `scopes` explicitly.
+// Defaults to a single tenant ("test-tenant") with a bound subject
+// ("test-subject"). Tests that need a pure-org executor can pass `subject:
+// null` via a spread override.
 // ---------------------------------------------------------------------------
 
 export type TestDatabaseBackend = "sqlite";
@@ -68,14 +67,14 @@ const makeLazyTestFumaDb = (options: {
     "upsert",
   ]);
 
-  const makeDb = (context?: ExecutorScopePolicyContext): FumaDb =>
+  const makeDb = (context?: ExecutorOwnerPolicyContext): FumaDb =>
     new Proxy(
       { internal: context === undefined ? internal : { ...internal, context } },
       {
         get(target, prop) {
           if (prop === "internal") return target.internal;
           if (prop === "withContext") {
-            return (nextContext: ExecutorScopePolicyContext) => makeDb(nextContext);
+            return (nextContext: ExecutorOwnerPolicyContext) => makeDb(nextContext);
           }
           if (!queryMethods.has(prop)) return undefined;
 
@@ -104,12 +103,25 @@ const makeLazyTestFumaDb = (options: {
   };
 };
 
+/** The OAuth callback the in-memory test executor advertises. The OAuth flow
+ *  tests exercise `start` (authorization_code), which now REQUIRES an explicit
+ *  `redirectUri` — there is no localhost default. The test authorization server
+ *  accepts any redirect_uri for an unregistered client, so this stable value is
+ *  what the test AS echoes back. Tests asserting the "missing redirectUri fails
+ *  loudly" path override this with `redirectUri: null`. */
+export const TEST_OAUTH_REDIRECT_URI = "http://localhost/oauth/callback";
+
 export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly []> = {
-  readonly scopeName?: string;
-  readonly scopes?: readonly Scope[];
+  readonly tenant?: string;
+  readonly subject?: string | null;
   readonly plugins?: TPlugins;
   readonly backend?: TestDatabaseBackend;
   readonly dataDir?: string;
+  readonly coreTools?: ExecutorConfig<TPlugins>["coreTools"];
+  /** Override the OAuth callback URL. Pass `null` to construct an executor with
+   *  no OAuth callback (exercises the fail-loud redirect path). */
+  readonly redirectUri?: string | null;
+  readonly oauthCallbackStateOrgSlug?: string;
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -118,33 +130,37 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
   readonly db: FumaDb;
   readonly testDb: TestFumaDb;
 } => {
-  const scopes = options?.scopes ?? [
-    Scope.make({
-      id: ScopeId.make("test-scope"),
-      name: options?.scopeName ?? "test",
-      createdAt: new Date(),
-    }),
-  ];
+  const tenant = options?.tenant ?? "test-tenant";
+  const subject = options?.subject === undefined ? "test-subject" : options.subject;
 
-  const tables = collectTables(options?.plugins ?? []);
+  const tables = collectTables();
   const testDb = makeLazyTestFumaDb({
     tables,
     backend: options?.backend ?? "sqlite",
     dataDir: options?.dataDir,
   });
   const db = withQueryContext(testDb.db, {
-    allowedScopeIds: new Set(scopes.map((scope) => String(scope.id))),
-  } satisfies ExecutorScopePolicyContext);
+    tenant,
+    subject,
+  } satisfies ExecutorOwnerPolicyContext);
+
+  // EXPLICIT OAuth callback: default to a stable test URL so the redirect flow
+  // tests work without the removed localhost default; `redirectUri: null` omits
+  // it so a test can exercise the fail-loud "no callback configured" path.
+  const redirectUri =
+    options?.redirectUri === undefined ? TEST_OAUTH_REDIRECT_URI : options.redirectUri;
 
   return {
-    scopes,
+    tenant: Tenant.make(tenant),
+    ...(subject != null ? { subject: Subject.make(subject) } : {}),
     db,
     plugins: options?.plugins,
+    coreTools: options?.coreTools,
     testDb,
-    // Tests default to auto-accepting elicitation prompts. Override via
-    // a wrapping spread if a test exercises a real handler:
-    //   { ...makeTestConfig(...), onElicitation: customHandler }
+    // Tests default to auto-accepting elicitation prompts.
     onElicitation: "accept-all",
+    ...(redirectUri != null ? { redirectUri } : {}),
+    oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
   };
 };
 
@@ -154,7 +170,8 @@ export interface TestWorkspaceHarness<
   readonly config: ExecutorConfig<TPlugins> & { readonly testDb: TestFumaDb };
   readonly executor: Executor<TPlugins>;
   readonly testDb: TestFumaDb;
-  readonly scopes: readonly Scope[];
+  readonly tenant: string;
+  readonly subject: string | null;
 }
 
 export class TestWorkspace extends Context.Service<TestWorkspace, TestWorkspaceHarness>()(
@@ -180,7 +197,8 @@ export const makeTestWorkspaceHarness = <const TPlugins extends readonly AnyPlug
         config,
         executor,
         testDb: config.testDb,
-        scopes: config.scopes,
+        tenant: String(config.tenant),
+        subject: config.subject != null ? String(config.subject) : null,
       } as const;
     }),
     ({ executor, testDb }) =>
@@ -205,30 +223,37 @@ export const makeTestExecutor = <const TPlugins extends readonly AnyPlugin[] = r
   options?: TestConfigOptions<TPlugins>,
 ) => makeTestWorkspaceHarness(options).pipe(Effect.map(({ executor }) => executor));
 
-export const memorySecretsPlugin = definePlugin(() => {
+/** Built-in in-memory writable credential provider, contributed as a plugin
+ *  so tests always have a default writable store for inline connection values. */
+export const memoryCredentialsPlugin = definePlugin(() => {
   const store = new Map<string, string>();
 
-  const provider: SecretProvider = {
-    key: "memory",
+  const provider: CredentialProvider = {
+    key: ProviderKey.make("memory"),
     writable: true,
-    get: (id, scope) => Effect.sync(() => store.get(`${scope}\u0000${id}`) ?? null),
-    set: (id, value, scope) =>
+    get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+    set: (id, value) =>
       Effect.sync(() => {
-        store.set(`${scope}\u0000${id}`, value);
+        store.set(String(id), value);
       }),
-    delete: (id, scope) => Effect.sync(() => store.delete(`${scope}\u0000${id}`)),
+    delete: (id) =>
+      Effect.sync(() => {
+        store.delete(String(id));
+      }),
     list: () =>
       Effect.sync(() =>
-        Array.from(store.keys()).map((key) => {
-          const name = key.split("\u0000", 2)[1] ?? key;
-          return { id: name, name };
-        }),
+        Array.from(store.keys()).map((key) => ({
+          id: ProviderItemId.make(key),
+          name: key,
+        })),
       ),
   };
 
   return {
-    id: "memory-secrets" as const,
+    id: "memory-credentials" as const,
     storage: () => ({}),
-    secretProviders: [provider],
+    credentialProviders: [provider],
   };
 });
+
+// Back-compat alias removed: v1 `memorySecretsPlugin` is gone (no secrets).

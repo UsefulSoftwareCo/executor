@@ -169,7 +169,9 @@ function mapQueryResult(table: AnyTable, result: Record<string, unknown>) {
 export function fromDrizzle(
   schema: AnySchema,
   _db: unknown,
-  provider: SQLProvider
+  provider: SQLProvider,
+  interactiveTransactions: boolean = true,
+  maxBoundParameters?: number
 ): AbstractQuery<AnySchema> {
   const [db, drizzleTables] = parseDrizzle(_db);
 
@@ -354,9 +356,18 @@ export function fromDrizzle(
       const idField = table.getIdColumn().names.drizzle;
       const drizzleTable = toDrizzle(table);
       values = values.map((v) => mapValues(v, table));
+      // A multi-row insert binds (rows * columns) parameters in one statement.
+      // Some engines cap bound parameters per query (Cloudflare D1: 100), so
+      // size the batch by PARAMETER count, not row count — otherwise a wide
+      // table (e.g. tools) overflows with "too many SQL variables". Engines
+      // without a tight cap keep the row-count batch.
+      const columnsPerRow = values.length > 0 ? Math.max(1, Object.keys(values[0]!).length) : 1;
+      const batchSize = maxBoundParameters
+        ? Math.max(1, Math.min(CREATE_MANY_BATCH_SIZE, Math.floor(maxBoundParameters / columnsPerRow)))
+        : CREATE_MANY_BATCH_SIZE;
       const batches: (typeof values)[] = [];
-      for (let i = 0; i < values.length; i += CREATE_MANY_BATCH_SIZE) {
-        batches.push(values.slice(i, i + CREATE_MANY_BATCH_SIZE));
+      for (let i = 0; i < values.length; i += batchSize) {
+        batches.push(values.slice(i, i + batchSize));
       }
 
       if (provider === "sqlite" || provider === "postgresql") {
@@ -392,10 +403,19 @@ export function fromDrizzle(
       await query;
     },
     async transaction(run) {
+      // Some SQLite-compatible engines (Cloudflare D1) reject interactive
+      // transactions — both raw BEGIN/COMMIT and the driver's `.transaction()`.
+      // When disabled, run the operations directly against the same connection:
+      // each statement auto-commits, so there is no atomic rollback (the
+      // engine's constraint, not ours). libSQL/Postgres keep real transactions.
+      if (!interactiveTransactions) {
+        return run(fromDrizzle(schema, _db, provider, interactiveTransactions, maxBoundParameters));
+      }
+
       if (provider === "sqlite") {
         await executeRaw("BEGIN");
         try {
-          const result = await run(fromDrizzle(schema, _db, provider));
+          const result = await run(fromDrizzle(schema, _db, provider, interactiveTransactions, maxBoundParameters));
           await executeRaw("COMMIT");
           return result;
         } catch (e) {
@@ -404,7 +424,9 @@ export function fromDrizzle(
         }
       }
 
-      return db.transaction((tx) => run(fromDrizzle(schema, tx, provider)));
+      return db.transaction((tx) =>
+        run(fromDrizzle(schema, tx, provider, interactiveTransactions, maxBoundParameters))
+      );
     },
   });
 }

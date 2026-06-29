@@ -1,5 +1,5 @@
 import { sqliteTable, text, foreignKey, customType } from "drizzle-orm/sqlite-core"
-import { createId } from "fumadb/cuid"
+import { createId } from "@executor-js/fumadb/cuid"
 import { relations } from "drizzle-orm"
 
 export const users = sqliteTable("users", {

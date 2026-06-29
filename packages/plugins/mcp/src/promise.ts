@@ -2,9 +2,9 @@ export { mcpPlugin } from "./sdk/plugin";
 export type {
   McpPluginOptions,
   McpPluginExtension,
-  McpSourceConfig,
-  McpRemoteSourceConfig,
-  McpStdioSourceConfig,
+  McpServerInput,
+  McpRemoteServerInput,
+  McpStdioServerInput,
   McpProbeResult,
-  McpConfigureSourceInput,
+  McpProbeEndpointInput,
 } from "./sdk/plugin";

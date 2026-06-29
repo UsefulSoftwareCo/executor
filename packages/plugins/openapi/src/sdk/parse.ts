@@ -1,7 +1,7 @@
 import type { OpenAPI, OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import { Duration, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import YAML from "yaml";
+import { JSON_SCHEMA, load as parseYamlDocument } from "js-yaml";
 
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
 
@@ -50,7 +50,7 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
       message: `Failed to fetch OpenAPI document: HTTP ${response.status}`,
     });
   }
-  return yield* response.text.pipe(
+  const specText = yield* response.text.pipe(
     Effect.mapError(
       (_cause) =>
         new OpenApiParseError({
@@ -58,6 +58,7 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
         }),
     ),
   );
+  return specText;
 });
 
 /**
@@ -128,7 +129,7 @@ const parseJsonText = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Un
 
 const parseJsonLike = (text: string): Effect.Effect<unknown, unknown> => {
   const parseYaml = Effect.try({
-    try: () => YAML.parse(text) as unknown,
+    try: () => parseYamlDocument(text, { json: true, schema: JSON_SCHEMA }) as unknown,
     catch: () => "YamlParseFailed" as const,
   });
   if (!text.startsWith("{") && !text.startsWith("[")) return parseYaml;

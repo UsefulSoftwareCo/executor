@@ -50,19 +50,19 @@ export const OnePasswordHandlers = HttpApiBuilder.group(
           }),
         ),
       )
-      .handle("configure", ({ params: path, payload }) =>
+      .handle("configure", ({ payload }) =>
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.configure(payload, path.scopeId);
+            yield* ext.configure(payload);
           }),
         ),
       )
-      .handle("removeConfig", ({ params: path }) =>
+      .handle("removeConfig", () =>
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.removeConfig(path.scopeId);
+            yield* ext.removeConfig();
           }),
         ),
       )
@@ -81,7 +81,7 @@ export const OnePasswordHandlers = HttpApiBuilder.group(
             const auth =
               urlParams.authKind === "desktop-app"
                 ? { kind: "desktop-app" as const, accountName: urlParams.account }
-                : { kind: "service-account" as const, tokenSecretId: urlParams.account };
+                : { kind: "service-account" as const, token: urlParams.account };
             const vaults = yield* ext.listVaults(auth);
             return { vaults: [...vaults] };
           }),

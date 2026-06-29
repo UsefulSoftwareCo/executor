@@ -6,6 +6,8 @@
  * can render with proper nesting.
  */
 
+import { Option } from "effect";
+
 import type { ExtractedOperation } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -134,22 +136,44 @@ export interface ToolDefinition {
   readonly operation: ExtractedOperation;
 }
 
+/**
+ * The minimal per-operation metadata the tool-path planner needs. Kept
+ * deliberately light (no schemas) so the streaming compile path can plan paths
+ * for tens of thousands of operations without holding the full extracted
+ * operations in memory.
+ */
+export interface OperationPathInput {
+  readonly operationId: string;
+  readonly explicitToolPath: string | undefined;
+  readonly method: string;
+  readonly pathTemplate: string;
+  /** The first non-empty tag, used to seed the group segment. */
+  readonly tag0: string | undefined;
+}
+
+/** A resolved tool path plus its index back into the input operations array. */
+export interface PlannedToolPath {
+  readonly toolPath: string;
+  readonly group: string;
+  readonly leaf: string;
+  readonly operationIndex: number;
+}
+
 // ---------------------------------------------------------------------------
 // Collision resolution
 // ---------------------------------------------------------------------------
 
-const resolveCollisions = (
-  definitions: {
-    toolPath: string;
-    group: string;
-    leaf: string;
-    versionSegment: string | undefined;
-    method: string;
-    operationHash: string;
-    operationIndex: number;
-    operation: ExtractedOperation;
-  }[],
-): ToolDefinition[] => {
+interface RawToolPath {
+  toolPath: string;
+  group: string;
+  leaf: string;
+  versionSegment: string | undefined;
+  method: string;
+  operationHash: string;
+  operationIndex: number;
+}
+
+const resolveCollisions = (definitions: RawToolPath[]): PlannedToolPath[] => {
   // Mutable — we progressively refine toolPath on collision
   const staged = definitions.map((d) => ({ ...d }));
 
@@ -190,7 +214,6 @@ const resolveCollisions = (
     group: d.group,
     leaf: d.leaf,
     operationIndex: d.operationIndex,
-    operation: d.operation,
   }));
 };
 
@@ -212,23 +235,40 @@ const stableHash = (value: unknown): string => {
 // ---------------------------------------------------------------------------
 
 /**
- * Compile extracted operations into tool definitions with structured
- * `group.leaf` paths suitable for tree rendering.
+ * Plan structured `group.leaf` tool paths from lightweight per-operation
+ * metadata. Path derivation + collision resolution need a global view of every
+ * operation, but only its name/method/path/tag, never its schemas. Keeping this
+ * pass schema-free lets the streaming compile path plan paths for a 16k-op spec
+ * without materializing the full extracted operations.
+ *
+ * The returned `operationIndex` points back into the `inputs` array.
  */
-export const compileToolDefinitions = (
-  operations: readonly ExtractedOperation[],
-): ToolDefinition[] => {
-  const raw = operations.map((op, index) => {
+export const planToolPaths = (inputs: readonly OperationPathInput[]): PlannedToolPath[] => {
+  const raw: RawToolPath[] = inputs.map((op, index) => {
     const operationId = op.operationId;
-    const group = normalizeGroupSegment(op.tags[0]) ?? derivePathGroup(op.pathTemplate);
-    const leaf = deriveLeaf(operationId, op.method, op.pathTemplate, group);
-    const versionSegment = deriveVersionSegment(op.pathTemplate);
     const operationHash = stableHash({
       method: op.method,
       path: op.pathTemplate,
       operationId,
     });
+    const versionSegment = deriveVersionSegment(op.pathTemplate);
 
+    if (op.explicitToolPath) {
+      const [group = "root", ...leafParts] = op.explicitToolPath.split(".").filter(Boolean);
+      const leaf = leafParts.join(".") || group;
+      return {
+        toolPath: op.explicitToolPath,
+        group,
+        leaf,
+        versionSegment,
+        method: op.method,
+        operationHash,
+        operationIndex: index,
+      };
+    }
+
+    const group = normalizeGroupSegment(op.tag0) ?? derivePathGroup(op.pathTemplate);
+    const leaf = deriveLeaf(operationId, op.method, op.pathTemplate, group);
     return {
       toolPath: `${group}.${leaf}`,
       group,
@@ -237,9 +277,35 @@ export const compileToolDefinitions = (
       method: op.method,
       operationHash,
       operationIndex: index,
-      operation: op,
     };
   });
 
   return resolveCollisions(raw).sort((a, b) => a.toolPath.localeCompare(b.toolPath));
+};
+
+/**
+ * Compile extracted operations into tool definitions with structured
+ * `group.leaf` paths suitable for tree rendering. Thin wrapper over
+ * `planToolPaths` that re-attaches each operation by index.
+ */
+export const compileToolDefinitions = (
+  operations: readonly ExtractedOperation[],
+): ToolDefinition[] => {
+  const plans = planToolPaths(
+    operations.map((op) => ({
+      operationId: op.operationId,
+      explicitToolPath: Option.getOrUndefined(op.toolPath),
+      method: op.method,
+      pathTemplate: op.pathTemplate,
+      tag0: op.tags[0],
+    })),
+  );
+
+  return plans.map((plan) => ({
+    toolPath: plan.toolPath,
+    group: plan.group,
+    leaf: plan.leaf,
+    operationIndex: plan.operationIndex,
+    operation: operations[plan.operationIndex]!,
+  }));
 };

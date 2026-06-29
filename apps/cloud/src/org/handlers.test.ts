@@ -1,25 +1,27 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Data, Effect, Layer } from "effect";
 
-import { AuthContext } from "../auth/middleware";
-import { WorkOSAuth, type WorkOSAuthService } from "../auth/workos";
+import { AuthContext } from "@executor-js/api/server";
+import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { Forbidden } from "./api";
 
 // ---------------------------------------------------------------------------
-// Stub factory — only implement what each test calls
+// Domain-handler guards. The member / role / invite / org-name endpoints moved
+// to the shared WorkOS `AccountProvider` (covered by
+// `workos-account-service.test.ts`); this group now serves only the WorkOS
+// domain-verification endpoints. These tests pin the two guards those handlers
+// share — `requireAdmin` and `assertDomainInSessionOrg` — which mirror
+// `org/handlers.ts`.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test stub needs wide function types
-type StubFn = (...args: never[]) => Effect.Effect<any>;
+type StubFn = (...args: never[]) => Effect.Effect<any, any>;
 
 type StubOverrides = {
-  listOrgMembers?: StubFn;
   getUserOrgMembership?: StubFn;
-  getUser?: StubFn;
-  sendInvitation?: StubFn;
-  deleteOrgMembership?: StubFn;
-  updateOrgMembershipRole?: StubFn;
-  listOrgRoles?: StubFn;
+  getOrganizationDomain?: StubFn;
+  getOrganization?: StubFn;
+  deleteOrganizationDomain?: StubFn;
 };
 
 class UnstubbedWorkOSMethod extends Data.TaggedError("UnstubbedWorkOSMethod")<{
@@ -28,8 +30,8 @@ class UnstubbedWorkOSMethod extends Data.TaggedError("UnstubbedWorkOSMethod")<{
 
 const stubWorkOS = (overrides: StubOverrides = {}) =>
   Layer.succeed(
-    WorkOSAuth,
-    new Proxy({} as WorkOSAuthService, {
+    WorkOSClient,
+    new Proxy({} as WorkOSClientService, {
       get: (_target, prop) => {
         if (typeof prop === "string" && prop in overrides) {
           return overrides[prop as keyof StubOverrides];
@@ -44,16 +46,13 @@ const stubWorkOS = (overrides: StubOverrides = {}) =>
     }),
   );
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
 const adminAuth = {
   accountId: "user_admin",
   organizationId: "org_1",
   email: "admin@test.com",
   name: "Admin",
   avatarUrl: null,
+  roles: [],
 };
 
 const memberAuth = {
@@ -62,158 +61,51 @@ const memberAuth = {
   email: "member@test.com",
   name: "Member",
   avatarUrl: null,
+  roles: [],
 };
 
-type FakeMembership = {
-  id: string;
-  userId: string;
-  status: string;
-  role: { slug: string };
-};
-type FakeUser = {
-  email: string;
-  firstName: string | null;
-  lastName: string | null;
-  profilePictureUrl: string | null;
-  lastSignInAt: string | null;
-};
-type FakeRole = { slug: string; name: string };
+const provide = (auth: typeof adminAuth, workosOverrides: StubOverrides = {}) =>
+  Layer.mergeAll(Layer.succeed(AuthContext)(auth), stubWorkOS(workosOverrides));
 
-const fakeMemberships: FakeMembership[] = [
-  {
-    id: "mem_admin",
-    userId: "user_admin",
-    status: "active",
-    role: { slug: "admin" },
-  },
-  {
-    id: "mem_member",
-    userId: "user_member",
-    status: "active",
-    role: { slug: "member" },
-  },
-];
-
-const fakeUsers: Record<string, FakeUser> = {
-  user_admin: {
-    email: "admin@test.com",
-    firstName: "Admin",
-    lastName: null,
-    profilePictureUrl: null,
-    lastSignInAt: "2026-04-09T00:00:00Z",
-  },
-  user_member: {
-    email: "member@test.com",
-    firstName: "Member",
-    lastName: null,
-    profilePictureUrl: null,
-    lastSignInAt: null,
-  },
-};
-
-const fakeRoles: FakeRole[] = [
-  { slug: "admin", name: "Admin" },
-  { slug: "member", name: "Member" },
-];
-
-// ---------------------------------------------------------------------------
-// The admin guard — mirrors handlers.ts
-// ---------------------------------------------------------------------------
-
+// Mirrors `org/handlers.ts` `requireAdmin`.
 const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
-  const workos = yield* WorkOSAuth;
+  const workos = yield* WorkOSClient;
   const current = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
   if (!current || current.role?.slug !== "admin") {
     return yield* new Forbidden();
   }
 });
 
-const provide = (auth: typeof adminAuth, workosOverrides: StubOverrides = {}) =>
-  Layer.mergeAll(Layer.succeed(AuthContext)(auth), stubWorkOS(workosOverrides));
-
-const withMembers: StubOverrides = {
-  listOrgMembers: () => Effect.succeed({ data: fakeMemberships }),
-};
-
 const withCurrentMembership: StubOverrides = {
   getUserOrgMembership: (_organizationId: string, userId: string) =>
-    Effect.succeed(fakeMemberships.find((m) => m.userId === userId) ?? null),
+    Effect.succeed(
+      userId === "user_admin"
+        ? { id: "mem_admin", userId, status: "active", role: { slug: "admin" } }
+        : { id: "mem_member", userId, status: "active", role: { slug: "member" } },
+    ),
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("Org handlers", () => {
-  describe("listMembers", () => {
-    it.effect("returns members with isCurrentUser set correctly", () =>
-      Effect.gen(function* () {
-        const auth = yield* AuthContext;
-        const workos = yield* WorkOSAuth;
-        const result = yield* workos.listOrgMembers(auth.organizationId);
-        const members = yield* Effect.all(
-          result.data.map((m: FakeMembership) =>
-            Effect.gen(function* () {
-              const user = yield* workos.getUser(m.userId);
-              return {
-                id: m.id,
-                email: user.email,
-                role: m.role?.slug ?? "member",
-                isCurrentUser: m.userId === auth.accountId,
-              };
-            }),
-          ),
-        );
-
-        expect(members).toHaveLength(2);
-        expect(members[0]).toMatchObject({
-          email: "admin@test.com",
-          isCurrentUser: true,
-        });
-        expect(members[1]).toMatchObject({
-          email: "member@test.com",
-          isCurrentUser: false,
-        });
-      }).pipe(
-        Effect.provide(
-          provide(adminAuth, {
-            ...withMembers,
-            getUser: (id: string) => Effect.succeed(fakeUsers[id]),
-          }),
-        ),
-      ),
-    );
+// Mirrors `org/handlers.ts` `assertDomainInSessionOrg`.
+const assertDomainInSessionOrg = (domainId: string) =>
+  Effect.gen(function* () {
+    const auth = yield* AuthContext;
+    const workos = yield* WorkOSClient;
+    const domain = yield* workos
+      .getOrganizationDomain(domainId)
+      .pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (!domain || domain.organizationId !== auth.organizationId) {
+      return yield* new Forbidden();
+    }
   });
 
-  describe("listRoles", () => {
-    it.effect("returns available roles", () =>
-      Effect.gen(function* () {
-        const auth = yield* AuthContext;
-        const workos = yield* WorkOSAuth;
-        const result = yield* workos.listOrgRoles(auth.organizationId);
-        const roles = result.data.map((r: FakeRole) => ({
-          slug: r.slug,
-          name: r.name,
-        }));
-
-        expect(roles).toEqual(fakeRoles);
-      }).pipe(
-        Effect.provide(
-          provide(adminAuth, {
-            listOrgRoles: () => Effect.succeed({ data: fakeRoles }),
-          }),
-        ),
-      ),
-    );
-  });
-
+describe("Org domain handlers", () => {
   describe("requireAdmin", () => {
-    it.effect("passes for admin user", () =>
+    it.effect("passes for an admin caller", () =>
       requireAdmin.pipe(Effect.provide(provide(adminAuth, withCurrentMembership))),
     );
 
-    it.effect("rejects non-admin with Forbidden", () =>
+    it.effect("rejects a non-admin caller with Forbidden", () =>
       Effect.gen(function* () {
         const error = yield* Effect.flip(requireAdmin);
         expect(error).toBeInstanceOf(Forbidden);
@@ -221,103 +113,43 @@ describe("Org handlers", () => {
     );
   });
 
-  describe("invite (admin-gated)", () => {
-    it.effect("admin can invite", () =>
-      Effect.gen(function* () {
-        yield* requireAdmin;
-        const auth = yield* AuthContext;
-        const workos = yield* WorkOSAuth;
-        const result = yield* workos.sendInvitation({
-          email: "new@test.com",
-          organizationId: auth.organizationId,
-        });
-
-        expect(result.email).toBe("new@test.com");
-      }).pipe(
+  describe("assertDomainInSessionOrg", () => {
+    it.effect("passes when the domain belongs to the session org", () =>
+      assertDomainInSessionOrg("dom_1").pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withCurrentMembership,
-            sendInvitation: (p: { email: string }) =>
-              Effect.succeed({ id: "inv_1", email: p.email }),
+            getOrganizationDomain: () =>
+              Effect.succeed({ id: "dom_1", organizationId: "org_1", domain: "acme.test" }),
           }),
         ),
       ),
     );
 
-    it.effect("member cannot invite", () =>
+    it.effect("rejects a domain owned by a different org with Forbidden", () =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip(
-          Effect.gen(function* () {
-            yield* requireAdmin;
-            const workos = yield* WorkOSAuth;
-            yield* workos.sendInvitation({
-              email: "x",
-              organizationId: "org_1",
-            });
-          }),
-        );
+        const error = yield* Effect.flip(assertDomainInSessionOrg("dom_other"));
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
-    );
-  });
-
-  describe("removeMember (admin-gated)", () => {
-    it.effect("admin can remove", () =>
-      Effect.gen(function* () {
-        yield* requireAdmin;
-        const workos = yield* WorkOSAuth;
-        yield* workos.deleteOrgMembership("mem_member");
       }).pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withCurrentMembership,
-            deleteOrgMembership: () => Effect.void,
+            getOrganizationDomain: () =>
+              Effect.succeed({ id: "dom_other", organizationId: "org_2", domain: "evil.test" }),
           }),
         ),
       ),
     );
 
-    it.effect("member cannot remove", () =>
+    it.effect("rejects (Forbidden) when the domain lookup fails — never leaks existence", () =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip(
-          Effect.gen(function* () {
-            yield* requireAdmin;
-            const workos = yield* WorkOSAuth;
-            yield* workos.deleteOrgMembership("mem_admin");
-          }),
-        );
+        const error = yield* Effect.flip(assertDomainInSessionOrg("dom_missing"));
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
-    );
-  });
-
-  describe("updateMemberRole (admin-gated)", () => {
-    it.effect("admin can change role", () =>
-      Effect.gen(function* () {
-        yield* requireAdmin;
-        const workos = yield* WorkOSAuth;
-        yield* workos.updateOrgMembershipRole("mem_member", "admin");
       }).pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withCurrentMembership,
-            updateOrgMembershipRole: () => Effect.void,
+            getOrganizationDomain: () => Effect.fail(new UnstubbedWorkOSMethod({ method: "boom" })),
           }),
         ),
       ),
-    );
-
-    it.effect("member cannot change role", () =>
-      Effect.gen(function* () {
-        const error = yield* Effect.flip(
-          Effect.gen(function* () {
-            yield* requireAdmin;
-            const workos = yield* WorkOSAuth;
-            yield* workos.updateOrgMembershipRole("mem_admin", "member");
-          }),
-        );
-        expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
     );
   });
 });

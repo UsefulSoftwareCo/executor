@@ -23,9 +23,9 @@ import {
 } from "./executor";
 import type { ElicitationContext, ElicitationResponse } from "./elicitation";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
-import { ScopeId } from "./ids";
+import { Subject, Tenant } from "./ids";
 import type { AnyPlugin } from "./plugin";
-import { Scope } from "./scope";
+import type { CredentialProvider } from "./provider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,27 +86,39 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = Prom
 >;
 
 export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly []> {
-  /**
-   * Precedence-ordered scope stack (innermost first). Optional — defaults
-   * to a single-element stack with id "default-scope". Pass an array of
-   * `{ id, name }` partials to build a multi-scope executor.
-   */
-  readonly scopes?: readonly { readonly id?: string; readonly name?: string }[];
+  /** The org / workspace this executor binds to. Optional — defaults to
+   *  `"default-tenant"`. `owner: "org"` rows file here. */
+  readonly tenant?: string;
+  /** The acting member. Omit for a pure-org executor (no `owner:"user"`). */
+  readonly subject?: string;
   readonly plugins?: TPlugins;
   /**
-   * FumaDB ORM handle, or a factory that receives the full Executor table
-   * map after plugins have been applied. Public consumers usually want the
-   * factory form so `collectTables(plugins)` stays inside `createExecutor`.
+   * Config-level credential providers, merged with every
+   * `plugin.credentialProviders`. Config providers register first, so the
+   * default (first writable) store is selected from them when present. A
+   * writable provider is required before `connections.create({ value })` can
+   * store an inline credential. Providers are Effect-native objects (their
+   * `get`/`set` return `Effect`s) — bring them from `@executor-js/sdk/core`.
+   */
+  readonly providers?: readonly CredentialProvider[];
+  /**
+   * FumaDB ORM handle, or a factory that receives the executor-owned table
+   * map. Public consumers usually want the factory form so `collectTables()`
+   * stays inside `createExecutor`.
    */
   readonly db?:
     | FumaDb
     | { readonly db: FumaDb; readonly close?: () => Promise<void> | void }
-    | ((config: {
-        readonly tables: FumaTables;
-      }) =>
+    | ((config: { readonly tables: FumaTables }) =>
         | FumaDb
         | { readonly db: FumaDb; readonly close?: () => Promise<void> | void }
-        | Promise<FumaDb | { readonly db: FumaDb; readonly close?: () => Promise<void> | void }>);
+        | Promise<
+            | FumaDb
+            | {
+                readonly db: FumaDb;
+                readonly close?: () => Promise<void> | void;
+              }
+          >);
   /**
    * How to respond when a tool requests user input mid-invocation. Pass
    * `"accept-all"` for tests / non-interactive hosts, or a handler
@@ -193,30 +205,13 @@ export const createExecutor = async <const TPlugins extends readonly AnyPlugin[]
 ): Promise<Executor<TPlugins>> => {
   const plugins = (config?.plugins ?? []) as TPlugins;
   const db =
-    typeof config.db === "function"
-      ? await config.db({ tables: collectTables(plugins) })
-      : config.db;
-
-  const scopes =
-    config.scopes && config.scopes.length > 0
-      ? config.scopes.map((s, i) =>
-          Scope.make({
-            id: ScopeId.make(s.id ?? (i === 0 ? "default-scope" : `scope-${i}`)),
-            name: s.name ?? (i === 0 ? "default" : `scope-${i}`),
-            createdAt: new Date(),
-          }),
-        )
-      : [
-          Scope.make({
-            id: ScopeId.make("default-scope"),
-            name: "default",
-            createdAt: new Date(),
-          }),
-        ];
+    typeof config.db === "function" ? await config.db({ tables: collectTables() }) : config.db;
 
   const effectConfig = {
-    scopes,
+    tenant: Tenant.make(config.tenant ?? "default-tenant"),
+    ...(config.subject !== undefined ? { subject: Subject.make(config.subject) } : {}),
     plugins,
+    ...(config.providers ? { providers: config.providers } : {}),
     onElicitation: toEffectOnElicitation(config.onElicitation),
     ...(db ? { db } : {}),
   };

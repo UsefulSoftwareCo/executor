@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
-import { FormElicitation, ToolId, createExecutor, definePlugin, tool } from "@executor-js/sdk";
+import { FormElicitation, ToolAddress, createExecutor, definePlugin, tool } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import {
   createExecutionEngine,
@@ -22,7 +22,7 @@ import { chromium, type Browser, type Frame, type Page } from "playwright-core";
 import { createServer as createViteServer } from "vite";
 import type * as Cause from "effect/Cause";
 
-import { createExecutorMcpServer } from "@executor-js/host-mcp";
+import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 
 type ShellServer = {
   readonly url: string;
@@ -65,7 +65,7 @@ type AppsClientCapabilities = ClientCapabilities & {
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const chromeExecutablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? "/usr/bin/google-chrome";
-const formToolId = ToolId.make("test.form");
+const formToolId = ToolAddress.make("tools.test.form.main.t");
 
 const EmptySchema = Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(Schema.Struct({})));
 const CreateItemSchema = Schema.toStandardSchemaV1(
@@ -751,7 +751,7 @@ const makePausedResult = (
   request: ReturnType<typeof FormElicitation.make>,
 ): ExecutionResult => ({
   status: "paused",
-  execution: { id, elicitationContext: { toolId: formToolId, args: {}, request } },
+  execution: { id, elicitationContext: { address: formToolId, args: {}, request } },
 });
 
 const startMcpHarnessForEngine = async <E extends Cause.YieldableError>(
@@ -857,6 +857,8 @@ const startSchemaElicitationMcpHarness = (): Promise<McpHarness> =>
         ),
       ),
     getPausedExecution: () => Effect.succeed(null),
+    pausedExecutionCount: () => Effect.succeed(0),
+    hasPausedExecutions: () => Effect.succeed(false),
     resume: (_executionId, response) =>
       Effect.succeed({
         status: "completed",

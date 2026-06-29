@@ -26,7 +26,18 @@ function FloatActions({ className, children }: { className?: string; children: R
   }
 
   return (
-    <CardStack className={cn("sticky shadow-lg bottom-4 left-0 right-0 mt-auto w-full", className)}>
+    // `transform-gpu` promotes the bar to its own compositing layer. Without it,
+    // when an action button changes width (e.g. "Add integration" -> "Adding...")
+    // the right-aligned row reflows and Chromium can leave a stale paint of the
+    // sticky bar, rendering it doubled/ghosted. A dedicated layer repaints
+    // atomically and avoids the artifact. Transforming the sticky element itself
+    // does not affect its stickiness.
+    <CardStack
+      className={cn(
+        "sticky shadow-lg bottom-4 left-0 right-0 mt-auto w-full transform-gpu",
+        className,
+      )}
+    >
       <div className="flex items-center justify-end gap-3 px-4 py-3">{children}</div>
     </CardStack>
   );

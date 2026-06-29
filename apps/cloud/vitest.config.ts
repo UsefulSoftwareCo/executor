@@ -1,26 +1,31 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+// All of cloud's unit tests in one plain node pool. Integration coverage
+// lives in e2e/ (over the dev server, which runs the production
+// wrangler.jsonc topology — real workerd, real Durable Objects).
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
+const tanstackStartEntryStub = resolve(__dirname, "./test-stubs/tanstack-start-entry.ts");
+
 export default defineConfig({
-  plugins: [
-    cloudflareTest({
-      wrangler: { configPath: "./wrangler.test.jsonc" },
-    }),
-  ],
+  resolve: {
+    alias: {
+      "cloudflare:workers": resolve(__dirname, "./test-stubs/cloudflare-workers.ts"),
+      "#tanstack-start-entry": tanstackStartEntryStub,
+      "#tanstack-router-entry": tanstackStartEntryStub,
+      "#tanstack-start-plugin-adapters": tanstackStartEntryStub,
+    },
+  },
   test: {
     include: ["src/**/*.test.ts"],
-    exclude: ["src/**/*.node.test.ts", "**/node_modules/**"],
+    exclude: ["**/node_modules/**"],
     globalSetup: ["./scripts/test-globalsetup.ts"],
-    // postgres.js's Cloudflare polyfill leaves a couple of `.then()` chains
-    // on `writer.ready` uncaught when the socket tears down before the
-    // writer settles (DbService scope close). The rejection is benign —
-    // the socket is closing anyway — so filter it out rather than fail
-    // the run with noise.
-    onUnhandledError(error) {
-      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: Vitest unhandled-error hook receives unknown host errors
-      if (error && (error as Error).message === "Stream was cancelled.") {
-        return false;
-      }
+    fileParallelism: false,
+    env: {
+      DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5434/postgres",
+      WORKOS_API_KEY: "test_api_key",
+      WORKOS_CLIENT_ID: "test_client_id",
+      WORKOS_COOKIE_PASSWORD: "test_cookie_password_at_least_32_chars!",
+      NODE_ENV: "test",
     },
   },
 });

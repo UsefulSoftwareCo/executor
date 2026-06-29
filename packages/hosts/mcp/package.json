@@ -4,7 +4,26 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./tool-server": {
+      "types": "./src/tool-server.ts",
+      "default": "./src/tool-server.ts"
+    },
+    "./in-memory-session-store": {
+      "types": "./src/in-memory-session-store.ts",
+      "default": "./src/in-memory-session-store.ts"
+    },
+    "./browser-approval": {
+      "types": "./src/browser-approval.ts",
+      "default": "./src/browser-approval.ts"
+    },
+    "./browser-approval-store": {
+      "types": "./src/browser-approval-store.ts",
+      "default": "./src/browser-approval-store.ts"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -18,7 +37,7 @@
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "effect": "catalog:",
-    "zod": "^4.3.0"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

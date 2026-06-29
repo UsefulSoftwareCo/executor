@@ -145,7 +145,13 @@ describe("release bootstrap smoke", () => {
 
       const webProcess = spawn(
         process.execPath,
-        [join(installedWrapperDir, "bin", "executor"), "web", "--port", String(webPort)],
+        [
+          join(installedWrapperDir, "bin", "executor"),
+          "web",
+          "--foreground",
+          "--port",
+          String(webPort),
+        ],
         {
           cwd: installedWrapperDir,
           env: {

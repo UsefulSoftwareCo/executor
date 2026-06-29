@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { CodeBlock } from "@executor-js/react/components/code-block";
 import {
@@ -15,8 +16,19 @@ import {
 } from "@executor-js/react/components/collapsible";
 import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
 
+import { useAuth } from "../auth";
+
 export const SetupMcpPage = () => {
   const navigate = useNavigate();
+  const auth = useAuth();
+  const organizationSlug =
+    auth.status === "authenticated" ? (auth.organization?.slug ?? null) : null;
+  // Land DIRECTLY on the org's canonical URL. Navigating to the bare
+  // `/{-$orgSlug}` would mount the shell at `/`, then OrgSlugGate would fire a
+  // SECOND navigation to canonicalize `/` → `/<slug>` — that double hop is the
+  // window where the shell paints over this still-mounted onboarding page.
+  const goToApp = () =>
+    navigate({ to: "/{-$orgSlug}", params: { orgSlug: organizationSlug ?? undefined } });
   const [origin, setOrigin] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("model");
@@ -30,6 +42,7 @@ export const SetupMcpPage = () => {
         origin,
         desktop: null,
         elicitationMode,
+        organizationSlug,
       })
     : "";
   const command = origin
@@ -38,6 +51,7 @@ export const SetupMcpPage = () => {
         isDev: false,
         origin,
         elicitationMode,
+        organizationSlug,
       })
     : "";
 
@@ -48,7 +62,7 @@ export const SetupMcpPage = () => {
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Step 2 of 2
           </p>
-          <h1 className="font-serif text-3xl">Connect your MCP client</h1>
+          <h1 className="font-sans font-semibold text-3xl">Connect your MCP client</h1>
           <p className="text-sm text-muted-foreground">
             Executor exposes your sources, secrets, and tools to any MCP-compatible agent. Copy the
             URL into your client, or run the install command.
@@ -63,7 +77,18 @@ export const SetupMcpPage = () => {
             <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground/90">
               {endpoint || "…"}
             </span>
-            {endpoint && <CopyButton value={endpoint} />}
+            {endpoint && (
+              <CopyButton
+                value={endpoint}
+                onCopy={() =>
+                  trackEvent("mcp_install_command_copied", {
+                    transport: "http",
+                    elicitation_mode: elicitationMode,
+                    surface: "setup_mcp",
+                  })
+                }
+              />
+            )}
           </div>
           <p className="text-xs text-muted-foreground">Paste this into your MCP client config.</p>
         </section>
@@ -111,7 +136,17 @@ export const SetupMcpPage = () => {
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Install command
           </p>
-          <CodeBlock code={command} lang="bash" />
+          <CodeBlock
+            code={command}
+            lang="bash"
+            onCopy={() =>
+              trackEvent("mcp_install_command_copied", {
+                transport: "http",
+                elicitation_mode: elicitationMode,
+                surface: "setup_mcp",
+              })
+            }
+          />
           <p className="text-xs text-muted-foreground">Adds the server to a supported agent.</p>
         </section>
 
@@ -119,12 +154,21 @@ export const SetupMcpPage = () => {
           {/* oxlint-disable-next-line react/forbid-elements */}
           <button
             type="button"
-            onClick={() => void navigate({ to: "/" })}
+            onClick={() => {
+              trackEvent("setup_mcp_skipped");
+              void goToApp();
+            }}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             Skip for now
           </button>
-          <Button size="sm" onClick={() => void navigate({ to: "/" })}>
+          <Button
+            size="sm"
+            onClick={() => {
+              trackEvent("setup_mcp_completed");
+              void goToApp();
+            }}
+          >
             Continue to app
           </Button>
         </div>

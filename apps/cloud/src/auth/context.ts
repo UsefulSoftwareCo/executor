@@ -1,10 +1,7 @@
 import { Context, Effect, Layer } from "effect";
-import { makeUserStore } from "../services/user-store";
-import { DbService } from "../services/db";
+import { makeUserStore } from "../auth/user-store";
+import { DbService } from "../db/db";
 import { UserStoreError, tryPromiseService, withServiceLogging } from "./errors";
-
-// AuthContext is defined in ./middleware.ts to keep middleware-related types together.
-export { AuthContext } from "./middleware";
 
 // ---------------------------------------------------------------------------
 // UserStoreService — wraps the Drizzle-backed user store with Effect
@@ -30,3 +27,16 @@ export class UserStoreService extends Context.Service<UserStoreService, UserStor
     Effect.map(DbService.asEffect(), ({ db }) => makeService(makeUserStore(db))),
   );
 }
+
+/**
+ * A FRESH `UserStoreService` layer (new layer value per call). `UserStoreService.Live`
+ * captures its `db` at build time; when a long-lived runtime's shared memo map
+ * memoizes that const layer once, it pins the first request's postgres socket and
+ * reuses it on later requests — illegal under Cloudflare's per-request I/O. Build
+ * this (over a fresh `DbService` layer) anywhere a service is constructed once but
+ * invoked across many requests (the MCP org-authorization seam). See [[makeDbLayer]].
+ */
+export const makeUserStoreLayer = (): Layer.Layer<UserStoreService, never, DbService> =>
+  Layer.effect(UserStoreService)(
+    Effect.map(DbService.asEffect(), ({ db }) => makeService(makeUserStore(db))),
+  );

@@ -1,23 +1,34 @@
 {
   "name": "@executor-js/react",
-  "version": "1.4.20",
+  "version": "1.4.45",
   "private": true,
   "type": "module",
   "exports": {
+    "./console-routes": {
+      "types": "./src/console-routes.ts",
+      "bun": "./src/console-routes.ts",
+      "default": "./dist/console-routes.js"
+    },
     "./api/oauth-popup": "./src/api/oauth-popup.ts",
     "./api/*": "./src/api/*.tsx",
     "./plugins/*": "./src/plugins/*.tsx",
     "./pages/*": "./src/pages/*.tsx",
+    "./multiplayer/*": "./src/multiplayer/*.tsx",
     "./components/*": "./src/components/*.tsx",
     "./hooks/*": "./src/hooks/*.ts",
+    "./lib/auth-placements": "./src/lib/auth-placements.tsx",
+    "./lib/integration-add": "./src/lib/integration-add.tsx",
     "./lib/*": "./src/lib/*.ts",
-    "./globals.css": "./src/styles/globals.css"
+    "./globals.css": "./src/styles/globals.css",
+    "./route-tree-gen": "./src/route-tree-gen.ts"
   },
   "scripts": {
     "test": "vitest run",
+    "routes:gen": "bun scripts/gen-routes.ts",
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
-    "typecheck:slow": "tsc --noEmit"
+    "typecheck:slow": "tsc --noEmit",
+    "build": "tsup"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -29,6 +40,7 @@
     "@shikijs/langs": "^4.0.2",
     "@shikijs/themes": "^4.0.2",
     "@tanstack/react-router": "catalog:",
+    "@tanstack/virtual-file-routes": "^1.162.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -52,10 +64,13 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@tanstack/router-cli": "^1.167.17",
+    "@tanstack/router-generator": "^1.167.17",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "hast-util-to-jsx-runtime": "^2.3.6",
     "tailwindcss": "catalog:",
+    "tsup": "^8.5.1",
     "typescript": "catalog:",
     "vite": "catalog:"
   }
