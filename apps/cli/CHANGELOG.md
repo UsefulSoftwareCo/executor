@@ -1,5 +1,21 @@
 # executor
 
+## 1.5.24
+
+### Patch Changes
+
+- [#1207](https://github.com/RhysSullivan/executor/pull/1207) [`c8d9b9d`](https://github.com/RhysSullivan/executor/commit/c8d9b9df2a463da800233a8735b309db2e333d50) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Polish the app's title bar. The release tag beside the `executor` wordmark is now quiet muted-mono metadata instead of a filled pill, matching the registry-minimal design language, and the wordmark is shared across the desktop and dashboard shells so the brand reads identically everywhere. The macOS traffic-light offset is also applied to the mobile sidebar overlay and the collapsed top bar, so the native window controls never sit on top of the wordmark when the window is narrow.
+
+- [#1204](https://github.com/RhysSullivan/executor/pull/1204) [`9394217`](https://github.com/RhysSullivan/executor/commit/939421733830c78c0be8e7a4c65ea9a7c143abfb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the self-host and Cloudflare web dashboards showing "update available" even on the latest version. The builds baked a placeholder version (`0.0.0-selfhost` / `0.0.0-cloudflare`) into the shell, so the update check always compared as behind. They now bake the real release version, and the sidebar footer shows the running version so you can see what you are on.
+
+- [#1209](https://github.com/RhysSullivan/executor/pull/1209) [`ffa4f70`](https://github.com/RhysSullivan/executor/commit/ffa4f700fdba4e3c525f58bbfb0e8355946e29cb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the desktop and CLI daemon crashing on first launch on Windows when a v1 local database is present. The v1 to v2 data migration performed file operations (fsync, rename, remove) on libSQL SQLite files whose native OS handles linger after close() on Windows, surfacing as a fatal "Unknown error" (EPERM on fsync of a read-only handle, EBUSY on rename/remove of just-closed files). POSIX is unaffected, so this only reproduced on Windows. The migration now opens files read-write for fsync (treating it as best-effort), retries removes the same way renames were already retried, and forces a GC pass on each retry so libSQL's native finalizer releases the handle before the next attempt. Fixes the v1.5.23 Windows startup regression.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.24
+  - @executor-js/runtime-quickjs@1.5.24
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.44
+
 ## 1.5.23
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @executor-js/example-all-plugins
 
+## 0.0.42
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.24
+  - @executor-js/plugin-file-secrets@1.5.24
+  - @executor-js/plugin-graphql@1.5.24
+  - @executor-js/plugin-keychain@1.5.24
+  - @executor-js/plugin-mcp@1.5.24
+  - @executor-js/plugin-onepassword@1.5.24
+  - @executor-js/plugin-openapi@1.5.24
+  - @executor-js/plugin-google@1.5.23
+  - @executor-js/plugin-workos-vault@0.0.2
+
 ## 0.0.41
 
 ### Patch Changes
