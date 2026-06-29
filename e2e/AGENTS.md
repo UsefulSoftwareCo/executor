@@ -187,7 +187,7 @@ still have a usable display:
 
 - **macOS**: the base image's autologin reaches a real Aqua session
   (WindowServer/Dock/Finder). Launch the app INTO it with `sudo launchctl asuser
-  <uid> …` (a plain SSH spawn lands in a non-GUI session); the unsigned arm64
+<uid> …` (a plain SSH spawn lands in a non-GUI session); the unsigned arm64
   bundle is ad-hoc `codesign`'d in the guest; `screencapture` films it.
 - **linux**: no window server, so the app renders into an `Xvfb` display with a
   minimal WM (`openbox` — without it the electron window never maps); the window

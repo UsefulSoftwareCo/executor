@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-microsoft",
-  "version": "1.5.21",
+  "version": "1.5.22",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/microsoft",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"

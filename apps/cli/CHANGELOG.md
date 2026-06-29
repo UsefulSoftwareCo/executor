@@ -1,5 +1,21 @@
 # executor
 
+## 1.5.23
+
+### Patch Changes
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add a test seam to skip the first-run "keep Executor running in the background?" consent dialog under automation, matching the existing `confirmResetState` seam. Set `EXECUTOR_TEST_AUTO_CONFIRM_BACKGROUND_SERVICE=1` to keep the background service or any other value to decline. When the variable is unset the dialog is shown exactly as before. Native dialogs cannot be answered from CDP or Playwright, so a packaged first-run boot under automation previously blocked at this prompt with no way to proceed.
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the desktop app failing to start its local server when the generated auth token begins with a dash. The token is `randomBytes(32).toString("base64url")`, which can start with "-", and the packaged app passed it to the bundled CLI as a separate argument (`--auth-token`, then the token). The CLI then read the leading-dash token as an unknown flag, printed its help, and exited, so the desktop showed a fatal "local Executor server crashed during startup" dialog. This was persistent (the token is saved) and cross-platform, affecting roughly 1 in 64 fresh installs. The token is now passed in the combined `--auth-token=<value>` form so a leading dash is treated as the value.
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Notify when a newer Executor is published. The CLI now prints an "update available" line under its ready banner, and the web shell's sidebar update card works for real (a new `/v1/app/npm/dist-tags` endpoint backs it). In the desktop app the card shows a native "Restart to update" action wired to the in-app updater instead of the npm command. The check is best-effort and offline-safe, and can be disabled with `EXECUTOR_DISABLE_UPDATE_CHECK`.
+
+- Updated dependencies [[`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a), [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a)]:
+  - @executor-js/api@1.4.43
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.23
+  - @executor-js/runtime-quickjs@1.5.23
+
 ## 1.5.22
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @executor-js/plugin-toolkits
 
+## 1.5.15
+
+### Patch Changes
+
+- Updated dependencies [[`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a), [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a)]:
+  - @executor-js/api@1.4.43
+  - @executor-js/react@1.4.43
+  - @executor-js/sdk@1.5.23
+
 ## 1.5.14
 
 ### Patch Changes

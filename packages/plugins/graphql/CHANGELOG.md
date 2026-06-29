@@ -1,5 +1,21 @@
 # @executor-js/plugin-graphql
 
+## 1.5.23
+
+### Patch Changes
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the GraphQL plugin generating invalid operations against large schemas, and make field selection caller-controlled instead of a baked-in guess.
+
+  Previously each tool froze a recursive, depth- and count-bounded selection at sync time. Against a rich schema (GitLab) this produced invalid GraphQL (composite fields with no sub-selection, nested fields missing required arguments) so every call over a rich return type failed, and the arbitrary bound silently truncated which fields came back.
+
+  Generated tools now default to selecting only scalar/enum leaf fields of the return type (always valid, always within a server's query-complexity budget), and expose an optional `select` input carrying a GraphQL selection set so a caller can request nested or list data per call (including supplying nested required arguments). Fixes [#1146](https://github.com/RhysSullivan/executor/issues/1146).
+
+- Updated dependencies [[`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a), [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a)]:
+  - @executor-js/api@1.4.43
+  - @executor-js/react@1.4.43
+  - @executor-js/sdk@1.5.23
+  - @executor-js/config@1.5.23
+
 ## 1.5.22
 
 ### Patch Changes

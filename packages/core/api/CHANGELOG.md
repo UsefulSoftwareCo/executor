@@ -1,5 +1,25 @@
 # @executor-js/api
 
+## 1.4.43
+
+### Patch Changes
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix OAuth "Mismatching redirect URI" for org-scoped client-id metadata documents
+
+  Org-scoped client-id metadata documents registered their callback as
+  `redirect_uri` with an `executor_org` query param, but the client always sends
+  the bare callback and the org is carried in the OAuth `state`. Providers that
+  compare `redirect_uri` as an exact string (such as PostHog) rejected the
+  authorize request. Org targets now keep their distinct `client_id` URL but
+  register the same bare callback `redirect_uri` as every other target.
+
+- [#1199](https://github.com/RhysSullivan/executor/pull/1199) [`29936d5`](https://github.com/RhysSullivan/executor/commit/29936d5981256f8f953797d9ce8ce073ac6a0b6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Notify when a newer Executor is published. The CLI now prints an "update available" line under its ready banner, and the web shell's sidebar update card works for real (a new `/v1/app/npm/dist-tags` endpoint backs it). In the desktop app the card shows a native "Restart to update" action wired to the in-app updater instead of the npm command. The check is best-effort and offline-safe, and can be disabled with `EXECUTOR_DISABLE_UPDATE_CHECK`.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.23
+  - @executor-js/execution@1.5.23
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.42
 
 ### Patch Changes
