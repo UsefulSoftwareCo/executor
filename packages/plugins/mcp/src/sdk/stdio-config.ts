@@ -121,13 +121,17 @@ const normalizeEnv = (
 
 export const canonicalizeStdioConfig = (
   config: Pick<McpStdioIntegrationConfig, "command" | "args" | "env" | "cwd">,
-): CanonicalStdioConfig => ({
-  transport: "stdio",
-  command: config.command.trim(),
-  ...(config.args !== undefined && config.args.length > 0 ? { args: [...config.args] } : {}),
-  ...(normalizeEnv(config.env) !== undefined ? { env: normalizeEnv(config.env) } : {}),
-  ...(config.cwd !== undefined && config.cwd.trim().length > 0 ? { cwd: config.cwd.trim() } : {}),
-});
+): CanonicalStdioConfig => {
+  const env = normalizeEnv(config.env);
+  const cwd = config.cwd?.trim();
+  return {
+    transport: "stdio",
+    command: config.command.trim(),
+    ...(config.args !== undefined && config.args.length > 0 ? { args: [...config.args] } : {}),
+    ...(env !== undefined ? { env } : {}),
+    ...(cwd !== undefined && cwd.length > 0 ? { cwd } : {}),
+  };
+};
 
 export const canonicalizeStdioDraft = (input: {
   readonly command: string;
