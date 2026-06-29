@@ -368,7 +368,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
-  it.effect("application/octet-stream: string body fails before dispatch", () =>
+  it.effect("application/octet-stream: string body passes through as UTF-8 bytes", () =>
     Effect.gen(function* () {
       const { server, captured } = yield* startEchoServer({
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
@@ -380,15 +380,16 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         slug: "bin_string_body",
       });
 
-      const exit = yield* executor
-        .execute(conn.address("body.submit"), {
-          body: "3q2+7w==",
-        })
-        .pipe(Effect.exit);
+      // A plain string `body` is the long-standing way callers upload text
+      // content to an octet-stream endpoint, so it must reach the wire rather
+      // than failing. It is sent verbatim as UTF-8 bytes (not base64-decoded),
+      // which preserves the pre-bodyBase64 behavior; binary uploads still use
+      // `bodyBase64`.
+      const text = "plain file contents, not base64";
+      yield* executor.execute(conn.address("body.submit"), { body: text });
 
-      expect(Exit.isFailure(exit)).toBe(true);
-      expect(captured.contentType).toBe("");
-      expect(captured.body.length).toBe(0);
+      expect(captured.contentType).toBe("application/octet-stream");
+      expect(captured.body.toString("utf8")).toBe(text);
     }),
   );
 
