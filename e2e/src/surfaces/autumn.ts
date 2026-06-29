@@ -34,6 +34,13 @@ export interface AutumnSurface {
   readonly expectUsage: (
     query: UsageQuery & { readonly count: number },
   ) => Effect.Effect<readonly UsageEvent[], unknown>;
+  /** Land the asynchronous checkout webhook for a checkout session, activating
+   *  its subscription. In production this is Stripe's `checkout.session.completed`
+   *  reaching Autumn shortly after the browser is redirected back; the emulator
+   *  defers activation until this is called, so a test controls the exact moment
+   *  the billing backend becomes consistent. The `sessionId` is the last path
+   *  segment of the hosted checkout URL the browser was sent to. */
+  readonly settleCheckout: (sessionId: string) => Effect.Effect<void, unknown>;
 }
 
 export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
@@ -71,8 +78,21 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
         }));
     });
 
+  const settleCheckout = (sessionId: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        fetch(`${autumnUrl}/checkout/${encodeURIComponent(sessionId)}/settle`, { method: "POST" }),
+      );
+      if (!response.ok) {
+        return yield* Effect.fail(
+          `autumn checkout settle responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
+        );
+      }
+    });
+
   return {
     usageEvents,
+    settleCheckout,
     expectUsage: (query) =>
       usageEvents(query).pipe(
         Effect.filterOrFail(

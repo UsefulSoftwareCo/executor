@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForHttp } from "./boot";
+import { AUTUMN_PLAN_SEED } from "./autumn-plans";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -65,6 +66,9 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
   const autumn = await createEmulator({
     service: "autumn",
     port: options.autumnPort,
+    // Seed the plan catalog so the billing UI (plans, eligibility, trial
+    // checkout) has real plans to render. Derived from autumn.config.ts.
+    seed: { autumn: { plans: AUTUMN_PLAN_SEED } },
   });
 
   const workosUrl = options.workosPublicUrl ?? workos.url;

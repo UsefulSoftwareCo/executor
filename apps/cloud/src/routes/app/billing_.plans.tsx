@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
 import { trackEvent } from "@executor-js/react/api/analytics";
@@ -20,6 +20,54 @@ type Plan = NonNullable<ReturnType<typeof useListPlans>["data"]>[number];
 export const Route = createFileRoute("/{-$orgSlug}/billing_/plans")({
   component: PlansPage,
 });
+
+// Marker appended to the checkout success URL so the page knows, on return, that
+// it just came back from Stripe and which plan was attached.
+const CHECKOUT_RETURN_PARAM = "checkout";
+
+/**
+ * Refresh billing data after returning from a redirect checkout.
+ *
+ * autumn-js fetches the customer once on load and does not refetch on its own
+ * (staleTime 60s, no refetch on focus), while Stripe's `checkout.session.completed`
+ * webhook reaches Autumn moments AFTER the browser is redirected back. So the
+ * single fetch on the success page sees the pre-checkout plan and the page would
+ * otherwise show the old plan (and the upgrade CTA) until a manual reload.
+ *
+ * On detecting the return marker, poll the billing data until the attached plan
+ * shows as active (or a timeout), then strip the marker so a later manual reload
+ * does not re-arm the poll.
+ */
+function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void): void {
+  const plansRef = useRef(plans);
+  plansRef.current = plans;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const attachedPlanId = params.get(CHECKOUT_RETURN_PARAM);
+    if (!attachedPlanId) return;
+
+    params.delete(CHECKOUT_RETURN_PARAM);
+    const query = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+
+    const reflected = () =>
+      plansRef.current?.find((p) => p.id === attachedPlanId)?.customerEligibility?.status ===
+      "active";
+
+    let elapsed = 0;
+    refetch();
+    const interval = setInterval(() => {
+      elapsed += 1500;
+      if (reflected() || elapsed >= 20_000) {
+        clearInterval(interval);
+        return;
+      }
+      refetch();
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [refetch]);
+}
 
 const ENTERPRISE_FEATURES = [
   "Self-hosted or dedicated cloud deployment support",
@@ -67,9 +115,25 @@ const ACTION_LABELS: Record<string, string> = {
 const PLAN_ORDER = ["free", "team", "enterprise"];
 
 function PlansPage() {
-  const { attach, openCustomerPortal, isLoading: customerLoading } = useCustomer();
-  const { data: plans, isLoading: plansLoading, isFetching } = useListPlans();
+  const {
+    attach,
+    openCustomerPortal,
+    isLoading: customerLoading,
+    refetch: refetchCustomer,
+  } = useCustomer();
+  const {
+    data: plans,
+    isLoading: plansLoading,
+    isFetching,
+    refetch: refetchPlans,
+  } = useListPlans();
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+  const refetchBilling = useCallback(() => {
+    void refetchCustomer();
+    void refetchPlans();
+  }, [refetchCustomer, refetchPlans]);
+  useRefreshAfterCheckout(plans, refetchBilling);
 
   const isLoading = customerLoading || plansLoading;
 
@@ -215,7 +279,11 @@ function PlansPage() {
                             });
                           }
                           setLoadingPlan(plan.id);
-                          await attach({ planId: plan.id, redirectMode: "always" });
+                          // Tag the return URL so the page refetches billing
+                          // data when Stripe redirects back (the webhook that
+                          // activates the plan lands moments after the redirect).
+                          const successUrl = `${window.location.origin}${window.location.pathname}?${CHECKOUT_RETURN_PARAM}=${plan.id}`;
+                          await attach({ planId: plan.id, redirectMode: "always", successUrl });
                           setLoadingPlan(null);
                         }}
                         className={[

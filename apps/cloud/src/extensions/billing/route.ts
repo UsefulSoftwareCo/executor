@@ -86,7 +86,11 @@ const handler = Effect.gen(function* () {
       },
       clientOptions: {
         secretKey: env.AUTUMN_SECRET_KEY ?? "",
-        ...(env.AUTUMN_API_URL ? { serverURL: env.AUTUMN_API_URL } : {}),
+        // autumn-js's handler reads `baseURL` to override the Autumn endpoint
+        // (not `serverURL`, which it silently ignores). Without this, a non-prod
+        // AUTUMN_API_URL (the e2e emulator, a self-hosted Autumn) is dropped and
+        // every billing request goes to production Autumn and 401s.
+        ...(env.AUTUMN_API_URL ? { baseURL: env.AUTUMN_API_URL } : {}),
       },
       pathPrefix: "/api/billing",
     }),
