@@ -1036,16 +1036,61 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
-      const preflightStdioConfig = (config: McpIntegrationConfigType) =>
+      const requiredStdioEnvVars = (config: McpStdioIntegrationConfig): readonly string[] => [
+        ...new Set(
+          (config.authenticationTemplate ?? []).flatMap((method: McpAuthMethod) =>
+            method.kind === "stdio_env" ? method.vars : [],
+          ),
+        ),
+      ];
+
+      const missingStdioEnvVars = (
+        requiredVars: readonly string[],
+        values: Record<string, string | null>,
+      ): readonly string[] => requiredVars.filter((variable) => values[variable] == null);
+
+      const preflightStdioConfig = (
+        integration: IntegrationSlug,
+        config: McpStdioIntegrationConfig,
+      ) =>
         Effect.gen(function* () {
-          const connectorInput = yield* buildConnectorInput(
-            config,
-            {},
-            null,
-            allowStdio,
-            httpClientLayer,
-          );
-          yield* discoverTools(createMcpConnector(connectorInput));
+          const requiredVars = requiredStdioEnvVars(config);
+          if (requiredVars.length === 0) {
+            const connectorInput = yield* buildConnectorInput(
+              config,
+              {},
+              null,
+              allowStdio,
+              httpClientLayer,
+            );
+            yield* discoverTools(createMcpConnector(connectorInput));
+            return;
+          }
+
+          const connections = yield* ctx.connections.list({ integration });
+          for (const connection of connections) {
+            const template = String(connection.template);
+            const method = selectAuthMethod(config, template);
+            if (method?.kind !== "stdio_env") continue;
+
+            const values = yield* ctx.connections.resolveValues(connection);
+            if (missingStdioEnvVars(method.vars, values).length > 0) continue;
+
+            const connectorInput = yield* buildConnectorInput(
+              config,
+              values,
+              template,
+              allowStdio,
+              httpClientLayer,
+            );
+            yield* discoverTools(createMcpConnector(connectorInput));
+            return;
+          }
+
+          return yield* new McpConnectionError({
+            transport: "stdio",
+            message: `Cannot validate this command because no visible connection has values for required environment variables: ${requiredVars.join(", ")}.`,
+          });
         });
 
       const removePoliciesScopedToIntegration = (integration: IntegrationSlug) =>
@@ -1141,7 +1186,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             return;
           }
 
-          yield* preflightStdioConfig(config);
+          yield* preflightStdioConfig(integration, config);
           yield* ctx.transaction(
             Effect.gen(function* () {
               yield* removePoliciesScopedToIntegration(integration);

@@ -147,7 +147,7 @@ const withStdioFixtureScript = Effect.acquireRelease(
     yield* Effect.promise(() =>
       Fs.writeFile(
         script,
-        `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";\nimport { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";\nconst toolName = process.argv[2] ?? "one";\nconst server = new McpServer({ name: "stdio-fixture", version: "1.0.0" }, { capabilities: {} });\nserver.registerTool(toolName, { description: "Stdio fixture tool", inputSchema: {} }, async () => ({ content: [{ type: "text", text: process.env.STDIO_VALUE ?? "ok" }] }));\nawait server.connect(new StdioServerTransport());\n`,
+        `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";\nimport { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";\nconst toolName = process.argv[2] ?? "one";\nconst requiredEnv = process.argv[3];\nif (requiredEnv && process.env[requiredEnv] == null) process.exit(1);\nconst server = new McpServer({ name: "stdio-fixture", version: "1.0.0" }, { capabilities: {} });\nserver.registerTool(toolName, { description: "Stdio fixture tool", inputSchema: {} }, async () => ({ content: [{ type: "text", text: process.env.STDIO_VALUE ?? process.env.STDIO_SECRET ?? "ok" }] }));\nawait server.connect(new StdioServerTransport());\n`,
       ),
     );
     return { dir, script } as const;
@@ -598,6 +598,95 @@ describe("mcpPlugin", () => {
         tools = yield* executor.tools.list({ integration: IntegrationSlug.make("stdio_edit") });
         expect(tools.map((tool) => String(tool.name))).toContain("two");
         expect(tools.map((tool) => String(tool.name))).not.toContain("one");
+      }),
+    ),
+  );
+
+  it.effect(
+    "configureServer preflights stdio secret env sources with existing connection values",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* withStdioFixtureScript;
+          const executor = yield* createExecutor(
+            makeTestConfig({
+              plugins: [
+                memoryCredentialsPlugin(),
+                mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+              ] as const,
+            }),
+          );
+
+          yield* executor.mcp.addServer({
+            transport: "stdio",
+            name: "Stdio secret edit",
+            slug: "stdio_secret_edit",
+            command: process.execPath,
+            args: [fixture.script, "one", "STDIO_SECRET"],
+            envVars: ["STDIO_SECRET"],
+          });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("default"),
+            integration: IntegrationSlug.make("stdio_secret_edit"),
+            template: AuthTemplateSlug.make("env"),
+            values: { STDIO_SECRET: "secret-value" },
+          });
+
+          yield* executor.mcp.configureServer("stdio_secret_edit", {
+            transport: "stdio",
+            command: process.execPath,
+            args: [fixture.script, "two", "STDIO_SECRET"],
+            authenticationTemplate: [{ slug: "env", kind: "stdio_env", vars: ["STDIO_SECRET"] }],
+          });
+
+          const tools = yield* executor.tools.list({
+            integration: IntegrationSlug.make("stdio_secret_edit"),
+          });
+          expect(tools.map((tool) => String(tool.name))).toContain("two");
+          expect(tools.map((tool) => String(tool.name))).not.toContain("one");
+        }),
+      ),
+  );
+
+  it.effect("configureServer reports missing stdio secret values before preflight", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* withStdioFixtureScript;
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          }),
+        );
+
+        yield* executor.mcp.addServer({
+          transport: "stdio",
+          name: "Stdio secret missing",
+          slug: "stdio_secret_missing",
+          command: process.execPath,
+          args: [fixture.script, "one", "STDIO_SECRET"],
+          envVars: ["STDIO_SECRET"],
+        });
+
+        const result = yield* Effect.result(
+          executor.mcp.configureServer("stdio_secret_missing", {
+            transport: "stdio",
+            command: process.execPath,
+            args: [fixture.script, "two", "STDIO_SECRET"],
+            authenticationTemplate: [{ slug: "env", kind: "stdio_env", vars: ["STDIO_SECRET"] }],
+          }),
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+        const failure = Result.isFailure(result) ? result.failure : null;
+        expect(failure).toMatchObject({
+          _tag: "McpConnectionError",
+          message:
+            "Cannot validate this command because no visible connection has values for required environment variables: STDIO_SECRET.",
+        });
       }),
     ),
   );

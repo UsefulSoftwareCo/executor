@@ -3308,6 +3308,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           remove: (ref) => connectionsRemove(ref),
           refresh: (ref) => connectionsRefresh(ref),
           resolveValue: (ref) => resolveConnectionValueByRef(ref),
+          resolveValues: (ref) => resolveConnectionValuesByRef(ref),
         },
         providers: {
           list: () => providersList(),
