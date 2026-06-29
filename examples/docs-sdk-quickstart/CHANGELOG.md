@@ -1,5 +1,13 @@
 # @executor-js/example-docs-sdk-quickstart
 
+## 0.0.28
+
+### Patch Changes
+
+- Updated dependencies [[`dc9bf71`](https://github.com/RhysSullivan/executor/commit/dc9bf717b81a3b719a137b25d01a8fd28e6cd699)]:
+  - @executor-js/plugin-openapi@1.5.25
+  - @executor-js/sdk@1.5.25
+
 ## 0.0.27
 
 ### Patch Changes

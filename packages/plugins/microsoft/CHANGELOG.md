@@ -1,5 +1,15 @@
 # @executor-js/plugin-microsoft
 
+## 1.5.24
+
+### Patch Changes
+
+- Updated dependencies [[`dc9bf71`](https://github.com/RhysSullivan/executor/commit/dc9bf717b81a3b719a137b25d01a8fd28e6cd699)]:
+  - @executor-js/plugin-openapi@1.5.25
+  - @executor-js/sdk@1.5.25
+  - @executor-js/api@1.4.45
+  - @executor-js/react@1.4.45
+
 ## 1.5.23
 
 ### Patch Changes

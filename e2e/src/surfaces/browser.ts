@@ -13,6 +13,7 @@ import { chromium, type Page } from "playwright";
 
 import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
+import { installRecordingUrlBar } from "../recording-url-bar";
 import type { Identity, Target } from "../target";
 
 export interface BrowserSession {
@@ -74,6 +75,9 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
           snapshots: true,
           sources: true,
         });
+        // Bake a synthetic URL bar into the recording so a shared session.mp4
+        // (and the step screenshots) shows which page each moment was on.
+        await installRecordingUrlBar(context);
         if (identity.cookies?.length) {
           await context.addCookies(
             identity.cookies.map((cookie) => ({

@@ -782,7 +782,16 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         binaryBody?.ok === true && !octetStreamContent && isOctetStream(rb.contentType)
           ? rb.contentType
           : (selected?.contentType ?? rb.contentType);
-      if (isOctetStream(chosenCt) && toUint8Array(bodyValue) === null) {
+      // A `bodyBase64` arg already decoded to bytes above. A plain string
+      // `body` is the long-standing way callers pass (text) octet-stream
+      // upload content, and applyRequestBody sends it through as-is, so let it
+      // past. Only a genuinely non-byte, non-string shape (an object, say)
+      // can't be uploaded as octet-stream and needs `bodyBase64`.
+      if (
+        isOctetStream(chosenCt) &&
+        typeof bodyValue !== "string" &&
+        toUint8Array(bodyValue) === null
+      ) {
         return yield* new OpenApiInvocationError({
           message: "application/octet-stream request body must be bytes; provide `bodyBase64`",
           statusCode: Option.none(),
