@@ -1003,10 +1003,19 @@ const insertPlan = async (
   }
 };
 
+// libSQL releases its OS file handle in a native finalizer, which on Windows
+// only runs on garbage collection and so lags client.close(). Forcing a GC
+// runs the finalizer, releasing the handle so a follow-up rename/rm succeeds.
+// No-op outside the Bun runtime (e.g. vitest on Node), where this is unneeded.
+const nudgeNativeHandleRelease = (): void => {
+  const bun = (globalThis as { Bun?: { gc?: (sync: boolean) => void } }).Bun;
+  bun?.gc?.(true);
+};
+
 // Windows reports EBUSY/EPERM on rename for a short window after a SQLite
 // handle closes (handle release lags the close call, and antivirus scanners
 // briefly lock the file). POSIX renames never hit this — retry with a short
-// backoff instead of failing the whole migration.
+// backoff, forcing handle release first, instead of failing the whole migration.
 const renameWithRetry = async (source: string, target: string): Promise<void> => {
   // ~8s total. 1.9s was not enough on Windows: libSQL's native handle and
   // antivirus scans hold the freshly-written db past close() (observed as an
@@ -1019,16 +1028,51 @@ const renameWithRetry = async (source: string, target: string): Promise<void> =>
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if ((code !== "EBUSY" && code !== "EPERM") || attempt >= delaysMs.length) throw cause;
+      nudgeNativeHandleRelease();
       await new Promise((resolveDelay) => setTimeout(resolveDelay, delaysMs[attempt]));
     }
   }
 };
 
+// Same lingering-handle window as renameWithRetry: on Windows a libSQL file's
+// native handle (and antivirus locks) can briefly outlive close(), so removing
+// a just-closed source/staging db throws EBUSY/EPERM. POSIX never hits this.
+const rmWithRetry = async (path: string): Promise<void> => {
+  const delaysMs = [50, 100, 250, 500, 1000, 2000, 4000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.rmSync(path, { force: true });
+      return;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if ((code !== "EBUSY" && code !== "EPERM") || attempt >= delaysMs.length) throw cause;
+      nudgeNativeHandleRelease();
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delaysMs[attempt]));
+    }
+  }
+};
+
+const removeSqliteFileSetWithRetry = async (path: string): Promise<void> => {
+  for (const suffix of fileSetSuffixes) await rmWithRetry(`${path}${suffix}`);
+};
+
 const fsyncFileIfExists = (path: string): void => {
   if (!fs.existsSync(path)) return;
-  const fd = fs.openSync(path, "r");
+  // Windows FlushFileBuffers requires a writable handle, so fsync on a
+  // read-only ("r") fd throws EPERM and would crash the v1->v2 migration at
+  // boot. Open read-write for the flush, and treat fsync as best-effort
+  // durability hardening (the rename/copy already wrote the bytes) so a
+  // platform or filesystem that refuses the flush does not fail the migration.
+  let fd: number;
+  try {
+    fd = fs.openSync(path, "r+");
+  } catch {
+    return;
+  }
   try {
     fs.fsyncSync(fd);
+  } catch {
+    // best-effort: some platforms/filesystems refuse fsync on certain handles
   } finally {
     fs.closeSync(fd);
   }
@@ -1060,7 +1104,7 @@ const moveSqliteFileSet = async (source: string, target: string): Promise<void> 
       await renameWithRetry(`${source}${suffix}`, `${target}${suffix}`);
       fsyncDirectory(dirname(target));
     } else {
-      fs.rmSync(`${target}${suffix}`, { force: true });
+      await rmWithRetry(`${target}${suffix}`);
     }
   }
 };
@@ -1071,7 +1115,7 @@ const moveExistingSqliteFileSet = async (source: string, target: string): Promis
     if (!fs.existsSync(from)) continue;
     const to = `${target}${suffix}`;
     if (fs.existsSync(to)) {
-      fs.rmSync(from, { force: true });
+      await rmWithRetry(from);
     } else {
       await renameWithRetry(from, to);
       fsyncDirectory(dirname(to));
@@ -1413,8 +1457,8 @@ const completeJournaledFlip = async (
     await pauseMigrationForTest("staging-consumed");
   }
   await writeMigrationJournal(journalPath, { ...journal, phase: "committed" });
-  removeSqliteFileSet(journal.normalizedSource);
-  removeSqliteFileSet(journal.staging);
+  await removeSqliteFileSetWithRetry(journal.normalizedSource);
+  await removeSqliteFileSetWithRetry(journal.staging);
   await cleanupSecretBackups(journal);
   removeMigrationJournal(journalPath);
 };
@@ -1435,8 +1479,8 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<MigrationRecove
 
   const { journal } = journalRead;
   if (journal.phase === "building") {
-    removeSqliteFileSet(journal.normalizedSource);
-    removeSqliteFileSet(journal.staging);
+    await removeSqliteFileSetWithRetry(journal.normalizedSource);
+    await removeSqliteFileSetWithRetry(journal.staging);
     await restoreAuthFromJournal(journal);
     await cleanupSecretBackups(journal);
     removeMigrationJournal(journalPath);
@@ -1448,8 +1492,8 @@ const recoverV1V2Migration = async (sqlitePath: string): Promise<MigrationRecove
     return "recovered";
   }
 
-  removeSqliteFileSet(journal.normalizedSource);
-  removeSqliteFileSet(journal.staging);
+  await removeSqliteFileSetWithRetry(journal.normalizedSource);
+  await removeSqliteFileSetWithRetry(journal.staging);
   await cleanupSecretBackups(journal);
   removeMigrationJournal(journalPath);
   return "recovered";
@@ -1573,8 +1617,7 @@ export const migrateLocalV1ToV2IfNeeded = async (
     // WAL/SHM sidecars before journaling the staged DB as complete; otherwise a
     // crash mid-sidecar move would make staging appear present after the base DB
     // had already been installed.
-    for (const suffix of ["-wal", "-shm"] as const)
-      fs.rmSync(`${stagingPath}${suffix}`, { force: true });
+    for (const suffix of ["-wal", "-shm"] as const) await rmWithRetry(`${stagingPath}${suffix}`);
     fsyncDirectory(dirname(stagingPath));
     await writeMigrationJournal(journalPath, { ...journal, phase: "built" });
     await pauseMigrationForTest("built");
@@ -1598,8 +1641,8 @@ export const migrateLocalV1ToV2IfNeeded = async (
         await restoreAuthFromJournal(journal);
         await cleanupSecretBackups(journal);
       }
-      if (normalizedSourcePath) removeSqliteFileSet(normalizedSourcePath);
-      if (stagingPath) removeSqliteFileSet(stagingPath);
+      if (normalizedSourcePath) await removeSqliteFileSetWithRetry(normalizedSourcePath);
+      if (stagingPath) await removeSqliteFileSetWithRetry(stagingPath);
       removeMigrationJournal(journalPath);
     }
     throw cause;
