@@ -13,14 +13,30 @@ describe("mcpAuthMethodInputFromEditorValue", () => {
     expect(mcpAuthMethodInputFromEditorValue({ kind: "none" })).toEqual({ kind: "none" });
   });
 
-  it("maps 'oauth' → { kind: 'oauth2' } (endpoints/scopes are resolved at connect time)", () => {
+  it("maps an endpointful 'oauth' value → { kind: 'oauth2' } preserving endpoints/scopes", () => {
     const value: AuthTemplateEditorValue = {
       kind: "oauth",
       authorizationUrl: "https://a.example.com/auth",
       tokenUrl: "https://a.example.com/token",
       scopes: ["mcp.read"],
     };
-    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({ kind: "oauth2" });
+    expect(mcpAuthMethodInputFromEditorValue(value)).toEqual({
+      kind: "oauth2",
+      authorizationUrl: "https://a.example.com/auth",
+      tokenUrl: "https://a.example.com/token",
+      scopes: ["mcp.read"],
+    });
+  });
+
+  it("maps a discovery 'oauth' value (no endpoints) → bare { kind: 'oauth2' }", () => {
+    expect(
+      mcpAuthMethodInputFromEditorValue({
+        kind: "oauth",
+        authorizationUrl: "",
+        tokenUrl: "",
+        scopes: [],
+      }),
+    ).toEqual({ kind: "oauth2" });
   });
 
   it("maps a header placement to an apikey method (prefix preserved)", () => {

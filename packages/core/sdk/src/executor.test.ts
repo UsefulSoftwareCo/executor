@@ -300,6 +300,43 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("oauth client handoff URL carries 'basic' but omits the implicit 'body'", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        coreTools: { webBaseUrl: "http://localhost:3000" },
+      });
+
+      const basic = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.oauth.clients.createHandoff"),
+        {
+          integration: String(INTEG),
+          owner: "org",
+          grant: "client_credentials",
+          tokenUrl: "https://auth.linear.app/oauth/token",
+          tokenEndpointAuthMethod: "basic",
+        },
+      );
+      const basicUrl = new URL((basic as { readonly url: string }).url);
+      expect(basicUrl.searchParams.get("grant")).toBe("client_credentials");
+      expect(basicUrl.searchParams.get("tokenEndpointAuthMethod")).toBe("basic");
+
+      // "body" is the implicit default and must NOT be materialized in the URL
+      // (else it would override a method's advertised "basic" default).
+      const body = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.oauth.clients.createHandoff"),
+        {
+          integration: String(INTEG),
+          owner: "org",
+          grant: "client_credentials",
+          tokenUrl: "https://auth.example/token",
+          tokenEndpointAuthMethod: "body",
+        },
+      );
+      const bodyUrl = new URL((body as { readonly url: string }).url);
+      expect(bodyUrl.searchParams.has("tokenEndpointAuthMethod")).toBe(false);
+    }),
+  );
+
   it.effect("starts a client-credentials connection through the oauth.start tool", () =>
     Effect.scoped(
       Effect.gen(function* () {

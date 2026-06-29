@@ -143,6 +143,7 @@ import { collectReferencedDefinitions } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
+  parseClientAuthMethod,
   shouldRefreshToken,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
@@ -1456,6 +1457,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ? String(row.oauth_token_url)
           : String(clientRow.token_url);
 
+        // How this app authenticates to the token endpoint ("body" | "basic").
+        // Null on old rows resolves to "body" (client_secret_post). Threaded
+        // into both the client_credentials re-mint and the refresh_token call so
+        // Basic-only providers (e.g. Linear) keep working across refreshes.
+        const clientAuth = parseClientAuthMethod(clientRow.token_endpoint_auth_method);
+
         // client_credentials (machine-to-machine) has NO refresh token — the
         // token is RE-MINTED from the client id/secret. The authorization_code
         // path below needs a stored refresh token. Branching on grant here is
@@ -1469,6 +1476,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 clientSecret,
                 scopes: grantedScopes,
                 resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                clientAuth,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
               }).pipe(
@@ -1502,6 +1510,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
                   resource: clientRow.resource ? String(clientRow.resource) : undefined,
+                  clientAuth,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
                 }).pipe(

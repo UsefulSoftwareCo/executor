@@ -135,6 +135,40 @@ describe("describeGraphqlAuthMethods", () => {
     ]);
   });
 
+  it("projects an endpointful oauth2 method with the service-account defaults", () => {
+    const methods = describeGraphqlAuthMethods(
+      recordWith({
+        endpoint: "https://x.example/graphql",
+        name: "x",
+        authenticationTemplate: [
+          {
+            kind: "oauth2",
+            slug: "oauth",
+            tokenUrl: "https://auth.linear.app/oauth/token",
+            scopes: ["read"],
+            defaultGrant: "client_credentials",
+            defaultTokenEndpointAuthMethod: "basic",
+          },
+        ],
+      }),
+    );
+
+    expect(methods).toEqual([
+      {
+        id: "oauth",
+        label: "OAuth",
+        kind: "oauth",
+        template: "oauth",
+        oauth: {
+          tokenUrl: "https://auth.linear.app/oauth/token",
+          scopes: ["read"],
+          defaultGrant: "client_credentials",
+          defaultTokenEndpointAuthMethod: "basic",
+        },
+      },
+    ]);
+  });
+
   it("projects a none method to a no-auth descriptor", () => {
     const methods = describeGraphqlAuthMethods(
       recordWith({

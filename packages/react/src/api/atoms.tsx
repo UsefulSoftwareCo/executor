@@ -460,6 +460,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly grant: OAuthGrant;
           readonly clientId: string;
           readonly resource?: string | null;
+          readonly tokenEndpointAuthMethod?: "body" | "basic";
         };
       },
     ) =>
@@ -472,6 +473,10 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           tokenUrl: arg.payload.tokenUrl,
           resource: arg.payload.resource ?? null,
           clientId: arg.payload.clientId,
+          // Mirror the persisted convention: only carry a non-default "basic".
+          ...(arg.payload.tokenEndpointAuthMethod === "basic"
+            ? { tokenEndpointAuthMethod: "basic" as const }
+            : {}),
           origin: { kind: "manual" },
         };
         const index = rows.findIndex(

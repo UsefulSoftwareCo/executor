@@ -3,6 +3,12 @@ import { Schema } from "effect";
 
 import type { Connection } from "./connection";
 import type { StorageFailure } from "./fuma-runtime";
+import type { ClientAuthMethod } from "./oauth-helpers";
+
+/** Re-exported so the public OAuth contract surface (`@executor-js/sdk/shared`)
+ *  carries the token-endpoint client-auth method alongside the client shapes
+ *  that use it, without consumers importing the server-only flow helpers. */
+export type { ClientAuthMethod } from "./oauth-helpers";
 import {
   type AuthTemplateSlug,
   type ConnectionName,
@@ -61,6 +67,12 @@ export interface OAuthClient {
   /** RFC 8707 Resource Indicator (MCP). Carried so the refresh request can keep
    *  the re-minted token bound to the same resource. Null/omitted otherwise. */
   readonly resource?: string | null;
+  /** How the client authenticates to the token endpoint: `"body"`
+   *  (`client_secret_post`, the default) or `"basic"` (`client_secret_basic`,
+   *  base64 `client_id:client_secret` in the Authorization header). Some
+   *  providers (e.g. Linear's client_credentials grant) only accept Basic.
+   *  Omitted/undefined is treated as `"body"` throughout. */
+  readonly tokenEndpointAuthMethod?: ClientAuthMethod;
 }
 
 export type OAuthClientOrigin =
@@ -86,6 +98,10 @@ export interface OAuthClientSummary {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly clientId: string;
+  /** Token-endpoint client authentication method ("body" | "basic"); see
+   *  {@link OAuthClient.tokenEndpointAuthMethod}. Surfaced so the UI can show
+   *  and re-edit how a registered app authenticates. */
+  readonly tokenEndpointAuthMethod?: ClientAuthMethod;
   readonly origin: OAuthClientOrigin;
 }
 

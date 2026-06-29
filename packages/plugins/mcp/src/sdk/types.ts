@@ -51,6 +51,28 @@ export type McpTransport = typeof McpTransport.Type;
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  // Endpointful fields. When `tokenUrl` is present this is an endpointful
+  // method (the token endpoint is known up front, e.g. a client_credentials
+  // service-account flow) rather than the default discovery-at-connect method
+  // (whose endpoints are probed live from the server's `.well-known`). The
+  // fields are advertised on the auth-method descriptor so the connect UI can
+  // register + mint a client without the user pasting endpoints. Runtime is
+  // unchanged: the resolved (refreshing) token is still applied as a Bearer via
+  // the MCP SDK's OAuthClientProvider, regardless of how it was minted.
+  /** OAuth2 authorization endpoint (authorization_code flows). */
+  authorizationUrl: Schema.optional(Schema.String),
+  /** OAuth2 token endpoint. Its presence marks this method as endpointful. */
+  tokenUrl: Schema.optional(Schema.String),
+  /** RFC 8707 resource indicator, when the provider uses one. */
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Scopes to request. */
+  scopes: Schema.optional(Schema.Array(Schema.String)),
+  /** Default grant to preselect when registering an app ("client_credentials"
+   *  for a shared service-account identity). Absent means authorization_code. */
+  defaultGrant: Schema.optional(Schema.Literals(["authorization_code", "client_credentials"])),
+  /** Default token-endpoint client auth to preselect; only "basic" is ever
+   *  materialized (e.g. Linear). Absent means the "body" default. */
+  defaultTokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
 
@@ -114,7 +136,16 @@ export const mcpAuthMethodFromShorthand = (auth: McpAuthShorthand): McpAuthMetho
  *  `normalizeMcpAuthMethods` backfills it. */
 export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("none") }),
-  Schema.Struct({ slug: Schema.optional(Schema.String), kind: Schema.Literal("oauth2") }),
+  Schema.Struct({
+    slug: Schema.optional(Schema.String),
+    kind: Schema.Literal("oauth2"),
+    authorizationUrl: Schema.optional(Schema.String),
+    tokenUrl: Schema.optional(Schema.String),
+    resource: Schema.optional(Schema.NullOr(Schema.String)),
+    scopes: Schema.optional(Schema.Array(Schema.String)),
+    defaultGrant: Schema.optional(Schema.Literals(["authorization_code", "client_credentials"])),
+    defaultTokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
+  }),
   // Credential methods are authored request-shaped — the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
   // variable("token")] }, queryParams: { … } }`. Stored configs and the

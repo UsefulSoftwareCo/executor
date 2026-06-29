@@ -21,6 +21,7 @@ import type {
   McpAuthMethod,
   McpAuthMethodInput,
   McpCanonicalAuthMethodInput,
+  McpOAuthMethod,
   McpStdioEnvMethod,
 } from "../sdk/types";
 
@@ -48,14 +49,33 @@ export const mcpWireAuthInput = (
   method: McpAuthMethod | McpCanonicalAuthMethodInput,
 ): McpAuthMethodInput => wireAuthInputFromShared(method) as McpAuthMethodInput;
 
-const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
-  id: slug,
+const oauthAuthMethod = (method: McpOAuthMethod, endpoint: string): AuthMethod => ({
+  id: method.slug,
   label: "OAuth",
   kind: "oauth",
-  source: slug.startsWith("custom_") ? "custom" : "spec",
-  template: AuthTemplateSlug.make(slug),
+  source: method.slug.startsWith("custom_") ? "custom" : "spec",
+  template: AuthTemplateSlug.make(method.slug),
   placements: [],
-  oauth: { discoveryUrl: endpoint, supportsDynamicRegistration: true },
+  // Endpointful (tokenUrl present): advertise the stored endpoints + defaults so
+  // the connect UI registers + mints a client (e.g. client_credentials) WITHOUT
+  // probing for dynamic registration. No discoveryUrl/supportsDynamicRegistration
+  // here keeps the modal's DCR gate off. Discovery-at-connect methods keep the
+  // prior shape (probe the MCP endpoint live).
+  oauth:
+    method.tokenUrl != null
+      ? {
+          ...(method.authorizationUrl !== undefined
+            ? { authorizationUrl: method.authorizationUrl }
+            : {}),
+          tokenUrl: method.tokenUrl,
+          ...(method.resource !== undefined ? { resource: method.resource } : {}),
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
+          ...(method.defaultGrant !== undefined ? { defaultGrant: method.defaultGrant } : {}),
+          ...(method.defaultTokenEndpointAuthMethod !== undefined
+            ? { defaultTokenEndpointAuthMethod: method.defaultTokenEndpointAuthMethod }
+            : {}),
+        }
+      : { discoveryUrl: endpoint, supportsDynamicRegistration: true },
 });
 
 /** Convert a generic editor value into one MCP auth-method input (no slug —
@@ -65,7 +85,18 @@ const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
 export function mcpAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
 ): McpCanonicalAuthMethodInput {
-  if (value.kind === "oauth") return { kind: "oauth2" };
+  if (value.kind === "oauth") {
+    // Preserve endpoints/scopes the editor carries (an endpointful /
+    // service-account method) so a read-modify-write round-trip keeps them.
+    // defaultGrant / defaultTokenEndpointAuthMethod are integration-level config
+    // set via addServer / the agent, not surfaced by the generic editor.
+    return {
+      kind: "oauth2",
+      ...(value.authorizationUrl ? { authorizationUrl: value.authorizationUrl } : {}),
+      ...(value.tokenUrl ? { tokenUrl: value.tokenUrl } : {}),
+      ...(value.scopes && value.scopes.length > 0 ? { scopes: [...value.scopes] } : {}),
+    };
+  }
   return (sharedMethodInputFromEditorValue(value) ?? {
     kind: "none",
   }) as McpCanonicalAuthMethodInput;
@@ -74,7 +105,14 @@ export function mcpAuthMethodInputFromEditorValue(
 /** Convert one stored MCP method into the generic editor value. */
 export function editorValueFromMcpAuthMethod(method: McpAuthMethod): AuthTemplateEditorValue {
   if (method.kind === "oauth2") {
-    return { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] };
+    // Endpointful methods seed the editor with their stored endpoints/scopes;
+    // discovery-at-connect methods yield empty fields as before.
+    return {
+      kind: "oauth",
+      authorizationUrl: method.authorizationUrl ?? "",
+      tokenUrl: method.tokenUrl ?? "",
+      scopes: method.scopes ? [...method.scopes] : [],
+    };
   }
   if (method.kind === "stdio_env") return stdioEnvEditorValue(method);
   return editorValueFromSharedMethod(method);
@@ -89,7 +127,7 @@ export function authMethodsFromConfig(
   endpoint: string,
 ): AuthMethod[] {
   return methods.map((method: McpAuthMethod): AuthMethod => {
-    if (method.kind === "oauth2") return oauthAuthMethod(method.slug, endpoint);
+    if (method.kind === "oauth2") return oauthAuthMethod(method, endpoint);
     if (method.kind === "stdio_env") return stdioEnvAuthMethod(method);
     return authMethodFromSharedTemplate(method);
   });

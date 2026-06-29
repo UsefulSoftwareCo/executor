@@ -995,6 +995,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
       ...(oauthClientHandoff.tokenUrl ? { tokenUrl: oauthClientHandoff.tokenUrl } : {}),
       ...(oauthClientHandoff.resource ? { resource: oauthClientHandoff.resource } : {}),
       ...(grant ? { grant } : {}),
+      ...(oauthClientHandoff.tokenEndpointAuthMethod
+        ? { tokenEndpointAuthMethod: oauthClientHandoff.tokenEndpointAuthMethod }
+        : {}),
       ...(oauthClientHandoff.clientId ? { clientId: oauthClientHandoff.clientId } : {}),
     };
   }, [oauthClientHandoff]);
@@ -1563,6 +1566,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   tokenUrl: editingClient.tokenUrl,
                   resource: editingClient.resource ?? null,
                   grant: editingClient.grant,
+                  // Carry the stored auth method so editing a Basic client and
+                  // saving does not silently rewrite the row to body.
+                  tokenEndpointAuthMethod: editingClient.tokenEndpointAuthMethod,
                   clientId: editingClient.clientId,
                 }}
                 onCreated={() => setEditingClient(null)}
@@ -1608,7 +1614,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     undefined,
                   tokenEndpointAuthMethodsSupported:
                     oauthFallbackProbe?.tokenEndpointAuthMethodsSupported,
-                  ...(oauthHandoffPrefill?.grant ? { grant: oauthHandoffPrefill.grant } : {}),
+                  // Grant: agent handoff wins, else the method's advertised
+                  // defaultGrant (e.g. a Linear MCP preset declaring
+                  // client_credentials), else the form's own default.
+                  ...(oauthHandoffPrefill?.grant
+                    ? { grant: oauthHandoffPrefill.grant }
+                    : method.oauth?.defaultGrant
+                      ? { grant: method.oauth.defaultGrant }
+                      : {}),
+                  // Same precedence for the token-endpoint client auth method.
+                  ...(oauthHandoffPrefill?.tokenEndpointAuthMethod
+                    ? { tokenEndpointAuthMethod: oauthHandoffPrefill.tokenEndpointAuthMethod }
+                    : method.oauth?.defaultTokenEndpointAuthMethod
+                      ? { tokenEndpointAuthMethod: method.oauth.defaultTokenEndpointAuthMethod }
+                      : {}),
                   ...(oauthHandoffPrefill?.clientId
                     ? { clientId: oauthHandoffPrefill.clientId }
                     : {}),

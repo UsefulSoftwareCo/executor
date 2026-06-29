@@ -47,6 +47,43 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
+  it("projects an endpointful oauth2 method (tokenUrl) with the service-account defaults", () => {
+    const methods = describeMcpAuthMethods(
+      recordWith({
+        transport: "remote",
+        endpoint: "https://x.example/mcp",
+        authenticationTemplate: [
+          {
+            slug: "oauth2",
+            kind: "oauth2",
+            tokenUrl: "https://auth.linear.app/oauth/token",
+            scopes: ["read", "write"],
+            defaultGrant: "client_credentials",
+            defaultTokenEndpointAuthMethod: "basic",
+          },
+        ],
+      }),
+    );
+
+    // Endpointful methods advertise the token endpoint + defaults and must NOT
+    // set discoveryUrl / supportsDynamicRegistration (that keeps the connect
+    // UI's DCR gate off, routing to the pre-seeded BYO-app form).
+    expect(methods).toEqual([
+      {
+        id: "oauth2",
+        label: "OAuth",
+        kind: "oauth",
+        template: "oauth2",
+        oauth: {
+          tokenUrl: "https://auth.linear.app/oauth/token",
+          scopes: ["read", "write"],
+          defaultGrant: "client_credentials",
+          defaultTokenEndpointAuthMethod: "basic",
+        },
+      },
+    ]);
+  });
+
   it("projects an apikey header method carrying the placement", () => {
     const methods = describeMcpAuthMethods(
       recordWith({

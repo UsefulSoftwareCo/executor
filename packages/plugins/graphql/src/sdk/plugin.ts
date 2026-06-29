@@ -607,7 +607,23 @@ export const describeGraphqlAuthMethods = (
         label: "OAuth",
         kind: "oauth",
         template: method.slug,
-        oauth: {},
+        // Advertise the stored endpoints (when this is an endpointful /
+        // service-account method) so the connect UI can register + mint a
+        // client without the user pasting a token endpoint. An endpoint-less
+        // oauth2 method (bearer-render only) emits an empty oauth object,
+        // preserving the prior behavior.
+        oauth: {
+          ...(method.authorizationUrl !== undefined
+            ? { authorizationUrl: method.authorizationUrl }
+            : {}),
+          ...(method.tokenUrl !== undefined ? { tokenUrl: method.tokenUrl } : {}),
+          ...(method.resource !== undefined ? { resource: method.resource } : {}),
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
+          ...(method.defaultGrant !== undefined ? { defaultGrant: method.defaultGrant } : {}),
+          ...(method.defaultTokenEndpointAuthMethod !== undefined
+            ? { defaultTokenEndpointAuthMethod: method.defaultTokenEndpointAuthMethod }
+            : {}),
+        },
       };
     }
     return describeNoneAuthMethod(method.slug);

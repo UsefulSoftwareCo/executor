@@ -25,14 +25,18 @@ import {
 
 import { addGraphqlIntegrationOptimistic } from "./atoms";
 import { GraphqlSourceFields } from "./GraphqlSourceFields";
-import { graphqlAuthMethodInputsFromPlacements } from "./auth-method-config";
+import {
+  graphqlAuthMethodInputFromEditorValue,
+  graphqlAuthMethodInputsFromPlacements,
+} from "./auth-method-config";
 import type { GraphqlAuthMethodInput } from "../sdk/types";
 
 // v2 GraphQL add flow: register the integration with its declared auth-method
-// LIST (the shared `AuthMethodListEditor` — GraphQL stays header/query apiKey;
-// OAuth is hidden), then route to the integration's detail hub. Connection
-// creation is no longer part of the add flow — accounts are added from the hub
-// (P6: add without auth, connect later).
+// LIST (the shared `AuthMethodListEditor`: header/query apiKey plus oauth2,
+// which may be endpoint-less bearer-render or endpointful / service-account
+// when a token endpoint is provided), then route to the integration's detail
+// hub. Connection creation is no longer part of the add flow; accounts are
+// added from the hub (P6: add without auth, connect later).
 
 // GraphQL has no add-time detection, so the list starts empty (module constant
 // — a fresh [] every render would re-seed the list each render).
@@ -62,11 +66,18 @@ export default function AddGraphqlSource(props: {
   // register nothing.
   const authenticationTemplate = useMemo<readonly GraphqlAuthMethodInput[]>(
     () =>
-      authMethodList.rows.flatMap((row: AuthMethodRow) =>
-        row.value.kind === "apikey"
-          ? graphqlAuthMethodInputsFromPlacements(row.value.placements)
-          : [],
-      ),
+      authMethodList.rows.flatMap((row: AuthMethodRow) => {
+        if (row.value.kind === "apikey") {
+          return graphqlAuthMethodInputsFromPlacements(row.value.placements);
+        }
+        // An oauth row registers one oauth2 method. With a token endpoint it is
+        // an endpointful / service-account method; without one it is the legacy
+        // bearer-render method. `none` rows register nothing.
+        if (row.value.kind === "oauth") {
+          return [graphqlAuthMethodInputFromEditorValue(row.value)];
+        }
+        return [];
+      }),
     [authMethodList.rows],
   );
 
@@ -142,7 +153,7 @@ export default function AddGraphqlSource(props: {
 
       <AuthMethodListEditor
         list={authMethodList}
-        allowedKinds={["none", "apikey"]}
+        allowedKinds={["none", "apikey", "oauth"]}
         emptyHint="No authentication declared. Add a method, or add the source without auth and connect an account from the integration page later."
         footerHint="Every method here is registered with the source. Connect an account from the integration page after adding."
       />

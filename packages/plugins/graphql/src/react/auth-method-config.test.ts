@@ -13,14 +13,30 @@ describe("graphqlAuthMethodInputFromEditorValue", () => {
     expect(graphqlAuthMethodInputFromEditorValue({ kind: "none" })).toEqual({ kind: "none" });
   });
 
-  it("maps 'oauth' → { kind: 'oauth2' } (graphql oauth stores no endpoints)", () => {
+  it("maps an endpointful 'oauth' value → { kind: 'oauth2' } preserving endpoints/scopes", () => {
     const value: AuthTemplateEditorValue = {
       kind: "oauth",
       authorizationUrl: "https://a.example.com/auth",
       tokenUrl: "https://a.example.com/token",
       scopes: ["read"],
     };
-    expect(graphqlAuthMethodInputFromEditorValue(value)).toEqual({ kind: "oauth2" });
+    expect(graphqlAuthMethodInputFromEditorValue(value)).toEqual({
+      kind: "oauth2",
+      authorizationUrl: "https://a.example.com/auth",
+      tokenUrl: "https://a.example.com/token",
+      scopes: ["read"],
+    });
+  });
+
+  it("maps an endpoint-less 'oauth' value → bare { kind: 'oauth2' } (bearer-render only)", () => {
+    expect(
+      graphqlAuthMethodInputFromEditorValue({
+        kind: "oauth",
+        authorizationUrl: "",
+        tokenUrl: "",
+        scopes: [],
+      }),
+    ).toEqual({ kind: "oauth2" });
   });
 
   it("maps a header placement to an apikey method (prefix preserved)", () => {

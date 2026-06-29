@@ -22,16 +22,29 @@ import type {
   GraphqlAuthMethod,
   GraphqlAuthMethodInput,
   GraphqlCanonicalAuthMethodInput,
+  GraphqlOAuthMethod,
 } from "../sdk/types";
 
-const oauthAuthMethod = (slug: string): AuthMethod => ({
-  id: slug,
+const oauthAuthMethod = (method: GraphqlOAuthMethod): AuthMethod => ({
+  id: method.slug,
   label: "OAuth",
   kind: "oauth",
-  source: slug.startsWith("custom_") ? "custom" : "spec",
-  template: AuthTemplateSlug.make(slug),
+  source: method.slug.startsWith("custom_") ? "custom" : "spec",
+  template: AuthTemplateSlug.make(method.slug),
   placements: [],
-  oauth: {},
+  // Mirror the server's describeGraphqlAuthMethods: surface stored endpoints +
+  // defaults so the connect UI can register + mint a client_credentials app.
+  // Endpoint-less methods emit an empty oauth object (prior behavior).
+  oauth: {
+    ...(method.authorizationUrl !== undefined ? { authorizationUrl: method.authorizationUrl } : {}),
+    ...(method.tokenUrl !== undefined ? { tokenUrl: method.tokenUrl } : {}),
+    ...(method.resource !== undefined ? { resource: method.resource } : {}),
+    ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
+    ...(method.defaultGrant !== undefined ? { defaultGrant: method.defaultGrant } : {}),
+    ...(method.defaultTokenEndpointAuthMethod !== undefined
+      ? { defaultTokenEndpointAuthMethod: method.defaultTokenEndpointAuthMethod }
+      : {}),
+  },
 });
 
 /** Convert a generic editor value into one GraphQL auth-method input (no slug
@@ -41,7 +54,19 @@ const oauthAuthMethod = (slug: string): AuthMethod => ({
 export function graphqlAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
 ): GraphqlAuthMethodInput {
-  if (value.kind === "oauth") return { kind: "oauth2" };
+  if (value.kind === "oauth") {
+    // Preserve any endpoints/scopes the editor carries (an endpointful /
+    // service-account method) so a read-modify-write round-trip does not
+    // discard them. The integration-level defaultGrant /
+    // defaultTokenEndpointAuthMethod are not surfaced by the generic editor and
+    // are set via addIntegration / the agent config, not here.
+    return {
+      kind: "oauth2",
+      ...(value.authorizationUrl ? { authorizationUrl: value.authorizationUrl } : {}),
+      ...(value.tokenUrl ? { tokenUrl: value.tokenUrl } : {}),
+      ...(value.scopes && value.scopes.length > 0 ? { scopes: [...value.scopes] } : {}),
+    };
+  }
   return (sharedMethodInputFromEditorValue(value) ?? { kind: "none" }) as GraphqlAuthMethodInput;
 }
 
@@ -50,8 +75,14 @@ export function editorValueFromGraphqlAuthMethod(
   method: GraphqlAuthMethod,
 ): AuthTemplateEditorValue {
   if (method.kind === "oauth2") {
-    // GraphQL oauth methods store no endpoints — only the bearer rendering.
-    return { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] };
+    // Endpointful methods seed the editor with their stored endpoints/scopes;
+    // endpoint-less (bearer-render-only) methods yield empty fields as before.
+    return {
+      kind: "oauth",
+      authorizationUrl: method.authorizationUrl ?? "",
+      tokenUrl: method.tokenUrl ?? "",
+      scopes: method.scopes ? [...method.scopes] : [],
+    };
   }
   return editorValueFromSharedMethod(method);
 }
@@ -61,7 +92,7 @@ export function editorValueFromGraphqlAuthMethod(
  *  user-created methods (removable from the hub). */
 export function authMethodsFromConfig(methods: readonly GraphqlAuthMethod[]): AuthMethod[] {
   return methods.map((method: GraphqlAuthMethod): AuthMethod => {
-    if (method.kind === "oauth2") return oauthAuthMethod(method.slug);
+    if (method.kind === "oauth2") return oauthAuthMethod(method);
     return authMethodFromSharedTemplate(method);
   });
 }

@@ -1,4 +1,5 @@
 import type { IntegrationSlug } from "./ids";
+import type { ClientAuthMethod, OAuthGrant } from "./oauth-client";
 
 /* Core knows only an integration's catalog identity — slug + description + which
  * plugin (`kind`) owns it. The type-specific shape (openapi auth templates + spec,
@@ -62,6 +63,14 @@ export interface AuthMethodOAuthDescriptor {
    *  clients. The UI can create a local public OAuth client using this host's
    *  metadata-document URL as `client_id`, with no provider app registration. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** Default OAuth grant to preselect when registering an app for this method.
+   *  `"client_credentials"` makes the connect UI register a service-account app
+   *  (no per-user sign-in) and mint inline. Absent means `"authorization_code"`. */
+  readonly defaultGrant?: OAuthGrant;
+  /** Default token-endpoint client-auth to preselect (e.g. `"basic"` for
+   *  providers like Linear that require HTTP Basic on the client_credentials
+   *  token request). Only `"basic"` is ever advertised; absent means `"body"`. */
+  readonly defaultTokenEndpointAuthMethod?: ClientAuthMethod;
 }
 
 /** A single declared auth method on an integration's catalog response. */

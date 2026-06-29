@@ -65,7 +65,9 @@ import {
   exchangeAuthorizationCode,
   exchangeClientCredentials,
   isLoopbackHttpUrl,
+  parseClientAuthMethod,
   rebindTokenEndpointHostToCallbackDomain,
+  type ClientAuthMethod,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
@@ -277,6 +279,8 @@ interface LoadedOAuthClient {
   /** Resolved literal secret (read from the provider via the stored item id). */
   readonly clientSecret: string;
   readonly resource: string | null;
+  /** Resolved token-endpoint client auth method ("body" | "basic"). */
+  readonly tokenEndpointAuthMethod: ClientAuthMethod;
 }
 
 /** Where an OAuth app's client secret is stored in the default writable
@@ -511,6 +515,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           client_id: input.clientId,
           client_secret_item_id: clientSecretItemIdValue,
           resource: input.resource ?? null,
+          // Persist only a non-default ("basic") method; "body"/undefined stays
+          // null, which parseClientAuthMethod resolves back to the "body" default.
+          token_endpoint_auth_method: input.tokenEndpointAuthMethod === "basic" ? "basic" : null,
           origin_kind: input.origin?.kind ?? "manual",
           origin_integration:
             input.origin?.kind === "dynamic_client_registration"
@@ -679,6 +686,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               tokenUrl: String(row.token_url),
               resource: row.resource == null ? null : String(row.resource),
               clientId: String(row.client_id),
+              // Only surface a non-default ("basic") method; "body" is implicit
+              // (undefined), matching how it is persisted and sent on create.
+              ...(parseClientAuthMethod(row.token_endpoint_auth_method) === "basic"
+                ? { tokenEndpointAuthMethod: "basic" as const }
+                : {}),
               origin: parseOAuthClientOrigin(row),
             } satisfies OAuthClientSummary);
           }),
@@ -735,6 +747,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               clientId: String(row.client_id),
               clientSecret,
               resource: row.resource == null ? null : String(row.resource),
+              tokenEndpointAuthMethod: parseClientAuthMethod(row.token_endpoint_auth_method),
             } satisfies LoadedOAuthClient;
           });
         }),
@@ -809,6 +822,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           clientSecret: client.clientSecret,
           scopes: requestedScopes,
           resource: client.resource ?? undefined,
+          clientAuth: client.tokenEndpointAuthMethod,
           endpointUrlPolicy: deps.endpointUrlPolicy,
           fetch,
         }).pipe(
@@ -1003,6 +1017,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         codeVerifier: session.pkceVerifier,
         code: input.code,
         resource: client.resource ?? undefined,
+        clientAuth: client.tokenEndpointAuthMethod,
         endpointUrlPolicy: deps.endpointUrlPolicy,
         fetch,
       }).pipe(

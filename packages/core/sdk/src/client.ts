@@ -134,6 +134,8 @@ export interface IntegrationAccountHandoff {
     readonly authorizationUrl?: string;
     readonly tokenUrl?: string;
     readonly resource?: string;
+    /** Token-endpoint client auth to preselect ("body" | "basic"). */
+    readonly tokenEndpointAuthMethod?: "body" | "basic";
   };
 }
 

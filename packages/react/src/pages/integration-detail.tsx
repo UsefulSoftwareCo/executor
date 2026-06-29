@@ -119,6 +119,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       const authorizationUrl = search.get("authorizationUrl");
       const tokenUrl = search.get("tokenUrl");
       const resource = search.get("resource");
+      const tokenEndpointAuthMethod = search.get("tokenEndpointAuthMethod");
       return {
         ...(slug != null && slug.length > 0 ? { slug } : {}),
         ...(grant != null && grant.length > 0 ? { grant } : {}),
@@ -126,6 +127,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         ...(authorizationUrl != null && authorizationUrl.length > 0 ? { authorizationUrl } : {}),
         ...(tokenUrl != null && tokenUrl.length > 0 ? { tokenUrl } : {}),
         ...(resource != null && resource.length > 0 ? { resource } : {}),
+        ...(tokenEndpointAuthMethod === "basic" || tokenEndpointAuthMethod === "body"
+          ? { tokenEndpointAuthMethod }
+          : {}),
       };
     })();
     return {

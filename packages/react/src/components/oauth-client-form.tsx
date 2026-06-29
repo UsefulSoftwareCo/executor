@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/shared";
+import {
+  OAuthClientSlug,
+  type ClientAuthMethod,
+  type OAuthGrant,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
@@ -48,6 +53,11 @@ export interface OAuthClientFormPrefill {
    *  and they are only sent when no declared scopes exist. */
   readonly discoveredScopes?: readonly string[];
   readonly grant?: OAuthGrant;
+  /** Default token-endpoint client-auth method to preselect ("body" |
+   *  "basic"). Lets an integration whose provider only accepts HTTP Basic at
+   *  the token endpoint (e.g. Linear's client_credentials grant) seed the
+   *  correct choice. Defaults to "body" (client_secret_post). */
+  readonly tokenEndpointAuthMethod?: ClientAuthMethod;
   /** Client id to seed (e.g. when editing an existing app). NOT a secret — the
    *  secret is never returned, so it is always re-entered. */
   readonly clientId?: string;
@@ -144,6 +154,9 @@ export function OAuthClientForm(props: {
   );
   const [name, setName] = useState(integrationName);
   const [grant, setGrant] = useState<OAuthGrant>(prefill?.grant ?? "authorization_code");
+  const [tokenEndpointAuthMethod, setTokenEndpointAuthMethod] = useState<ClientAuthMethod>(
+    prefill?.tokenEndpointAuthMethod ?? "body",
+  );
   const [clientId, setClientId] = useState(prefill?.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
   const [issuerUrl, setIssuerUrl] = useState("");
@@ -287,6 +300,10 @@ export function OAuthClientForm(props: {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         resource,
+        // Only send a non-default method; "body" is the server-side default.
+        ...(tokenEndpointAuthMethod === "basic"
+          ? { tokenEndpointAuthMethod: "basic" as const }
+          : {}),
       },
       reactivityKeys: oauthClientWriteKeys,
     });
@@ -469,6 +486,54 @@ export function OAuthClientForm(props: {
           />
         </div>
       </div>
+
+      {/* token-endpoint client auth, only relevant when a secret is sent.
+          Most providers accept the secret in the request body
+          (client_secret_post); some (e.g. Linear's client_credentials grant)
+          require HTTP Basic. Hidden for public clients with no secret. */}
+      {clientSecret.trim().length > 0 || grant === "client_credentials" ? (
+        <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground">Client authentication</Label>
+          <RadioGroup
+            value={tokenEndpointAuthMethod}
+            onValueChange={(next: string) => setTokenEndpointAuthMethod(next as ClientAuthMethod)}
+            className="gap-2"
+          >
+            {(
+              [
+                {
+                  value: "body",
+                  label: "Request body",
+                  hint: "client_secret_post (default)",
+                },
+                {
+                  value: "basic",
+                  label: "HTTP Basic",
+                  hint: "client_secret_basic (e.g. Linear)",
+                },
+              ] as const
+            ).map((option) => (
+              <Label
+                key={option.value}
+                htmlFor={`token-auth-${option.value}`}
+                className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+              >
+                <RadioGroupItem
+                  id={`token-auth-${option.value}`}
+                  value={option.value}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">{option.label}</span>
+                  <span className="block font-mono text-xs text-muted-foreground">
+                    {option.hint}
+                  </span>
+                </span>
+              </Label>
+            ))}
+          </RadioGroup>
+        </div>
+      ) : null}
 
       {/* endpoints + scopes — collapsed when the integration already declares them */}
       {endpointsKnown && !showEndpoints ? (

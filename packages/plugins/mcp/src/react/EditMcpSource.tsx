@@ -98,14 +98,27 @@ function RemoteEdit(props: {
   // The edited methods, slugs preserved for seeded rows so existing
   // connections (bound by template slug) stay attached. New rows omit the
   // slug — the backend assigns kind-based ones.
-  const editedMethods = useMemo<readonly McpCanonicalAuthMethodInput[]>(
-    () =>
-      list.rows.map((row: AuthMethodRow): McpCanonicalAuthMethodInput => {
-        const input = mcpAuthMethodInputFromEditorValue(row.value);
-        return row.seedSlug !== undefined ? { ...input, slug: row.seedSlug } : input;
-      }),
-    [list.rows],
-  );
+  const editedMethods = useMemo<readonly McpCanonicalAuthMethodInput[]>(() => {
+    const storedBySlug = new Map(
+      server.config.authenticationTemplate.map((method) => [method.slug, method] as const),
+    );
+    return list.rows.map((row: AuthMethodRow): McpCanonicalAuthMethodInput => {
+      const input = mcpAuthMethodInputFromEditorValue(row.value);
+      if (row.seedSlug === undefined) return input;
+      // Preserve the OAuth fields the generic editor does not surface
+      // (resource, defaultGrant, defaultTokenEndpointAuthMethod) by merging the
+      // editor-derived input onto the original stored method. Without this, an
+      // unrelated auth edit (this flow REPLACES the whole template) would
+      // silently strip a configured service-account / client_credentials method
+      // back to discovery. Editor-surfaced fields (tokenUrl, scopes,
+      // authorizationUrl) on `input` still win.
+      const original = storedBySlug.get(row.seedSlug);
+      if (input.kind === "oauth2" && original?.kind === "oauth2") {
+        return { ...original, ...input, slug: row.seedSlug };
+      }
+      return { ...input, slug: row.seedSlug };
+    });
+  }, [list.rows, server.config.authenticationTemplate]);
 
   const methodsChanged = useMemo(() => {
     const stored = server.config.authenticationTemplate;
@@ -117,6 +130,16 @@ function RemoteEdit(props: {
       if (method.kind !== current.kind) return true;
       if (method.kind === "apikey" && current.kind === "apikey") {
         return !samePlacements(method.placements, current.placements);
+      }
+      // Detect edits to the endpointful oauth2 fields the editor surfaces so a
+      // token-endpoint / scope change is saved (the non-editable defaults are
+      // merged through unchanged above).
+      if (method.kind === "oauth2" && current.kind === "oauth2") {
+        return (
+          (method.tokenUrl ?? "") !== (current.tokenUrl ?? "") ||
+          (method.authorizationUrl ?? "") !== (current.authorizationUrl ?? "") ||
+          (method.scopes ?? []).join(" ") !== (current.scopes ?? []).join(" ")
+        );
       }
       return false;
     });

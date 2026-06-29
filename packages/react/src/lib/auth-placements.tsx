@@ -74,6 +74,13 @@ export interface AuthMethodOAuth {
    *  `client_id` is this host's metadata document URL, with no provider-side app
    *  registration. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** Default OAuth grant to preselect for this method (`"client_credentials"`
+   *  drives the service-account / no-user-sign-in connect path). Absent means
+   *  `"authorization_code"`. */
+  readonly defaultGrant?: "authorization_code" | "client_credentials";
+  /** Default token-endpoint client-auth to preselect (`"basic"` for providers
+   *  that require HTTP Basic). Only `"basic"` is advertised; absent means body. */
+  readonly defaultTokenEndpointAuthMethod?: "body" | "basic";
 }
 
 export interface AuthMethod {
@@ -175,6 +182,8 @@ function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod 
         discoveryUrl: oauth?.discoveryUrl,
         supportsDynamicRegistration: oauth?.supportsDynamicRegistration,
         supportsClientIdMetadataDocument: oauth?.supportsClientIdMetadataDocument,
+        defaultGrant: oauth?.defaultGrant,
+        defaultTokenEndpointAuthMethod: oauth?.defaultTokenEndpointAuthMethod,
       },
     };
   }

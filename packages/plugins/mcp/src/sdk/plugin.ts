@@ -600,13 +600,39 @@ export const describeMcpAuthMethods = (
     if (method.kind === "stdio_env") return describeStdioEnvAuthMethod(method);
     if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
     if (method.kind === "oauth2") {
+      // Endpointful method (tokenUrl declared up front, e.g. a client_credentials
+      // service-account flow): advertise the stored endpoints + defaults and do
+      // NOT set discoveryUrl / supportsDynamicRegistration. That keeps the connect
+      // UI's DCR gate (isDcr) false, so it renders the BYO-app form pre-seeded with
+      // defaultGrant rather than probing the token URL for dynamic registration.
+      if (method.tokenUrl != null) {
+        return {
+          id: method.slug,
+          label: "OAuth",
+          kind: "oauth",
+          template: method.slug,
+          oauth: {
+            ...(method.authorizationUrl !== undefined
+              ? { authorizationUrl: method.authorizationUrl }
+              : {}),
+            tokenUrl: method.tokenUrl,
+            ...(method.resource !== undefined ? { resource: method.resource } : {}),
+            ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
+            ...(method.defaultGrant !== undefined ? { defaultGrant: method.defaultGrant } : {}),
+            ...(method.defaultTokenEndpointAuthMethod !== undefined
+              ? { defaultTokenEndpointAuthMethod: method.defaultTokenEndpointAuthMethod }
+              : {}),
+          },
+        };
+      }
+      // Discovery-at-connect method (no stored token endpoint): probe the
+      // server's metadata live. Only remote configs carry an endpoint; stdio
+      // never reaches here with oauth2.
       return {
         id: method.slug,
         label: "OAuth",
         kind: "oauth",
         template: method.slug,
-        // Only remote configs carry an endpoint; stdio never reaches here with
-        // oauth2.
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
           supportsDynamicRegistration: true,

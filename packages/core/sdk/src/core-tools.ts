@@ -220,6 +220,8 @@ const OAuthClientOutput = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
+  /** Token-endpoint client auth ("body" | "basic"); omitted means "body". */
+  tokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
   origin: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("manual") }),
     Schema.Struct({
@@ -257,6 +259,9 @@ const OAuthCreateClientHandoffInput = Schema.Struct({
   authorizationUrl: Schema.optional(Schema.String),
   tokenUrl: Schema.optional(Schema.String),
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Pre-fill the token-endpoint client auth ("body" | "basic"). Lets an agent
+   *  hand off a Basic-only client (e.g. Linear client_credentials) correctly. */
+  tokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
   label: Schema.optional(Schema.String),
 });
 const OAuthCreateClientHandoffOutput = Schema.Struct({
@@ -488,6 +493,11 @@ const oauthClientCreateHandoffUrl = (
   if (input.authorizationUrl !== undefined) search.set("authorizationUrl", input.authorizationUrl);
   if (input.tokenUrl !== undefined) search.set("tokenUrl", input.tokenUrl);
   if (input.resource != null && input.resource.length > 0) search.set("resource", input.resource);
+  // Only materialize a non-default "basic" (matches the persist/load/list
+  // convention). Emitting "body" here would override a method's advertised
+  // "basic" default in the connect-UI prefill precedence and break Basic-only
+  // providers like Linear.
+  if (input.tokenEndpointAuthMethod === "basic") search.set("tokenEndpointAuthMethod", "basic");
   if (input.label !== undefined) search.set("label", input.label);
   const orgPrefix = orgSlug !== undefined && orgSlug.length > 0 ? `/${orgSlug}` : "";
   const path = `${orgPrefix}/integrations/${encodeURIComponent(input.integration)}?${search.toString()}`;
@@ -677,6 +687,10 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 tokenUrl: client.tokenUrl,
                 resource: client.resource ?? null,
                 clientId: client.clientId,
+                // Only present when "basic"; omitted means the "body" default.
+                ...(client.tokenEndpointAuthMethod === "basic"
+                  ? { tokenEndpointAuthMethod: "basic" as const }
+                  : {}),
               })),
             })),
         }),

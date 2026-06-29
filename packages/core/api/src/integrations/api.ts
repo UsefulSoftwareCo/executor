@@ -52,6 +52,8 @@ const OAuthDescriptor = Schema.Struct({
   registrationEndpoint: Schema.optional(Schema.String),
   supportsDynamicRegistration: Schema.optional(Schema.Boolean),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  defaultGrant: Schema.optional(Schema.Literals(["authorization_code", "client_credentials"])),
+  defaultTokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
 });
 
 /** A single declared auth method — mirrors the SDK's `AuthMethodDescriptor`. */

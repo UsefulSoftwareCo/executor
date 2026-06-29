@@ -98,6 +98,26 @@ export const GraphqlOAuthMethod = Schema.Struct({
   header: Schema.optional(Schema.String),
   /** The token prefix. Defaults to `Bearer `. */
   prefix: Schema.optional(Schema.String),
+  // Endpointful fields, present when the method declares its OAuth endpoints up
+  // front (a service-account / client_credentials flow) rather than leaving the
+  // token to a bearer-only render. They are advertised on the auth-method
+  // descriptor so the connect UI can register + mint a client without the user
+  // pasting endpoints. Token minting/refresh is core's job; rendering is
+  // unchanged (the resolved token is still written as the bearer).
+  /** OAuth2 authorization endpoint (authorization_code flows). */
+  authorizationUrl: Schema.optional(Schema.String),
+  /** OAuth2 token endpoint. Its presence marks this method as endpointful. */
+  tokenUrl: Schema.optional(Schema.String),
+  /** RFC 8707 resource indicator, when the provider uses one. */
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Scopes to request. */
+  scopes: Schema.optional(Schema.Array(Schema.String)),
+  /** Default grant to preselect when registering an app ("client_credentials"
+   *  for a shared service-account identity). Absent means authorization_code. */
+  defaultGrant: Schema.optional(Schema.Literals(["authorization_code", "client_credentials"])),
+  /** Default token-endpoint client auth to preselect; only "basic" is ever
+   *  materialized (e.g. Linear). Absent means the "body" default. */
+  defaultTokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
 });
 export type GraphqlOAuthMethod = typeof GraphqlOAuthMethod.Type;
 
@@ -117,6 +137,12 @@ export const GraphqlAuthMethodInput = Schema.Union([
     kind: Schema.Literal("oauth2"),
     header: Schema.optional(Schema.String),
     prefix: Schema.optional(Schema.String),
+    authorizationUrl: Schema.optional(Schema.String),
+    tokenUrl: Schema.optional(Schema.String),
+    resource: Schema.optional(Schema.NullOr(Schema.String)),
+    scopes: Schema.optional(Schema.Array(Schema.String)),
+    defaultGrant: Schema.optional(Schema.Literals(["authorization_code", "client_credentials"])),
+    defaultTokenEndpointAuthMethod: Schema.optional(Schema.Literals(["body", "basic"])),
   }),
   // Credential methods are authored request-shaped — the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
