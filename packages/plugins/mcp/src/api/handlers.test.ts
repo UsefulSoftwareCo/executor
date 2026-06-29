@@ -14,6 +14,7 @@ import { Effect, Layer, Schema } from "effect";
 
 import { addGroup, observabilityMiddleware } from "@executor-js/api";
 import { CoreHandlers, ExecutionEngineService, ExecutorService } from "@executor-js/api/server";
+import { IntegrationNotFoundError, IntegrationSlug } from "@executor-js/sdk/shared";
 import type { McpPluginExtension } from "../sdk/plugin";
 import { McpConnectionError } from "../sdk/errors";
 import { McpExtensionService, McpHandlers } from "./handlers";
@@ -69,6 +70,11 @@ const McpConnectionErrorResponse = Schema.Struct({
   message: Schema.String,
 });
 
+const IntegrationNotFoundErrorResponse = Schema.Struct({
+  _tag: Schema.Literal("IntegrationNotFoundError"),
+  slug: Schema.String,
+});
+
 describe("McpHandlers", () => {
   it.effect("defect-returning methods produce an opaque InternalError, no leakage", () =>
     Effect.gen(function* () {
@@ -117,6 +123,38 @@ describe("McpHandlers", () => {
         yield* Effect.promise(() => response.json()),
       );
       expect(body.message).toContain("Do you need to provide an API key");
+    }),
+  );
+
+  it.effect("configureServer IntegrationNotFoundError is encoded as a 404 response", () =>
+    Effect.gen(function* () {
+      const slug = IntegrationSlug.make("missing_mcp");
+      const web = yield* webHandlerFor({
+        ...failingExtension,
+        configureServer: () => Effect.fail(new IntegrationNotFoundError({ slug })),
+      });
+      const response = yield* Effect.promise(() =>
+        (web.handler as (request: Request) => Promise<Response>)(
+          new Request("http://localhost/mcp/servers/missing_mcp/config", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              config: {
+                transport: "remote",
+                endpoint: "https://example.com/mcp",
+                remoteTransport: "auto",
+                authenticationTemplate: [{ slug: "none", kind: "none" }],
+              },
+            }),
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      const body = yield* Schema.decodeUnknownEffect(IntegrationNotFoundErrorResponse)(
+        yield* Effect.promise(() => response.json()),
+      );
+      expect(body.slug).toBe("missing_mcp");
     }),
   );
 });
