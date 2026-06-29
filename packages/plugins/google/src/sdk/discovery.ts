@@ -50,6 +50,17 @@ const GOOGLE_DISCOVERY_SERVICE_OVERRIDES: Record<string, GoogleDiscoveryServiceO
   },
 };
 
+const googleDiscoveryUrlForService = (
+  service: string,
+  version: string,
+  host = `${service}.googleapis.com`,
+): string => {
+  const override = GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service];
+  return override?.preserveServiceHostedUrl === true
+    ? `https://${host}/$discovery/rest?version=${version}`
+    : `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest`;
+};
+
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
@@ -288,7 +299,7 @@ export const normalizeGoogleDiscoveryUrl = (discoveryUrl: string): string | null
     const match = parsed.pathname.match(DISCOVERY_SERVICE_PATH_RE);
     const service = match?.[1];
     const version = match?.[2];
-    return service && version ? `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest` : null;
+    return service && version ? googleDiscoveryUrlForService(service, version) : null;
   }
 
   const service = serviceFromGoogleApisHost(host);
@@ -305,10 +316,7 @@ export const normalizeGoogleDiscoveryUrl = (discoveryUrl: string): string | null
   ) {
     return null;
   }
-  const override = GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service];
-  return override?.preserveServiceHostedUrl === true
-    ? `https://${host}/$discovery/rest?version=${version}`
-    : `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest`;
+  return googleDiscoveryUrlForService(service, version, host);
 };
 
 const normalizeDiscoveryUrl = (discoveryUrl: string): string => {

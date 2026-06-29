@@ -51,6 +51,17 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
     normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest/"),
   ).toBe("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest");
   expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://www.googleapis.com/discovery/v1/apis/photospicker/v1/rest",
+    ),
+  ).toBe("https://photospicker.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/forms/v1/rest"),
+  ).toBe("https://forms.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/keep/v1/rest"),
+  ).toBe("https://keep.googleapis.com/$discovery/rest?version=v1");
+  expect(
     normalizeGoogleDiscoveryUrl("https://chat.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://www.googleapis.com/discovery/v1/apis/chat/v1/rest");
   expect(
