@@ -159,6 +159,9 @@ export function OAuthClientForm(props: {
   const [discoveredScopes, setDiscoveredScopes] = useState<readonly string[]>(
     prefill?.discoveredScopes ?? [],
   );
+  const visibleScopes = registrationScopes(declaredScopes, discoveredScopes);
+  const visibleScopesSource =
+    declaredScopes.length > 0 ? "Declared by integration" : "Discovered from server";
   const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // DCR (RFC 7591): the registration endpoint + advertised auth methods. Seeded
@@ -470,7 +473,7 @@ export function OAuthClientForm(props: {
         </div>
       </div>
 
-      {/* endpoints + scopes — collapsed when the integration already declares them */}
+      {/* endpoints */}
       {endpointsKnown && !showEndpoints ? (
         <Button
           type="button"
@@ -551,6 +554,30 @@ export function OAuthClientForm(props: {
           ) : null}
         </div>
       )}
+
+      {visibleScopes.length > 0 ? (
+        <div className="space-y-2 rounded-lg border border-border/50 bg-background/30 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-foreground">Required OAuth scopes</p>
+              <p className="text-[11px] text-muted-foreground">{visibleScopesSource}</p>
+            </div>
+            <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {visibleScopes.length}
+            </span>
+          </div>
+          <ul className="space-y-1">
+            {visibleScopes.map((scope: string) => (
+              <li
+                key={scope}
+                className="rounded-md border border-border bg-muted/20 px-2.5 py-1 font-mono text-[11px] break-all text-muted-foreground"
+              >
+                {scope}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {/* client owner (distinct from the connection's saved-to owner). Locked
           when editing — an app's owner is part of its (owner, slug) identity. */}

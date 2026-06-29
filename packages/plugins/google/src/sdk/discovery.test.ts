@@ -51,8 +51,28 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
     normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest/"),
   ).toBe("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest");
   expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://www.googleapis.com/discovery/v1/apis/photospicker/v1/rest",
+    ),
+  ).toBe("https://photospicker.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/forms/v1/rest"),
+  ).toBe("https://forms.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/keep/v1/rest"),
+  ).toBe("https://keep.googleapis.com/$discovery/rest?version=v1");
+  expect(
     normalizeGoogleDiscoveryUrl("https://chat.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://www.googleapis.com/discovery/v1/apis/chat/v1/rest");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://photospicker.googleapis.com/$discovery/rest?version=v1"),
+  ).toBe("https://photospicker.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://forms.googleapis.com/$discovery/rest?version=v1"),
+  ).toBe("https://forms.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://keep.googleapis.com/$discovery/rest?version=v1"),
+  ).toBe("https://keep.googleapis.com/$discovery/rest?version=v1");
 
   expect(isGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest")).toBe(
     true,
@@ -329,6 +349,49 @@ it.effect("marks Google Discovery media-download methods as binary responses", (
       (body) => body.fileHint,
     );
     expect(Option.isSome(responseFileHint)).toBe(true);
+  }),
+);
+
+it.effect("supplies documented scopes when Picker Discovery omits auth metadata", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryToOpenApi({
+      discoveryUrl: "https://photospicker.googleapis.com/$discovery/rest?version=v1",
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      documentText: JSON.stringify({
+        name: "photospicker",
+        version: "v1",
+        title: "Google Photos Picker API",
+        rootUrl: "https://photospicker.googleapis.com/",
+        servicePath: "v1/",
+        resources: {
+          mediaItems: {
+            methods: {
+              list: {
+                id: "photospicker.mediaItems.list",
+                httpMethod: "GET",
+                path: "mediaItems",
+                parameters: {},
+              },
+            },
+          },
+        },
+        schemas: {},
+      }),
+    });
+
+    const pickerScope = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+    const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+    expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual([
+      pickerScope,
+    ]);
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operation = spec.paths["/mediaItems"]?.get;
+    expect(operation).toMatchObject({
+      operationId: "mediaItems.list",
+      "x-google-scopes": [pickerScope],
+      security: [{ googleOAuth2: [pickerScope] }],
+    });
   }),
 );
 

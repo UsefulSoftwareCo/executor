@@ -18,6 +18,10 @@ const DISCOVERY_SERVICE_HOST = "https://www.googleapis.com/discovery/v1/apis";
 const GOOGLE_BUNDLE_BASE_URL = "https://www.googleapis.com/";
 const GOOGLE_OAUTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_PHOTOS_PICKER_SERVICE = "photospicker";
+const GOOGLE_PHOTOS_PICKER_SCOPE =
+  "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+const GOOGLE_PHOTOS_PICKER_SCOPE_DESCRIPTION = "Read selected Google Photos media";
 const OPENAPI_SCHEMA_TYPES = new Set([
   "array",
   "boolean",
@@ -27,6 +31,35 @@ const OPENAPI_SCHEMA_TYPES = new Set([
   "object",
   "string",
 ]);
+
+type GoogleDiscoveryServiceOverride = {
+  readonly preserveServiceHostedUrl?: true;
+  readonly scopes?: Record<string, string>;
+  readonly fallbackMethodScopes?: readonly string[];
+};
+
+const GOOGLE_DISCOVERY_SERVICE_OVERRIDES: Record<string, GoogleDiscoveryServiceOverride> = {
+  forms: { preserveServiceHostedUrl: true },
+  keep: { preserveServiceHostedUrl: true },
+  [GOOGLE_PHOTOS_PICKER_SERVICE]: {
+    preserveServiceHostedUrl: true,
+    scopes: {
+      [GOOGLE_PHOTOS_PICKER_SCOPE]: GOOGLE_PHOTOS_PICKER_SCOPE_DESCRIPTION,
+    },
+    fallbackMethodScopes: [GOOGLE_PHOTOS_PICKER_SCOPE],
+  },
+};
+
+const googleDiscoveryUrlForService = (
+  service: string,
+  version: string,
+  host = `${service}.googleapis.com`,
+): string => {
+  const override = GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service];
+  return override?.preserveServiceHostedUrl === true
+    ? `https://${host}/$discovery/rest?version=${version}`
+    : `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest`;
+};
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -266,7 +299,7 @@ export const normalizeGoogleDiscoveryUrl = (discoveryUrl: string): string | null
     const match = parsed.pathname.match(DISCOVERY_SERVICE_PATH_RE);
     const service = match?.[1];
     const version = match?.[2];
-    return service && version ? `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest` : null;
+    return service && version ? googleDiscoveryUrlForService(service, version) : null;
   }
 
   const service = serviceFromGoogleApisHost(host);
@@ -283,7 +316,7 @@ export const normalizeGoogleDiscoveryUrl = (discoveryUrl: string): string | null
   ) {
     return null;
   }
-  return `${DISCOVERY_SERVICE_HOST}/${service}/${version}/rest`;
+  return googleDiscoveryUrlForService(service, version, host);
 };
 
 const normalizeDiscoveryUrl = (discoveryUrl: string): string => {
@@ -677,13 +710,37 @@ const buildDiscoveryOperation = (input: {
 
 const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
 const GOOGLE_PHOTOS_LIBRARY_SERVICE = "photoslibrary";
-const GOOGLE_PHOTOS_PICKER_SERVICE = "photospicker";
 const GOOGLE_PHOTOS_APPENDONLY_SCOPE = "https://www.googleapis.com/auth/photoslibrary.appendonly";
 const GOOGLE_PHOTOS_UPLOAD_TOOL_PATH = "photoslibrary.mediaItems.upload";
 const GOOGLE_PHOTOS_UPLOAD_PATH = "/uploads";
 
 const isGooglePhotosService = (service: string): boolean =>
   service === GOOGLE_PHOTOS_LIBRARY_SERVICE || service === GOOGLE_PHOTOS_PICKER_SERVICE;
+
+const discoveryScopesForService = (
+  service: string,
+  document: DiscoveryDocument,
+): Record<string, string> => {
+  const scopes = discoveryScopes(document);
+  const overrideScopes = GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service]?.scopes;
+  if (!overrideScopes) {
+    return scopes;
+  }
+  const missingScopes = Object.fromEntries(
+    Object.entries(overrideScopes).filter(([scope]) => scopes[scope] === undefined),
+  );
+  return Object.keys(missingScopes).length === 0 ? scopes : { ...scopes, ...missingScopes };
+};
+
+const discoveryMethodScopesForService = (
+  service: string,
+  method: DiscoveryMethod,
+): readonly string[] => {
+  const scopes = method.scopes ?? [];
+  return scopes.length === 0
+    ? (GOOGLE_DISCOVERY_SERVICE_OVERRIDES[service]?.fallbackMethodScopes ?? scopes)
+    : scopes;
+};
 
 /** The v2 oauth auth template for a Google-discovery integration. The spec
  *  itself carries the matching `securitySchemes.googleOAuth2` entry; this is the
@@ -811,6 +868,7 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
         method,
         toolPath,
         pathTemplate: pathTemplate.startsWith("/") ? pathTemplate : `/${pathTemplate}`,
+        oauthScopes: discoveryMethodScopesForService(service, method),
       });
     }
 
@@ -826,7 +884,7 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
       });
     }
 
-    const scopes = compactDiscoveryScopeMap(discoveryScopes(document));
+    const scopes = compactDiscoveryScopeMap(discoveryScopesForService(service, document));
     const authenticationTemplate = googleOauthTemplate(scopes);
 
     const spec: OpenApiDocument = {
@@ -923,7 +981,7 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
   for (const info of infos) {
     const schemaPrefix = schemaComponentPart(`${info.service}_${info.version}`);
     const schemaNameForRef = (name: string) => `${schemaPrefix}_${schemaComponentPart(name)}`;
-    const scopeDescriptions = discoveryScopes(info.document);
+    const scopeDescriptions = discoveryScopesForService(info.service, info.document);
     const filterPhotosScopes = consentScopeSet !== null && isGooglePhotosService(info.service);
 
     for (const [scope, description] of Object.entries(scopeDescriptions)) {
@@ -939,7 +997,7 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
       const methodId = Option.getOrUndefined(method.id);
       const rawPathTemplate = Option.getOrUndefined(method.path);
       if (!methodId || !rawPathTemplate || !method.httpMethod) continue;
-      const methodScopes = method.scopes ?? [];
+      const methodScopes = discoveryMethodScopesForService(info.service, method);
       const oauthScopes = filterPhotosScopes
         ? methodScopes.filter((scope) => consentScopeSet.has(scope))
         : methodScopes;
