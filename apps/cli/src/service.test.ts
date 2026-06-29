@@ -5,9 +5,11 @@ import {
   generateLaunchdPlist,
   generateSystemdUnit,
   generateWindowsDaemonWrapper,
-  generateWindowsRegisterScript,
-  generateWindowsStopExecutorListenersScript,
+  generateWindowsHiddenLauncherVbs,
+  generateWindowsTaskXml,
   getServiceBackend,
+  parseNetstatListenerPids,
+  parseSchtasksRunning,
 } from "./service";
 
 describe("service unit generation", () => {
@@ -124,28 +126,107 @@ describe("service unit generation", () => {
     expect(`set "PATH=${cmdSetValue('a"&b')}"`).not.toMatch(/"\s*&/);
   });
 
-  it("registers a boot-triggered S4U task (the reboot-survival contract)", () => {
-    const script = generateWindowsRegisterScript({
-      taskName: "ExecutorDaemon",
-      wrapperPath: "C:\\Users\\x\\.executor\\server-control\\run-daemon.cmd",
-      userId: "x",
+  it("defaults to a per-user logon task that needs no elevation", () => {
+    const xml = generateWindowsTaskXml({
+      command: "wscript.exe",
+      arguments: '"C:\\Users\\x\\.executor\\server-control\\run-daemon.vbs"',
+      userId: "HOST\\x",
     });
-    // S4U + AtStartup = run as the user, at boot, no stored password, no logon.
-    expect(script).toContain("-LogonType S4U");
-    expect(script).toContain("New-ScheduledTaskTrigger -AtStartup");
-    expect(script).toContain("-RestartCount 3");
-    expect(script).toContain("Register-ScheduledTask -TaskName 'ExecutorDaemon'");
-    expect(script).toContain("Start-ScheduledTask -TaskName 'ExecutorDaemon'");
+    // LogonTrigger + InteractiveToken + LeastPrivilege = run as the user at their
+    // own logon, unprivileged. A standard user may register this without admin.
+    expect(xml).toContain("<LogonTrigger><Enabled>true</Enabled><UserId>HOST\\x</UserId>");
+    expect(xml).toContain("<LogonType>InteractiveToken</LogonType>");
+    expect(xml).toContain("<RunLevel>LeastPrivilege</RunLevel>");
+    // The default path must NOT use the admin-only Boot/S4U/Highest knobs.
+    expect(xml).not.toContain("BootTrigger");
+    expect(xml).not.toContain("S4U");
+    expect(xml).not.toContain("HighestAvailable");
+    expect(xml).toContain("<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count>");
+    expect(xml).toContain("<Command>wscript.exe</Command>");
+    expect(xml).toContain("run-daemon.vbs&quot;</Arguments>");
   });
 
-  it("stops orphaned executor.exe listeners without shadowing PowerShell's $PID", () => {
-    const script = generateWindowsStopExecutorListenersScript(4789);
+  it("registers a boot-triggered S4U task under --boot (the reboot-survival contract)", () => {
+    const xml = generateWindowsTaskXml({
+      command: "wscript.exe",
+      arguments: '"C:\\Users\\x\\.executor\\server-control\\run-daemon.vbs"',
+      userId: "HOST\\x",
+      boot: true,
+    });
+    // BootTrigger + S4U + HighestAvailable = run as the user, at boot, no stored
+    // password, no logon. Task Scheduler only lets an elevated shell create this.
+    expect(xml).toContain("<BootTrigger><Enabled>true</Enabled></BootTrigger>");
+    expect(xml).toContain("<LogonType>S4U</LogonType>");
+    expect(xml).toContain("<RunLevel>HighestAvailable</RunLevel>");
+    expect(xml).not.toContain("LogonTrigger");
+    expect(xml).not.toContain("InteractiveToken");
+  });
 
-    expect(script).toContain("Get-NetTCPConnection -LocalPort 4789 -State Listen");
-    expect(script).toContain("$listenerPid");
-    expect(script).not.toContain("foreach ($pid");
-    expect(script).toContain("[string]$process.Name -ieq 'executor.exe'");
-    expect(script).toContain('Write-Output ("STOPPED=" + $listenerPid)');
+  it("hides the daemon console via a wait-and-propagate wscript shim", () => {
+    const vbs = generateWindowsHiddenLauncherVbs(
+      "C:\\Users\\x\\.executor\\server-control\\run-daemon.cmd",
+    );
+    // Run(cmd, 0, True): 0 = hidden window, True = wait so the task stays Running
+    // and the wrapper's exit code propagates (preserving RestartOnFailure).
+    expect(vbs).toContain(
+      'sh.Run("""C:\\Users\\x\\.executor\\server-control\\run-daemon.cmd""", 0, True)',
+    );
+    expect(vbs).toContain("WScript.Quit rc");
+  });
+
+  it("parses LISTENING pids for the service port from netstat output", () => {
+    const netstat = [
+      "Active Connections",
+      "  Proto  Local Address          Foreign Address        State           PID",
+      "  TCP    127.0.0.1:4789         0.0.0.0:0              LISTENING       4072",
+      "  TCP    127.0.0.1:4789         127.0.0.1:51000       ESTABLISHED     4072",
+      "  TCP    [::1]:4789             [::]:0                LISTENING       4072",
+      "  TCP    0.0.0.0:445            0.0.0.0:0             LISTENING       4",
+      "  TCP    127.0.0.1:8765         0.0.0.0:0             LISTENING       9999",
+    ].join("\r\n");
+    expect(parseNetstatListenerPids(netstat, 4789)).toEqual([4072]);
+    // A connection in another state on the port must not be treated as a listener.
+    expect(parseNetstatListenerPids(netstat, 445)).toEqual([4]);
+    expect(parseNetstatListenerPids(netstat, 1234)).toEqual([]);
+  });
+
+  it("identifies listeners by wildcard remote, so it survives a localized state column", () => {
+    // German netstat: the state word is "ABHÖREN"/"HERGESTELLT", but addresses and
+    // "TCP" are not localized. Listener detection must not depend on the word.
+    const deNetstat = [
+      "Aktive Verbindungen",
+      "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
+      "  TCP    127.0.0.1:4789         0.0.0.0:0              ABHÖREN         4072",
+      "  TCP    127.0.0.1:4789         127.0.0.1:51000       HERGESTELLT     8000",
+    ].join("\r\n");
+    expect(parseNetstatListenerPids(deNetstat, 4789)).toEqual([4072]);
+  });
+
+  it("detects a running task via the locale-invariant result code, not the Status word", () => {
+    // English verbose LIST output for a running task.
+    const en = [
+      "TaskName:                             \\ExecutorDaemon",
+      "Status:                               Running",
+      "Last Result:                          267009",
+    ].join("\r\n");
+    expect(parseSchtasksRunning(en)).toBe(true);
+
+    // French Windows: both the label and the status word are translated, but the
+    // SCHED_S_TASK_RUNNING code (267009 / 0x41301) is the same.
+    const fr = [
+      "Nom de tâche:                         \\ExecutorDaemon",
+      "État:                                 En cours d'exécution",
+      "Dernier résultat:                     267009",
+    ].join("\r\n");
+    expect(parseSchtasksRunning(fr)).toBe(true);
+
+    // A ready/terminated task (267014 = SCHED_S_TASK_TERMINATED) is not running.
+    const ready = ["Status:                               Ready", "Last Result:    267014"].join(
+      "\r\n",
+    );
+    expect(parseSchtasksRunning(ready)).toBe(false);
+    // Hex form (some builds/locales) is also recognized.
+    expect(parseSchtasksRunning("Last Result: 0x41301")).toBe(true);
   });
 });
 

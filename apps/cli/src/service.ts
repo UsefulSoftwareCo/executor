@@ -16,8 +16,14 @@ import { resolveExecutorDataDir } from "./local-server-manifest";
 // `<executor> daemon run --foreground --port <p>`, bind loopback, write
 // `server.json`, and get restarted on crash but not on a clean stop.
 //
-// macOS (launchd), Linux (systemd --user + lingering), and Windows (Task
-// Scheduler S4U/AtStartup) are all reboot-survival verified in real VMs.
+// By default each backend starts the daemon at LOGIN with no elevation: launchd
+// RunAtLoad, systemd --user, and a Windows per-user logon Scheduled Task. Where
+// the platform can also survive a reboot before any login, that is layered on
+// best-effort (Linux lingering) or behind an explicit, elevation-requiring opt
+// in (Windows `--boot`: a BootTrigger/S4U task). Windows registration goes
+// through `schtasks.exe` (Task Scheduler RPC), not the CIM `*-ScheduledTask`
+// cmdlets, so a non-admin install from the compiled binary is not blocked by a
+// DCOM local-activation denial.
 // ---------------------------------------------------------------------------
 
 export const SERVICE_LABEL = "sh.executor.daemon";
@@ -36,6 +42,16 @@ export interface ServiceDescriptor {
   readonly port: number;
   /** Installing CLI version, baked in for drift detection on upgrade. */
   readonly version: string;
+  /**
+   * Opt in to boot-survival-before-login (Windows only, requires elevation).
+   * Default (false) installs a per-user, login-triggered task that needs no
+   * Administrator shell, matching launchd RunAtLoad and systemd --user. When
+   * true the Windows backend registers an AtStartup/S4U task that runs at boot
+   * before any logon, which Task Scheduler only lets an elevated shell create.
+   * launchd and systemd ignore this flag (they always start at login, with
+   * Linux lingering best-effort upgrading that to boot).
+   */
+  readonly boot?: boolean;
 }
 
 // No secret is part of the descriptor: the supervised daemon mints/loads its
@@ -551,186 +567,333 @@ export const generateWindowsDaemonWrapper = (
   return ["@echo off", ...setLines, command, ""].join("\r\n");
 };
 
-/** Quote a value as a PowerShell single-quoted string literal. */
-const psSingleQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+/**
+ * The Scheduled Task is registered for this exact account. We pass the
+ * fully-qualified `DOMAIN\user` (really `COMPUTERNAME\user` on a standalone box)
+ * so Task Scheduler resolves the principal as the caller and lets a non-admin
+ * register a task that runs as themselves. The bare username also works, but the
+ * qualified form is unambiguous when the machine is domain-joined.
+ */
+const windowsTaskUserId = (): string => {
+  const name = userInfo().username;
+  const domain = process.env.USERDOMAIN;
+  return domain ? `${domain}\\${name}` : name;
+};
 
 /**
- * PowerShell that registers the daemon as a boot-triggered Scheduled Task.
+ * Render the Task Scheduler task definition (Task Scheduler 1.2 XML, the schema
+ * `schtasks /create /xml` consumes). Two shapes, same running contract
+ * (RestartOnFailure gives crash-restart; ExecutionTimeLimit=PT0S means "never
+ * time out a long-running task"):
  *
- * LogonType=S4U + AtStartup is the Windows equivalent of launchd RunAtLoad and
- * systemd lingering: the task runs the daemon AS THE USER, at boot, with no
- * stored password and no interactive logon — verified to survive a real reboot
- * with no login on a headless host. RestartCount/RestartInterval supply the
- * crash-restart half of the contract; ExecutionTimeLimit=0 means "never time
- * out a long-running task". Registering a boot task requires an elevated
- * (Administrator) shell.
+ * - `boot: false` (DEFAULT, no Administrator needed): a LogonTrigger for this
+ *   user + an InteractiveToken principal at LeastPrivilege. A standard user is
+ *   allowed to register a task that runs as themselves at their own logon, so
+ *   this installs from an ordinary, non-elevated shell. It is the Windows
+ *   equivalent of a launchd LaunchAgent with RunAtLoad and `systemd --user`:
+ *   the daemon comes up when the user logs in, unprivileged.
+ *
+ * - `boot: true` (requires an elevated/Administrator shell): a BootTrigger + an
+ *   S4U principal at HighestAvailable. Runs the daemon AS THE USER at boot, with
+ *   no stored password and no interactive logon — survives a real reboot with no
+ *   login on a headless host. Task Scheduler only lets an elevated shell create
+ *   a boot/S4U task, which is why this path costs the UAC prompt.
+ *
+ * We register via `schtasks.exe` rather than the PowerShell `*-ScheduledTask`
+ * cmdlets on purpose: those cmdlets reach Task Scheduler over CIM/DCOM, whose
+ * local-activation check fails with "Access denied" (0x80070005) when the
+ * compiled `executor` binary spawns the helper on a non-interactive window
+ * station. `schtasks` talks to the Task Scheduler service over RPC, so it has no
+ * such dependency and a non-admin install succeeds.
  */
-export const generateWindowsRegisterScript = (options: {
-  readonly taskName: string;
-  readonly wrapperPath: string;
+export const generateWindowsTaskXml = (options: {
+  readonly command: string;
+  readonly arguments?: string;
   readonly userId: string;
-}): string =>
+  readonly boot?: boolean;
+}): string => {
+  const user = xmlEscape(options.userId);
+  const trigger = options.boot
+    ? "<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+    : `<LogonTrigger><Enabled>true</Enabled><UserId>${user}</UserId></LogonTrigger>`;
+  const logonType = options.boot ? "S4U" : "InteractiveToken";
+  const runLevel = options.boot ? "HighestAvailable" : "LeastPrivilege";
+  const action = options.arguments
+    ? `<Exec><Command>${xmlEscape(options.command)}</Command><Arguments>${xmlEscape(options.arguments)}</Arguments></Exec>`
+    : `<Exec><Command>${xmlEscape(options.command)}</Command></Exec>`;
+  return [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    "  <RegistrationInfo><Description>Executor supervised daemon</Description></RegistrationInfo>",
+    `  <Triggers>${trigger}</Triggers>`,
+    "  <Principals>",
+    `    <Principal id="Author"><UserId>${user}</UserId><LogonType>${logonType}</LogonType><RunLevel>${runLevel}</RunLevel></Principal>`,
+    "  </Principals>",
+    "  <Settings>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <StartWhenAvailable>true</StartWhenAvailable>",
+    "    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>",
+    "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+    "    <Enabled>true</Enabled>",
+    "  </Settings>",
+    '  <Actions Context="Author">',
+    `    ${action}`,
+    "  </Actions>",
+    "</Task>",
+    "",
+  ].join("\r\n");
+};
+
+/**
+ * A tiny VBScript shim the task runs via `wscript.exe`. The default (logon) task
+ * runs in the user's interactive session, so pointing its action straight at the
+ * `.cmd` wrapper would flash a console window on the desktop at every login. The
+ * shim launches the wrapper with a hidden window (`Run(cmd, 0, True)`) and waits
+ * for it, so: no visible window, and `wscript` stays alive for the daemon's
+ * lifetime, which keeps the task reported as Running and preserves RestartOnFailure
+ * (the wrapper's exit code propagates out). Output still flows to daemon.log via
+ * the wrapper's own redirection.
+ */
+export const generateWindowsHiddenLauncherVbs = (wrapperPath: string): string =>
   [
-    `$action = New-ScheduledTaskAction -Execute ${psSingleQuote(options.wrapperPath)}`,
-    `$trigger = New-ScheduledTaskTrigger -AtStartup`,
-    `$principal = New-ScheduledTaskPrincipal -UserId ${psSingleQuote(options.userId)} -LogonType S4U -RunLevel Highest`,
-    `$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)`,
-    `Register-ScheduledTask -TaskName ${psSingleQuote(options.taskName)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`,
-    `Start-ScheduledTask -TaskName ${psSingleQuote(options.taskName)}`,
-  ].join("\n");
+    'Set sh = CreateObject("WScript.Shell")',
+    `rc = sh.Run("""${wrapperPath}""", 0, True)`,
+    "WScript.Quit rc",
+    "",
+  ].join("\r\n");
+
+/** Run schtasks.exe, capturing (stdout, stderr, code). */
+const runSchtasks = (args: ReadonlyArray<string>): Effect.Effect<CommandResult, Error> =>
+  runCommand("schtasks.exe", args);
+
+/** Write a UTF-16LE (BOM-prefixed) file — the encoding schtasks expects for XML. */
+const writeUtf16File = (
+  path: string,
+  contents: string,
+): Effect.Effect<void, Error | PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const bytes = Buffer.from(`﻿${contents}`, "utf16le");
+    yield* fs.writeFile(path, new Uint8Array(bytes));
+  });
+
+/**
+ * SCHED_S_TASK_RUNNING — the Task Scheduler HRESULT a task reports as its "Last
+ * Result" while it is currently running (0x00041301 == 267009). schtasks prints
+ * this in the verbose listing as a decimal; some Windows builds/locales print the
+ * hex form. The numeric code is locale-invariant even though the surrounding
+ * labels ("Last Result:", "Status:") and the human state word ("Running") are
+ * translated on a non-English Windows.
+ */
+const SCHED_S_TASK_RUNNING = 267009;
+
+/**
+ * Decide whether `schtasks /query /v /fo LIST` reports the task as currently
+ * running, without depending on the localized "Status:" line. We look for the
+ * locale-invariant SCHED_S_TASK_RUNNING result code instead. Pure + exported for
+ * unit tests (including non-English fixtures).
+ */
+export const parseSchtasksRunning = (verboseListOutput: string): boolean =>
+  new RegExp(`\\b(?:${SCHED_S_TASK_RUNNING}|0x0*41301)\\b`, "i").test(verboseListOutput);
+
+/**
+ * Parse `netstat -ano` output for the PIDs listening on `port`. Pure, so it can
+ * be unit-tested without a live socket. Matches both IPv4 (`127.0.0.1:PORT`) and
+ * IPv6 (`[::1]:PORT`) local endpoints. A listener is identified by its
+ * wildcard/zero remote endpoint (`0.0.0.0:0` / `[::]:0`) rather than the state
+ * column, because that column ("LISTENING") is localized on a non-English
+ * Windows while the addresses and the `TCP` token are not.
+ */
+const NETSTAT_LISTENER_REMOTES = new Set(["0.0.0.0:0", "[::]:0", "*:*"]);
+
+export const parseNetstatListenerPids = (output: string, port: number): ReadonlyArray<number> => {
+  const pids = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/);
+    // TCP  <local>  <remote(=wildcard when listening)>  <state>  <pid>
+    if (cols.length < 5 || cols[0].toUpperCase() !== "TCP") continue;
+    if (!cols[1].endsWith(`:${port}`)) continue;
+    if (!NETSTAT_LISTENER_REMOTES.has(cols[2])) continue;
+    const pid = Number.parseInt(cols[4], 10);
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+  }
+  return [...pids];
+};
 
 /**
  * Stop orphaned Windows `executor.exe` listeners on the service port. Task
  * Scheduler can report the task as stopped after terminating the `.cmd` action
- * while leaving the child `executor.exe` process bound to 4789. That process is
- * healthy enough to satisfy `/api/health`, but `executor web` cannot discover it
- * once its `server.json` is gone.
+ * while leaving the child `executor.exe` process bound to the port. That process
+ * is healthy enough to satisfy `/api/health`, but `executor web` cannot discover
+ * it once its `server.json` is gone. We use netstat/tasklist/taskkill (RPC/Win32
+ * tools) rather than the CIM `Get-NetTCPConnection`/`Get-CimInstance` cmdlets so
+ * this works from the compiled binary without a DCOM local-activation grant.
  */
-export const generateWindowsStopExecutorListenersScript = (port: number): string =>
-  [
-    `$connections = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue)`,
-    `$listenerPids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique)`,
-    `foreach ($listenerPid in $listenerPids) {`,
-    `  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid" -ErrorAction SilentlyContinue`,
-    `  if ($null -eq $process) { continue }`,
-    `  $pathName = if ($process.ExecutablePath) { [System.IO.Path]::GetFileName([string]$process.ExecutablePath) } else { '' }`,
-    `  if ([string]$process.Name -ieq 'executor.exe' -or $pathName -ieq 'executor.exe') {`,
-    `    Stop-Process -Id $listenerPid -Force -ErrorAction SilentlyContinue`,
-    `    Write-Output ("STOPPED=" + $listenerPid)`,
-    `  }`,
-    `}`,
-  ].join("\n");
-
-/** Run a PowerShell script via -EncodedCommand (sidesteps all shell quoting). */
-const runPowerShell = (script: string): Effect.Effect<CommandResult, Error> =>
-  runCommand("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64"),
-  ]);
-
 export const stopWindowsExecutorListenersOnPort = (
   port: number,
 ): Effect.Effect<ReadonlyArray<number>, Error> =>
   Effect.gen(function* () {
-    const result = yield* runPowerShell(generateWindowsStopExecutorListenersScript(port));
-    if (result.code !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim();
+    const netstat = yield* runCommand("netstat.exe", ["-ano", "-p", "tcp"]);
+    if (netstat.code !== 0) {
+      const detail = netstat.stderr.trim() || netstat.stdout.trim();
       return yield* Effect.fail(
         new Error(`Failed to inspect Executor listeners on port ${port}: ${detail}`),
       );
     }
-    return result.stdout.split(/\r?\n/).flatMap((line) => {
-      const match = /^STOPPED=(\d+)\s*$/.exec(line.trim());
-      if (!match) return [];
-      const pid = Number.parseInt(match[1], 10);
-      return Number.isInteger(pid) && pid > 0 ? [pid] : [];
-    });
+    const stopped: number[] = [];
+    for (const pid of parseNetstatListenerPids(netstat.stdout, port)) {
+      // Confirm the listener really is executor.exe before killing it.
+      const list = yield* runCommand("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]);
+      if (!/"executor\.exe"/i.test(list.stdout)) continue;
+      const kill = yield* runCommand("taskkill.exe", ["/PID", String(pid), "/F"]);
+      if (kill.code === 0) stopped.push(pid);
+    }
+    return stopped;
   });
 
-const makeWindowsBackend = (): ServiceBackend => ({
-  platform: "win32",
-  automated: true,
-  install: (descriptor) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const dataDir = resolveExecutorDataDir(path);
-      const logs = serviceLogDir(path);
-      const control = path.join(dataDir, "server-control");
-      yield* fs.makeDirectory(logs, { recursive: true });
-      yield* fs.makeDirectory(control, { recursive: true });
+const makeWindowsBackend = (): ServiceBackend => {
+  const controlDir = (path: Path.Path): string =>
+    path.join(resolveExecutorDataDir(path), "server-control");
+  const taskXmlPath = (path: Path.Path): string => path.join(controlDir(path), "run-daemon.xml");
+  const wrapperCmdPath = (path: Path.Path): string => path.join(controlDir(path), "run-daemon.cmd");
+  const launcherVbsPath = (path: Path.Path): string =>
+    path.join(controlDir(path), "run-daemon.vbs");
 
-      const wrapperPath = path.join(control, "run-daemon.cmd");
-      yield* fs.writeFileString(
-        wrapperPath,
-        generateWindowsDaemonWrapper(descriptor, dataDir, logs),
-      );
+  return {
+    platform: "win32",
+    automated: true,
+    install: (descriptor) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dataDir = resolveExecutorDataDir(path);
+        const logs = serviceLogDir(path);
+        const control = path.join(dataDir, "server-control");
+        yield* fs.makeDirectory(logs, { recursive: true });
+        yield* fs.makeDirectory(control, { recursive: true });
 
-      const result = yield* runPowerShell(
-        generateWindowsRegisterScript({
-          taskName: WINDOWS_TASK_NAME,
+        const wrapperPath = wrapperCmdPath(path);
+        yield* fs.writeFileString(
           wrapperPath,
-          userId: userInfo().username,
-        }),
-      );
-      if (result.code !== 0) {
-        const detail = result.stderr.trim() || result.stdout.trim();
-        const hint = /denied|0x80070005|administrator|elevat/i.test(detail)
-          ? " Run `executor service install` from an Administrator PowerShell."
-          : "";
-        return yield* Effect.fail(
-          new Error(`Register-ScheduledTask failed (exit ${result.code}): ${detail}.${hint}`),
+          generateWindowsDaemonWrapper(descriptor, dataDir, logs),
         );
-      }
-    }),
-  uninstall: () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      // Tolerate "task not found" (idempotent uninstall), but don't hide a
-      // failure to even spawn PowerShell — that would leave the task registered
-      // while we report success.
-      yield* runPowerShell(
-        `Stop-ScheduledTask -TaskName ${psSingleQuote(WINDOWS_TASK_NAME)} -ErrorAction SilentlyContinue | Out-Null; ` +
-          `Unregister-ScheduledTask -TaskName ${psSingleQuote(WINDOWS_TASK_NAME)} -Confirm:$false -ErrorAction SilentlyContinue`,
-      ).pipe(
-        Effect.tapError((cause) =>
-          Effect.sync(() =>
-            console.warn(
-              `Warning: could not remove the ExecutorDaemon scheduled task: ${cause.message}`,
+
+        // Launch the wrapper through a hidden wscript shim so the logon task
+        // doesn't flash a console window on the interactive desktop each login.
+        const vbsPath = launcherVbsPath(path);
+        yield* fs.writeFileString(vbsPath, generateWindowsHiddenLauncherVbs(wrapperPath));
+
+        const xmlPath = taskXmlPath(path);
+        yield* writeUtf16File(
+          xmlPath,
+          generateWindowsTaskXml({
+            command: "wscript.exe",
+            arguments: `"${vbsPath}"`,
+            userId: windowsTaskUserId(),
+            boot: descriptor.boot ?? false,
+          }),
+        );
+
+        const create = yield* runSchtasks([
+          "/create",
+          "/tn",
+          WINDOWS_TASK_NAME,
+          "/xml",
+          xmlPath,
+          "/f",
+        ]);
+        if (create.code !== 0) {
+          // schtasks ends its messages with a period; drop it so the assembled
+          // sentence doesn't read "denied.. <hint>".
+          const detail = (create.stderr.trim() || create.stdout.trim()).replace(/\.\s*$/, "");
+          // The default (logon) task needs no elevation. Only the --boot path
+          // registers a boot/S4U task, which Task Scheduler refuses without
+          // Administrator — so point access-denial at the relevant fix.
+          const hint = /denied|0x80070005|administrator|elevat/i.test(detail)
+            ? descriptor.boot
+              ? " `--boot` registers a boot task, which needs an Administrator shell. Re-run elevated, or drop `--boot` to install a no-elevation login task."
+              : " Run `executor service install` from an Administrator shell."
+            : "";
+          return yield* Effect.fail(
+            new Error(`schtasks /create failed (exit ${create.code}): ${detail}.${hint}`),
+          );
+        }
+
+        // Bring it up now (the other backends start on install too). A logon task
+        // /run launches in the current interactive session; tolerate a non-zero
+        // here (e.g. no interactive session yet) since the trigger still fires on
+        // the next logon and `service status` reports the registered task.
+        yield* runSchtasks(["/run", "/tn", WINDOWS_TASK_NAME]).pipe(Effect.ignore);
+      }),
+    uninstall: () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        // Idempotent: tolerate "task not found" but warn if schtasks can't run.
+        yield* runSchtasks(["/end", "/tn", WINDOWS_TASK_NAME]).pipe(Effect.ignore);
+        yield* runSchtasks(["/delete", "/tn", WINDOWS_TASK_NAME, "/f"]).pipe(
+          Effect.tapError((cause) =>
+            Effect.sync(() =>
+              console.warn(
+                `Warning: could not remove the ExecutorDaemon scheduled task: ${cause.message}`,
+              ),
             ),
           ),
-        ),
-        Effect.ignore,
-      );
-      const control = path.join(resolveExecutorDataDir(path), "server-control");
-      yield* fs.remove(path.join(control, "run-daemon.cmd"), { force: true });
-    }),
-  status: () =>
-    Effect.gen(function* () {
-      const result = yield* runPowerShell(
-        `$t = Get-ScheduledTask -TaskName ${psSingleQuote(WINDOWS_TASK_NAME)} -ErrorAction SilentlyContinue; ` +
-          `if ($null -eq $t) { 'NONE' } else { 'STATE=' + $t.State }`,
-      );
-      const out = result.stdout.trim();
-      if (result.code !== 0 || out === "" || out.includes("NONE")) {
+          Effect.ignore,
+        );
+        yield* fs.remove(wrapperCmdPath(path), { force: true });
+        yield* fs.remove(launcherVbsPath(path), { force: true });
+        yield* fs.remove(taskXmlPath(path), { force: true });
+      }),
+    status: () =>
+      Effect.gen(function* () {
+        const result = yield* runSchtasks([
+          "/query",
+          "/tn",
+          WINDOWS_TASK_NAME,
+          "/fo",
+          "LIST",
+          "/v",
+        ]);
+        if (result.code !== 0) {
+          return {
+            platform: "win32" as const,
+            registered: false,
+            running: false,
+            pid: null,
+            detail: [
+              "No ExecutorDaemon scheduled task registered. Run `executor service install`.",
+            ],
+          };
+        }
+        // Detect "running" via the locale-invariant SCHED_S_TASK_RUNNING result
+        // code, not the translated "Status: Running" line (which is localized on
+        // a non-English Windows and would otherwise always read as not-running).
+        const running = parseSchtasksRunning(result.stdout);
         return {
           platform: "win32" as const,
-          registered: false,
-          running: false,
+          registered: true,
+          running,
           pid: null,
-          detail: ["No ExecutorDaemon scheduled task registered. Run `executor service install`."],
+          detail: running ? [] : ["Scheduled task registered but not currently running."],
         };
-      }
-      const state = /STATE=(\w+)/.exec(out)?.[1] ?? "Unknown";
-      const running = state === "Running";
-      return {
-        platform: "win32" as const,
-        registered: true,
-        running,
-        pid: null,
-        detail: running ? [] : [`Scheduled task registered; current state: ${state}.`],
-      };
-    }),
-  restart: () =>
-    Effect.gen(function* () {
-      const result = yield* runPowerShell(
-        `Stop-ScheduledTask -TaskName ${psSingleQuote(WINDOWS_TASK_NAME)} -ErrorAction SilentlyContinue | Out-Null; ` +
-          `Start-ScheduledTask -TaskName ${psSingleQuote(WINDOWS_TASK_NAME)}`,
-      );
-      if (result.code !== 0) {
-        return yield* Effect.fail(
-          new Error(
-            `Failed to restart ExecutorDaemon task (exit ${result.code}): ${result.stderr.trim()}`,
-          ),
-        );
-      }
-    }),
-});
+      }),
+    restart: () =>
+      Effect.gen(function* () {
+        yield* runSchtasks(["/end", "/tn", WINDOWS_TASK_NAME]).pipe(Effect.ignore);
+        const run = yield* runSchtasks(["/run", "/tn", WINDOWS_TASK_NAME]);
+        if (run.code !== 0) {
+          return yield* Effect.fail(
+            new Error(
+              `Failed to restart ExecutorDaemon task (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,
+            ),
+          );
+        }
+      }),
+  };
+};
 
 const makeUnsupportedBackend = (): ServiceBackend => ({
   platform: "unsupported",
