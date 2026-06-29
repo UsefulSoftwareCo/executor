@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-toolkits",
-  "version": "1.5.16",
+  "version": "1.5.17",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/toolkits",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
