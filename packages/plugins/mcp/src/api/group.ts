@@ -101,6 +101,11 @@ const ConfigureServerPayload = Schema.Struct({
 
 const ConfigureServerResponse = Schema.Struct({
   config: McpIntegrationConfig,
+  toolsRefreshFailed: Schema.Boolean,
+});
+
+const RefreshServerToolsResponse = Schema.Struct({
+  toolsRefreshFailed: Schema.Boolean,
 });
 
 // The configureAuth payload/response — custom auth methods to merge-append
@@ -173,6 +178,13 @@ export const McpGroup = HttpApiGroup.make("mcp")
       params: SlugParams,
       payload: ConfigureServerPayload,
       success: ConfigureServerResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError, IntegrationNotFound],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("refreshServerTools", "/mcp/servers/:slug/tools/refresh", {
+      params: SlugParams,
+      success: RefreshServerToolsResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError, IntegrationNotFound],
     }),
   )

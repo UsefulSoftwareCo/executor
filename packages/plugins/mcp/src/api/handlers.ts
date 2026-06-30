@@ -139,8 +139,15 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          yield* ext.configureServer(path.slug, payload.config);
-          return { config: payload.config };
+          return yield* ext.configureServer(path.slug, payload.config);
+        }),
+      ),
+    )
+    .handle("refreshServerTools", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          return yield* ext.refreshServerTools(path.slug);
         }),
       ),
     )

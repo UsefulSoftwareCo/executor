@@ -30,6 +30,7 @@ const failingExtension: McpPluginExtension = {
   reconcileStdioConnections: () => unused,
   getServer: () => Effect.succeed(null),
   configureServer: () => unused,
+  refreshServerTools: () => unused,
   configureAuth: () => unused,
 };
 

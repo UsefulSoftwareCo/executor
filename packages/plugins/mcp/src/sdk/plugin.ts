@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Cause, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -1106,8 +1106,25 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
       const refreshStdioConnections = (integration: IntegrationSlug) =>
         Effect.gen(function* () {
+          const record = yield* ctx.core.integrations.get(integration);
+          const config = record ? parseMcpIntegrationConfig(record.config) : null;
+          if (!config || config.transport !== "stdio") {
+            return yield* new McpConnectionError({
+              transport: "stdio",
+              message: `Cannot refresh tools for MCP integration ${integration}: stdio config not found.`,
+            });
+          }
+
           const connections = yield* ctx.connections.list({ integration });
           if (connections.length === 0) {
+            const requiredVars = requiredStdioEnvVars(config);
+            if (requiredVars.length > 0) {
+              return yield* new McpConnectionError({
+                transport: "stdio",
+                message: `Cannot refresh tools because no visible connection has values for required environment variables: ${requiredVars.join(", ")}.`,
+              });
+            }
+
             yield* ctx.connections
               .create({
                 owner: "org",
@@ -1136,7 +1153,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }
 
           const failedNames = yield* Effect.forEach(connections, (connection) =>
-            ctx.connections.refresh(connection).pipe(
+            Effect.gen(function* () {
+              const values = yield* ctx.connections.resolveValues(connection);
+              const connectorInput = yield* buildConnectorInput(
+                config,
+                values,
+                String(connection.template),
+                allowStdio,
+                httpClientLayer,
+              );
+              yield* discoverTools(createMcpConnector(connectorInput));
+              yield* ctx.connections.refresh(connection);
+            }).pipe(
               Effect.as(null),
               Effect.catch(() => Effect.succeed(String(connection.name))),
             ),
@@ -1149,6 +1177,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             });
           }
         });
+
+      const refreshStdioToolsBestEffort = (integration: IntegrationSlug) =>
+        refreshStdioConnections(integration).pipe(
+          Effect.as(false),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("stdio tools refresh failed after config commit").pipe(
+              Effect.annotateLogs("cause", Cause.pretty(cause)),
+              Effect.as(true),
+            ),
+          ),
+        );
 
       const configureServer = (slug: string, config: McpIntegrationConfigType) =>
         Effect.gen(function* () {
@@ -1167,7 +1206,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           if (current.transport !== "stdio") {
             yield* ctx.core.integrations.update(integration, { config });
-            return;
+            return { config, toolsRefreshFailed: false } satisfies McpConfigureServerResult;
           }
 
           if (config.transport !== "stdio") {
@@ -1183,7 +1222,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           );
           if (!processConfigChanged) {
             yield* ctx.core.integrations.update(integration, { config });
-            return;
+            return { config, toolsRefreshFailed: false } satisfies McpConfigureServerResult;
           }
 
           yield* preflightStdioConfig(integration, config);
@@ -1193,9 +1232,33 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               yield* ctx.core.integrations.update(integration, { config });
             }),
           );
-          yield* refreshStdioConnections(integration);
+          const toolsRefreshFailed = yield* refreshStdioToolsBestEffort(integration);
+          return { config, toolsRefreshFailed } satisfies McpConfigureServerResult;
         }).pipe(
           Effect.withSpan("mcp.plugin.configure_server", {
+            attributes: { "mcp.integration.slug": slug },
+          }),
+        );
+
+      const refreshServerTools = (slug: string) =>
+        Effect.gen(function* () {
+          const integration = slugFrom(slug);
+          const record = yield* ctx.core.integrations.get(integration);
+          const current = record ? parseMcpIntegrationConfig(record.config) : null;
+          if (record === null || current === null) {
+            return yield* new IntegrationNotFoundError({ slug: integration });
+          }
+          if (current.transport !== "stdio") {
+            return yield* new McpConnectionError({
+              transport: "auto",
+              message:
+                "MCP tool refresh through the MCP server API is only supported for stdio servers.",
+            });
+          }
+          const toolsRefreshFailed = yield* refreshStdioToolsBestEffort(integration);
+          return { toolsRefreshFailed } satisfies McpRefreshServerToolsResult;
+        }).pipe(
+          Effect.withSpan("mcp.plugin.refresh_server_tools", {
             attributes: { "mcp.integration.slug": slug },
           }),
         );
@@ -1245,6 +1308,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         reconcileStdioConnections,
         getServer,
         configureServer,
+        refreshServerTools,
         configureAuth,
       };
     },
@@ -1575,6 +1639,15 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
 export type McpExtensionFailure = McpConnectionError | McpToolDiscoveryError | StorageFailure;
 
+export interface McpConfigureServerResult {
+  readonly config: McpIntegrationConfigType;
+  readonly toolsRefreshFailed: boolean;
+}
+
+export interface McpRefreshServerToolsResult {
+  readonly toolsRefreshFailed: boolean;
+}
+
 export interface McpPluginExtension {
   readonly probeEndpoint: (
     input: string | McpProbeEndpointInput,
@@ -1598,7 +1671,10 @@ export interface McpPluginExtension {
   readonly configureServer: (
     slug: string,
     config: McpIntegrationConfigType,
-  ) => Effect.Effect<void, McpExtensionFailure | IntegrationNotFoundError>;
+  ) => Effect.Effect<McpConfigureServerResult, McpExtensionFailure | IntegrationNotFoundError>;
+  readonly refreshServerTools: (
+    slug: string,
+  ) => Effect.Effect<McpRefreshServerToolsResult, McpExtensionFailure | IntegrationNotFoundError>;
   readonly configureAuth: (
     slug: string,
     input: McpConfigureAuthInput,

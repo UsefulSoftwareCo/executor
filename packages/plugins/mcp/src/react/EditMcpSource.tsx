@@ -286,6 +286,13 @@ function StdioEdit(props: {
       setError(errorMessageFromExit(exit, "Failed to update command settings"));
       return { ok: false };
     }
+    if (exit.value.toolsRefreshFailed) {
+      return {
+        ok: true,
+        summary:
+          "Command settings updated, but tools could not be refreshed. Check secrets or retry.",
+      };
+    }
     return { ok: true, summary: "Command settings updated." };
   }, [argsDraft, commandDraft, cwdDraft, doConfigure, envDraft, server.config, server.slug]);
 

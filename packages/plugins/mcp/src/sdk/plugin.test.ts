@@ -155,6 +155,27 @@ const withStdioFixtureScript = Effect.acquireRelease(
   ({ dir }) => Effect.promise(() => Fs.rm(dir, { recursive: true, force: true })),
 );
 
+const withFlakyStdioRefreshScript = Effect.acquireRelease(
+  Effect.gen(function* () {
+    const root = Path.join(process.cwd(), ".tmp");
+    yield* Effect.promise(() => Fs.mkdir(root, { recursive: true }));
+    const dir = yield* Effect.promise(() => Fs.mkdtemp(Path.join(root, "mcp-stdio-flaky-")));
+    const script = Path.join(dir, "server.mjs");
+    const counter = Path.join(dir, "attempts.txt");
+    yield* Effect.promise(() =>
+      Fs.writeFile(
+        script,
+        `import fs from "node:fs";\nimport { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";\nimport { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";\nconst toolName = process.argv[2] ?? "two";\nconst counter = process.argv[3];\nconst previous = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;\nconst attempt = previous + 1;\nfs.writeFileSync(counter, String(attempt));\nif (attempt === 2) process.exit(1);\nconst server = new McpServer({ name: "stdio-flaky-fixture", version: "1.0.0" }, { capabilities: {} });\nserver.registerTool(toolName, { description: "Stdio flaky fixture tool", inputSchema: {} }, async () => ({ content: [{ type: "text", text: "ok" }] }));\nawait server.connect(new StdioServerTransport());\n`,
+      ),
+    );
+    return { dir, script, counter } as const;
+  }),
+  ({ dir }) => Effect.promise(() => Fs.rm(dir, { recursive: true, force: true })),
+);
+
+const readStdioAttemptCount = (counter: string) =>
+  Effect.promise(() => Fs.readFile(counter, "utf8")).pipe(Effect.map((value) => Number(value)));
+
 const seedCallToolExecutor = (input: { slug: string; callTool: CallToolResponder }) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
@@ -647,6 +668,86 @@ describe("mcpPlugin", () => {
           expect(tools.map((tool) => String(tool.name))).not.toContain("one");
         }),
       ),
+  );
+
+  it.effect("configureServer reports post-commit stdio refresh failure as a warning result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* withStdioFixtureScript;
+        const flaky = yield* withFlakyStdioRefreshScript;
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          }),
+        );
+
+        yield* executor.mcp.addServer({
+          transport: "stdio",
+          name: "Stdio refresh warning",
+          slug: "stdio_refresh_warning",
+          command: process.execPath,
+          args: [fixture.script, "one"],
+        });
+
+        const result: unknown = yield* executor.mcp.configureServer("stdio_refresh_warning", {
+          transport: "stdio",
+          command: process.execPath,
+          args: [flaky.script, "two", flaky.counter],
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        });
+
+        expect(result).toMatchObject({ toolsRefreshFailed: true });
+        expect(yield* readStdioAttemptCount(flaky.counter)).toBe(2);
+
+        const integration = yield* executor.mcp.getServer("stdio_refresh_warning");
+        expect(integration?.config).toMatchObject({
+          command: process.execPath,
+          args: [flaky.script, "two", flaky.counter],
+        });
+      }),
+    ),
+  );
+
+  it.effect("refreshServerTools retries stdio tool refresh after a warning result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* withStdioFixtureScript;
+        const flaky = yield* withFlakyStdioRefreshScript;
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          }),
+        );
+        const config = {
+          transport: "stdio" as const,
+          command: process.execPath,
+          args: [flaky.script, "two", flaky.counter],
+          authenticationTemplate: [{ slug: "none" as const, kind: "none" as const }],
+        };
+
+        yield* executor.mcp.addServer({
+          transport: "stdio",
+          name: "Stdio refresh retry",
+          slug: "stdio_refresh_retry",
+          command: process.execPath,
+          args: [fixture.script, "one"],
+        });
+
+        const configureResult = yield* executor.mcp.configureServer("stdio_refresh_retry", config);
+        expect(configureResult).toMatchObject({ toolsRefreshFailed: true });
+        expect(yield* readStdioAttemptCount(flaky.counter)).toBe(2);
+
+        const refreshResult = yield* executor.mcp.refreshServerTools("stdio_refresh_retry");
+        expect(refreshResult).toMatchObject({ toolsRefreshFailed: false });
+        expect(yield* readStdioAttemptCount(flaky.counter)).toBe(4);
+      }),
+    ),
   );
 
   it.effect("configureServer reports missing stdio secret values before preflight", () =>
