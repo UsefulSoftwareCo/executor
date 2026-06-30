@@ -2,8 +2,10 @@ import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 import { makeLocalApiHandler } from "./app";
 import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
+import { isGeneratedUiMcpAppsEnabled, makeLocalEnvFeatureFlags } from "./feature-flags";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -81,15 +83,19 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // engine instance (the browser-approval + stdio surface is local-only and not
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
-    const { executor } = await getExecutorBundle();
+    const { executor, plugins } = await getExecutorBundle();
+    const generatedUiMcpAppsEnabled = await Effect.runPromise(
+      isGeneratedUiMcpAppsEnabled(makeLocalEnvFeatureFlags()),
+    );
+    const mcpPlugins = filterDynamicUiMcpPlugins(plugins, generatedUiMcpAppsEnabled);
     const engine = createExecutionEngine({
       executor,
       codeExecutor: makeQuickJsExecutor(),
     });
     mcp = createMcpRequestHandler({
-      defaultConfig: { engine },
+      defaultConfig: { engine, plugins: mcpPlugins },
       createConfigForResource: async (resource) => {
-        if (resource.kind === "default") return { config: { engine } };
+        if (resource.kind === "default") return { config: { engine, plugins: mcpPlugins } };
         const handle = await createExecutorHandle({
           activeToolkitSlug: resource.slug,
         });
@@ -98,7 +104,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
           codeExecutor: makeQuickJsExecutor(),
         });
         return {
-          config: { engine: toolkitEngine },
+          config: { engine: toolkitEngine, plugins: mcpPlugins },
           close: handle.dispose,
         };
       },

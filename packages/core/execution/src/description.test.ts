@@ -95,6 +95,9 @@ describe("buildExecuteDescription", () => {
 
       // Stable anchor from the workflow preamble.
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
+      // The base description must not advertise the gated generative-UI surface.
+      expect(description).not.toContain("## Generative UI");
+      expect(description).not.toContain("render-ui");
       expect(description).toContain("Use `emit(value)` to append user-visible output");
       expect(description).toContain("Emit any attachment with `emit(result.data)`");
       expect(description).toContain("pass an MCP content block to `emit(...)`");
@@ -180,6 +183,7 @@ describe("buildExecuteDescription", () => {
       const description = yield* buildExecuteDescription(executor);
 
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
+      expect(description).not.toContain("## Generative UI");
       expect(description).not.toContain("## Available connection prefixes");
     }),
   );

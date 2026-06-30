@@ -24,6 +24,7 @@ import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolk
 import { Route as ResumeDotexecutionIdRouteImport } from './routes/app/resume.$executionId'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRouteImport } from './../../../packages/react/src/routes/integrations.$namespace'
 import { Route as Billing_DotplansRouteImport } from './routes/app/billing_.plans'
+import { Route as PluginsDotpluginIdDotsplatRouteImport } from './routes/bare/plugins.$pluginId.$'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport } from './../../../packages/react/src/routes/integrations.add.$pluginKey'
 
 const SetupMcpRoute = SetupMcpRouteImport.update({
@@ -112,6 +113,12 @@ const Billing_DotplansRoute = Billing_DotplansRouteImport.update({
   path: '/{-$orgSlug}/billing/plans',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PluginsDotpluginIdDotsplatRoute =
+  PluginsDotpluginIdDotsplatRouteImport.update({
+    id: '/plugins/$pluginId/$',
+    path: '/plugins/$pluginId/$',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport.update(
     {
@@ -133,6 +140,7 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
+  '/plugins/$pluginId/$': typeof PluginsDotpluginIdDotsplatRoute
   '/{-$orgSlug}/billing/plans': typeof Billing_DotplansRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/resume/$executionId': typeof ResumeDotexecutionIdRoute
@@ -151,6 +159,7 @@ export interface FileRoutesByTo {
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
+  '/plugins/$pluginId/$': typeof PluginsDotpluginIdDotsplatRoute
   '/{-$orgSlug}/billing/plans': typeof Billing_DotplansRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/resume/$executionId': typeof ResumeDotexecutionIdRoute
@@ -170,6 +179,7 @@ export interface FileRoutesById {
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
+  '/plugins/$pluginId/$': typeof PluginsDotpluginIdDotsplatRoute
   '/{-$orgSlug}/billing_/plans': typeof Billing_DotplansRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/resume/$executionId': typeof ResumeDotexecutionIdRoute
@@ -190,6 +200,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
+    | '/plugins/$pluginId/$'
     | '/{-$orgSlug}/billing/plans'
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/resume/$executionId'
@@ -208,6 +219,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}'
+    | '/plugins/$pluginId/$'
     | '/{-$orgSlug}/billing/plans'
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/resume/$executionId'
@@ -226,6 +238,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
+    | '/plugins/$pluginId/$'
     | '/{-$orgSlug}/billing_/plans'
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/resume/$executionId'
@@ -245,6 +258,7 @@ export interface RootRouteChildren {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
+  PluginsDotpluginIdDotsplatRoute: typeof PluginsDotpluginIdDotsplatRoute
   Billing_DotplansRoute: typeof Billing_DotplansRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute
   ResumeDotexecutionIdRoute: typeof ResumeDotexecutionIdRoute
@@ -358,6 +372,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof Billing_DotplansRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/plugins/$pluginId/$': {
+      id: '/plugins/$pluginId/$'
+      path: '/plugins/$pluginId/$'
+      fullPath: '/plugins/$pluginId/$'
+      preLoaderRoute: typeof PluginsDotpluginIdDotsplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/{-$orgSlug}/integrations/add/$pluginKey': {
       id: '/{-$orgSlug}/integrations/add/$pluginKey'
       path: '/{-$orgSlug}/integrations/add/$pluginKey'
@@ -399,6 +420,7 @@ const rootRouteChildren: RootRouteChildren = {
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute,
+  PluginsDotpluginIdDotsplatRoute: PluginsDotpluginIdDotsplatRoute,
   Billing_DotplansRoute: Billing_DotplansRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRoute,

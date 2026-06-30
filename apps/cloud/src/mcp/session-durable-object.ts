@@ -56,8 +56,11 @@ import {
 import { makeExecutionStack } from "../engine/execution-stack";
 import { CloudMeteredExecutionStackLayer } from "../engine/execution-stack-metered";
 import { AutumnService } from "../extensions/billing/service";
+import { cloudPlugins } from "../plugins";
+import { isGeneratedUiMcpAppsEnabled, PostHogFeatureFlags } from "../feature-flags";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import { captureCause as reportCause } from "../observability";
+import { filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 
 // Re-export the shared types so existing cloud importers
 // (`auth/handlers.ts`, etc.) keep their `../mcp/session-durable-object` path.
@@ -150,7 +153,7 @@ const makeEphemeralDb = (): CloudSessionDbHandle =>
 const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
   const DbLive = Layer.succeed(DbService)({ sql: dbHandle.sql, db: dbHandle.db });
   const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
-  return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices);
+  return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices, PostHogFeatureFlags);
 };
 
 // ---------------------------------------------------------------------------
@@ -215,9 +218,37 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       // of invoking `engine.getDescription` across its async boundary.
       const description = yield* buildExecuteDescription(executor);
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
+
+      // Generated UI MCP apps stay behind a PostHog feature flag. A flag-eval
+      // failure must not break the session, so it degrades to "disabled".
+      const generatedUiMcpAppsEnabled = yield* isGeneratedUiMcpAppsEnabled({
+        distinctId: sessionMeta.userId,
+        accountId: sessionMeta.userId,
+        organizationId: sessionMeta.organizationId,
+        groups: { organization: sessionMeta.organizationId },
+      }).pipe(
+        Effect.catch((error: unknown) =>
+          Effect.sync(() => {
+            console.error("[executor:mcp] generated UI feature flag failed", error);
+            return false;
+          }),
+        ),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "feature.generated_ui_mcp_apps.enabled": generatedUiMcpAppsEnabled,
+      });
+      const mcpPlugins = filterDynamicUiMcpPlugins(cloudPlugins, generatedUiMcpAppsEnabled);
+
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
+        plugins: mcpPlugins,
+        renderUiFallbackUrl: (code) => {
+          const origin = env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh";
+          const url = new URL("/plugins/dynamic-ui/render", origin);
+          url.hash = `code=${encodeURIComponent(code)}`;
+          return url.toString();
+        },
         parentSpan: () => self.currentParentSpan(),
         debug: env.EXECUTOR_MCP_DEBUG === "true",
         browserApprovalStore: self.browserApprovalStore,

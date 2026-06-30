@@ -3,6 +3,7 @@ import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { googleHttpPlugin } from "@executor-js/plugin-google/api";
 import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
+import { dynamicUiPlugin } from "@executor-js/plugin-dynamic-ui";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
@@ -27,6 +28,7 @@ export default defineExecutorConfig({
   plugins: ({ activeToolkitSlug }: LocalPluginDeps = {}) =>
     [
       openApiHttpPlugin(),
+      dynamicUiPlugin(),
       googleHttpPlugin(),
       microsoftHttpPlugin(),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),

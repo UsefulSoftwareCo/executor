@@ -67,6 +67,12 @@ const formatBoundaryError = (error: unknown): unknown => {
   return error;
 };
 
+const renderUiFallbackUrlForRequest = (request: Request, code: string): string => {
+  const url = new URL("/plugins/dynamic-ui/render", new URL(request.url).origin);
+  url.hash = `code=${encodeURIComponent(code)}`;
+  return url.toString();
+};
+
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
     ? Effect.runPromise(
@@ -209,6 +215,9 @@ export const createMcpRequestHandler = (
         created = await Effect.runPromise(
           createExecutorMcpServer({
             ...resourceConfig.config,
+            renderUiFallbackUrl:
+              resourceConfig.config.renderUiFallbackUrl ??
+              ((code) => renderUiFallbackUrlForRequest(request, code)),
             browserApprovalStore: approvals.store,
             elicitationMode:
               elicitationMode === "browser"

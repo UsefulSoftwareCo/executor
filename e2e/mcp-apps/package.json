@@ -1,0 +1,17 @@
+{
+  "name": "@executor-js/e2e-mcp-apps",
+  "private": true,
+  "type": "module",
+  "description": "Render + test executor's generative-UI MCP Apps in a real MCP-Apps host (sunpeak), headless, no VM.",
+  "scripts": {
+    "postinstall": "node scripts/patch-sunpeak.mjs",
+    "pretest": "bun run --cwd ../../packages/plugins/dynamic-ui build:shell",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "sunpeak": "^0.20.56"
+  }
+}

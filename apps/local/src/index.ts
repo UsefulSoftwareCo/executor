@@ -8,11 +8,18 @@ export {
   createExecutorHandle,
   disposeExecutor,
   getExecutor,
+  getExecutorBundle,
   reloadExecutor,
   type ExecutorHandle,
   type LocalExecutor,
 } from "./executor";
 export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./mcp";
+export {
+  isGeneratedUiMcpAppsEnabled,
+  makeLocalEnvFeatureFlags,
+  LocalEnvFeatureFlags,
+} from "./feature-flags";
+export { filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 export { startServer, type StartServerOptions, type ServerInstance } from "./serve";
 export {
   DataDirOwnershipHeld,

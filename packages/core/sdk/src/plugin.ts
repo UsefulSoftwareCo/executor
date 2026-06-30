@@ -494,6 +494,13 @@ export interface PluginSpec<
   /** Static sources contributed by this plugin with inline tool handlers. */
   readonly staticSources?: (self: NoInfer<TExtension>) => readonly StaticSourceDecl<TStore>[];
 
+  /** Optional host-protocol contributions. The core SDK intentionally
+   *  treats this as opaque data so protocol packages can define their
+   *  own contracts without pulling host-specific dependencies into every
+   *  plugin. For MCP, `@executor-js/host-mcp` interprets this field as an
+   *  MCP contribution factory. */
+  readonly mcp?: unknown;
+
   /** HttpApiGroup contributed by this plugin. */
   readonly routes?: () => TGroup;
 

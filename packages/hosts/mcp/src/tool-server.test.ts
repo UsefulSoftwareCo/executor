@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type * as Cause from "effect/Cause";
 
 import {
@@ -15,6 +16,8 @@ import {
 } from "@executor-js/sdk";
 import type { ToolFileValue } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
+// oxlint-disable-next-line executor/no-cross-package-relative-imports -- boundary: host integration test uses the real plugin without adding a package-graph cycle
+import { dynamicUiPlugin, filterDynamicUiMcpPlugins } from "../../../plugins/dynamic-ui/src";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
 
@@ -43,6 +46,8 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   getDescription: Effect.succeed(overrides.description ?? "test executor"),
 });
 
+const DYNAMIC_UI_PLUGIN = dynamicUiPlugin();
+
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */
 const withClient = async <E extends Cause.YieldableError>(
   engine: ExecutionEngine<E>,
@@ -50,7 +55,12 @@ const withClient = async <E extends Cause.YieldableError>(
   fn: (client: Client) => Promise<void>,
   config?: Pick<
     ExecutorMcpServerConfig<E>,
-    "debug" | "elicitationMode" | "browserApprovalStore" | "pausedExecutionHooks"
+    | "debug"
+    | "elicitationMode"
+    | "browserApprovalStore"
+    | "plugins"
+    | "renderUiFallbackUrl"
+    | "pausedExecutionHooks"
   >,
 ) => {
   const mcpServer = await Effect.runPromise(createExecutorMcpServer({ engine, ...config }));
@@ -78,6 +88,16 @@ const ELICITATION_CAPS: ClientCapabilities = {
 };
 const FORM_ONLY_CAPS: ClientCapabilities = { elicitation: { form: {} } };
 const NO_CAPS: ClientCapabilities = {};
+type AppsClientCapabilities = ClientCapabilities & {
+  readonly extensions: Record<string, unknown>;
+};
+const APPS_ELICITATION_CAPS: AppsClientCapabilities = {
+  ...ELICITATION_CAPS,
+  extensions: { [EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } },
+};
+const APPS_WITHOUT_ELICITATION_CAPS: AppsClientCapabilities = {
+  extensions: { [EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } },
+};
 
 /** Extract the first text content from a callTool result. */
 const textOf = (result: Awaited<ReturnType<Client["callTool"]>>): string =>
@@ -624,6 +644,172 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("does not expose dynamic UI tools unless a plugin contributes them", async () => {
+    await withClient(makeStubEngine({}), APPS_ELICITATION_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      const names = tools.map((tool) => tool.name);
+      expect(names).not.toContain("render-ui");
+      expect(names).not.toContain("execute-action");
+    });
+  });
+
+  it("does not expose dynamic UI tools when the host filters the plugin at its exit point", async () => {
+    await withClient(
+      makeStubEngine({}),
+      APPS_ELICITATION_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        const names = tools.map((tool) => tool.name);
+        expect(names).not.toContain("render-ui");
+        expect(names).not.toContain("execute-action");
+        expect(names).not.toContain("execute-action-resume");
+      },
+      { plugins: filterDynamicUiMcpPlugins([DYNAMIC_UI_PLUGIN], false) },
+    );
+  });
+
+  it("exposes render-ui fallback but not app-only tools to clients without MCP Apps support", async () => {
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        const names = tools.map((tool) => tool.name);
+        expect(names).toContain("render-ui");
+        expect(names).not.toContain("execute-action");
+        expect(names).not.toContain("execute-action-resume");
+
+        const result = await client.callTool({
+          name: "render-ui",
+          arguments: { code: 'function App() { return <Card className="p-4" />; }' },
+        });
+        expect(textOf(result)).toContain("https://executor.test/render?code=42");
+        expect(result.structuredContent).toEqual({
+          status: "fallback_url",
+          url: "https://executor.test/render?code=42",
+        });
+      },
+      {
+        plugins: [DYNAMIC_UI_PLUGIN],
+        renderUiFallbackUrl: () => "https://executor.test/render?code=42",
+      },
+    );
+  });
+
+  it("render-ui tool routes React code to the MCP app shell", async () => {
+    await withClient(
+      makeStubEngine({}),
+      APPS_ELICITATION_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "render-ui",
+          arguments: { code: 'function App() { return <Card className="p-4" />; }' },
+        });
+        expect(result.content).toEqual([
+          { type: "text", text: "Rendered interactive UI component." },
+        ]);
+        expect(result.structuredContent).toEqual({
+          code: 'function App() { return <Card className="p-4" />; }',
+        });
+      },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
+    );
+  });
+
+  it("serves the app shell resource with restrictive CSP metadata", async () => {
+    await withClient(
+      makeStubEngine({}),
+      APPS_ELICITATION_CAPS,
+      async (client) => {
+        const result = await client.readResource({
+          uri: "ui://executor/shell-tanstack-query.html",
+        });
+        expect(result.contents).toHaveLength(1);
+        expect(result.contents[0]).toMatchObject({
+          uri: "ui://executor/shell-tanstack-query.html",
+          mimeType: RESOURCE_MIME_TYPE,
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: [],
+                resourceDomains: [],
+              },
+            },
+          },
+        });
+      },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
+    );
+  });
+
+  it("render-ui rejects obvious hardcoded live-data snapshots", async () => {
+    const code = [
+      "const rows = [",
+      '  { service: "api", count: 100 },',
+      '  { service: "web", count: 80 },',
+      "];",
+      "function App() { return <Card><CardContent>{rows.length}</CardContent></Card>; }",
+    ].join("\n");
+
+    await withClient(
+      makeStubEngine({}),
+      APPS_ELICITATION_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "render-ui",
+          arguments: { code },
+        });
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain("Hardcoded live-data array");
+        expect(textOf(result)).toContain("useQuery");
+      },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
+    );
+  });
+
+  it("render-ui rejects redeclared provided globals before iframe evaluation", async () => {
+    const code = [
+      "const { useState } = React;",
+      "function App() {",
+      "  const [count, setCount] = useState(0);",
+      "  return <Button onClick={() => setCount(count + 1)}>{count}</Button>;",
+      "}",
+    ].join("\n");
+
+    await withClient(
+      makeStubEngine({}),
+      APPS_ELICITATION_CAPS,
+      async (client) => {
+        const reactDestructure = await client.callTool({
+          name: "render-ui",
+          arguments: { code },
+        });
+        expect(reactDestructure.isError).toBe(true);
+        expect(textOf(reactDestructure)).toContain("Do not destructure React");
+        expect(textOf(reactDestructure)).toContain("useState");
+
+        const componentRedeclaration = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: "const Card = () => null;\nfunction App() { return <Card />; }",
+          },
+        });
+        expect(componentRedeclaration.isError).toBe(true);
+        expect(textOf(componentRedeclaration)).toContain('Provided global "Card"');
+
+        const componentDestructure = await client.callTool({
+          name: "render-ui",
+          arguments: {
+            code: 'const { Card } = require("./components");\nfunction App() { return <Card />; }',
+          },
+        });
+        expect(componentDestructure.isError).toBe(true);
+        expect(textOf(componentDestructure)).toContain('Provided global "Card"');
+      },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
+    );
+  });
+
   it("execute tool hides defect details in MCP error results", async () => {
     const engine = makeStubEngine({
       // oxlint-disable-next-line executor/no-effect-escape-hatch, executor/no-error-constructor -- boundary: test injects a defect to verify MCP error redaction
@@ -917,6 +1103,89 @@ describe("MCP host server — native form-only elicitation", () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP host server — client without elicitation (pause/resume)", () => {
+  it("exposes execute-action to MCP apps even when browser approval mode is enabled", async () => {
+    const engine = makeStubEngine({
+      executeWithPause: (code) =>
+        Effect.succeed({ status: "completed", result: { result: `app:${code}` } }),
+    });
+
+    await withClient(
+      engine,
+      APPS_WITHOUT_ELICITATION_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        expect(tools.map((t) => t.name)).toContain("execute-action");
+
+        const result = await client.callTool({
+          name: "execute-action",
+          arguments: { code: "return await tools.axiom_mcp.listdatasets({})" },
+        });
+        expect(result.content).toEqual([
+          { type: "text", text: "app:return await tools.axiom_mcp.listdatasets({})" },
+        ]);
+      },
+      {
+        elicitationMode: {
+          mode: "browser",
+          approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,
+        },
+        plugins: [DYNAMIC_UI_PLUGIN],
+      },
+    );
+  });
+
+  it("execute-action pauses elicitations for shell-owned approval instead of browser approval URLs", async () => {
+    const engine = makeStubEngine({
+      executeWithPause: () =>
+        Effect.succeed(
+          makePausedResult(
+            "exec_app",
+            FormElicitation.make({ message: "Approve UI action?", requestedSchema: {} }),
+          ),
+        ),
+      resume: (executionId, response) =>
+        Effect.succeed(
+          executionId === "exec_app"
+            ? { status: "completed", result: { result: `action:${response.action}` } }
+            : null,
+        ),
+    });
+
+    await withClient(
+      engine,
+      APPS_WITHOUT_ELICITATION_CAPS,
+      async (client) => {
+        const paused = await client.callTool({
+          name: "execute-action",
+          arguments: { code: "return await tools.github.issues.create({})" },
+        });
+        expect(paused.structuredContent).toMatchObject({
+          status: "waiting_for_interaction",
+          executionId: "exec_app",
+          interaction: {
+            kind: "form",
+            message: "Approve UI action?",
+            requestedSchema: {},
+          },
+        });
+        expect(textOf(paused)).not.toContain("approvalUrl");
+
+        const resumed = await client.callTool({
+          name: "execute-action-resume",
+          arguments: { executionId: "exec_app", action: "accept", content: "{}" },
+        });
+        expect(resumed.content).toEqual([{ type: "text", text: "action:accept" }]);
+      },
+      {
+        elicitationMode: {
+          mode: "browser",
+          approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,
+        },
+        plugins: [DYNAMIC_UI_PLUGIN],
+      },
+    );
+  });
+
   it("completed execution returns result directly", async () => {
     const engine = makeStubEngine({
       executeWithPause: () =>

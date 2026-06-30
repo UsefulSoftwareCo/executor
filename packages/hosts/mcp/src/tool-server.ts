@@ -12,6 +12,7 @@ import * as z from "zod/v4";
 
 import { isToolFile } from "@executor-js/sdk";
 import type {
+  AnyPlugin,
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
@@ -27,6 +28,21 @@ import {
   type ExecutionEngineConfig,
   type ResumeResponse,
 } from "@executor-js/execution";
+import { collectMcpContributions, type McpToolResult } from "./plugin";
+
+// Generative-UI plugin contributions are mounted through this tool factory, so
+// the contribution vocabulary is re-exported from the same `/tool-server`
+// subpath rather than the dependency-light serving root.
+export {
+  defineMcpContribution,
+  type McpDebugLog,
+  type McpPluginClientCapabilitiesContext,
+  type McpPluginContribution,
+  type McpPluginContributionFactory,
+  type McpPluginRegisterContext,
+  type McpRunToolEffect,
+  type McpToolResult,
+} from "./plugin";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -91,6 +107,16 @@ type SharedMcpServerConfig = {
         readonly mode: "native";
       };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /**
+   * Browser URL used by generative UI MCP contributions when the connected
+   * client cannot mount MCP Apps resources directly.
+   */
+  readonly renderUiFallbackUrl?: (code: string) => string;
+  /**
+   * Executor plugins whose host-protocol MCP contributions should be mounted.
+   * Core SDK treats the field as opaque; this host interprets `plugin.mcp`.
+   */
+  readonly plugins?: readonly AnyPlugin[];
   /**
    * Host-owned lifecycle for paused executions. The MCP server reports pause
    * boundaries; the host decides whether that means a keepAlive lease, browser
@@ -279,12 +305,6 @@ const formatBoundaryError = (err: unknown): { name?: string; message: string; st
 // ---------------------------------------------------------------------------
 // MCP result formatting
 // ---------------------------------------------------------------------------
-
-type McpToolResult = {
-  content: ContentBlock[];
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-};
 
 type FormattedExecuteInput = Parameters<typeof formatExecuteResult>[0];
 type ExecuteOutputItem = NonNullable<FormattedExecuteInput["output"]>[number];
@@ -539,6 +559,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const description =
       config.description ??
       (yield* engine.getDescription.pipe(Effect.withSpan("mcp.host.get_description")));
+    const mcpContributions = collectMcpContributions(config.plugins);
+    const executeDescription = mcpContributions.reduce(
+      (current, contribution) => contribution.prepareExecuteDescription?.(current) ?? current,
+      description,
+    );
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -591,7 +616,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         new McpServer(
           { name: "executor", version: "1.0.0" },
           {
-            capabilities: { tools: {} },
+            capabilities: { resources: {}, tools: {} },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
           },
         ),
@@ -759,13 +784,50 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
 
+    const executeCodeFromApp = (code: string): Effect.Effect<McpToolResult, E> =>
+      Effect.gen(function* () {
+        debugLog("execute_action.call", {
+          elicitationMode: elicitationMode.mode,
+          elicitationSupport: getElicitationSupport(server),
+          clientCapabilities: server.server.getClientCapabilities() ?? null,
+          codeLength: code.length,
+        });
+
+        if (elicitationMode.mode === "native") {
+          const result = yield* engine.execute(code, {
+            onElicitation: makeMcpElicitationHandler(server, debugLog),
+          });
+          return toMcpResult(result);
+        }
+
+        const outcome = yield* engine.executeWithPause(code);
+        debugLog("execute_action.paused_flow_result", {
+          status: outcome.status,
+          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+          interactionKind:
+            outcome.status === "paused"
+              ? pausedInteractionKind(outcome.execution.elicitationContext.request)
+              : undefined,
+        });
+        return outcome.status === "completed"
+          ? toMcpResult(outcome.result)
+          : toMcpPausedResult(formatPausedExecution(outcome.execution));
+      }).pipe(
+        Effect.withSpan("mcp.host.tool.execute_action", {
+          attributes: {
+            "mcp.tool.name": "execute-action",
+            "mcp.execute.code_length": code.length,
+          },
+        }),
+      );
+
     // --- tools ---
 
     yield* Effect.sync(() =>
       server.registerTool(
         "execute",
         {
-          description,
+          description: executeDescription,
           inputSchema: { code: z.string().trim().min(1) },
         },
         ({ code }) => runToolEffect(executeCode(code)),
@@ -825,7 +887,40 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       }),
     );
 
-    yield* Effect.sync(() => {
+    yield* Effect.forEach(
+      mcpContributions,
+      (contribution) =>
+        contribution
+          .register({
+            server,
+            engine,
+            description,
+            debugLog,
+            runToolEffect,
+            executeCodeFromApp,
+            renderUiFallbackUrl: config.renderUiFallbackUrl,
+            resumeExecution,
+            parseJsonContent,
+          })
+          .pipe(
+            Effect.withSpan("mcp.host.plugin.register", {
+              attributes: { "mcp.plugin.id": contribution.id },
+            }),
+          ),
+      { discard: true },
+    );
+
+    // --- capability-based tool visibility ---
+
+    const syncToolAvailability = () => {
+      const clientCapabilities = server.server.getClientCapabilities();
+      for (const contribution of mcpContributions) {
+        contribution.onClientCapabilitiesChanged?.({
+          server,
+          clientCapabilities,
+          debugLog,
+        });
+      }
       console.error(
         "[executor] MCP session mode",
         JSON.stringify({
@@ -835,11 +930,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
       debugLog("tool.visibility", {
-        clientCapabilities: server.server.getClientCapabilities() ?? null,
+        clientCapabilities: clientCapabilities ?? null,
         elicitationSupport: getElicitationSupport(server),
         elicitationMode: elicitationMode.mode,
         resumeEnabled: elicitationMode.mode !== "native",
       });
+    };
+
+    yield* Effect.sync(() => {
+      syncToolAvailability();
+      server.server.oninitialized = syncToolAvailability;
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
 
     return server;
