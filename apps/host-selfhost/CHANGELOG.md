@@ -1,5 +1,27 @@
 # @executor-js/host-selfhost
 
+## 0.0.25
+
+### Patch Changes
+
+- [#1221](https://github.com/RhysSullivan/executor/pull/1221) [`3606317`](https://github.com/RhysSullivan/executor/commit/360631733e0d0595094a06b9a9fbe06b2714d16c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Send correct `Cache-Control` headers for the self-hosted web app. The SPA shell (`index.html`) and its client-route fallbacks are now served with `no-cache`, so a new deploy is picked up on the next visit instead of the browser rendering a stale UI from cache until a hard refresh. Content-hashed `/assets/*` are served `immutable` and cached long-term.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.26
+  - @executor-js/runtime-quickjs@1.5.26
+  - @executor-js/execution@1.5.26
+  - @executor-js/plugin-graphql@1.5.26
+  - @executor-js/plugin-mcp@1.5.26
+  - @executor-js/plugin-openapi@1.5.26
+  - @executor-js/app@1.4.4
+  - @executor-js/api@1.4.46
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-encrypted-secrets@0.0.25
+  - @executor-js/plugin-google@1.5.25
+  - @executor-js/plugin-microsoft@1.5.25
+  - @executor-js/plugin-toolkits@1.5.18
+  - @executor-js/react@1.4.46
+
 ## 0.0.24
 
 ### Patch Changes
