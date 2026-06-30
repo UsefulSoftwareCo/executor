@@ -8,6 +8,12 @@ export const loadDynamicUiShellHtml = async (): Promise<string> => {
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
     const candidates = [
+      // `bun build --compile` can't bundle this runtime `fs.readFile`, so the
+      // binary build (apps/cli/src/build.ts) copies `mcp-app.html` next to the
+      // executable. We find it via `process.execPath`, the same colocation
+      // trick native-bindings.ts uses for `libsql.node` / `keyring.node`.
+      path.join(path.dirname(process.execPath), "mcp-app.html"),
+      // Dev / package-resolved (`bun run`, vitest): the package's own dist.
       path.join(import.meta.dirname, "../dist/mcp-app.html"),
       path.join(import.meta.dirname, "../../dist/mcp-app.html"),
     ];

@@ -23,6 +23,103 @@ const resolveQuickJsWasmPath = (): string => {
 };
 
 // ---------------------------------------------------------------------------
+// Dynamic-UI MCP-Apps shell (mcp-app.html)
+//
+// The generative-UI plugin serves its iframe shell as the MCP-Apps resource
+// `ui://executor/shell-tanstack-query.html`. `dynamic-ui/src/shell-html.ts`
+// reads it from disk at runtime (a `fs.readFile`), which `bun build --compile`
+// can NOT bundle into bunfs, so without this the packaged binary serves a
+// "Shell not built" placeholder and every generated UI renders blank. We build
+// the shell if missing and copy it next to the executable, where shell-html.ts
+// finds it via `process.execPath` (same colocation as libsql/keyring .node).
+// ---------------------------------------------------------------------------
+
+const dynamicUiDir = resolve(repoRoot, "packages/plugins/dynamic-ui");
+const dynamicUiShellSrc = join(dynamicUiDir, "dist/mcp-app.html");
+
+const ensureDynamicUiShell = async (): Promise<string> => {
+  if (!existsSync(dynamicUiShellSrc)) {
+    console.log("Building dynamic-ui MCP-Apps shell (mcp-app.html)...");
+    await $`bun run --cwd ${dynamicUiDir} build:shell`.quiet();
+  }
+  if (!existsSync(dynamicUiShellSrc)) {
+    throw new Error(`dynamic-ui shell missing at ${dynamicUiShellSrc} after build:shell`);
+  }
+  return dynamicUiShellSrc;
+};
+
+/**
+ * Build-time guard for the shipped binary: spawn `executor mcp`, run the
+ * MCP-Apps handshake, and assert the generative-UI shell resource is the real
+ * built HTML, not the "Shell not built" placeholder. Catches a missing/forgotten
+ * shell sidecar at build time rather than as a blank widget in a host. Runs only
+ * for the current platform (the only target we can execute here).
+ */
+const verifyMcpShellResource = async (bin: string): Promise<void> => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dataDir = mkdtempSync(join(tmpdir(), "executor-shell-smoke-"));
+  const proc = Bun.spawn([bin, "mcp"], {
+    env: {
+      ...process.env,
+      EXECUTOR_FEATURE_GENERATED_UI_MCP_APPS: "true",
+      EXECUTOR_DATA_DIR: dataDir,
+    },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const send = (msg: unknown) => proc.stdin.write(`${JSON.stringify(msg)}\n`);
+  const uiCaps = {
+    experimental: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html+skybridge"] } },
+  };
+  try {
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: uiCaps,
+        clientInfo: { name: "build-smoke", version: "1.0.0" },
+      },
+    });
+    await proc.stdin.flush();
+    await Bun.sleep(7000); // daemon election + boot
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "resources/read",
+      params: { uri: "ui://executor/shell-tanstack-query.html" },
+    });
+    await proc.stdin.flush();
+    // Collect stdout for a few seconds.
+    let out = "";
+    const reader = proc.stdout.getReader();
+    const deadline = Date.now() + 6000;
+    const dec = new TextDecoder();
+    while (Date.now() < deadline && !out.includes('"id":2')) {
+      const r = await Promise.race([
+        reader.read(),
+        Bun.sleep(1500).then(() => ({ done: true, value: undefined })),
+      ]);
+      if (r.done) break;
+      out += dec.decode(r.value);
+    }
+    if (out.includes("Shell not built"))
+      throw new Error("binary served the 'Shell not built' placeholder (shell sidecar missing)");
+    if (!out.includes('"id":2') || !/mcp-app|<!doctype html|id=\\?"root\\?"/i.test(out)) {
+      throw new Error("binary did not serve the generative-UI shell resource");
+    }
+    console.log("  OK: serves generative-UI shell resource");
+  } finally {
+    proc.kill();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------
 
@@ -321,6 +418,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
   await writeFile(embeddedMigrationsPath, `${embeddedMigrations}\n`);
 
   const quickJsWasmPath = resolveQuickJsWasmPath();
+  const dynamicUiShell = await ensureDynamicUiShell();
 
   try {
     for (const target of targets) {
@@ -358,12 +456,17 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
         await cp(libsqlNative, join(binDir, "libsql.node"));
       }
 
+      // Copy the dynamic-ui MCP-Apps shell next to the binary (platform-
+      // independent HTML). shell-html.ts reads it from execDir at runtime.
+      await cp(dynamicUiShell, join(binDir, "mcp-app.html"));
+
       // Smoke test on current platform
       if (isCurrentPlatform(target)) {
         const bin = join(binDir, binaryName(target));
         console.log(`  Smoke test: ${bin} --version`);
         const version = await $`${bin} --version`.text();
         console.log(`  OK: ${version.trim()}`);
+        await verifyMcpShellResource(bin);
       }
 
       // Variant package.json. All variants publish to the SAME npm package
