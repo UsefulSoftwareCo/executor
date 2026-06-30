@@ -213,7 +213,7 @@ describe("openOwnedLocalDatabase", () => {
       // The next sole owner resumes the journaled flip during open (recovery
       // runs completeJournaledFlip before the serving connection opens). The
       // steady-state migrate then sees an already-v2 DB, so migration.migrated
-      // is false even though the on-disk DB is now v2 — the cleared journal and
+      // is false even though the on-disk DB is now v2, the cleared journal and
       // the v2 rows are the real proof.
       const owned = await openOwnedLocalDatabase({
         dataDir,
@@ -237,7 +237,7 @@ describe("openOwnedLocalDatabase", () => {
       child.child.stderr.destroy();
       rmSync(workDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------

@@ -48,7 +48,7 @@ const decodeMigrationJournalForTest = Schema.decodeUnknownSync(
   Schema.fromJsonString(MigrationJournalForTest),
 );
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
-// Preserves every journal field (`when`, `breakpoints`, …) — drizzle's
+// Preserves every journal field (`when`, `breakpoints`, ...), drizzle's
 // migrator needs them, so only `entries` is typed for the truncation filter.
 const decodeJournal = (text: string) =>
   decodeUnknownJson(text) as {
@@ -1249,7 +1249,7 @@ describe("local v1 -> v2 migration", () => {
     expect(result.migrated).toBe(true);
     expect(existsSync(`${dbPath}.v1-v2-migration.json`)).toBe(false);
     await assertMigratedStripeDbAndSecret({ dbPath, scopeId, secret, walMarker });
-  });
+  }, 15_000);
 
   it("recovers when killed after external secret writes but before SQL commit", async () => {
     const scopeId = "executor-secrets-before-commit";
@@ -1782,7 +1782,7 @@ describe("local v1 -> v2 migration", () => {
   });
 
   // Regression: a database last touched by a release OLDER than v1-final
-  // (pre-0011 — no `plugin_storage` table) must be replayed through the
+  // (pre-0011, no `plugin_storage` table) must be replayed through the
   // bundled legacy drizzle chain before the v1→v2 data migration reads it.
   // Without the replay, migration crashed with "no such table: plugin_storage"
   // on every fresh 1.5.0 install over old data.

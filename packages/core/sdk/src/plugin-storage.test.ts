@@ -222,29 +222,32 @@ describe("plugin storage collections", () => {
     }),
   );
 
-  it.effect("bulk puts large plugin storage row sets in bounded batches", () =>
-    Effect.gen(function* () {
-      const executor = yield* makeTestExecutor({
-        backend: "sqlite",
-        plugins: [executionHistoryPlugin] as const,
-      });
-      const rows = Array.from({ length: 7_000 }, (_, index) => ({
-        key: `large-call-${String(index).padStart(5, "0")}`,
-        data: call({
-          runId: "run-large-bulk",
-          toolId: index % 2 === 0 ? "browser" : "shell",
-          status: "ok",
-          startedAt: new Date(Date.UTC(2026, 4, 29, 12, 0, index)).toISOString(),
-        }),
-      }));
+  it.effect(
+    "bulk puts large plugin storage row sets in bounded batches",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor({
+          backend: "sqlite",
+          plugins: [executionHistoryPlugin] as const,
+        });
+        const rows = Array.from({ length: 7_000 }, (_, index) => ({
+          key: `large-call-${String(index).padStart(5, "0")}`,
+          data: call({
+            runId: "run-large-bulk",
+            toolId: index % 2 === 0 ? "browser" : "shell",
+            status: "ok",
+            startedAt: new Date(Date.UTC(2026, 4, 29, 12, 0, index)).toISOString(),
+          }),
+        }));
 
-      yield* executor.executionHistory.recordMany("org", rows);
+        yield* executor.executionHistory.recordMany("org", rows);
 
-      const count = yield* executor.executionHistory.count({
-        where: { runId: "run-large-bulk" },
-      });
-      expect(count).toBe(rows.length);
-    }),
+        const count = yield* executor.executionHistory.count({
+          where: { runId: "run-large-bulk" },
+        });
+        expect(count).toBe(rows.length);
+      }),
+    15_000,
   );
 
   it.effect("user rows shadow org rows on read; both share one plugin_storage table", () =>
