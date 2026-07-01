@@ -1709,16 +1709,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     };
 
     const integrationsList = (): Effect.Effect<readonly Integration[], StorageFailure> =>
-      core
-        .findMany("integration", {})
-        .pipe(
-          Effect.map((rows) => [
-            ...staticSources().map(staticSourceToIntegration),
-            ...rows.map((row) =>
-              rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row)),
-            ),
-          ]),
+      Effect.gen(function* () {
+        const rows = yield* core.findMany("integration", {});
+        const staticIntegrations = staticSources().map(staticSourceToIntegration);
+        const dbIntegrations = rows.map((row) =>
+          rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayUrlForRow(row)),
         );
+        // A scoped toolkit must not advertise providers it grants no tools from
+        // (mirrors `connectionsList`). Static sources are system namespaces, not
+        // user providers, so they stay; DB-backed integrations are filtered to
+        // those that contribute at least one visible tool under the active policy.
+        if (!activeToolPolicyProvider) return [...staticIntegrations, ...dbIntegrations];
+        const visibleTools = yield* toolsList({ includeAnnotations: false });
+        const visibleIntegrationSlugs = new Set(
+          visibleTools.filter((tool) => !tool.static).map((tool) => String(tool.integration)),
+        );
+        return [
+          ...staticIntegrations,
+          ...dbIntegrations.filter((integration) =>
+            visibleIntegrationSlugs.has(String(integration.slug)),
+          ),
+        ];
+      });
 
     const integrationsGet = (
       slug: IntegrationSlug,

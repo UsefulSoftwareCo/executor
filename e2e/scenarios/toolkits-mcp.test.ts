@@ -583,3 +583,122 @@ scenario(
     );
   }),
 );
+
+scenario(
+  "Toolkits · the provider catalog hides integrations the toolkit grants no tools",
+  { timeout: 240_000 },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const mcp = yield* Mcp;
+      const { client: makeClient } = yield* Api;
+      const upstream = yield* servePingApi;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+
+      // Two providers exist in the workspace; the toolkit will include only one.
+      const granted = unique("granted_ping");
+      const ungranted = unique("ungranted_ping");
+      const toolkitName = unique("scoped-kit");
+
+      const listCatalog = (session: McpSession) =>
+        executeJson(
+          session,
+          `const r = await tools.executor.coreTools.integrations.list({});
+           if (!r.ok) return { error: r.error };
+           return { slugs: r.data.integrations.map((i) => i.slug) };`,
+        ).pipe(
+          Effect.map((value) => {
+            expect(value.error, `integrations.list failed: ${JSON.stringify(value.error)}`).toBe(
+              undefined,
+            );
+            return value.slugs as string[];
+          }),
+        );
+
+      yield* Effect.gen(function* () {
+        for (const slug of [granted, ungranted]) {
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: pingSpec(upstream.url) },
+              slug: IntegrationSlug.make(slug),
+              baseUrl: upstream.url,
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: { "x-e2e-token": [{ type: "variable", name: "token" }] },
+                },
+              ],
+            },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: IntegrationSlug.make(slug),
+              template: AuthTemplateSlug.make("apiKey"),
+              value: "unused-token",
+            },
+          });
+        }
+
+        const toolkit = yield* client.toolkits.create({
+          payload: { owner: "org", name: toolkitName },
+        });
+        // Only the granted provider's connection is part of the toolkit.
+        yield* client.toolkits.createConnection({
+          params: { toolkitId: toolkit.id },
+          payload: { pattern: connectionPattern(granted, "org", "main") },
+        });
+        // Grant the executor core-tools namespace so the agent can introspect
+        // the catalog (the dev box has introspection, just not the gmail tools).
+        yield* client.toolkits.createConnection({
+          params: { toolkitId: toolkit.id },
+          payload: { pattern: "executor.coreTools.*" },
+        });
+
+        // The unscoped workspace endpoint advertises the full catalog: both
+        // providers are connected at the workspace level.
+        const workspaceCatalog = yield* listCatalog(mcp.session(identity));
+        expect(workspaceCatalog, "workspace catalog lists the granted provider").toContain(granted);
+        expect(workspaceCatalog, "workspace catalog lists the ungranted provider").toContain(
+          ungranted,
+        );
+
+        // The toolkit-scoped endpoint must advertise only providers it grants
+        // tools from. The ungranted provider is the "shown with 0 tools" leak.
+        const session = mcp.session(identity, {
+          url: toolkitUrl(target.baseUrl, toolkit.slug),
+        });
+        const toolkitCatalog = yield* listCatalog(session);
+        expect(toolkitCatalog, "toolkit catalog lists the granted provider").toContain(granted);
+        expect(toolkitCatalog, "toolkit catalog hides a provider it grants no tools").not.toContain(
+          ungranted,
+        );
+
+        // The exclusion is real access control, not a display trick: the
+        // ungranted provider exposes no callable tools through the toolkit.
+        const search = yield* executeJson(
+          session,
+          `const r = await tools.search({ namespace: ${JSON.stringify(ungranted)}, query: "ping", limit: 100 });
+           return { paths: r.items.map((i) => i.path) };`,
+        );
+        expect(search.paths as string[], "ungranted provider exposes no callable tools").toEqual(
+          [],
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const listed = yield* client.toolkits.list();
+            yield* Effect.forEach(
+              listed.toolkits.filter((toolkit) => toolkit.name === toolkitName),
+              (toolkit) => client.toolkits.remove({ params: { toolkitId: toolkit.id } }),
+              { discard: true },
+            );
+          }).pipe(Effect.ignore),
+        ),
+      );
+    }),
+  ),
+);
