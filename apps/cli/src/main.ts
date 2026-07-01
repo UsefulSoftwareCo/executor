@@ -2,6 +2,10 @@
 // before any import (e.g. `@executor-js/local` → libSQL) eagerly loads them.
 import "./native-bindings";
 
+// Stamp EXECUTOR_CLIENT=cli (unless the desktop app already set `desktop`)
+// before `@executor-js/local` builds its integrations User-Agent from it.
+import "./client-env";
+
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

@@ -15,13 +15,19 @@ const resolveChannel = (version: string): InstallationChannel => {
   return "stable";
 };
 
-// The desktop main process sets `EXECUTOR_CLIENT=desktop` when it spawns the
-// sidecar. Otherwise this headless apps/local server was launched by the
-// `executor` CLI (`executor mcp`, `web`, `daemon run --foreground`, or the
-// installed background service), so it reports as `cli`. Surface is only ever
-// `cli` or `desktop`; mirrors the owner.client resolution in apps/cli/src/main.ts.
-const resolveClient = (): SurfaceClient =>
-  process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "cli";
+// EXECUTOR_CLIENT identifies which product launched this headless apps/local
+// server: the desktop app sets `desktop` before spawning it, and the executor
+// CLI sets `cli` (apps/cli stamps it at startup, see src/client-env.ts). It is
+// therefore always set to a valid surface in a real launch, so we pass it
+// through rather than guess. The `cli` floor only covers direct library/test
+// imports that boot the server without going through a launcher.
+const SURFACE_CLIENTS = ["cli", "desktop"] as const;
+const resolveClient = (): SurfaceClient => {
+  const client = process.env.EXECUTOR_CLIENT;
+  return (SURFACE_CLIENTS as readonly string[]).includes(client ?? "")
+    ? (client as SurfaceClient)
+    : "cli";
+};
 
 export const CHANNEL: InstallationChannel = resolveChannel(LOCAL_VERSION);
 export const VERSION: string = LOCAL_VERSION;
