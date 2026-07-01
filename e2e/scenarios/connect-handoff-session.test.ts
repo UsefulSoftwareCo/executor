@@ -152,7 +152,9 @@ scenario(
                   .waitFor({ timeout: 15_000 });
               });
               await step("Paste the Resend API key and connect", async () => {
-                const credential = page.getByPlaceholder(/paste the value \/ token/i);
+                // Affixed single-input bearer field: value input placeholder is
+                // "token" (scoped to the dialog to stay unique).
+                const credential = page.getByRole("dialog").getByPlaceholder("token");
                 await credential.waitFor({ timeout: 15_000 });
                 await credential.fill(apiKey);
                 await page.getByRole("button", { name: "Add connection", exact: true }).click();

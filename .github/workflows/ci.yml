@@ -115,6 +115,44 @@ jobs:
         run: bunx vitest run --project local local/stdio-mcp.test.ts
         working-directory: e2e
 
+  e2e-selfhost:
+    name: E2E (self-host)
+    # Runs on PRs and push: the self-host project boots its own dev server (no
+    # external infra) and is the regression guard that PR CI was missing — the
+    # org-scoped OAuth callback bug lived exactly here and shipped green because
+    # nothing ran this suite. Browser scenarios are included; if they prove
+    # flaky on CI, gate this to push-only (like e2e-local) or add a retry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      # The self-host web app + emulator OAuth flows spawn Node, and some
+      # scenarios drive a headless browser: pin Node 22 and install Chromium.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Full fresh-checkout setup: installs deps AND builds the vite-plugin
+      # bundle + react console routes the web boot needs (a bare `bun install`
+      # leaves those unbuilt). bootstrap also fetches Chromium, but without the
+      # ubuntu system libs the headless shell needs — the step below adds
+      # `--with-deps` and the headless-shell download.
+      - run: bun run bootstrap
+
+      - name: Install Playwright Chromium (with system deps)
+        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        working-directory: e2e
+
+      # Boots the self-host dev server via its globalsetup and runs the
+      # cross-target `scenarios/**` plus the selfhost-only `selfhost/**` suite.
+      - name: Run the self-host e2e suite
+        run: bun run test:selfhost
+        working-directory: e2e
+
   desktop-smoke:
     name: Desktop smoke build
     runs-on: ubuntu-latest

@@ -209,7 +209,10 @@ const runScenario = (input: {
       });
 
       await step("Paste the emulator API key", async () => {
-        const credential = page.getByPlaceholder(/paste the value \/ token/i);
+        // The single-input bearer method renders an affixed field ("Authorization:
+        // Bearer " prefix) whose value input placeholder is "token". Scope to the
+        // dialog so the match stays unique.
+        const credential = page.getByRole("dialog").getByPlaceholder("token");
         await credential.waitFor({ timeout: 15_000 });
         await credential.fill(apiKey);
       });
