@@ -44,6 +44,7 @@ import {
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  validateOpenApiBackedToolArgs,
 } from "./backing";
 import { resolveServerUrl } from "./openapi-utils";
 
@@ -1030,6 +1031,9 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         httpClientLayer,
       });
     },
+
+    validateToolArgs: ({ ctx: validateCtx, toolRow, args }) =>
+      validateOpenApiBackedToolArgs({ ctx: validateCtx, toolRow, args }),
 
     resolveAnnotations: ({ ctx: annotationsCtx, integration, toolRows }) =>
       resolveOpenApiBackedAnnotations({

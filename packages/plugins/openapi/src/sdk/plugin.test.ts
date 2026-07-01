@@ -565,6 +565,40 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
+  it.effect("rejects invalid args before raising the approval elicitation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
+        const calls = { count: 0 };
+        // createItem requires approval (POST) and a request body. Omitting
+        // the body must fail pre-flight validation WITHOUT consuming an
+        // approval: the user would otherwise approve a call that can only
+        // fail.
+        const failure = yield* executor
+          .execute(
+            conn.address("items.createItem"),
+            {},
+            {
+              onElicitation: () =>
+                Effect.sync(() => {
+                  calls.count++;
+                  return { action: "accept" as const, content: {} };
+                }),
+            },
+          )
+          .pipe(Effect.flip);
+
+        expect(calls.count).toBe(0);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+        // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: asserts the exact caller-facing message the pre-flight failure carries
+        expect((failure as { message: string }).message).toBe("Missing required request body");
+      }),
+    ),
+  );
+
   it.effect("describes OpenAPI invocation results payload-first with http meta beside data", () =>
     Effect.scoped(
       Effect.gen(function* () {

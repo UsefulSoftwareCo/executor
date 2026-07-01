@@ -28,7 +28,7 @@ import {
   streamOperationBindingsFromStructure,
 } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
-import { annotationsForOperation, invokeWithLayer } from "./invoke";
+import { annotationsForOperation, buildRequest, invokeWithLayer } from "./invoke";
 import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
@@ -643,6 +643,27 @@ export const invokeOpenApiBackedTool = (input: {
     return ToolResult.ok(result.data, {
       http: { status: result.status, headers: result.headers },
     });
+  });
+
+/** Pre-approval argument validation: run the exact request-building pass
+ *  `invoke` runs (path params, request body, base64 payloads) and discard the
+ *  built request. Fails with the same pre-flight OpenApiInvocationError the
+ *  real invocation would raise, so a call guaranteed to fail is rejected
+ *  before the executor pauses it for approval. Legacy rows without a
+ *  persisted binding skip validation (re-parsing the spec here would repeat
+ *  invokeTool's heavy fallback for no user-visible gain). */
+export const validateOpenApiBackedToolArgs = (input: {
+  readonly ctx: PluginCtx<OpenapiStore>;
+  readonly toolRow: { readonly integration: string; readonly name: string };
+  readonly args: unknown;
+}) =>
+  Effect.gen(function* () {
+    const operation = yield* input.ctx.storage.getOperation(
+      input.toolRow.integration,
+      input.toolRow.name,
+    );
+    if (!operation) return;
+    yield* buildRequest(operation.binding, (input.args ?? {}) as Record<string, unknown>, {});
   });
 
 export const resolveOpenApiBackedAnnotations = (input: {

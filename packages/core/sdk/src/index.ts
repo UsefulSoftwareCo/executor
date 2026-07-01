@@ -288,6 +288,7 @@ export {
   type StaticToolInput,
   type ConfigureIntegrationHandlerInput,
   type InvokeToolInput,
+  type ValidateToolArgsInput,
   type ConnectionLifecycleInput,
   type IntegrationConfigureDecl,
   type IntegrationConfigureSchema,

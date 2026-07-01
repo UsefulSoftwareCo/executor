@@ -12,7 +12,7 @@ export {
   type ByteRange,
   type KeepPathItem,
 } from "./split";
-export { invoke, invokeWithLayer, annotationsForOperation } from "./invoke";
+export { invoke, invokeWithLayer, buildRequest, annotationsForOperation } from "./invoke";
 export {
   buildDefsJsonStreaming,
   compileAndPersistOpenApiOperations,
@@ -28,6 +28,7 @@ export {
   openApiToolDefsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
+  validateOpenApiBackedToolArgs,
   type CompiledOpenApiSpec,
   type OpenApiPersistResult,
 } from "./backing";

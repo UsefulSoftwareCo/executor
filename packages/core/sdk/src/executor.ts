@@ -2935,6 +2935,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
     };
 
+    // The single source of truth for "will enforceApproval pause this call".
+    // Read before pre-approval arg validation so the extra validation pass
+    // only runs for calls that would otherwise burn a user approval.
+    const approvalRequired = (
+      annotations: ToolAnnotations | undefined,
+      policy: EffectivePolicy,
+    ): boolean => {
+      if (policy.action === "approve") return false;
+      return policy.action === "require_approval" || annotations?.requiresApproval === true;
+    };
+
     const enforceApproval = (
       annotations: ToolAnnotations | undefined,
       address: ToolAddress,
@@ -2943,9 +2954,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       handler: ElicitationHandler,
     ) =>
       Effect.gen(function* () {
-        if (policy.action === "approve") return;
+        if (!approvalRequired(annotations, policy)) return;
         const policyForcesApproval = policy.action === "require_approval";
-        if (!policyForcesApproval && !annotations?.requiresApproval) return;
         const message = annotations?.approvalDescription
           ? annotations.approvalDescription
           : policyForcesApproval && policy.pattern
@@ -3153,6 +3163,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             })
             .pipe(wrapInvocationError);
           resolvedAnnotations = map[String(parsed.tool)] ?? annotations;
+        }
+        // When this call is about to pause for approval, validate args
+        // first: a call that can only fail (missing required path param /
+        // body) must be rejected here, not after the user grants an approval
+        // that then goes to waste. Non-pausing calls skip this — invokeTool
+        // raises the identical failure moments later without the extra pass.
+        if (approvalRequired(resolvedAnnotations, policy) && runtime.plugin.validateToolArgs) {
+          yield* runtime.plugin
+            .validateToolArgs({ ctx: runtime.ctx, toolRow: row, args })
+            .pipe(wrapInvocationError);
         }
         yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
 

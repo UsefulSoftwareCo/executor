@@ -406,6 +406,15 @@ export interface InvokeToolInput<TStore = unknown> {
   readonly elicit: Elicit;
 }
 
+/** Input for `validateToolArgs` — no credential/elicit: validation runs
+ *  before approval enforcement and credential resolution, so it must depend
+ *  on nothing but the tool row and the caller's args. */
+export interface ValidateToolArgsInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly toolRow: ToolInvocationRow;
+  readonly args: unknown;
+}
+
 /** Called when the executor removes / refreshes a connection owned by this
  *  plugin's integration — plugin-side cleanup or re-resolution only; the
  *  executor handles the core tool rows. */
@@ -521,6 +530,16 @@ export interface PluginSpec<
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the
    *  address. The plugin applies `input.credential` to the outbound request. */
   readonly invokeTool?: (input: InvokeToolInput<TStore>) => Effect.Effect<unknown, unknown>;
+
+  /** Validate a dynamic tool's args before the executor enforces approval,
+   *  so a call guaranteed to fail is rejected instead of pausing for an
+   *  approval the user can only waste. Fail with the same error `invokeTool`
+   *  would raise for those args; succeed (void) when the args would reach the
+   *  wire. Must be side-effect free: no credential use, no elicitation, no
+   *  outbound request. Omit to skip pre-approval validation. */
+  readonly validateToolArgs?: (
+    input: ValidateToolArgsInput<TStore>,
+  ) => Effect.Effect<void, unknown>;
 
   /** Bulk resolve annotations for a set of tool rows under one connection. */
   readonly resolveAnnotations?: (input: {

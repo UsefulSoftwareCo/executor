@@ -643,25 +643,22 @@ const applyRequestBody = (
 };
 
 // ---------------------------------------------------------------------------
-// Public API — invoke a single operation
+// Public API — build the outbound request for an operation
+//
+// The full pre-flight phase of an invocation: read/validate caller args
+// (path params, request body, base64 payloads) and construct the
+// HttpClientRequest. Pure — nothing is sent. Exposed separately so the
+// executor's approval flow can validate args BEFORE raising an approval
+// elicitation, guaranteeing the validation semantics are exactly what
+// `invoke` applies (one code path, not a parallel re-implementation).
 // ---------------------------------------------------------------------------
 
-export const invoke = Effect.fn("OpenApi.invoke")(function* (
+export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
   operation: OperationBinding,
   args: Record<string, unknown>,
   resolvedHeaders: Record<string, string>,
   sourceQueryParams: Record<string, string> = {},
 ) {
-  const client = yield* HttpClient.HttpClient;
-
-  yield* Effect.annotateCurrentSpan({
-    "http.method": operation.method.toUpperCase(),
-    "http.route": operation.pathTemplate,
-    "plugin.openapi.method": operation.method.toUpperCase(),
-    "plugin.openapi.path_template": operation.pathTemplate,
-    "plugin.openapi.headers.resolved_count": Object.keys(resolvedHeaders).length,
-  });
-
   const resolvedPath = yield* resolvePath(operation.pathTemplate, args, operation.parameters);
 
   const path = resolvedPath.startsWith("/") ? resolvedPath : `/${resolvedPath}`;
@@ -807,6 +804,31 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
   }
 
   request = applyHeaders(request, resolvedHeaders);
+
+  return request;
+});
+
+// ---------------------------------------------------------------------------
+// Public API — invoke a single operation
+// ---------------------------------------------------------------------------
+
+export const invoke = Effect.fn("OpenApi.invoke")(function* (
+  operation: OperationBinding,
+  args: Record<string, unknown>,
+  resolvedHeaders: Record<string, string>,
+  sourceQueryParams: Record<string, string> = {},
+) {
+  const client = yield* HttpClient.HttpClient;
+
+  yield* Effect.annotateCurrentSpan({
+    "http.method": operation.method.toUpperCase(),
+    "http.route": operation.pathTemplate,
+    "plugin.openapi.method": operation.method.toUpperCase(),
+    "plugin.openapi.path_template": operation.pathTemplate,
+    "plugin.openapi.headers.resolved_count": Object.keys(resolvedHeaders).length,
+  });
+
+  const request = yield* buildRequest(operation, args, resolvedHeaders, sourceQueryParams);
 
   const response = yield* client.execute(request).pipe(
     Effect.mapError(
