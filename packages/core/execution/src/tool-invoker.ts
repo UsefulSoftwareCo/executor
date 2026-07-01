@@ -148,6 +148,29 @@ const validationIssues = (value: unknown): readonly unknown[] | null => {
   return Array.isArray(issues) ? issues : null;
 };
 
+// Pre-flight OpenAPI invocation failures (missing/unresolved path params,
+// missing or malformed request body) are caller-argument errors raised before
+// any HTTP request is sent. Their messages are generated locally from the
+// spec (no upstream data, no transport internals), so they are safe to
+// surface, and actionable: the fix is renaming or adding an argument.
+// Discriminator: pre-flight raises carry `statusCode: None` and no `cause`.
+// Transport failures share `statusCode: None` but wrap the raw client error
+// (which can hold internal URLs) as `cause`, and post-response failures carry
+// a status code; both stay on the opaque-defect path. Matched structurally
+// because this package does not depend on the openapi plugin.
+const openApiPreflightMessage = (value: unknown): string | null => {
+  if (!Predicate.isTagged(value, "OpenApiInvocationError")) return null;
+  const err = value as {
+    readonly message?: unknown;
+    readonly statusCode?: unknown;
+    readonly cause?: unknown;
+  };
+  if (err.cause !== undefined) return null;
+  if (!Predicate.isTagged(err.statusCode, "None")) return null;
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: structural match on the openapi plugin's tagged error; the pre-flight message is locally generated (no upstream data) and is the payload being surfaced
+  return typeof err.message === "string" && err.message.length > 0 ? err.message : null;
+};
+
 const credentialResolutionToolFailure = (input: {
   readonly label: string;
   readonly message: string;
@@ -186,12 +209,20 @@ const expectedToolFailure = (value: unknown): ToolError | null => {
     };
   }
   if (Predicate.isTagged(value, "ToolInvocationError")) {
-    const issues = validationIssues((value as { readonly cause?: unknown }).cause);
+    const cause = (value as { readonly cause?: unknown }).cause;
+    const issues = validationIssues(cause);
     if (issues) {
       return {
         code: "invalid_tool_arguments",
         message: "Tool arguments did not match the input schema.",
         details: { issues },
+      };
+    }
+    const preflight = openApiPreflightMessage(cause);
+    if (preflight) {
+      return {
+        code: "invalid_tool_arguments",
+        message: preflight,
       };
     }
   }

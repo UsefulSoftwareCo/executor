@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 
 import { ElicitationResponse, createExecutor, definePlugin } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
@@ -18,6 +18,17 @@ const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accep
 class FakePluginInvocationError extends Data.TaggedError("PluginInvocationError")<{
   readonly message: string;
   readonly cause: unknown;
+}> {}
+
+// Mirrors the openapi plugin's OpenApiInvocationError shape (the dispatcher
+// matches it structurally by tag, not by class identity, since this package
+// does not depend on the plugin). Pre-flight raises carry statusCode: None
+// and no cause and must surface verbatim; transport/post-response failures
+// must stay opaque.
+class FakeOpenApiInvocationError extends Data.TaggedError("OpenApiInvocationError")<{
+  readonly message: string;
+  readonly statusCode: Option.Option<number>;
+  readonly cause?: unknown;
 }> {}
 
 const leakyPlugin = definePlugin(() => ({
@@ -66,6 +77,59 @@ const leakyPlugin = definePlugin(() => ({
               ),
             ),
         },
+        {
+          name: "failsPreflightPathParam",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.fail(
+              new FakeOpenApiInvocationError({
+                message: "Missing required path parameter: datasourceId",
+                statusCode: Option.none(),
+              }),
+            ),
+        },
+        {
+          name: "failsPreflightBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.fail(
+              new FakeOpenApiInvocationError({
+                message: "Missing required request body",
+                statusCode: Option.none(),
+              }),
+            ),
+        },
+        {
+          name: "failsOpenApiTransport",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.fail(
+              new FakeOpenApiInvocationError({
+                message: "HTTP request failed",
+                statusCode: Option.none(),
+                cause: {
+                  _tag: "RequestError",
+                  request: { url: "https://internal.service.local/v1?token=tok-456" },
+                },
+              }),
+            ),
+        },
+        {
+          name: "failsOpenApiPostResponse",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.fail(
+              new FakeOpenApiInvocationError({
+                message: "Failed to read response body",
+                statusCode: Option.some(502),
+                cause: { _tag: "ResponseError", note: "internal parser detail" },
+              }),
+            ),
+        },
       ],
     },
   ],
@@ -108,6 +172,83 @@ describe("internal-error leak audit (opaque defects)", () => {
       expect(msg).not.toContain("secret-store.ts");
       expect(msg).not.toContain("at /home/");
       expect(msg).not.toContain("sk_live_abcd");
+    }),
+  );
+});
+
+describe("openapi pre-flight invocation errors (expected failures)", () => {
+  it.effect("missing path parameter surfaces verbatim as invalid_tool_arguments", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "leaky.failsPreflightPathParam", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "invalid_tool_arguments",
+          message: "Missing required path parameter: datasourceId",
+        },
+      });
+    }),
+  );
+
+  it.effect("missing request body surfaces verbatim as invalid_tool_arguments", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "leaky.failsPreflightBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "invalid_tool_arguments",
+          message: "Missing required request body",
+        },
+      });
+    }),
+  );
+
+  it.effect("transport failure (statusCode None but cause present) stays opaque", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const err = yield* Effect.flip(
+        invoker.invoke({ path: "leaky.failsOpenApiTransport", args: {} }),
+      );
+      expect(err).toBeInstanceOf(ExecutionToolError);
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: leak test inspects the rendered message to assert it is the opaque generic
+      const msg = (err as { message: string }).message;
+      expect(msg).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
+      expect(msg).not.toContain("internal.service.local");
+      expect(msg).not.toContain("tok-456");
+      expect(msg).not.toContain("HTTP request failed");
+    }),
+  );
+
+  it.effect("post-response failure (statusCode Some) stays opaque", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const err = yield* Effect.flip(
+        invoker.invoke({ path: "leaky.failsOpenApiPostResponse", args: {} }),
+      );
+      expect(err).toBeInstanceOf(ExecutionToolError);
+      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: leak test inspects the rendered message to assert it is the opaque generic
+      const msg = (err as { message: string }).message;
+      expect(msg).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
+      expect(msg).not.toContain("Failed to read response body");
+      expect(msg).not.toContain("internal parser detail");
     }),
   );
 });
