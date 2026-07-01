@@ -16,10 +16,12 @@ const resolveChannel = (version: string): InstallationChannel => {
 };
 
 // The desktop main process sets `EXECUTOR_CLIENT=desktop` when it spawns the
-// sidecar so PostHog can slice desktop installs from headless apps/local
-// (CLI `executor web`, `daemon run --foreground`, etc.).
+// sidecar. Otherwise this headless apps/local server was launched by the
+// `executor` CLI (`executor mcp`, `web`, `daemon run --foreground`, or the
+// installed background service), so it reports as `cli`. Surface is only ever
+// `cli` or `desktop`; mirrors the owner.client resolution in apps/cli/src/main.ts.
 const resolveClient = (): SurfaceClient =>
-  process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "local";
+  process.env.EXECUTOR_CLIENT === "desktop" ? "desktop" : "cli";
 
 export const CHANNEL: InstallationChannel = resolveChannel(LOCAL_VERSION);
 export const VERSION: string = LOCAL_VERSION;

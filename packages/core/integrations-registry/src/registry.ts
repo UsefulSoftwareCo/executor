@@ -11,7 +11,10 @@ import { NodeFileSystem } from "@effect/platform-node";
 // ---------------------------------------------------------------------------
 
 export type InstallationChannel = "stable" | "beta" | "dev";
-export type SurfaceClient = "cli" | "local" | "desktop";
+// Only two surfaces: the desktop app (sets EXECUTOR_CLIENT=desktop) or the
+// `executor` CLI (everything else, including the headless apps/local daemon,
+// `executor mcp`, and the installed background service).
+export type SurfaceClient = "cli" | "desktop";
 
 export const DEFAULT_INTEGRATIONS_URL = "https://integrations.sh/api.json";
 
