@@ -6,6 +6,14 @@ import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
 import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
+import { Button } from "@executor-js/react/components/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@executor-js/react/components/card";
 import { AuthProvider, useAuth } from "@executor-js/react/multiplayer/auth-context";
 import { Shell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
@@ -48,26 +56,72 @@ const Loading = () => (
   </div>
 );
 
+const SetupStatusErrorCard = ({ onRetry }: { onRetry: () => void }) => (
+  <div className="flex min-h-screen items-center justify-center bg-background p-6">
+    <Card className="w-full max-w-md">
+      <CardHeader>
+        <CardTitle>Can't reach the server</CardTitle>
+        <CardDescription>
+          Executor couldn't check this instance's setup state. Make sure the server is running, then
+          retry.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button type="button" onClick={onRetry}>
+          Retry
+        </Button>
+      </CardContent>
+    </Card>
+  </div>
+);
+
 function AuthGate({ children }: { children: ReactNode }) {
   const auth = useAuth();
   // When unauthenticated, decide between first-run setup and sign-in by asking
-  // the server whether the instance still has zero members. `null` = checking.
-  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  // the server whether the instance still has zero members.
+  const [setupStatus, setSetupStatus] = useState<
+    | { state: "checking"; attempt: number }
+    | { state: "ready"; needsSetup: boolean }
+    | { state: "error"; attempt: number }
+  >({ state: "checking", attempt: 0 });
   useEffect(() => {
     if (auth.status !== "unauthenticated") return;
     let alive = true;
-    void fetchNeedsSetup().then((value) => {
-      if (alive) setNeedsSetup(value);
-    });
+    setSetupStatus((current) => ({ state: "checking", attempt: current.attempt }));
+    void fetchNeedsSetup().then(
+      (value) => {
+        if (alive) setSetupStatus({ state: "ready", needsSetup: value });
+      },
+      () => {
+        if (alive) {
+          setSetupStatus((current) => ({
+            state: "error",
+            attempt: current.state === "ready" ? 0 : current.attempt,
+          }));
+        }
+      },
+    );
     return () => {
       alive = false;
     };
-  }, [auth.status]);
+  }, [auth.status, setupStatus.attempt]);
 
   if (auth.status === "loading") return <Loading />;
   if (auth.status === "unauthenticated") {
-    if (needsSetup === null) return <Loading />;
-    return needsSetup ? <SetupPage /> : <LoginPage />;
+    if (setupStatus.state === "checking") return <Loading />;
+    if (setupStatus.state === "error") {
+      return (
+        <SetupStatusErrorCard
+          onRetry={() =>
+            setSetupStatus((current) => ({
+              state: "checking",
+              attempt: current.state === "ready" ? 0 : current.attempt + 1,
+            }))
+          }
+        />
+      );
+    }
+    return setupStatus.needsSetup ? <SetupPage /> : <LoginPage />;
   }
   return <>{children}</>;
 }
