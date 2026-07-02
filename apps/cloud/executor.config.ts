@@ -42,14 +42,23 @@ interface CloudPluginDeps {
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
+  /** Mirrors `HostConfig.allowLocalNetwork` (`ALLOW_LOCAL_NETWORK`): lets
+   *  `microsoft.addGraph` point at a loopback emulator instead of the pinned
+   *  Microsoft Graph URLs. Off by default; production leaves it unset. */
+  readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
+  plugins: ({
+    workosCredentials,
+    workosVaultClient,
+    activeToolkitSlug,
+    allowLocalNetwork,
+  }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin(),
       googleHttpPlugin(),
-      microsoftHttpPlugin(),
+      microsoftHttpPlugin({ allowUnsafeUrlOverrides: allowLocalNetwork === true }),
       mcpHttpPlugin({
         dangerouslyAllowStdioMCP: false,
       }),

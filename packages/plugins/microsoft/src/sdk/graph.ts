@@ -62,6 +62,12 @@ export interface MicrosoftGraphSpecBuild {
 }
 
 export interface MicrosoftGraphUrlPolicy {
+  /**
+   * When true, spec/base/OAuth endpoint URLs may point anywhere a trusted
+   * https URL could, plus plain http on loopback (local Graph emulators).
+   * Every other host is still rejected. Off by default — production leaves
+   * this unset so only the pinned Microsoft Graph URLs are accepted.
+   */
   readonly allowUnsafeUrlOverrides?: boolean;
 }
 
@@ -193,13 +199,36 @@ const parseTrustedHttpsUrl = (value: string): URL | null => {
   return parsed;
 };
 
+// Local emulators (microsoft-emulator.test.ts, `microsoft.emulators.dev` run
+// locally) serve plain http on loopback. Only these three hostnames count —
+// this is not a general SSRF-safe "is this private" check, just a narrow
+// allowance for the dev machine talking to itself.
+const isLoopbackHostname = (hostname: string): boolean => {
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower === "[::1]";
+};
+
+const parseTrustedLoopbackHttpUrl = (value: string): URL | null => {
+  if (!URL.canParse(value)) return null;
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.hash) {
+    return null;
+  }
+  return isLoopbackHostname(parsed.hostname) ? parsed : null;
+};
+
+/**
+ * Under `allowUnsafeUrlOverrides`, accept either a trusted https URL or a
+ * plain-http URL on loopback (local emulators have no TLS). Every other URL
+ * shape is still rejected, override or not.
+ */
 const allowUnsafeUrl = (
   value: string | undefined,
   policy: MicrosoftGraphUrlPolicy | undefined,
 ): string | undefined | null => {
   if (!value) return undefined;
   if (policy?.allowUnsafeUrlOverrides !== true) return null;
-  return parseTrustedHttpsUrl(value) ? value : null;
+  return parseTrustedHttpsUrl(value) || parseTrustedLoopbackHttpUrl(value) ? value : null;
 };
 
 const normalizeMicrosoftGraphSpecUrl = (

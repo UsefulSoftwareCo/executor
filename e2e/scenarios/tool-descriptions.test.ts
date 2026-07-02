@@ -353,19 +353,6 @@ scenario(
           "the spec's info.description prefills the description",
         ).toBe("A fixture API exercising every OpenAPI description channel.");
 
-        // Post-add curation the way the console's edit sheets do: a
-        // connection-level description on the OpenAPI connection (its prefix
-        // line shows it; the GraphQL connection has none, so its line falls
-        // back to the integration description set at add).
-        yield* apiClient.connections.update({
-          params: {
-            owner: "org",
-            integration: IntegrationSlug.make(openapiSlug),
-            name: ConnectionName.make("main"),
-          },
-          payload: { description: "Staging orders — safe to create test orders." },
-        });
-
         // The agent-visible surface: catalog entry + schema view (the same
         // data `tools.search()` / `tools.describe.tool()` serve the sandbox).
         const snapshotFor = (slug: string) =>
@@ -450,9 +437,8 @@ scenario(
             ]),
             "## Execute-tool inventory (over MCP)",
             "",
-            "The connection-prefix lines from the `execute` tool's description,",
-            "as an MCP client reads them. Connection descriptions ride their",
-            "prefix; a connection without one falls back to its integration's.",
+            "Integration slug lines from the `execute` tool's description,",
+            "as an MCP client reads them (names only, deduped across connections).",
             "",
             codeBlock("md", inventory ?? "(no inventory section found)"),
             "",
@@ -540,50 +526,18 @@ scenario(
           "reason",
         );
 
-        // The curated descriptions reach the model: the connection's own
-        // description rides its prefix line; the connection without one falls
-        // back to its integration's description.
-        expect(inventory, "connection description reaches the MCP inventory").toContain(
-          `- \`${openapiSlug}.org.main\` — Staging orders — safe to create test orders.`,
+        // The execute-tool inventory lists connected integration slugs only
+        // (no connection prefixes, no descriptions) — see formatIntegrationInventory.
+        expect(inventory, "the OpenAPI fixture appears in the MCP inventory").toContain(
+          `- \`${openapiSlug}\``,
         );
-        expect(inventory, "integration description is the fallback").toContain(
-          `- \`${graphqlSlug}.org.main\` — Order management over GraphQL.`,
-        );
-
-        // EDIT PROPAGATION — the loop the edit sheets exist for: an agent has
-        // already read the inventory above; the user now edits both
-        // descriptions (the exact PATCHes the sheets make); a NEW agent
-        // session must see the new text. (Within one session the execute
-        // description is computed at session build and stays as-is — the
-        // re-read below is a fresh session, which is also what a reconnecting
-        // client gets.)
-        yield* apiClient.connections.update({
-          params: {
-            owner: "org",
-            integration: IntegrationSlug.make(openapiSlug),
-            name: ConnectionName.make("main"),
-          },
-          payload: { description: "EDITED: production orders — do not create test data." },
-        });
-        yield* apiClient.integrations.update({
-          params: { slug: IntegrationSlug.make(graphqlSlug) },
-          payload: { description: "EDITED: order admin over GraphQL." },
-        });
-
-        const inventoryAfterEdit = yield* readInventory();
-        expect(
-          inventoryAfterEdit,
-          "an edited connection description reaches a fresh agent session",
-        ).toContain(
-          `- \`${openapiSlug}.org.main\` — EDITED: production orders — do not create test data.`,
+        expect(inventory, "the GraphQL fixture appears in the MCP inventory").toContain(
+          `- \`${graphqlSlug}\``,
         );
         expect(
-          inventoryAfterEdit,
-          "an edited integration description reaches a fresh agent session",
-        ).toContain(`- \`${graphqlSlug}.org.main\` — EDITED: order admin over GraphQL.`);
-        expect(inventoryAfterEdit, "the pre-edit connection text is gone").not.toContain(
-          "Staging orders",
-        );
+          inventory,
+          "inventory lines are bare slugs, not connection-prefix paths",
+        ).not.toMatch(/\.org\.main/);
       }),
       Effect.gen(function* () {
         yield* cleanup(openapiSlug);

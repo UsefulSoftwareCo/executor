@@ -97,11 +97,14 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // its own tracing for the same reason).
     const browserTraces = browserTracesResponse(request, env);
     if (browserTraces) return browserTraces;
-    if (!installTracerProvider()) {
-      return fetchHandler(request, env, ctx);
-    }
+    // The MCP dispatch is classified up front, independent of whether
+    // telemetry installs — an unset `AXIOM_TOKEN` (tracer not installed) must
+    // never take /mcp requests down with it. See `installTracerProvider`'s
+    // early return below: it only governs the tracing envelope for
+    // non-MCP paths.
     const url = new URL(request.url);
     const mcpRoute = classifyMcpPath(url.pathname);
+    const tracingInstalled = installTracerProvider();
     if (mcpRoute?.kind === "mcp") {
       // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
       // to pass authenticated session props into the hibernatable DO.
@@ -110,8 +113,11 @@ const cloudflareHandler: ExportedHandler<Env> = {
       try {
         return await mcpAgentHandler(prepareMcpOrgScope(request), env, ctx);
       } finally {
-        ctx.waitUntil(flushTracerProvider());
+        if (tracingInstalled) ctx.waitUntil(flushTracerProvider());
       }
+    }
+    if (!tracingInstalled) {
+      return fetchHandler(request, env, ctx);
     }
     // Effect-served paths bring their own http.server span (with traceparent
     // join) — opening one here too would duplicate it. See the header note.

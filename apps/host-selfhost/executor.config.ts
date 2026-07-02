@@ -19,12 +19,20 @@ import { resolveSecretKey } from "./src/config";
 // (slice 4) is added here as the first writable secret provider.
 // ---------------------------------------------------------------------------
 
+interface SelfHostPluginDeps {
+  readonly activeToolkitSlug?: string;
+  /** Mirrors `HostConfig.allowLocalNetwork` (EXECUTOR_ALLOW_LOCAL_NETWORK):
+   *  lets `microsoft.addGraph` point at a loopback emulator instead of the
+   *  pinned Microsoft Graph URLs. Off by default. */
+  readonly allowLocalNetwork?: boolean;
+}
+
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug }: { readonly activeToolkitSlug?: string } = {}) =>
+  plugins: ({ activeToolkitSlug, allowLocalNetwork }: SelfHostPluginDeps = {}) =>
     [
       openApiHttpPlugin(),
       googleHttpPlugin(),
-      microsoftHttpPlugin(),
+      microsoftHttpPlugin({ allowUnsafeUrlOverrides: allowLocalNetwork === true }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),

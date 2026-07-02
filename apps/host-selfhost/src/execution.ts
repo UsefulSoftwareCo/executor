@@ -44,6 +44,7 @@ export const SelfHostPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succe
       executorConfig.plugins({
         activeToolkitSlug:
           context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
+        allowLocalNetwork: loadConfig().allowLocalNetwork,
       }),
   },
 );

@@ -121,6 +121,8 @@ const permissionsReferenceFixture = `
 
 const EMULATOR_SPEC_URL = "https://microsoft.emulators.dev/_emulate/openapi";
 const EMULATOR_BASE_URL = "https://microsoft.emulators.dev";
+const LOCAL_EMULATOR_SPEC_URL = "http://localhost:4123/_emulate/openapi";
+const LOCAL_EMULATOR_BASE_URL = "http://localhost:4123";
 const emulatorGraphFixture = `
 openapi: 3.0.3
 info:
@@ -158,6 +160,31 @@ components:
             https://graph.microsoft.com/.default: https://graph.microsoft.com/.default
 `;
 
+const localEmulatorGraphFixture = `
+openapi: 3.0.3
+info:
+  title: Microsoft Graph Local Emulator
+  version: 1.0.0
+servers:
+  - url: ${LOCAL_EMULATOR_BASE_URL}
+paths:
+  /v1.0/users:
+    get:
+      operationId: graphUser_List
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    azureAdDelegated:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: ${LOCAL_EMULATOR_BASE_URL}/oauth2/v2.0/token
+          scopes:
+            https://graph.microsoft.com/.default: https://graph.microsoft.com/.default
+`;
+
 const graphHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
   HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
     Effect.succeed(
@@ -170,12 +197,15 @@ const graphHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
               ? permissionsReferenceFixture
               : request.url === EMULATOR_SPEC_URL
                 ? emulatorGraphFixture
-                : "not found",
+                : request.url === LOCAL_EMULATOR_SPEC_URL
+                  ? localEmulatorGraphFixture
+                  : "not found",
           {
             status:
               request.url === MICROSOFT_GRAPH_OPENAPI_URL ||
               request.url === MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL ||
-              request.url === EMULATOR_SPEC_URL
+              request.url === EMULATOR_SPEC_URL ||
+              request.url === LOCAL_EMULATOR_SPEC_URL
                 ? 200
                 : 404,
             headers: {
@@ -505,6 +535,86 @@ describe("Microsoft Graph provider", () => {
 
         const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
         expect(toolNames).toContain("users.graphUserList");
+      }),
+    ),
+  );
+
+  it.effect("accepts a loopback http emulator spec only when the override is enabled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: graphPlugins({ allowUnsafeUrlOverrides: true }) }),
+        );
+
+        yield* executor.microsoft.addGraph({
+          presetIds: ["users"],
+          slug: "microsoft_graph_local_emulated",
+          baseUrl: LOCAL_EMULATOR_BASE_URL,
+          specUrl: LOCAL_EMULATOR_SPEC_URL,
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_local_emulated");
+        expect(config?.sourceUrl).toBe(LOCAL_EMULATOR_SPEC_URL);
+        expect(config?.baseUrl).toBe(LOCAL_EMULATOR_BASE_URL);
+      }),
+    ),
+  );
+
+  it.effect("rejects a loopback http spec URL when the override is disabled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        const exit = yield* executor.microsoft
+          .addGraph({
+            slug: "microsoft_graph_local_disabled",
+            baseUrl: LOCAL_EMULATOR_BASE_URL,
+            specUrl: LOCAL_EMULATOR_SPEC_URL,
+          })
+          .pipe(Effect.exit);
+
+        expect(Exit.isFailure(exit)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("rejects a non-loopback http override even with allowUnsafeUrlOverrides", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let requests = 0;
+        const blockedHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+          HttpClient.make((request: HttpClientRequest.HttpClientRequest) =>
+            Effect.sync(() => {
+              requests += 1;
+              return HttpClientResponse.fromWeb(
+                request,
+                new Response("unexpected request", { status: 500 }),
+              );
+            }),
+          ),
+        );
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              microsoftPlugin({
+                httpClientLayer: blockedHttpClientLayer,
+                allowUnsafeUrlOverrides: true,
+              }),
+              memoryCredentialsPlugin(),
+            ],
+          }),
+        );
+
+        const exit = yield* executor.microsoft
+          .addGraph({
+            slug: "microsoft_graph_http_example",
+            baseUrl: "http://example.com/v1.0",
+            specUrl: "http://example.com/openapi.yaml",
+          })
+          .pipe(Effect.exit);
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        expect(requests).toBe(0);
       }),
     ),
   );

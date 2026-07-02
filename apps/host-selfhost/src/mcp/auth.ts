@@ -12,6 +12,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { BetterAuth } from "../auth/better-auth";
+import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
 // ---------------------------------------------------------------------------
 // Self-host McpAuthProvider adapter, backed by Better Auth's mcp() plugin.
@@ -26,7 +27,14 @@ import { BetterAuth } from "../auth/better-auth";
 //
 //  2. `resourceMetadataUrl(request)` — the absolute `resource_metadata` URL the
 //     401 challenge points at: the bare origin-root protected-resource doc
-//     (`<origin>/.well-known/oauth-protected-resource`).
+//     (`<origin>/.well-known/oauth-protected-resource`) UNLESS the request came
+//     in org-scoped (`/<org>/mcp…`), in which case both this and the PRM
+//     document's `resource` field must echo the org-scoped form back — the MCP
+//     SDK client enforces that the advertised `resource` is a same-origin
+//     path-prefix of the URL it actually dialed (RFC 9728). The strip
+//     middleware (../serve.ts, ../../vite.config.ts) rewrites org-scoped
+//     requests to the bare route before they reach here, so the org prefix is
+//     recovered from MCP_ORIGINAL_PATH_HEADER, not the live request path.
 //
 //  3. `authenticate(request)` resolving an MCP principal as a typed AuthOutcome,
 //     trying two credential shapes in order:
@@ -68,8 +76,28 @@ const userRole = (user: object): string | null => {
 const hasBearer = (request: Request): boolean =>
   (request.headers.get("authorization") ?? "").startsWith("Bearer ");
 
+/**
+ * The org-scoped pathname the client actually dialed, recovered from the strip
+ * middleware's header (see ./org-path.ts). `null` for a request that was never
+ * org-scoped (already-bare `/mcp…`), OR whose header value isn't one the
+ * middleware would itself have set — never trust an arbitrary client-supplied
+ * string here, even though the middleware already strips a spoofed header at
+ * its own boundary; this is a second, cheap check against reflecting garbage
+ * into a security-relevant URL.
+ */
+const originalOrgScopedPathFor = (request: Request): string | null => {
+  const header = request.headers.get(MCP_ORIGINAL_PATH_HEADER);
+  return header ? mcpResourcePathFromOriginalPath(header) : null;
+};
+
+/** The pathname to derive the toolkit slug / resource path from: the
+ * org-scoped original when the client dialed org-scoped, else the request's
+ * own (already-bare) path. */
+const effectivePathnameFor = (request: Request): string =>
+  originalOrgScopedPathFor(request) ?? new URL(request.url).pathname;
+
 const toolkitSlugFromRequest = (request: Request): string | null => {
-  const pathname = new URL(request.url).pathname;
+  const pathname = effectivePathnameFor(request);
   const index = pathname.indexOf(TOOLKIT_MCP_SEGMENT);
   if (index < 0) return null;
   const slug = pathname.slice(index + TOOLKIT_MCP_SEGMENT.length).split("/", 1)[0];
@@ -77,6 +105,8 @@ const toolkitSlugFromRequest = (request: Request): string | null => {
 };
 
 const mcpResourcePathFor = (request: Request): string => {
+  const orgScoped = originalOrgScopedPathFor(request);
+  if (orgScoped) return orgScoped;
   const toolkitSlug = toolkitSlugFromRequest(request);
   return toolkitSlug ? `/mcp/toolkits/${toolkitSlug}` : "/mcp";
 };
@@ -85,9 +115,13 @@ const mcpResourcePathFor = (request: Request): string => {
  * Absolute protected-resource metadata URL for the 401 challenge. Derive the
  * origin from `baseURL` when set; otherwise from the live request so the URL is
  * never relative (cloud-drop-in: a self-host behind any host resolves right).
+ * When the client dialed org-scoped, echo the org-scoped PRM path back (see
+ * `mcpResourcePathFor`) so the MCP SDK's same-origin resource check passes.
  */
 const resourceMetadataUrlFor = (baseURL: string | undefined, request: Request): string => {
   const origin = baseURL && baseURL.length > 0 ? baseURL : new URL(request.url).origin;
+  const orgScoped = originalOrgScopedPathFor(request);
+  if (orgScoped) return `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${orgScoped}`;
   const toolkitSlug = toolkitSlugFromRequest(request);
   return toolkitSlug
     ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/${toolkitSlug}`

@@ -19,12 +19,12 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 export const makeCloudflarePlugins = (
   secretKey: string,
-  options: { readonly activeToolkitSlug?: string } = {},
+  options: { readonly activeToolkitSlug?: string; readonly allowLocalNetwork?: boolean } = {},
 ) =>
   [
     openApiHttpPlugin(),
     googleHttpPlugin(),
-    microsoftHttpPlugin(),
+    microsoftHttpPlugin({ allowUnsafeUrlOverrides: options.allowLocalNetwork === true }),
     mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
     graphqlHttpPlugin(),
     toolkitsPlugin({ activeToolkitSlug: options.activeToolkitSlug }),

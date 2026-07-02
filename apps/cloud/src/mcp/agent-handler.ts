@@ -112,13 +112,29 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
-  const serve = McpSessionDOSqlite.serve("/mcp", {
-    binding: "MCP_SESSION",
-    transport: "streamable-http",
-  });
+  const serveOptions = { binding: "MCP_SESSION", transport: "streamable-http" } as const;
+  // The agents SDK builds an exact-match `URLPattern` from the path handed to
+  // `serve` (see `createStreamingHttpHandler` in `agents/dist/mcp/index.js`) —
+  // a single `/mcp` handler never matches `/mcp/toolkits/<slug>` and falls
+  // through to its own internal 404. A second `serve` mounted on the
+  // parameterized path picks it up (`URLPattern` supports `:slug` segments);
+  // the auth/ownership/props logic above is unchanged and shared, only the
+  // final dispatch target differs.
+  const serve = McpSessionDOSqlite.serve("/mcp", serveOptions);
+  const serveToolkit = McpSessionDOSqlite.serve("/mcp/toolkits/:slug", serveOptions);
+
+  const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
   return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
+    // The old envelope (packages/hosts/mcp/src/envelope.ts) answered anything
+    // outside GET/POST/DELETE/OPTIONS with a JSON-RPC 405; the agents SDK
+    // handler only understands its own transport verbs and falls through to
+    // a bare 404. Reject before authenticating so PUT/PATCH/etc never reach
+    // the session engine.
+    if (!ALLOWED_METHODS.has(request.method)) {
+      return jsonRpcResponse(405, -32001, "Method not allowed");
+    }
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request));
@@ -132,7 +148,10 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     if (!sessionId && request.method === "DELETE") {
-      return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } });
+      // Matches the old envelope's contract (@modelcontextprotocol/sdk's
+      // `WebStandardStreamableHTTPServerTransport.handleDeleteRequest`): 200,
+      // not 204 — see e2e/cloud/mcp-protocol.test.ts.
+      return new Response(null, { status: 200, headers: { "access-control-allow-origin": "*" } });
     }
 
     if (sessionId) {
@@ -159,7 +178,32 @@ export const makeCloudMcpAgentHandler = () => {
       },
       resource,
     );
-    const response = await serve.fetch(forwarded, env, ctx);
+    const target = resource.kind === "toolkit" ? serveToolkit : serve;
+    let response: Response;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the agents SDK aborts the isolate (throws) instead of returning a response for a condemned session
+    try {
+      response = await target.fetch(forwarded, env, ctx);
+    } catch (error) {
+      // `_cf_scheduleDestroy` (called above via DELETE) marks the DO
+      // condemned and schedules its alarm; the alarm's `destroy()` then
+      // `ctx.abort("destroyed")`s the isolate. A request that lands after the
+      // alarm has already fired — same DO, same tick budget as the DELETE in
+      // tests — throws that abort reason out of `serve.fetch` instead of the
+      // DO ever getting to answer. Map it to the old envelope's reconnect
+      // error for a dead session (e2e/cloud/mcp-protocol.test.ts expects the
+      // client to be told to reconnect, matching a timed-out session).
+      // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message IS the signal
+      if (Predicate.isError(error) && error.message === "destroyed") {
+        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+      }
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't the condemned-DO abort to the Workers runtime unchanged
+      throw error;
+    }
+    // The agents SDK answers a bare DELETE with 204; the old envelope's
+    // contract (see above) was 200 — rewrite for consistency.
+    if (request.method === "DELETE" && response.status === 204) {
+      return new Response(null, { status: 200, headers: response.headers });
+    }
     return wrapMcpSseResponse(request, env, response);
   };
 };

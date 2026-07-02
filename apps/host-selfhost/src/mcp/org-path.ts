@@ -7,8 +7,11 @@
 // card per host, both self-host front-ends (the prod Bun server and the vite
 // dev middleware) strip a single leading segment so the card's URL reaches the
 // real route — mirroring cloud's edge rewrite, but accepting ANY segment (a
-// Better Auth org id is not the `org_…` shape cloud keys on) and setting no
-// header.
+// Better Auth org id is not the `org_…` shape cloud keys on). Unlike cloud,
+// which carries the org in a header for routing, self-host's rewrite carries
+// the ORIGINAL org-scoped pathname in `MCP_ORIGINAL_PATH_HEADER` below, purely
+// so the protected-resource metadata (./auth.ts) can echo the org-scoped form
+// back to a client that dialed org-scoped (RFC 9728 same-origin check).
 //
 // Pure + Effect-free on purpose: the vite config imports it too.
 
@@ -44,4 +47,45 @@ export const stripMcpOrgSegment = (pathname: string): string | null => {
     return `/mcp/toolkits/${segments[3]}`;
   }
   return null;
+};
+
+/**
+ * Header the strip middleware (serve.ts's Effect middleware and the vite dev
+ * middleware) attaches to a rewritten request, carrying the ORIGINAL org-scoped
+ * pathname the client actually dialed. `stripMcpOrgSegment` discards that
+ * pathname when it rewrites `request.url` to the bare route, but the
+ * protected-resource metadata handlers (./auth.ts) need it back to advertise a
+ * `resource` that path-prefix-matches what the client dialed (RFC 9728 /
+ * `checkResourceAllowed`) — otherwise an org-scoped client never completes
+ * discovery. Only ever set to a value that `stripMcpOrgSegment` itself
+ * recognizes (see `isRecognizedMcpOrgPath`); any client-supplied value of this
+ * header is stripped at the same middleware boundary so it can't be spoofed.
+ */
+export const MCP_ORIGINAL_PATH_HEADER = "x-executor-mcp-original-path";
+
+/**
+ * Whether `pathname` is one `stripMcpOrgSegment` would recognize and rewrite,
+ * i.e. a safe value for `MCP_ORIGINAL_PATH_HEADER`. Used to validate the
+ * header on the way IN (auth.ts must not trust an arbitrary string), not just
+ * on the way out.
+ */
+export const isRecognizedMcpOrgPath = (pathname: string): boolean =>
+  stripMcpOrgSegment(pathname) !== null;
+
+/**
+ * Given a recognized original pathname (a `MCP_ORIGINAL_PATH_HEADER` value —
+ * either the org-scoped MCP path itself, or its PRM-prefixed discovery-doc
+ * form), return the org-scoped MCP resource path alone:
+ *
+ *   /<org>/mcp                                                -> /<org>/mcp
+ *   /<org>/mcp/toolkits/<toolkit>                             -> /<org>/mcp/toolkits/<toolkit>
+ *   /.well-known/oauth-protected-resource/<org>/mcp           -> /<org>/mcp
+ *   /.well-known/oauth-protected-resource/<org>/mcp/toolkits/<toolkit>
+ *                                                            -> /<org>/mcp/toolkits/<toolkit>
+ *
+ * `null` when `pathname` isn't one `stripMcpOrgSegment` recognizes.
+ */
+export const mcpResourcePathFromOriginalPath = (pathname: string): string | null => {
+  if (!isRecognizedMcpOrgPath(pathname)) return null;
+  return pathname.startsWith(`${PRM_PREFIX}/`) ? pathname.slice(PRM_PREFIX.length) : pathname;
 };

@@ -16,6 +16,7 @@
 import { fileURLToPath } from "node:url";
 
 import {
+  Headers as EffectHeaders,
   HttpMiddleware,
   HttpRouter,
   HttpServerRequest,
@@ -32,14 +33,20 @@ import {
   OAUTH_CALLBACK_PATH,
   oauthCallbackSignInRedirectLocation,
 } from "./auth/oauth-callback-login";
-import { stripMcpOrgSegment } from "./mcp/org-path";
+import { MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./mcp/org-path";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const assetsDir = fileURLToPath(new URL("../dist/assets/", import.meta.url));
 
 // Rewrite `/<org>/mcp` (and its OAuth discovery path) to the bare path before
 // routing, so the "Connect an agent" card's org-pinned URL reaches the real
-// `/mcp` route — see ./mcp/org-path. A no-op for every other request.
+// `/mcp` route — see ./mcp/org-path. The original org-scoped pathname is
+// preserved on MCP_ORIGINAL_PATH_HEADER so the protected-resource metadata
+// (./mcp/auth.ts) can echo it back to a client that dialed org-scoped, rather
+// than always advertising the bare form (which fails the MCP SDK's same-origin
+// resource check for org-scoped clients). A no-op for every other request,
+// aside from scrubbing any client-supplied value of that header so it can't be
+// spoofed into an unrewritten request.
 const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
   HttpMiddleware.make((httpApp) =>
     Effect.gen(function* () {
@@ -58,11 +65,27 @@ const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
       }
 
       const rewritten = stripMcpOrgSegment(url.pathname);
-      if (rewritten === null) return yield* httpApp;
+      if (rewritten === null) {
+        // Never let a client dictate the org-scoped echo below by smuggling
+        // this header in directly — it's only ever trustworthy when WE set it
+        // a few lines down, for a request we ourselves just rewrote.
+        if (!EffectHeaders.has(request.headers, MCP_ORIGINAL_PATH_HEADER)) return yield* httpApp;
+        return yield* httpApp.pipe(
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            request.modify({
+              headers: EffectHeaders.remove(request.headers, MCP_ORIGINAL_PATH_HEADER),
+            }),
+          ),
+        );
+      }
       return yield* httpApp.pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
-          request.modify({ url: `${rewritten}${url.search}` }),
+          request.modify({
+            url: `${rewritten}${url.search}`,
+            headers: EffectHeaders.set(request.headers, MCP_ORIGINAL_PATH_HEADER, url.pathname),
+          }),
         ),
       );
     }),
