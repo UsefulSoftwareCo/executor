@@ -365,7 +365,7 @@ export function PoliciesPage() {
     <PageContainer>
       <PageHeader
         title="Policies"
-        description="Override default approval behavior for tools. The most restrictive matched action wins. Blocked tools are hidden from agent search and fail at invoke."
+        description="Decide which tools run automatically, which ask for approval, and which are blocked. The most restrictive matching rule wins; blocked tools are hidden from agents."
       />
 
       <div className="mb-8">

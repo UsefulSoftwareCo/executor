@@ -380,7 +380,7 @@ export default function AddMcpSource(props: {
   return (
     <div className="flex flex-1 flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-foreground">Add MCP Source</h1>
+        <h1 className="text-xl font-semibold text-foreground">Add MCP integration</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
           Connect to an MCP server to discover and use its tools.
         </p>
@@ -473,7 +473,7 @@ export default function AddMcpSource(props: {
             </Button>
             {(probe || isProbing) && (
               <Button type="button" onClick={handleAddRemote} disabled={!canAdd} loading={isAdding}>
-                Add source
+                Add integration
               </Button>
             )}
           </FloatActions>
@@ -542,7 +542,7 @@ export default function AddMcpSource(props: {
               disabled={!stdioCommand.trim() || stdioSlugExists}
               loading={stdioAdding}
             >
-              Add source
+              Add integration
             </Button>
           </FloatActions>
         </>

@@ -133,7 +133,7 @@ export function ApiKeysPage() {
           <CopyButton value="Authorization: Bearer <api-key>" />
         </div>
         <p className="mt-2 max-w-2xl text-xs leading-5 text-muted-foreground">
-          API keys work as PATs and have full access to your account.
+          API keys work like personal access tokens and have full access to your account.
         </p>
       </PageHeader>
 
