@@ -1,6 +1,6 @@
 import { useReducer, useState } from "react";
 import { Exit, Match } from "effect";
-import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { toast } from "sonner";
 import { trackEvent } from "../api/analytics";
@@ -47,6 +47,8 @@ import {
 import { useAuth } from "../multiplayer/auth-context";
 import { messageFromExit } from "../api/error-reporting";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // ---------------------------------------------------------------------------
 // Shared organization page — members + roles + invites + org name, over the
@@ -144,6 +146,7 @@ export function OrgPage(props: {
   const organizationName =
     auth.status === "authenticated" ? (auth.organization?.name ?? "Organization") : "Organization";
   const membersResult = useAtomValue(orgMembersAtom);
+  const refreshMembers = useAtomRefresh(orgMembersAtom);
   const rolesResult = useAtomValue(orgRolesAtom);
   const doRemove = useAtomSet(removeMember, { mode: "promiseExit" });
   const doUpdateRole = useAtomSet(updateMemberRole, { mode: "promiseExit" });
@@ -269,143 +272,149 @@ export function OrgPage(props: {
           className="mb-3 h-9 text-sm"
         />
 
-        {AsyncResult.match(membersResult, {
-          onInitial: () => (
-            <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
-              ))}
-            </div>
-          ),
-          onFailure: () => (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-              <p className="text-sm text-destructive">Failed to load members</p>
-            </div>
-          ),
-          onSuccess: ({ value }) => {
-            const members = value.members;
-            const filtered = search
-              ? members.filter(
-                  (m: MemberData) =>
-                    m.email.toLowerCase().includes(search.toLowerCase()) ||
-                    (m.name?.toLowerCase().includes(search.toLowerCase()) ?? false),
-                )
-              : members;
-
-            if (filtered.length === 0) {
-              return (
-                <p className="py-8 text-center text-sm text-muted-foreground">
-                  {search ? "No matching members" : "No members yet"}
-                </p>
-              );
-            }
-
-            return (
-              <div className="space-y-px">
-                {filtered.map((member: MemberData) => (
-                  <div
-                    key={member.id}
-                    className="group relative grid grid-cols-[2rem_1fr_6rem_5rem_2rem] items-center gap-3 rounded-lg border border-transparent px-4 py-3 transition-all hover:bg-muted/30"
-                  >
-                    {member.avatarUrl ? (
-                      <img src={member.avatarUrl} alt="" className="size-8 rounded-full" />
-                    ) : (
-                      <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-                        {member.name
-                          ? member.name
-                              .split(" ")
-                              .map((n: string) => n[0])
-                              .join("")
-                              .slice(0, 2)
-                              .toUpperCase()
-                          : member.email[0]!.toUpperCase()}
-                      </div>
-                    )}
-
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-medium text-foreground leading-none">
-                          {member.name ?? member.email}
-                        </p>
-                        {member.isCurrentUser && (
-                          <Badge className="bg-muted text-muted-foreground">You</Badge>
-                        )}
-                        {member.status === "pending" && (
-                          <Badge className="bg-muted text-muted-foreground">Invited</Badge>
-                        )}
-                      </div>
-                      {member.name && (
-                        <p className="mt-0.5 truncate text-xs text-muted-foreground leading-none">
-                          {member.email}
-                        </p>
-                      )}
-                    </div>
-
-                    <p className="text-sm text-muted-foreground capitalize leading-none">
-                      {member.role}
-                    </p>
-
-                    <p className="text-xs text-muted-foreground leading-none">
-                      {formatLastActive(member.lastActiveAt)}
-                    </p>
-
-                    {!member.isCurrentUser ? (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-7 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <svg viewBox="0 0 16 16" className="size-3">
-                              <circle cx="8" cy="3" r="1.2" fill="currentColor" />
-                              <circle cx="8" cy="8" r="1.2" fill="currentColor" />
-                              <circle cx="8" cy="13" r="1.2" fill="currentColor" />
-                            </svg>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-44">
-                          {roles.length > 0 && (
-                            <>
-                              <DropdownMenuSub>
-                                <DropdownMenuSubTrigger className="text-xs">
-                                  Change role
-                                </DropdownMenuSubTrigger>
-                                <DropdownMenuSubContent>
-                                  {roles.map((role: RoleData) => (
-                                    <DropdownMenuItem
-                                      key={role.slug}
-                                      className="text-xs"
-                                      disabled={role.slug === member.role}
-                                      onClick={() =>
-                                        handleChangeRole(member.id, role.slug, role.name)
-                                      }
-                                    >
-                                      {role.name}
-                                    </DropdownMenuItem>
-                                  ))}
-                                </DropdownMenuSubContent>
-                              </DropdownMenuSub>
-                              <DropdownMenuSeparator />
-                            </>
-                          )}
-                          <DropdownMenuItem
-                            className="text-destructive focus:text-destructive text-sm"
-                            onClick={() => handleRemove(member.id, member.name ?? member.email)}
-                          >
-                            Remove member
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    ) : (
-                      <div />
-                    )}
-                  </div>
+        {isAsyncResultLoading(membersResult) ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
+            ))}
+          </div>
+        ) : (
+          AsyncResult.match(membersResult, {
+            onInitial: () => (
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
                 ))}
               </div>
-            );
-          },
-        })}
+            ),
+            onFailure: () => (
+              <ErrorState message="Failed to load members" onRetry={refreshMembers} />
+            ),
+            onSuccess: ({ value }) => {
+              const members = value.members;
+              const filtered = search
+                ? members.filter(
+                    (m: MemberData) =>
+                      m.email.toLowerCase().includes(search.toLowerCase()) ||
+                      (m.name?.toLowerCase().includes(search.toLowerCase()) ?? false),
+                  )
+                : members;
+
+              if (filtered.length === 0) {
+                return (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    {search ? "No matching members" : "No members yet"}
+                  </p>
+                );
+              }
+
+              return (
+                <div className="space-y-px">
+                  {filtered.map((member: MemberData) => (
+                    <div
+                      key={member.id}
+                      className="group relative grid grid-cols-[2rem_1fr_6rem_5rem_2rem] items-center gap-3 rounded-lg border border-transparent px-4 py-3 transition-all hover:bg-muted/30"
+                    >
+                      {member.avatarUrl ? (
+                        <img src={member.avatarUrl} alt="" className="size-8 rounded-full" />
+                      ) : (
+                        <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                          {member.name
+                            ? member.name
+                                .split(" ")
+                                .map((n: string) => n[0])
+                                .join("")
+                                .slice(0, 2)
+                                .toUpperCase()
+                            : member.email[0]!.toUpperCase()}
+                        </div>
+                      )}
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-sm font-medium text-foreground leading-none">
+                            {member.name ?? member.email}
+                          </p>
+                          {member.isCurrentUser && (
+                            <Badge className="bg-muted text-muted-foreground">You</Badge>
+                          )}
+                          {member.status === "pending" && (
+                            <Badge className="bg-muted text-muted-foreground">Invited</Badge>
+                          )}
+                        </div>
+                        {member.name && (
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground leading-none">
+                            {member.email}
+                          </p>
+                        )}
+                      </div>
+
+                      <p className="text-sm text-muted-foreground capitalize leading-none">
+                        {member.role}
+                      </p>
+
+                      <p className="text-xs text-muted-foreground leading-none">
+                        {formatLastActive(member.lastActiveAt)}
+                      </p>
+
+                      {!member.isCurrentUser ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <svg viewBox="0 0 16 16" className="size-3">
+                                <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                                <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                                <circle cx="8" cy="13" r="1.2" fill="currentColor" />
+                              </svg>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            {roles.length > 0 && (
+                              <>
+                                <DropdownMenuSub>
+                                  <DropdownMenuSubTrigger className="text-xs">
+                                    Change role
+                                  </DropdownMenuSubTrigger>
+                                  <DropdownMenuSubContent>
+                                    {roles.map((role: RoleData) => (
+                                      <DropdownMenuItem
+                                        key={role.slug}
+                                        className="text-xs"
+                                        disabled={role.slug === member.role}
+                                        onClick={() =>
+                                          handleChangeRole(member.id, role.slug, role.name)
+                                        }
+                                      >
+                                        {role.name}
+                                      </DropdownMenuItem>
+                                    ))}
+                                  </DropdownMenuSubContent>
+                                </DropdownMenuSub>
+                                <DropdownMenuSeparator />
+                              </>
+                            )}
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive text-sm"
+                              onClick={() => handleRemove(member.id, member.name ?? member.email)}
+                            >
+                              Remove member
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : (
+                        <div />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            },
+          })
+        )}
       </section>
 
       <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} roles={roles} />

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { trackEvent } from "../api/analytics";
@@ -57,6 +57,8 @@ import {
 } from "../components/select";
 import { Label } from "../components/label";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // Owner guardrail ordering: org rules are the outer guardrail (rank 0), user
 // rules are inner (rank 1). Mirrors server-side resolution where the most
@@ -284,6 +286,7 @@ function PolicyRow(props: {
 export function PoliciesPage() {
   useExecutorDocumentTitle("Policies");
   const policies = useAtomValue(policiesOptimisticAtom);
+  const refreshPolicies = useAtomRefresh(policiesOptimisticAtom);
   const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
   const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
   const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
@@ -374,114 +377,119 @@ export function PoliciesPage() {
         />
       </div>
 
-      {AsyncResult.match(policies, {
-        onInitial: () => (
-          <div className="flex items-center gap-2 py-8">
-            <div className="size-1.5 rounded-full bg-muted-foreground/30 animate-pulse" />
-            <p className="text-sm text-muted-foreground">Loading policies…</p>
-          </div>
-        ),
-        onFailure: () => (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-            <p className="text-sm text-destructive">Failed to load policies</p>
-          </div>
-        ),
-        onSuccess: ({ value }) => {
-          // Sort by owner rank (org outer, user inner), then position (lex
-          // order on fractional-indexing keys), tiebreaking on id so
-          // identical positions don't swap on refetch and
-          // `generateKeyBetween` never sees duplicate neighbor keys (which
-          // would throw). Optimistic placeholders carry `position: ""` so
-          // they sort to the top of their owner group.
-          const sorted = [...value].sort((a, b) => {
-            const ownerOrder = ownerRank(a.owner) - ownerRank(b.owner);
-            return ownerOrder === 0
-              ? comparePolicy(a.position, a.id, b.position, b.id)
-              : ownerOrder;
-          });
-          // Reorder math runs against committed rows only — placeholder rows
-          // (empty `position`) aren't valid keys for `generateKeyBetween` and
-          // aren't reorderable until the server confirms.
-          const committedForOwner = (owner: Owner) =>
-            sorted.filter((p) => p.owner === owner && p.position !== "");
-          const committedIndex = (id: string, owner: Owner): number =>
-            committedForOwner(owner).findIndex((p) => p.id === id);
-          const positionAbove = (id: string, owner: Owner): string => {
-            const committed = committedForOwner(owner);
-            const j = committedIndex(id, owner);
-            if (j <= 0) return generateKeyBetween(null, committed[0]!.position);
-            return j === 1
-              ? generateKeyBetween(null, committed[0]!.position)
-              : generateKeyBetween(committed[j - 2]!.position, committed[j - 1]!.position);
-          };
-          const positionBelow = (id: string, owner: Owner): string => {
-            const committed = committedForOwner(owner);
-            const j = committedIndex(id, owner);
-            if (j === -1 || j >= committed.length - 1)
-              return generateKeyBetween(committed[committed.length - 1]!.position, null);
-            return j === committed.length - 2
-              ? generateKeyBetween(committed[committed.length - 1]!.position, null)
-              : generateKeyBetween(committed[j + 1]!.position, committed[j + 2]!.position);
-          };
-          return (
-            <CardStack>
-              <CardStackHeader>Active policies</CardStackHeader>
-              <CardStackContent>
-                {sorted.length === 0 ? (
-                  <CardStackEntry>
-                    <CardStackEntryContent>
-                      <CardStackEntryDescription>
-                        No policies yet. Tools fall back to their plugin's default approval
-                        behavior.
-                      </CardStackEntryDescription>
-                    </CardStackEntryContent>
-                  </CardStackEntry>
-                ) : (
-                  sorted.map((p) => {
-                    const committed = committedForOwner(p.owner);
-                    const j = committedIndex(p.id, p.owner);
-                    // Pending placeholder or only one committed row → no
-                    // reorder affordance.
-                    const reorderable = j !== -1 && committed.length > 1;
-                    return (
-                      <PolicyRow
-                        key={p.id}
-                        policy={{
-                          id: p.id,
-                          owner: p.owner,
-                          pattern: p.pattern,
-                          action: p.action,
-                        }}
-                        isFirst={!reorderable || j === 0}
-                        isLast={!reorderable || j === committed.length - 1}
-                        showOwnerLabel={ownerDisplay.showOwnerLabels}
-                        onRemove={() => handleRemove({ id: p.id, owner: p.owner })}
-                        onChangeAction={(action) =>
-                          handleUpdate({ id: p.id, owner: p.owner }, action)
-                        }
-                        onMoveUp={() =>
-                          handleMove(
-                            { id: p.id, owner: p.owner },
-                            positionAbove(p.id, p.owner),
-                            "up",
-                          )
-                        }
-                        onMoveDown={() =>
-                          handleMove(
-                            { id: p.id, owner: p.owner },
-                            positionBelow(p.id, p.owner),
-                            "down",
-                          )
-                        }
-                      />
-                    );
-                  })
-                )}
-              </CardStackContent>
-            </CardStack>
-          );
-        },
-      })}
+      {isAsyncResultLoading(policies) ? (
+        <div className="flex items-center gap-2 py-8">
+          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">Loading policies…</p>
+        </div>
+      ) : (
+        AsyncResult.match(policies, {
+          onInitial: () => (
+            <div className="flex items-center gap-2 py-8">
+              <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+              <p className="text-sm text-muted-foreground">Loading policies…</p>
+            </div>
+          ),
+          onFailure: () => (
+            <ErrorState message="Failed to load policies" onRetry={refreshPolicies} />
+          ),
+          onSuccess: ({ value }) => {
+            // Sort by owner rank (org outer, user inner), then position (lex
+            // order on fractional-indexing keys), tiebreaking on id so
+            // identical positions don't swap on refetch and
+            // `generateKeyBetween` never sees duplicate neighbor keys (which
+            // would throw). Optimistic placeholders carry `position: ""` so
+            // they sort to the top of their owner group.
+            const sorted = [...value].sort((a, b) => {
+              const ownerOrder = ownerRank(a.owner) - ownerRank(b.owner);
+              return ownerOrder === 0
+                ? comparePolicy(a.position, a.id, b.position, b.id)
+                : ownerOrder;
+            });
+            // Reorder math runs against committed rows only — placeholder rows
+            // (empty `position`) aren't valid keys for `generateKeyBetween` and
+            // aren't reorderable until the server confirms.
+            const committedForOwner = (owner: Owner) =>
+              sorted.filter((p) => p.owner === owner && p.position !== "");
+            const committedIndex = (id: string, owner: Owner): number =>
+              committedForOwner(owner).findIndex((p) => p.id === id);
+            const positionAbove = (id: string, owner: Owner): string => {
+              const committed = committedForOwner(owner);
+              const j = committedIndex(id, owner);
+              if (j <= 0) return generateKeyBetween(null, committed[0]!.position);
+              return j === 1
+                ? generateKeyBetween(null, committed[0]!.position)
+                : generateKeyBetween(committed[j - 2]!.position, committed[j - 1]!.position);
+            };
+            const positionBelow = (id: string, owner: Owner): string => {
+              const committed = committedForOwner(owner);
+              const j = committedIndex(id, owner);
+              if (j === -1 || j >= committed.length - 1)
+                return generateKeyBetween(committed[committed.length - 1]!.position, null);
+              return j === committed.length - 2
+                ? generateKeyBetween(committed[committed.length - 1]!.position, null)
+                : generateKeyBetween(committed[j + 1]!.position, committed[j + 2]!.position);
+            };
+            return (
+              <CardStack>
+                <CardStackHeader>Active policies</CardStackHeader>
+                <CardStackContent>
+                  {sorted.length === 0 ? (
+                    <CardStackEntry>
+                      <CardStackEntryContent>
+                        <CardStackEntryDescription>
+                          No policies yet. Tools fall back to their plugin's default approval
+                          behavior.
+                        </CardStackEntryDescription>
+                      </CardStackEntryContent>
+                    </CardStackEntry>
+                  ) : (
+                    sorted.map((p) => {
+                      const committed = committedForOwner(p.owner);
+                      const j = committedIndex(p.id, p.owner);
+                      // Pending placeholder or only one committed row → no
+                      // reorder affordance.
+                      const reorderable = j !== -1 && committed.length > 1;
+                      return (
+                        <PolicyRow
+                          key={p.id}
+                          policy={{
+                            id: p.id,
+                            owner: p.owner,
+                            pattern: p.pattern,
+                            action: p.action,
+                          }}
+                          isFirst={!reorderable || j === 0}
+                          isLast={!reorderable || j === committed.length - 1}
+                          showOwnerLabel={ownerDisplay.showOwnerLabels}
+                          onRemove={() => handleRemove({ id: p.id, owner: p.owner })}
+                          onChangeAction={(action) =>
+                            handleUpdate({ id: p.id, owner: p.owner }, action)
+                          }
+                          onMoveUp={() =>
+                            handleMove(
+                              { id: p.id, owner: p.owner },
+                              positionAbove(p.id, p.owner),
+                              "up",
+                            )
+                          }
+                          onMoveDown={() =>
+                            handleMove(
+                              { id: p.id, owner: p.owner },
+                              positionBelow(p.id, p.owner),
+                              "down",
+                            )
+                          }
+                        />
+                      );
+                    })
+                  )}
+                </CardStackContent>
+              </CardStack>
+            );
+          },
+        })
+      )}
     </PageContainer>
   );
 }

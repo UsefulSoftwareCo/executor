@@ -34,6 +34,8 @@ import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
 // the integration's per-owner connections; a tool's policy id is
@@ -138,7 +140,6 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       ...(oauthClient !== undefined ? { oauthClient } : {}),
     };
   }, [locationSearch]);
-
   useEffect(() => {
     if (accountHandoff && !isBuiltInIntegration) {
       setActiveTab("accounts");
@@ -446,52 +447,58 @@ export function IntegrationDetailPage(props: { namespace: string }) {
           value="tools"
           className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
         >
-          {AsyncResult.match(tools, {
-            onInitial: () => <IntegrationDetailSkeleton />,
-            onFailure: () => (
-              <div className="p-6 text-sm text-destructive">Failed to load tools</div>
-            ),
-            onSuccess: () => (
-              <div className="flex min-h-0 flex-1 overflow-hidden">
-                {/* Left: tool tree */}
-                <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
-                  <ToolTree
-                    tools={integrationTools}
-                    selectedToolId={selectedToolId}
-                    onSelect={setSelectedToolId}
-                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                    policies={sortedPolicies}
-                    groupByConnection={!isBuiltInIntegration}
-                  />
+          {isAsyncResultLoading(tools) ? (
+            <IntegrationDetailSkeleton />
+          ) : (
+            AsyncResult.match(tools, {
+              onInitial: () => <IntegrationDetailSkeleton />,
+              onFailure: () => (
+                <div className="p-6">
+                  <ErrorState message="Failed to load tools" onRetry={refreshTools} />
                 </div>
-
-                {/* Right: tool detail with Schema · TypeScript · Run tabs */}
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  {selectedTool && selectedAddress && selectedBareName ? (
-                    <ToolDetail
-                      address={selectedAddress}
-                      toolName={selectedTool.name}
-                      staticTool={selection?.static}
-                      policy={selectedTool.policy}
+              ),
+              onSuccess: () => (
+                <div className="flex min-h-0 flex-1 overflow-hidden">
+                  {/* Left: tool tree */}
+                  <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
+                    <ToolTree
+                      tools={integrationTools}
+                      selectedToolId={selectedToolId}
+                      onSelect={setSelectedToolId}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                      {...(!selection?.static && selectedBareName
-                        ? {
-                            integration: slug,
-                            runToolName: selectedBareName,
-                            connections: integrationConnections,
-                            initialConnectionName: selection?.connection ?? null,
-                          }
-                        : {})}
+                      policies={sortedPolicies}
+                      groupByConnection={!isBuiltInIntegration}
                     />
-                  ) : (
-                    <ToolDetailEmpty hasTools={integrationTools.length > 0} />
-                  )}
+                  </div>
+
+                  {/* Right: tool detail with Schema · TypeScript · Run tabs */}
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                    {selectedTool && selectedAddress && selectedBareName ? (
+                      <ToolDetail
+                        address={selectedAddress}
+                        toolName={selectedTool.name}
+                        staticTool={selection?.static}
+                        policy={selectedTool.policy}
+                        onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
+                        onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                        {...(!selection?.static && selectedBareName
+                          ? {
+                              integration: slug,
+                              runToolName: selectedBareName,
+                              connections: integrationConnections,
+                              initialConnectionName: selection?.connection ?? null,
+                            }
+                          : {})}
+                      />
+                    ) : (
+                      <ToolDetailEmpty hasTools={integrationTools.length > 0} />
+                    )}
+                  </div>
                 </div>
-              </div>
-            ),
-          })}
+              ),
+            })
+          )}
         </TabsContent>
       </Tabs>
 

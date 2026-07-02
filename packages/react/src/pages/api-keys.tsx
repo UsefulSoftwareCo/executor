@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Exit } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { toast } from "sonner";
 import { apiKeyWriteKeys } from "../api/reactivity-keys";
 import { trackEvent } from "../api/analytics";
@@ -21,6 +21,8 @@ import {
 import { Input } from "../components/input";
 import { Label } from "../components/label";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // ---------------------------------------------------------------------------
 // Shared API-keys page. Reads/writes the provider-neutral `/account/api-keys`
@@ -61,6 +63,7 @@ const defaultApiKeyName = (): string =>
 export function ApiKeysPage() {
   useExecutorDocumentTitle("API keys");
   const result = useAtomValue(apiKeysAtom);
+  const refreshApiKeys = useAtomRefresh(apiKeysAtom);
   const doCreate = useAtomSet(createApiKey, { mode: "promiseExit" });
   const doRevoke = useAtomSet(revokeApiKey, { mode: "promiseExit" });
   const [createOpen, setCreateOpen] = useState(false);
@@ -134,65 +137,69 @@ export function ApiKeysPage() {
         </p>
       </PageHeader>
 
-      {AsyncResult.match(result, {
-        onInitial: () => (
-          <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-            Loading API keys...
-          </div>
-        ),
-        onFailure: () => (
-          <div className="rounded-md border border-border bg-card p-6 text-sm text-destructive">
-            Failed to load API keys
-          </div>
-        ),
-        onSuccess: ({ value }) =>
-          value.apiKeys.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border bg-card p-8">
-              <h2 className="text-base font-semibold text-foreground">No API keys</h2>
-              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                Create a key and send it in the Authorization Bearer header.
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-md border border-border bg-card">
-              <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground md:grid-cols-[1.4fr_1fr_1fr_auto]">
-                <span>Name</span>
-                <span className="hidden md:block">Created</span>
-                <span className="hidden md:block">Last used</span>
-                <span className="text-right">Actions</span>
-              </div>
-              {value.apiKeys.map((key: ApiKeySummary) => (
-                <div
-                  key={key.id}
-                  className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 last:border-b-0 md:grid-cols-[1.4fr_1fr_1fr_auto]"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{key.name}</p>
-                    <p className="mt-1 font-mono text-xs text-muted-foreground">
-                      {key.obfuscatedValue}
-                    </p>
-                  </div>
-                  <p className="hidden text-sm text-muted-foreground md:block">
-                    {formatDate(key.createdAt)}
-                  </p>
-                  <p className="hidden text-sm text-muted-foreground md:block">
-                    {formatDate(key.lastUsedAt)}
-                  </p>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => handleRevoke(key)}
-                    disabled={revokingId === key.id}
-                    title={`Revoke ${key.name}`}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <span aria-hidden="true">×</span>
-                  </Button>
-                </div>
-              ))}
+      {isAsyncResultLoading(result) ? (
+        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
+          Loading API keys...
+        </div>
+      ) : (
+        AsyncResult.match(result, {
+          onInitial: () => (
+            <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
+              Loading API keys...
             </div>
           ),
-      })}
+          onFailure: () => (
+            <ErrorState message="Failed to load API keys" onRetry={refreshApiKeys} />
+          ),
+          onSuccess: ({ value }) =>
+            value.apiKeys.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border bg-card p-8">
+                <h2 className="text-base font-semibold text-foreground">No API keys</h2>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                  Create a key and send it in the Authorization Bearer header.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-md border border-border bg-card">
+                <div className="grid grid-cols-[1fr_auto] gap-4 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground md:grid-cols-[1.4fr_1fr_1fr_auto]">
+                  <span>Name</span>
+                  <span className="hidden md:block">Created</span>
+                  <span className="hidden md:block">Last used</span>
+                  <span className="text-right">Actions</span>
+                </div>
+                {value.apiKeys.map((key: ApiKeySummary) => (
+                  <div
+                    key={key.id}
+                    className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-border px-4 py-4 last:border-b-0 md:grid-cols-[1.4fr_1fr_1fr_auto]"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">{key.name}</p>
+                      <p className="mt-1 font-mono text-xs text-muted-foreground">
+                        {key.obfuscatedValue}
+                      </p>
+                    </div>
+                    <p className="hidden text-sm text-muted-foreground md:block">
+                      {formatDate(key.createdAt)}
+                    </p>
+                    <p className="hidden text-sm text-muted-foreground md:block">
+                      {formatDate(key.lastUsedAt)}
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => handleRevoke(key)}
+                      disabled={revokingId === key.id}
+                      title={`Revoke ${key.name}`}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <span aria-hidden="true">×</span>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ),
+        })
+      )}
 
       <Dialog open={createOpen} onOpenChange={closeCreate}>
         <DialogContent className="sm:max-w-[480px]">

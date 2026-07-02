@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { ToolAddress, effectivePolicyFromSorted } from "@executor-js/sdk/shared";
 
@@ -11,6 +11,8 @@ import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // Dynamic tool policy patterns are derived from the connection-aware address.
 // Static tools (for example Executor's own tools) use their address directly.
@@ -33,6 +35,7 @@ export function ToolsPage() {
   // Tools page is a flat policy tree, not an account-grouped view. Policy writes
   // still target a specific owner (Workspace default; see usePolicyActions).
   const tools = useAtomValue(toolsAllAtom);
+  const refreshTools = useAtomRefresh(toolsAllAtom);
   const policies = useAtomValue(policiesOptimisticAtom);
   const policyActions = usePolicyActions("org");
 
@@ -114,48 +117,56 @@ export function ToolsPage() {
         </div>
       </div>
 
-      {AsyncResult.match(tools, {
-        onInitial: () => <ToolsPageSkeleton />,
-        onFailure: () => <div className="p-6 text-sm text-destructive">Failed to load tools</div>,
-        onSuccess: () =>
-          summaries.length === 0 ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center">
-              <div className="text-center">
-                <p className="text-sm font-medium text-foreground/70">No tools registered</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Add an integration to start discovering tools.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 overflow-hidden">
-              <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
-                <ToolTree
-                  tools={summaries}
-                  selectedToolId={selectedToolId}
-                  onSelect={setSelectedToolId}
-                  onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                  onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                  policies={sortedPolicies}
-                />
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                {selectedTool && selectedAddress ? (
-                  <ToolDetail
-                    address={selectedAddress}
-                    toolName={selectedTool.name}
-                    staticTool={selection?.static}
-                    policy={selectedTool.policy}
-                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                  />
-                ) : (
-                  <ToolDetailEmpty hasTools={summaries.length > 0} />
-                )}
-              </div>
+      {isAsyncResultLoading(tools) ? (
+        <ToolsPageSkeleton />
+      ) : (
+        AsyncResult.match(tools, {
+          onInitial: () => <ToolsPageSkeleton />,
+          onFailure: () => (
+            <div className="p-6">
+              <ErrorState message="Failed to load tools" onRetry={refreshTools} />
             </div>
           ),
-      })}
+          onSuccess: () =>
+            summaries.length === 0 ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center">
+                <div className="text-center">
+                  <p className="text-sm font-medium text-foreground/70">No tools registered</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Add an integration to start discovering tools.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 overflow-hidden">
+                <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
+                  <ToolTree
+                    tools={summaries}
+                    selectedToolId={selectedToolId}
+                    onSelect={setSelectedToolId}
+                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
+                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                    policies={sortedPolicies}
+                  />
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                  {selectedTool && selectedAddress ? (
+                    <ToolDetail
+                      address={selectedAddress}
+                      toolName={selectedTool.name}
+                      staticTool={selection?.static}
+                      policy={selectedTool.policy}
+                      onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
+                      onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                    />
+                  ) : (
+                    <ToolDetailEmpty hasTools={summaries.length > 0} />
+                  )}
+                </div>
+              </div>
+            ),
+        })
+      )}
     </div>
   );
 }
