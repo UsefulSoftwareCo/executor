@@ -113,7 +113,7 @@ scenario(
       await step("Provider sends a signed-out browser to the OAuth callback", async () => {
         const response = await page.goto(callbackPath, { waitUntil: "networkidle" });
         expect(response?.status(), "the callback redirects into the login flow").toBe(200);
-        await page.getByText("Sign in to your instance").waitFor();
+        await page.getByRole("heading", { name: "Sign in" }).waitFor();
       });
 
       const loginUrl = new URL(page.url());

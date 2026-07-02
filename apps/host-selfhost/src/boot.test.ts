@@ -2,20 +2,26 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, expect, test } from "@effect/vitest";
+import { afterAll, beforeAll, expect, test } from "@effect/vitest";
 
 // Config reads the environment, so point it at a throwaway data dir before
 // importing the app graph.
 process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-boot-"));
 
-const { makeSelfHostTestApp, singleAdminIdentityLayer } = await import("./testing/test-app");
+let handler!: (request: Request) => Promise<Response>;
+let dispose: () => Promise<void> = async () => {};
 
-const { handler, dispose } = await makeSelfHostTestApp({
-  identity: singleAdminIdentityLayer({
-    userId: "admin",
-    organizationId: "default-org",
-    organizationName: "Default",
-  }),
+beforeAll(async () => {
+  const { makeSelfHostTestApp, singleAdminIdentityLayer } = await import("./testing/test-app");
+  const app = await makeSelfHostTestApp({
+    identity: singleAdminIdentityLayer({
+      userId: "admin",
+      organizationId: "default-org",
+      organizationName: "Default",
+    }),
+  });
+  handler = app.handler;
+  dispose = app.dispose;
 });
 afterAll(() => dispose());
 

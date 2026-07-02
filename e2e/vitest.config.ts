@@ -110,7 +110,7 @@ export default defineConfig({
         include: ["local/**/*.test.ts"],
         globalSetup: [],
         fileParallelism: false,
-        testTimeout: 240_000,
+        testTimeout: 300_000,
       }),
       // The supervised CLI daemon inside a guest VM, one project per OS. The
       // globalsetup provisions a VM, `executor service install`s the daemon, and

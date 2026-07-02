@@ -73,16 +73,12 @@ const makePostgresResource = (): DbResource => {
     sql,
     db: drizzle(sql, { schema: combinedSchema }) as DrizzleDb,
     close: () =>
-      Effect.sync(() => {
-        void Effect.runFork(
-          Effect.ignore(
-            Effect.tryPromise({
-              try: () => sql.end({ timeout: 0 }),
-              catch: (cause) => cause,
-            }),
-          ),
-        );
-      }),
+      Effect.ignore(
+        Effect.tryPromise({
+          try: () => sql.end({ timeout: 0 }),
+          catch: (cause) => cause,
+        }),
+      ),
   };
 };
 

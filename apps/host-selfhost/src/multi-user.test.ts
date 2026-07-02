@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, expect, test } from "@effect/vitest";
+import { afterAll, beforeAll, expect, test } from "@effect/vitest";
 import { connectionIdentifier } from "@executor-js/sdk/shared";
 
 import { mintInviteCode } from "./testing/mint-invite";
@@ -13,9 +13,15 @@ process.env.BETTER_AUTH_SECRET = "multi-user-secret-0123456789-abcdefghij-klmn";
 process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL = "admin@multi.test";
 process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD = "admin-pass-123456";
 
-const { makeSelfHostApiHandler } = await import("./app");
+let handler!: (request: Request) => Promise<Response>;
+let dispose: () => Promise<void> = async () => {};
 
-const { handler, dispose } = await makeSelfHostApiHandler();
+beforeAll(async () => {
+  const { makeSelfHostApiHandler } = await import("./app");
+  const app = await makeSelfHostApiHandler();
+  handler = app.handler;
+  dispose = app.dispose;
+});
 afterAll(() => dispose());
 
 const BASE = "http://localhost:4788";

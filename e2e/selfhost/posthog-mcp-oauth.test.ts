@@ -42,9 +42,9 @@ scenario(
             await page.getByText("OAuth metadata is discovered from this server").waitFor();
           });
 
-          await step("Add the PostHog MCP source", async () => {
+          await step("Add the PostHog MCP integration", async () => {
             await page.getByPlaceholder("e.g. Linear").fill(displayName);
-            await page.getByRole("button", { name: "Add source" }).click();
+            await page.getByRole("button", { name: "Add integration" }).click();
             await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, { timeout: 30_000 });
             const landedSlug = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);
             expect(landedSlug, "the add flow lands on the created integration").toBe(String(slug));

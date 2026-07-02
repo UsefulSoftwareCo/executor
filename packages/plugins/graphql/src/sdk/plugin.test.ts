@@ -32,6 +32,7 @@ import {
   makeGreetingGraphqlSchema,
   serveGraphqlFailureTestServer,
   serveGraphqlTestServer,
+  waitForRecordedRequests,
 } from "../testing";
 
 // removed: v1 secret browser-handoff, credential-binding scopes, usagesForSecret/
@@ -313,9 +314,8 @@ describe("graphqlPlugin real protocol server", () => {
         value: "unused",
       });
 
-      const afterConnect = yield* server.requests;
-      expect(afterConnect.some((request) => request.payload.query?.includes("__schema"))).toBe(
-        true,
+      yield* waitForRecordedRequests(server.requests, (requests) =>
+        requests.some((request) => request.payload.query?.includes("__schema")),
       );
 
       const tools = yield* executor.tools.list();
@@ -550,11 +550,12 @@ describe("graphqlPlugin real protocol server", () => {
         value: "connect-token",
       });
 
-      const afterConnect = yield* server.requests;
+      const afterConnect = yield* waitForRecordedRequests(server.requests, (requests) =>
+        requests.some((request) => request.payload.query?.includes("__schema")),
+      );
       const introspectionRequests = afterConnect.filter((request) =>
         request.payload.query?.includes("__schema"),
       );
-      expect(introspectionRequests.length).toBeGreaterThan(0);
       expect(introspectionRequests[0]?.headers.authorization).toBe("Bearer connect-token");
 
       // The introspected operations become per-connection tools.

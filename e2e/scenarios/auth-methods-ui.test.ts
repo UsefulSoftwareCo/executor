@@ -55,8 +55,8 @@ scenario(
           await headerName.waitFor();
         });
 
-        await step("Add the source with both methods", async () => {
-          await page.getByRole("button", { name: "Add source" }).click();
+        await step("Add the integration with both methods", async () => {
+          await page.getByRole("button", { name: "Add integration" }).click();
           // onComplete routes to the new integration's detail hub.
           await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, { timeout: 30_000 });
           await page.getByText("Connections").first().waitFor();
