@@ -923,10 +923,10 @@ function HealthCheckPickView(props: {
   const sample = healthy ? (result?.responseSample ?? []) : [];
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-5">
+    <div className="flex w-full min-w-0 flex-col gap-4 rounded-md border border-border/60 bg-muted/20 p-3">
       {/* Beat 1: which call proves the key works. */}
       <div className="space-y-2">
-        <StepHeader index={1} label="Pick a read-only call" htmlFor="hc-pick-operation" />
+        <Label htmlFor="hc-pick-operation">Test it against a read-only call</Label>
         <FreeformCombobox
           id="hc-pick-operation"
           value={operation}
@@ -1001,7 +1001,7 @@ function HealthCheckPickView(props: {
       {/* Beat 3: the real response — click the field that names the account. */}
       {healthy ? (
         <div className="space-y-2">
-          <StepHeader index={2} label="Pick the field that names this account" />
+          <Label>Pick the field that names this account</Label>
           <p className="text-xs text-muted-foreground">
             This is the response your key just got. The field you pick labels the connection and
             every future check.
@@ -1096,12 +1096,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
   const [hcOperation, setHcOperation] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
-  // "Check the key works" with no configured check swaps the WHOLE modal body
-  // into pick mode (the same view-swap the OAuth app registration uses): the
-  // user picks the probe operation, sees the real response, and picks the
-  // identity field there — a teachable moment in its own focused view, not a
-  // form crammed into the main modal.
-  const [hcPicking, setHcPicking] = useState(false);
+  // Credential methods run as a TWO-STEP wizard in the same modal: step 1 is
+  // the key + proving it works (the pick-a-call block expands inline, so the
+  // key stays visible and editable the whole time); step 2 is naming the
+  // connection and picking where it lives. No submodal.
+  const [wizardStep, setWizardStep] = useState<"validate" | "place">("validate");
+  // Whether the inline pick-a-call block is open (integration has no
+  // configured check and the user clicked "Check the key works").
+  const [hcExpanded, setHcExpanded] = useState(false);
   // The spec a healthy pick-mode probe saved (identity click upgrades it).
   const [savedInlineSpec, setSavedInlineSpec] = useState<HealthCheckSpec | null>(null);
   // Whether the display name was auto-filled from a probed identity (so a later
@@ -1433,6 +1435,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
     setDcrFailed(false);
     setOAuthFallbackProbe(null);
     setDcrFallbackMessage(null);
+    setWizardStep("validate");
+    setHcExpanded(false);
   };
 
   // A just-created custom method joins the in-session list and is auto-selected
@@ -1487,6 +1491,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
   });
 
   const canSubmit = method != null && !submitting && credentialPayloadOrigin !== null;
+  // The two-step wizard applies to credential methods only (OAuth connects in
+  // one act — its flow is unchanged).
+  const wizardActive = !isOAuth && !isNoAuth;
+  // Step 1 -> 2 wants the key present; validation is encouraged, not forced
+  // (some keys can't be probed — no candidates, no configured check).
+  const canContinue = credentialPayloadOrigin !== null;
 
   const handleSubmit = async () => {
     const payloadOrigin = createCredentialPayloadOrigin({
@@ -1640,8 +1650,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
       nameAutofilled.current = true;
       return value;
     });
-    // The pick is the last beat: return to the main modal with the verdict.
-    setHcPicking(false);
+    // The pick is the last beat: collapse the inline block, verdict stands.
+    setHcExpanded(false);
   };
 
   const handleOAuthConnect = async () => {
@@ -1946,44 +1956,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
               />
             </div>
           </>
-        ) : hcPicking ? (
-          <>
-            <DialogHeader className="border-b border-border/60 px-5 py-4">
-              <DialogTitle className="text-base">Check the key works</DialogTitle>
-              <DialogDescription className="text-sm">
-                Pick a read-only call from {integrationName} to test the key against — it becomes
-                this integration&apos;s health check.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="px-5 py-5">
-              <HealthCheckPickView
-                candidates={healthCheckCandidates}
-                selected={hcSelected}
-                operation={hcOperation}
-                onOperationChange={(next) => {
-                  setHcOperation(next);
-                  setHcArgs({});
-                  clearKeyCheck();
-                }}
-                args={hcArgs}
-                onArgChange={(name, value) => {
-                  setHcArgs((prev) => ({ ...prev, [name]: value }));
-                  clearKeyCheck();
-                }}
-                ready={hcPickReady && !validating}
-                validating={validating}
-                result={validationResult}
-                onProbe={() => void handlePickModeProbe()}
-                onPickIdentity={(path, value) => void handlePickIdentity(path, value)}
-                onDone={() => setHcPicking(false)}
-              />
-            </div>
-            <DialogFooter className="border-t border-border/60 px-5 py-4">
-              <Button type="button" variant="ghost" onClick={() => setHcPicking(false)}>
-                Back
-              </Button>
-            </DialogFooter>
-          </>
         ) : oauthRegistering && method?.kind === "oauth" ? (
           <>
             <DialogHeader className="border-b border-border/60 px-5 py-4">
@@ -2057,314 +2029,364 @@ function AddAccountModalView(props: AddAccountModalProps) {
             </DialogHeader>
 
             <div className="flex w-full min-w-0 flex-col gap-5">
-              {(!dcrActive || createCustomMethod) && (
-                <Tabs
-                  value={methodId}
-                  onValueChange={selectMethod}
-                  className="w-full min-w-0 max-w-full gap-0"
-                >
-                  <TabsList className="flex h-10 w-full min-w-0 max-w-full justify-start overflow-x-auto overflow-y-hidden rounded-b-none rounded-t-md border border-b-0 border-border/60 bg-muted/30 p-1 [scrollbar-width:thin]">
-                    <div className="flex w-max shrink-0 items-stretch gap-1">
-                      {allMethods.map((m: AuthMethod) => (
-                        <div
-                          key={m.id}
-                          className="group/method-tab relative flex h-8 shrink-0 items-stretch"
-                        >
-                          <TabsTrigger
-                            value={m.id}
-                            className={cn(
-                              "h-full max-w-64 shrink-0 justify-start px-3 text-sm font-medium",
-                              m.source === "custom" && removeCustomMethod ? "pr-8" : null,
-                            )}
+              {(!dcrActive || createCustomMethod) &&
+                (!wizardActive || wizardStep === "validate") && (
+                  <Tabs
+                    value={methodId}
+                    onValueChange={selectMethod}
+                    className="w-full min-w-0 max-w-full gap-0"
+                  >
+                    <TabsList className="flex h-10 w-full min-w-0 max-w-full justify-start overflow-x-auto overflow-y-hidden rounded-b-none rounded-t-md border border-b-0 border-border/60 bg-muted/30 p-1 [scrollbar-width:thin]">
+                      <div className="flex w-max shrink-0 items-stretch gap-1">
+                        {allMethods.map((m: AuthMethod) => (
+                          <div
+                            key={m.id}
+                            className="group/method-tab relative flex h-8 shrink-0 items-stretch"
                           >
-                            <span className="truncate">{m.label}</span>
-                          </TabsTrigger>
-                          {m.source === "custom" && removeCustomMethod ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`Remove ${m.label}`}
-                              tabIndex={methodId === m.id ? 0 : -1}
+                            <TabsTrigger
+                              value={m.id}
                               className={cn(
-                                "absolute right-1 top-1/2 z-10 size-6 -translate-y-1/2 rounded-full text-muted-foreground transition-opacity hover:bg-transparent hover:text-destructive",
-                                methodId === m.id ? "opacity-100" : "pointer-events-none opacity-0",
+                                "h-full max-w-64 shrink-0 justify-start px-3 text-sm font-medium",
+                                m.source === "custom" && removeCustomMethod ? "pr-8" : null,
                               )}
-                              onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void handleRemoveCustomMethod(m);
-                              }}
                             >
-                              <XIcon />
-                            </Button>
-                          ) : null}
-                        </div>
-                      ))}
-                      {createCustomMethod && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label="Add authentication method"
-                          className="h-8 shrink-0 rounded-md border border-transparent bg-transparent px-3 text-foreground/60 hover:bg-background/60 hover:text-foreground dark:hover:bg-input/30"
-                          onClick={() => setAddingMethod(true)}
-                        >
-                          <PlusIcon className="size-4" />
-                        </Button>
-                      )}
-                    </div>
-                  </TabsList>
+                              <span className="truncate">{m.label}</span>
+                            </TabsTrigger>
+                            {m.source === "custom" && removeCustomMethod ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={`Remove ${m.label}`}
+                                tabIndex={methodId === m.id ? 0 : -1}
+                                className={cn(
+                                  "absolute right-1 top-1/2 z-10 size-6 -translate-y-1/2 rounded-full text-muted-foreground transition-opacity hover:bg-transparent hover:text-destructive",
+                                  methodId === m.id
+                                    ? "opacity-100"
+                                    : "pointer-events-none opacity-0",
+                                )}
+                                onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void handleRemoveCustomMethod(m);
+                                }}
+                              >
+                                <XIcon />
+                              </Button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {createCustomMethod && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Add authentication method"
+                            className="h-8 shrink-0 rounded-md border border-transparent bg-transparent px-3 text-foreground/60 hover:bg-background/60 hover:text-foreground dark:hover:bg-input/30"
+                            onClick={() => setAddingMethod(true)}
+                          >
+                            <PlusIcon className="size-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </TabsList>
 
-                  {dcrActive ? null : (
-                    <TabsContent
-                      value={methodId}
-                      className={cn(
-                        "mt-0 min-w-0 space-y-5",
-                        // No-auth renders no fields, so skip the framed box that
-                        // would otherwise show up as an empty bordered panel.
-                        // Otherwise the panel attaches to the tab header above
-                        // (square top, rounded bottom).
-                        isNoAuth
-                          ? null
-                          : "rounded-b-md rounded-t-none border border-border/60 bg-muted/15 p-4",
-                      )}
-                    >
-                      {method?.placements && !isEnvMethod && singleInput && !singleCredentialAffix
-                        ? (() => {
-                            const shown = method.placements.filter((p) => p.carrier !== "env");
-                            return shown.length > 0 ? (
-                              <div className="flex flex-wrap gap-x-3.5 gap-y-1">
-                                {shown.map((placement, i: number) => (
-                                  <PlacementLine key={i} placement={placement} />
-                                ))}
-                              </div>
-                            ) : null;
-                          })()
-                        : null}
+                    {dcrActive ? null : (
+                      <TabsContent
+                        value={methodId}
+                        className={cn(
+                          "mt-0 min-w-0 space-y-5",
+                          // No-auth renders no fields, so skip the framed box that
+                          // would otherwise show up as an empty bordered panel.
+                          // Otherwise the panel attaches to the tab header above
+                          // (square top, rounded bottom).
+                          isNoAuth
+                            ? null
+                            : "rounded-b-md rounded-t-none border border-border/60 bg-muted/15 p-4",
+                        )}
+                      >
+                        {method?.placements && !isEnvMethod && singleInput && !singleCredentialAffix
+                          ? (() => {
+                              const shown = method.placements.filter((p) => p.carrier !== "env");
+                              return shown.length > 0 ? (
+                                <div className="flex flex-wrap gap-x-3.5 gap-y-1">
+                                  {shown.map((placement, i: number) => (
+                                    <PlacementLine key={i} placement={placement} />
+                                  ))}
+                                </div>
+                              ) : null;
+                            })()
+                          : null}
 
-                      {!isNoAuth && (
-                        <div className="space-y-2">
-                          <StepHeader index={1} label={authStepLabel} />
+                        {!isNoAuth && (
+                          <div className="space-y-2">
+                            <StepHeader index={1} label={authStepLabel} />
 
-                          {isOAuth && method ? (
-                            cimdActive ? (
-                              <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
-                                <p className="text-sm font-medium">No app registration</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {cimdConnecting
-                                    ? `Connecting to ${integrationName}…`
-                                    : `${integrationName} supports Client ID Metadata Document OAuth. We'll use this Executor host's public client metadata document and sign you in.`}
-                                </p>
-                              </div>
-                            ) : dcrActive ? (
-                              // Transparent DCR: no picker. We register an app for you and run
-                              // the OAuth flow with a single Connect click.
-                              <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
-                                <p className="text-sm font-medium">No app to choose</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {dcrConnecting
-                                    ? `Connecting to ${integrationName}…`
-                                    : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
-                                </p>
-                              </div>
-                            ) : oauthLoading ? (
-                              <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
-                            ) : (
-                              <div className="space-y-3">
-                                {dcrFallbackMessage ? (
-                                  <div
-                                    role="alert"
-                                    className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-3"
-                                  >
-                                    <p className="text-sm font-medium text-destructive">
-                                      Couldn&apos;t set up {integrationName} automatically
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {dcrFallbackMessage}
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">
-                                      Register an app below to connect.
-                                    </p>
-                                  </div>
-                                ) : null}
-                                {/* No registered app matched the integration's endpoint:
+                            {isOAuth && method ? (
+                              cimdActive ? (
+                                <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
+                                  <p className="text-sm font-medium">No app registration</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {cimdConnecting
+                                      ? `Connecting to ${integrationName}…`
+                                      : `${integrationName} supports Client ID Metadata Document OAuth. We'll use this Executor host's public client metadata document and sign you in.`}
+                                  </p>
+                                </div>
+                              ) : dcrActive ? (
+                                // Transparent DCR: no picker. We register an app for you and run
+                                // the OAuth flow with a single Connect click.
+                                <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
+                                  <p className="text-sm font-medium">No app to choose</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {dcrConnecting
+                                      ? `Connecting to ${integrationName}…`
+                                      : `${integrationName} supports automatic setup. We register an app for you and sign you in — no client ID or app to pick.`}
+                                  </p>
+                                </div>
+                              ) : oauthLoading ? (
+                                <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
+                              ) : (
+                                <div className="space-y-3">
+                                  {dcrFallbackMessage ? (
+                                    <div
+                                      role="alert"
+                                      className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-3"
+                                    >
+                                      <p className="text-sm font-medium text-destructive">
+                                        Couldn&apos;t set up {integrationName} automatically
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        {dcrFallbackMessage}
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        Register an app below to connect.
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {/* No registered app matched the integration's endpoint:
                         empty state + a prominent register CTA, and an opt-in
                         collapsed "use a different registered app" escape hatch. */}
-                                {oauthDisplayRegisterCTA && (
-                                  <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
-                                    <p className="text-sm font-medium">
-                                      No app for {integrationName} yet
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">
-                                      None of your registered apps target this integration's OAuth
-                                      endpoint. Register one to connect.
-                                    </p>
-                                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        onClick={() => setRegisteringOAuthClient(true)}
-                                      >
-                                        {dcrFallbackMessage
-                                          ? "Manually register an app"
-                                          : "Register app"}
-                                      </Button>
-                                      {oauthOtherApps.length > 0 && !showOtherApps ? (
+                                  {oauthDisplayRegisterCTA && (
+                                    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
+                                      <p className="text-sm font-medium">
+                                        No app for {integrationName} yet
+                                      </p>
+                                      <p className="text-xs text-muted-foreground">
+                                        None of your registered apps target this integration's OAuth
+                                        endpoint. Register one to connect.
+                                      </p>
+                                      <div className="flex flex-wrap items-center gap-2 pt-1">
                                         <Button
                                           type="button"
-                                          variant="outline"
                                           size="sm"
-                                          onClick={() => setShowOtherApps(true)}
+                                          onClick={() => setRegisteringOAuthClient(true)}
                                         >
-                                          Use another app
+                                          {dcrFallbackMessage
+                                            ? "Manually register an app"
+                                            : "Register app"}
                                         </Button>
+                                        {oauthOtherApps.length > 0 && !showOtherApps ? (
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => setShowOtherApps(true)}
+                                          >
+                                            Use another app
+                                          </Button>
+                                        ) : null}
+                                      </div>
+                                      {oauthOtherApps.length > 0 && showOtherApps ? (
+                                        <RadioGroup
+                                          value={selectedApp}
+                                          onValueChange={setPickedApp}
+                                          className="gap-2 pt-1"
+                                        >
+                                          {oauthOtherApps.map((app: OAuthClientOption) => (
+                                            <OAuthAppRadioRow
+                                              key={String(app.slug)}
+                                              app={app}
+                                              idPrefix="other-app"
+                                              variant="other"
+                                              showOwnerLabel={ownerDisplay.showOwnerLabels}
+                                              onManage={manageHandlersFor(app)}
+                                            />
+                                          ))}
+                                        </RadioGroup>
                                       ) : null}
                                     </div>
-                                    {oauthOtherApps.length > 0 && showOtherApps ? (
-                                      <RadioGroup
-                                        value={selectedApp}
-                                        onValueChange={setPickedApp}
-                                        className="gap-2 pt-1"
+                                  )}
+
+                                  {oauthApps.length > 0 && (
+                                    <RadioGroup
+                                      value={selectedApp}
+                                      onValueChange={setPickedApp}
+                                      className="gap-2"
+                                    >
+                                      {oauthApps.map((app: OAuthClientOption) => (
+                                        <OAuthAppRadioRow
+                                          key={String(app.slug)}
+                                          app={app}
+                                          idPrefix="app"
+                                          variant="matched"
+                                          showOwnerLabel={ownerDisplay.showOwnerLabels}
+                                          onManage={manageHandlersFor(app)}
+                                        />
+                                      ))}
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="h-auto justify-start gap-3 rounded-lg border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground hover:text-foreground"
+                                        onClick={() => setRegisteringOAuthClient(true)}
                                       >
-                                        {oauthOtherApps.map((app: OAuthClientOption) => (
-                                          <OAuthAppRadioRow
-                                            key={String(app.slug)}
-                                            app={app}
-                                            idPrefix="other-app"
-                                            variant="other"
-                                            showOwnerLabel={ownerDisplay.showOwnerLabels}
-                                            onManage={manageHandlersFor(app)}
-                                          />
-                                        ))}
-                                      </RadioGroup>
+                                        <PlusIcon className="size-4" />
+                                        Register a new app
+                                      </Button>
+                                    </RadioGroup>
+                                  )}
+                                </div>
+                              )
+                            ) : (
+                              <div className="space-y-2">
+                                <CredentialValueFields
+                                  inputs={credentialInputs}
+                                  singleInput={singleInput}
+                                  showLabels={isEnvMethod}
+                                  affix={singleCredentialAffix}
+                                  allowExternalProvider={!isEnvMethod}
+                                  values={values}
+                                  onValuesChange={(next) => {
+                                    setValues(next);
+                                    clearKeyCheck();
+                                  }}
+                                  origin={credentialOrigin}
+                                  onOriginChange={(next) => {
+                                    setCredentialOrigin(next);
+                                    if (next === "paste") setOnePasswordItemId("");
+                                    clearKeyCheck();
+                                  }}
+                                  onePasswordItemId={onePasswordItemId}
+                                  onOnePasswordItemIdChange={(next) => {
+                                    setOnePasswordItemId(next);
+                                    clearKeyCheck();
+                                  }}
+                                />
+                                {/* Check the key works before continuing. With a
+                              configured check it probes right here; with none
+                              the pick-a-call block expands INLINE below — the
+                              key stays visible and editable throughout. */}
+                                {canCheckKey ? (
+                                  <div className="flex flex-col gap-2">
+                                    <div className="flex items-center gap-3">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        loading={validating}
+                                        disabled={credentialPayloadOrigin === null}
+                                        onClick={() => {
+                                          if (hasHealthCheck) {
+                                            void handleValidate();
+                                          } else {
+                                            setHcExpanded(true);
+                                          }
+                                        }}
+                                      >
+                                        Check the key works
+                                      </Button>
+                                      {/* The expanded pick block carries its own
+                                    verdict next to Run it — don't say it twice. */}
+                                      {hcExpanded ? null : (
+                                        <KeyValidationStatus
+                                          validating={validating}
+                                          result={validationResult}
+                                        />
+                                      )}
+                                    </div>
+                                    {/* Gated on the expansion alone: probing
+                                  healthy saves the spec, which flips
+                                  hasHealthCheck mid-flow — the block must
+                                  outlive its own success until the pick. */}
+                                    {hcExpanded ? (
+                                      <HealthCheckPickView
+                                        candidates={healthCheckCandidates}
+                                        selected={hcSelected}
+                                        operation={hcOperation}
+                                        onOperationChange={(next) => {
+                                          setHcOperation(next);
+                                          setHcArgs({});
+                                          clearKeyCheck();
+                                        }}
+                                        args={hcArgs}
+                                        onArgChange={(name, value) => {
+                                          setHcArgs((prev) => ({ ...prev, [name]: value }));
+                                          clearKeyCheck();
+                                        }}
+                                        ready={hcPickReady && !validating}
+                                        validating={validating}
+                                        result={validationResult}
+                                        onProbe={() => void handlePickModeProbe()}
+                                        onPickIdentity={(path, value) =>
+                                          void handlePickIdentity(path, value)
+                                        }
+                                        onDone={() => setHcExpanded(false)}
+                                      />
                                     ) : null}
                                   </div>
-                                )}
-
-                                {oauthApps.length > 0 && (
-                                  <RadioGroup
-                                    value={selectedApp}
-                                    onValueChange={setPickedApp}
-                                    className="gap-2"
-                                  >
-                                    {oauthApps.map((app: OAuthClientOption) => (
-                                      <OAuthAppRadioRow
-                                        key={String(app.slug)}
-                                        app={app}
-                                        idPrefix="app"
-                                        variant="matched"
-                                        showOwnerLabel={ownerDisplay.showOwnerLabels}
-                                        onManage={manageHandlersFor(app)}
-                                      />
-                                    ))}
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      className="h-auto justify-start gap-3 rounded-lg border-dashed border-border/60 px-3 py-2.5 text-sm font-normal text-muted-foreground hover:text-foreground"
-                                      onClick={() => setRegisteringOAuthClient(true)}
-                                    >
-                                      <PlusIcon className="size-4" />
-                                      Register a new app
-                                    </Button>
-                                  </RadioGroup>
-                                )}
+                                ) : null}
                               </div>
-                            )
-                          ) : (
-                            <div className="space-y-2">
-                              <CredentialValueFields
-                                inputs={credentialInputs}
-                                singleInput={singleInput}
-                                showLabels={isEnvMethod}
-                                affix={singleCredentialAffix}
-                                allowExternalProvider={!isEnvMethod}
-                                values={values}
-                                onValuesChange={(next) => {
-                                  setValues(next);
-                                  clearKeyCheck();
-                                }}
-                                origin={credentialOrigin}
-                                onOriginChange={(next) => {
-                                  setCredentialOrigin(next);
-                                  if (next === "paste") setOnePasswordItemId("");
-                                  clearKeyCheck();
-                                }}
-                                onePasswordItemId={onePasswordItemId}
-                                onOnePasswordItemIdChange={(next) => {
-                                  setOnePasswordItemId(next);
-                                  clearKeyCheck();
-                                }}
-                              />
-                              {/* Check the key works before saving. With a
-                              configured check it probes right here; with none
-                              it swaps the modal into pick mode — the user
-                              chooses the probe and the identity field there. */}
-                              {canCheckKey ? (
-                                <div className="flex items-center gap-3">
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    loading={validating}
-                                    disabled={credentialPayloadOrigin === null}
-                                    onClick={() => {
-                                      if (hasHealthCheck) {
-                                        void handleValidate();
-                                      } else {
-                                        setHcPicking(true);
-                                      }
-                                    }}
-                                  >
-                                    Check the key works
-                                  </Button>
-                                  <KeyValidationStatus
-                                    validating={validating}
-                                    result={validationResult}
-                                  />
-                                </div>
-                              ) : null}
-                            </div>
-                          )}
-                          {isOAuth && oauthPopup.error ? (
-                            <p className="text-xs text-destructive">{oauthPopup.error}</p>
-                          ) : null}
-                        </div>
-                      )}
-                    </TabsContent>
-                  )}
-                </Tabs>
-              )}
+                            )}
+                            {isOAuth && oauthPopup.error ? (
+                              <p className="text-xs text-destructive">{oauthPopup.error}</p>
+                            ) : null}
+                          </div>
+                        )}
+                      </TabsContent>
+                    )}
+                  </Tabs>
+                )}
 
-              {/* The name is DERIVED — checking the key fills it from the
-              account's identity — so it comes after the credential, prefilled
-              rather than asked for. Editable for the rare override. */}
-              <div className="space-y-2">
-                <StepHeader
-                  index={2}
-                  label="Display name"
-                  hint={
-                    canCheckKey
-                      ? "filled from the account when you check the key"
-                      : "how you'll tell accounts apart"
-                  }
-                  htmlFor="connection-name"
-                />
-                <Input
-                  id="connection-name"
-                  placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
-                  value={label}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                    setLabel(e.target.value);
-                    // A hand-typed name takes over: a later probe won't overwrite it.
-                    nameAutofilled.current = false;
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">
-                  This connection will be callable as{" "}
-                  <span className="font-mono text-foreground">{String(callableName)}</span>.
-                </p>
-              </div>
+              {/* Step 2 (credential wizard): a one-line recap of what step 1
+              proved — the key's verdict travels with the user instead of
+              disappearing behind Back. */}
+              {wizardActive && wizardStep === "place" && validationResult ? (
+                <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <KeyValidationStatus validating={false} result={validationResult} />
+                </div>
+              ) : null}
+
+              {/* Step 2 (credential wizard): name it and place it. The name is
+              DERIVED — validating filled it from the account's identity — so
+              it arrives prefilled, editable for the rare override. OAuth
+              methods aren't a wizard; they show this alongside the picker. */}
+              {(!wizardActive || wizardStep === "place") && (
+                <div className="space-y-2">
+                  <StepHeader
+                    index={wizardActive ? 1 : 2}
+                    label="Display name"
+                    hint={
+                      canCheckKey && label.trim().length === 0
+                        ? "filled from the account when you check the key"
+                        : "how you'll tell accounts apart"
+                    }
+                    htmlFor="connection-name"
+                  />
+                  <Input
+                    id="connection-name"
+                    placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
+                    value={label}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                      setLabel(e.target.value);
+                      // A hand-typed name takes over: a later probe won't overwrite it.
+                      nameAutofilled.current = false;
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    This connection will be callable as{" "}
+                    <span className="font-mono text-foreground">{String(callableName)}</span>.
+                  </p>
+                </div>
+              )}
 
               {/* Connection saved-to. Hidden while registering a new OAuth app
               (the connection, and where it's saved, only exists once you
@@ -2373,9 +2395,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
               while a Personal app mints Personal only in cloud;
               for transparent DCR the app + connection land under the chosen
               owner; for a credential method it's the plain owner choice. */}
-              {showSavedToPicker && (
+              {showSavedToPicker && (!wizardActive || wizardStep === "place") && (
                 <div className="space-y-2">
-                  <StepHeader index={3} label="Connection saved to" />
+                  <StepHeader index={wizardActive ? 2 : 3} label="Connection saved to" />
                   <ConnectionOwnerDropdown
                     value={savedToOwner}
                     options={savedToOptions}
@@ -2431,10 +2453,30 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       ? "Connect"
                       : "Connect with OAuth"}
                 </Button>
-              ) : (
-                <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-                  {submitting ? "Adding…" : "Add connection"}
+              ) : wizardActive && wizardStep === "validate" ? (
+                <Button
+                  type="button"
+                  onClick={() => setWizardStep("place")}
+                  disabled={!canContinue || validating}
+                >
+                  Continue
                 </Button>
+              ) : (
+                <>
+                  {wizardActive ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setWizardStep("validate")}
+                      disabled={submitting}
+                    >
+                      Back
+                    </Button>
+                  ) : null}
+                  <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
+                    {submitting ? "Adding…" : "Add connection"}
+                  </Button>
+                </>
               )}
             </DialogFooter>
           </>

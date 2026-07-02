@@ -237,7 +237,7 @@ const largeSpec = (baseUrl: string, title = "Big API"): string => {
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · pick mode teaches the check: choose the call, see the response, pick the identity",
+  "Health checks (UI) · step 1 proves the key inline: choose the call, see the response, pick the identity",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -279,25 +279,32 @@ scenario(
               await dialog.getByRole("button", { name: "Check the key works" }).click();
             });
 
-            await step("Pick mode: choose the read-only call", async () => {
-              // No configured check, so the modal swaps into pick mode (the
-              // OAuth-register pattern): one focused view, one decision.
-              await page.getByRole("heading", { name: "Check the key works" }).waitFor();
+            await step("The pick block expands inline: choose the read-only call", async () => {
+              // No configured check, so the pick-a-call block expands BELOW the
+              // key — which stays visible and editable the whole time.
               await clickComboboxOption(page, "hc-pick-operation", "getMe");
               await page.getByRole("button", { name: "Run it", exact: true }).click();
-              await page.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
+              await dialog.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
+              // The key field is still on screen, editable, mid-flow.
+              await dialog.getByPlaceholder("token", { exact: true }).waitFor();
             });
 
             await step("The real response teaches the pick: click the identity", async () => {
-              await page.getByText("Pick the field that names this account").waitFor();
-              await page.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
-              // Picking returns to the main modal with the name derived.
-              await page.getByRole("heading", { name: /Add connection/ }).waitFor();
+              await dialog.getByText("Pick the field that names this account").waitFor();
+              await dialog.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
+            });
+
+            await step("Continue: step 2 is just name + where it lives", async () => {
+              await dialog.getByRole("button", { name: "Continue", exact: true }).click();
+              // Step 2 carries the verdict recap and the derived name; the key
+              // entry is behind Back, not lost.
+              await dialog.getByText(/Healthy · alice@example\.com/).waitFor();
               await page.waitForFunction(
                 () =>
                   (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
                   "alice@example.com",
               );
+              await dialog.getByRole("button", { name: "Add connection", exact: true }).waitFor();
             });
           });
 
@@ -773,8 +780,11 @@ scenario(
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
+              // A CONFIGURED check probes directly — no pick block.
               await dialog.getByRole("button", { name: "Check the key works" }).click();
-              await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
+              await dialog.getByText(/Healthy/).waitFor({ timeout: 30_000 });
+              // The derived name shows on step 2.
+              await dialog.getByRole("button", { name: "Continue", exact: true }).click();
               await page.waitForFunction(
                 (expected) =>
                   (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
