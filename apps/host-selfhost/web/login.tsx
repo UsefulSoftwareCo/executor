@@ -5,6 +5,7 @@ import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
 import { authClient } from "./auth-client";
+import { AuthLayout } from "./auth-layout";
 import { mcpAuthorizeResumeTarget, safeReturnTo } from "../src/auth/return-to";
 
 // Self-host login: email + password sign-in via Better Auth. On success we
@@ -54,12 +55,16 @@ export const LoginPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+    <AuthLayout>
       <div className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-6 shadow-sm">
-        <div className="space-y-1 text-center">
-          <h1 className="font-mono text-2xl tracking-tight text-foreground">Executor</h1>
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">
+            {mode === "signin" ? "Sign in" : "Join this instance"}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            {mode === "signin" ? "Sign in to your instance" : "Join with your invite code"}
+            {mode === "signin"
+              ? "Welcome back. Use your instance account."
+              : "Enter the invite code you were given."}
           </p>
         </div>
 
@@ -127,6 +132,6 @@ export const LoginPage = () => {
           </Button>
         </div>
       </div>
-    </div>
+    </AuthLayout>
   );
 };
