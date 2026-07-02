@@ -468,10 +468,12 @@ export const makeElicitationMcpServer = () => {
  */
 export const makeMutableCatalogMcpServer = (
   options: {
+    readonly name?: string;
     readonly initialToolName?: string;
     readonly renamedToolName?: string;
   } = {},
 ) => {
+  const serverName = options.name ?? "mutable-catalog-test-server";
   const initialToolName = options.initialToolName ?? "greet";
   const renamedToolName = options.renamedToolName ?? "greet_v2";
   const registrations = new Set<{ update: (updates: { name: string }) => void }>();
@@ -485,10 +487,7 @@ export const makeMutableCatalogMcpServer = (
   };
 
   const factory = () => {
-    const server = new McpServer(
-      { name: "mutable-catalog-test-server", version: "1.0.0" },
-      { capabilities: {} },
-    );
+    const server = new McpServer({ name: serverName, version: "1.0.0" }, { capabilities: {} });
     const registered = server.registerTool(
       currentToolName,
       {
