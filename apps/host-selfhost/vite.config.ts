@@ -34,8 +34,10 @@ const DEV_PORT = 5173;
 // via real env for anything you care about (esp. BETTER_AUTH_SECRET in prod).
 process.env.EXECUTOR_DATA_DIR ??= fileURLToPath(new URL("./.executor-dev/", import.meta.url));
 process.env.BETTER_AUTH_SECRET ??= "executor-selfhost-dev-secret-change-me-0123456789";
-process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL ??= "admin@example.com";
-process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD ??= "executor-dev-admin";
+if (process.env.EXECUTOR_DEV_SEED_ADMIN === "1") {
+  process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL ??= "admin@example.com";
+  process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD ??= "executor-dev-admin";
+}
 process.env.EXECUTOR_WEB_BASE_URL ??= `http://localhost:${DEV_PORT}`;
 
 // Dev-only: forward /api, /mcp, /docs to the self-host Effect handler in-process

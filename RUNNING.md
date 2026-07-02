@@ -30,6 +30,9 @@ develop on its `main`, publish a bump, then bump the dependency here. The
 - Self-host boots standalone with just env vars — see
   `e2e/setup/selfhost.globalsetup.ts` for the canonical recipe (data dir,
   bootstrap admin email/password, base URL, `EXECUTOR_ALLOW_LOCAL_NETWORK`)
+- Self-host Vite dev shows first-run setup by default. Set
+  `EXECUTOR_DEV_SEED_ADMIN=1` to seed `admin@example.com` /
+  `executor-dev-admin` instead.
 - Cloud needs WorkOS + Autumn; for a no-.env boot, point it at emulators —
   see `e2e/setup/cloud.globalsetup.ts` for the canonical recipe (the real
   SDKs against emulated services, PGlite dev DB)
