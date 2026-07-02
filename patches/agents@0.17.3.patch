@@ -1,0 +1,323 @@
+diff --git a/dist/mcp/index.js b/dist/mcp/index.js
+index 1edcf0c8..e65cd346 100644
+--- a/dist/mcp/index.js
++++ b/dist/mcp/index.js
+@@ -32,9 +32,9 @@ const KEEPALIVE_FRAME = ": keepalive\n\n";
+ * Start an SSE keepalive on `writer`. Returns a `clearInterval` handle
+ * that the stream cleanup must invoke when the stream closes.
+ */
+-function startKeepalive(writer, encoder) {
++function startKeepalive(writeFrame, encoder) {
+ 	const handle = setInterval(() => {
+-		writer.write(encoder.encode(KEEPALIVE_FRAME)).catch(() => clearInterval(handle));
++		writeFrame(encoder.encode(KEEPALIVE_FRAME));
+ 	}, KEEPALIVE_INTERVAL_MS);
+ 	return handle;
+ }
+@@ -180,10 +180,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+ 					});
+ 					return new Response(body, { status: 404 });
+ 				}
+-				const { readable, writable } = new TransformStream();
+-				const writer = writable.getWriter();
+-				const encoder = new TextEncoder();
+-				const existingHeaders = {};
++					const { readable, writable } = new TransformStream();
++					const writer = writable.getWriter();
++					const encoder = new TextEncoder();
++					const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
++					let __pendingBytes = 0;
++					let __writeChain = Promise.resolve();
++					let __sseClosed = false;
++					let keepAlive;
++					const existingHeaders = {};
+ 				request.headers.forEach((value, key) => {
+ 					existingHeaders[key] = value;
+ 				});
+@@ -206,45 +211,68 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+ 						jsonrpc: "2.0"
+ 					});
+ 					return new Response(body, { status: 500 });
+-				}
+-				ws.accept();
+-				if (messages.every((msg) => isJSONRPCNotification(msg) || isJSONRPCResultResponse(msg))) {
+-					ws.close();
+-					return new Response(null, {
++					}
++					ws.accept();
++					const __forwardSse = (frame) => {
++						if (__sseClosed) return __writeChain;
++						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
++							__sseClosed = true;
++							try {
++								clearInterval(keepAlive);
++							} catch {}
++							try {
++								ws.close(1013, "SSE client not draining");
++							} catch {}
++							writer.abort(new Error("SSE client not draining")).catch(() => {});
++							return Promise.resolve();
++						}
++						__pendingBytes += frame.byteLength;
++						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {}).finally(() => {
++							__pendingBytes -= frame.byteLength;
++						});
++						return __writeChain;
++					};
++					keepAlive = startKeepalive(__forwardSse, encoder);
++					if (messages.every((msg) => isJSONRPCNotification(msg) || isJSONRPCResultResponse(msg))) {
++						clearInterval(keepAlive);
++						ws.close();
++						return new Response(null, {
+ 						headers: corsHeaders(request, options.corsOptions),
+ 						status: 202
+-					});
+-				}
+-				const keepAlive = startKeepalive(writer, encoder);
+-				ws.addEventListener("message", (event) => {
++						});
++					}
++					ws.addEventListener("message", (event) => {
+ 					async function onMessage(event) {
+ 						try {
+-							const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+-							const message = JSON.parse(data);
+-							if (message.type !== "cf_mcp_agent_event") return;
+-							await writer.write(encoder.encode(message.event));
+-							if (message.close) {
+-								clearInterval(keepAlive);
+-								ws?.close();
+-								await writer.close().catch(() => {});
+-							}
++								const data = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
++								const message = JSON.parse(data);
++								if (message.type !== "cf_mcp_agent_event") return;
++								const writePromise = __forwardSse(encoder.encode(message.event));
++								if (message.close) {
++									clearInterval(keepAlive);
++									ws?.close();
++									await writePromise;
++									await writer.close().catch(() => {});
++								}
+ 						} catch (error) {
+ 							console.error("Error forwarding message to SSE:", error);
+ 						}
+ 					}
+ 					onMessage(event).catch(console.error);
+ 				});
+-				ws.addEventListener("error", (error) => {
+-					async function onError(_error) {
+-						clearInterval(keepAlive);
+-						await writer.close().catch(() => {});
++					ws.addEventListener("error", (error) => {
++						async function onError(_error) {
++							__sseClosed = true;
++							clearInterval(keepAlive);
++							await writer.close().catch(() => {});
+ 					}
+ 					onError(error).catch(console.error);
+ 				});
+-				ws.addEventListener("close", () => {
+-					async function onClose() {
+-						clearInterval(keepAlive);
+-						await writer.close().catch(() => {});
++					ws.addEventListener("close", () => {
++						async function onClose() {
++							__sseClosed = true;
++							clearInterval(keepAlive);
++							await writer.close().catch(() => {});
+ 					}
+ 					onClose().catch(console.error);
+ 				});
+@@ -279,10 +307,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+ 					id: null,
+ 					jsonrpc: "2.0"
+ 				}), { status: 400 });
+-				const { readable, writable } = new TransformStream();
+-				const writer = writable.getWriter();
+-				const encoder = new TextEncoder();
+-				const agent = await getAgentByName(namespace, `streamable-http:${sessionId}`, {
++					const { readable, writable } = new TransformStream();
++					const writer = writable.getWriter();
++					const encoder = new TextEncoder();
++					const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
++					let __pendingBytes = 0;
++					let __writeChain = Promise.resolve();
++					let __sseClosed = false;
++					let keepAlive;
++					const agent = await getAgentByName(namespace, `streamable-http:${sessionId}`, {
+ 					props: ctx.props,
+ 					jurisdiction: options.jurisdiction
+ 				});
+@@ -306,27 +339,51 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+ 				if (!ws) {
+ 					await writer.close();
+ 					return new Response("Failed to establish WS to DO", { status: 500 });
+-				}
+-				ws.accept();
+-				ws.addEventListener("message", (event) => {
++					}
++					ws.accept();
++					const __forwardSse = (frame) => {
++						if (__sseClosed) return __writeChain;
++						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
++							__sseClosed = true;
++							try {
++								clearInterval(keepAlive);
++							} catch {}
++							try {
++								ws.close(1013, "SSE client not draining");
++							} catch {}
++							writer.abort(new Error("SSE client not draining")).catch(() => {});
++							return Promise.resolve();
++						}
++						__pendingBytes += frame.byteLength;
++						__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {}).finally(() => {
++							__pendingBytes -= frame.byteLength;
++						});
++						return __writeChain;
++					};
++					keepAlive = startKeepalive(__forwardSse, encoder);
++					ws.addEventListener("message", (event) => {
+ 					try {
+ 						async function onMessage(ev) {
+-							const data = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+-							const message = JSON.parse(data);
+-							if (message.type !== "cf_mcp_agent_event") return;
+-							await writer.write(encoder.encode(message.event));
+-						}
++								const data = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
++								const message = JSON.parse(data);
++								if (message.type !== "cf_mcp_agent_event") return;
++								__forwardSse(encoder.encode(message.event));
++							}
+ 						onMessage(event).catch(console.error);
+ 					} catch (e) {
+ 						console.error("Error forwarding message to SSE:", e);
+ 					}
+-				});
+-				ws.addEventListener("error", () => {
+-					writer.close().catch(() => {});
+-				});
+-				ws.addEventListener("close", () => {
+-					writer.close().catch(() => {});
+-				});
++					});
++					ws.addEventListener("error", () => {
++						__sseClosed = true;
++						clearInterval(keepAlive);
++						writer.close().catch(() => {});
++					});
++					ws.addEventListener("close", () => {
++						__sseClosed = true;
++						clearInterval(keepAlive);
++						writer.close().catch(() => {});
++					});
+ 				return new Response(readable, {
+ 					headers: {
+ 						"Cache-Control": "no-cache",
+@@ -389,10 +446,15 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+ 		const url = new URL(request.url);
+ 		if (request.method === "GET" && basePattern.test(url)) {
+ 			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
+-			const { readable, writable } = new TransformStream();
+-			const writer = writable.getWriter();
+-			const encoder = new TextEncoder();
+-			const endpointUrl = new URL(request.url);
++				const { readable, writable } = new TransformStream();
++				const writer = writable.getWriter();
++				const encoder = new TextEncoder();
++				const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
++				let __pendingBytes = 0;
++				let __writeChain = Promise.resolve();
++				let __sseClosed = false;
++				let keepAlive;
++				const endpointUrl = new URL(request.url);
+ 			endpointUrl.pathname = encodeURI(`${basePath}/message`);
+ 			endpointUrl.searchParams.set("sessionId", sessionId);
+ 			const endpointMessage = `event: endpoint\ndata: ${endpointUrl.pathname + endpointUrl.search + endpointUrl.hash}\n\n`;
+@@ -414,35 +476,59 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+ 				console.error("Failed to establish WebSocket connection");
+ 				await writer.close();
+ 				return new Response("Failed to establish WebSocket connection", { status: 500 });
+-			}
+-			ws.accept();
+-			ws.addEventListener("message", (event) => {
++				}
++				ws.accept();
++				const __forwardSse = (frame) => {
++					if (__sseClosed) return __writeChain;
++					if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
++						__sseClosed = true;
++						try {
++							clearInterval(keepAlive);
++						} catch {}
++						try {
++							ws.close(1013, "SSE client not draining");
++						} catch {}
++						writer.abort(new Error("SSE client not draining")).catch(() => {});
++						return Promise.resolve();
++					}
++					__pendingBytes += frame.byteLength;
++					__writeChain = __writeChain.then(() => writer.write(frame)).catch(() => {}).finally(() => {
++						__pendingBytes -= frame.byteLength;
++					});
++					return __writeChain;
++				};
++				keepAlive = startKeepalive(__forwardSse, encoder);
++				ws.addEventListener("message", (event) => {
+ 				async function onMessage(event) {
+ 					try {
+ 						const message = JSON.parse(event.data);
+-						const result = JSONRPCMessageSchema.safeParse(message);
+-						if (!result.success) return;
+-						const messageText = `event: message\ndata: ${JSON.stringify(result.data)}\n\n`;
+-						await writer.write(encoder.encode(messageText));
+-					} catch (error) {
++							const result = JSONRPCMessageSchema.safeParse(message);
++							if (!result.success) return;
++							const messageText = `event: message\ndata: ${JSON.stringify(result.data)}\n\n`;
++							__forwardSse(encoder.encode(messageText));
++						} catch (error) {
+ 						console.error("Error forwarding message to SSE:", error);
+ 					}
+ 				}
+ 				onMessage(event).catch(console.error);
+ 			});
+-			ws.addEventListener("error", (error) => {
+-				async function onError(_error) {
+-					try {
+-						await writer.close();
+-					} catch (_e) {}
++				ws.addEventListener("error", (error) => {
++					async function onError(_error) {
++						try {
++							__sseClosed = true;
++							clearInterval(keepAlive);
++							await writer.close();
++						} catch (_e) {}
+ 				}
+ 				onError(error).catch(console.error);
+ 			});
+-			ws.addEventListener("close", () => {
+-				async function onClose() {
+-					try {
+-						await writer.close();
+-					} catch (error) {
++				ws.addEventListener("close", () => {
++					async function onClose() {
++						try {
++							__sseClosed = true;
++							clearInterval(keepAlive);
++							await writer.close();
++						} catch (error) {
+ 						console.error("Error closing SSE connection:", error);
+ 					}
+ 				}
+@@ -1700,4 +1786,4 @@ McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
+ //#endregion
+ export { DurableObjectEventStore, ElicitRequestSchema, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
+ 
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map

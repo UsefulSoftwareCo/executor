@@ -28,7 +28,7 @@
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.16.2",
+    "agents": "^0.17.3",
     "effect": "catalog:"
   },
   "devDependencies": {
