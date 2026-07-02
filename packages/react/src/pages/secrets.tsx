@@ -17,6 +17,7 @@ import {
 } from "../components/card-stack";
 import { Badge } from "../components/badge";
 import { PageContainer, PageHeader } from "../components/page";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // ---------------------------------------------------------------------------
 // Providers page (v2) — repurposed from the v1 Secrets page.
@@ -41,6 +42,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 const providerLabel = (key: string): string => PROVIDER_LABELS[key] ?? key;
 
 export function SecretsPage(props: { showProviderInfo?: boolean }) {
+  useExecutorDocumentTitle("Providers");
   const showProviderInfo = props.showProviderInfo ?? true;
   const secretProviderPlugins = useSecretProviderPlugins();
   const providers = useAtomValue(providersAtom);

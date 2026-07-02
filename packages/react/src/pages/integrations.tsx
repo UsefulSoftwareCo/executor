@@ -40,6 +40,7 @@ import {
 } from "../components/integration-favicon";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
   openapi: "openapi",
@@ -64,6 +65,7 @@ const bestDetection = (
 // ---------------------------------------------------------------------------
 
 export function IntegrationsPage() {
+  useExecutorDocumentTitle("Integrations");
   const integrations = useAtomValue(integrationsOptimisticAtom);
   const [connectOpen, setConnectOpen] = useState(false);
 

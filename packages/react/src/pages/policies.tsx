@@ -56,6 +56,7 @@ import {
   SelectValue,
 } from "../components/select";
 import { Label } from "../components/label";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // Owner guardrail ordering: org rules are the outer guardrail (rank 0), user
 // rules are inner (rank 1). Mirrors server-side resolution where the most
@@ -281,6 +282,7 @@ function PolicyRow(props: {
 // ---------------------------------------------------------------------------
 
 export function PoliciesPage() {
+  useExecutorDocumentTitle("Policies");
   const policies = useAtomValue(policiesOptimisticAtom);
   const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
   const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });

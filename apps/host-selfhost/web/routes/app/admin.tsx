@@ -10,6 +10,7 @@ import { CopyButton } from "@executor-js/react/components/copy-button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
+import { useExecutorDocumentTitle } from "@executor-js/react/lib/document-title";
 import {
   orgMembersAtom,
   removeMember,
@@ -29,6 +30,7 @@ const ROLES = ["member", "admin"] as const;
 // are the self-host join mechanism. The API gates to owner/admin, so a
 // non-admin who opens this just sees load failures.
 function AdminPage() {
+  useExecutorDocumentTitle("Admin");
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-10 px-6 py-10 lg:px-8 lg:py-14">

@@ -33,6 +33,7 @@ import { usePolicyActions } from "../hooks/use-policy-actions";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
 // the integration's per-owner connections; a tool's policy id is
@@ -97,6 +98,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   }, [namespace]);
 
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
+  useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
   const canRefresh = integrationData?.canRefresh ?? false;

@@ -7,6 +7,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ResumeApprovalPage, ResumeApprovalPageView } from "../pages/resume-approval";
 import { getExecutorServerAuthorizationHeader } from "../api/server-connection";
 import type { ElicitationAction } from "../components/elicitation-approval";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 const SearchParams = Schema.toStandardSchemaV1(
   Schema.Struct({
@@ -143,6 +144,7 @@ export const Route = createFileRoute("/{-$orgSlug}/resume/$executionId")({
 });
 
 function RouteComponent() {
+  useExecutorDocumentTitle("Resume");
   const { executionId } = Route.useParams();
   const { mcp_session_id: mcpSessionId } = Route.useSearch();
   if (mcpSessionId) {

@@ -10,6 +10,7 @@ import { ToolTree, type ToolSummary } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // Dynamic tool policy patterns are derived from the connection-aware address.
 // Static tools (for example Executor's own tools) use their address directly.
@@ -26,6 +27,7 @@ const policyId = (tool: ToolRow): string =>
   tool.static ? String(tool.address) : `${tool.integration}.${tool.name}`;
 
 export function ToolsPage() {
+  useExecutorDocumentTitle("Tools");
   // Merged across BOTH owners (omit-owner read). The page dedupes to one row per
   // `<integration>.<tool>` policy id, so owner is irrelevant here — the global
   // Tools page is a flat policy tree, not an account-grouped view. Policy writes

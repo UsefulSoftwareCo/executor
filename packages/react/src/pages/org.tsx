@@ -46,6 +46,7 @@ import {
 } from "../api/account-atoms";
 import { useAuth } from "../multiplayer/auth-context";
 import { messageFromExit } from "../api/error-reporting";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // ---------------------------------------------------------------------------
 // Shared organization page — members + roles + invites + org name, over the
@@ -138,6 +139,7 @@ export function OrgPage(props: {
   // so it never reaches this and can omit it.
   upgradeAction?: React.ReactNode;
 }) {
+  useExecutorDocumentTitle("Organization");
   const auth = useAuth();
   const organizationName =
     auth.status === "authenticated" ? (auth.organization?.name ?? "Organization") : "Organization";

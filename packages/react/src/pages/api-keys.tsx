@@ -20,6 +20,7 @@ import {
 } from "../components/dialog";
 import { Input } from "../components/input";
 import { Label } from "../components/label";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // ---------------------------------------------------------------------------
 // Shared API-keys page. Reads/writes the provider-neutral `/account/api-keys`
@@ -58,6 +59,7 @@ const defaultApiKeyName = (): string =>
   }).format(new Date())}`;
 
 export function ApiKeysPage() {
+  useExecutorDocumentTitle("API keys");
   const result = useAtomValue(apiKeysAtom);
   const doCreate = useAtomSet(createApiKey, { mode: "promiseExit" });
   const doRevoke = useAtomSet(revokeApiKey, { mode: "promiseExit" });
