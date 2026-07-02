@@ -76,15 +76,15 @@ export const withLocalServer = (
                   return TOKEN_URL.test(current.text);
                 },
                 // A cold `executor web` runs vite's optimizeDeps before it prints
-                // the URL; 180s is generous headroom over the warm ~3s boot. Kept
-                // BELOW each scenario's test timeout (240s) so that on a slow or
+                // the URL; 240s leaves headroom for isolated CI cold boots. Kept
+                // BELOW each scenario's test timeout (300s) so that on a slow or
                 // wedged boot THIS error surfaces, with the terminal tail, rather
                 // than racing vitest's generic timeout at the same deadline.
-                { timeoutMs: 180_000 },
+                { timeoutMs: 240_000 },
               )
               .catch((cause: unknown) => {
                 throw new Error(
-                  `executor web --foreground printed no ?_token URL within 180s (${String(cause)}):\n${lastText.slice(-600)}`,
+                  `executor web --foreground printed no ?_token URL within 240s (${String(cause)}):\n${lastText.slice(-600)}`,
                 );
               });
             const url = TOKEN_URL.exec(snapshot.text)?.[0];
