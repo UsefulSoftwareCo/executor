@@ -70,18 +70,25 @@ export const runSqliteOAuthClientGcMigration = (
     );
     const rows = rowsResult.rows;
 
-    // Count connections that reference each (tenant, owner, slug) so the GC
-    // decision is conjunctive. When the connection table is absent (impossible
-    // in practice, but keeps this total) every DCR row counts as orphaned.
-    const referencingCount = (
-      row: Record<string, unknown>,
-    ): Effect.Effect<number, DataMigrationError> =>
-      hasConnections
-        ? execute(client, {
-            sql: "SELECT COUNT(*) AS count FROM connection WHERE tenant = ? AND oauth_client_owner = ? AND oauth_client = ?",
-            args: [row.tenant ?? null, row.owner ?? null, row.slug ?? null],
-          }).pipe(Effect.map((result) => Number(result.rows[0]?.count ?? 0)))
-        : Effect.succeed(0);
+    // Count connections that reference each (tenant, owner, slug) in ONE grouped
+    // pass (not a COUNT per oauth_client row), so the GC decision is conjunctive
+    // without an N+1. When the connection table is absent (impossible in
+    // practice, but keeps this total) every DCR row counts as orphaned.
+    const referenceKey = (tenant: unknown, owner: unknown, slug: unknown): string =>
+      `${String(tenant ?? "")} ${String(owner ?? "")} ${String(slug ?? "")}`;
+    const referenceCounts = new Map<string, number>();
+    if (hasConnections) {
+      const countsResult = yield* execute(
+        client,
+        "SELECT tenant, oauth_client_owner, oauth_client, COUNT(*) AS count FROM connection WHERE oauth_client IS NOT NULL GROUP BY tenant, oauth_client_owner, oauth_client",
+      );
+      for (const countRow of countsResult.rows) {
+        referenceCounts.set(
+          referenceKey(countRow.tenant, countRow.oauth_client_owner, countRow.oauth_client),
+          Number(countRow.count ?? 0),
+        );
+      }
+    }
 
     const applyAll = Effect.gen(function* () {
       let deleted = 0;
@@ -90,7 +97,7 @@ export const runSqliteOAuthClientGcMigration = (
       for (const row of rows) {
         if (!isDcrClassifiedRow(row)) continue; // manual apps: never touched.
 
-        const count = yield* referencingCount(row);
+        const count = referenceCounts.get(referenceKey(row.tenant, row.owner, row.slug)) ?? 0;
         const decision = classifyOAuthClientGc(row, count);
 
         if (decision.action === "delete") {

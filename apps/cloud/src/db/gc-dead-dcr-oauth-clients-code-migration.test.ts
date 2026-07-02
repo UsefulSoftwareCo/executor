@@ -7,9 +7,9 @@ import { gcDeadDcrOAuthClientsMigration } from "../../scripts/code-migrations/gc
 import type { CodeMigrationContext, CodeMigrationSql } from "../../scripts/code-migrations/runner";
 
 // Cloud counterpart of the local libSQL GC migration test. A small in-memory
-// fake models the two SQL shapes the migration issues (the oauth_client SELECT,
-// the per-row connection COUNT, and the DELETE/UPDATE mutations) so the same
-// shared decision matrix is proven end-to-end over the Postgres wiring.
+// fake models the SQL shapes the migration issues (the oauth_client SELECT, the
+// single GROUPED connection-count query, and the DELETE/UPDATE mutations) so the
+// same shared decision matrix is proven end-to-end over the Postgres wiring.
 
 interface OAuthClientRow {
   readonly tenant: string;
@@ -27,7 +27,6 @@ const makeFake = (input: {
   /** connection count keyed by `${tenant}|${owner}|${slug}`. */
   readonly references: Record<string, number>;
 }) => {
-  const key = (tenant: string, owner: string, slug: string) => `${tenant}|${owner}|${slug}`;
   const deletes: string[] = [];
   const updates: { slug: string; issuer: string }[] = [];
 
@@ -37,11 +36,13 @@ const makeFake = (input: {
       if (q.startsWith("SELECT") && q.includes("FROM oauth_client")) {
         return Promise.resolve(input.rows as never);
       }
-      if (q.startsWith("SELECT COUNT(*)") && q.includes("FROM connection")) {
-        const [tenant, owner, slug] = params as [string, string, string];
-        return Promise.resolve([
-          { count: input.references[key(tenant, owner, slug)] ?? 0 },
-        ] as never);
+      if (q.startsWith("SELECT") && q.includes("FROM connection")) {
+        // One grouped pass: emit a row per referenced (tenant, owner, slug).
+        const grouped = Object.entries(input.references).map(([composite, count]) => {
+          const [tenant, owner, slug] = composite.split("|");
+          return { tenant, oauth_client_owner: owner, oauth_client: slug, count };
+        });
+        return Promise.resolve(grouped as never);
       }
       if (q.startsWith("DELETE FROM oauth_client")) {
         const [tenant, owner, slug] = params as [string, string, string];
