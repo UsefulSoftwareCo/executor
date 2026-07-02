@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { baseUrlFromSpecInput } from "./AddOpenApiSource";
+import { baseUrlFromSpecInput, openApiPreviewFailureMessage } from "./AddOpenApiSource";
 
 describe("baseUrlFromSpecInput", () => {
   it("defaults URL-hosted specs to their origin", () => {
@@ -11,5 +11,19 @@ describe("baseUrlFromSpecInput", () => {
 
   it("does not default raw specs", () => {
     expect(baseUrlFromSpecInput('{"openapi":"3.0.0"}')).toBe("");
+  });
+});
+
+describe("openApiPreviewFailureMessage", () => {
+  it("uses the server message when one is available", () => {
+    expect(openApiPreviewFailureMessage("bad yaml")).toBe(
+      "Couldn't load or parse this spec: bad yaml",
+    );
+  });
+
+  it("falls back when the server message is blank", () => {
+    expect(openApiPreviewFailureMessage("")).toBe(
+      "Couldn't load or parse this spec: unknown error",
+    );
   });
 });
