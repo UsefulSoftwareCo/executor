@@ -503,8 +503,15 @@ export const makeMutableCatalogMcpServer = (
     server.registerTool(
       "rename_greet",
       { description: "Renames the greet tool", inputSchema: {} },
-      async () => {
+      async (_args, extra) => {
         renameTool();
+        // `RegisteredTool.update` already emitted list_changed, but with no
+        // relatedRequestId the transport routes it to the standalone GET SSE
+        // stream, which a request-scoped client may never have open. Send it
+        // through the handler's `extra` too: that stamps the request id, so
+        // the notification rides THIS call's response stream and is
+        // guaranteed to reach the caller before the tool result.
+        await extra.sendNotification({ method: "notifications/tools/list_changed" });
         return { content: [{ type: "text" as const, text: "renamed" }] };
       },
     );
