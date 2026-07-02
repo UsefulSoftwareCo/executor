@@ -22,7 +22,8 @@ import {
 
 import { decodeOpenApiIntegrationConfig, type OpenApiIntegrationConfig } from "./config";
 import { OpenApiExtractionError, OpenApiOAuthError, OpenApiParseError } from "./errors";
-import { parse, resolveSpecText } from "./parse";
+import { parse } from "./parse";
+import { fetchSpecTextCached, type SpecFetchFreshness } from "./spec-cache";
 import { extract } from "./extract";
 import {
   OAuth2AuthorizationCodeFlow,
@@ -384,6 +385,11 @@ const maybeUrl = (value: string): URL | null => {
   }
 };
 
+// Same URL-vs-inline-text split resolveSpecText applies, kept as a predicate so
+// URL inputs can route through the spec cache while blobs pass straight through.
+const isSpecUrlInput = (value: string): boolean =>
+  value.startsWith("http://") || value.startsWith("https://");
+
 const addProbeCandidate = (candidates: string[], value: string | undefined): void => {
   const trimmed = value?.trim();
   if (!trimmed) return;
@@ -564,21 +570,34 @@ export interface OpenApiPluginOptions {
 }
 
 export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
+  // URL inputs go through the tenant's spec cache (URL index over the
+  // content-addressed blob store): within-TTL repeats are served from the
+  // store, and refreshes revalidate with the stored ETag/Last-Modified so an
+  // unchanged upstream costs a bodyless 304. Inline blobs pass through.
   const resolveSpecForInput = (
     spec: OpenApiSpecInput,
+    storage: OpenapiStore,
     httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
+    freshness: SpecFetchFreshness,
   ): Effect.Effect<
     {
       readonly specText: string;
+      /** True when the spec blob is already persisted under its hash. */
+      readonly persisted: boolean;
     },
-    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError
+    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError | StorageFailure
   > =>
     Effect.gen(function* () {
       if (spec.kind === "url") {
-        const specText = yield* resolveSpecText(spec.url).pipe(Effect.provide(httpClientLayer));
-        return { specText };
+        const resolved = yield* fetchSpecTextCached({
+          url: spec.url,
+          storage,
+          httpClientLayer,
+          freshness,
+        });
+        return { specText: resolved.specText, persisted: resolved.persisted };
       }
-      return { specText: spec.value };
+      return { specText: spec.value, persisted: false };
     });
 
   return {
@@ -646,7 +665,14 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         Effect.gen(function* () {
           // Resolve URL → text and parse BEFORE opening a transaction. Holding
           // `BEGIN` across a network fetch is the Hyperdrive deadlock path.
-          const resolved = yield* resolveSpecForInput(config.spec, httpClientLayer);
+          // The cache makes the UI's preview → add sequence a single download:
+          // preview already fetched and persisted this URL moments ago.
+          const resolved = yield* resolveSpecForInput(
+            config.spec,
+            ctx.storage,
+            httpClientLayer,
+            "prefer-cache",
+          );
           const compiled = yield* compileOpenApiSpec(resolved.specText);
 
           // Defaults the add page derives from its preview, applied here so
@@ -724,8 +750,11 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // The spec blob is written OUTSIDE the transaction: it's
           // content-addressed (re-puts are idempotent) and an aborted register
           // leaves only an unreferenced blob behind - while blob backends like
-          // R2 couldn't roll back with the transaction anyway.
-          yield* ctx.storage.putSpec(specHash, resolved.specText);
+          // R2 couldn't roll back with the transaction anyway. URL inputs were
+          // already persisted by the cached fetch; skip re-putting multi-MB text.
+          if (!resolved.persisted) {
+            yield* ctx.storage.putSpec(specHash, resolved.specText);
+          }
           // The content-addressed defs blob lets the serve path resolve the
           // shared `definitions` without re-parsing the spec. Same idempotent,
           // outside-the-transaction rationale as the spec blob.
@@ -779,8 +808,16 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           }
 
           // Resolve + compile BEFORE the transaction (same Hyperdrive-deadlock
-          // rule as addSpec: never hold BEGIN across a network fetch).
-          const resolved = yield* resolveSpecForInput(specInput, httpClientLayer);
+          // rule as addSpec: never hold BEGIN across a network fetch). Refresh
+          // is an explicit "check upstream" — revalidate instead of trusting
+          // the TTL, so it always sees a changed spec; an unchanged one costs
+          // a bodyless 304 instead of a multi-MB download.
+          const resolved = yield* resolveSpecForInput(
+            specInput,
+            ctx.storage,
+            httpClientLayer,
+            "revalidate",
+          );
           const compiled = yield* compileOpenApiSpec(resolved.specText);
 
           const previousOperations = yield* ctx.storage.listOperations(rawSlug);
@@ -790,9 +827,12 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // The resolved spec text lives in the plugin blob store keyed by its
           // content hash (`spec/<hash>`); the config carries only the hash. Put
           // the blob outside the transaction - re-puts are idempotent and an
-          // aborted config update just leaves an unreferenced blob.
+          // aborted config update just leaves an unreferenced blob. URL inputs
+          // were already persisted by the cached fetch.
           const specHash = yield* sha256Hex(resolved.specText);
-          yield* ctx.storage.putSpec(specHash, resolved.specText);
+          if (!resolved.persisted) {
+            yield* ctx.storage.putSpec(specHash, resolved.specText);
+          }
           yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
           const nextConfig: OpenApiIntegrationConfig = {
@@ -853,9 +893,17 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
         previewSpec: (input: string | OpenApiPreviewInput) =>
           Effect.gen(function* () {
             const previewInput = typeof input === "string" ? { spec: input } : input;
-            const specText = yield* resolveSpecText(previewInput.spec).pipe(
-              Effect.provide(httpClientLayer),
-            );
+            // The add form re-previews on a debounce while the user types, and
+            // addSpec re-resolves the same URL right after — the cache turns
+            // that into one download per distinct spec URL.
+            const specText = isSpecUrlInput(previewInput.spec)
+              ? (yield* fetchSpecTextCached({
+                  url: previewInput.spec,
+                  storage: ctx.storage,
+                  httpClientLayer,
+                  freshness: "prefer-cache",
+                })).specText
+              : previewInput.spec;
             const preview = yield* previewSpecText(specText);
             return yield* enrichPreviewWithDiscoveredOAuth({
               specText,
@@ -1060,10 +1108,19 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           catch: (error) => error,
         }).pipe(Effect.option);
         if (Option.isNone(parsed)) return null;
-        const specText = yield* resolveSpecText(trimmed).pipe(
-          Effect.provide(httpClientLayer),
-          Effect.catch(() => Effect.succeed(null)),
-        );
+        // Detect probes the same URL the user is about to preview/add — go
+        // through the cache so the probe download is reused by those steps.
+        const specText = isSpecUrlInput(trimmed)
+          ? yield* fetchSpecTextCached({
+              url: trimmed,
+              storage: detectCtx.storage,
+              httpClientLayer,
+              freshness: "prefer-cache",
+            }).pipe(
+              Effect.map((resolved) => resolved.specText),
+              Effect.catch(() => Effect.succeed(null)),
+            )
+          : trimmed;
         if (specText === null) return null;
         const doc = yield* parse(specText).pipe(Effect.catch(() => Effect.succeed(null)));
         if (!doc) return null;

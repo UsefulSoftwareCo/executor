@@ -1,4 +1,17 @@
-export { parse, resolveSpecText, fetchSpecText } from "./parse";
+export {
+  parse,
+  resolveSpecText,
+  fetchSpecText,
+  fetchSpecDocument,
+  type SpecDocumentResult,
+  type SpecFetchValidators,
+} from "./parse";
+export {
+  fetchSpecTextCached,
+  SPEC_FETCH_TTL,
+  type ResolvedSpecDocument,
+  type SpecFetchFreshness,
+} from "./spec-cache";
 export { extract, streamOperationBindingsFromStructure } from "./extract";
 export {
   structuralSplit,
@@ -42,7 +55,12 @@ export {
   type OpenApiPluginExtension,
   type OpenApiPluginOptions,
 } from "./plugin";
-export { type OpenapiStore, type StoredOperation, makeDefaultOpenapiStore } from "./store";
+export {
+  type OpenapiStore,
+  type StoredOperation,
+  type SpecSourceEntry,
+  makeDefaultOpenapiStore,
+} from "./store";
 export {
   decodeOpenApiIntegrationConfig,
   renderAuthTemplate,

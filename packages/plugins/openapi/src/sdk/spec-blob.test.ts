@@ -140,6 +140,8 @@ describe("OpenAPI plugin — spec blob storage", () => {
         getSpec: (specHash) => Effect.succeed(specHash === hash ? text : null),
         putDefs: () => Effect.void,
         getDefs: () => Effect.succeed(null),
+        getSpecSource: () => Effect.succeed(null),
+        putSpecSource: () => Effect.void,
       };
 
       const resolve = (config: IntegrationConfig) =>

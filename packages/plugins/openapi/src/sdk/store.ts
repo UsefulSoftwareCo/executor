@@ -25,8 +25,10 @@ import { OperationBinding } from "./types";
 // ---------------------------------------------------------------------------
 
 const OPERATION_COLLECTION = "operation";
+const SPEC_SOURCE_COLLECTION = "spec_source";
 const STORE_OWNER = "org" as const;
 const OPERATION_KEY_VERSION = "op";
+const SPEC_SOURCE_KEY_VERSION = "src";
 
 const encodeBinding = Schema.encodeSync(OperationBinding);
 const decodeBinding = Schema.decodeUnknownSync(OperationBinding);
@@ -87,6 +89,34 @@ const stableKeyHash = (value: string): string => {
 const operationKey = (integration: string, toolName: string): string =>
   `${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.${stableKeyHash(toolName)}`;
 
+const specSourceKey = (url: string): string => `${SPEC_SOURCE_KEY_VERSION}.${stableKeyHash(url)}`;
+
+// What we remember about the last successful fetch of a spec URL: the content
+// hash it resolved to (the blob address) plus the response's cache validators.
+// `url` is stored in the row too so a key-hash collision can't serve another
+// URL's spec.
+const SpecSourceStorage = Schema.Struct({
+  url: Schema.String,
+  specHash: Schema.String,
+  etag: Schema.optional(Schema.String),
+  lastModified: Schema.optional(Schema.String),
+  fetchedAt: Schema.Number,
+});
+const decodeSpecSourceStorage = Schema.decodeUnknownOption(SpecSourceStorage);
+
+export interface SpecSourceEntry {
+  /** The spec URL this entry describes. */
+  readonly url: string;
+  /** Content hash the URL last resolved to — the `spec/<hash>` blob address. */
+  readonly specHash: string;
+  /** Response `ETag`, replayed as `If-None-Match` on refresh. */
+  readonly etag?: string;
+  /** Response `Last-Modified`, replayed as `If-Modified-Since` on refresh. */
+  readonly lastModified?: string;
+  /** Epoch millis of the last fetch that produced (or revalidated) the entry. */
+  readonly fetchedAt: number;
+}
+
 const legacyOperationKey = (integration: string, toolName: string): string =>
   `${integration}.${toolName}`;
 
@@ -137,6 +167,13 @@ export interface OpenapiStore {
   /** Load the compiled `#/$defs/*` JSON by content hash; null when no blob
    *  exists (legacy rows added before the defs blob). */
   readonly getDefs: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
+  /** Look up what a spec URL last resolved to (content hash + cache
+   *  validators). Null when the URL was never fetched (or the row predates the
+   *  index). Org-owned like the spec blob: the fetch is unauthenticated, so the
+   *  result is shareable tenant-wide. */
+  readonly getSpecSource: (url: string) => Effect.Effect<SpecSourceEntry | null, StorageFailure>;
+  /** Record a successful fetch (or revalidation) of a spec URL. */
+  readonly putSpecSource: (entry: SpecSourceEntry) => Effect.Effect<void, StorageFailure>;
 }
 
 export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): OpenapiStore => {
@@ -216,5 +253,35 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
       blobs.put(defsBlobKey(specHash), defsJson, { owner: STORE_OWNER }),
 
     getDefs: (specHash) => blobs.get(defsBlobKey(specHash)),
+
+    getSpecSource: (url) =>
+      Effect.gen(function* () {
+        const row = yield* pluginStorage.get({
+          collection: SPEC_SOURCE_COLLECTION,
+          key: specSourceKey(url),
+        });
+        if (!row) return null;
+        const decoded = decodeSpecSourceStorage(row.data);
+        if (Option.isNone(decoded)) return null;
+        // Guard against a stableKeyHash collision serving another URL's spec.
+        if (decoded.value.url !== url) return null;
+        return decoded.value;
+      }),
+
+    putSpecSource: (entry) =>
+      pluginStorage
+        .put({
+          owner: STORE_OWNER,
+          collection: SPEC_SOURCE_COLLECTION,
+          key: specSourceKey(entry.url),
+          data: {
+            url: entry.url,
+            specHash: entry.specHash,
+            ...(entry.etag !== undefined ? { etag: entry.etag } : {}),
+            ...(entry.lastModified !== undefined ? { lastModified: entry.lastModified } : {}),
+            fetchedAt: entry.fetchedAt,
+          },
+        })
+        .pipe(Effect.asVoid),
   };
 };
