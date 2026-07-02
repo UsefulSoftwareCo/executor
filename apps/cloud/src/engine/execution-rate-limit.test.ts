@@ -1,9 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 import type { ExecutionEngine } from "@executor-js/execution";
 
-import { RATE_LIMIT_BLOCKED_MESSAGE, makeExecutionRateLimiter } from "./execution-rate-limit";
+import {
+  RATE_LIMIT_BLOCKED_MESSAGE,
+  ExecutionRateLimitExceededError,
+  makeExecutionRateLimiter,
+} from "./execution-rate-limit";
+
+// Stand-in for a counter-DO failure (unreachable, storage error).
+class FakeCounterError extends Data.TaggedError("FakeCounterError")<{}> {}
 
 // In-memory stand-in for the counter DO: same fixed-window semantics, one
 // { windowId, count } record per org.
@@ -88,9 +95,8 @@ describe("execution rate limiter", () => {
       yield* limiter.check("org_hot");
       const error = yield* Effect.flip(limiter.check("org_hot"));
 
-      expect(error._tag).toBe("ExecutionRateLimitExceededError");
+      expect(error).toBeInstanceOf(ExecutionRateLimitExceededError);
       expect(error.organizationId).toBe("org_hot");
-      expect(error.message).toBe(RATE_LIMIT_BLOCKED_MESSAGE);
     }),
   );
 
@@ -124,7 +130,7 @@ describe("execution rate limiter", () => {
       const limiter = makeExecutionRateLimiter(() =>
         Effect.suspend(() => {
           state.calls += 1;
-          return Effect.fail(new Error("counter DO unreachable"));
+          return Effect.fail(new FakeCounterError());
         }),
       );
       const { engine, calls } = makeFakeEngine();

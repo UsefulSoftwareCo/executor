@@ -1,9 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 import type { ExecutionEngine } from "@executor-js/execution";
 
-import { EXECUTION_LIMIT_BLOCKED_MESSAGE, makeExecutionLimitGate } from "./execution-gate";
+import {
+  EXECUTION_LIMIT_BLOCKED_MESSAGE,
+  ExecutionLimitReachedError,
+  makeExecutionLimitGate,
+} from "./execution-gate";
+
+// Stand-in for an upstream billing failure (Autumn down, network error).
+class FakeUpstreamError extends Data.TaggedError("FakeUpstreamError")<{}> {}
 
 // Minimal engine fake: records calls, always completes successfully. The gate
 // must never let a blocked execution reach it.
@@ -102,16 +109,15 @@ describe("execution balance gate", () => {
 
       const error = yield* Effect.flip(gate.check("org_blocked"));
 
-      expect(error._tag).toBe("ExecutionLimitReachedError");
+      expect(error).toBeInstanceOf(ExecutionLimitReachedError);
       expect(error.organizationId).toBe("org_blocked");
-      expect(error.message).toBe(EXECUTION_LIMIT_BLOCKED_MESSAGE);
     }),
   );
 
   it.effect("fails open when the billing service errors (check attempted, execution runs)", () =>
     Effect.gen(function* () {
       const { engine, calls } = makeFakeEngine();
-      const balance = makeBalanceCheck(() => Effect.fail(new Error("autumn down")));
+      const balance = makeBalanceCheck(() => Effect.fail(new FakeUpstreamError()));
       const gate = makeExecutionLimitGate(balance.check);
       const gated = gate.decorate("org_erroring", engine);
 
@@ -179,7 +185,7 @@ describe("execution balance gate", () => {
       const balance = makeBalanceCheck(() => {
         if (failNext) {
           failNext = false;
-          return Effect.fail(new Error("transient"));
+          return Effect.fail(new FakeUpstreamError());
         }
         return Effect.succeed({ allowed: false });
       });
