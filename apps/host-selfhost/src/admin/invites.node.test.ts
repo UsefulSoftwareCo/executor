@@ -27,6 +27,15 @@ const signUp = (body: Record<string, unknown>) =>
     }),
   );
 
+const inviteStatus = async (code: string): Promise<boolean> => {
+  const response = await handler(
+    new Request(`${BASE}/api/invite-status/${encodeURIComponent(code)}`),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { valid?: boolean };
+  return body.valid === true;
+};
+
 test("open signup is closed: a signup without a valid invite code is rejected", async () => {
   const res = await signUp({
     email: "intruder@invite.test",
@@ -47,6 +56,8 @@ test("open signup is closed: a signup without a valid invite code is rejected", 
 test("a code minted via the admin API redeems into a real org membership", async () => {
   // Minted through the TYPED admin HttpApi client (see mint-invite.ts).
   const inviteCode = await mintInviteCode(handler);
+  expect(await inviteStatus("AAAA-BBBB-CCCC")).toBe(false);
+  expect(await inviteStatus(inviteCode)).toBe(true);
 
   const res = await signUp({
     email: "member@invite.test",
@@ -76,4 +87,5 @@ test("a code minted via the admin API redeems into a real org membership", async
     inviteCode,
   });
   expect(reuse.status).not.toBe(200);
+  expect(await inviteStatus(inviteCode)).toBe(false);
 });

@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { Button } from "@executor-js/react/components/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@executor-js/react/components/card";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
@@ -18,11 +19,36 @@ export const Route = createFileRoute("/join/$code")({
 // auth gate (an un-redeemed visitor has no session yet).
 function JoinPage() {
   const { code } = Route.useParams();
+  const [inviteState, setInviteState] = useState<"checking" | "valid" | "invalid">("checking");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setInviteState("checking");
+    void fetch(`/api/invite-status/${encodeURIComponent(code)}`, {
+      credentials: "same-origin",
+    }).then(
+      async (response) => {
+        const body = response.ok
+          ? ((await response.json().then(
+              (value) => value,
+              () => ({}),
+            )) as { valid?: boolean })
+          : {};
+        if (alive) setInviteState(body.valid === true ? "valid" : "invalid");
+      },
+      () => {
+        if (alive) setInviteState("invalid");
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [code]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -42,6 +68,30 @@ function JoinPage() {
     }
     window.location.href = "/";
   };
+
+  if (inviteState === "checking") {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+
+  if (inviteState === "invalid") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-6">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Invite not valid</CardTitle>
+            <CardDescription>
+              This invite link is invalid or has expired. Ask the person who invited you for a new
+              link.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">

@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 import { SystemError, SystemHttpApi } from "./api";
 import { BetterAuth, countOrgMembers, type BetterAuthHandle } from "../auth/better-auth";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
+import { findRedeemableCode } from "../auth/invites";
 
 // ---------------------------------------------------------------------------
 // Handlers for the public system API. Unauthenticated; every DB touch is an
@@ -37,6 +38,16 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
           catch: () => new SystemError({ message: "failed to read setup status" }),
         });
         return { needsSetup: count === 0 };
+      }),
+    )
+    .handle("inviteStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const { client } = yield* SelfHostDb;
+        const code = yield* Effect.tryPromise({
+          try: () => findRedeemableCode(client, params.code),
+          catch: () => new SystemError({ message: "failed to read invite status" }),
+        });
+        return { valid: code !== null };
       }),
     ),
 );
