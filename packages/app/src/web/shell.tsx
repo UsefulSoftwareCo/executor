@@ -152,7 +152,12 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
 
 // ── SidebarContent ───────────────────────────────────────────────────────
 
-function SidebarContent(props: { pathname: string; onNavigate?: () => void; showBrand?: boolean }) {
+function SidebarContent(props: {
+  pathname: string;
+  onNavigate?: () => void;
+  showBrand?: boolean;
+  onOpenCommands: () => void;
+}) {
   const isHome = props.pathname === "/";
   const isSecrets = props.pathname === "/secrets";
   const isPolicies = props.pathname === "/policies";
@@ -212,6 +217,15 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
       {/* Footer */}
       <div className="shrink-0 border-t border-sidebar-border px-4 py-2.5">
         <div className="flex flex-col gap-1.5 text-xs leading-none">
+          {/* oxlint-disable-next-line react/forbid-elements */}
+          <button
+            type="button"
+            onClick={props.onOpenCommands}
+            className="flex items-center justify-between text-left text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span>Commands</span>
+            <span className="font-mono text-[11px]">⌘K</span>
+          </button>
           <a
             href="https://executor.sh/docs"
             target="_blank"
@@ -254,6 +268,7 @@ export function Shell() {
   const refreshTools = useAtomRefresh(toolsAllAtom);
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   if (lastPathname.current !== pathname) {
     lastPathname.current = pathname;
     if (mobileSidebarOpen) setMobileSidebarOpen(false);
@@ -288,10 +303,10 @@ export function Shell() {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <CommandPalette />
+      <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       {/* Desktop sidebar */}
       <aside className="desktop-macos-sidebar hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <SidebarContent pathname={pathname} />
+        <SidebarContent pathname={pathname} onOpenCommands={() => setCommandPaletteOpen(true)} />
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -330,6 +345,10 @@ export function Shell() {
               pathname={pathname}
               onNavigate={() => setMobileSidebarOpen(false)}
               showBrand={false}
+              onOpenCommands={() => {
+                setMobileSidebarOpen(false);
+                setCommandPaletteOpen(true);
+              }}
             />
           </div>
         </div>

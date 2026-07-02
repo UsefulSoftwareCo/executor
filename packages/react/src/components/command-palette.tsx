@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -28,9 +28,9 @@ import {
 //   3. Popular integrations (plugin presets)
 // ---------------------------------------------------------------------------
 
-export function CommandPalette() {
+export function CommandPalette(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { open, onOpenChange } = props;
   const integrationPlugins = useIntegrationPlugins();
-  const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const integrationsResult = useAtomValue(integrationsOptimisticAtom);
 
@@ -39,12 +39,12 @@ export function CommandPalette() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        setOpen((o) => !o);
+        onOpenChange(!open);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [onOpenChange, open]);
 
   const connectedSources = useMemo(
     () =>
@@ -88,7 +88,7 @@ export function CommandPalette() {
     return entries;
   }, [integrationPlugins]);
 
-  const close = useCallback(() => setOpen(false), []);
+  const close = useCallback(() => onOpenChange(false), [onOpenChange]);
 
   const goToIntegration = useCallback(
     (id: string) => {
@@ -132,8 +132,10 @@ export function CommandPalette() {
     [close, navigate],
   );
 
+  if (!open) return null;
+
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
       <CommandInput placeholder="Search integrations or jump to add…" />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
