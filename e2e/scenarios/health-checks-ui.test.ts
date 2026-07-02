@@ -235,7 +235,7 @@ const largeSpec = (baseUrl: string, title = "Big API"): string => {
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · Add Connection checks the key against an inline-picked operation and saves it",
+  "Health checks (UI) · Add Connection auto-picks the probe, and identity is chosen from the real response",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -270,30 +270,42 @@ scenario(
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
 
-            await step("Paste the key and pick an operation to test it against", async () => {
+            await step("Paste the key: the probe is already picked for you", async () => {
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
-              // No check configured ⇒ the inline operation picker is shown. CLICK
-              // the option (the real mouse path): the popup is portaled out of the
-              // dialog, so this proves clicking it neither fails nor dismisses the
-              // modal before the selection lands.
-              await clickComboboxOption(page, "connect-health-check-operation", "getMe");
-              // The modal must still be open after the click.
-              await page.getByRole("heading", { name: /Add connection/ }).waitFor();
+              // No pre-probe form: the top-ranked read-only zero-arg operation is
+              // auto-picked and shown as a one-line caption next to the button.
+              await dialog.getByText(/Calls/).waitFor();
+              await dialog.getByText(new RegExp(getMe.operation)).waitFor();
             });
 
             await step("Check the key works: it probes healthy", async () => {
               await dialog.getByRole("button", { name: "Check the key works" }).click();
               await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
             });
+
+            await step("Pick the identity from the REAL response the key returned", async () => {
+              // The probe's actual response fields render as clickable rows —
+              // identity is chosen from live data, never guessed from a schema.
+              await dialog.getByText("Which field names this account?").waitFor();
+              await dialog.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
+              // Picking labels the connection: the display name adopts the value.
+              await page.waitForFunction(
+                () =>
+                  (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
+                  "alice@example.com",
+              );
+            });
           });
 
-          // The healthy inline check was persisted as the integration's check.
+          // The healthy probe auto-saved the check, and the picked field
+          // upgraded it with the identity path.
           const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
-          expect(stored?.operation, "the picked operation was saved as the health check").toBe(
+          expect(stored?.operation, "the auto-picked operation was saved as the health check").toBe(
             getMe.operation,
           );
+          expect(stored?.identityField, "the response click set the identity field").toBe("email");
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );

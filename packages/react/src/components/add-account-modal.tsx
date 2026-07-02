@@ -885,6 +885,57 @@ function KeyValidationStatus(props: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Response identity picker: after a healthy probe, the probe's REAL response
+// fields render as clickable rows — the user names the account by pointing at
+// the field that identifies it (email, login, id). No schema guessing, no
+// pre-probe form. Collapses once picked (the verdict line carries the identity)
+// or when skipped.
+// ---------------------------------------------------------------------------
+function ResponseIdentityPicker(props: {
+  readonly result: HealthCheckResult | null;
+  readonly pickedPath: string;
+  readonly dismissed: boolean;
+  readonly onPick: (path: string, value: string) => void;
+  readonly onDismiss: () => void;
+}) {
+  const { result, pickedPath, dismissed } = props;
+  if (!result || result.status !== "healthy") return null;
+  const sample = result.responseSample ?? [];
+  if (sample.length === 0 || dismissed || pickedPath.length > 0) return null;
+  return (
+    <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium">Which field names this account?</p>
+        <button
+          type="button"
+          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          onClick={props.onDismiss}
+        >
+          Skip — status only
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        From the response the key just returned. Picking one labels the connection and every future
+        check.
+      </p>
+      <div className="max-h-40 overflow-y-auto">
+        {sample.map((field) => (
+          <button
+            key={field.path}
+            type="button"
+            className="flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left font-mono text-xs hover:bg-muted/60"
+            onClick={() => props.onPick(field.path, field.value)}
+          >
+            <span className="shrink-0 text-muted-foreground">{field.path}</span>
+            <span className="min-w-0 truncate text-foreground">{field.value}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
@@ -928,16 +979,24 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [credentialOrigin, setCredentialOrigin] = useState<CredentialOrigin>("paste");
   const [onePasswordItemId, setOnePasswordItemId] = useState("");
   const [label, setLabel] = useState("");
-  // Key check: the in-flight probe state and its last result. When the
-  // integration has no configured health check, `hcOperation`/`hcArgs` hold an
-  // inline-drafted check the user picks to test the key against (and which we
-  // save as the integration's check once it comes back healthy). All of this
-  // lives in the view, so closing the modal unmounts and resets it.
+  // Key check, probe-first: we auto-pick the top-ranked read-only zero-arg
+  // operation and the user just clicks "Check the key works" — no form to fill
+  // before anything has been seen. The probe's REAL response then doubles as
+  // the identity picker (click the field that names the account), so identity
+  // is chosen from data, never guessed from a schema. `hcOperation`/`hcArgs`
+  // only carry a manual override ("change" escape hatch). All of this lives in
+  // the view, so closing the modal unmounts and resets it.
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
   const [hcOperation, setHcOperation] = useState("");
   const [hcIdentityField, setHcIdentityField] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+  // "change" swaps the one-line auto-pick caption for the full operation form.
+  const [hcAdvanced, setHcAdvanced] = useState(false);
+  // The inline spec a healthy probe just saved (identity picker upgrades it),
+  // and whether the user dismissed the picker ("Skip — status only").
+  const [savedInlineSpec, setSavedInlineSpec] = useState<HealthCheckSpec | null>(null);
+  const [identityDismissed, setIdentityDismissed] = useState(false);
   // Whether the display name was auto-filled from a probed identity (so a later
   // probe may overwrite it, but a hand-typed name is never clobbered).
   const nameAutofilled = useRef(false);
@@ -1095,17 +1154,29 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   // Key check (pasteable credentials only): offer it whenever the integration
   // either has a configured check OR exposes candidate operations to test
-  // against. The inline-picked candidate (when no check is configured) drives
-  // both the probe and what we save as the integration's health check.
-  const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
+  // against. With no configured check we AUTO-pick the best probe — the
+  // top-ranked non-destructive candidate needing no arguments (candidates are
+  // already ranked GET-first / fewest-args) — so checking the key is one click.
+  // "change" opens the full form for the rare spec where the auto-pick is wrong.
+  const hcAutoCandidate = useMemo(
+    () =>
+      healthCheckCandidates.find(
+        (candidate) => !candidate.destructive && candidate.requiredArgCount === 0,
+      ) ?? null,
+    [healthCheckCandidates],
+  );
+  const hcEffectiveOperation =
+    hcOperation.length > 0 ? hcOperation : hcAdvanced ? "" : (hcAutoCandidate?.operation ?? "");
+  const hcSelected =
+    healthCheckCandidates.find((c) => c.operation === hcEffectiveOperation) ?? null;
   const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
   const hcMissingRequired = hcRequiredParams.some(
     (p) => (hcArgs[p.name] ?? "").trim().length === 0,
   );
   const canCheckKey = !isOAuth && !isNoAuth && (hasHealthCheck || healthCheckCandidates.length > 0);
-  // True when we have something to probe against: a configured check, or a
-  // complete inline-picked candidate.
-  const keyCheckReady = hasHealthCheck || (hcOperation.length > 0 && !hcMissingRequired);
+  // True when we have something to probe against: a configured check, or an
+  // auto-picked / manually-picked candidate with its required args filled.
+  const keyCheckReady = hasHealthCheck || (hcEffectiveOperation.length > 0 && !hcMissingRequired);
 
   // The distinct credential inputs the selected method needs — one per variable
   // across its placements. A single-input method yields one field (`token`); a
@@ -1365,6 +1436,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // that is no longer what's in the form.
   const clearKeyCheck = (): void => {
     if (validationResult !== null) setValidationResult(null);
+    if (savedInlineSpec !== null) setSavedInlineSpec(null);
+    if (identityDismissed) setIdentityDismissed(false);
   };
 
   // Check the key works: probe the pasted credential WITHOUT saving the
@@ -1382,13 +1455,13 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (!method || payloadOrigin === null || validating) return;
     let inlineSpec: HealthCheckSpec | undefined;
     if (!hasHealthCheck) {
-      if (hcOperation.length === 0 || hcMissingRequired) return;
+      if (hcEffectiveOperation.length === 0 || hcMissingRequired) return;
       const identityPath = hcIdentityField.trim();
       const argEntries = Object.entries(hcArgs)
         .map(([key, value]) => [key, value.trim()] as const)
         .filter(([, value]) => value.length > 0);
       inlineSpec = {
-        operation: hcOperation,
+        operation: hcEffectiveOperation,
         ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
         ...(identityPath.length > 0 ? { identityField: identityPath } : {}),
       };
@@ -1423,6 +1496,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
       });
       if (Exit.isSuccess(saved)) {
         toast.success("Saved as this integration's health check");
+        // The probe's real response now doubles as the identity picker; a
+        // click there upgrades this spec with the chosen field.
+        setSavedInlineSpec(inlineSpec);
       } else {
         // The key is healthy but the spec did NOT persist: say so, or the
         // user walks away believing the check is configured.
@@ -1442,6 +1518,33 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return probedIdentity;
       });
     }
+  };
+
+  // The user clicked a field in the probe's response: that field IS the
+  // identity. Upgrade the just-saved spec with it, and (unless hand-typed)
+  // adopt its value as the display name — it's the account label, live.
+  const handlePickIdentity = async (path: string, value: string) => {
+    setHcIdentityField(path);
+    if (savedInlineSpec) {
+      const upgraded: HealthCheckSpec = { ...savedInlineSpec, identityField: path };
+      const saved = await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec: upgraded },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+      if (Exit.isSuccess(saved)) {
+        setSavedInlineSpec(upgraded);
+      } else {
+        toast.error(messageFromExit(saved, "Couldn't save the identity field"));
+        return;
+      }
+    }
+    setValidationResult((current) => (current ? { ...current, identity: value } : current));
+    setLabel((current) => {
+      if (current.trim().length > 0 && !nameAutofilled.current) return current;
+      nameAutofilled.current = true;
+      return value;
+    });
   };
 
   const handleOAuthConnect = async () => {
@@ -2085,17 +2188,49 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                   clearKeyCheck();
                                 }}
                               />
-                              {/* Check the key works before saving. Runs the
-                              integration's health check, or an operation you pick
-                              here (which we then save as the check). */}
+                              {/* Check the key works before saving — probe-first:
+                              one click against the auto-picked read-only probe
+                              (or the configured check). Identity is chosen
+                              AFTER, from the probe's real response. */}
                               {canCheckKey ? (
                                 <div className="flex flex-col gap-2">
-                                  {!hasHealthCheck ? (
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={
+                                        credentialPayloadOrigin === null ||
+                                        validating ||
+                                        !keyCheckReady
+                                      }
+                                      onClick={() => void handleValidate()}
+                                    >
+                                      {validating ? "Checking..." : "Check the key works"}
+                                    </Button>
+                                    {!hasHealthCheck && hcSelected && !hcAdvanced ? (
+                                      <span className="min-w-0 truncate text-xs text-muted-foreground">
+                                        Calls{" "}
+                                        <span className="font-mono">
+                                          {hcSelected.method.toUpperCase()} {hcSelected.operation}
+                                        </span>
+                                        {" · "}
+                                        <button
+                                          type="button"
+                                          className="underline underline-offset-2 hover:text-foreground"
+                                          onClick={() => setHcAdvanced(true)}
+                                        >
+                                          change
+                                        </button>
+                                      </span>
+                                    ) : hasHealthCheck ? (
+                                      <span className="text-xs text-muted-foreground">
+                                        Confirms the key authenticates.
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {!hasHealthCheck && hcAdvanced ? (
                                     <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
-                                      <p className="text-xs text-muted-foreground">
-                                        Pick a read-only operation to test the key against. We save
-                                        it as this integration's health check.
-                                      </p>
                                       <HealthCheckConfigFields
                                         candidates={healthCheckCandidates}
                                         selected={hcSelected}
@@ -2121,27 +2256,29 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                       />
                                     </div>
                                   ) : null}
-                                  <div className="flex items-center justify-between gap-2">
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      disabled={
-                                        credentialPayloadOrigin === null ||
-                                        validating ||
-                                        !keyCheckReady
-                                      }
-                                      onClick={() => void handleValidate()}
-                                    >
-                                      {validating ? "Checking..." : "Check the key works"}
-                                    </Button>
-                                    <span className="text-xs text-muted-foreground">
-                                      Confirms the key authenticates.
-                                    </span>
-                                  </div>
+                                  {!hasHealthCheck && !hcAdvanced && !hcSelected ? (
+                                    <p className="text-xs text-muted-foreground">
+                                      No zero-argument read-only operation to auto-pick.{" "}
+                                      <button
+                                        type="button"
+                                        className="underline underline-offset-2 hover:text-foreground"
+                                        onClick={() => setHcAdvanced(true)}
+                                      >
+                                        Pick one
+                                      </button>{" "}
+                                      to test the key against.
+                                    </p>
+                                  ) : null}
                                   <KeyValidationStatus
                                     validating={validating}
                                     result={validationResult}
+                                  />
+                                  <ResponseIdentityPicker
+                                    result={validationResult}
+                                    pickedPath={hcIdentityField}
+                                    dismissed={identityDismissed}
+                                    onPick={(path, value) => void handlePickIdentity(path, value)}
+                                    onDismiss={() => setIdentityDismissed(true)}
                                   />
                                 </div>
                               ) : null}
