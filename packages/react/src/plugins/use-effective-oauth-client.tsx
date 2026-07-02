@@ -199,6 +199,13 @@ export function uniqueClientSlug(name: string, existing: readonly string[]): OAu
   return OAuthClientSlug.make(`${base}-${suffix}`);
 }
 
+/** Deterministic DCR client slug derived from the authorization server host. */
+export function dcrClientSlug(issuerOrEndpoint: string): OAuthClientSlug {
+  const host = hostOf(issuerOrEndpoint);
+  const base = host === undefined ? "" : slugifyName(host);
+  return OAuthClientSlug.make(`dcr-${base || "authorization-server"}`);
+}
+
 /** Humanize a client slug for display ("spotify-prod" → "Spotify prod"). */
 export function clientDisplayName(slug: string): string {
   const text = slug.replace(/[-_]/g, " ").trim();

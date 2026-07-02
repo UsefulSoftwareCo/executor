@@ -9,7 +9,7 @@ import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
-import { uniqueClientSlug } from "../plugins/use-effective-oauth-client";
+import { dcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
@@ -36,6 +36,7 @@ import { RadioGroup, RadioGroupItem } from "./radio-group";
 // ---------------------------------------------------------------------------
 
 export interface OAuthClientFormPrefill {
+  readonly issuer?: string | null;
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
   readonly resource?: string | null;
@@ -147,6 +148,7 @@ export function OAuthClientForm(props: {
   const [clientId, setClientId] = useState(prefill?.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
   const [issuerUrl, setIssuerUrl] = useState("");
+  const [discoveredIssuer, setDiscoveredIssuer] = useState<string | null>(prefill?.issuer ?? null);
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
   const [resource, setResource] = useState(prefill?.resource ?? null);
@@ -226,6 +228,7 @@ export function OAuthClientForm(props: {
       return;
     }
     const result = exit.value;
+    setDiscoveredIssuer(result.issuer ?? null);
     setAuthorizationUrl(result.authorizationUrl);
     setTokenUrl(result.tokenUrl);
     setResource(result.resource ?? null);
@@ -247,11 +250,12 @@ export function OAuthClientForm(props: {
   const handleRegisterDynamic = async () => {
     if (!canRegisterDynamic || registering) return;
     setRegistering(true);
-    const slug = fixedSlug ?? uniqueClientSlug(name, existingSlugs);
+    const slug = fixedSlug ?? dcrClientSlug(discoveredIssuer ?? registrationEndpoint.trim());
     const exit = await doRegisterDynamic({
       payload: {
         owner,
         slug,
+        issuer: discoveredIssuer,
         registrationEndpoint: registrationEndpoint.trim(),
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
@@ -273,7 +277,7 @@ export function OAuthClientForm(props: {
     }
     trackEvent("oauth_client_registered", { owner, grant, via_dcr: true, success: true });
     toast.success(`Registered ${integrationName} OAuth app`);
-    onCreated({ owner, slug });
+    onCreated({ owner, slug: exit.value.client });
   };
 
   const handleSubmit = async () => {

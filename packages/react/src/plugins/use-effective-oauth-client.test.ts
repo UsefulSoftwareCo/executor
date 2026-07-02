@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { OAuthClientSlug, type Owner } from "@executor-js/sdk/shared";
 
 import {
+  dcrClientSlug,
   selectClientsForEndpoints,
   uniqueClientSlug,
   type OAuthClientOption,
@@ -142,5 +143,14 @@ describe("uniqueClientSlug", () => {
     expect(String(uniqueClientSlug("Linear MCP", ["linear-mcp", "linear-mcp-2"]))).toBe(
       "linear-mcp-3",
     );
+  });
+});
+
+describe("dcrClientSlug", () => {
+  it("derives a deterministic DCR slug from the authorization server host", () => {
+    expect(String(dcrClientSlug("https://mcp.cloudflare.com/register"))).toBe(
+      "dcr-mcp-cloudflare-com",
+    );
+    expect(String(dcrClientSlug("http://127.0.0.1:8787/register"))).toBe("dcr-127-0-0-1-8787");
   });
 });

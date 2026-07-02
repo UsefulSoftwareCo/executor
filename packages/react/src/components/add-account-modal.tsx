@@ -47,6 +47,7 @@ import {
 import {
   clientDisplayName,
   clientHost,
+  dcrClientSlug,
   uniqueClientSlug,
   useOAuthClientsForIntegration,
   type OAuthClientOption,
@@ -613,6 +614,7 @@ export async function runCimdConnect(
 
 /** Discovery result from the probe step (subset of the `probeOAuth` response). */
 type DcrProbeResult = {
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly resource?: string | null;
@@ -624,6 +626,7 @@ type DcrProbeResult = {
 type DcrRegisterArgs = {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  readonly issuer?: string | null;
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
@@ -684,7 +687,7 @@ type RunDcrConnectInput = {
   readonly resourceFallback?: string;
   readonly owner: Owner;
   readonly integrationName: string;
-  /** The owner's existing client slugs, so the minted slug stays unique. */
+  /** Kept for callers that still pass picker state. DCR slugs are server keyed. */
   readonly existingSlugs: readonly string[];
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
@@ -718,11 +721,12 @@ export async function runDcrConnect(
   const registrationEndpoint = probe.registrationEndpoint;
   if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint", probe };
 
-  const slug = uniqueClientSlug(input.integrationName, input.existingSlugs);
+  const slug = dcrClientSlug(probe.issuer ?? registrationEndpoint);
   const scopes = registrationScopes(input.declaredScopes ?? [], probe.scopesSupported ?? []);
   const minted = await deps.register({
     owner: input.owner,
     slug,
+    issuer: probe.issuer ?? null,
     registrationEndpoint,
     authorizationUrl: probe.authorizationUrl,
     tokenUrl: probe.tokenUrl,
@@ -1444,6 +1448,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             payload: {
               owner: args.owner,
               slug: args.slug,
+              issuer: args.issuer ?? null,
               registrationEndpoint: args.registrationEndpoint,
               authorizationUrl: args.authorizationUrl,
               tokenUrl: args.tokenUrl,
@@ -1602,6 +1607,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     null,
                   scopes: method.oauth?.scopes,
                   discoveredScopes: oauthFallbackProbe?.scopesSupported,
+                  issuer: oauthFallbackProbe?.issuer ?? null,
                   registrationEndpoint:
                     method.oauth?.registrationEndpoint ??
                     oauthFallbackProbe?.registrationEndpoint ??

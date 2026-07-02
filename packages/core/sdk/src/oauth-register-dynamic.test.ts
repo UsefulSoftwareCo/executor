@@ -25,6 +25,18 @@ const TEMPLATE = AuthTemplateSlug.make("oauth");
 const CLIENT = OAuthClientSlug.make("acme-dcr");
 const FLOW_REDIRECT_URI = "https://localhost:5394/api/oauth/callback";
 
+const dcrSlugFor = (issuerUrl: string): OAuthClientSlug =>
+  OAuthClientSlug.make(
+    `dcr-${new URL(issuerUrl).host
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")}`,
+  );
+
+const registerRequestCount = (
+  requests: readonly { readonly path: string; readonly method: string }[],
+): number => requests.filter((r) => r.path === "/register" && r.method === "POST").length;
+
 const oauthPlugin = definePlugin(() => ({
   id: "acme" as const,
   storage: () => ({}),
@@ -56,6 +68,7 @@ describe("oauth.registerDynamicClient", () => {
         // Probe surfaces the registration endpoint + advertised auth methods so
         // the caller knows a public client is allowed.
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        expect(probe.issuer).toBe(server.issuerUrl);
         expect(probe.registrationEndpoint).toBe(server.registrationEndpoint);
         expect(probe.tokenEndpointAuthMethodsSupported).toContain("none");
         expect(probe.resource).toBe(server.mcpResourceUrl);
@@ -64,6 +77,7 @@ describe("oauth.registerDynamicClient", () => {
         const slug = yield* executor.oauth.registerDynamicClient({
           owner: "org",
           slug: CLIENT,
+          issuer: probe.issuer,
           registrationEndpoint: probe.registrationEndpoint!,
           authorizationUrl: probe.authorizationUrl,
           tokenUrl: probe.tokenUrl,
@@ -74,12 +88,13 @@ describe("oauth.registerDynamicClient", () => {
           redirectUri: FLOW_REDIRECT_URI,
           originIntegration: INTEG,
         });
-        expect(String(slug)).toBe(String(CLIENT));
+        const expectedSlug = dcrSlugFor(server.issuerUrl);
+        expect(String(slug)).toBe(String(expectedSlug));
 
         // The minted client appears in listClients with a server-issued
         // client_id and NO secret ever projected.
         const clients = yield* executor.oauth.listClients();
-        const minted = clients.find((c) => String(c.slug) === String(CLIENT));
+        const minted = clients.find((c) => String(c.slug) === String(expectedSlug));
         expect(minted).toBeDefined();
         expect(minted!.owner).toBe("org");
         expect(minted!.grant).toBe("authorization_code");
@@ -98,7 +113,7 @@ describe("oauth.registerDynamicClient", () => {
         // PKCE flow with NO client_secret on the token exchange.
         const started = yield* executor.oauth.start({
           owner: "org",
-          client: CLIENT,
+          client: expectedSlug,
           clientOwner: "org",
           name: ConnectionName.make("main"),
           integration: INTEG,
@@ -141,6 +156,213 @@ describe("oauth.registerDynamicClient", () => {
         expect(tokenRequest).toBeDefined();
         expect(tokenRequest!.body).not.toContain("client_secret");
         expect(new URLSearchParams(tokenRequest!.body).get("resource")).toBe(server.mcpResourceUrl);
+      }),
+    ),
+  );
+
+  it.effect("reuses an existing DCR client for the same owner and authorization server", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const first = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("first-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        yield* server.clearRequests;
+
+        const second = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("second-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Other integration DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: IntegrationSlug.make("other"),
+        });
+
+        expect(second).toBe(first);
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("does not reuse a DCR client across owners", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+        const orgSlug = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("org-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Org DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        yield* server.clearRequests;
+
+        const userSlug = yield* executor.oauth.registerDynamicClient({
+          owner: "user",
+          slug: OAuthClientSlug.make("user-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: probe.resource,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "User DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+
+        expect(String(userSlug)).toBe(String(orgSlug));
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("reuses legacy DCR-looking rows with no stored issuer by token host", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: legacySlug,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: server.mcpResourceUrl,
+          grant: "authorization_code",
+          clientId: "legacy-dcr-client",
+          clientSecret: "",
+        });
+        yield* Effect.promise(() =>
+          config.db.updateMany("oauth_client", {
+            where: (b) => b("slug", "=", String(legacySlug)),
+            set: { origin_kind: null, origin_integration: null, origin_issuer: null },
+          }),
+        );
+        yield* server.clearRequests;
+
+        const reused = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("new-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: server.mcpResourceUrl,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+
+        expect(reused).toBe(legacySlug);
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("uses resource to distinguish DCR clients only after an issuer already differs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        const resourceA = `${server.issuerUrl}/mcp/a`;
+        const resourceB = `${server.issuerUrl}/mcp/b`;
+
+        const first = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("first-resource"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: resourceA,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource A",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(first)).toBe(String(dcrSlugFor(server.issuerUrl)));
+
+        const second = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("second-resource"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: resourceB,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource B",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(second)).not.toBe(String(first));
+        expect(String(second)).toContain(String(first));
+        yield* server.clearRequests;
+
+        const third = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("third-resource"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: resourceB,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource B again",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: IntegrationSlug.make("other"),
+        });
+
+        expect(third).toBe(second);
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(0);
       }),
     ),
   );

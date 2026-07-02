@@ -31,6 +31,7 @@ const apiKeyMethod = (id: string, source: "spec" | "custom", template = id): Aut
 });
 
 type ProbeResult = {
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly resource?: string | null;
@@ -42,6 +43,7 @@ type ProbeResult = {
 type RegisterArgs = {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  readonly issuer?: string | null;
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
@@ -306,6 +308,7 @@ describe("runDcrConnect", () => {
     const probe = (_url: string): Promise<ProbeResult | null> => {
       calls.push("probe");
       return Promise.resolve({
+        issuer: "https://auth.example.com",
         authorizationUrl: "https://auth.example.com/authorize",
         tokenUrl: "https://auth.example.com/token",
         resource: "https://mcp.example.com/mcp",
@@ -342,6 +345,8 @@ describe("runDcrConnect", () => {
     // DCR always mints an authorization-code/PKCE client; callers do not choose
     // a grant here.
     expect(registerArgs).not.toBeNull();
+    expect(String(registerArgs!.slug)).toBe("dcr-auth-example-com");
+    expect(registerArgs!.issuer).toBe("https://auth.example.com");
     expect(registerArgs!.registrationEndpoint).toBe("https://auth.example.com/register");
     expect(registerArgs!.authorizationUrl).toBe("https://auth.example.com/authorize");
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
