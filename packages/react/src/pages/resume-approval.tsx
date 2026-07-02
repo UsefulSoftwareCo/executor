@@ -230,6 +230,7 @@ export function ResumeApprovalPageView(props: {
   const busy = status.state === "submitting";
   const done = status.state === "done";
   const canSubmit = Boolean(displayedPaused) && !busy && !done;
+  const unavailable = !nextPaused && AsyncResult.isFailure(paused);
 
   return (
     <main className="flex min-h-full items-center justify-center bg-background px-4 py-8">
@@ -240,12 +241,14 @@ export function ResumeApprovalPageView(props: {
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              User approval required
+              {unavailable ? "Resume execution" : "User approval required"}
             </p>
             <h1 className="mt-1 text-xl font-semibold text-foreground">Resume execution</h1>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              A paused tool call is waiting for your decision before it can continue.
-            </p>
+            {!unavailable && (
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                A paused tool call is waiting for your decision before it can continue.
+              </p>
+            )}
           </div>
         </div>
 
@@ -294,7 +297,11 @@ export function ResumeApprovalPageView(props: {
             <span className="text-xs font-medium text-muted-foreground">Execution </span>
             <code className="break-all font-mono text-xs text-foreground">{shortExecutionId}</code>
           </div>
-          {done ? (
+          {unavailable ? (
+            <Button type="button" asChild>
+              <a href="/">Go home</a>
+            </Button>
+          ) : done ? (
             <CopyButton
               value={returnPrompt[status.action]}
               label="Copy prompt"
