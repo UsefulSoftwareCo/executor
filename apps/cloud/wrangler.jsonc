@@ -22,6 +22,13 @@
         "name": "MCP_SESSION",
         "class_name": "McpSessionDOSqlite",
       },
+      // Per-org execution rate-limit counter (abuse backstop). One instance
+      // per organization via idFromName(orgId); a single { windowId, count }
+      // record per instance, purged by alarm after inactivity.
+      {
+        "name": "EXECUTION_RATE_LIMITER",
+        "class_name": "ExecutionRateLimiterDO",
+      },
     ],
   },
   // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
@@ -41,6 +48,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["McpSessionDOSqlite"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["ExecutionRateLimiterDO"],
     },
   ],
   "services": [

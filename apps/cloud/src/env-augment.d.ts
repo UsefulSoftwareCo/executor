@@ -32,6 +32,13 @@ declare global {
       // ON; the test workers set "true" so fixtures can reach localhost.
       ALLOW_LOCAL_NETWORK?: string;
 
+      // Per-org execution rate-limit counter DO (wrangler.jsonc
+      // `durable_objects`). Declared optional here (matching the BLOBS
+      // precedent) rather than regenerating worker-configuration.d.ts: test
+      // workers and older local setups run without the binding, and the
+      // limiter degrades to disabled when absent.
+      EXECUTION_RATE_LIMITER?: import("@cloudflare/workers-types").DurableObjectNamespace;
+
       // Billing
       AUTUMN_SECRET_KEY?: string;
       /** Optional Autumn base-URL override (Autumn emulator in tests/dev). */
