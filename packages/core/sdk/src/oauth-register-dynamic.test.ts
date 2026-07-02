@@ -367,6 +367,103 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  it.effect("does not reuse a resource-scoped DCR client for a resource-less request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        const resourceA = `${server.issuerUrl}/mcp/a`;
+        const resourceB = `${server.issuerUrl}/mcp/b`;
+
+        // Two resource-scoped clients for the same authorization server. The first
+        // takes the base `dcr-<host>` slug; the second gets a resource-suffixed one.
+        const scopedA = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("scoped-a"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: resourceA,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource A",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        const scopedB = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("scoped-b"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: resourceB,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource B",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(scopedB)).not.toBe(String(scopedA));
+        yield* server.clearRequests;
+
+        // A resource-LESS request for the same owner + issuer must NOT borrow
+        // either resource-scoped client (their tokens are bound to a resource):
+        // it registers a fresh resource-less client.
+        const resourceLess = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("resource-less"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: null,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource-less",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+        expect(String(resourceLess)).not.toBe(String(scopedA));
+        expect(String(resourceLess)).not.toBe(String(scopedB));
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(1);
+
+        // The minted resource-less client is stored with a null resource, and the
+        // two resource-scoped clients still exist (nothing was clobbered).
+        const clients = yield* executor.oauth.listClients();
+        const minted = clients.find((c) => String(c.slug) === String(resourceLess));
+        expect(minted).toBeDefined();
+        expect(minted!.resource ?? null).toBeNull();
+        const slugs = clients.map((c) => String(c.slug));
+        expect(slugs).toContain(String(scopedA));
+        expect(slugs).toContain(String(scopedB));
+
+        // A SECOND resource-less request now reuses the resource-less client.
+        yield* server.clearRequests;
+        const reused = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("resource-less-again"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: null,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Resource-less again",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: IntegrationSlug.make("other"),
+        });
+        expect(String(reused)).toBe(String(resourceLess));
+        expect(registerRequestCount(yield* server.requests)).toBe(0);
+      }),
+    ),
+  );
+
   // Regression: issue #770. Vercel (and other RFC 8252-strict servers) only
   // approve loopback redirect URIs for anonymous DCR, so a hosted/tailnet/LAN
   // origin trips `invalid_redirect_uri`. The failure must explain the loopback

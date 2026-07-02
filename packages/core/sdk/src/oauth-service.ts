@@ -297,6 +297,17 @@ const dcrClientSlug = (
   return OAuthClientSlug.make(`${base}-${resourcePart}-${shortStableHash(resource)}`.slice(0, 240));
 };
 
+/** Dedupe a freshly-minted DCR slug against slugs already held by an owner's
+ *  DCR candidates, appending `-2`, `-3`, … so a new client never collides with
+ *  (and clobbers, via createClient's delete-then-create) an existing one. */
+const uniqueDcrSlug = (slug: OAuthClientSlug, taken: ReadonlySet<string>): OAuthClientSlug => {
+  const base = String(slug);
+  if (!taken.has(base)) return slug;
+  let suffix = 2;
+  while (taken.has(`${base}-${suffix}`)) suffix += 1;
+  return OAuthClientSlug.make(`${base}-${suffix}`);
+};
+
 const parseOAuthClientOrigin = (row: {
   readonly slug?: unknown;
   readonly grant?: unknown;
@@ -736,9 +747,21 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         };
       }
 
-      const reusable = candidates.find((client) => client.resource === null) ?? candidates[0];
+      // Resource-less request: only reuse a resource-LESS candidate. A client
+      // minted for a specific RFC 8707 resource must NOT be reused for a
+      // resource-less flow (its tokens are bound to that resource), so when only
+      // resource-scoped candidates exist we register a fresh resource-less client
+      // rather than silently borrowing one (the old `?? candidates[0]` bug).
+      const reusable = candidates.find((client) => client.resource === null);
       if (reusable) return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
-      const slug = dcrClientSlug(issuer, null, input.slug);
+      // Fresh resource-less client. Its slug is the bare `dcr-<host>` base, but
+      // the FIRST resource-scoped registration for an issuer also takes that base
+      // (dcrClientSlug only suffixes once candidates exist). `createClient`
+      // deletes any row with a colliding (owner, slug) first, so reusing the base
+      // here would silently clobber that resource-scoped client. Dedupe against
+      // the existing candidate slugs so the resource-less client keeps its own row.
+      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
+      const slug = uniqueDcrSlug(dcrClientSlug(issuer, null, input.slug), takenSlugs);
       return { existingSlug: null, registrationSlug: slug };
     });
 
