@@ -21,6 +21,14 @@ jobs:
         with:
           bun-version: 1.3.11
 
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
       - run: bun install --frozen-lockfile
 
       - run: bun run format:check
@@ -35,6 +43,14 @@ jobs:
         with:
           bun-version: 1.3.11
 
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
       - run: bun install --frozen-lockfile
 
       - run: bun run lint
@@ -48,6 +64,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       - run: bun install --frozen-lockfile
 
@@ -64,6 +88,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # apps/cloud's test script invokes `node` directly; undici 8.x (pulled
       # in by @cloudflare/vitest-pool-workers) calls webidl.markAsUncloneable
@@ -107,6 +139,14 @@ jobs:
         with:
           bun-version: 1.3.11
 
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
       # The dev stacks spawn Node sidecars (vite/workerd tooling); pin the
       # same known-good runtime the unit-test job uses.
       - uses: actions/setup-node@v4
@@ -114,6 +154,12 @@ jobs:
           node-version: 22
 
       - run: bun install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.60.0
 
       # Install from e2e so bunx resolves ITS pinned playwright (the version
       # the tests run against) rather than floating to the latest.
@@ -154,6 +200,14 @@ jobs:
         with:
           bun-version: 1.3.11
 
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
       # The local scenarios boot a real `executor web` (which spawns a Node
       # sidecar) and some drive a browser, so pin Node 22 and install Chromium.
       - uses: actions/setup-node@v4
@@ -161,6 +215,12 @@ jobs:
           node-version: 22
 
       - run: bun install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.60.0
 
       # `chromium` and the new `chromium-headless-shell` ship as separate
       # downloads; the browser-driven scenarios launch the headless shell.
@@ -191,6 +251,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       - run: bun install --frozen-lockfile
 
@@ -223,3 +291,5 @@ jobs:
           file: apps/host-selfhost/Dockerfile
           push: false
           tags: executor-selfhost:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
