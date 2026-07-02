@@ -17,6 +17,7 @@ import {
   tool,
   ToolResult,
   type AuthMethodDescriptor,
+  classifyHttpStatus,
   type HealthCheckResult,
   type Integration,
   type IntegrationConfig,
@@ -77,8 +78,12 @@ const mcpLivenessFailureStatus = (failure: {
   readonly message: string;
   readonly httpStatus?: number;
 }): "expired" | "degraded" => {
-  if (failure.httpStatus === 401 || failure.httpStatus === 403) return "expired";
-  if (failure.httpStatus !== undefined) return "degraded";
+  if (failure.httpStatus !== undefined) {
+    // A failed connect can't be healthy; the shared classifier decides
+    // expired vs degraded so "which statuses mean expired" lives in one place.
+    const classified = classifyHttpStatus(failure.httpStatus);
+    return classified === "expired" ? "expired" : "degraded";
+  }
   const lower = failure.message.toLowerCase();
   const authWalled =
     lower.includes("oauth re-authorization") ||

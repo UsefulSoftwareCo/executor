@@ -887,24 +887,36 @@ export function AddAccountModal(props: AddAccountModalProps) {
 // shares the button's row (no reserved block, no reveal shift), and the
 // in-flight state lives only on the button's spinner.
 // ---------------------------------------------------------------------------
-function KeyValidationStatus(props: { readonly result: HealthCheckResult | null }) {
-  const result = props.result;
-  if (!result) return null;
-  const { status, identity, detail } = result;
-  const indicator = HEALTH_INDICATOR_COLOR[status];
-  const tone = status === "healthy" ? "text-muted-foreground" : "text-destructive";
+/** One verdict line: status dot, label, `· identity` when healthy, `— detail`
+ *  when not. Shared by the step-2 recap and the request panel's response
+ *  status so the verdict reads identically everywhere. */
+function HealthStatusLine(props: {
+  readonly result: HealthCheckResult;
+  /** Mono + http status for the request panel; sans for the recap line. */
+  readonly variant?: "line" | "response";
+}) {
+  const { status, identity, detail, httpStatus } = props.result;
+  const healthy = status === "healthy";
+  const tone = healthy ? "text-muted-foreground" : "text-destructive";
+  const font = props.variant === "response" ? "font-mono" : "";
   return (
-    <div className={`flex min-w-0 items-center gap-2 text-xs ${tone}`}>
-      <span aria-hidden className={`size-2 shrink-0 rounded-full ${indicator.dot}`} />
+    <div className={`flex min-w-0 items-center gap-2 text-xs ${tone} ${font}`}>
+      <span
+        aria-hidden
+        className={`size-2 shrink-0 rounded-full ${HEALTH_INDICATOR_COLOR[status].dot}`}
+      />
+      {props.variant === "response" && httpStatus !== undefined ? (
+        <span className="shrink-0">{httpStatus}</span>
+      ) : null}
       <span className="min-w-0 truncate">
         <span className="font-medium">{HEALTH_STATUS_LABEL[status]}</span>
-        {status === "healthy" && identity ? (
+        {healthy && identity ? (
           <>
             {" · "}
             <span className="text-foreground">{identity}</span>
           </>
         ) : null}
-        {status !== "healthy" && detail ? <span className="opacity-80"> — {detail}</span> : null}
+        {!healthy && detail ? <span className="opacity-80"> — {detail}</span> : null}
       </span>
     </div>
   );
@@ -1027,25 +1039,8 @@ function RequestCheckPanel(props: {
       identity pick happens on step 2 (the display name), not here. */}
       {result && !props.validating ? (
         <div className="border-t border-border">
-          <div
-            className={`flex min-w-0 items-center gap-2 px-3 py-2 font-mono text-xs ${
-              healthy ? "text-muted-foreground" : "text-destructive"
-            }`}
-          >
-            <span
-              aria-hidden
-              className={`size-2 shrink-0 rounded-full ${HEALTH_INDICATOR_COLOR[result.status].dot}`}
-            />
-            {result.httpStatus !== undefined ? (
-              <span className="shrink-0">{result.httpStatus}</span>
-            ) : null}
-            <span className="min-w-0 truncate">
-              <span className="font-medium">{HEALTH_STATUS_LABEL[result.status]}</span>
-              {healthy && result.identity ? (
-                <span className="text-foreground"> · {result.identity}</span>
-              ) : null}
-              {!healthy && result.detail ? <span> — {result.detail}</span> : null}
-            </span>
+          <div className="px-3 py-2">
+            <HealthStatusLine result={result} variant="response" />
           </div>
           {healthy && sample.length > 0 ? (
             // No inner scroller: nested scroll areas trap the wheel mid-modal.
@@ -2410,7 +2405,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
               disappearing behind Back. */}
               {wizardActive && wizardStep === "place" && validationResult ? (
                 <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <KeyValidationStatus result={validationResult} />
+                  <HealthStatusLine result={validationResult} />
                 </div>
               ) : null}
 
