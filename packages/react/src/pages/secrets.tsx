@@ -33,7 +33,7 @@ import { isAsyncResultLoading } from "../lib/async-result";
 // ---------------------------------------------------------------------------
 
 const PROVIDER_LABELS: Record<string, string> = {
-  default: "Default store",
+  encrypted: "Encrypted store",
   keychain: "Keychain",
   file: "Local file",
   memory: "Memory",
@@ -41,7 +41,13 @@ const PROVIDER_LABELS: Record<string, string> = {
   "workos-vault": "WorkOS Vault",
 };
 
-const providerLabel = (key: string): string => PROVIDER_LABELS[key] ?? key;
+const providerLabel = (key: string): string =>
+  PROVIDER_LABELS[key] ??
+  key
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 
 export function SecretsPage(props: { showProviderInfo?: boolean }) {
   useExecutorDocumentTitle("Providers");
@@ -117,13 +123,17 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
                           <span className="min-w-0 shrink truncate">
                             {providerLabel(String(key))}
                           </span>
-                          <span className="max-w-40 shrink truncate font-mono text-xs text-muted-foreground">
-                            {String(key)}
-                          </span>
                         </CardStackEntryTitle>
+                        <CardStackEntryDescription>
+                          {String(key) === "encrypted"
+                            ? "Values you paste are encrypted and stored in this instance's database."
+                            : `${providerLabel(String(key))} credential provider.`}
+                        </CardStackEntryDescription>
                       </CardStackEntryContent>
                       <CardStackEntryActions>
-                        <Badge variant="secondary">provider</Badge>
+                        <Badge variant="secondary">
+                          {String(key) === "encrypted" ? "default" : "provider"}
+                        </Badge>
                       </CardStackEntryActions>
                     </CardStackEntry>
                   ))

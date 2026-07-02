@@ -132,7 +132,7 @@ export default function AddGoogleSource(props: {
   return (
     <div className="flex flex-1 flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-foreground">Add Google</h1>
+        <h1 className="text-xl font-semibold text-foreground">Add Google integration</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
           Bundle Google APIs into one integration with a shared OAuth consent.
         </p>
