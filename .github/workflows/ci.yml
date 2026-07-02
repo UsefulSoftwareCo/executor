@@ -121,8 +121,11 @@ jobs:
 
       # The globalsetup boots the target's own dev server (ports are claimed
       # per checkout, so this is hermetic) and tears it down after the run.
+      # --retry=2: browser scenarios time out sporadically on 2-core runners
+      # (single-test waitFor timeouts, not systemic failures); a retry on the
+      # same booted stack clears them.
       - name: Run ${{ matrix.target }} scenarios
-        run: bunx vitest run --project ${{ matrix.target }} ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        run: bunx vitest run --project ${{ matrix.target }} --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in
