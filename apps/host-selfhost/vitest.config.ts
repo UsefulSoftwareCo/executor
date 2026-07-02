@@ -9,10 +9,13 @@ export default defineConfig({
     // over the in-memory handler. Each boot is CPU-heavy and every query
     // serializes through the one shared libSQL connection, so parallel files can
     // oversubscribe CI and starve in-flight requests. Run files serially and
-    // give lifecycle hooks room for the cold graph boot.
+    // give lifecycle hooks room for the cold graph boot. Tests that fan out
+    // many concurrent requests (scope-isolation) stretch well past 30s when
+    // sibling turbo tasks contend for the same cores, so the budget is sized
+    // for a loaded runner, not an idle one.
     fileParallelism: false,
     maxWorkers: 1,
-    testTimeout: 30_000,
+    testTimeout: 120_000,
     hookTimeout: 60_000,
   },
 });
