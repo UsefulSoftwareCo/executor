@@ -168,6 +168,38 @@ export const extractIdentity = (data: unknown, dotpath?: string): string | undef
   return undefined;
 };
 
+/** The best identity tier among a candidate's response fields, or -1 when its
+ *  schema exposes nothing account-naming. Feeds the identity-aware ranking:
+ *  a call that returns an email is a better probe than a generic list. */
+export const candidateIdentityTier = (candidate: HealthCheckCandidate): number => {
+  let best = -1;
+  for (const field of candidate.responseFields ?? []) {
+    const tier = identityPathTier(field.path);
+    if (tier === -1) continue;
+    if (best === -1 || tier < best) best = tier;
+  }
+  return best;
+};
+
+/** Ranking for the candidate list, identity first: non-destructive before
+ *  destructive, then calls whose response carries an identity field (email
+ *  beats login beats name), then the generic order (fewest required args,
+ *  GET first, alphabetical). */
+export const compareHealthCheckCandidatesByIdentity = (
+  a: HealthCheckCandidate,
+  b: HealthCheckCandidate,
+): number => {
+  if (a.destructive !== b.destructive) return a.destructive ? 1 : -1;
+  const tierA = candidateIdentityTier(a);
+  const tierB = candidateIdentityTier(b);
+  if (tierA !== tierB) {
+    if (tierA === -1) return 1;
+    if (tierB === -1) return -1;
+    return tierA - tierB;
+  }
+  return compareHealthCheckCandidates(a, b);
+};
+
 /** Stable ranking for the candidate list: non-destructive before destructive,
  *  then fewest required args, then by method (get first), then alphabetical.
  *  Returns a negative/zero/positive comparator value. */
@@ -393,12 +425,22 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
 // undefined when nothing plausible exists (pure liveness check).
 // ---------------------------------------------------------------------------
 
-const IDENTITY_KEY_TIERS: readonly (readonly string[])[] = [
+export const IDENTITY_KEY_TIERS: readonly (readonly string[])[] = [
   ["email", "emailaddress", "mail", "userprincipalname"],
   ["login", "username", "handle", "slug"],
   ["displayname", "name", "fullname"],
   ["id", "userid", "accountid"],
 ];
+
+/** How account-naming a dot-path's leaf key is: tier index (0 = email, best),
+ *  or -1 when it doesn't look like an identity at all. Shared by the sample
+ *  picker below and the candidate ranking in the connect flow. */
+export const identityPathTier = (path: string): number => {
+  const segments = path.split(".");
+  const named = segments.filter((segment) => !/^\d+$/.test(segment));
+  const leaf = (named[named.length - 1] ?? "").toLowerCase();
+  return IDENTITY_KEY_TIERS.findIndex((keys) => keys.includes(leaf));
+};
 
 /** Pick the sample row that most likely identifies the account. The tiebreak
  *  within a tier is path depth (shallower = more canonical), then sample
@@ -409,12 +451,9 @@ export const pickIdentitySample = (
   let best: { row: HealthCheckResponseSample; tier: number; depth: number } | undefined;
   for (const row of sample) {
     if (row.value.trim().length === 0) continue;
-    const segments = row.path.split(".");
-    const named = segments.filter((segment) => !/^\d+$/.test(segment));
-    const leaf = (named[named.length - 1] ?? "").toLowerCase();
-    const tier = IDENTITY_KEY_TIERS.findIndex((keys) => keys.includes(leaf));
+    const tier = identityPathTier(row.path);
     if (tier === -1) continue;
-    const depth = segments.length;
+    const depth = row.path.split(".").length;
     if (!best || tier < best.tier || (tier === best.tier && depth < best.depth)) {
       best = { row, tier, depth };
     }

@@ -114,8 +114,10 @@ export {
   classifyHttpStatus,
   extractIdentity,
   compareHealthCheckCandidates,
+  compareHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  identityPathTier,
   pickIdentitySample,
 } from "./health-check";
 

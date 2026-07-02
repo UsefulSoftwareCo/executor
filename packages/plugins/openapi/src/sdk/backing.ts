@@ -8,7 +8,7 @@ import {
   ToolResult,
   authToolFailure,
   classifyHttpStatus,
-  compareHealthCheckCandidates,
+  compareHealthCheckCandidatesByIdentity,
   extractIdentity,
   extractResponseFields,
   projectResponseFields,
@@ -917,5 +917,5 @@ export const listHealthCheckCandidatesOpenApi = (input: {
         ...(responseFields && responseFields.length > 0 ? { responseFields } : {}),
       };
     });
-    return [...candidates].sort(compareHealthCheckCandidates);
+    return [...candidates].sort(compareHealthCheckCandidatesByIdentity);
   });

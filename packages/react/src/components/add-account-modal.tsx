@@ -8,6 +8,7 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  identityPathTier,
   type HealthCheckCandidate,
   type HealthCheckResult,
   type HealthCheckSpec,
@@ -935,12 +936,7 @@ function RequestCheckPanel(props: {
   readonly ready: boolean;
   readonly validating: boolean;
   readonly result: HealthCheckResult | null;
-  /** The identity path picked so far (highlights its row). */
-  readonly pickedPath: string | null;
-  /** True when the response rows should offer the identity pick. */
-  readonly canPickIdentity: boolean;
   readonly onCheck: () => void;
-  readonly onPickIdentity: (path: string, value: string) => void;
 }) {
   const { candidates, selected, operation, configuredOperation, result } = props;
   const operationOptions = useMemo<FreeformComboboxOption[]>(
@@ -956,15 +952,30 @@ function RequestCheckPanel(props: {
   );
   const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
   const healthy = result?.status === "healthy";
-  const sample = healthy ? (result?.responseSample ?? []) : [];
-  const showRows = healthy && props.canPickIdentity && sample.length > 0;
+  const fullSample = healthy ? (result?.responseSample ?? []) : [];
+  // Identity-looking fields first, then response order; capped so a chatty
+  // response can't blow the modal up (the hidden tail adds nothing — the
+  // interesting fields rank first).
+  const sample = useMemo(() => {
+    const ranked = [...fullSample].sort((a, b) => {
+      const tierA = identityPathTier(a.path);
+      const tierB = identityPathTier(b.path);
+      if (tierA === tierB) return 0;
+      if (tierA === -1) return 1;
+      if (tierB === -1) return -1;
+      return tierA - tierB;
+    });
+    return ranked.slice(0, 8);
+  }, [fullSample]);
+  const hiddenCount = fullSample.length - sample.length;
   const method = configuredOperation ? "GET" : (selected?.method ?? "get").toUpperCase();
 
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border border-border">
-      {/* Request line: METHOD operation … Check */}
-      <div className="flex h-10 min-w-0 items-center gap-2.5 bg-muted/40 pl-3 pr-1.5">
-        <span className="shrink-0 select-none font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      {/* Request line: METHOD operation … Check. The operation is a frameless
+      combobox so the whole line reads as one request, not a form row. */}
+      <div className="flex h-10 min-w-0 items-center bg-muted/40 pr-1.5">
+        <span className="shrink-0 select-none pl-3 pr-2.5 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
           {method}
         </span>
         {configuredOperation ? (
@@ -980,8 +991,8 @@ function RequestCheckPanel(props: {
             placeholder="pick a call"
             emptyLabel="No matching operations"
             disabled={props.validating}
-            className="min-w-0 flex-1"
-            inputClassName="h-7 border-0 bg-transparent px-0 font-mono text-xs shadow-none focus-visible:ring-0 dark:bg-transparent"
+            className="h-10 min-w-0 flex-1 rounded-none border-0 bg-transparent shadow-none focus-within:border-0 has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent"
+            inputClassName="h-10 px-0 font-mono text-xs"
           />
         )}
         <Button
@@ -991,6 +1002,7 @@ function RequestCheckPanel(props: {
           loading={props.validating}
           disabled={!props.ready}
           onClick={props.onCheck}
+          className="ml-2 shrink-0"
         >
           Check
         </Button>
@@ -1022,7 +1034,8 @@ function RequestCheckPanel(props: {
         </div>
       ) : null}
 
-      {/* Response: status line, then the rows (the identity picker). */}
+      {/* Response: status line, then a read-only view of what came back. The
+      identity pick happens on step 2 (the display name), not here. */}
       {result && !props.validating ? (
         <div className="border-t border-border">
           <div
@@ -1045,37 +1058,24 @@ function RequestCheckPanel(props: {
               {!healthy && result.detail ? <span> — {result.detail}</span> : null}
             </span>
           </div>
-          {showRows ? (
-            <div className="border-t border-border">
-              <p className="px-3 pb-1 pt-2 text-xs text-muted-foreground">
-                Click the field that names this account — it becomes the connection&apos;s label.
-              </p>
-              <div className="max-h-44 overflow-y-auto px-1.5 pb-1.5">
-                {sample.map((field) => {
-                  const picked = props.pickedPath === field.path;
-                  return (
-                    <Button
-                      key={field.path}
-                      type="button"
-                      variant="ghost"
-                      size="xs"
-                      data-picked={picked ? "" : undefined}
-                      className="flex h-auto w-full min-w-0 items-baseline justify-start gap-2.5 rounded-sm px-1.5 py-1 text-left font-mono text-xs font-normal data-[picked]:bg-accent"
-                      onClick={() => props.onPickIdentity(field.path, field.value)}
-                    >
-                      <span className="w-40 shrink-0 truncate text-muted-foreground">
-                        {field.path}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-foreground">{field.value}</span>
-                      {picked ? (
-                        <span className="shrink-0 text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
-                          label
-                        </span>
-                      ) : null}
-                    </Button>
-                  );
-                })}
-              </div>
+          {healthy && sample.length > 0 ? (
+            // No inner scroller: nested scroll areas trap the wheel mid-modal.
+            // The modal is the one scroll context; the row cap bounds height.
+            <div className="border-t border-border px-3 py-1.5">
+              {sample.map((field) => (
+                <div
+                  key={field.path}
+                  className="flex min-w-0 items-baseline gap-2.5 py-0.5 font-mono text-xs"
+                >
+                  <span className="w-40 shrink-0 truncate text-muted-foreground">{field.path}</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground">{field.value}</span>
+                </div>
+              ))}
+              {hiddenCount > 0 ? (
+                <div className="py-0.5 font-mono text-[11px] text-muted-foreground">
+                  +{hiddenCount} more
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1083,7 +1083,6 @@ function RequestCheckPanel(props: {
     </div>
   );
 }
-
 function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
@@ -1327,6 +1326,22 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hcBestCandidate]);
   const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
+  // Step 2's display name offers the response's identity-looking fields as
+  // options (email > login > name > id) — picking one also stores it as the
+  // check's identityField so future probes label the connection live.
+  const nameOptions = useMemo<FreeformComboboxOption[]>(() => {
+    const sample =
+      validationResult?.status === "healthy" ? (validationResult.responseSample ?? []) : [];
+    return sample
+      .map((field) => ({ field, tier: identityPathTier(field.path) }))
+      .filter((entry) => entry.tier !== -1)
+      .sort((a, b) => a.tier - b.tier)
+      .map(({ field }) => ({
+        value: field.value,
+        label: field.value,
+        description: field.path,
+      }));
+  }, [validationResult]);
   const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
   const hcMissingRequired = hcRequiredParams.some(
     (p) => (hcArgs[p.name] ?? "").trim().length === 0,
@@ -2353,9 +2368,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
               {/* The key check, as one request/response panel below the tabs.
               Always visible for credential methods: the request line shows
-              exactly what will run (pre-seeded with the best read-only call,
-              editable in place), Check runs it, and the response body doubles
-              as the identity picker. */}
+              exactly what will run (pre-seeded with the best identity-bearing
+              read-only call, editable in place), Check runs it, and the
+              response renders read-only — the identity pick happens on step 2
+              as the display name. */}
               {(!wizardActive || wizardStep === "validate") && canCheckKey ? (
                 <div className="space-y-1.5">
                   <StepHeader
@@ -2385,8 +2401,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     }
                     validating={validating}
                     result={validationResult}
-                    pickedPath={hcPickedPath}
-                    canPickIdentity={savedInlineSpec !== null}
                     onCheck={() => {
                       if (hasHealthCheck) {
                         void handleValidate();
@@ -2394,7 +2408,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
                         void handlePickModeProbe();
                       }
                     }}
-                    onPickIdentity={(path, value) => void handlePickIdentity(path, value)}
                   />
                 </div>
               ) : null}
@@ -2418,22 +2431,52 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     index={wizardActive ? 1 : 2}
                     label="Display name"
                     hint={
-                      canCheckKey && label.trim().length === 0
-                        ? "filled from the account when you check the key"
+                      nameOptions.length > 0
+                        ? "from the account your key returned — or type your own"
                         : "how you'll tell accounts apart"
                     }
                     htmlFor="connection-name"
                   />
-                  <Input
-                    id="connection-name"
-                    placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
-                    value={label}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                      setLabel(e.target.value);
-                      // A hand-typed name takes over: a later probe won't overwrite it.
-                      nameAutofilled.current = false;
-                    }}
-                  />
+                  {nameOptions.length > 0 ? (
+                    // The response's identity fields are the options; picking
+                    // one also stores its path as the check's identityField.
+                    <FreeformCombobox
+                      id="connection-name"
+                      value={label}
+                      onValueChange={(next) => {
+                        const match = nameOptions.find((option) => option.value === next);
+                        setLabel(next);
+                        nameAutofilled.current = match !== undefined;
+                        if (match && typeof match.description === "string") {
+                          void handlePickIdentity(match.description, next);
+                        }
+                      }}
+                      options={nameOptions}
+                      placeholder={connectionLabelForHost(
+                        "",
+                        owner,
+                        integrationName,
+                        organizationId,
+                      )}
+                      emptyLabel="Type any name"
+                    />
+                  ) : (
+                    <Input
+                      id="connection-name"
+                      placeholder={connectionLabelForHost(
+                        "",
+                        owner,
+                        integrationName,
+                        organizationId,
+                      )}
+                      value={label}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        setLabel(e.target.value);
+                        // A hand-typed name takes over: a later probe won't overwrite it.
+                        nameAutofilled.current = false;
+                      }}
+                    />
+                  )}
                   <p className="text-xs text-muted-foreground">
                     This connection will be callable as{" "}
                     <span className="font-mono text-foreground">{String(callableName)}</span>.

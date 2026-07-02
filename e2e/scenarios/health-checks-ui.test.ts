@@ -296,34 +296,35 @@ scenario(
               await dialog.locator('input[type="password"]').first().waitFor();
             });
 
-            await step("The response rows ARE the identity picker: click the email", async () => {
-              await dialog.getByText(/Click the field that names this account/).waitFor();
-              await dialog.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
-              // The picked row is marked as the label.
-              await dialog.getByText("label", { exact: true }).waitFor();
+            await step("The response renders read-only, identity fields first", async () => {
+              // The panel shows what came back; picking happens on step 2.
+              await dialog.getByText("email", { exact: true }).waitFor();
+              await dialog.getByText("alice@example.com", { exact: true }).waitFor();
             });
 
-            await step("Continue: step 2 is just name + where it lives", async () => {
-              await dialog.getByRole("button", { name: "Continue", exact: true }).click();
-              // Step 2 carries the verdict recap and the derived name; the key
-              // entry is behind Back, not lost.
-              await dialog.getByText(/Healthy · alice@example\.com/).waitFor();
-              await page.waitForFunction(
-                () =>
-                  (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
-                  "alice@example.com",
-              );
-              await dialog.getByRole("button", { name: "Add connection", exact: true }).waitFor();
-            });
+            await step(
+              "Step 2: the display name is a picker over the identity fields",
+              async () => {
+                await dialog.getByRole("button", { name: "Continue", exact: true }).click();
+                await dialog.getByRole("button", { name: "Add connection", exact: true }).waitFor();
+                // The name combobox offers the response's identity fields.
+                await clickComboboxOption(page, "connection-name", "alice@example.com");
+                await page.waitForFunction(
+                  () =>
+                    (document.querySelector("#connection-name") as HTMLInputElement | null)
+                      ?.value === "alice@example.com",
+                );
+              },
+            );
           });
 
-          // Pick mode persisted the chosen operation, and the identity click
-          // upgraded it.
+          // The Check persisted the operation; picking the name from the
+          // response upgraded the check with that field as the identity.
           const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
           expect(stored?.operation, "the picked operation was saved as the health check").toBe(
             getMe.operation,
           );
-          expect(stored?.identityField, "the response click set the identity field").toBe("email");
+          expect(stored?.identityField, "the name pick set the identity field").toBe("email");
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
@@ -889,6 +890,109 @@ scenario(
             .pipe(Effect.ignore);
           yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
         }),
+      );
+    }),
+  ),
+);
+
+// ===========================================================================
+// Modal scroll: with the request panel showing a full response, the Add
+// Connection modal can exceed the viewport cap (max-h 85vh) — its body must
+// actually wheel-scroll. Radix modal dialogs lock body scroll; a bug in the
+// overflow chain (or a scroll-lock leak from the portaled combobox) makes the
+// wheel do nothing, stranding the footer out of reach.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · the Add Connection modal wheel-scrolls when the response overflows",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      // A wide response: many scalar fields, so the response view + the rest
+      // of the modal outgrow a short viewport.
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<{ readonly url: string; readonly close: () => void }>((resume) => {
+          const httpServer = createServer((request, response) => {
+            const authorized = request.headers["authorization"] === `Bearer ${goodToken}`;
+            if (request.method === "GET" && (request.url ?? "").startsWith("/me")) {
+              const body: Record<string, string> = { email: "alice@example.com" };
+              for (let i = 0; i < 20; i++) body[`field${i}`] = `value ${i}`;
+              response.writeHead(authorized ? 200 : 401, {
+                "content-type": "application/json",
+              });
+              response.end(JSON.stringify(authorized ? body : { error: "x" }));
+              return;
+            }
+            response.writeHead(404, { "content-type": "application/json" });
+            response.end(JSON.stringify({ error: "not_found" }));
+          });
+          httpServer.listen(0, "127.0.0.1", () => {
+            const address = httpServer.address();
+            const port = typeof address === "object" && address ? address.port : 0;
+            resume(
+              Effect.succeed({
+                url: `http://127.0.0.1:${port}`,
+                close: () => {
+                  httpServer.close();
+                  httpServer.closeAllConnections();
+                },
+              }),
+            );
+          });
+        }),
+        (s) => Effect.sync(s.close),
+      );
+      const slug = newSlug("hc-ui-scrollmodal");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const dialog = page.getByRole("dialog", { name: /Add connection/ });
+
+            await step("Open the modal in a short viewport and probe", async () => {
+              await page.setViewportSize({ width: 1280, height: 560 });
+              await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+              await page.getByRole("button", { name: "Add connection", exact: true }).click();
+              await page.getByRole("heading", { name: /Add connection/ }).waitFor();
+              await page.keyboard.type(goodToken);
+              await dialog.getByRole("button", { name: "Check", exact: true }).click();
+              await dialog.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
+            });
+
+            await step("The modal body wheel-scrolls to reach the footer", async () => {
+              const content = page.locator('[data-slot="dialog-content"]');
+              const before = await content.evaluate((el) => el.scrollTop);
+              // The modal must be genuinely overflowing in this viewport, or
+              // the scroll assertion below would pass vacuously.
+              const overflowing = await content.evaluate(
+                (el) => el.scrollHeight > el.clientHeight + 20,
+              );
+              expect(overflowing, "the modal content overflows the viewport cap").toBe(true);
+              await content.hover();
+              await page.mouse.wheel(0, 600);
+              await page.waitForFunction(
+                (start) => {
+                  const el = document.querySelector('[data-slot="dialog-content"]');
+                  return el != null && el.scrollTop > start + 20;
+                },
+                before,
+                { timeout: 5_000 },
+              );
+              // And the footer's Continue is reachable after scrolling.
+              await dialog.getByRole("button", { name: "Continue", exact: true }).click();
+              await dialog.getByRole("button", { name: "Add connection", exact: true }).waitFor();
+            });
+          });
+        }),
+        client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
     }),
   ),
