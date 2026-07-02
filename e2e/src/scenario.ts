@@ -54,6 +54,10 @@ export const slugify = (text: string): string =>
 
 export interface ScenarioOptions {
   readonly timeout?: number;
+  /** When set, the scenario is registered as skipped (vitest `it.skip`) and its
+   *  body never runs. Use ONLY for a scenario blocked on a tracked, out-of-scope
+   *  issue; state the reason here so the skip is self-documenting in the source. */
+  readonly skip?: string;
 }
 
 type AllServices =
@@ -114,6 +118,13 @@ export const scenario = (
   options: ScenarioOptions,
   body: Effect.Effect<void, unknown, AllServices | HttpClient.HttpClient>,
 ): void => {
+  if (options.skip) {
+    // Blocked on a tracked, out-of-scope issue (see the scenario's `skip`
+    // reason). Registered as skipped so the suite stays green and the gap stays
+    // visible in the test report rather than silently deleted.
+    it.skip(name, () => Effect.void);
+    return;
+  }
   const target = resolveTarget();
   const dir = join(RUNS_DIR, target.name, slugify(name));
   const context = contextFor(target, dir);
