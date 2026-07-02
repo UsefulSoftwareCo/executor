@@ -885,102 +885,121 @@ function KeyValidationStatus(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Health-check pick mode: the modal body swaps to this focused view (like the
-// OAuth app registration subview) when the user clicks "Check the key works"
-// on an integration with no configured check. A teachable moment in three
-// beats, one at a time:
-//   1. pick the read-only operation the key will be tested against,
-//   2. run it and SEE the real response,
-//   3. click the field that names the account (or skip for status-only).
-// The picked operation + field become the integration's health check.
+// The key check as a request/response panel — the system's code-window
+// pattern, because that is literally what this is: one hairline-framed panel
+// whose titlebar is the request line (method chip + operation + Check) and
+// whose body is the response the key actually got. The operation arrives
+// pre-seeded with the best read-only candidate and is editable in place, so
+// the user always SEES what will run without filling in a form. On a healthy
+// run the response rows are the identity picker: click the field that names
+// the account. No expanding sub-forms, no duplicate verdicts, no skip link
+// (Continue already is one).
 // ---------------------------------------------------------------------------
-function HealthCheckPickView(props: {
+function RequestCheckPanel(props: {
   readonly candidates: readonly HealthCheckCandidate[];
   readonly selected: HealthCheckCandidate | null;
+  /** The operation in the request line (pre-seeded or user-picked). */
   readonly operation: string;
   readonly onOperationChange: (operation: string) => void;
+  /** Static request line for an already-configured check (no combobox). */
+  readonly configuredOperation: string | null;
   readonly args: Record<string, string>;
   readonly onArgChange: (name: string, value: string) => void;
   readonly ready: boolean;
   readonly validating: boolean;
   readonly result: HealthCheckResult | null;
-  readonly onProbe: () => void;
+  /** The identity path picked so far (highlights its row). */
+  readonly pickedPath: string | null;
+  /** True when the response rows should offer the identity pick. */
+  readonly canPickIdentity: boolean;
+  readonly onCheck: () => void;
   readonly onPickIdentity: (path: string, value: string) => void;
-  readonly onDone: () => void;
 }) {
-  const { candidates, selected, operation, result } = props;
+  const { candidates, selected, operation, configuredOperation, result } = props;
   const operationOptions = useMemo<FreeformComboboxOption[]>(
     () =>
-      candidates.map((c) => ({
-        value: c.operation,
-        label: `${c.method.toUpperCase()} ${c.operation}${c.destructive ? " (writes)" : ""}`,
-        description: c.summary,
-      })),
+      candidates
+        .filter((c) => !c.destructive)
+        .map((c) => ({
+          value: c.operation,
+          label: c.operation,
+          description: c.summary,
+        })),
     [candidates],
   );
   const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
   const healthy = result?.status === "healthy";
   const sample = healthy ? (result?.responseSample ?? []) : [];
+  const showRows = healthy && props.canPickIdentity && sample.length > 0;
+  const method = configuredOperation ? "GET" : (selected?.method ?? "get").toUpperCase();
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-4 rounded-md border border-border/60 bg-muted/20 p-3">
-      {/* Beat 1: which call proves the key works. */}
-      <div className="space-y-2">
-        <Label htmlFor="hc-pick-operation">Test it against a read-only call</Label>
-        <FreeformCombobox
-          id="hc-pick-operation"
-          value={operation}
-          onValueChange={props.onOperationChange}
-          options={operationOptions}
-          placeholder={candidates.length === 0 ? "No operations available" : "Pick an operation"}
-          emptyLabel="No matching operations"
-          disabled={props.validating}
-        />
-        {selected?.summary ? (
-          <p className="text-xs text-muted-foreground">{selected.summary}</p>
-        ) : null}
-        {selected?.destructive ? (
-          <p className="text-xs text-destructive">
-            This operation writes data — it will not run as a health check. Pick a read-only (GET)
-            call.
-          </p>
-        ) : null}
-        {requiredParams.map((param) => (
-          <div key={param.name} className="space-y-1.5">
-            <Label htmlFor={`hc-pick-arg-${param.name}`}>
-              {param.name}
-              <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                ({param.location})
-              </span>
-            </Label>
-            <Input
-              id={`hc-pick-arg-${param.name}`}
-              value={props.args[param.name] ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                props.onArgChange(param.name, e.target.value)
-              }
-              placeholder={param.description ?? `Value for ${param.name}`}
-              disabled={props.validating}
-            />
-          </div>
-        ))}
-      </div>
-
-      {/* Beat 2: run it against the pasted key. */}
-      <div className="flex items-center gap-3">
+    <div className="min-w-0 overflow-hidden rounded-lg border border-border">
+      {/* Request line: METHOD operation … Check */}
+      <div className="flex h-10 min-w-0 items-center gap-2.5 bg-muted/40 pl-3 pr-1.5">
+        <span className="shrink-0 select-none font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          {method}
+        </span>
+        {configuredOperation ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+            {configuredOperation}
+          </span>
+        ) : (
+          <FreeformCombobox
+            id="hc-pick-operation"
+            value={operation}
+            onValueChange={props.onOperationChange}
+            options={operationOptions}
+            placeholder="pick a call"
+            emptyLabel="No matching operations"
+            disabled={props.validating}
+            className="min-w-0 flex-1"
+            inputClassName="h-7 border-0 bg-transparent px-0 font-mono text-xs shadow-none focus-visible:ring-0 dark:bg-transparent"
+          />
+        )}
         <Button
           type="button"
-          variant="outline"
-          size="sm"
+          variant="secondary"
+          size="xs"
           loading={props.validating}
           disabled={!props.ready}
-          onClick={props.onProbe}
+          onClick={props.onCheck}
         >
-          Run it
+          Check
         </Button>
-        {result && !props.validating ? (
-          <span
-            className={`flex min-w-0 items-center gap-2 text-xs ${
+      </div>
+
+      {/* Required args, only when the chosen call needs them. */}
+      {!configuredOperation && requiredParams.length > 0 ? (
+        <div className="space-y-2 border-t border-border px-3 py-2.5">
+          {requiredParams.map((param) => (
+            <div key={param.name} className="flex min-w-0 items-center gap-2.5">
+              <Label
+                htmlFor={`hc-pick-arg-${param.name}`}
+                className="w-32 shrink-0 truncate font-mono text-xs font-normal text-muted-foreground"
+              >
+                {param.name}
+              </Label>
+              <Input
+                id={`hc-pick-arg-${param.name}`}
+                value={props.args[param.name] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onArgChange(param.name, e.target.value)
+                }
+                placeholder={param.description ?? "required"}
+                disabled={props.validating}
+                className="h-7 font-mono text-xs"
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Response: status line, then the rows (the identity picker). */}
+      {result && !props.validating ? (
+        <div className="border-t border-border">
+          <div
+            className={`flex min-w-0 items-center gap-2 px-3 py-2 font-mono text-xs ${
               healthy ? "text-muted-foreground" : "text-destructive"
             }`}
           >
@@ -988,54 +1007,50 @@ function HealthCheckPickView(props: {
               aria-hidden
               className={`size-2 shrink-0 rounded-full ${HEALTH_INDICATOR_COLOR[result.status].dot}`}
             />
+            {result.httpStatus !== undefined ? (
+              <span className="shrink-0">{result.httpStatus}</span>
+            ) : null}
             <span className="min-w-0 truncate">
               <span className="font-medium">{HEALTH_STATUS_LABEL[result.status]}</span>
-              {!healthy && result.detail ? (
-                <span className="opacity-80"> — {result.detail}</span>
+              {healthy && result.identity ? (
+                <span className="text-foreground"> · {result.identity}</span>
               ) : null}
+              {!healthy && result.detail ? <span> — {result.detail}</span> : null}
             </span>
-          </span>
-        ) : null}
-      </div>
-
-      {/* Beat 3: the real response — click the field that names the account. */}
-      {healthy ? (
-        <div className="space-y-2">
-          <Label>Pick the field that names this account</Label>
-          <p className="text-xs text-muted-foreground">
-            This is the response your key just got. The field you pick labels the connection and
-            every future check.
-          </p>
-          <div className="max-h-48 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-1.5">
-            {sample.length === 0 ? (
-              <p className="px-1.5 py-1 text-xs text-muted-foreground">
-                The response had no readable fields — this stays a status-only check.
-              </p>
-            ) : (
-              sample.map((field) => (
-                <Button
-                  key={field.path}
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  className="flex h-auto w-full min-w-0 items-baseline justify-start gap-2 rounded px-1.5 py-1 text-left font-mono text-xs font-normal"
-                  onClick={() => props.onPickIdentity(field.path, field.value)}
-                >
-                  <span className="shrink-0 text-muted-foreground">{field.path}</span>
-                  <span className="min-w-0 truncate text-foreground">{field.value}</span>
-                </Button>
-              ))
-            )}
           </div>
-          <Button
-            type="button"
-            variant="link"
-            size="xs"
-            className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
-            onClick={props.onDone}
-          >
-            Skip — status only
-          </Button>
+          {showRows ? (
+            <div className="border-t border-border">
+              <p className="px-3 pb-1 pt-2 text-xs text-muted-foreground">
+                Click the field that names this account — it becomes the connection&apos;s label.
+              </p>
+              <div className="max-h-44 overflow-y-auto px-1.5 pb-1.5">
+                {sample.map((field) => {
+                  const picked = props.pickedPath === field.path;
+                  return (
+                    <Button
+                      key={field.path}
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      data-picked={picked ? "" : undefined}
+                      className="flex h-auto w-full min-w-0 items-baseline justify-start gap-2.5 rounded-sm px-1.5 py-1 text-left font-mono text-xs font-normal data-[picked]:bg-accent"
+                      onClick={() => props.onPickIdentity(field.path, field.value)}
+                    >
+                      <span className="w-40 shrink-0 truncate text-muted-foreground">
+                        {field.path}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-foreground">{field.value}</span>
+                      {picked ? (
+                        <span className="shrink-0 text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                          label
+                        </span>
+                      ) : null}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1097,13 +1112,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [hcOperation, setHcOperation] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
   // Credential methods run as a TWO-STEP wizard in the same modal: step 1 is
-  // the key + proving it works (the pick-a-call block expands inline, so the
-  // key stays visible and editable the whole time); step 2 is naming the
-  // connection and picking where it lives. No submodal.
+  // the key + proving it works (the request/response panel sits right below
+  // the key, which stays visible and editable the whole time); step 2 is
+  // naming the connection and picking where it lives. No submodal.
   const [wizardStep, setWizardStep] = useState<"validate" | "place">("validate");
-  // Whether the inline pick-a-call block is open (integration has no
-  // configured check and the user clicked "Check the key works").
-  const [hcExpanded, setHcExpanded] = useState(false);
+  // The identity path the user picked from the response (highlights its row).
+  const [hcPickedPath, setHcPickedPath] = useState<string | null>(null);
   // The spec a healthy pick-mode probe saved (identity click upgrades it).
   const [savedInlineSpec, setSavedInlineSpec] = useState<HealthCheckSpec | null>(null);
   // Whether the display name was auto-filled from a probed identity (so a later
@@ -1153,8 +1167,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // check is configured we probe against it; when not, the user picks one of the
   // candidates inline to test the key (and we save it).
   const healthCheckResult = useAtomValue(integrationHealthCheckAtom(integration));
-  const hasHealthCheck =
-    AsyncResult.isSuccess(healthCheckResult) && healthCheckResult.value !== null;
+  const configuredHealthCheck = AsyncResult.isSuccess(healthCheckResult)
+    ? healthCheckResult.value
+    : null;
+  const hasHealthCheck = configuredHealthCheck !== null;
   const candidatesResult = useAtomValue(integrationHealthCheckCandidatesAtom(integration));
   const healthCheckCandidates = useMemo(
     () => (AsyncResult.isSuccess(candidatesResult) ? candidatesResult.value : []),
@@ -1264,8 +1280,25 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   // Key check (pasteable credentials only): offer it whenever the integration
   // either has a configured check OR exposes candidate operations to test
-  // against. With a configured check the button probes directly; with none it
-  // enters pick mode, where the user chooses the probe deliberately.
+  // against. The request line arrives pre-seeded with the best read-only
+  // zero-argument candidate so the user SEES what will run and edits in place.
+  const hcBestCandidate = useMemo(
+    () =>
+      healthCheckCandidates.find(
+        (candidate) => !candidate.destructive && candidate.requiredArgCount === 0,
+      ) ??
+      healthCheckCandidates.find((candidate) => !candidate.destructive) ??
+      null,
+    [healthCheckCandidates],
+  );
+  useEffect(() => {
+    if (hcBestCandidate && hcOperation.length === 0) {
+      setHcOperation(hcBestCandidate.operation);
+    }
+    // Seed once per candidate load; a user clearing the field mid-session is
+    // re-seeded only when candidates change, which is the useful behavior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hcBestCandidate]);
   const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
   const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
   const hcMissingRequired = hcRequiredParams.some(
@@ -1436,7 +1469,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     setOAuthFallbackProbe(null);
     setDcrFallbackMessage(null);
     setWizardStep("validate");
-    setHcExpanded(false);
+    setHcPickedPath(null);
   };
 
   // A just-created custom method joins the in-session list and is auto-selected
@@ -1543,6 +1576,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const clearKeyCheck = (): void => {
     if (validationResult !== null) setValidationResult(null);
     if (savedInlineSpec !== null) setSavedInlineSpec(null);
+    if (hcPickedPath !== null) setHcPickedPath(null);
   };
 
   // Check the key works: probe the pasted credential WITHOUT saving the
@@ -1644,14 +1678,13 @@ function AddAccountModalView(props: AddAccountModalProps) {
         return;
       }
     }
+    setHcPickedPath(path);
     setValidationResult((current) => (current ? { ...current, identity: value } : current));
     setLabel((current) => {
       if (current.trim().length > 0 && !nameAutofilled.current) return current;
       nameAutofilled.current = true;
       return value;
     });
-    // The pick is the last beat: collapse the inline block, verdict stands.
-    setHcExpanded(false);
   };
 
   const handleOAuthConnect = async () => {
@@ -2283,61 +2316,51 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   </Tabs>
                 )}
 
-              {/* Check the key works — OUTSIDE the tabs, always below them, so
-              the affordance doesn't move or vanish as methods switch. With a
-              configured check it probes directly; with none the pick-a-call
-              block expands inline and the key above stays editable. */}
+              {/* The key check, as one request/response panel below the tabs.
+              Always visible for credential methods: the request line shows
+              exactly what will run (pre-seeded with the best read-only call,
+              editable in place), Check runs it, and the response body doubles
+              as the identity picker. */}
               {(!wizardActive || wizardStep === "validate") && canCheckKey ? (
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-3">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      loading={validating}
-                      disabled={credentialPayloadOrigin === null}
-                      onClick={() => {
-                        if (hasHealthCheck) {
-                          void handleValidate();
-                        } else {
-                          setHcExpanded(true);
-                        }
-                      }}
-                    >
-                      Check the key works
-                    </Button>
-                    {/* The expanded pick block carries its own verdict next to
-                    Run it — don't say it twice. */}
-                    {hcExpanded ? null : (
-                      <KeyValidationStatus validating={validating} result={validationResult} />
-                    )}
-                  </div>
-                  {/* Gated on the expansion alone: probing healthy saves the
-                  spec, which flips hasHealthCheck mid-flow — the block must
-                  outlive its own success until the pick. */}
-                  {hcExpanded ? (
-                    <HealthCheckPickView
-                      candidates={healthCheckCandidates}
-                      selected={hcSelected}
-                      operation={hcOperation}
-                      onOperationChange={(next) => {
-                        setHcOperation(next);
-                        setHcArgs({});
-                        clearKeyCheck();
-                      }}
-                      args={hcArgs}
-                      onArgChange={(name, value) => {
-                        setHcArgs((prev) => ({ ...prev, [name]: value }));
-                        clearKeyCheck();
-                      }}
-                      ready={hcPickReady && !validating}
-                      validating={validating}
-                      result={validationResult}
-                      onProbe={() => void handlePickModeProbe()}
-                      onPickIdentity={(path, value) => void handlePickIdentity(path, value)}
-                      onDone={() => setHcExpanded(false)}
-                    />
-                  ) : null}
+                <div className="space-y-1.5">
+                  <StepHeader
+                    index={2}
+                    label="Check the key works"
+                    hint="runs one read-only call with your key — saved as this integration's health check"
+                  />
+                  <RequestCheckPanel
+                    candidates={healthCheckCandidates}
+                    selected={hcSelected}
+                    operation={hcOperation}
+                    onOperationChange={(next) => {
+                      setHcOperation(next);
+                      setHcArgs({});
+                      clearKeyCheck();
+                    }}
+                    configuredOperation={configuredHealthCheck?.operation ?? null}
+                    args={hcArgs}
+                    onArgChange={(name, value) => {
+                      setHcArgs((prev) => ({ ...prev, [name]: value }));
+                      clearKeyCheck();
+                    }}
+                    ready={
+                      credentialPayloadOrigin !== null &&
+                      !validating &&
+                      (hasHealthCheck || hcPickReady)
+                    }
+                    validating={validating}
+                    result={validationResult}
+                    pickedPath={hcPickedPath}
+                    canPickIdentity={savedInlineSpec !== null}
+                    onCheck={() => {
+                      if (hasHealthCheck) {
+                        void handleValidate();
+                      } else {
+                        void handlePickModeProbe();
+                      }
+                    }}
+                    onPickIdentity={(path, value) => void handlePickIdentity(path, value)}
+                  />
                 </div>
               ) : null}
 

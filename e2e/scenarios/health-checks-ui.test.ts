@@ -237,7 +237,7 @@ const largeSpec = (baseUrl: string, title = "Big API"): string => {
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · step 1 proves the key inline: choose the call, see the response, pick the identity",
+  "Health checks (UI) · the request panel: pre-seeded call, one Check, response rows pick the identity",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -272,26 +272,35 @@ scenario(
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
 
-            await step("The key field has first focus; paste and check", async () => {
-              // The credential is the modal's first input now (the name is
-              // derived from it), so pasting starts immediately.
-              await page.keyboard.type(goodToken);
-              await dialog.getByRole("button", { name: "Check the key works" }).click();
-            });
+            await step(
+              "The key field has first focus; the request line is pre-seeded",
+              async () => {
+                // The credential is the modal's first input now (the name is
+                // derived from it), so pasting starts immediately.
+                await page.keyboard.type(goodToken);
+                // The panel is already on screen with the best read-only call in
+                // the request line — nothing to expand, nothing to configure.
+                await page.waitForFunction(() => {
+                  const input = document.querySelector(
+                    "#hc-pick-operation",
+                  ) as HTMLInputElement | null;
+                  return input?.value.includes("getMe") ?? false;
+                });
+              },
+            );
 
-            await step("The pick block expands inline: choose the read-only call", async () => {
-              // No configured check, so the pick-a-call block expands BELOW the
-              // key — which stays visible and editable the whole time.
-              await clickComboboxOption(page, "hc-pick-operation", "getMe");
-              await page.getByRole("button", { name: "Run it", exact: true }).click();
+            await step("One Check runs it; the response lands in the panel", async () => {
+              await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
               // The key field is still on screen, editable, mid-flow.
               await dialog.getByPlaceholder("token", { exact: true }).waitFor();
             });
 
-            await step("The real response teaches the pick: click the identity", async () => {
-              await dialog.getByText("Pick the field that names this account").waitFor();
+            await step("The response rows ARE the identity picker: click the email", async () => {
+              await dialog.getByText(/Click the field that names this account/).waitFor();
               await dialog.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
+              // The picked row is marked as the label.
+              await dialog.getByText("label", { exact: true }).waitFor();
             });
 
             await step("Continue: step 2 is just name + where it lives", async () => {
@@ -781,7 +790,7 @@ scenario(
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
               // A CONFIGURED check probes directly — no pick block.
-              await dialog.getByRole("button", { name: "Check the key works" }).click();
+              await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText(/Healthy/).waitFor({ timeout: 30_000 });
               // The derived name shows on step 2.
               await dialog.getByRole("button", { name: "Continue", exact: true }).click();
