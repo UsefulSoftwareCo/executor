@@ -116,6 +116,7 @@ export {
   compareHealthCheckCandidates,
   projectResponseFields,
   extractResponseFields,
+  pickIdentitySample,
 } from "./health-check";
 
 // Core schema.

@@ -4,7 +4,7 @@
 // WHICH call the probe runs:
 //
 //  1. Add Connection: with no health check configured yet, the user picks a
-//     read-only operation inline, clicks "Check the key works", the probe runs,
+//     read-only operation is auto-picked, one Validate click probes the key,
 //     and the picked operation is saved as the integration's health check.
 //  2. Edit sheet, large spec: typing into the operation combobox filters a
 //     hundreds-long candidate list down to the one match, and committing it
@@ -89,7 +89,9 @@ const serveIdentityApi = (validToken: string) =>
         if (request.method === "GET" && (request.url ?? "").startsWith("/me")) {
           response.writeHead(authorized ? 200 : 401, { "content-type": "application/json" });
           response.end(
-            JSON.stringify(authorized ? { email: "alice@example.com" } : { error: "x" }),
+            JSON.stringify(
+              authorized ? { email: "alice@example.com", login: "alice" } : { error: "x" },
+            ),
           );
           return;
         }
@@ -235,7 +237,7 @@ const largeSpec = (baseUrl: string, title = "Big API"): string => {
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · Add Connection auto-picks the probe, and identity is chosen from the real response",
+  "Health checks (UI) · one Validate click checks the key, defaults the identity, and saves the check",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -270,42 +272,45 @@ scenario(
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
 
-            await step("Paste the key: the probe is already picked for you", async () => {
+            await step("Paste the key and Validate — that's the whole flow", async () => {
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
-              // No pre-probe form: the top-ranked read-only zero-arg operation is
-              // auto-picked and shown as a one-line caption next to the button.
-              await dialog.getByText(/Calls/).waitFor();
-              await dialog.getByText(new RegExp(getMe.operation)).waitFor();
+              // ONE control, no pre-probe form, no caption: the probe operation
+              // and the identity field are both defaults the flow picks.
+              await dialog.getByRole("button", { name: "Validate", exact: true }).click();
             });
 
-            await step("Check the key works: it probes healthy", async () => {
-              await dialog.getByRole("button", { name: "Check the key works" }).click();
-              await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
-            });
-
-            await step("Pick the identity from the REAL response the key returned", async () => {
-              // The probe's actual response fields render as clickable rows —
-              // identity is chosen from live data, never guessed from a schema.
-              await dialog.getByText("Which field names this account?").waitFor();
-              await dialog.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
-              // Picking labels the connection: the display name adopts the value.
+            await step("The verdict line carries everything: status + identity", async () => {
+              // Healthy, with the auto-picked identity inline and a "change"
+              // escape hatch — the only post-validate UI.
+              await dialog.getByText(/Healthy · alice@example\.com/).waitFor({ timeout: 30_000 });
+              await dialog.getByRole("button", { name: "change", exact: true }).waitFor();
+              // The display name adopted the identity.
               await page.waitForFunction(
                 () =>
                   (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
                   "alice@example.com",
               );
             });
+
+            await step("change opens the correction list over the real response", async () => {
+              await dialog.getByRole("button", { name: "change", exact: true }).click();
+              await dialog.getByText("Label this connection by").waitFor();
+              await dialog.getByRole("button", { name: /login\s+alice/ }).click();
+              await dialog.getByText(/Healthy · alice$/).waitFor({ timeout: 30_000 });
+            });
           });
 
-          // The healthy probe auto-saved the check, and the picked field
-          // upgraded it with the identity path.
+          // One Validate click persisted the check with the auto-picked
+          // identity; the correction click re-pointed it.
           const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
           expect(stored?.operation, "the auto-picked operation was saved as the health check").toBe(
             getMe.operation,
           );
-          expect(stored?.identityField, "the response click set the identity field").toBe("email");
+          expect(stored?.identityField, "the correction re-pointed the identity field").toBe(
+            "login",
+          );
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
@@ -771,7 +776,7 @@ scenario(
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
-              await dialog.getByRole("button", { name: "Check the key works" }).click();
+              await dialog.getByRole("button", { name: "Validate", exact: true }).click();
               await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
               await page.waitForFunction(
                 (expected) =>

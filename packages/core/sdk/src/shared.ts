@@ -116,6 +116,7 @@ export {
   classifyHttpStatus,
   extractIdentity,
   compareHealthCheckCandidates,
+  pickIdentitySample,
 } from "./health-check";
 
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).

@@ -384,3 +384,40 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
   visit(data, "", 0);
   return out;
 };
+
+// ---------------------------------------------------------------------------
+// Identity auto-pick — choose the response field that most likely names the
+// account, so the connect flow can default the identity instead of asking.
+// Ranked by how account-naming the leaf key is (email > login/username >
+// name/displayName > id), shallower paths first within a tier. Returns
+// undefined when nothing plausible exists (pure liveness check).
+// ---------------------------------------------------------------------------
+
+const IDENTITY_KEY_TIERS: readonly (readonly string[])[] = [
+  ["email", "emailaddress", "mail", "userprincipalname"],
+  ["login", "username", "handle", "slug"],
+  ["displayname", "name", "fullname"],
+  ["id", "userid", "accountid"],
+];
+
+/** Pick the sample row that most likely identifies the account. The tiebreak
+ *  within a tier is path depth (shallower = more canonical), then sample
+ *  order (which follows response order). */
+export const pickIdentitySample = (
+  sample: readonly HealthCheckResponseSample[],
+): HealthCheckResponseSample | undefined => {
+  let best: { row: HealthCheckResponseSample; tier: number; depth: number } | undefined;
+  for (const row of sample) {
+    if (row.value.trim().length === 0) continue;
+    const segments = row.path.split(".");
+    const named = segments.filter((segment) => !/^\d+$/.test(segment));
+    const leaf = (named[named.length - 1] ?? "").toLowerCase();
+    const tier = IDENTITY_KEY_TIERS.findIndex((keys) => keys.includes(leaf));
+    if (tier === -1) continue;
+    const depth = segments.length;
+    if (!best || tier < best.tier || (tier === best.tier && depth < best.depth)) {
+      best = { row, tier, depth };
+    }
+  }
+  return best?.row;
+};
