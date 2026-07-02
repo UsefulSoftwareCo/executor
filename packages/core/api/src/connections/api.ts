@@ -147,6 +147,15 @@ const ListConnectionsQuery = Schema.Struct({
   owner: Schema.optional(Owner),
 });
 
+// Freshness window for checkHealth: return the persisted verdict when younger
+// than this many ms; probe otherwise. Bounded to a day — a bigger window is a
+// caller bug, not a use case.
+const CheckHealthQuery = Schema.Struct({
+  ifStaleMs: Schema.optional(
+    Schema.FiniteFromString.check(Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
+  ),
+});
+
 // ---------------------------------------------------------------------------
 // Error schemas with HTTP status annotations
 // ---------------------------------------------------------------------------
@@ -224,6 +233,10 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
   .add(
     HttpApiEndpoint.post("checkHealth", "/connections/:owner/:integration/:name/health", {
       params: ConnectionParams,
+      // `ifStaleMs`: return the persisted verdict when younger than this
+      // instead of probing — the page-load revalidation path. The server owns
+      // the freshness decision so open tabs can't stampede an upstream.
+      query: CheckHealthQuery,
       success: HealthCheckResult,
       error: [InternalError, ConnectionNotFound, IntegrationNotFound],
     }),

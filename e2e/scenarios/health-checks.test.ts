@@ -317,6 +317,7 @@ scenario(
           });
           const healthy = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(healthy.status, "the saved connection's live key is healthy").toBe("healthy");
           expect(healthy.httpStatus, "the saved probe saw the 200").toBe(200);
@@ -335,6 +336,7 @@ scenario(
           });
           const expired = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(expired.status, "the same connection now reads as expired").toBe("expired");
           expect(expired.httpStatus, "the saved probe saw the 401").toBe(401);
@@ -447,6 +449,7 @@ scenario(
           });
           const result = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(result.status, "with no check configured the status is unknown").toBe("unknown");
           expect(result.detail ?? "", "the result explains why it is unknown").toContain(
@@ -507,6 +510,7 @@ scenario(
           // result is unknown-with-reason and the upstream never sees a POST.
           const result = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(result.status, "a mutating probe refuses to run").toBe("unknown");
           expect(result.detail ?? "", "the refusal names the problem").toContain("mutating");
@@ -586,6 +590,7 @@ scenario(
 
           const result = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(result.status, "a 500 upstream reads degraded").toBe("degraded");
           expect(result.httpStatus, "the probe saw the 500").toBe(500);
@@ -593,6 +598,84 @@ scenario(
           expect(result.detail ?? "", "the diagnostic survives").toContain("internal error");
           expect(result.detail ?? "", "the credential is scrubbed").not.toContain(secret);
           expect(result.detail ?? "", "the redaction marker stands in").toContain("[redacted]");
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);
+
+scenario(
+  "Health checks · ifStaleMs returns the cached verdict while fresh and probes once stale",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      const server = yield* serveIdentityApi(goodToken);
+      const slug = newSlug("hc-swr");
+      const name = ConnectionName.make("main");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+          const operation = yield* getMeOperation(client, slug);
+          yield* client.integrations.healthCheckSet({
+            params: { slug },
+            payload: { spec: { operation } },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: goodToken,
+            },
+          });
+
+          // Seed a verdict, then re-create the connection with a DEAD key: the
+          // persisted verdict (healthy) and reality (expired) now disagree.
+          const seeded = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+            query: {},
+          });
+          expect(seeded.status, "the seed probe is healthy").toBe("healthy");
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: "rotated-away",
+            },
+          });
+
+          // Within the freshness window the CACHED verdict comes back — no
+          // probe, so the dead key still reads healthy (stale by design).
+          const cached = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+            query: { ifStaleMs: 60_000 },
+          });
+          expect(cached.status, "a fresh cached verdict is returned as-is").toBe("healthy");
+          expect(cached.checkedAt, "and it IS the seeded verdict, not a new probe").toBe(
+            seeded.checkedAt,
+          );
+
+          // A zero window forces the probe: reality (expired) replaces the cache.
+          const revalidated = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+            query: { ifStaleMs: 0 },
+          });
+          expect(revalidated.status, "a stale window probes and sees the dead key").toBe("expired");
         }),
         Effect.gen(function* () {
           yield* client.connections

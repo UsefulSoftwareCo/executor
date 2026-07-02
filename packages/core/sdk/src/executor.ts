@@ -327,6 +327,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
      *  error: those come back as a `HealthCheckResult` with the matching status. */
     readonly checkHealth: (
       ref: ConnectionRef,
+      options?: {
+        /** Return the persisted verdict when younger than this; probe
+         *  otherwise. Omit to always probe. */
+        readonly ifStaleMs?: number;
+      },
     ) => Effect.Effect<
       HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
@@ -2593,6 +2598,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const connectionCheckHealth = (
       ref: ConnectionRef,
+      options?: {
+        /** Skip the probe and return the persisted verdict when it is younger
+         *  than this. The server owns the freshness decision so N open tabs
+         *  revalidating on load cannot stampede an upstream. Omit = always
+         *  probe (the manual "Check now"). */
+        readonly ifStaleMs?: number;
+      },
     ): Effect.Effect<
       HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
@@ -2605,6 +2617,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             integration: ref.integration,
             name: ref.name,
           });
+        }
+        if (options?.ifStaleMs !== undefined) {
+          const cached = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
+          if (cached && Date.now() - cached.checkedAt < options.ifStaleMs) return cached;
         }
         const integrationRow = yield* findIntegrationRow(ref.integration);
         if (!integrationRow) {

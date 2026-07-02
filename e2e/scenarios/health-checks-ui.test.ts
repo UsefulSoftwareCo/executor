@@ -146,6 +146,7 @@ const serveMutableIdentityApi = (validToken: string) =>
     Effect.callback<{
       readonly url: string;
       readonly revoke: () => void;
+      readonly restore: () => void;
       readonly close: () => void;
     }>((resume) => {
       let live = true;
@@ -167,6 +168,9 @@ const serveMutableIdentityApi = (validToken: string) =>
             url: `http://127.0.0.1:${port}`,
             revoke: () => {
               live = false;
+            },
+            restore: () => {
+              live = true;
             },
             close: () => {
               server.close();
@@ -861,11 +865,13 @@ scenario(
           // the API, before any browser opens. Each run persists its verdict.
           const healthy = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(healthy.status, "the key starts healthy").toBe("healthy");
           server.revoke();
           const expired = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(expired.status, "the revoked key probes expired").toBe("expired");
 
@@ -885,6 +891,21 @@ scenario(
                 // An expired verdict carries no identity; the row falls back to
                 // the connection name.
                 await connections.getByText("main", { exact: true }).waitFor();
+              },
+            );
+
+            await step(
+              "The key recovers: reloading auto-revalidates back to healthy, no clicks",
+              async () => {
+                // Health checks are AUTOMATIC: non-healthy verdicts always
+                // revalidate on mount (recovery must show on the next load,
+                // not after the freshness window). Restore the key, reload,
+                // and the dot flips back with no clicks.
+                server.restore();
+                await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+                // The row mounts with the stale expired verdict, then the
+                // background revalidation flips it to healthy in place.
+                await connections.getByLabel("Status: Healthy").waitFor({ timeout: 30_000 });
               },
             );
           });

@@ -91,6 +91,7 @@ scenario(
           // Saved connection with the live token: alive.
           const healthy = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(healthy.status, "a live MCP credential is healthy").toBe("healthy");
 
@@ -118,6 +119,7 @@ scenario(
           live = false;
           const expired = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
+            query: {},
           });
           expect(expired.status, "a revoked MCP credential reads expired").toBe("expired");
           expect(expired.httpStatus, "the 401 survives the auto-transport fallback").toBe(401);

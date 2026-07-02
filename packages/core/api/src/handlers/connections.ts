@@ -143,15 +143,18 @@ export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connection
         }),
       ),
     )
-    .handle("checkHealth", ({ params: path }) =>
+    .handle("checkHealth", ({ params: path, query }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const result = yield* executor.connections.checkHealth({
-            owner: path.owner,
-            integration: path.integration,
-            name: path.name,
-          });
+          const result = yield* executor.connections.checkHealth(
+            {
+              owner: path.owner,
+              integration: path.integration,
+              name: path.name,
+            },
+            query.ifStaleMs !== undefined ? { ifStaleMs: query.ifStaleMs } : undefined,
+          );
           return toHealthResponse(result);
         }),
       ),
