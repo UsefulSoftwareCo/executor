@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/shared";
+import {
+  OAuthClientSlug,
+  type IntegrationSlug,
+  type OAuthGrant,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
@@ -90,6 +95,12 @@ export const canSubmitOAuthClientForm = (input: {
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
   readonly integrationName: string;
+  /** Slug of the integration whose dialog this form is registering from, when
+   *  known. Stamped onto the created MANUAL app as recorded intent so the picker
+   *  matches it to this integration exactly (not by root-domain guess). Omitted
+   *  when editing (an existing app's origin is fixed) or when there is no single
+   *  integration context. */
+  readonly integrationSlug?: IntegrationSlug;
   /** Existing client slugs, so the generated slug stays unique across apps. */
   readonly existingSlugs: readonly string[];
   /** Endpoints/scopes declared by the integration's OAuth method. */
@@ -113,6 +124,7 @@ export function OAuthClientForm(props: {
 }) {
   const {
     integrationName,
+    integrationSlug,
     existingSlugs,
     prefill,
     fixedSlug,
@@ -294,6 +306,9 @@ export function OAuthClientForm(props: {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         resource,
+        // Editing keeps the app's original origin; only a fresh registration
+        // from an integration's dialog stamps recorded intent.
+        originIntegration: fixedSlug ? null : (integrationSlug ?? null),
       },
       reactivityKeys: oauthClientWriteKeys,
     });
