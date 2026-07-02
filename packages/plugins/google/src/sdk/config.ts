@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { HealthCheckSpec } from "@executor-js/sdk/core";
 import { AuthenticationSchema, type Authentication } from "@executor-js/plugin-openapi";
 
 export const GoogleIntegrationConfigSchema = Schema.Struct({
@@ -9,6 +10,9 @@ export const GoogleIntegrationConfigSchema = Schema.Struct({
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
+  // The declared health check survives the plugin's own decode (updateBundle
+  // read-modify-write); the OpenAPI backing reads/writes it via the base config.
+  healthCheck: Schema.optional(HealthCheckSpec),
 });
 
 export type GoogleIntegrationConfig = Omit<

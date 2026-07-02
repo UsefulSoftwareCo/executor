@@ -19,7 +19,11 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
+  describeHealthCheckOpenApi,
+  listHealthCheckCandidatesOpenApi,
+  setHealthCheckOpenApi,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
@@ -190,6 +194,26 @@ const makeMicrosoftPluginExtension = (
           return yield* persistGraphOperations(graph, String(slug), specHash);
         }),
       );
+
+      // Default the health check to `GET /me` (the canonical Graph identity
+      // endpoint) when the selected workloads include it, so connections report
+      // alive/expired + who-am-I out of the box. The operations were streamed
+      // to storage above, so find the binding there. Best-effort: a Graph
+      // selection without /me just leaves the check unconfigured (the editor
+      // remains available).
+      const meOperation = (yield* ctx.storage.listOperations(String(slug))).find(
+        (op) => op.binding.method.toLowerCase() === "get" && op.binding.pathTemplate === "/me",
+      );
+      if (meOperation) {
+        yield* setHealthCheckOpenApi({
+          ctx,
+          integration: slug,
+          spec: {
+            operation: meOperation.toolName,
+            identityField: "userPrincipalName",
+          },
+        });
+      }
 
       return { slug, toolCount: persisted.toolCount };
     });
@@ -371,6 +395,22 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
       ctx,
       integration: String(integration),
       toolRows,
+    }),
+
+  // Health checks reuse the OpenAPI backing (same store + config superset). The
+  // user picks the identity operation (e.g. GET /me) via the editor.
+  describeHealthCheck: describeHealthCheckOpenApi,
+  listHealthCheckCandidates: (input) =>
+    listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+  setHealthCheck: (input) =>
+    setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
+  checkHealth: (input) =>
+    checkHealthOpenApi({
+      ctx: input.ctx,
+      integration: input.integration,
+      credential: input.credential,
+      spec: input.spec,
+      httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
     }),
 
   removeConnection: () => Effect.void,
