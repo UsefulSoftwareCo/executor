@@ -67,6 +67,25 @@ const alive = (pid: number): boolean => {
   }
 };
 
+const isInstanceState = (value: unknown): value is InstanceState => {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.target === "string" &&
+    typeof v.runnerPid === "number" &&
+    typeof v.startedAt === "string"
+  );
+};
+
+const appResponds = async (url: string): Promise<boolean> => {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 // --- tailnet helpers -------------------------------------------------------
 
 const TAILSCALE_CANDIDATES = [
@@ -445,18 +464,42 @@ const ledger = async (targetName: string, service = "workos") => {
 
 // --- lifecycle commands ----------------------------------------------------
 
-const status = () => {
+const status = async () => {
   if (!existsSync(devDir)) return console.log("no instances");
-  const states = readdirSync(devDir)
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(readFileSync(join(devDir, f), "utf8")) as InstanceState);
+  const states: InstanceState[] = [];
+  for (const f of readdirSync(devDir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(devDir, f), "utf8"));
+      if (isInstanceState(parsed)) states.push(parsed);
+    } catch {
+      // skip unparseable debris
+    }
+  }
   if (states.length === 0) return console.log("no instances");
   for (const state of states) {
     const live = alive(state.runnerPid);
-    console.log(
-      `${state.target}: ${live ? state.status : "DEAD (stale state file)"} — runner ${state.runnerPid}, since ${state.startedAt}`,
-    );
-    if (live && state.status === "ready") printInstance(state);
+    let label: string;
+    if (!live) {
+      label = "DEAD (stale state file)";
+    } else if (state.status === "ready") {
+      const appUrl = state.urls?.app;
+      if (appUrl && !(await appResponds(appUrl))) {
+        label = "UNRESPONSIVE (runner alive but app not answering)";
+      } else {
+        label = state.status;
+      }
+    } else {
+      label = state.status;
+    }
+    console.log(`${state.target}: ${label} — runner ${state.runnerPid}, since ${state.startedAt}`);
+    if (live && state.status === "ready") {
+      if (label === "UNRESPONSIVE (runner alive but app not answering)") {
+        console.log(`  log      ${state.logFile}`);
+      } else {
+        printInstance(state);
+      }
+    }
   }
 };
 
@@ -525,7 +568,7 @@ const main = async () => {
     case "__run":
       return run(args[0] as "selfhost" | "cloud", flags);
     case "status":
-      return status();
+      return await status();
     case "identity":
       return identity(args[0] ?? "", flags);
     case "api":
