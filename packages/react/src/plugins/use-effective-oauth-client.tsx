@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
@@ -100,6 +101,19 @@ export interface UseOAuthClientsResult {
    *  once loaded. */
   readonly displayRegisterCTA: boolean;
 }
+
+/** Stable empty-list reference so the picker memo doesn't re-run while the
+ *  optimistic clients atom is still loading (a fresh `[]` each render would
+ *  invalidate the memo key). */
+const EMPTY_CLIENTS: readonly OAuthClientOption[] = [];
+
+/** Host/root equality that matches ONLY when both sides parsed to a real value.
+ *  `hostOf`/`getRootDomain` return undefined for URLs `new URL()` can't parse,
+ *  so a bare `a === b` would treat two unparseable endpoints as equal
+ *  (`undefined === undefined`). Every host/root comparison in this module must
+ *  go through this so an unparseable value never counts as a match. */
+const hostEq = (a: string | undefined, b: string | undefined): boolean =>
+  a !== undefined && b !== undefined && a === b;
 
 /** Sort apps user-owned first (so the user's own apps surface before shared
  *  workspace apps). */
@@ -207,15 +221,15 @@ export function selectClientsForEndpoints(
     // token endpoint is what the SDK actually calls; authorize host as fallback
     // when no token endpoint was declared).
     const exactHostMatch = wantedTokenHost
-      ? appTokenHost === wantedTokenHost
-      : appAuthorizationHost === wantedAuthorizationHost ||
-        appTokenHost === wantedAuthorizationHost;
+      ? hostEq(appTokenHost, wantedTokenHost)
+      : hostEq(appAuthorizationHost, wantedAuthorizationHost) ||
+        hostEq(appTokenHost, wantedAuthorizationHost);
     // Same registrable root domain (the old, looser heuristic) — now only a
     // tier-2 signal.
     const rootMatch = wantedTokenRoot
-      ? appTokenRoot === wantedTokenRoot
-      : appAuthorizationRoot === wantedAuthorizationRoot ||
-        appTokenRoot === wantedAuthorizationRoot;
+      ? hostEq(appTokenRoot, wantedTokenRoot)
+      : hostEq(appAuthorizationRoot, wantedAuthorizationRoot) ||
+        hostEq(appTokenRoot, wantedAuthorizationRoot);
     if (matchesIntent(app) || exactHostMatch) matched.push(app);
     else if (rootMatch) nearMatches.push(app);
     else unmatched.push(app);
@@ -239,7 +253,26 @@ export function useOAuthClientsForIntegration(opts: {
   // lands. The modal's management menu reads the same optimistic atom, so the
   // picker rows and their actions stay consistent.
   const clientsResult = useAtomValue(oauthClientsOptimisticAtom);
-  if (!AsyncResult.isSuccess(clientsResult)) {
+  const loaded = AsyncResult.isSuccess(clientsResult);
+  const all = loaded ? (clientsResult.value as readonly OAuthClientOption[]) : EMPTY_CLIENTS;
+
+  // Memoize the grade: `selectClientsForEndpoints` parses every client's URLs
+  // with tldts, and the modal passes a FRESH inline options object each render,
+  // so without this every keystroke would re-grade all clients. Key on the
+  // primitive inputs plus the `all` array reference (a new optimistic list is a
+  // new array), NOT on `opts` identity.
+  const selection = useMemo(
+    () =>
+      selectClientsForEndpoints(all, {
+        tokenUrl: opts.tokenUrl,
+        authorizationUrl: opts.authorizationUrl,
+        integration: opts.integration,
+        requireEndpointMatch: opts.requireEndpointMatch,
+      }),
+    [all, opts.tokenUrl, opts.authorizationUrl, opts.integration, opts.requireEndpointMatch],
+  );
+
+  if (!loaded) {
     return {
       clients: [],
       nearMatches: [],
@@ -250,13 +283,7 @@ export function useOAuthClientsForIntegration(opts: {
     };
   }
 
-  const all = clientsResult.value as readonly OAuthClientOption[];
-  const { matched, nearMatches, unmatched, endpointMatched } = selectClientsForEndpoints(all, {
-    tokenUrl: opts.tokenUrl,
-    authorizationUrl: opts.authorizationUrl,
-    integration: opts.integration,
-    requireEndpointMatch: opts.requireEndpointMatch,
-  });
+  const { matched, nearMatches, unmatched, endpointMatched } = selection;
   // EXPLICIT outcome: `clients` is the tier-1 (exact/intent) subset the picker
   // defaults into. `nearMatches` (root-domain-only) is always surfaced, but in a
   // separate subdued section so it is never mistaken for a real match. When an
@@ -307,11 +334,10 @@ export function selectDcrClientsForIntegration(
     const appTokenRoot = getRootDomain(app.tokenUrl);
     const appAuthorizationRoot = getRootDomain(app.authorizationUrl);
     return (
-      (wantedTokenRoot != null &&
-        (appTokenRoot === wantedTokenRoot || appAuthorizationRoot === wantedTokenRoot)) ||
-      (wantedAuthorizationRoot != null &&
-        (appAuthorizationRoot === wantedAuthorizationRoot ||
-          appTokenRoot === wantedAuthorizationRoot))
+      hostEq(appTokenRoot, wantedTokenRoot) ||
+      hostEq(appAuthorizationRoot, wantedTokenRoot) ||
+      hostEq(appAuthorizationRoot, wantedAuthorizationRoot) ||
+      hostEq(appTokenRoot, wantedAuthorizationRoot)
     );
   });
   return sortUserFirst(relevant);
@@ -333,8 +359,19 @@ export function uniqueClientSlug(name: string, existing: readonly string[]): OAu
   return OAuthClientSlug.make(`${base}-${suffix}`);
 }
 
-/** Deterministic DCR client slug derived from the authorization server host. */
-export function dcrClientSlug(issuerOrEndpoint: string): OAuthClientSlug {
+/**
+ * Optimistic (client-side) DCR client slug derived from the authorization
+ * server host, for immediate/placeholder display only.
+ *
+ * The AUTHORITATIVE slug is computed server-side by `dcrClientSlug` in
+ * `packages/core/sdk/src/oauth-service.ts`, which is resource-aware (an AS
+ * serving multiple RFC 8707 resources gets distinct, hash-suffixed slugs). This
+ * host-only form deliberately ignores resource: it is a best-effort placeholder
+ * the UI shows before the server responds, and the server recomputes and
+ * persists the real slug on registration. Do NOT rely on it matching the stored
+ * slug for a multi-resource server.
+ */
+export function optimisticDcrClientSlug(issuerOrEndpoint: string): OAuthClientSlug {
   const host = hostOf(issuerOrEndpoint);
   const base = host === undefined ? "" : slugifyName(host);
   return OAuthClientSlug.make(`dcr-${base || "authorization-server"}`);

@@ -47,7 +47,7 @@ import {
 import {
   clientDisplayName,
   clientHost,
-  dcrClientSlug,
+  optimisticDcrClientSlug,
   selectDcrClientsForIntegration,
   uniqueClientSlug,
   useOAuthClientsForIntegration,
@@ -66,13 +66,14 @@ import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
-import { PlusIcon, XIcon } from "lucide-react";
+import { ChevronDown, PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -688,10 +689,6 @@ type RunDcrConnectInput = {
   readonly resourceFallback?: string;
   readonly owner: Owner;
   readonly integrationName: string;
-  /** @deprecated DCR slugs are deterministic per authorization server (Part A),
-   *  so the connect path no longer needs the picker's slug list. Accepted but
-   *  ignored; retained only so existing test callers keep compiling. */
-  readonly existingSlugs?: readonly string[];
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
@@ -724,7 +721,7 @@ export async function runDcrConnect(
   const registrationEndpoint = probe.registrationEndpoint;
   if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint", probe };
 
-  const slug = dcrClientSlug(probe.issuer ?? registrationEndpoint);
+  const slug = optimisticDcrClientSlug(probe.issuer ?? registrationEndpoint);
   const scopes = registrationScopes(input.declaredScopes ?? [], probe.scopesSupported ?? []);
   const minted = await deps.register({
     owner: input.owner,
@@ -1953,63 +1950,65 @@ function AddAccountModalView(props: AddAccountModalProps) {
                         and deleted without cluttering the picker. */}
                                 {dcrClients.length > 0 && (
                                   <div className="border-t border-border/60 pt-3">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      className={cn(
-                                        "h-auto w-full justify-between rounded-none p-0 text-xs font-medium text-muted-foreground",
-                                        "hover:bg-transparent hover:text-foreground",
-                                      )}
-                                      onClick={() => setShowAutoRegistered((prev) => !prev)}
-                                      aria-expanded={showAutoRegistered}
+                                    <Collapsible
+                                      open={showAutoRegistered}
+                                      onOpenChange={setShowAutoRegistered}
                                     >
-                                      <span>Auto-registered clients ({dcrClients.length})</span>
-                                      <span aria-hidden>{showAutoRegistered ? "−" : "+"}</span>
-                                    </Button>
-                                    {showAutoRegistered ? (
-                                      <div className="space-y-2 pt-2">
-                                        <p className="text-xs text-muted-foreground">
-                                          Created automatically when connecting. Reused across
-                                          connections, not selectable as your app.
-                                        </p>
-                                        {dcrClients.map((app: OAuthClientOption) => (
-                                          <div
-                                            key={String(app.slug)}
-                                            className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5"
-                                          >
-                                            <span className="min-w-0 flex-1">
-                                              <span className="block text-sm font-medium">
-                                                {clientDisplayName(String(app.slug))}
-                                              </span>
-                                              <span className="block truncate text-xs text-muted-foreground">
-                                                {clientHost(app.tokenUrl)}
-                                              </span>
-                                            </span>
-                                            {ownerDisplay.showOwnerLabels ? (
-                                              <Badge variant="outline">
-                                                {ownerLabel(app.owner)}
-                                              </Badge>
-                                            ) : null}
-                                            <Button
-                                              type="button"
-                                              variant="ghost"
-                                              size="sm"
-                                              className="shrink-0 text-destructive hover:text-destructive"
-                                              onClick={() => {
-                                                const summary = clientSummaries.find(
-                                                  (c: OAuthClientSummary) =>
-                                                    c.owner === app.owner &&
-                                                    String(c.slug) === String(app.slug),
-                                                );
-                                                if (summary) setRemovingClient(summary);
-                                              }}
+                                      <CollapsibleTrigger className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+                                        <span>Auto-registered clients ({dcrClients.length})</span>
+                                        <ChevronDown
+                                          className={cn(
+                                            "size-3.5 transition-transform",
+                                            showAutoRegistered && "rotate-180",
+                                          )}
+                                          aria-hidden="true"
+                                        />
+                                      </CollapsibleTrigger>
+                                      <CollapsibleContent>
+                                        <div className="space-y-2 pt-2">
+                                          <p className="text-xs text-muted-foreground">
+                                            Created automatically when connecting. Reused across
+                                            connections, not selectable as your app.
+                                          </p>
+                                          {dcrClients.map((app: OAuthClientOption) => (
+                                            <div
+                                              key={String(app.slug)}
+                                              className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5"
                                             >
-                                              Remove
-                                            </Button>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ) : null}
+                                              <span className="min-w-0 flex-1">
+                                                <span className="block text-sm font-medium">
+                                                  {clientDisplayName(String(app.slug))}
+                                                </span>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                  {clientHost(app.tokenUrl)}
+                                                </span>
+                                              </span>
+                                              {ownerDisplay.showOwnerLabels ? (
+                                                <Badge variant="outline">
+                                                  {ownerLabel(app.owner)}
+                                                </Badge>
+                                              ) : null}
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="shrink-0 text-destructive hover:text-destructive"
+                                                onClick={() => {
+                                                  const summary = clientSummaries.find(
+                                                    (c: OAuthClientSummary) =>
+                                                      c.owner === app.owner &&
+                                                      String(c.slug) === String(app.slug),
+                                                  );
+                                                  if (summary) setRemovingClient(summary);
+                                                }}
+                                              >
+                                                Remove
+                                              </Button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </CollapsibleContent>
+                                    </Collapsible>
                                   </div>
                                 )}
                               </div>

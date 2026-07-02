@@ -14,7 +14,7 @@ import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
-import { dcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
+import { optimisticDcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
@@ -262,7 +262,8 @@ export function OAuthClientForm(props: {
   const handleRegisterDynamic = async () => {
     if (!canRegisterDynamic || registering) return;
     setRegistering(true);
-    const slug = fixedSlug ?? dcrClientSlug(discoveredIssuer ?? registrationEndpoint.trim());
+    const slug =
+      fixedSlug ?? optimisticDcrClientSlug(discoveredIssuer ?? registrationEndpoint.trim());
     const exit = await doRegisterDynamic({
       payload: {
         owner,

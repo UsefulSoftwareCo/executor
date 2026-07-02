@@ -3,7 +3,7 @@ import { IntegrationSlug, OAuthClientSlug, type Owner } from "@executor-js/sdk/s
 import type { OAuthClientOrigin } from "@executor-js/sdk/shared";
 
 import {
-  dcrClientSlug,
+  optimisticDcrClientSlug,
   selectClientsForEndpoints,
   selectDcrClientsForIntegration,
   uniqueClientSlug,
@@ -92,6 +92,27 @@ describe("selectClientsForEndpoints", () => {
     expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual([
       "google-authorize",
     ]);
+  });
+
+  it("does not tier-1 match an unparseable app URL against a scheme-less declared endpoint", () => {
+    // Regression: `hostOf` returns undefined for URLs `new URL()` can't parse.
+    // An integration whose manifest declares a scheme-less authorization URL
+    // ("oauth.cloudflare.com", no validation on manifest Schema.String) and an
+    // unrelated app whose stored URL is also unparseable would both yield
+    // `undefined` hosts, so a naive `appAuthorizationHost === wantedAuthorizationHost`
+    // is `undefined === undefined` → a false tier-1 (default-picked) match. The
+    // guard must require BOTH hosts defined, so this app lands in `unmatched`.
+    const unparseable = app("mystery-app", {
+      authorizationUrl: "not a url",
+      tokenUrl: "not a url",
+    });
+    const result = selectClientsForEndpoints([unparseable], {
+      authorizationUrl: "oauth.cloudflare.com",
+    });
+    expect(result.matched).toEqual([]);
+    expect(result.nearMatches).toEqual([]);
+    expect(result.endpointMatched).toBe(false);
+    expect(result.unmatched.map((a: OAuthClientOption) => String(a.slug))).toEqual(["mystery-app"]);
   });
 
   it("treats every app as usable when no endpoint is declared", () => {
@@ -305,11 +326,13 @@ describe("uniqueClientSlug", () => {
   });
 });
 
-describe("dcrClientSlug", () => {
-  it("derives a deterministic DCR slug from the authorization server host", () => {
-    expect(String(dcrClientSlug("https://mcp.cloudflare.com/register"))).toBe(
+describe("optimisticDcrClientSlug", () => {
+  it("derives a deterministic optimistic DCR slug from the authorization server host", () => {
+    expect(String(optimisticDcrClientSlug("https://mcp.cloudflare.com/register"))).toBe(
       "dcr-mcp-cloudflare-com",
     );
-    expect(String(dcrClientSlug("http://127.0.0.1:8787/register"))).toBe("dcr-127-0-0-1-8787");
+    expect(String(optimisticDcrClientSlug("http://127.0.0.1:8787/register"))).toBe(
+      "dcr-127-0-0-1-8787",
+    );
   });
 });
