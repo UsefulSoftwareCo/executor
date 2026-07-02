@@ -8,7 +8,6 @@ import {
   type HealthCheckCandidate,
   type HealthCheckResult,
   type HealthCheckSpec,
-  type HealthStatus,
   type IntegrationSlug,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -22,7 +21,7 @@ import {
 } from "../api/atoms";
 import { healthCheckWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
-import { HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { HEALTH_STATUS_LABEL, HEALTH_TEXT_CLASS } from "../lib/health-display";
 import { Button } from "./button";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { Input } from "./input";
@@ -86,15 +85,6 @@ const specSummary = (
 ): string => {
   const match = candidates.find((c) => c.operation === spec.operation);
   return match ? `${match.method.toUpperCase()} ${spec.operation}` : spec.operation;
-};
-
-// Text tone per status for the preview verdict line. Labels come from the
-// shared health-display module so every surface agrees on wording.
-const STATUS_CLASS: Record<HealthStatus, string> = {
-  healthy: "text-emerald-600 dark:text-emerald-400",
-  expired: "text-destructive",
-  degraded: "text-amber-600 dark:text-amber-500",
-  unknown: "text-muted-foreground",
 };
 
 // ---------------------------------------------------------------------------
@@ -339,7 +329,7 @@ function HealthCheckLivePreviewBlock(props: {
         <div className="space-y-2">
           <p className="text-sm">
             Status:{" "}
-            <span className={`font-medium ${STATUS_CLASS[result.status]}`}>
+            <span className={`font-medium ${HEALTH_TEXT_CLASS[result.status]}`}>
               {HEALTH_STATUS_LABEL[result.status]}
             </span>
             {result.httpStatus !== undefined ? (

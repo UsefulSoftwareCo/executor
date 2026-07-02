@@ -186,24 +186,28 @@ export const candidateIdentityTier = (candidate: HealthCheckCandidate): number =
   return best;
 };
 
-/** Ranking for the candidate list, identity first: non-destructive before
- *  destructive, then calls whose response carries an identity field (email
- *  beats login beats name), then the generic order (fewest required args,
- *  GET first, alphabetical). */
-export const compareHealthCheckCandidatesByIdentity = (
-  a: HealthCheckCandidate,
-  b: HealthCheckCandidate,
-): number => {
-  if (a.destructive !== b.destructive) return a.destructive ? 1 : -1;
-  const tierA = candidateIdentityTier(a);
-  const tierB = candidateIdentityTier(b);
-  if (tierA !== tierB) {
-    if (tierA === -1) return 1;
-    if (tierB === -1) return -1;
-    return tierA - tierB;
-  }
-  return compareHealthCheckCandidates(a, b);
-};
+/** Sort candidates identity-first: non-destructive before destructive, then
+ *  calls whose response carries an identity field (email beats login beats
+ *  name), then the generic order (fewest required args, GET first,
+ *  alphabetical). Tiers are computed once per candidate, not per comparison —
+ *  the field walk is linear in response fields and the comparator runs
+ *  O(n log n) times on Graph-sized specs. */
+export const sortHealthCheckCandidatesByIdentity = (
+  candidates: readonly HealthCheckCandidate[],
+): HealthCheckCandidate[] =>
+  candidates
+    .map((candidate) => ({ candidate, tier: candidateIdentityTier(candidate) }))
+    .sort((a, b) => {
+      if (a.candidate.destructive !== b.candidate.destructive)
+        return a.candidate.destructive ? 1 : -1;
+      if (a.tier !== b.tier) {
+        if (a.tier === -1) return 1;
+        if (b.tier === -1) return -1;
+        return a.tier - b.tier;
+      }
+      return compareHealthCheckCandidates(a.candidate, b.candidate);
+    })
+    .map(({ candidate }) => candidate);
 
 /** Stable ranking for the candidate list: non-destructive before destructive,
  *  then fewest required args, then by method (get first), then alphabetical.
@@ -430,7 +434,7 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
 // undefined when nothing plausible exists (pure liveness check).
 // ---------------------------------------------------------------------------
 
-export const IDENTITY_KEY_TIERS: readonly (readonly string[])[] = [
+const IDENTITY_KEY_TIERS: readonly (readonly string[])[] = [
   ["email", "emailaddress", "mail", "userprincipalname"],
   ["login", "username", "handle", "slug"],
   ["displayname", "name", "fullname"],
@@ -465,22 +469,3 @@ export const rankResponseSample = (
       return a.index - b.index;
     })
     .map(({ row }) => row);
-
-/** Pick the sample row that most likely identifies the account. The tiebreak
- *  within a tier is path depth (shallower = more canonical), then sample
- *  order (which follows response order). */
-export const pickIdentitySample = (
-  sample: readonly HealthCheckResponseSample[],
-): HealthCheckResponseSample | undefined => {
-  let best: { row: HealthCheckResponseSample; tier: number; depth: number } | undefined;
-  for (const row of sample) {
-    if (row.value.trim().length === 0) continue;
-    const tier = identityPathTier(row.path);
-    if (tier === -1) continue;
-    const depth = row.path.split(".").length;
-    if (!best || tier < best.tier || (tier === best.tier && depth < best.depth)) {
-      best = { row, tier, depth };
-    }
-  }
-  return best?.row;
-};

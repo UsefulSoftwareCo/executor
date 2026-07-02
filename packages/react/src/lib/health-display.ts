@@ -14,6 +14,15 @@ export const HEALTH_STATUS_LABEL: Record<HealthStatus, string> = {
   unknown: "Unchecked",
 };
 
+/** Text tone per status, for verdict lines and previews. Same per-status color
+ *  decision as the indicator dots below — change them together. */
+export const HEALTH_TEXT_CLASS: Record<HealthStatus, string> = {
+  healthy: "text-emerald-600 dark:text-emerald-400",
+  expired: "text-destructive",
+  degraded: "text-amber-600 dark:text-amber-500",
+  unknown: "text-muted-foreground",
+};
+
 /** Dot + ring color classes for the per-connection indicator. `unknown` is the
  *  neutral never-probed state; `expired` reuses the destructive token so it reads
  *  the same as a blocked policy. */

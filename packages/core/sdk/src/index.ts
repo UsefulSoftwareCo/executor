@@ -115,11 +115,10 @@ export {
   extractIdentity,
   compareHealthCheckCandidates,
   candidateIdentityTier,
-  compareHealthCheckCandidatesByIdentity,
+  sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
   identityPathTier,
-  pickIdentitySample,
   rankResponseSample,
 } from "./health-check";
 
