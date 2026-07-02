@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect, Layer } from "effect";
-import { afterAll, expect, test } from "@effect/vitest";
+import { afterAll, beforeAll, expect, test } from "@effect/vitest";
 
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk";
 import { makeScopedExecutor } from "@executor-js/api/server";
@@ -32,13 +32,20 @@ const createScopedExecutor = (
     Effect.provide(SelfHostScopedExecutorSeams),
   );
 
-const dbHandle = await createSelfHostDb({
-  path: dbPath,
-  namespace: "executor_selfhost",
-  version: "1.0.0",
+let dbLayer!: Layer.Layer<SelfHostDb>;
+let dbHandle: Awaited<ReturnType<typeof createSelfHostDb>> | undefined;
+
+beforeAll(async () => {
+  dbHandle = await createSelfHostDb({
+    path: dbPath,
+    namespace: "executor_selfhost",
+    version: "1.0.0",
+  });
+  dbLayer = Layer.succeed(SelfHostDb)(dbHandle);
 });
-const dbLayer = Layer.succeed(SelfHostDb)(dbHandle);
-afterAll(() => dbHandle.close());
+afterAll(async () => {
+  await dbHandle?.close();
+});
 
 const TINY_SPEC = JSON.stringify({
   openapi: "3.0.0",

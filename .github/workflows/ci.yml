@@ -56,6 +56,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      TURBO_TEST_CONCURRENCY: 3
     steps:
       - uses: actions/checkout@v4
 
