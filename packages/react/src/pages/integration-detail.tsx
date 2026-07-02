@@ -90,6 +90,8 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"accounts" | "tools">("accounts");
+  const [manualAccountHandoff, setManualAccountHandoff] =
+    useState<IntegrationAccountHandoff | null>(null);
   const [locationSearch] = useState(() =>
     typeof window === "undefined" ? "" : window.location.search,
   );
@@ -105,7 +107,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
-  const accountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
+  const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
     if (locationSearch.length === 0) return null;
     const search = new URLSearchParams(locationSearch);
     if (search.get("addAccount") !== "1") return null;
@@ -140,6 +142,8 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       ...(oauthClient !== undefined ? { oauthClient } : {}),
     };
   }, [locationSearch]);
+  const accountHandoff = manualAccountHandoff ?? urlAccountHandoff;
+
   useEffect(() => {
     if (accountHandoff && !isBuiltInIntegration) {
       setActiveTab("accounts");
@@ -338,6 +342,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setRefreshing(false);
   };
 
+  const handleOpenAddConnection = () => {
+    setActiveTab("accounts");
+    setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header bar */}
@@ -491,6 +500,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
                             }
                           : {})}
                       />
+                    ) : !isBuiltInIntegration && integrationConnections.length === 0 ? (
+                      <NoConnectionToolsEmptyState
+                        onAddConnection={handleOpenAddConnection}
+                        canAddConnection={accountsMethods.length > 0}
+                      />
                     ) : (
                       <ToolDetailEmpty hasTools={integrationTools.length > 0} />
                     )}
@@ -510,6 +524,31 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         {...(editPlugin?.editSheet ? { pluginSection: editPlugin.editSheet } : {})}
         onOpenChange={setEditSheetOpen}
       />
+    </div>
+  );
+}
+
+function NoConnectionToolsEmptyState(props: {
+  readonly onAddConnection: () => void;
+  readonly canAddConnection: boolean;
+}) {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="max-w-sm text-center">
+        <p className="text-sm font-medium text-foreground">No tools yet</p>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Add a connection to unlock this integration's tools.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          className="mt-4"
+          onClick={props.onAddConnection}
+          disabled={!props.canAddConnection}
+        >
+          Add connection
+        </Button>
+      </div>
     </div>
   );
 }
