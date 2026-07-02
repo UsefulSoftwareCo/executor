@@ -5,7 +5,6 @@ import {
   renderAuthPlacements,
   requiredPlacementVariables,
 } from "@executor-js/sdk/http-auth";
-import { HealthCheckSpec } from "@executor-js/sdk/core";
 
 import type { Authentication } from "./types";
 
@@ -54,10 +53,6 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** The auth methods a connection's value can be applied through. */
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
-  /** The declared health check: which operation a connection runs to prove its
-   *  credential is alive and surface whose account it is. Picked by the user
-   *  the same way auth methods are configured. Absent = no health check. */
-  healthCheck: Schema.optional(HealthCheckSpec),
 });
 
 export type OpenApiIntegrationConfig = Omit<

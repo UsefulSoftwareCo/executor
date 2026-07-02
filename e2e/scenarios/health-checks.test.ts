@@ -339,6 +339,18 @@ scenario(
           expect(expired.status, "the same connection now reads as expired").toBe("expired");
           expect(expired.httpStatus, "the saved probe saw the 401").toBe(401);
           expect(expired.identity, "an expired connection surfaces no identity").toBeUndefined();
+
+          // The verdict PERSISTS: the plain connections list carries the last
+          // health-check result, so the UI shows expired at a glance with no
+          // per-row probing - the reason this feature exists.
+          const listed = yield* client.connections.list({ query: {} });
+          const row = listed.find(
+            (c) => String(c.integration) === String(slug) && String(c.name) === String(name),
+          );
+          expect(row?.lastHealth?.status, "the expired verdict is visible in the list").toBe(
+            "expired",
+          );
+          expect(row?.lastHealth?.httpStatus, "with the observed status").toBe(401);
         }),
         Effect.gen(function* () {
           yield* client.connections

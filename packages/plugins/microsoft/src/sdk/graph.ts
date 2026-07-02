@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect";
 import type { Layer } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
-import { AuthTemplateSlug, HealthCheckSpec } from "@executor-js/sdk/core";
+import { AuthTemplateSlug } from "@executor-js/sdk/core";
 import {
   AuthenticationSchema,
   OpenApiParseError,
@@ -95,7 +95,6 @@ const MicrosoftGraphIntegrationConfigSchema = Schema.Struct({
   microsoftGraphAuthorizationUrl: Schema.optional(Schema.String),
   microsoftGraphTokenUrl: Schema.optional(Schema.String),
   microsoftGraphClientCredentialsTokenUrl: Schema.optional(Schema.String),
-  healthCheck: Schema.optional(HealthCheckSpec),
 });
 
 const decodeMicrosoftConfig = Schema.decodeUnknownOption(MicrosoftGraphIntegrationConfigSchema);

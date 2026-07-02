@@ -27,7 +27,8 @@ import type {
   UpdateConnectionInput,
   ValidateConnectionInput,
 } from "./connection";
-import type { HealthCheckCandidate, HealthCheckResult, HealthCheckSpec } from "./health-check";
+import { HealthCheckResult, HealthCheckSpec } from "./health-check";
+import type { HealthCheckCandidate } from "./health-check";
 import {
   coreSchema,
   isToolPolicyAction,
@@ -526,6 +527,9 @@ const rowToIntegrationRecord = (
   config: decodeJsonColumn(row.config),
 });
 
+const decodeLastHealth = Schema.decodeUnknownOption(HealthCheckResult);
+const decodeHealthCheckSpec = Schema.decodeUnknownOption(HealthCheckSpec);
+
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
   const integration = IntegrationSlug.make(row.integration);
@@ -544,6 +548,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
     oauthClientOwner:
       row.oauth_client_owner == null ? null : (String(row.oauth_client_owner) as Owner),
     oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
+    lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
   };
 };
 
@@ -1750,21 +1755,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }
     };
 
-    // Project a row's declared health check via the owning plugin's
-    // `describeHealthCheck` hook. Pure (no I/O); degrades a plugin throw to
-    // `null` like the other catalog projectors.
-    const describeHealthCheckForRow = (row: IntegrationRow): HealthCheckSpec | null => {
-      const runtime = runtimes.get(row.plugin_id);
-      const describe = runtime?.plugin.describeHealthCheck;
-      if (!describe) return null;
-      const record = rowToIntegrationRecord(row);
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
-      try {
-        return describe(record);
-      } catch {
-        return null;
-      }
-    };
+    // The declared health check off the integration row's own column. CORE
+    // owns this storage (never the plugin config blob), so a plugin config
+    // rewrite can never strip it and no plugin schema has to declare it.
+    const describeHealthCheckForRow = (row: IntegrationRow): HealthCheckSpec | null =>
+      Option.getOrNull(decodeHealthCheckSpec(row.health_check));
 
     // The health-check hooks are typed `Effect<_, unknown>` at the PluginSpec
     // boundary (each plugin owns its own error shape). Fold that channel into a
@@ -1969,6 +1964,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
       });
 
+    // Core-owned write: the spec lands in the integration row's own column.
+    // No plugin hook, no config read-modify-write, nothing a plugin's own
+    // config cycle can clobber.
     const integrationSetHealthCheck = (
       slug: IntegrationSlug,
       spec: HealthCheckSpec | null,
@@ -1976,18 +1974,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         const row = yield* findIntegrationRow(slug);
         if (!row) return yield* new IntegrationNotFoundError({ slug });
-        const runtime = runtimes.get(row.plugin_id);
-        const set = runtime?.plugin.setHealthCheck;
-        if (!runtime || !set) {
-          return yield* new StorageError({
-            message: `Plugin "${row.plugin_id}" does not support health checks.`,
-            cause: undefined,
-          });
-        }
-        yield* foldPluginFailure(
-          set({ ctx: runtime.ctx, integration: slug, spec }),
-          `Setting the health check for "${slug}" failed.`,
-        );
+        yield* core.updateMany("integration", {
+          where: (b: AnyCb) => b("slug", "=", String(slug)),
+          set: { health_check: spec, updated_at: new Date() },
+        });
       });
 
     // ------------------------------------------------------------------
@@ -2638,10 +2628,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           values,
           config: record.config,
         };
-        return yield* foldPluginFailure(
-          check({ ctx: runtime.ctx, integration: record, credential }),
+        // Core resolves the declared spec (its own column) and hands it to the
+        // plugin; plugins no longer read it out of their config.
+        const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
+        const result = yield* foldPluginFailure(
+          check({ ctx: runtime.ctx, integration: record, credential, spec }),
           `Health check for connection "${ref.name}" failed.`,
         );
+        // Persist the verdict on the connection row so the accounts list shows
+        // alive/expired at a glance. Best-effort: a write failure must not turn
+        // a successful probe into an error.
+        yield* core
+          .updateMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                b("owner", "=", String(ref.owner)),
+                b("integration", "=", String(ref.integration)),
+                b("name", "=", String(ref.name)),
+              ),
+            set: { last_health: result, updated_at: new Date() },
+          })
+          .pipe(Effect.ignore);
+        return result;
       });
 
     const connectionValidate = (
@@ -2673,8 +2681,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           values,
           config: record.config,
         };
+        // Caller override (editor preview) wins; otherwise the declared spec
+        // from the integration row. Nothing persists here: validate is the
+        // key-first flow's dry run.
+        const spec = input.spec ?? describeHealthCheckForRow(integrationRow) ?? undefined;
         return yield* foldPluginFailure(
-          check({ ctx: runtime.ctx, integration: record, credential, spec: input.spec }),
+          check({ ctx: runtime.ctx, integration: record, credential, spec }),
           `Validating credential for "${input.integration}" failed.`,
         );
       });
@@ -3535,6 +3547,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             list: () => integrationsList(),
             get: (slug) => integrationsGetRecord(slug),
             remove: (slug) => integrationsRemove(slug),
+            setHealthCheck: (slug, spec) =>
+              integrationSetHealthCheck(slug, spec).pipe(
+                // Fold not-found: a plugin declaring a default on a row it
+                // never registered is a no-op, not a storage failure.
+                Effect.catchTag("IntegrationNotFoundError", () => Effect.void),
+              ),
             detect: (url) => integrationsDetect(url),
             configureSchemas: (): readonly IntegrationConfigureSchema[] =>
               Array.from(runtimes.values())

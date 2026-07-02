@@ -21,7 +21,6 @@ import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
   compileOpenApiSpec,
-  describeHealthCheckOpenApi,
   invokeOpenApiBackedTool,
   listHealthCheckCandidatesOpenApi,
   makeDefaultOpenapiStore,
@@ -29,7 +28,6 @@ import {
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
-  setHealthCheckOpenApi,
   type Authentication,
   type AuthenticationInput,
   type OpenapiStore,
@@ -198,11 +196,6 @@ const makeGooglePluginExtension = (
       }
 
       const specHash = yield* sha256Hex(conversion.specText);
-      // Default the health check to the People API identity call
-      // (`people.get` with `resourceName=people/me`) when the bundle includes
-      // the People API, so connections report alive/expired + identity out of the
-      // box. The user can adjust the operation / identity field via the editor.
-      const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
       const integrationConfig: GoogleIntegrationConfig = {
         specHash,
         googleDiscoveryUrls: urls,
@@ -210,7 +203,6 @@ const makeGooglePluginExtension = (
         ...(conversion.authenticationTemplate
           ? { authenticationTemplate: conversion.authenticationTemplate }
           : {}),
-        ...(defaultHealthCheck ? { healthCheck: defaultHealthCheck } : {}),
       };
 
       yield* ctx.storage.putSpec(specHash, conversion.specText);
@@ -232,6 +224,15 @@ const makeGooglePluginExtension = (
           );
         }),
       );
+
+      // Default the health check to the People API identity call (`people.get`
+      // with `resourceName=people/me`) when the bundle includes the People API,
+      // so connections report alive/expired + identity out of the box. Declared
+      // through core's own storage; the user can adjust it via the editor.
+      const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
+      if (defaultHealthCheck) {
+        yield* ctx.core.integrations.setHealthCheck(slug, defaultHealthCheck);
+      }
 
       return { slug, toolCount: compiled.definitions.length };
     });
@@ -392,14 +393,11 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
       toolRows,
     }),
 
-  // Health checks reuse the OpenAPI backing (same store + config superset). The
-  // People API identity call is auto-defaulted at addBundle when present, and the
-  // user can adjust the operation / identity field via the editor.
-  describeHealthCheck: describeHealthCheckOpenApi,
+  // Health checks reuse the OpenAPI backing (same store). The People API
+  // identity call is auto-defaulted at addBundle when present; core owns the
+  // stored spec, the user adjusts it via the editor.
   listHealthCheckCandidates: (input) =>
     listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
-  setHealthCheck: (input) =>
-    setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
   checkHealth: (input) =>
     checkHealthOpenApi({
       ctx: input.ctx,

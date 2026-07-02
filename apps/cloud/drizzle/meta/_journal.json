@@ -57,6 +57,13 @@
       "when": 1782149425764,
       "tag": "0007_red_dragon_lord",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782957914937,
+      "tag": "0008_true_lake",
+      "breakpoints": true
     }
   ]
 }

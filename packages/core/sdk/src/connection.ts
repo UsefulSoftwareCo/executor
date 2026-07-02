@@ -8,7 +8,7 @@ import type {
   ProviderItemId,
   ProviderKey,
 } from "./ids";
-import type { HealthCheckSpec } from "./health-check";
+import type { HealthCheckResult, HealthCheckSpec } from "./health-check";
 
 /* A Connection is THE saved credential — secret, account, and connection are one
  * concept — bound to exactly ONE integration (born wired; there is no unwired
@@ -54,6 +54,10 @@ export interface Connection {
    *  declared scopes to decide whether this connection must reconnect to grant
    *  newly-needed access. Null for static creds / when the AS omitted `scope`. */
   readonly oauthScope?: string | null;
+  /** Last health-check verdict, persisted by every `checkHealth` run. Answers
+   *  "has this expired?" at a glance in the connections list without probing.
+   *  Null/absent = never checked. */
+  readonly lastHealth?: HealthCheckResult | null;
 }
 
 /** Identify one connection — unique by (owner, integration, name). */

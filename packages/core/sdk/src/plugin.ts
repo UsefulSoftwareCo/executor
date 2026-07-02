@@ -175,6 +175,13 @@ export interface PluginCtx<TStore = unknown> {
       readonly remove: (
         slug: IntegrationSlug,
       ) => Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure>;
+      /** Declare (or clear, with null) the integration's health check. Core
+       *  owns this storage; plugins call it e.g. to install a zero-config
+       *  default probe at registration time. */
+      readonly setHealthCheck: (
+        slug: IntegrationSlug,
+        spec: HealthCheckSpec | null,
+      ) => Effect.Effect<void, StorageFailure>;
       readonly detect: (
         url: string,
       ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
@@ -304,22 +311,23 @@ export interface ToolInvocationCredential {
 // ---------------------------------------------------------------------------
 // Health-check hook inputs. A health check is a single declared authenticated
 // operation a connection runs to prove its credential is still alive and to
-// surface whose account it is. The plugin owns which operation (stored in its
-// opaque config); core dispatches these hooks.
+// surface whose account it is. CORE owns the declared spec (its own column on
+// the integration row — never the plugin's opaque config, so no plugin config
+// cycle can strip it); plugins only enumerate candidates and run probes.
 // ---------------------------------------------------------------------------
 
-/** Input to `checkHealth` — run the configured (or overridden) probe against a
- *  resolved credential. The credential may come from a saved connection OR from
- *  in-flight values (key-first validation, before the connection is saved). */
+/** Input to `checkHealth` — run the given probe against a resolved credential.
+ *  The credential may come from a saved connection OR from in-flight values
+ *  (key-first validation, before the connection is saved). Core resolves the
+ *  declared spec (or the editor's preview override) and passes it here; the
+ *  plugin never reads it from storage. Absent spec ⇒ report `unknown`. */
 export interface HealthCheckInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   /** The catalog record (with opaque config) whose health is being checked. */
   readonly integration: IntegrationRecord;
   /** The resolved credential to authenticate the probe. */
   readonly credential: ToolInvocationCredential;
-  /** Optional spec override. When omitted, the plugin uses the health check
-   *  stored in its own config; an override lets the editor test a candidate
-   *  before saving it. */
+  /** The probe to run, resolved by core. */
   readonly spec?: HealthCheckSpec;
 }
 
@@ -327,14 +335,6 @@ export interface HealthCheckInput<TStore = unknown> {
 export interface HealthCheckCandidatesInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   readonly integration: IntegrationRecord;
-}
-
-/** Input to `setHealthCheck` — persist or clear an integration's health check. */
-export interface SetHealthCheckInput<TStore = unknown> {
-  readonly ctx: PluginCtx<TStore>;
-  readonly integration: IntegrationSlug;
-  /** The new health check, or null to clear it. */
-  readonly spec: HealthCheckSpec | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,24 +609,17 @@ export interface PluginSpec<
     integration: IntegrationRecord,
   ) => IntegrationDisplayDescriptor;
 
-  /** Project this plugin's opaque integration config into the configured health
-   *  check, when one is set. Synchronous and pure (the config is already
-   *  loaded); must tolerate a malformed/foreign config blob by returning null.
-   *  Absent ⇒ core reports "no health check configured". */
-  readonly describeHealthCheck?: (integration: IntegrationRecord) => HealthCheckSpec | null;
-
   /** List the operations a user can pick as this integration's health check,
-   *  ranked best-first (non-destructive, fewest required args). */
+   *  ranked best-first (non-destructive, fewest required args). Declaring this
+   *  is what marks the plugin health-check-capable; core owns storing the
+   *  picked spec (integration row column, never plugin config). */
   readonly listHealthCheckCandidates?: (
     input: HealthCheckCandidatesInput<TStore>,
   ) => Effect.Effect<readonly HealthCheckCandidate[], unknown>;
 
-  /** Persist (or clear, with a null spec) the integration's health check in the
-   *  plugin's opaque config. Mirrors `integrationConfigure`'s read-modify-write. */
-  readonly setHealthCheck?: (input: SetHealthCheckInput<TStore>) => Effect.Effect<void, unknown>;
-
-  /** Run the configured (or overridden) health check against a resolved
-   *  credential and classify the outcome into a `HealthCheckResult`. */
+  /** Run the given health check against a resolved credential and classify the
+   *  outcome into a `HealthCheckResult`. Core resolves and passes the spec;
+   *  the plugin never reads it from storage. */
   readonly checkHealth?: (
     input: HealthCheckInput<TStore>,
   ) => Effect.Effect<HealthCheckResult, unknown>;

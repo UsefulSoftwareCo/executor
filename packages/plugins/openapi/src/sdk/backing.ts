@@ -16,9 +16,7 @@ import {
   type HealthCheckResponseField,
   type HealthCheckResult,
   type HealthCheckSpec,
-  type IntegrationConfig,
   type IntegrationRecord,
-  type IntegrationSlug,
   type PluginCtx,
   type ResolveToolsResult,
   type StorageFailure,
@@ -727,9 +725,11 @@ const resolveHealthCheckBinding = (
     )?.binding;
   });
 
-/** Run the configured (or overridden) probe against a resolved credential and
- *  classify the outcome. Never fails for credential/upstream reasons: a rejected
- *  credential is a `HealthCheckResult` with `status: "expired"`, not an error. */
+/** Run the given probe against a resolved credential and classify the outcome.
+ *  The spec is resolved by CORE (its own storage) and passed in — this never
+ *  reads it from the plugin config. Never fails for credential/upstream
+ *  reasons: a rejected credential is a `HealthCheckResult` with
+ *  `status: "expired"`, not an error. */
 export const checkHealthOpenApi = (input: {
   readonly ctx: PluginCtx<OpenapiStore>;
   readonly integration: IntegrationRecord;
@@ -740,7 +740,7 @@ export const checkHealthOpenApi = (input: {
   Effect.gen(function* () {
     const checkedAt = Date.now();
     const config = decodeOpenApiIntegrationConfig(input.integration.config);
-    const spec = input.spec ?? config?.healthCheck;
+    const spec = input.spec;
     if (!spec) {
       return {
         status: "unknown",
@@ -761,6 +761,19 @@ export const checkHealthOpenApi = (input: {
         status: "unknown",
         checkedAt,
         detail: `Health check operation "${spec.operation}" not found on "${integration}".`,
+      } satisfies HealthCheckResult;
+    }
+
+    // HARD block, not just a ranking hint: a health check runs unattended and
+    // repeatedly, so a mutating operation must never execute through it — the
+    // normal tool path gates these behind approval, and this path has no
+    // approval step. The candidate list labels these "(writes)"; refusing here
+    // is the enforcement.
+    if (REQUIRE_APPROVAL.has(binding.method.toLowerCase())) {
+      return {
+        status: "unknown",
+        checkedAt,
+        detail: `Health check operation "${spec.operation}" is a ${binding.method.toUpperCase()} (mutating) — pick a read-only operation.`,
       } satisfies HealthCheckResult;
     }
 
@@ -802,11 +815,20 @@ export const checkHealthOpenApi = (input: {
       Effect.catch((failure) => Effect.succeed({ ok: false as const, failure })),
     );
 
+    // Upstream error text can echo the request back (URLs with query params,
+    // auth headers) — scrub every credential value out of anything that leaves
+    // as `detail` so a probe can never leak the secret it authenticated with.
+    const secretValues = Object.values(input.credential.values).filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    const scrubSecrets = (text: string): string =>
+      secretValues.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+
     if (!probe.ok) {
       return {
         status: "degraded",
         checkedAt,
-        detail: `Health check request failed: ${probe.failure.message}`,
+        detail: scrubSecrets(`Health check request failed: ${probe.failure.message}`),
       } satisfies HealthCheckResult;
     }
 
@@ -826,7 +848,11 @@ export const checkHealthOpenApi = (input: {
       ...(responseSample.length > 0 ? { responseSample } : {}),
       ...(status === "healthy"
         ? {}
-        : { detail: extractOpenApiUpstreamMessage(probe.result.error, probe.result.status) }),
+        : {
+            detail: scrubSecrets(
+              extractOpenApiUpstreamMessage(probe.result.error, probe.result.status),
+            ),
+          }),
     } satisfies HealthCheckResult;
   });
 
@@ -893,36 +919,3 @@ export const listHealthCheckCandidatesOpenApi = (input: {
     });
     return [...candidates].sort(compareHealthCheckCandidates);
   });
-
-/** Persist (or clear, when `spec` is null) the integration's health check.
- *  Read-modify-write of the opaque config inside a transaction, mirroring
- *  `configure`. */
-export const setHealthCheckOpenApi = (input: {
-  readonly ctx: PluginCtx<OpenapiStore>;
-  readonly integration: IntegrationSlug;
-  readonly spec: HealthCheckSpec | null;
-}): Effect.Effect<void, StorageFailure> =>
-  input.ctx.transaction(
-    Effect.gen(function* () {
-      const record = yield* input.ctx.core.integrations.get(input.integration);
-      if (!record) return;
-      // Guard: only touch configs that decode as the openapi shape. Merge over
-      // the RAW config object (not the decoded one, which strips unknown keys)
-      // so provider supersets (Microsoft presets, Google discovery URLs) survive
-      // a health-check write. `healthCheck: undefined` drops the key on JSON
-      // serialization, clearing the stored health check.
-      if (decodeOpenApiIntegrationConfig(record.config) === null) return;
-      const raw = (record.config ?? {}) as Record<string, unknown>;
-      const next = input.spec
-        ? { ...raw, healthCheck: input.spec }
-        : { ...raw, healthCheck: undefined };
-      yield* input.ctx.core.integrations.update(input.integration, {
-        config: next as IntegrationConfig,
-      });
-    }),
-  );
-
-/** Pure projector: the health check declared in the integration's config, or
- *  null when none is configured. */
-export const describeHealthCheckOpenApi = (record: IntegrationRecord): HealthCheckSpec | null =>
-  decodeOpenApiIntegrationConfig(record.config)?.healthCheck ?? null;

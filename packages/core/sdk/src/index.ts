@@ -316,7 +316,6 @@ export {
   type ToolInvocationCredential,
   type HealthCheckInput,
   type HealthCheckCandidatesInput,
-  type SetHealthCheckInput,
   type Elicit,
   definePlugin,
   tool,

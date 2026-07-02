@@ -77,15 +77,17 @@ function AccountRow(props: {
   readonly onRemove: () => void;
 }) {
   const { connection, needsReconsent } = props;
-  // A live probe result, once "Check now" has run, drives the status indicator.
-  const [probe, setProbe] = useState<HealthCheckResult | null>(null);
+  // A live probe result, once "Check now" has run, overrides the persisted one.
+  const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
 
-  // Status comes only from a live probe ("Check now"). We deliberately do NOT
-  // derive expiry from the stored `expiresAt`: that's the access-token lifetime,
-  // which refreshes, so a passive countdown / "expired" reads as alarming but
-  // means nothing. Until a probe runs the connection is "Unchecked".
+  // The status renders WITHOUT any clicking: every checkHealth run persists its
+  // verdict on the connection row, so the list answers "has this expired?" at a
+  // glance. A live "Check now" from this session takes precedence. We
+  // deliberately do NOT derive expiry from the stored `expiresAt`: that's the
+  // access-token lifetime, which refreshes, so a passive countdown means nothing.
+  const probe = liveProbe ?? connection.lastHealth ?? null;
   const status: HealthStatus = probe?.status ?? "unknown";
   const indicator = HEALTH_INDICATOR_COLOR[status];
 
@@ -115,7 +117,7 @@ function AccountRow(props: {
       toast.error(messageFromExit(exit, "Health check failed"));
       return;
     }
-    setProbe(exit.value);
+    setLiveProbe(exit.value);
     if (exit.value.status === "healthy") {
       toast.success(
         exit.value.identity ? `Healthy — ${exit.value.identity}` : "Connection is healthy",

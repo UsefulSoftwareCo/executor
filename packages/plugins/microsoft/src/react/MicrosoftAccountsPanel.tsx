@@ -6,6 +6,12 @@ import { AuthTemplateSlug, IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
+import {
+  HealthCheckEditor,
+  type HealthCheckLivePreview,
+} from "@executor-js/react/components/health-check-editor";
+import { useOrganizationId } from "@executor-js/react/api/organization-context";
+import { defaultConnectionOwnerForHost } from "@executor-js/react/plugins/connection-owner";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
@@ -83,6 +89,17 @@ export default function MicrosoftAccountsPanel(props: {
     configure,
   });
 
+  // Live-preview context for the health-check edit sheet (apiKey methods only;
+  // OAuth methods can't be previewed with a pasted key).
+  const organizationId = useOrganizationId();
+  const livePreview = useMemo<HealthCheckLivePreview | undefined>(() => {
+    const templates = methods
+      .filter((m) => m.kind === "apikey")
+      .map((m) => ({ template: m.template, label: m.label }));
+    if (templates.length === 0) return undefined;
+    return { owner: defaultConnectionOwnerForHost(organizationId), templates };
+  }, [methods, organizationId]);
+
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
       <AccountsSection
@@ -93,6 +110,9 @@ export default function MicrosoftAccountsPanel(props: {
         createCustomMethod={createCustomMethod}
         removeCustomMethod={removeCustomMethod}
       />
+      {/* Graph auto-configures the /me identity probe at add time; this is
+          where an admin sees, adjusts, or clears it. */}
+      <HealthCheckEditor integration={slug} livePreview={livePreview} />
     </div>
   );
 }

@@ -21,6 +21,7 @@ import {
 } from "../api/atoms";
 import { healthCheckWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
+import { HEALTH_STATUS_LABEL } from "../lib/health-display";
 import { Button } from "./button";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { Input } from "./input";
@@ -86,13 +87,8 @@ const specSummary = (
   return match ? `${match.method.toUpperCase()} ${spec.operation}` : spec.operation;
 };
 
-const STATUS_LABEL: Record<HealthStatus, string> = {
-  healthy: "Healthy",
-  expired: "Expired",
-  degraded: "Degraded",
-  unknown: "Unknown",
-};
-
+// Text tone per status for the preview verdict line. Labels come from the
+// shared health-display module so every surface agrees on wording.
 const STATUS_CLASS: Record<HealthStatus, string> = {
   healthy: "text-emerald-600 dark:text-emerald-400",
   expired: "text-destructive",
@@ -343,7 +339,7 @@ function HealthCheckLivePreviewBlock(props: {
           <p className="text-sm">
             Status:{" "}
             <span className={`font-medium ${STATUS_CLASS[result.status]}`}>
-              {STATUS_LABEL[result.status]}
+              {HEALTH_STATUS_LABEL[result.status]}
             </span>
             {result.httpStatus !== undefined ? (
               <span className="ml-1.5 text-xs text-muted-foreground">

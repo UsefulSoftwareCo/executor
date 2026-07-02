@@ -21,9 +21,7 @@ import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
-  describeHealthCheckOpenApi,
   listHealthCheckCandidatesOpenApi,
-  setHealthCheckOpenApi,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
@@ -205,13 +203,9 @@ const makeMicrosoftPluginExtension = (
         (op) => op.binding.method.toLowerCase() === "get" && op.binding.pathTemplate === "/me",
       );
       if (meOperation) {
-        yield* setHealthCheckOpenApi({
-          ctx,
-          integration: slug,
-          spec: {
-            operation: meOperation.toolName,
-            identityField: "userPrincipalName",
-          },
+        yield* ctx.core.integrations.setHealthCheck(slug, {
+          operation: meOperation.toolName,
+          identityField: "userPrincipalName",
         });
       }
 
@@ -397,13 +391,10 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
       toolRows,
     }),
 
-  // Health checks reuse the OpenAPI backing (same store + config superset). The
-  // user picks the identity operation (e.g. GET /me) via the editor.
-  describeHealthCheck: describeHealthCheckOpenApi,
+  // Health checks reuse the OpenAPI backing (same store). GET /me is
+  // auto-defaulted at addGraph when present; core owns the stored spec.
   listHealthCheckCandidates: (input) =>
     listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
-  setHealthCheck: (input) =>
-    setHealthCheckOpenApi({ ctx: input.ctx, integration: input.integration, spec: input.spec }),
   checkHealth: (input) =>
     checkHealthOpenApi({
       ctx: input.ctx,

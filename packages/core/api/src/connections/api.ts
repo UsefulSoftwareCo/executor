@@ -58,6 +58,9 @@ const ConnectionResponse = Schema.Struct({
   oauthClient: Schema.NullOr(OAuthClientSlug),
   oauthClientOwner: Schema.NullOr(Owner),
   oauthScope: Schema.NullOr(Schema.String),
+  // Last persisted health-check verdict (written by every checkHealth run),
+  // so the list can show alive/expired at a glance without probing.
+  lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
 const ToolResponse = Schema.Struct({
