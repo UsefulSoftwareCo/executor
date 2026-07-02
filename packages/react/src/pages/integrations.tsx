@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { PlusIcon } from "lucide-react";
@@ -40,6 +40,9 @@ import {
 } from "../components/integration-favicon";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
+import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
   openapi: "openapi",
@@ -64,7 +67,9 @@ const bestDetection = (
 // ---------------------------------------------------------------------------
 
 export function IntegrationsPage() {
+  useExecutorDocumentTitle("Integrations");
   const integrations = useAtomValue(integrationsOptimisticAtom);
+  const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
   const [connectOpen, setConnectOpen] = useState(false);
 
   return (
@@ -93,28 +98,34 @@ export function IntegrationsPage() {
 
       <div className="mb-8 border-t border-border/50" />
 
-      {AsyncResult.match(integrations, {
-        onInitial: () => <IntegrationsGridSkeleton />,
-        onFailure: () => <p className="text-sm text-destructive">Failed to load integrations</p>,
-        onSuccess: ({ value }) => {
-          if (value.length === 0) {
-            return (
-              <EmptyIntegrations
-                onConnect={() => {
-                  setConnectOpen(true);
-                  trackEvent("integration_connect_dialog_opened");
-                }}
-              />
-            );
-          }
+      {isAsyncResultLoading(integrations) ? (
+        <IntegrationsGridSkeleton />
+      ) : (
+        AsyncResult.match(integrations, {
+          onInitial: () => <IntegrationsGridSkeleton />,
+          onFailure: () => (
+            <ErrorState message="Failed to load integrations" onRetry={refreshIntegrations} />
+          ),
+          onSuccess: ({ value }) => {
+            if (value.length === 0) {
+              return (
+                <EmptyIntegrations
+                  onConnect={() => {
+                    setConnectOpen(true);
+                    trackEvent("integration_connect_dialog_opened");
+                  }}
+                />
+              );
+            }
 
-          return (
-            <div className="mb-8 space-y-3">
-              <IntegrationGrid integrations={value} />
-            </div>
-          );
-        },
-      })}
+            return (
+              <div className="mb-8 space-y-3">
+                <IntegrationGrid integrations={value} />
+              </div>
+            );
+          },
+        })
+      )}
 
       <ConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
     </PageContainer>

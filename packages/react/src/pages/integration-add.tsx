@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { trackEvent } from "../api/analytics";
+import { useExecutorDocumentTitle } from "../lib/document-title";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -13,6 +14,7 @@ export function AddIntegrationPage(props: {
   preset?: string;
   namespace?: string;
 }) {
+  useExecutorDocumentTitle("Add integration");
   const { pluginKey, url, preset, namespace } = props;
   const navigate = useNavigate();
   const integrationPlugins = useIntegrationPlugins();

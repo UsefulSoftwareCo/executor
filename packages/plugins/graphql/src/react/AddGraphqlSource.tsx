@@ -130,7 +130,7 @@ export default function AddGraphqlSource(props: {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <h1 className="text-xl font-semibold text-foreground">Add GraphQL Source</h1>
+      <h1 className="text-xl font-semibold text-foreground">Add GraphQL integration</h1>
 
       <GraphqlSourceFields
         endpoint={endpoint}
@@ -143,8 +143,8 @@ export default function AddGraphqlSource(props: {
       <AuthMethodListEditor
         list={authMethodList}
         allowedKinds={["none", "apikey"]}
-        emptyHint="No authentication declared. Add a method, or add the source without auth and connect an account from the integration page later."
-        footerHint="Every method here is registered with the source. Connect an account from the integration page after adding."
+        emptyHint="No authentication declared. Add a method, or add the integration without auth and connect an account from the integration page later."
+        footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
       />
 
       {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSlug} />}
@@ -156,7 +156,7 @@ export default function AddGraphqlSource(props: {
           Cancel
         </Button>
         <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
-          Add source
+          Add integration
         </Button>
       </FloatActions>
     </div>

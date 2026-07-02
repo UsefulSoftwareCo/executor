@@ -33,6 +33,9 @@ import { usePolicyActions } from "../hooks/use-policy-actions";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
+import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // v2: the route's `namespace` param is the integration slug. Tools belong to
 // the integration's per-owner connections; a tool's policy id is
@@ -87,6 +90,8 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"accounts" | "tools">("accounts");
+  const [manualAccountHandoff, setManualAccountHandoff] =
+    useState<IntegrationAccountHandoff | null>(null);
   const [locationSearch] = useState(() =>
     typeof window === "undefined" ? "" : window.location.search,
   );
@@ -97,11 +102,12 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   }, [namespace]);
 
   const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
+  useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
-  const accountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
+  const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
     if (locationSearch.length === 0) return null;
     const search = new URLSearchParams(locationSearch);
     if (search.get("addAccount") !== "1") return null;
@@ -136,6 +142,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       ...(oauthClient !== undefined ? { oauthClient } : {}),
     };
   }, [locationSearch]);
+  const accountHandoff = manualAccountHandoff ?? urlAccountHandoff;
 
   useEffect(() => {
     if (accountHandoff && !isBuiltInIntegration) {
@@ -335,6 +342,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     setRefreshing(false);
   };
 
+  const handleOpenAddConnection = () => {
+    setActiveTab("accounts");
+    setManualAccountHandoff({ key: `manual:${String(slug)}:${Date.now()}` });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header bar */}
@@ -444,52 +456,63 @@ export function IntegrationDetailPage(props: { namespace: string }) {
           value="tools"
           className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
         >
-          {AsyncResult.match(tools, {
-            onInitial: () => <IntegrationDetailSkeleton />,
-            onFailure: () => (
-              <div className="p-6 text-sm text-destructive">Failed to load tools</div>
-            ),
-            onSuccess: () => (
-              <div className="flex min-h-0 flex-1 overflow-hidden">
-                {/* Left: tool tree */}
-                <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
-                  <ToolTree
-                    tools={integrationTools}
-                    selectedToolId={selectedToolId}
-                    onSelect={setSelectedToolId}
-                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                    policies={sortedPolicies}
-                    groupByConnection={!isBuiltInIntegration}
-                  />
+          {isAsyncResultLoading(tools) ? (
+            <IntegrationDetailSkeleton />
+          ) : (
+            AsyncResult.match(tools, {
+              onInitial: () => <IntegrationDetailSkeleton />,
+              onFailure: () => (
+                <div className="p-6">
+                  <ErrorState message="Failed to load tools" onRetry={refreshTools} />
                 </div>
-
-                {/* Right: tool detail with Schema · TypeScript · Run tabs */}
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  {selectedTool && selectedAddress && selectedBareName ? (
-                    <ToolDetail
-                      address={selectedAddress}
-                      toolName={selectedTool.name}
-                      staticTool={selection?.static}
-                      policy={selectedTool.policy}
+              ),
+              onSuccess: () => (
+                <div className="flex min-h-0 flex-1 overflow-hidden">
+                  {/* Left: tool tree */}
+                  <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
+                    <ToolTree
+                      tools={integrationTools}
+                      selectedToolId={selectedToolId}
+                      onSelect={setSelectedToolId}
                       onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
                       onClearPolicy={(pattern) => void policyActions.clear(pattern)}
-                      {...(!selection?.static && selectedBareName
-                        ? {
-                            integration: slug,
-                            runToolName: selectedBareName,
-                            connections: integrationConnections,
-                            initialConnectionName: selection?.connection ?? null,
-                          }
-                        : {})}
+                      policies={sortedPolicies}
+                      groupByConnection={!isBuiltInIntegration}
                     />
-                  ) : (
-                    <ToolDetailEmpty hasTools={integrationTools.length > 0} />
-                  )}
+                  </div>
+
+                  {/* Right: tool detail with Schema · TypeScript · Run tabs */}
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                    {selectedTool && selectedAddress && selectedBareName ? (
+                      <ToolDetail
+                        address={selectedAddress}
+                        toolName={selectedTool.name}
+                        staticTool={selection?.static}
+                        policy={selectedTool.policy}
+                        onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
+                        onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                        {...(!selection?.static && selectedBareName
+                          ? {
+                              integration: slug,
+                              runToolName: selectedBareName,
+                              connections: integrationConnections,
+                              initialConnectionName: selection?.connection ?? null,
+                            }
+                          : {})}
+                      />
+                    ) : !isBuiltInIntegration && integrationConnections.length === 0 ? (
+                      <NoConnectionToolsEmptyState
+                        onAddConnection={handleOpenAddConnection}
+                        canAddConnection={accountsMethods.length > 0}
+                      />
+                    ) : (
+                      <ToolDetailEmpty hasTools={integrationTools.length > 0} />
+                    )}
+                  </div>
                 </div>
-              </div>
-            ),
-          })}
+              ),
+            })
+          )}
         </TabsContent>
       </Tabs>
 
@@ -501,6 +524,31 @@ export function IntegrationDetailPage(props: { namespace: string }) {
         {...(editPlugin?.editSheet ? { pluginSection: editPlugin.editSheet } : {})}
         onOpenChange={setEditSheetOpen}
       />
+    </div>
+  );
+}
+
+function NoConnectionToolsEmptyState(props: {
+  readonly onAddConnection: () => void;
+  readonly canAddConnection: boolean;
+}) {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="max-w-sm text-center">
+        <p className="text-sm font-medium text-foreground">No tools yet</p>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Add a connection to unlock this integration's tools.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          className="mt-4"
+          onClick={props.onAddConnection}
+          disabled={!props.canAddConnection}
+        >
+          Add connection
+        </Button>
+      </div>
     </div>
   );
 }

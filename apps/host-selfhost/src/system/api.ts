@@ -20,6 +20,9 @@ export class SystemError extends Schema.TaggedErrorClass<SystemError>()(
 
 export const HealthResponse = Schema.Struct({ status: Schema.String });
 export const SetupStatusResponse = Schema.Struct({ needsSetup: Schema.Boolean });
+export const InviteStatusResponse = Schema.Struct({ valid: Schema.Boolean });
+
+const InviteStatusParams = { code: Schema.String };
 
 export const SystemApi = HttpApiGroup.make("system")
   .add(
@@ -31,6 +34,13 @@ export const SystemApi = HttpApiGroup.make("system")
   .add(
     HttpApiEndpoint.get("setupStatus", "/setup-status", {
       success: SetupStatusResponse,
+      error: [SystemError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("inviteStatus", "/invite-status/:code", {
+      params: InviteStatusParams,
+      success: InviteStatusResponse,
       error: [SystemError],
     }),
   );

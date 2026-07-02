@@ -108,7 +108,7 @@ export default function AddMicrosoftSource(props: {
   return (
     <div className="flex flex-1 flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-foreground">Add Microsoft Graph</h1>
+        <h1 className="text-xl font-semibold text-foreground">Add Microsoft integration</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
           Pick Microsoft 365 workloads and connect them through one delegated OAuth consent.
         </p>

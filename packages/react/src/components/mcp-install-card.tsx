@@ -170,7 +170,7 @@ export function McpInstallCard(props: { className?: string }) {
       ? isDev
         ? "Uses the repo-local dev CLI from any agent working directory."
         : "Requires the executor CLI on your PATH."
-      : "Connect to executor as a remote MCP server over streamable HTTP.";
+      : "Paste this into Claude Code, Cursor, or any MCP client, and your agent gets every tool you connect here.";
 
   const advancedControls = (
     <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -224,9 +224,10 @@ export function McpInstallCard(props: { className?: string }) {
             key={key}
             title={label}
             aria-label={label}
+            role="img"
             style={{ zIndex: SUPPORTED_AGENTS.length - index }}
             className={cn(
-              "flex h-6 items-center justify-center rounded-md border border-border/60 bg-background px-1.5 transition-[margin] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
+              "flex h-6 items-center justify-center rounded-md border border-border/60 bg-background px-1.5 text-muted-foreground transition-[margin] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
               index > 0 && "-ml-2 group-hover/agents:ml-1",
             )}
           >

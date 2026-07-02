@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import type { ProviderKey } from "@executor-js/sdk/shared";
 import { useSecretProviderPlugins } from "@executor-js/sdk/client";
@@ -17,6 +17,9 @@ import {
 } from "../components/card-stack";
 import { Badge } from "../components/badge";
 import { PageContainer, PageHeader } from "../components/page";
+import { useExecutorDocumentTitle } from "../lib/document-title";
+import { ErrorState } from "../components/error-state";
+import { isAsyncResultLoading } from "../lib/async-result";
 
 // ---------------------------------------------------------------------------
 // Providers page (v2) — repurposed from the v1 Secrets page.
@@ -30,7 +33,7 @@ import { PageContainer, PageHeader } from "../components/page";
 // ---------------------------------------------------------------------------
 
 const PROVIDER_LABELS: Record<string, string> = {
-  default: "Default store",
+  encrypted: "Encrypted store",
   keychain: "Keychain",
   file: "Local file",
   memory: "Memory",
@@ -38,12 +41,20 @@ const PROVIDER_LABELS: Record<string, string> = {
   "workos-vault": "WorkOS Vault",
 };
 
-const providerLabel = (key: string): string => PROVIDER_LABELS[key] ?? key;
+const providerLabel = (key: string): string =>
+  PROVIDER_LABELS[key] ??
+  key
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 
 export function SecretsPage(props: { showProviderInfo?: boolean }) {
+  useExecutorDocumentTitle("Providers");
   const showProviderInfo = props.showProviderInfo ?? true;
   const secretProviderPlugins = useSecretProviderPlugins();
   const providers = useAtomValue(providersAtom);
+  const refreshProviders = useAtomRefresh(providersAtom);
 
   return (
     <PageContainer>
@@ -76,53 +87,62 @@ export function SecretsPage(props: { showProviderInfo?: boolean }) {
       )}
 
       {/* Registered providers */}
-      {AsyncResult.match(providers, {
-        onInitial: () => (
-          <div className="flex items-center gap-2 py-8">
-            <div className="size-1.5 rounded-full bg-muted-foreground/30 animate-pulse" />
-            <p className="text-sm text-muted-foreground">Loading providers…</p>
-          </div>
-        ),
-        onFailure: () => (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-            <p className="text-sm text-destructive">Failed to load providers</p>
-          </div>
-        ),
-        onSuccess: ({ value }) => (
-          <CardStack>
-            <CardStackHeader>Available providers</CardStackHeader>
-            <CardStackContent>
-              {value.length === 0 ? (
-                <CardStackEntry>
-                  <CardStackEntryContent>
-                    <CardStackEntryDescription>
-                      No credential providers are registered.
-                    </CardStackEntryDescription>
-                  </CardStackEntryContent>
-                </CardStackEntry>
-              ) : (
-                value.map((key: ProviderKey) => (
-                  <CardStackEntry key={String(key)}>
+      {isAsyncResultLoading(providers) ? (
+        <div className="flex items-center gap-2 py-8">
+          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">Loading providers…</p>
+        </div>
+      ) : (
+        AsyncResult.match(providers, {
+          onInitial: () => (
+            <div className="flex items-center gap-2 py-8">
+              <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+              <p className="text-sm text-muted-foreground">Loading providers…</p>
+            </div>
+          ),
+          onFailure: () => (
+            <ErrorState message="Failed to load providers" onRetry={refreshProviders} />
+          ),
+          onSuccess: ({ value }) => (
+            <CardStack>
+              <CardStackHeader>Available providers</CardStackHeader>
+              <CardStackContent>
+                {value.length === 0 ? (
+                  <CardStackEntry>
                     <CardStackEntryContent>
-                      <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
-                        <span className="min-w-0 shrink truncate">
-                          {providerLabel(String(key))}
-                        </span>
-                        <span className="max-w-40 shrink truncate font-mono text-xs text-muted-foreground">
-                          {String(key)}
-                        </span>
-                      </CardStackEntryTitle>
+                      <CardStackEntryDescription>
+                        No credential providers are registered.
+                      </CardStackEntryDescription>
                     </CardStackEntryContent>
-                    <CardStackEntryActions>
-                      <Badge variant="secondary">provider</Badge>
-                    </CardStackEntryActions>
                   </CardStackEntry>
-                ))
-              )}
-            </CardStackContent>
-          </CardStack>
-        ),
-      })}
+                ) : (
+                  value.map((key: ProviderKey) => (
+                    <CardStackEntry key={String(key)}>
+                      <CardStackEntryContent>
+                        <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 shrink truncate">
+                            {providerLabel(String(key))}
+                          </span>
+                        </CardStackEntryTitle>
+                        <CardStackEntryDescription>
+                          {String(key) === "encrypted"
+                            ? "Values you paste are encrypted and stored in this instance's database."
+                            : `${providerLabel(String(key))} credential provider.`}
+                        </CardStackEntryDescription>
+                      </CardStackEntryContent>
+                      <CardStackEntryActions>
+                        <Badge variant="secondary">
+                          {String(key) === "encrypted" ? "default" : "provider"}
+                        </Badge>
+                      </CardStackEntryActions>
+                    </CardStackEntry>
+                  ))
+                )}
+              </CardStackContent>
+            </CardStack>
+          ),
+        })
+      )}
     </PageContainer>
   );
 }

@@ -2,7 +2,7 @@ import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { BookOpen, ExternalLink } from "lucide-react";
+import { BookOpen, Command, ExternalLink } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
@@ -160,6 +160,21 @@ function DocsLink(props: { href: string; onNavigate?: () => void }) {
       <span className="flex-1">Docs</span>
       <ExternalLink className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
     </a>
+  );
+}
+
+function CommandsButton(props: { onOpen: () => void }) {
+  return (
+    // oxlint-disable-next-line react/forbid-elements
+    <button
+      type="button"
+      onClick={props.onOpen}
+      className="group flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-active/60 hover:text-foreground"
+    >
+      <Command className="size-4 shrink-0" />
+      <span className="flex-1 text-left">Commands</span>
+      <span className="font-mono text-[11px] text-muted-foreground">⌘K</span>
+    </button>
   );
 }
 
@@ -326,7 +341,12 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
 // ── SidebarContent ───────────────────────────────────────────────────────
 
 function SidebarContent(
-  props: ShellProps & { pathname: string; onNavigate?: () => void; showBrand?: boolean },
+  props: ShellProps & {
+    pathname: string;
+    onNavigate?: () => void;
+    showBrand?: boolean;
+    onOpenCommands: () => void;
+  },
 ) {
   const plugins = useClientPlugins();
   const pluginNavItems = plugins.flatMap((plugin) =>
@@ -371,6 +391,7 @@ function SidebarContent(
       <SidebarUpdateCard />
 
       <div className="shrink-0 border-t border-sidebar-border p-2">
+        <CommandsButton onOpen={props.onOpenCommands} />
         <DocsLink href={props.docsUrl ?? DEFAULT_DOCS_URL} onNavigate={props.onNavigate} />
         {APP_VERSION && (
           <p className="px-2.5 pt-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">
@@ -392,6 +413,7 @@ export function Shell(props: ShellProps) {
   const pathname = useScopeRelativePathname();
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   if (lastPathname.current !== pathname) {
     lastPathname.current = pathname;
     if (mobileSidebarOpen) setMobileSidebarOpen(false);
@@ -408,10 +430,14 @@ export function Shell(props: ShellProps) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <CommandPalette />
+      <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       {/* Desktop sidebar */}
       <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
-        <SidebarContent {...props} pathname={pathname} />
+        <SidebarContent
+          {...props}
+          pathname={pathname}
+          onOpenCommands={() => setCommandPaletteOpen(true)}
+        />
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -450,6 +476,10 @@ export function Shell(props: ShellProps) {
               pathname={pathname}
               onNavigate={() => setMobileSidebarOpen(false)}
               showBrand={false}
+              onOpenCommands={() => {
+                setMobileSidebarOpen(false);
+                setCommandPaletteOpen(true);
+              }}
             />
           </div>
         </div>
