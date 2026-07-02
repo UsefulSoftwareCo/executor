@@ -200,6 +200,22 @@ const DiscoveryRef = Schema.Struct({
   $ref: Schema.optional(Schema.String),
 });
 
+const DiscoveryMediaUploadProtocol = Schema.Struct({
+  path: TextOption,
+  multipart: Schema.optional(Schema.Boolean),
+});
+
+const DiscoveryMediaUploadProtocols = Schema.Struct({
+  simple: Schema.optional(DiscoveryMediaUploadProtocol),
+  resumable: Schema.optional(DiscoveryMediaUploadProtocol),
+});
+
+const DiscoveryMediaUpload = Schema.Struct({
+  accept: Schema.optional(TextArray),
+  maxSize: Schema.optional(Schema.String),
+  protocols: Schema.optional(DiscoveryMediaUploadProtocols),
+});
+
 const DiscoveryMethod = Schema.Struct({
   id: TextOption,
   description: TextOption,
@@ -209,6 +225,8 @@ const DiscoveryMethod = Schema.Struct({
   request: Schema.optional(DiscoveryRef),
   response: Schema.optional(DiscoveryRef),
   scopes: TextArray,
+  supportsMediaUpload: Schema.optional(Schema.Boolean),
+  mediaUpload: Schema.optional(DiscoveryMediaUpload),
   supportsMediaDownload: Schema.optional(Schema.Boolean),
   useMediaDownloadService: Schema.optional(Schema.Boolean),
 });
@@ -708,6 +726,104 @@ const buildDiscoveryOperation = (input: {
   };
 };
 
+const buildDiscoveryMediaUploadOperation = (input: {
+  readonly document: DiscoveryDocument;
+  readonly method: DiscoveryMethod;
+  readonly toolPath: string;
+  readonly oauthScopes?: readonly string[];
+  readonly schemaNameForRef?: (name: string) => string;
+  readonly serverUrl?: string;
+  readonly tags?: readonly string[];
+}): OpenApiOperationObject | undefined => {
+  if (input.method.supportsMediaUpload !== true) return undefined;
+  const mediaUpload = input.method.mediaUpload;
+  if (mediaUpload === undefined) return undefined;
+  const simpleProtocol = mediaUpload.protocols?.simple;
+  const uploadPath = simpleProtocol ? Option.getOrUndefined(simpleProtocol.path) : undefined;
+  if (!uploadPath) return undefined;
+
+  const mergedParameters = new Map<string, DiscoveryParameter>();
+  for (const [name, raw] of Object.entries(input.document.parameters ?? {})) {
+    const parameter = decodeDiscoveryParameter(raw);
+    if (parameter.location) mergedParameters.set(name, parameter);
+  }
+  for (const [name, raw] of Object.entries(input.method.parameters ?? {})) {
+    const parameter = decodeDiscoveryParameter(raw);
+    if (parameter.location) mergedParameters.set(name, parameter);
+  }
+  mergedParameters.set("uploadType", {
+    type: "string",
+    location: "query",
+    required: true,
+    description: Option.some("The upload type for the media upload."),
+    properties: {},
+    items: undefined,
+    additionalProperties: undefined,
+    enum: ["media"],
+    format: undefined,
+    readOnly: undefined,
+    default: "media",
+    $ref: undefined,
+    repeated: undefined,
+  });
+
+  const methodScopes = input.oauthScopes ?? input.method.scopes ?? [];
+  const schemaNameForRef = input.schemaNameForRef ?? identitySchemaName;
+  const methodDescription = Option.getOrUndefined(input.method.description);
+
+  return {
+    operationId: `${input.toolPath}Media`,
+    "x-executor-toolPath": `${input.toolPath}Media`,
+    "x-executor-pathTemplate": uploadPath,
+    ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
+    ...(methodDescription !== undefined
+      ? { description: `${methodDescription} (media upload)` }
+      : {}),
+    ...(input.serverUrl ? { servers: [{ url: input.serverUrl }] } : {}),
+    parameters: [...mergedParameters.entries()].flatMap(([name, parameter]) => {
+      const location = parameter.location;
+      if (!location) return [];
+      const description = Option.getOrUndefined(parameter.description);
+      const allowReserved = location === "path" && pathUsesReservedExpansion(uploadPath, name);
+      return [
+        {
+          name,
+          in: location,
+          required: location === "path" ? true : parameter.required === true,
+          ...(description !== undefined ? { description } : {}),
+          schema: parameterSchema(parameter, schemaNameForRef),
+          ...(location === "query"
+            ? { style: "form" as const, explode: parameter.repeated === true }
+            : {}),
+          ...(allowReserved ? { allowReserved: true } : {}),
+        },
+      ];
+    }),
+    requestBody: {
+      required: true,
+      content: {
+        "application/octet-stream": {
+          schema: { type: "string", format: "binary" },
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description: "Successful response",
+        content: {
+          "application/json": {
+            schema: input.method.response?.$ref
+              ? { $ref: schemaRef(schemaNameForRef(input.method.response.$ref)) }
+              : {},
+          },
+        },
+      },
+    },
+    ...(methodScopes.length > 0 ? { security: [{ googleOAuth2: methodScopes }] } : {}),
+    "x-google-scopes": methodScopes,
+  };
+};
+
 const GOOGLE_OAUTH_SECURITY_SCHEME = "googleOAuth2";
 const GOOGLE_PHOTOS_LIBRARY_SERVICE = "photoslibrary";
 const GOOGLE_PHOTOS_APPENDONLY_SCOPE = "https://www.googleapis.com/auth/photoslibrary.appendonly";
@@ -847,7 +963,7 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
     });
 
     const info = yield* discoveryDocumentInfo(document, input.discoveryUrl);
-    const { service, version, baseUrl, title } = info;
+    const { service, version, rootUrl, baseUrl, title } = info;
     const paths: Record<string, Record<string, OpenApiOperationObject>> = {};
 
     for (const method of allDiscoveryMethods(document)) {
@@ -870,6 +986,31 @@ export const convertGoogleDiscoveryToOpenApi = Effect.fn("OpenApi.convertGoogleD
         pathTemplate: pathTemplate.startsWith("/") ? pathTemplate : `/${pathTemplate}`,
         oauthScopes: discoveryMethodScopesForService(service, method),
       });
+
+      const mediaUploadOperation = buildDiscoveryMediaUploadOperation({
+        document,
+        method,
+        toolPath,
+        oauthScopes: discoveryMethodScopesForService(service, method),
+        serverUrl: rootUrl,
+      });
+      if (mediaUploadOperation) {
+        const mediaUploadPathTemplate = mediaUploadOperation["x-executor-pathTemplate"] ?? "";
+        const uploadPath = normalizeDiscoveryPathTemplate(
+          mediaUploadPathTemplate.startsWith("/")
+            ? mediaUploadPathTemplate
+            : `/${mediaUploadPathTemplate}`,
+        );
+        const uploadMethodKey = method.httpMethod.toLowerCase();
+        const uploadPathKey = uniquePathKey(
+          paths,
+          uploadPath,
+          uploadMethodKey,
+          mediaUploadOperation.operationId,
+        );
+        paths[uploadPathKey] ??= {};
+        paths[uploadPathKey]![uploadMethodKey] = mediaUploadOperation;
+      }
     }
 
     if (
@@ -1020,6 +1161,33 @@ export const convertGoogleDiscoveryBundleToOpenApi = Effect.fn(
         serverUrl: info.baseUrl,
         tags: [info.title],
       });
+
+      const mediaUploadOperation = buildDiscoveryMediaUploadOperation({
+        document: info.document,
+        method,
+        toolPath,
+        oauthScopes,
+        schemaNameForRef,
+        serverUrl: info.rootUrl,
+        tags: [info.title],
+      });
+      if (mediaUploadOperation) {
+        const mediaUploadPathTemplate = mediaUploadOperation["x-executor-pathTemplate"] ?? "";
+        const uploadPath = normalizeDiscoveryPathTemplate(
+          mediaUploadPathTemplate.startsWith("/")
+            ? mediaUploadPathTemplate
+            : `/${mediaUploadPathTemplate}`,
+        );
+        const uploadMethodKey = method.httpMethod.toLowerCase();
+        const uploadPathKey = uniquePathKey(
+          paths,
+          uploadPath,
+          uploadMethodKey,
+          mediaUploadOperation.operationId,
+        );
+        paths[uploadPathKey] ??= {};
+        paths[uploadPathKey]![uploadMethodKey] = mediaUploadOperation;
+      }
     }
 
     if (
