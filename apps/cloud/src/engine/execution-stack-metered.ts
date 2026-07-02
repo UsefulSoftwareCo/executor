@@ -28,19 +28,40 @@ import {
 import { AutumnService } from "../extensions/billing/service";
 import type { DbService } from "../db/db";
 import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
+import { makeExecutionLimitGate } from "./execution-gate";
+import { makeCloudExecutionRateLimiter } from "./execution-rate-limit";
 import { withExecutionUsageTracking } from "./execution-usage";
 
-// Usage-metering decorator bound to the billing service. `trackExecution` is
-// fire-and-forget (`Effect.runFork`) so the billing call can't stall a
-// user-facing execution.
+// Usage-metering decorator bound to the billing service, plus the two
+// pre-execution guards this layer owns, ordered cheapest first:
+//   1. rate-limit backstop (counter DO, independent of billing)
+//   2. execution balance gate (Autumn check, cached 60s, fails open)
+//   3. usage tracking — fire-and-forget (`Effect.runFork`) so the billing
+//      call can't stall a user-facing execution.
+// The guards wrap OUTSIDE the tracker so a blocked execution is neither run
+// nor tracked. One gate/limiter instance per layer build: the balance cache is
+// shared by every engine this decorator produces (in the MCP session DO that's
+// the session's engines; on the HTTP plane the boot layer builds it once).
 export const CloudMeteringEngineDecorator: Layer.Layer<EngineDecorator, never, AutumnService> =
   Layer.effect(EngineDecorator)(
-    Effect.map(AutumnService.asEffect(), (autumn): EngineDecorator["Service"] => ({
-      decorate: (engine, identity: EngineStackIdentity) =>
-        withExecutionUsageTracking(identity.organizationId, engine, (organizationId) =>
-          Effect.runFork(autumn.trackExecution(organizationId)),
-        ),
-    })),
+    Effect.map(AutumnService.asEffect(), (autumn): EngineDecorator["Service"] => {
+      const balanceGate = makeExecutionLimitGate((organizationId) =>
+        autumn.checkExecutionBalance(organizationId),
+      );
+      const rateLimiter = makeCloudExecutionRateLimiter();
+      return {
+        decorate: (engine, identity: EngineStackIdentity) =>
+          rateLimiter.decorate(
+            identity.organizationId,
+            balanceGate.decorate(
+              identity.organizationId,
+              withExecutionUsageTracking(identity.organizationId, engine, (organizationId) =>
+                Effect.runFork(autumn.trackExecution(organizationId)),
+              ),
+            ),
+          ),
+      };
+    }),
   );
 
 /**
