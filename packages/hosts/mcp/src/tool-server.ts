@@ -1,4 +1,5 @@
 import { Duration, Effect, Match, Option, Schema } from "effect";
+import { MinimumLogLevel } from "effect/References";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
@@ -576,10 +577,20 @@ const parseJsonContent = (raw: string): Record<string, unknown> | undefined => {
 // Server factory
 // ---------------------------------------------------------------------------
 
+const formatMcpDebugLine = (event: string, data: Record<string, unknown>): string => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: debug logging must tolerate non-serializable SDK capability snapshots
+  try {
+    return `[executor:mcp] ${event} ${JSON.stringify(data)}`;
+  } catch {
+    return `[executor:mcp] ${event}`;
+  }
+};
+
 export const createExecutorMcpServer = <E extends Cause.YieldableError>(
   config: ExecutorMcpServerConfig<E>,
-): Effect.Effect<McpServer> =>
-  Effect.gen(function* () {
+): Effect.Effect<McpServer> => {
+  const debugEnabled = config.debug ?? readDebugDefault();
+  const program = Effect.gen(function* () {
     const engine = "engine" in config ? config.engine : createExecutionEngine(config);
     const description =
       config.description ??
@@ -592,15 +603,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // deferred past the outer Effect's await), so we use the runtime to
     // re-enter Effect-land at each callback edge.
     const context = yield* Effect.context<never>();
-    const debugEnabled = config.debug ?? readDebugDefault();
     const debugLog = (event: string, data: Record<string, unknown>) => {
       if (!debugEnabled) return;
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: debug logging must tolerate non-serializable SDK capability snapshots
-      try {
-        console.error(`[executor:mcp] ${event} ${JSON.stringify(data)}`);
-      } catch {
-        console.error(`[executor:mcp] ${event}`, data);
-      }
+      Effect.runSync(
+        Effect.logDebug(formatMcpDebugLine(event, data)).pipe(Effect.provide(context)),
+      );
     };
     const elicitationMode =
       config.elicitationMode ??
@@ -897,22 +904,16 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       }),
     );
 
-    yield* Effect.sync(() => {
-      console.error(
-        "[executor] MCP session mode",
-        JSON.stringify({
-          ...capabilitySnapshot(server),
-          elicitationMode: elicitationMode.mode,
-          resumeEnabled: elicitationMode.mode !== "native",
-        }),
-      );
-      debugLog("tool.visibility", {
-        clientCapabilities: server.server.getClientCapabilities() ?? null,
-        elicitationSupport: getElicitationSupport(server),
+    yield* Effect.logInfo(
+      `[executor] MCP session mode ${JSON.stringify({
+        ...capabilitySnapshot(server),
         elicitationMode: elicitationMode.mode,
         resumeEnabled: elicitationMode.mode !== "native",
-      });
-    }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
+      })}`,
+    ).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
 
     return server;
   }).pipe(Effect.withSpan("mcp.host.create_executor_server"));
+
+  return debugEnabled ? program.pipe(Effect.provideService(MinimumLogLevel, "Debug")) : program;
+};

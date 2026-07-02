@@ -1,4 +1,4 @@
-import { Effect, type Cause } from "effect";
+import { Effect, Logger, type Cause } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -285,7 +285,9 @@ export const createMcpRequestHandler = (
 export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
-  const server = await Effect.runPromise(createExecutorMcpServer(config));
+  const server = await Effect.runPromise(
+    createExecutorMcpServer(config).pipe(Effect.provideService(Logger.LogToStderr, true)),
+  );
   const transport = new StdioServerTransport();
 
   const waitForExit = () =>
