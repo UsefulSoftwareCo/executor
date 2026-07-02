@@ -5,6 +5,7 @@ import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
 import { authClient } from "./auth-client";
+import { AuthLayout } from "./auth-layout";
 
 // First-run setup. A fresh instance has no users, so the first visitor creates
 // the admin account here. The server admits the first signup into the empty org
@@ -32,15 +33,15 @@ export const SetupPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+    <AuthLayout>
       <form
         onSubmit={submit}
         className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-6 shadow-sm"
       >
-        <div className="space-y-1 text-center">
-          <h1 className="font-mono text-2xl tracking-tight text-foreground">Set up Executor</h1>
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Set up Executor</h1>
           <p className="text-sm text-muted-foreground">
-            Create the admin account for this instance.
+            Create the admin account for this instance. You can invite your team once you're in.
           </p>
         </div>
 
@@ -87,6 +88,6 @@ export const SetupPage = () => {
           {busy ? "Creating…" : "Create admin account"}
         </Button>
       </form>
-    </div>
+    </AuthLayout>
   );
 };
