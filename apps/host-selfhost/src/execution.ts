@@ -44,7 +44,10 @@ export const SelfHostPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succe
       executorConfig.plugins({
         activeToolkitSlug:
           context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
-        allowLocalNetwork: loadConfig().allowLocalNetwork,
+        // Read the env directly (same computation as loadConfig().allowLocalNetwork):
+        // plugins() runs per request, and loadConfig does filesystem work
+        // (data dir, secret key) that must not ride the request path.
+        allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
       }),
   },
 );
