@@ -1,9 +1,11 @@
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 
-import { ApiKeyManagementError } from "./api-key-errors";
-import { WorkOSAuth } from "./workos";
+import { ApiKeyManagementError } from "./errors";
+import { WorkOSClient } from "./workos";
 
-export type ApiKeyPrincipal = {
+/** The owner an api key resolves to — NOT a full {@link Principal} (no email /
+ * name / roles), so it carries an honest, distinct name. */
+export type ApiKeyOwner = {
   readonly accountId: string;
   readonly organizationId: string;
   readonly keyId: string;
@@ -80,7 +82,7 @@ const decodeValidateApiKeyResponse = Schema.decodeUnknownOption(ValidateApiKeyRe
 const decodeListApiKeysResponse = Schema.decodeUnknownOption(ListApiKeysResponse);
 const decodeCreateApiKeyResponse = Schema.decodeUnknownOption(CreateApiKeyResponse);
 
-const principalFromResponse = (value: unknown): ApiKeyPrincipal | null =>
+const ownerFromResponse = (value: unknown): ApiKeyOwner | null =>
   Option.match(decodeValidateApiKeyResponse(value), {
     onNone: () => null,
     onSome: ({ apiKey }) => {
@@ -132,9 +134,7 @@ const createdFromResponse = (value: unknown): CreatedApiKey | null =>
 export class ApiKeyService extends Context.Service<
   ApiKeyService,
   {
-    readonly validate: (
-      value: string,
-    ) => Effect.Effect<ApiKeyPrincipal | null, ApiKeyValidationError>;
+    readonly validate: (value: string) => Effect.Effect<ApiKeyOwner | null, ApiKeyValidationError>;
     readonly listUserKeys: (input: {
       readonly accountId: string;
       readonly organizationId: string;
@@ -151,11 +151,11 @@ export class ApiKeyService extends Context.Service<
 >()("@executor-js/cloud/ApiKeyService") {
   static WorkOS = Layer.effect(this)(
     Effect.gen(function* () {
-      const workos = yield* WorkOSAuth;
+      const workos = yield* WorkOSClient;
       return {
         validate: (value: string) =>
           workos.validateApiKey(value).pipe(
-            Effect.map(principalFromResponse),
+            Effect.map(ownerFromResponse),
             Effect.mapError((cause) => new ApiKeyValidationError({ cause })),
           ),
         listUserKeys: ({ accountId, organizationId }) =>

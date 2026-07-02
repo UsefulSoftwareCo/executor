@@ -2,23 +2,14 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Context, Effect } from "effect";
 
 import { addGroup, capture } from "@executor-js/api";
-import { ScopeId } from "@executor-js/sdk/core";
-import type {
-  McpPluginExtension,
-  McpProbeEndpointInput,
-  McpSourceConfig,
-  McpUpdateSourceInput,
-} from "../sdk/plugin";
-import type { McpCredentialInput } from "../sdk/types";
-import { McpStoredSourceSchema } from "../sdk/stored-source";
+import type { McpPluginExtension, McpProbeEndpointInput, McpServerInput } from "../sdk/plugin";
+import { parseMcpIntegrationConfig } from "../sdk/types";
 import { McpGroup } from "./group";
 
 // ---------------------------------------------------------------------------
-// Service tag — holds the raw extension shape the executor produces.
-// Handlers wrap their generator bodies with `capture(...)` from
-// `@executor-js/api`, which translates `StorageError` to `InternalError`
-// at the edge; that's why the tag type matches the SDK shape directly
-// (no `Captured<>` inversion).
+// Service tag — holds the raw extension shape the executor produces. Handlers
+// wrap their generator bodies with `capture(...)` from `@executor-js/api`,
+// which translates `StorageError` to `InternalError` at the edge.
 // ---------------------------------------------------------------------------
 
 export class McpExtensionService extends Context.Service<McpExtensionService, McpPluginExtension>()(
@@ -32,72 +23,68 @@ export class McpExtensionService extends Context.Service<McpExtensionService, Mc
 const ExecutorApiWithMcp = addGroup(McpGroup);
 
 // ---------------------------------------------------------------------------
-// Convert API payload → McpSourceConfig
+// Convert API payload → McpServerInput
 // ---------------------------------------------------------------------------
 
-const toSourceConfig = (
-  payload: { transport: "remote" | "stdio" } & Record<string, unknown>,
-  scope: string,
-): McpSourceConfig => {
+const toServerInput = (
+  payload: { transport?: "remote" | "stdio" } & Record<string, unknown>,
+): McpServerInput => {
   if (payload.transport === "stdio") {
     const p = payload as {
       transport: "stdio";
       name: string;
+      description?: string;
       command: string;
       args?: readonly string[];
+      envVars?: readonly string[];
       env?: Record<string, string>;
       cwd?: string;
-      namespace?: string;
+      slug?: string;
     };
     return {
       transport: "stdio",
-      scope,
       name: p.name,
+      description: p.description,
       command: p.command,
       args: p.args ? [...p.args] : undefined,
+      envVars: p.envVars ? [...p.envVars] : undefined,
       env: p.env,
       cwd: p.cwd,
-      namespace: p.namespace,
+      slug: p.slug,
     };
   }
 
   const p = payload as {
-    transport: "remote";
+    transport?: "remote";
     name: string;
+    description?: string;
     endpoint: string;
     remoteTransport?: "streamable-http" | "sse" | "auto";
-    queryParams?: Record<string, McpCredentialInput>;
-    headers?: Record<string, McpCredentialInput>;
-    namespace?: string;
-    auth?: { kind: string } & Record<string, unknown>;
-    credentialTargetScope?: string;
+    queryParams?: Record<string, string>;
+    headers?: Record<string, string>;
+    slug?: string;
+    authenticationTemplate?: McpServerInput extends { authenticationTemplate?: infer T }
+      ? T
+      : never;
+    auth?: McpServerInput extends { auth?: infer A } ? A : never;
   };
 
   return {
     transport: "remote",
-    scope,
     name: p.name,
+    description: p.description,
     endpoint: p.endpoint,
     remoteTransport: p.remoteTransport,
     queryParams: p.queryParams,
     headers: p.headers,
-    namespace: p.namespace,
-    auth: p.auth as McpSourceConfig extends { auth?: infer A } ? A : never,
-    credentialTargetScope: p.credentialTargetScope,
+    slug: p.slug,
+    authenticationTemplate: p.authenticationTemplate,
+    auth: p.auth,
   };
 };
 
 // ---------------------------------------------------------------------------
 // Handlers
-//
-// Each handler is exactly: yield the extension service, call the method,
-// return. Plugin SDK errors flow through the typed channel and are
-// schema-encoded to 4xx by HttpApi (see group.ts `.addError(...)` calls).
-// Defects bubble up and are captured + downgraded to `InternalError(traceId)`
-// by the API-level observability middleware (see apps/cloud/src/observability.ts).
-//
-// No `sanitize*`, no `liftDomainErrors`, no `withObservability` per handler.
-// If you find yourself adding error-handling here you're in the wrong layer.
 // ---------------------------------------------------------------------------
 
 export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (handlers) =>
@@ -110,92 +97,62 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
         }),
       ),
     )
-    .handle("addSource", ({ payload }) =>
+    .handle("addServer", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          return yield* ext.addSource(
-            toSourceConfig(payload as Parameters<typeof toSourceConfig>[0], payload.targetScope),
+          return yield* ext.addServer(
+            toServerInput(payload as Parameters<typeof toServerInput>[0]),
           );
         }),
       ),
     )
-    .handle("removeSource", ({ params: path, payload }) =>
+    .handle("removeServer", ({ params: path }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          yield* ext.removeSource(payload.namespace, path.scopeId);
+          yield* ext.removeServer(path.slug);
           return { removed: true };
         }),
       ),
     )
-    .handle("refreshSource", ({ params: path, payload }) =>
+    .handle("getServer", ({ params: path }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          return yield* ext.refreshSource(payload.namespace, path.scopeId);
+          const integration = yield* ext.getServer(path.slug);
+          if (integration === null) return null;
+          const config = parseMcpIntegrationConfig(integration.config);
+          if (config === null) return null;
+          return {
+            slug: integration.slug,
+            description: integration.description,
+            kind: integration.kind,
+            canRemove: integration.canRemove,
+            canRefresh: integration.canRefresh,
+            config,
+          };
         }),
       ),
     )
-    .handle("getSource", ({ params: path }) =>
+    .handle("configureServer", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          const source = yield* ext.getSource(path.namespace, path.scopeId);
-          return source
-            ? McpStoredSourceSchema.make({
-                namespace: source.namespace,
-                scope: ScopeId.make(source.scope),
-                name: source.name,
-                config: source.config,
-              })
-            : null;
+          yield* ext.configureServer(path.slug, payload.config);
+          return { config: payload.config };
         }),
       ),
     )
-    .handle("updateSource", ({ params: path, payload }) =>
+    .handle("configureAuth", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
           const ext = yield* McpExtensionService;
-          yield* ext.updateSource(path.namespace, payload.sourceScope, {
-            name: payload.name,
-            endpoint: payload.endpoint,
-            headers: payload.headers,
-            queryParams: payload.queryParams,
-            credentialTargetScope: payload.credentialTargetScope,
-            auth: payload.auth as McpUpdateSourceInput["auth"],
+          const authenticationTemplate = yield* ext.configureAuth(path.slug, {
+            authenticationTemplate: payload.authenticationTemplate,
+            mode: payload.mode ?? "merge",
           });
-          return { updated: true };
-        }),
-      ),
-    )
-    .handle("listSourceBindings", ({ params: path }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          return yield* ext.listSourceBindings(path.namespace, path.sourceScopeId);
-        }),
-      ),
-    )
-    .handle("setSourceBinding", ({ payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          return yield* ext.setSourceBinding(payload);
-        }),
-      ),
-    )
-    .handle("removeSourceBinding", ({ payload }) =>
-      capture(
-        Effect.gen(function* () {
-          const ext = yield* McpExtensionService;
-          yield* ext.removeSourceBinding(
-            payload.sourceId,
-            payload.sourceScope,
-            payload.slot,
-            payload.scope,
-          );
-          return { removed: true };
+          return { authenticationTemplate: [...authenticationTemplate] };
         }),
       ),
     ),

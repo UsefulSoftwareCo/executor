@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Fidelity suite — locks in every edge case the prior hand-rolled
-// google-discovery oauth.ts handled, so future "simplifications" of the
+// Google OAuth integrations handled, so future "simplifications" of the
 // shared helpers fail loudly instead of silently breaking refresh / parsing /
 // provider-specific quirks.
 // ---------------------------------------------------------------------------
@@ -14,6 +14,7 @@ import {
   OAUTH2_REFRESH_SKEW_MS,
   OAuth2Error,
   buildAuthorizationUrl,
+  providerAuthorizeExtras,
   createPkceCodeChallenge,
   createPkceCodeVerifier,
   exchangeAuthorizationCode,
@@ -128,6 +129,20 @@ describe("PKCE", () => {
 // buildAuthorizationUrl
 // ---------------------------------------------------------------------------
 
+describe("providerAuthorizeExtras (Google offline/consent quirk)", () => {
+  it("adds access_type=offline + prompt=consent for the Google authorize host", () => {
+    expect(providerAuthorizeExtras("https://accounts.google.com/o/oauth2/v2/auth")).toEqual({
+      access_type: "offline",
+      prompt: "consent",
+    });
+  });
+  it("adds nothing for non-Google hosts or an unparseable URL (token host ≠ authorize host)", () => {
+    expect(providerAuthorizeExtras("https://accounts.spotify.com/authorize")).toEqual({});
+    expect(providerAuthorizeExtras("https://oauth2.googleapis.com/token")).toEqual({});
+    expect(providerAuthorizeExtras("not a url")).toEqual({});
+  });
+});
+
 describe("buildAuthorizationUrl", () => {
   const baseInput = {
     authorizationUrl: "https://example.com/authorize",
@@ -162,20 +177,19 @@ describe("buildAuthorizationUrl", () => {
     expect(url.searchParams.has("scope")).toBe(false);
   });
 
-  it("merges Google-style extra params without dropping them", () => {
+  it("merges provider extra params without dropping them", () => {
     const url = new URL(
       buildAuthorizationUrl({
         ...baseInput,
         extraParams: {
           access_type: "offline",
           prompt: "consent",
-          include_granted_scopes: "true",
         },
       }),
     );
     expect(url.searchParams.get("access_type")).toBe("offline");
     expect(url.searchParams.get("prompt")).toBe("consent");
-    expect(url.searchParams.get("include_granted_scopes")).toBe("true");
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
@@ -594,6 +608,49 @@ describe("exchangeAuthorizationCode", () => {
 });
 
 describe("exchangeClientCredentials", () => {
+  it.effect("routes token grant requests through the injected fetch", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl }) =>
+      Effect.gen(function* () {
+        const seen: Array<{ url: string; method: string | undefined }> = [];
+        const customFetch: typeof globalThis.fetch = (async (input, init) => {
+          seen.push({
+            url: input instanceof Request ? input.url : String(input),
+            method: init?.method,
+          });
+          // oxlint-disable-next-line executor/no-raw-fetch -- boundary: test fetch adapter delegates to the local token endpoint
+          return fetch(input, init);
+        }) as typeof globalThis.fetch;
+
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          fetch: customFetch,
+        });
+        yield* exchangeClientCredentials({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "secret",
+          fetch: customFetch,
+        });
+        yield* refreshAccessToken({
+          tokenUrl,
+          clientId: "cid",
+          refreshToken: "old",
+          fetch: customFetch,
+        });
+
+        expect(seen).toEqual([
+          { url: tokenUrl, method: "POST" },
+          { url: tokenUrl, method: "POST" },
+          { url: tokenUrl, method: "POST" },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("rejects unsupported token URL schemes before exchange", () =>
     Effect.gen(function* () {
       const exit = yield* Effect.exit(

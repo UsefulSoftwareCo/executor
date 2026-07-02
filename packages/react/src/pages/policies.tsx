@@ -2,9 +2,16 @@ import { useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
+import { trackEvent } from "../api/analytics";
 import { generateKeyBetween } from "fractional-indexing";
 import { ChevronDownIcon } from "lucide-react";
-import { PolicyId, ScopeId, type ToolPolicyAction } from "@executor-js/sdk";
+import {
+  PolicyId,
+  matchPattern,
+  isValidPattern,
+  type Owner,
+  type ToolPolicyAction,
+} from "@executor-js/sdk/shared";
 
 import {
   createPolicyOptimistic,
@@ -13,7 +20,7 @@ import {
   updatePolicyOptimistic,
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
-import { useScope, useScopeStack } from "../hooks/use-scope";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { badgeVariants } from "../components/badge";
 import { cn } from "../lib/utils";
 import {
@@ -22,6 +29,7 @@ import {
   POLICY_BADGE_VARIANT,
 } from "../lib/policy-display";
 import { Button } from "../components/button";
+import { PageContainer, PageHeader } from "../components/page";
 import {
   CardStack,
   CardStackContent,
@@ -49,11 +57,23 @@ import {
 } from "../components/select";
 import { Label } from "../components/label";
 
+// Owner guardrail ordering: org rules are the outer guardrail (rank 0), user
+// rules are inner (rank 1). Mirrors server-side resolution where the most
+// restrictive matched action across owners wins.
+const ownerRank = (owner: Owner): number => (owner === "org" ? 0 : 1);
+
+// The two owners a policy can target.
+const POLICY_OWNERS: readonly { readonly owner: Owner; readonly label: string }[] = [
+  { owner: "org", label: "Workspace" },
+  { owner: "user", label: "Personal" },
+];
+
 // ---------------------------------------------------------------------------
-// Sort comparator — fractional-indexing key, then id as a stable tiebreak.
-// Identical positions can briefly happen across racing inserts; without the
-// tiebreak the rendered order flips between refetches, and `generateKeyBetween`
-// would also throw if asked to insert "between" two equal keys.
+// Sort comparator — owner rank, then fractional-indexing key, then id as a
+// stable tiebreak. Identical positions can briefly happen across racing
+// inserts; without the tiebreak the rendered order flips between refetches, and
+// `generateKeyBetween` would also throw if asked to insert "between" two equal
+// keys.
 // ---------------------------------------------------------------------------
 
 const comparePolicy = (posA: string, idA: string, posB: string, idB: string): number => {
@@ -64,54 +84,34 @@ const comparePolicy = (posA: string, idA: string, posB: string, idB: string): nu
   return 0;
 };
 
-// ---------------------------------------------------------------------------
-// Pattern matcher (mirrors `matchPattern` in @executor-js/sdk) — used for the
-// live "this rule matches N tools" preview without a server round-trip.
-// Kept inline so the React package doesn't take a runtime dep on the SDK
-// for one tiny pure function. If they drift, only the preview is stale.
-// ---------------------------------------------------------------------------
-
-const matchesPattern = (pattern: string, toolId: string): boolean => {
-  if (pattern === "*") return true;
-  if (pattern === toolId) return true;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    if (prefix.length === 0) return false;
-    return toolId === prefix || toolId.startsWith(`${prefix}.`);
-  }
-  return false;
-};
-
-const isValidPattern = (pattern: string): boolean => {
-  if (pattern.length === 0) return false;
-  if (pattern === "*") return true;
-  if (pattern.startsWith(".") || pattern.endsWith(".")) return false;
-  if (pattern.includes("..")) return false;
-  if (pattern.startsWith("*")) return false;
-  const segments = pattern.split(".");
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]!;
-    if (seg.length === 0) return false;
-    if (seg.includes("*") && seg !== "*") return false;
-    if (seg === "*" && i !== segments.length - 1) return false;
-  }
-  return true;
-};
+// Pattern matching + validation come from the SDK so the UI's "matches N tools"
+// preview and the add-policy validation use the EXACT same grammar the executor
+// enforces — including mid-segment wildcards (`integration.*.*.tool`), which the
+// connection-aware policy model now relies on. (Re-exported below for callers.)
+const matchesPattern = matchPattern;
 
 // ---------------------------------------------------------------------------
 // Add-policy form
 // ---------------------------------------------------------------------------
 
 function AddPolicyForm(props: {
-  onSubmit: (input: { targetScope: ScopeId; pattern: string; action: ToolPolicyAction }) => void;
-  scopeOptions: readonly { readonly id: ScopeId; readonly label: string }[];
-  targetScope: ScopeId;
-  onTargetScopeChange: (scopeId: ScopeId) => void;
+  onSubmit: (input: { owner: Owner; pattern: string; action: ToolPolicyAction }) => void;
+  owner: Owner;
+  onOwnerChange: (owner: Owner) => void;
   busy: boolean;
 }) {
   const [pattern, setPattern] = useState("");
   const [action, setAction] = useState<ToolPolicyAction>("require_approval");
   const valid = isValidPattern(pattern);
+  // Non-org hosts (local/desktop) have one local workspace. New local policies
+  // are org-owned internally to match the v1->v2 migration.
+  const ownerDisplay = useOwnerDisplay();
+  const ownerChoices = ownerDisplay.isSinglePlayerHost
+    ? POLICY_OWNERS.filter((option) => option.owner === "org").map((option) => ({
+        ...option,
+        label: "Local",
+      }))
+    : POLICY_OWNERS;
 
   return (
     <form
@@ -119,7 +119,7 @@ function AddPolicyForm(props: {
       onSubmit={(e) => {
         e.preventDefault();
         if (!valid) return;
-        props.onSubmit({ targetScope: props.targetScope, pattern, action });
+        props.onSubmit({ owner: props.owner, pattern, action });
         setPattern("");
         setAction("require_approval");
       }}
@@ -158,26 +158,26 @@ function AddPolicyForm(props: {
           </SelectContent>
         </Select>
       </div>
-      {props.scopeOptions.length > 1 && (
+      {ownerChoices.length > 1 ? (
         <div className="flex flex-col gap-1">
-          <Label className="text-xs font-medium text-foreground/80">Target</Label>
+          <Label className="text-xs font-medium text-foreground/80">Applies to</Label>
           <Select
-            value={props.targetScope}
-            onValueChange={(value) => props.onTargetScopeChange(ScopeId.make(value))}
+            value={props.owner}
+            onValueChange={(value) => props.onOwnerChange(value as Owner)}
           >
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {props.scopeOptions.map((option) => (
-                <SelectItem key={option.id} value={option.id}>
+              {ownerChoices.map((option) => (
+                <SelectItem key={option.owner} value={option.owner}>
                   {option.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
-      )}
+      ) : null}
       <div className="flex items-center justify-end">
         <Button type="submit" disabled={!valid || props.busy} size="sm">
           Add policy
@@ -194,8 +194,7 @@ function AddPolicyForm(props: {
 function PolicyRow(props: {
   policy: {
     id: string;
-    scopeId: ScopeId;
-    scopeLabel: string;
+    owner: Owner;
     pattern: string;
     action: ToolPolicyAction;
   };
@@ -205,15 +204,18 @@ function PolicyRow(props: {
   onChangeAction: (action: ToolPolicyAction) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  showOwnerLabel: boolean;
 }) {
   return (
     <CardStackEntry>
       <CardStackEntryContent>
         <CardStackEntryTitle className="flex items-center gap-2 font-mono text-sm">
           <span className="truncate">{props.policy.pattern}</span>
-          <span className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] leading-none text-muted-foreground">
-            {props.policy.scopeLabel}
-          </span>
+          {props.showOwnerLabel ? (
+            <span className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] leading-none text-muted-foreground">
+              {ownerLabel(props.policy.owner)}
+            </span>
+          ) : null}
         </CardStackEntryTitle>
       </CardStackEntryContent>
       <CardStackEntryActions>
@@ -279,49 +281,34 @@ function PolicyRow(props: {
 // ---------------------------------------------------------------------------
 
 export function PoliciesPage() {
-  const scopeId = useScope();
-  const scopeStack = useScopeStack();
-  const policies = useAtomValue(policiesOptimisticAtom(scopeId));
-  const doCreate = useAtomSet(createPolicyOptimistic(scopeId), {
-    mode: "promiseExit",
-  });
-  const doUpdate = useAtomSet(updatePolicyOptimistic(scopeId), {
-    mode: "promise",
-  });
-  const doRemove = useAtomSet(removePolicyOptimistic(scopeId), {
-    mode: "promise",
-  });
+  const policies = useAtomValue(policiesOptimisticAtom);
+  const doCreate = useAtomSet(createPolicyOptimistic, { mode: "promiseExit" });
+  const doUpdate = useAtomSet(updatePolicyOptimistic, { mode: "promiseExit" });
+  const doRemove = useAtomSet(removePolicyOptimistic, { mode: "promiseExit" });
   const [busy, setBusy] = useState(false);
-  const [targetScope, setTargetScope] = useState<ScopeId>(scopeId);
-
-  const scopeOptions =
-    scopeStack.length > 0
-      ? scopeStack.map((entry, index) => ({
-          id: entry.id,
-          label: index === 0 ? "Personal" : entry.name,
-        }))
-      : [{ id: scopeId, label: "Current scope" }];
-  const scopeRank = (id: ScopeId): number => {
-    const index = scopeOptions.findIndex((option) => option.id === id);
-    return index === -1 ? Number.POSITIVE_INFINITY : index;
-  };
-  const scopeLabel = (id: ScopeId): string =>
-    scopeOptions.find((option) => option.id === id)?.label ?? String(id);
+  const ownerDisplay = useOwnerDisplay();
+  // Policies default to org/workspace. On local this is the hidden Local owner
+  // that v1 local data migrates into.
+  const [targetOwner, setTargetOwner] = useState<Owner>("org");
 
   const handleCreate = async (input: {
-    targetScope: ScopeId;
+    owner: Owner;
     pattern: string;
     action: ToolPolicyAction;
   }) => {
     setBusy(true);
     const exit = await doCreate({
-      params: { scopeId },
       payload: {
-        targetScope: input.targetScope,
+        owner: input.owner,
         pattern: input.pattern,
         action: input.action,
       },
       reactivityKeys: policyWriteKeys,
+    });
+    trackEvent("policy_created", {
+      action: input.action,
+      owner: input.owner,
+      success: Exit.isSuccess(exit),
     });
     if (Exit.isFailure(exit)) {
       setBusy(false);
@@ -330,165 +317,170 @@ export function PoliciesPage() {
     setBusy(false);
   };
 
-  const handleUpdate = async (
-    policy: { id: string; scopeId: ScopeId },
-    action: ToolPolicyAction,
+  const handleUpdate = async (policy: { id: string; owner: Owner }, action: ToolPolicyAction) => {
+    const exit = await doUpdate({
+      params: { policyId: PolicyId.make(policy.id) },
+      payload: { owner: policy.owner, action },
+      reactivityKeys: policyWriteKeys,
+    });
+    trackEvent("policy_action_changed", {
+      action,
+      owner: policy.owner,
+      success: Exit.isSuccess(exit),
+    });
+  };
+
+  const handleRemove = async (policy: { id: string; owner: Owner }) => {
+    const exit = await doRemove({
+      params: { policyId: PolicyId.make(policy.id) },
+      payload: { owner: policy.owner },
+      reactivityKeys: policyWriteKeys,
+    });
+    trackEvent("policy_removed", { owner: policy.owner, success: Exit.isSuccess(exit) });
+  };
+
+  const handleMove = async (
+    policy: { id: string; owner: Owner },
+    position: string,
+    direction: "up" | "down",
   ) => {
-    await doUpdate({
-      params: { scopeId, policyId: PolicyId.make(policy.id) },
-      payload: { targetScope: policy.scopeId, action },
+    const exit = await doUpdate({
+      params: { policyId: PolicyId.make(policy.id) },
+      payload: { owner: policy.owner, position },
       reactivityKeys: policyWriteKeys,
     });
-  };
-
-  const handleRemove = async (policy: { id: string; scopeId: ScopeId }) => {
-    await doRemove({
-      params: { scopeId: policy.scopeId, policyId: PolicyId.make(policy.id) },
-      reactivityKeys: policyWriteKeys,
-    });
-  };
-
-  const handleMove = async (policy: { id: string; scopeId: ScopeId }, position: string) => {
-    await doUpdate({
-      params: { scopeId, policyId: PolicyId.make(policy.id) },
-      payload: { targetScope: policy.scopeId, position },
-      reactivityKeys: policyWriteKeys,
+    trackEvent("policy_reordered", {
+      owner: policy.owner,
+      direction,
+      success: Exit.isSuccess(exit),
     });
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-6 py-10 lg:px-8 lg:py-14">
-        <div className="flex items-end justify-between mb-10">
-          <div>
-            <h1 className="font-display text-[2rem] tracking-tight text-foreground leading-none">
-              Policies
-            </h1>
-            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-              Override default approval behavior for tools. Rules are evaluated top-to-bottom; the
-              first match wins. Blocked tools are hidden from agent search and fail at invoke.
-            </p>
-          </div>
-        </div>
+    <PageContainer>
+      <PageHeader
+        title="Policies"
+        description="Override default approval behavior for tools. The most restrictive matched action wins. Blocked tools are hidden from agent search and fail at invoke."
+      />
 
-        <div className="mb-8">
-          <AddPolicyForm
-            onSubmit={handleCreate}
-            scopeOptions={scopeOptions}
-            targetScope={targetScope}
-            onTargetScopeChange={setTargetScope}
-            busy={busy}
-          />
-        </div>
-
-        {AsyncResult.match(policies, {
-          onInitial: () => (
-            <div className="flex items-center gap-2 py-8">
-              <div className="size-1.5 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <p className="text-sm text-muted-foreground">Loading policies…</p>
-            </div>
-          ),
-          onFailure: () => (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
-              <p className="text-sm text-destructive">Failed to load policies</p>
-            </div>
-          ),
-          onSuccess: ({ value }) => {
-            // Sort by position (lex order on fractional-indexing keys),
-            // tiebreaking on id so identical positions don't swap on refetch
-            // and `generateKeyBetween` never sees duplicate neighbor keys
-            // (which would throw). Optimistic placeholders carry
-            // `position: ""` so they sort to the top.
-            const sorted = [...value].sort((a, b) => {
-              const scopeOrder = scopeRank(a.scopeId) - scopeRank(b.scopeId);
-              return scopeOrder === 0
-                ? comparePolicy(a.position, a.id, b.position, b.id)
-                : scopeOrder;
-            });
-            // Reorder math runs against committed rows only — placeholder
-            // rows (empty `position`) aren't valid keys for
-            // `generateKeyBetween` and aren't reorderable until the server
-            // confirms.
-            const committedForScope = (ownerScope: ScopeId) =>
-              sorted.filter((p) => p.scopeId === ownerScope && p.position !== "");
-            const committedIndex = (id: string, ownerScope: ScopeId): number =>
-              committedForScope(ownerScope).findIndex((p) => p.id === id);
-            const positionAbove = (id: string, ownerScope: ScopeId): string => {
-              const committed = committedForScope(ownerScope);
-              const j = committedIndex(id, ownerScope);
-              if (j <= 0) return generateKeyBetween(null, committed[0]!.position);
-              return j === 1
-                ? generateKeyBetween(null, committed[0]!.position)
-                : generateKeyBetween(committed[j - 2]!.position, committed[j - 1]!.position);
-            };
-            const positionBelow = (id: string, ownerScope: ScopeId): string => {
-              const committed = committedForScope(ownerScope);
-              const j = committedIndex(id, ownerScope);
-              if (j === -1 || j >= committed.length - 1)
-                return generateKeyBetween(committed[committed.length - 1]!.position, null);
-              return j === committed.length - 2
-                ? generateKeyBetween(committed[committed.length - 1]!.position, null)
-                : generateKeyBetween(committed[j + 1]!.position, committed[j + 2]!.position);
-            };
-            return (
-              <CardStack>
-                <CardStackHeader>Active policies</CardStackHeader>
-                <CardStackContent>
-                  {sorted.length === 0 ? (
-                    <CardStackEntry>
-                      <CardStackEntryContent>
-                        <CardStackEntryDescription>
-                          No policies yet. Tools fall back to their plugin's default approval
-                          behavior.
-                        </CardStackEntryDescription>
-                      </CardStackEntryContent>
-                    </CardStackEntry>
-                  ) : (
-                    sorted.map((p) => {
-                      const committed = committedForScope(p.scopeId);
-                      const j = committedIndex(p.id, p.scopeId);
-                      // Pending placeholder or only one committed row → no
-                      // reorder affordance.
-                      const reorderable = j !== -1 && committed.length > 1;
-                      return (
-                        <PolicyRow
-                          key={p.id}
-                          policy={{
-                            id: p.id,
-                            scopeId: p.scopeId,
-                            scopeLabel: scopeLabel(p.scopeId),
-                            pattern: p.pattern,
-                            action: p.action,
-                          }}
-                          isFirst={!reorderable || j === 0}
-                          isLast={!reorderable || j === committed.length - 1}
-                          onRemove={() => handleRemove({ id: p.id, scopeId: p.scopeId })}
-                          onChangeAction={(action) =>
-                            handleUpdate({ id: p.id, scopeId: p.scopeId }, action)
-                          }
-                          onMoveUp={() =>
-                            handleMove(
-                              { id: p.id, scopeId: p.scopeId },
-                              positionAbove(p.id, p.scopeId),
-                            )
-                          }
-                          onMoveDown={() =>
-                            handleMove(
-                              { id: p.id, scopeId: p.scopeId },
-                              positionBelow(p.id, p.scopeId),
-                            )
-                          }
-                        />
-                      );
-                    })
-                  )}
-                </CardStackContent>
-              </CardStack>
-            );
-          },
-        })}
+      <div className="mb-8">
+        <AddPolicyForm
+          onSubmit={handleCreate}
+          owner={targetOwner}
+          onOwnerChange={setTargetOwner}
+          busy={busy}
+        />
       </div>
-    </div>
+
+      {AsyncResult.match(policies, {
+        onInitial: () => (
+          <div className="flex items-center gap-2 py-8">
+            <div className="size-1.5 rounded-full bg-muted-foreground/30 animate-pulse" />
+            <p className="text-sm text-muted-foreground">Loading policies…</p>
+          </div>
+        ),
+        onFailure: () => (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+            <p className="text-sm text-destructive">Failed to load policies</p>
+          </div>
+        ),
+        onSuccess: ({ value }) => {
+          // Sort by owner rank (org outer, user inner), then position (lex
+          // order on fractional-indexing keys), tiebreaking on id so
+          // identical positions don't swap on refetch and
+          // `generateKeyBetween` never sees duplicate neighbor keys (which
+          // would throw). Optimistic placeholders carry `position: ""` so
+          // they sort to the top of their owner group.
+          const sorted = [...value].sort((a, b) => {
+            const ownerOrder = ownerRank(a.owner) - ownerRank(b.owner);
+            return ownerOrder === 0
+              ? comparePolicy(a.position, a.id, b.position, b.id)
+              : ownerOrder;
+          });
+          // Reorder math runs against committed rows only — placeholder rows
+          // (empty `position`) aren't valid keys for `generateKeyBetween` and
+          // aren't reorderable until the server confirms.
+          const committedForOwner = (owner: Owner) =>
+            sorted.filter((p) => p.owner === owner && p.position !== "");
+          const committedIndex = (id: string, owner: Owner): number =>
+            committedForOwner(owner).findIndex((p) => p.id === id);
+          const positionAbove = (id: string, owner: Owner): string => {
+            const committed = committedForOwner(owner);
+            const j = committedIndex(id, owner);
+            if (j <= 0) return generateKeyBetween(null, committed[0]!.position);
+            return j === 1
+              ? generateKeyBetween(null, committed[0]!.position)
+              : generateKeyBetween(committed[j - 2]!.position, committed[j - 1]!.position);
+          };
+          const positionBelow = (id: string, owner: Owner): string => {
+            const committed = committedForOwner(owner);
+            const j = committedIndex(id, owner);
+            if (j === -1 || j >= committed.length - 1)
+              return generateKeyBetween(committed[committed.length - 1]!.position, null);
+            return j === committed.length - 2
+              ? generateKeyBetween(committed[committed.length - 1]!.position, null)
+              : generateKeyBetween(committed[j + 1]!.position, committed[j + 2]!.position);
+          };
+          return (
+            <CardStack>
+              <CardStackHeader>Active policies</CardStackHeader>
+              <CardStackContent>
+                {sorted.length === 0 ? (
+                  <CardStackEntry>
+                    <CardStackEntryContent>
+                      <CardStackEntryDescription>
+                        No policies yet. Tools fall back to their plugin's default approval
+                        behavior.
+                      </CardStackEntryDescription>
+                    </CardStackEntryContent>
+                  </CardStackEntry>
+                ) : (
+                  sorted.map((p) => {
+                    const committed = committedForOwner(p.owner);
+                    const j = committedIndex(p.id, p.owner);
+                    // Pending placeholder or only one committed row → no
+                    // reorder affordance.
+                    const reorderable = j !== -1 && committed.length > 1;
+                    return (
+                      <PolicyRow
+                        key={p.id}
+                        policy={{
+                          id: p.id,
+                          owner: p.owner,
+                          pattern: p.pattern,
+                          action: p.action,
+                        }}
+                        isFirst={!reorderable || j === 0}
+                        isLast={!reorderable || j === committed.length - 1}
+                        showOwnerLabel={ownerDisplay.showOwnerLabels}
+                        onRemove={() => handleRemove({ id: p.id, owner: p.owner })}
+                        onChangeAction={(action) =>
+                          handleUpdate({ id: p.id, owner: p.owner }, action)
+                        }
+                        onMoveUp={() =>
+                          handleMove(
+                            { id: p.id, owner: p.owner },
+                            positionAbove(p.id, p.owner),
+                            "up",
+                          )
+                        }
+                        onMoveDown={() =>
+                          handleMove(
+                            { id: p.id, owner: p.owner },
+                            positionBelow(p.id, p.owner),
+                            "down",
+                          )
+                        }
+                      />
+                    );
+                  })
+                )}
+              </CardStackContent>
+            </CardStack>
+          );
+        },
+      })}
+    </PageContainer>
   );
 }
 

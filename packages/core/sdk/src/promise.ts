@@ -6,33 +6,51 @@ export {
   createExecutor,
   type Executor,
   type ExecutorConfig,
+  type PromiseInvokeOptions,
+  type PromiseOnElicitation,
   type Promisified,
 } from "./promise-executor";
 
 // Identity / projection types that don't carry Effect in their signatures
 // are safe to re-export from the Effect surface. Promise consumers need
-// these to type arguments they pass in (e.g. SetSecretInput, filters).
-export { ScopeId, ToolId, SecretId, PolicyId } from "./ids";
-export { Scope } from "./scope";
-export { RemoveConnectionInput } from "./connections";
-export { RemoveSecretInput, SecretRef, SetSecretInput } from "./secrets";
+// these to type arguments they pass in (filters, refs, ids).
+export {
+  Tenant,
+  Subject,
+  Owner,
+  IntegrationSlug,
+  ConnectionName,
+  AuthTemplateSlug,
+  ProviderKey,
+  ProviderItemId,
+  ToolAddress,
+  ToolName,
+  PolicyId,
+} from "./ids";
+export type { Integration } from "./integration";
+export type {
+  Connection,
+  ConnectionRef,
+  CreateConnectionInput,
+  UpdateConnectionInput,
+  ConnectionValueInput,
+} from "./connection";
+// Credential providers are Effect-native (their `get`/`set` return `Effect`s),
+// but Promise consumers still author them to register an inline writable store
+// via `createExecutor({ providers })`.
+export type { CredentialProvider, ProviderEntry } from "./provider";
 export type {
   CreateToolPolicyInput,
   RemoveToolPolicyInput,
   UpdateToolPolicyInput,
 } from "./policies";
-export {
-  ToolSchema,
-  SourceDetectionResult,
-  type RefreshSourceInput,
-  type RemoveSourceInput,
-  type Source,
-  type Tool,
-  type ToolListFilter,
-} from "./types";
-export type { ToolAnnotations } from "./core-schema";
+export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 export type { AnyPlugin, PluginExtensions } from "./plugin";
-export type { OnElicitation, InvokeOptions } from "./executor";
+export type {
+  PromiseOnElicitation as OnElicitation,
+  PromiseInvokeOptions as InvokeOptions,
+} from "./promise-executor";
 
 // Elicitation — Promise invoke returns raw values, but consumers still
 // may want to reference request/response shapes.
@@ -46,30 +64,21 @@ export {
   type ElicitationHandler,
 } from "./elicitation";
 
-// Secret-backed values — referenced by every plugin's source-config
-// schemas (headers/queryParams). Re-exported here so plugin packages
-// that target the Promise surface don't need to reach into `/core`.
-export {
-  SecretBackedValue,
-  SecretBackedMap,
-  isSecretBackedRef,
-  resolveSecretBackedMap,
-  type ResolveSecretBackedMapOptions,
-} from "./secret-backed-value";
-
 // File-config helper for the CLI. Plain typed-object factory with no
 // Effect in its signature, so it's safe to live on the Promise surface.
-export { defineExecutorConfig, type ExecutorCliConfig, type ExecutorDialect } from "./config";
+export { defineExecutorConfig, type ExecutorCliConfig } from "./config";
 
 // Error tags — Promise callers handle these via .catch().
 export {
   ToolNotFoundError,
   ToolInvocationError,
+  ToolBlockedError,
   NoHandlerError,
-  SourceNotFoundError,
-  SourceRemovalNotAllowedError,
   PluginNotLoadedError,
-  SecretNotFoundError,
-  SecretResolutionError,
+  ConnectionNotFoundError,
+  CredentialProviderNotRegisteredError,
+  CredentialResolutionError,
+  IntegrationNotFoundError,
+  IntegrationRemovalNotAllowedError,
   type ExecutorError,
 } from "./errors";

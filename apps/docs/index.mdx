@@ -1,0 +1,64 @@
+---
+title: Introduction
+description: "Executor is the open-source integration layer for AI agents: one catalog for every tool, shared across every agent you use."
+---
+
+Configure every integration once (MCP servers, OpenAPI specs, GraphQL
+endpoints) with authentication and per-tool [policies](/concepts/policies),
+then use that same catalog from any MCP-compatible agent.
+
+## Get started
+
+Choose how to run Executor:
+
+- **[CLI](/local/cli)**: a background service on your machine, from the terminal
+- **[Desktop app](/local/desktop)**: the same runtime, as a desktop app
+- **[Executor Cloud](/hosted/cloud)**: hosted, with a free tier; nothing to run yourself
+- **Self-host**: your own infrastructure, via [Docker](/hosted/docker) or [Cloudflare](/hosted/cloudflare)
+
+## Set up with your agent
+
+Prefer to let your coding agent do the setup? Copy this prompt and paste it into
+Claude, Cursor, or any MCP-capable agent. It will help you pick the right form
+of Executor, install it, connect over MCP, and get your first integration
+working.
+
+```text Setup prompt
+Help me set up Executor and get my first connection working.
+
+Executor is an open source integration layer for AI agents: one place to configure every integration (MCP servers, OpenAPI specs, GraphQL APIs) and connect to them over MCP.
+
+Start by helping me pick the right form to run it in. Chat with me about it rather than jumping straight to a yes/no question, and recommend one. If I just want the fastest path, suggest Executor Cloud (free tier, nothing to install). All forms expose the same functionality, just packaged differently:
+
+Local (everything stays on my machine):
+- Desktop app: a native app for Mac, Windows, and Linux. Best for a regular desktop environment.
+- CLI (`executor`): best for a headless or server environment.
+Both run a local HTTP server as a background service that any MCP client can connect to.
+
+Hosted (use it from multiple agents, including cloud ones, with nothing running locally):
+- Executor Cloud: hosted, generous free tier, sign in and start immediately.
+- Self-hosted: a Docker image or a Cloudflare Worker.
+
+How to think about it:
+- Want all your data on your own machine? Go local: the desktop app for a regular environment, the CLI for a headless one.
+- Want to use it from multiple agents (including cloud agents like ChatGPT), or not run anything locally? Go hosted: Executor Cloud is the fastest start; the self-hosted Docker or Cloudflare versions give you full control.
+
+Terms you'll come across:
+- Integration: anything you add (an MCP server, an OpenAPI spec, a GraphQL API).
+- Connection: one configured instance of an integration. An integration can have many connections, and a connection doesn't have to be authenticated.
+- Policy: whether each tool is always allowed, requires approval, or is blocked. Policies start from a sensible default derived from the imported spec (for example, GET requests on an OpenAPI spec are allowed by default).
+
+Once you know which form I want:
+1. Walk me through installing it.
+2. Connect Executor to you over MCP. Most MCP clients only load servers at startup, so after adding it I may need to restart the client or open a new chat before the Executor tools appear. Tell me if that's needed and wait for me to do it before continuing.
+3. Once the tools are available, help me add my first integration and get one tool working end to end.
+
+Docs: https://executor.sh/docs
+Source (and the place to start if something breaks): https://github.com/RhysSullivan/executor
+```
+
+## Concepts
+
+- **[Integrations](/concepts/integrations)**: what Executor connects to
+- **[Connections](/concepts/connections)**: configured instances of an integration
+- **[Policies](/concepts/policies)**: what each tool is allowed to do

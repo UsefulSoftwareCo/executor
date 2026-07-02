@@ -41,6 +41,36 @@ const PetstoreApi = HttpApi.make("petstore").add(PetstoreGroup);
 // Generate OpenAPI spec from the Effect API definition
 const spec = OpenApi.fromApi(PetstoreApi);
 
+type TestOpenApiServer = {
+  readonly url: string;
+  readonly description?: string;
+  readonly variables?: Record<
+    string,
+    {
+      readonly default: string;
+      readonly enum?: [string, ...string[]];
+      readonly description?: string;
+    }
+  >;
+};
+
+const pingSpecWithServers = (title: string, servers: readonly TestOpenApiServer[]) =>
+  OpenApi.fromApi(
+    HttpApi.make("serverVariablesTest")
+      .add(
+        HttpApiGroup.make("default", { topLevel: true }).add(
+          HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
+        ),
+      )
+      .annotateMerge(
+        OpenApi.annotations({
+          title,
+          version: "1.0.0",
+          servers,
+        }),
+      ),
+  );
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -163,28 +193,54 @@ describe("OpenAPI plugin", () => {
     }),
   );
 
-  it.effect("extracts server variables with enum and description", () =>
+  it.effect("compileToolDefinitions honors explicit executor tool paths", () =>
     Effect.gen(function* () {
-      const specWithServerVars = {
-        openapi: "3.0.0",
-        info: { title: "Sentry", version: "1.0.0" },
-        servers: [
-          {
-            url: "https://{region}.sentry.io",
-            description: "Regional endpoint",
-            variables: {
-              region: {
-                default: "us",
-                description: "The data-storage-location for an organization",
-                enum: ["us", "de"],
-              },
+      const explicitSpec = {
+        openapi: "3.1.0",
+        info: { title: "Googleish", version: "1.0.0" },
+        paths: {
+          "/gmail/v1/users/{userId}/messages": {
+            get: {
+              operationId: "gmail.usersMessagesList",
+              "x-executor-toolPath": "users.messages.list",
+              parameters: [
+                {
+                  name: "userId",
+                  in: "path",
+                  required: true,
+                  schema: { type: "string" },
+                },
+              ],
+              responses: { "200": { description: "OK" } },
             },
           },
-        ],
-        paths: {
-          "/ping": { get: { responses: { "200": { description: "ok" } } } },
         },
       };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const doc = yield* parse(JSON.stringify(explicitSpec));
+      const result = yield* extract(doc);
+      const defs = compileToolDefinitions(result.operations);
+
+      expect(defs.map((def) => def.toolPath)).toEqual(["users.messages.list"]);
+      expect(defs.map((def) => def.operation.operationId)).toEqual(["gmail.usersMessagesList"]);
+    }),
+  );
+
+  it.effect("extracts server variables with enum and description", () =>
+    Effect.gen(function* () {
+      const specWithServerVars = pingSpecWithServers("Sentry", [
+        {
+          url: "https://{region}.sentry.io",
+          description: "Regional endpoint",
+          variables: {
+            region: {
+              default: "us",
+              description: "The data-storage-location for an organization",
+              enum: ["us", "de"],
+            },
+          },
+        },
+      ]);
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       const doc = yield* parse(JSON.stringify(specWithServerVars));
       const result = yield* extract(doc);
@@ -212,27 +268,20 @@ describe("OpenAPI plugin", () => {
 // ---------------------------------------------------------------------------
 
 describe("extract — server variables", () => {
-  const specWithServerVars = {
-    openapi: "3.0.0",
-    info: { title: "Test", version: "1.0.0" },
-    servers: [
-      {
-        url: "https://{region}.example.com/{basePath}",
-        description: "Regional endpoint",
-        variables: {
-          region: {
-            default: "us",
-            enum: ["us", "eu", "ap"],
-            description: "Data region",
-          },
-          basePath: { default: "v1" },
+  const specWithServerVars = pingSpecWithServers("Test", [
+    {
+      url: "https://{region}.example.com/{basePath}",
+      description: "Regional endpoint",
+      variables: {
+        region: {
+          default: "us",
+          enum: ["us", "eu", "ap"],
+          description: "Data region",
         },
+        basePath: { default: "v1" },
       },
-    ],
-    paths: {
-      "/ping": { get: { responses: { "200": { description: "ok" } } } },
     },
-  };
+  ]);
 
   it.effect("preserves enum, default, and description for server variables", () =>
     Effect.gen(function* () {

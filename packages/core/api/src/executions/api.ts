@@ -1,7 +1,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
-import { InternalError } from "../observability";
+import { InternalError } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -9,6 +9,10 @@ import { InternalError } from "../observability";
 
 const ExecuteRequest = Schema.Struct({
   code: Schema.String,
+  // When true the caller is the human approver: approval-gated tools run to
+  // completion instead of pausing. Set by the operator-facing Run/Test panel,
+  // where clicking Run is itself the approval. `block` policies still apply.
+  autoApprove: Schema.optional(Schema.Boolean),
 });
 
 const CompletedResult = Schema.Struct({
@@ -31,10 +35,11 @@ const ResumeRequest = Schema.Struct({
   content: Schema.optional(Schema.Unknown),
 });
 
-const ResumeResponse = Schema.Struct({
+const ResumeResponse = Schema.Union([CompletedResult, PausedResult]);
+
+const PausedExecutionInfo = Schema.Struct({
   text: Schema.String,
   structured: Schema.Unknown,
-  isError: Schema.Boolean,
 });
 
 const ExecutionNotFoundError = Schema.TaggedStruct("ExecutionNotFoundError", {
@@ -52,6 +57,13 @@ const ExecutionParams = { executionId: Schema.String };
 // ---------------------------------------------------------------------------
 
 export const ExecutionsApi = HttpApiGroup.make("executions")
+  .add(
+    HttpApiEndpoint.get("getPaused", "/executions/:executionId", {
+      params: ExecutionParams,
+      success: PausedExecutionInfo,
+      error: [InternalError, ExecutionNotFoundError],
+    }),
+  )
   .add(
     HttpApiEndpoint.post("execute", "/executions", {
       payload: ExecuteRequest,

@@ -1,6 +1,8 @@
 import { useState, type ChangeEvent, type FocusEvent } from "react";
 import { PlusIcon } from "lucide-react";
 
+import type { Owner } from "@executor-js/sdk/shared";
+
 import { Input } from "../components/input";
 import { Badge } from "../components/badge";
 import {
@@ -12,16 +14,29 @@ import {
   CommandSeparator,
 } from "../components/command";
 import { Popover, PopoverAnchor, PopoverContent } from "../components/popover";
-import { useScopeStack } from "../api/scope-context";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
+
+// ---------------------------------------------------------------------------
+// Connection / provider-item picker (v2) — successor to v1's secret picker.
+//
+// v1 picked a stored secret by (scopeId, secretId); v2 picks a value source —
+// either an existing owner-scoped connection or a provider item — keyed by an
+// opaque `id` and an `owner`. The export names are kept so the plugin `/react`
+// dirs keep importing `SecretPicker` / `SecretPickerSecret`, adapted to v2.
+// ---------------------------------------------------------------------------
 
 export interface SecretPickerSecret {
+  /** Opaque value id — a connection name or a provider item id. */
   readonly id: string;
-  readonly scopeId: string;
+  /** Which owner this entry belongs to (org | user). */
+  readonly owner: Owner;
   readonly name: string;
+  /** Credential provider key (e.g. "default", "1password"). */
   readonly provider?: string;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
+  default: "Default",
   keychain: "Keychain",
   file: "Local",
   memory: "Memory",
@@ -29,41 +44,34 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const providerLabel = (key: string | undefined): string => {
-  if (!key) return "Local";
+  if (!key) return "Default";
   return PROVIDER_LABELS[key] ?? key;
 };
 
 export function SecretPicker(props: {
   readonly value: string | null;
-  readonly valueScopeId?: string;
-  readonly onSelect: (secretId: string, scopeId: string) => void;
+  readonly valueOwner?: Owner;
+  readonly onSelect: (id: string, owner: Owner) => void;
   readonly secrets: readonly SecretPickerSecret[];
   readonly placeholder?: string;
-  /** When provided, renders a "+ New secret" row at the top of the dropdown. */
+  /** When provided, renders a "+ New" row at the top of the dropdown. */
   readonly onCreateNew?: () => void;
 }) {
   const {
     value,
-    valueScopeId,
+    valueOwner,
     onSelect,
     secrets,
-    placeholder = "Search secrets…",
+    placeholder = "Search credentials…",
     onCreateNew,
   } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const scopeStack = useScopeStack();
-  const scopeLabel = (scopeId: string): string => {
-    const index = scopeStack.findIndex((entry) => String(entry.id) === scopeId);
-    if (index === 0) return "Personal";
-    if (index > 0) return scopeStack[index]?.name || "Organization";
-    return "Scoped";
-  };
+  const ownerDisplay = useOwnerDisplay();
 
   const selected =
     secrets.find(
-      (secret) =>
-        secret.id === value && (valueScopeId === undefined || secret.scopeId === valueScopeId),
+      (secret) => secret.id === value && (valueOwner === undefined || secret.owner === valueOwner),
     ) ??
     secrets.find((secret) => secret.id === value) ??
     null;
@@ -121,7 +129,7 @@ export function SecretPicker(props: {
         >
           <Command shouldFilter={false}>
             <CommandList>
-              <CommandEmpty>No secrets found</CommandEmpty>
+              <CommandEmpty>No credentials found</CommandEmpty>
               {onCreateNew && (
                 <>
                   <CommandGroup>
@@ -135,7 +143,7 @@ export function SecretPicker(props: {
                       className="text-muted-foreground data-[selected=true]:text-foreground"
                     >
                       <PlusIcon aria-hidden className="size-3.5" />
-                      <span>New secret</span>
+                      <span>New credential</span>
                     </CommandItem>
                   </CommandGroup>
                   {secrets.length > 0 && <CommandSeparator />}
@@ -155,18 +163,20 @@ export function SecretPicker(props: {
                   <CommandGroup key={label} heading={showGroupHeadings ? label : undefined}>
                     {filtered.map((secret) => (
                       <CommandItem
-                        key={`${secret.scopeId}:${secret.id}`}
-                        value={`${secret.name} ${secret.id} ${secret.scopeId}`}
+                        key={`${secret.owner}:${secret.id}`}
+                        value={`${secret.name} ${secret.id} ${secret.owner}`}
                         onSelect={() => {
-                          onSelect(secret.id, secret.scopeId);
+                          onSelect(secret.id, secret.owner);
                           setOpen(false);
                           setQuery("");
                         }}
                       >
                         <span className="min-w-0 flex-1 truncate">{secret.name}</span>
-                        <Badge variant="outline" className="ml-2 shrink-0 text-[10px]">
-                          {scopeLabel(secret.scopeId)}
-                        </Badge>
+                        {ownerDisplay.showOwnerLabels ? (
+                          <Badge variant="outline" className="ml-2 shrink-0 text-[10px]">
+                            {ownerLabel(secret.owner)}
+                          </Badge>
+                        ) : null}
                       </CommandItem>
                     ))}
                   </CommandGroup>

@@ -40,8 +40,9 @@ can restore the previous branch tips, PR bases, and stack metadata.
 - `stack status`: show the relevant tracked stack graph and include open PR details when GitHub is available.
 - `stack guide`: print the opinionated happy path for agents and humans.
 - `stack track <branch> --onto <parent>`: record stack intent for an existing branch.
-- `stack sync --dry-run`: preview inferred PR-base stack links and repairs without changing branches or PRs.
-- `stack sync`: infer clear PR-base stack links, repair descendants, retarget PRs, and refresh stack blocks.
+- `stack sync --dry-run [branch]`: preview inferred PR-base stack links and repairs without changing branches or PRs.
+- `stack sync [branch]`: infer clear PR-base stack links, repair descendants, retarget PRs, and refresh stack blocks. With a branch argument, sync only the stack containing that branch.
+- `stack sync --continue-on-failure` / `stack sync --keep-going`: process independent stacks, summarize successes and failures, and exit nonzero if any stack failed.
 - `stack doctor`: inspect local Git, GitHub, stack metadata, trunk branches, and undo journal health without changing anything.
 - `stack merge [branch]`: dry-run root PR merge plus descendant repair.
 - `stack merge [branch] --apply`: retarget immediate child PRs, squash-merge the root PR, then repair descendants.
@@ -58,6 +59,8 @@ gh pr create --base dev --head stack-a
 gh pr create --base stack-a --head stack-b
 stack sync --dry-run
 stack sync
+stack sync cleanup/schema-source
+stack sync --keep-going
 ```
 
 Prefer this workflow. `stack sync --dry-run` should show the inferred links, and
@@ -76,6 +79,12 @@ Use this to understand local stack metadata, current branch position, missing
 parents, tracked PR numbers, and PR titles when GitHub is available. It is
 opinionated: backup branches are hidden, and when the current branch is
 stack-relevant it focuses on that stack instead of listing every local branch.
+When relaying a stack view to the user, always include the full PR URLs for
+every branch that has a PR, not just PR numbers or titles. If `stack status`
+does not print a URL for a branch, query GitHub with `gh pr view`/`gh pr list`
+and include the URL in the shown stack view. Use Markdown links or plain URL
+lines for user-facing stack views so the PR links are clickable; do not hide the
+only copy of the PR URLs inside a fenced code block.
 
 Use `stack sync --dry-run`, not `stack status`, when you need GitHub PR-base
 inference before mutation.
@@ -112,9 +121,23 @@ changed, or the repo needs the safe common maintenance flow. It:
 Run `stack sync --dry-run` first when you want a preview of inferred links and
 repairs before mutation.
 
+`stack sync <branch>` scopes sync to the stack containing that branch. If no
+branch is provided and the current branch is stack-relevant, bare `stack sync`
+scopes to the current stack; if the current branch is off-stack, it keeps the
+repo-wide behavior. `--dry-run` follows the same scoping rules.
+
+Use `stack sync --continue-on-failure` or `stack sync --keep-going` when one
+independent stack should not block the rest. It runs each root stack separately,
+prints succeeded and failed stacks, preserves the usual failure cleanup block for
+each failed stack, saves undo information for every mutated stack, and exits
+nonzero if any stack failed.
+
 Sync output is intentionally outcome-oriented. It should show the stack tree with
 icons like `●`, `✓`, `◌`, and `✕`, plus changed PRs/backups/undo instructions. It
 should not default to internal phase logs like fetch, inspect, or reconcile.
+When you show a stack tree to the user, include full PR URLs alongside each PR
+entry so the stack view is directly actionable. Prefer Markdown list/tree output
+with clickable links over fenced code blocks when relaying PR URLs to a user.
 
 If a replay fails, `stack sync` aborts the failed cherry-pick, restores the
 original branch, deletes the temporary replay branch, keeps backups and the undo

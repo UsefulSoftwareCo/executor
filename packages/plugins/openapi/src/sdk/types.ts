@@ -1,11 +1,58 @@
 import { Schema } from "effect";
+import { AuthTemplateSlug, type OAuthAuthentication } from "@executor-js/sdk/shared";
 import {
-  ConnectionId,
-  ScopeId,
-  ScopedSecretCredentialInput,
-  SecretBackedValue,
-  SecretId,
-} from "@executor-js/sdk/core";
+  apiKeyMethodFromAuthTemplate,
+  isApiKeyAuthTemplate,
+  type ApiKeyAuthMethod,
+  type ApiKeyAuthTemplate,
+} from "@executor-js/sdk/http-auth";
+
+// ---------------------------------------------------------------------------
+// Auth-template model.
+//
+// The apiKey method is the SHARED placements model (`@executor-js/sdk/http-auth`,
+// the same shape the graphql/mcp plugins store): N header/query placements,
+// each rendered from its own credential input. The oauth template is
+// mechanism-intrinsic and comes from core (`OAuthAuthentication`, keyed
+// `kind: "oauth2"` with stored endpoints+scopes); an integration's
+// `Authentication` union composes the two. Client credentials
+// (clientId/secret) live on the core `OAuthClient`, not here.
+//
+// Pre-canonical stored templates (`type: "apiKey"` with `variable()`-templated
+// header/query records) are rewritten by the one-off config migration
+// (`migrate-config.ts`) — runtime code knows only this model.
+// ---------------------------------------------------------------------------
+
+export { TOKEN_VARIABLE } from "@executor-js/sdk/http-auth";
+
+export type APIKeyAuthentication = ApiKeyAuthMethod;
+
+/** Every method is keyed by `kind` — `kind: "oauth2"` | `kind: "apikey"`. */
+export type Authentication = OAuthAuthentication | APIKeyAuthentication;
+
+/** What auth inputs accept: oauth templates (wire-typed: plain slug) plus the
+ *  request-shaped apikey dialect (`type: "apiKey"`, headers/queryParams
+ *  records) — the ONE apikey authoring shape. Stored configs and the catalog
+ *  read as canonical placements; `apiKeyAuthTemplateFromMethod` serializes
+ *  them back for read-modify-write flows. */
+export type OAuthAuthenticationInput = Omit<OAuthAuthentication, "slug"> & {
+  readonly slug: string;
+};
+export type AuthenticationInput = OAuthAuthenticationInput | ApiKeyAuthTemplate;
+
+/** Expand the request-shaped dialect into canonical placements and brand the
+ *  oauth slugs. A dialect entry without a slug gets a blank one —
+ *  `mergeAuthTemplates` backfills `custom_<id>`. */
+export const normalizeOpenApiAuthInputs = (
+  inputs: readonly AuthenticationInput[],
+): readonly Authentication[] =>
+  inputs.map((input): Authentication => {
+    if (!isApiKeyAuthTemplate(input)) {
+      return { ...input, slug: AuthTemplateSlug.make(input.slug) };
+    }
+    const method = apiKeyMethodFromAuthTemplate(input);
+    return { ...method, slug: method.slug ?? "" };
+  });
 
 // ---------------------------------------------------------------------------
 // Branded IDs
@@ -88,20 +135,21 @@ export const OperationRequestBody = Schema.Struct({
 });
 export type OperationRequestBody = typeof OperationRequestBody.Type;
 
-export const ExtractedOperation = Schema.Struct({
-  operationId: OperationId,
-  method: HttpMethod,
-  pathTemplate: Schema.String,
-  summary: Schema.OptionFromOptional(Schema.String),
-  description: Schema.OptionFromOptional(Schema.String),
-  tags: Schema.Array(Schema.String),
-  parameters: Schema.Array(OperationParameter),
-  requestBody: Schema.OptionFromOptional(OperationRequestBody),
-  inputSchema: Schema.OptionFromOptional(Schema.Unknown),
-  outputSchema: Schema.OptionFromOptional(Schema.Unknown),
-  deprecated: Schema.Boolean,
+export const OperationFileHint = Schema.Struct({
+  kind: Schema.Literals(["binaryResponse", "byteField"]),
+  mimeType: Schema.OptionFromOptional(Schema.String),
+  dataField: Schema.OptionFromOptional(Schema.String),
+  sizeField: Schema.OptionFromOptional(Schema.String),
+  encoding: Schema.OptionFromOptional(Schema.Literals(["base64", "base64url"])),
 });
-export type ExtractedOperation = typeof ExtractedOperation.Type;
+export type OperationFileHint = typeof OperationFileHint.Type;
+
+export const OperationResponseBody = Schema.Struct({
+  contentType: Schema.String,
+  schema: Schema.OptionFromOptional(Schema.Unknown),
+  fileHint: Schema.OptionFromOptional(OperationFileHint),
+});
+export type OperationResponseBody = typeof OperationResponseBody.Type;
 
 export const ServerVariable = Schema.Struct({
   default: Schema.String,
@@ -117,8 +165,28 @@ export const ServerInfo = Schema.Struct({
 });
 export type ServerInfo = typeof ServerInfo.Type;
 
+export const ExtractedOperation = Schema.Struct({
+  operationId: OperationId,
+  toolPath: Schema.OptionFromOptional(Schema.String),
+  method: HttpMethod,
+  servers: Schema.Array(ServerInfo),
+  pathTemplate: Schema.String,
+  summary: Schema.OptionFromOptional(Schema.String),
+  description: Schema.OptionFromOptional(Schema.String),
+  tags: Schema.Array(Schema.String),
+  parameters: Schema.Array(OperationParameter),
+  requestBody: Schema.OptionFromOptional(OperationRequestBody),
+  responseBody: Schema.OptionFromOptional(OperationResponseBody),
+  inputSchema: Schema.OptionFromOptional(Schema.Unknown),
+  outputSchema: Schema.OptionFromOptional(Schema.Unknown),
+  deprecated: Schema.Boolean,
+});
+export type ExtractedOperation = typeof ExtractedOperation.Type;
+
 export const ExtractionResult = Schema.Struct({
   title: Schema.OptionFromOptional(Schema.String),
+  /** The spec's `info.description` — the author's own summary of the API. */
+  description: Schema.OptionFromOptional(Schema.String),
   version: Schema.OptionFromOptional(Schema.String),
   servers: Schema.Array(ServerInfo),
   operations: Schema.Array(ExtractedOperation),
@@ -131,116 +199,17 @@ export type ExtractionResult = typeof ExtractionResult.Type;
 
 export const OperationBinding = Schema.Struct({
   method: HttpMethod,
+  servers: Schema.optional(Schema.Array(ServerInfo)),
   pathTemplate: Schema.String,
   parameters: Schema.Array(OperationParameter),
   requestBody: Schema.OptionFromOptional(OperationRequestBody),
+  responseBody: Schema.OptionFromOptional(OperationResponseBody),
 });
 export type OperationBinding = typeof OperationBinding.Type;
 
 // ---------------------------------------------------------------------------
 // Invocation
 // ---------------------------------------------------------------------------
-
-/**
- * A header value — either a static string or a reference to a secret.
- * Stored as JSON-serializable data.
- */
-export const HeaderValue = SecretBackedValue;
-export type HeaderValue = typeof HeaderValue.Type;
-
-export const ConfiguredHeaderBinding = Schema.Struct({
-  kind: Schema.Literal("binding"),
-  slot: Schema.String,
-  prefix: Schema.optional(Schema.String),
-}).annotate({ identifier: "OpenApiConfiguredHeaderBinding" });
-export type ConfiguredHeaderBinding = typeof ConfiguredHeaderBinding.Type;
-
-export const ConfiguredHeaderValue = Schema.Union([Schema.String, ConfiguredHeaderBinding]);
-export type ConfiguredHeaderValue = typeof ConfiguredHeaderValue.Type;
-
-export const OpenApiCredentialInput = Schema.Union([
-  ScopedSecretCredentialInput,
-  HeaderValue,
-  ConfiguredHeaderValue,
-]);
-export type OpenApiCredentialInput = typeof OpenApiCredentialInput.Type;
-
-export const OpenApiSourceBindingValue = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("secret"),
-    secretId: SecretId,
-    secretScopeId: Schema.optional(ScopeId),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("connection"),
-    connectionId: ConnectionId,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("text"),
-    text: Schema.String,
-  }),
-]);
-export type OpenApiSourceBindingValue = typeof OpenApiSourceBindingValue.Type;
-
-export const OpenApiSourceBindingInput = Schema.Struct({
-  sourceId: Schema.String,
-  sourceScope: ScopeId,
-  scope: ScopeId,
-  slot: Schema.String,
-  value: OpenApiSourceBindingValue,
-});
-export type OpenApiSourceBindingInput = typeof OpenApiSourceBindingInput.Type;
-
-export const OpenApiSourceBindingRef = Schema.Struct({
-  sourceId: Schema.String,
-  sourceScopeId: ScopeId,
-  scopeId: ScopeId,
-  slot: Schema.String,
-  value: OpenApiSourceBindingValue,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
-});
-export type OpenApiSourceBindingRef = typeof OpenApiSourceBindingRef.Type;
-
-// ---------------------------------------------------------------------------
-// OAuth2 source config — carries source-owned slots and API-level config to
-// kick off a fresh sign-in from the source detail UI without needing any
-// one user's live connection to still exist.
-//
-// Split of responsibilities:
-//   - The Source owns: the OAuth config (tokenUrl, authorizationUrl,
-//     client credential slots, connection slot, scopes, flow,
-//     securitySchemeName).
-//     Values are a property of the target API, identical for every user
-//     signing into this source. Source-owned = reconnect works even if
-//     the connection row has been removed.
-//   - The Connection owns: live access/refresh tokens, token expiry,
-//     provider state the refresh path reads from. The connection's
-//     `providerState` caches the refresh-relevant bits of the config
-//     so the refresh loop never reaches back into source storage.
-//
-// This is a deliberate small duplication (scopes + tokenUrl and the static
-// client credential ids referenced by slots appear in source bindings and
-// connection providerState). The values are static per source so the two
-// copies can't drift under normal reconnect flows.
-// ---------------------------------------------------------------------------
-
-export const OAuth2Flow = Schema.Literals(["authorizationCode", "clientCredentials"]);
-export type OAuth2Flow = typeof OAuth2Flow.Type;
-
-export const OAuth2SourceConfig = Schema.Struct({
-  kind: Schema.Literal("oauth2"),
-  securitySchemeName: Schema.String,
-  flow: OAuth2Flow,
-  tokenUrl: Schema.String,
-  authorizationUrl: Schema.NullOr(Schema.String),
-  issuerUrl: Schema.optional(Schema.NullOr(Schema.String)),
-  clientIdSlot: Schema.String,
-  clientSecretSlot: Schema.NullOr(Schema.String),
-  connectionSlot: Schema.String,
-  scopes: Schema.Array(Schema.String),
-}).annotate({ identifier: "OpenApiOAuth2SourceConfig" });
-export type OAuth2SourceConfig = typeof OAuth2SourceConfig.Type;
 
 export const InvocationResult = Schema.Struct({
   status: Schema.Number,

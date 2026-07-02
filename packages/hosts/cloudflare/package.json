@@ -1,0 +1,42 @@
+{
+  "name": "@executor-js/cloudflare",
+  "version": "0.0.26",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./blob-store": {
+      "types": "./src/blob-store.ts",
+      "default": "./src/blob-store.ts"
+    },
+    "./mcp/do-headers": {
+      "types": "./src/mcp/do-headers.ts",
+      "default": "./src/mcp/do-headers.ts"
+    },
+    "./mcp/agent-durable-object": {
+      "types": "./src/mcp/agent-session-durable-object.ts",
+      "default": "./src/mcp/agent-session-durable-object.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@executor-js/api": "workspace:*",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.16.2",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

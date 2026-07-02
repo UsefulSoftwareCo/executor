@@ -4,11 +4,23 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import appPlugin from "@executor-js/app/vite";
+import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
+import { loadOrMintLocalAuthToken } from "./src/auth";
+import { consumeOAuthResult } from "./src/oauth-result-store";
+import {
+  isUnauthenticatedOAuthClientMetadataPath,
+  isUnauthenticatedOAuthPath,
+  makeIsAuthorized,
+} from "./src/serve-shared";
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const rootPackage = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
-) as { version: string; homepage?: string; repository?: string | { url?: string } };
+) as {
+  version: string;
+  homepage?: string;
+  repository?: string | { url?: string };
+};
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const cliPackage = JSON.parse(
@@ -27,35 +39,104 @@ const EXECUTOR_GITHUB_URL = (
   .replace(/^git\+/, "")
   .replace(/\.git$/, "");
 
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
+
+const oauthClientMetadataResponse = (requestUrl: string, webRequest: Request): Response =>
+  new Response(
+    JSON.stringify(
+      oauthClientIdMetadataDocumentFromRequest({
+        requestUrl,
+        webRequest,
+        mountPrefix: "/api",
+      }),
+    ),
+    {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=300",
+      },
+    },
+  );
 
 /**
  * Vite plugin that forwards /api and /mcp requests to the Effect handlers
  * during development, so you don't need a separate server process.
  */
 function executorApiPlugin(): Plugin {
-  let handlers: import("./src/server/main").ServerHandlers | null = null;
+  let handlers: import("./src/main").ServerHandlers | null = null;
+  // The dev server's in-process /api + /mcp require the bearer (same gate as the
+  // production Bun shell). The browser gets the token the SAME way it does in
+  // production — via the one-time `?_token=` URL printed below — so there is no
+  // dev-only token-injection path to drift.
+  let devToken: string | null = null;
 
   return {
     name: "executor-api",
     configureServer(server) {
+      devToken ??= loadOrMintLocalAuthToken();
+
+      // Print the bootstrap URL when vite is the front (plain `bun run dev`).
+      // When the CLI daemon spawns vite as a child (EXECUTOR_DEV_VITE_PORT set),
+      // the daemon prints its own `?_token=` URL and the app is loaded from the
+      // daemon port, so we stay quiet to avoid two conflicting URLs.
+      if (!process.env.EXECUTOR_DEV_VITE_PORT) {
+        server.httpServer?.once("listening", () => {
+          const address = server.httpServer?.address();
+          const port =
+            typeof address === "object" && address ? address.port : server.config.server.port;
+          server.config.logger.info(
+            `\n  Open with auth:  http://127.0.0.1:${port}/?_token=${devToken}\n`,
+          );
+        });
+      }
+
       server.watcher.on("change", (path) => {
-        if (path.includes("/src/server/") || path.endsWith("/executor.config.ts")) {
+        if (path.includes("/apps/local/src/") || path.endsWith("/executor.config.ts")) {
           handlers = null;
         }
       });
       server.middlewares.use(async (req, res, next) => {
         const rawUrl = req.url ?? "/";
-        const isApi = rawUrl.startsWith("/api/") || rawUrl === "/api";
-        const isMcp = rawUrl.startsWith("/mcp");
+        const pathOnly = rawUrl.split("?")[0] ?? "/";
+        const isApi = pathOnly.startsWith("/api/") || pathOnly === "/api";
+        const isMcp = pathOnly === "/mcp" || pathOnly.startsWith("/mcp/");
+        // App-level routes the Effect app serves at root, outside the `/api`
+        // prefix (e.g. `/v1/app/npm/dist-tags`, the update-check the web shell
+        // fetches). Public, like `/api/health` below.
+        const isV1 = pathOnly === "/v1" || pathOnly.startsWith("/v1/");
 
-        if (!isApi && !isMcp) return next();
+        if (!isApi && !isMcp && !isV1) return next();
+
+        // Gate parity with the production Bun shell (serve.ts): the vite server
+        // is reachable by any local process, so /api and /mcp require the bearer
+        // here too — otherwise /mcp would be unauthenticated arbitrary code
+        // execution in dev. Exempt the health probe and the state-gated OAuth
+        // callback. The SPA carries the token from its `?_token`/localStorage
+        // bootstrap, so the UI is unaffected; external MCP clients use the
+        // daemon port.
+        const authExempt =
+          pathOnly === "/api/health" || isV1 || isUnauthenticatedOAuthPath(pathOnly);
+        if (!authExempt) {
+          const presented = req.headers.authorization;
+          const authValue = Array.isArray(presented) ? presented[0] : presented;
+          const probe = new Request(
+            "http://localhost/",
+            authValue ? { headers: { authorization: authValue } } : undefined,
+          );
+          if (!makeIsAuthorized(devToken ?? loadOrMintLocalAuthToken())(probe)) {
+            res.statusCode = 401;
+            res.setHeader("www-authenticate", 'Bearer realm="executor"');
+            res.end("Unauthorized");
+            return;
+          }
+        }
 
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Vite middleware must convert handler failures into HTTP 500 responses
         try {
           if (!handlers) {
-            const { getServerHandlers } = await import("./src/server/main");
-            handlers = await getServerHandlers();
+            const { getServerHandlers } = await import("./src/main");
+            handlers = await getServerHandlers(devToken ?? loadOrMintLocalAuthToken());
           }
 
           const origin = `http://${req.headers.host ?? "localhost"}`;
@@ -64,20 +145,44 @@ function executorApiPlugin(): Plugin {
             if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
           }
 
-          // Strip /api prefix for Effect handlers
-          const url = isApi ? rawUrl.slice("/api".length) || "/" : rawUrl;
-
           const hasBody = req.method !== "GET" && req.method !== "HEAD";
-          const webRequest = new Request(new URL(url, origin), {
-            method: req.method,
-            headers,
-            body: hasBody ? Readable.toWeb(req) : undefined,
-            duplex: hasBody ? "half" : undefined,
-          } as RequestInit);
+          const webRequest = (url: string): Request =>
+            new Request(new URL(url, origin), {
+              method: req.method,
+              headers,
+              body: hasBody ? Readable.toWeb(req) : undefined,
+              duplex: hasBody ? "half" : undefined,
+            } as RequestInit);
 
-          const response = isMcp
-            ? await handlers.mcp.handleRequest(webRequest)
-            : await handlers.api.handler(webRequest);
+          let response: Response;
+          if (isUnauthenticatedOAuthClientMetadataPath(pathOnly) && req.method === "GET") {
+            response = oauthClientMetadataResponse(rawUrl, webRequest(rawUrl));
+          } else if (isMcp) {
+            response = await handlers.mcp.handleRequest(webRequest(rawUrl));
+          } else if (isV1) {
+            // Served at root by the Effect app; forward verbatim (no /api strip).
+            response = await handlers.api.handler(webRequest(rawUrl));
+          } else if (pathOnly === "/api/health" && req.method === "GET") {
+            response = new Response("ok", {
+              headers: { "content-type": "text/plain" },
+            });
+          } else if (pathOnly.startsWith("/api/mcp-sessions/")) {
+            const handler =
+              req.method === "GET"
+                ? handlers.mcp.handlePausedRequest
+                : handlers.mcp.handleApprovalRequest;
+            response = await handler(webRequest(rawUrl));
+          } else {
+            const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(pathOnly);
+            if (awaitMatch && req.method === "GET") {
+              response = new Response(JSON.stringify(consumeOAuthResult(awaitMatch[1]!)), {
+                headers: { "content-type": "application/json" },
+              });
+            } else {
+              // Strip /api prefix for Effect handlers.
+              response = await handlers.api.handler(webRequest(rawUrl.slice("/api".length) || "/"));
+            }
+          }
 
           res.statusCode = response.status;
           response.headers.forEach((v, k) => res.setHeader(k, v));
@@ -112,7 +217,14 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION),
+    // The local app IS the npm-installed CLI, so its update card shows the npm
+    // upgrade command (the desktop bridge overrides this with a native action).
+    "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("npm"),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify(EXECUTOR_GITHUB_URL),
+    "import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD": JSON.stringify(REPO_ROOT),
+    "import.meta.env.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL": JSON.stringify(
+      process.env.EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL ?? "https://executor.sh",
+    ),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
   resolve: {
@@ -121,11 +233,24 @@ export default defineConfig({
   server: {
     port: parseInt(process.env.PORT ?? "5173", 10),
     host: "127.0.0.1",
+    // When the CLI daemon spawns this vite as a child and proxies HTTP
+    // (EXECUTOR_DEV=1), the page is loaded from the daemon's port, but
+    // the daemon does not proxy WebSockets. Point the HMR client at
+    // vite's own port so the browser opens a WS directly to vite, side-
+    // stepping the daemon proxy. Without this, the client tries the
+    // daemon port and floods the console with reconnect errors.
+    hmr: process.env.EXECUTOR_DEV_VITE_PORT
+      ? {
+          host: "127.0.0.1",
+          clientPort: parseInt(process.env.EXECUTOR_DEV_VITE_PORT, 10),
+          protocol: "ws",
+        }
+      : undefined,
     watch: {
       // Workspace packages live under packages/ and are symlinked into
       // node_modules. Without this, chokidar treats them as ordinary
       // node_modules and skips watching, so edits to e.g.
-      // packages/react/src/pages/sources.tsx don't trigger HMR.
+      // packages/react/src/pages/integrations.tsx don't trigger HMR.
       ignored: ["!**/node_modules/@executor-js/**"],
       // WSL2 + symlinked workspace packages can drop inotify events;
       // polling is slower but reliable.

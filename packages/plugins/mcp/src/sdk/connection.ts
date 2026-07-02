@@ -2,8 +2,10 @@ import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
-import { Effect } from "effect";
+import { Effect, Layer, Predicate, Stream } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 // NOTE: `StdioClientTransport` is NOT imported eagerly. The upstream module
 // (`@modelcontextprotocol/sdk/client/stdio.js`) touches `node:child_process`
@@ -13,8 +15,8 @@ import { Effect } from "effect";
 // prod bundles that DO use stdio load it via a dynamic import inside the
 // stdio branch of `createMcpConnector`.
 
-import type { McpRemoteSourceData, McpStdioSourceData } from "./types";
-import { McpConnectionError } from "./errors";
+import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
+import { McpConnectionError, McpOAuthReauthorizationRequired } from "./errors";
 
 // ---------------------------------------------------------------------------
 // Connection type
@@ -25,23 +27,27 @@ export type McpConnection = {
   readonly close: () => Promise<void>;
 };
 
-export type McpConnector = Effect.Effect<McpConnection, McpConnectionError>;
+export type McpConnector = Effect.Effect<
+  McpConnection,
+  McpConnectionError | McpOAuthReauthorizationRequired
+>;
 
 // ---------------------------------------------------------------------------
 // Connector input — extends stored source data with resolved auth
 // ---------------------------------------------------------------------------
 
 export type RemoteConnectorInput = Omit<
-  McpRemoteSourceData,
-  "auth" | "remoteTransport" | "headers" | "queryParams"
+  McpRemoteIntegrationConfig,
+  "authenticationTemplate" | "remoteTransport" | "headers" | "queryParams"
 > & {
-  readonly remoteTransport?: McpRemoteSourceData["remoteTransport"];
+  readonly remoteTransport?: McpRemoteIntegrationConfig["remoteTransport"];
   readonly headers?: Record<string, string>;
   readonly queryParams?: Record<string, string>;
   readonly authProvider?: OAuthClientProvider;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 };
 
-export type StdioConnectorInput = McpStdioSourceData;
+export type StdioConnectorInput = McpStdioIntegrationConfig;
 
 export type ConnectorInput = RemoteConnectorInput | StdioConnectorInput;
 
@@ -55,6 +61,100 @@ const buildEndpointUrl = (endpoint: string, queryParams: Record<string, string>)
     url.searchParams.set(key, value);
   }
   return url;
+};
+
+type HttpMethod = Parameters<typeof HttpClientRequest.make>[0];
+const HTTP_METHODS = new Set<HttpMethod>([
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+]);
+
+const httpMethodFrom = (method: string | undefined): HttpMethod => {
+  const normalized = (method ?? "GET").toUpperCase() as HttpMethod;
+  return HTTP_METHODS.has(normalized) ? normalized : "POST";
+};
+
+const headersFrom = (headers: HeadersInit | undefined): Headers =>
+  headers ? new Headers(headers) : new Headers();
+
+const recordFromHeaders = (headers: Headers): Record<string, string> =>
+  Object.fromEntries(headers.entries());
+
+const applyBody = async (
+  request: HttpClientRequest.HttpClientRequest,
+  headers: Headers,
+  body: BodyInit | null | undefined,
+): Promise<HttpClientRequest.HttpClientRequest> => {
+  if (body == null) return request;
+  const contentType = headers.get("content-type") ?? undefined;
+  if (typeof body === "string") return HttpClientRequest.bodyText(request, body, contentType);
+  if (body instanceof URLSearchParams) {
+    return HttpClientRequest.bodyText(
+      request,
+      body.toString(),
+      contentType ?? "application/x-www-form-urlencoded;charset=UTF-8",
+    );
+  }
+  if (body instanceof Uint8Array)
+    return HttpClientRequest.bodyUint8Array(request, body, contentType);
+  if (body instanceof ArrayBuffer) {
+    return HttpClientRequest.bodyUint8Array(request, new Uint8Array(body), contentType);
+  }
+  const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+  return HttpClientRequest.bodyUint8Array(request, bytes, contentType);
+};
+
+const abortError = (signal: AbortSignal): unknown => {
+  if (signal.reason !== undefined) return signal.reason;
+  // oxlint-disable-next-line executor/no-error-constructor -- boundary: Fetch-compatible adapter must reject with an AbortError-shaped value
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+};
+
+const fetchFromHttpClientLayer = (
+  httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+): FetchLike => {
+  const execute: FetchLike = async (url, init) => {
+    const headers = headersFrom(init?.headers);
+    const requestWithoutBody = HttpClientRequest.make(httpMethodFrom(init?.method))(url, {
+      headers: recordFromHeaders(headers),
+    });
+    const request = await applyBody(requestWithoutBody, headers, init?.body);
+    const effect = Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const response = yield* client.execute(request);
+      const responseHeaders = new Headers();
+      for (const [key, value] of Object.entries(response.headers)) {
+        if (value !== undefined) responseHeaders.set(key, value);
+      }
+      const body =
+        response.status === 204 || response.status === 205 || response.status === 304
+          ? null
+          : Stream.toReadableStream(response.stream);
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      });
+    }).pipe(Effect.provide(httpClientLayer));
+    const promise = Effect.runPromise(effect);
+    if (!init?.signal) return promise;
+    // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter mirrors abort rejection semantics
+    if (init.signal.aborted) return Promise.reject(abortError(init.signal));
+    const aborted = new Promise<never>((_, reject) => {
+      // oxlint-disable-next-line executor/no-promise-reject -- boundary: Fetch-compatible adapter races the Effect request against AbortSignal
+      init.signal?.addEventListener("abort", () => reject(abortError(init.signal!)), {
+        once: true,
+      });
+    });
+    return Promise.race([promise, aborted]);
+  };
+  return execute;
 };
 
 // Use the cfworker JSON Schema validator instead of the SDK's default
@@ -77,21 +177,29 @@ const connectionFromClient = (client: Client): McpConnection => ({
   close: () => client.close(),
 });
 
+const connectionFailure = (
+  transport: string,
+  message: string,
+  cause: unknown,
+): McpConnectionError | McpOAuthReauthorizationRequired => {
+  if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
+    return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
+  }
+  return new McpConnectionError({ transport, message });
+};
+
 const connectClient = (input: {
   transport: string;
   createTransport: () => Parameters<Client["connect"]>[0];
-}): Effect.Effect<McpConnection, McpConnectionError> =>
+}): Effect.Effect<McpConnection, McpConnectionError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
     const client = createClient();
     const transportInstance = input.createTransport();
 
     yield* Effect.tryPromise({
       try: () => client.connect(transportInstance),
-      catch: () =>
-        new McpConnectionError({
-          transport: input.transport,
-          message: `Failed connecting via ${input.transport}`,
-        }),
+      catch: (cause) =>
+        connectionFailure(input.transport, `Failed connecting via ${input.transport}`, cause),
     }).pipe(
       Effect.withSpan("plugin.mcp.connection.handshake", {
         attributes: { "plugin.mcp.transport": input.transport },
@@ -146,6 +254,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   const headers = input.headers ?? {};
   const remoteTransport = input.remoteTransport ?? "auto";
   const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
+  const fetch = input.httpClientLayer ? fetchFromHttpClientLayer(input.httpClientLayer) : undefined;
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
@@ -155,6 +264,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
       new StreamableHTTPClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
+        fetch,
       }),
   });
 
@@ -164,12 +274,19 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
       new SSEClientTransport(endpoint, {
         requestInit,
         authProvider: input.authProvider,
+        fetch,
       }),
   });
 
   if (remoteTransport === "streamable-http") return connectStreamableHttp;
   if (remoteTransport === "sse") return connectSse;
 
-  // auto — try streamable-http first, fall back to SSE
-  return connectStreamableHttp.pipe(Effect.catch(() => connectSse));
+  // auto: try streamable-http first, fall back to SSE for transport failures.
+  return connectStreamableHttp.pipe(
+    Effect.catch((error) =>
+      Predicate.isTagged(error, "McpOAuthReauthorizationRequired")
+        ? Effect.fail(error)
+        : connectSse,
+    ),
+  );
 };

@@ -1,3 +1,4 @@
+import { FileSystem } from "effect";
 import * as Effect from "effect/Effect";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -143,6 +144,65 @@ export const parseJsonObjectInput = (
     }
 
     return parsed;
+  });
+
+export const resolveToolInvocation = (input: {
+  rawPathParts: ReadonlyArray<string>;
+}): Effect.Effect<{ path: string; args: Record<string, unknown> }, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    if (!Array.isArray(input.rawPathParts)) {
+      return yield* Effect.fail(
+        new Error("Invalid tool invocation: path parts were not parsed as an array"),
+      );
+    }
+
+    // The trailing argument carries the tool's JSON input — either inline
+    // (`'{"k":"v"}'`) or, via `@path`, read from a file. The file form is the
+    // cross-platform equivalent of the Unix `"$(cat file)"`: it dodges shell
+    // quote-mangling for large or double-quote-heavy payloads (notably
+    // PowerShell, which corrupts inline JSON passed to a native binary).
+    const rawLast = input.rawPathParts.at(-1)?.trim();
+    const isFileArg = rawLast !== undefined && rawLast.startsWith("@");
+    const filePath = isFileArg ? rawLast.slice(1) : undefined;
+    if (isFileArg && filePath === "") {
+      return yield* Effect.fail(
+        new Error("Tool input '@' requires a file path, e.g. `@./input.json`."),
+      );
+    }
+    const jsonText =
+      filePath !== undefined
+        ? (yield* (yield* FileSystem.FileSystem).readFileString(filePath).pipe(
+            // Surface a path-bearing message instead of a raw ENOENT PlatformError.
+            Effect.mapError(
+              (cause) => new Error(`Cannot read tool input file '${filePath}': ${cause}`),
+            ),
+          )).trim()
+        : rawLast;
+    const hasInlineJsonArg = jsonText !== undefined && jsonText.startsWith("{");
+    if (isFileArg && !hasInlineJsonArg) {
+      return yield* Effect.fail(
+        new Error(`Tool input file '${filePath}' must contain a JSON object starting with '{'.`),
+      );
+    }
+    const pathParts =
+      isFileArg || hasInlineJsonArg ? input.rawPathParts.slice(0, -1) : input.rawPathParts;
+    const args = hasInlineJsonArg ? yield* parseJsonObjectInput(jsonText) : {};
+
+    if (pathParts.some((part) => part.trim().startsWith("-"))) {
+      return yield* Effect.fail(
+        new Error(
+          "Tool invocation no longer accepts flags. Use: executor call <path...> '{...json...}'",
+        ),
+      );
+    }
+
+    const path = yield* Effect.try({
+      try: () => buildToolPath(pathParts),
+      catch: (cause) =>
+        cause instanceof Error ? cause : new Error(`Invalid tool path: ${String(cause)}`),
+    });
+
+    return { path, args };
   });
 
 export const extractExecutionResult = (structured: unknown): unknown => {

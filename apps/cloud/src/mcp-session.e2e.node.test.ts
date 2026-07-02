@@ -2,8 +2,9 @@
 //
 // The `McpSessionDO` in mcp-session.ts wires several things that previously
 // had zero integration coverage:
-//   - `createScopedExecutor` against a real drizzle adapter (the 2026-04-16
-//     prod outage was a schema spread bug here; see services/db.schema.test.ts)
+//   - a per-request executor bound to `{ tenant, subject }` against a real
+//     FumaDB/Drizzle handle (the 2026-04-16 prod outage was a schema spread bug
+//     here; see db/db.schema.test.ts)
 //   - `createExecutionEngine` with an in-process code executor
 //   - `createExecutorMcpServer` for the MCP request surface
 //   - Real `@modelcontextprotocol/sdk` Client → server round-trips
@@ -21,23 +22,23 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 
-import { createExecutorMcpServer } from "@executor-js/host-mcp";
+import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { collectTables } from "@executor-js/api/server";
 import {
   ElicitationResponse,
   FormElicitation,
-  Scope,
-  ScopeId,
-  collectSchemas,
+  Subject,
+  Tenant,
   createExecutor,
   definePlugin,
 } from "@executor-js/sdk";
 import { FetchHttpClient } from "effect/unstable/http";
-import { makePostgresAdapter, makePostgresBlobStore } from "@executor-js/storage-postgres";
 import { makeTestWorkOSVaultClient } from "@executor-js/plugin-workos-vault/testing";
 import executorConfig from "../executor.config";
-import { DbService } from "./services/db";
+import { DbService } from "./db/db";
+import { createDrizzleFumaDb } from "./db/fuma";
 
 // ---------------------------------------------------------------------------
 // Test-only plugin: exposes one in-memory tool that elicits once. Lets the
@@ -92,9 +93,16 @@ const ELICITATION_CAPS: ClientCapabilities = {
   elicitation: { form: {}, url: {} },
 };
 
-type BuildOptions = { readonly withElicitingPlugin?: boolean };
+type BuildOptions = {
+  readonly withElicitingPlugin?: boolean;
+  readonly elicitationMode?: "model" | "native";
+};
 
-const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildOptions = {}) =>
+const buildScopedExecutor = (
+  organizationId: string,
+  _organizationName: string,
+  options: BuildOptions = {},
+) =>
   Effect.gen(function* () {
     const { db } = yield* DbService;
     const basePlugins = executorConfig.plugins({
@@ -103,18 +111,16 @@ const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildO
     const plugins = options.withElicitingPlugin
       ? ([...basePlugins, elicitingTestPlugin()] as const)
       : basePlugins;
-    const schema = collectSchemas(plugins);
-    const adapter = makePostgresAdapter({ db, schema });
-    const blobs = makePostgresBlobStore({ db });
-    const scope = Scope.make({
-      id: ScopeId.make(scopeId),
-      name: scopeName,
-      createdAt: new Date(),
+    const fuma = createDrizzleFumaDb({
+      db,
+      tables: collectTables(),
+      namespace: "executor_cloud",
+      provider: "postgresql",
     });
     return yield* createExecutor({
-      scopes: [scope],
-      adapter,
-      blobs,
+      tenant: Tenant.make(organizationId),
+      subject: Subject.make(`user_${organizationId}`),
+      db: fuma.db,
       plugins,
       httpClientLayer: FetchHttpClient.layer,
       onElicitation: "accept-all",
@@ -125,14 +131,17 @@ const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildO
 // them connected to an in-memory MCP client. Shaped as an acquireRelease so
 // the transport teardown is guaranteed when the test scope closes.
 const openSession = (
-  orgId: string,
+  organizationId: string,
   options: BuildOptions & { readonly caps?: ClientCapabilities } = {},
 ) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
-      const executor = yield* buildScopedExecutor(orgId, `Org ${orgId}`, options);
+      const executor = yield* buildScopedExecutor(organizationId, `Org ${organizationId}`, options);
       const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
-      const mcpServer = yield* createExecutorMcpServer({ engine });
+      const mcpServer = yield* createExecutorMcpServer({
+        engine,
+        elicitationMode: options.elicitationMode ? { mode: options.elicitationMode } : undefined,
+      });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       const client = new Client(
         { name: "cloud-e2e-test", version: "1.0.0" },
@@ -191,19 +200,22 @@ describe("cloud MCP session end-to-end", () => {
 
   // Isolates the drizzle adapter path so a schema spread drift surfaces as
   // a raw "unknown model" error. The prod outage on 2026-04-16 would have
-  // thrown at `executor.sources.list()` when the MCP session's drizzle
+  // thrown at `executor.integrations.list()` when the MCP session's drizzle
   // instance lost the executor-schema tables.
-  it.effect("exercises the drizzle adapter directly via executor.sources.list", () =>
+  it.effect("exercises the drizzle adapter directly via executor.integrations.list", () =>
     Effect.gen(function* () {
       const executor = yield* buildScopedExecutor(nextOrgId(), "drizzle-probe");
-      const sources = yield* executor.sources.list();
-      expect(Array.isArray(sources)).toBe(true);
+      const integrations = yield* executor.integrations.list();
+      expect(Array.isArray(integrations)).toBe(true);
     }).pipe(Effect.provide(DbService.Live), Effect.scoped),
   );
 
   it.effect("bridges a form elicitation from engine to client and back", () =>
     Effect.gen(function* () {
-      const { client } = yield* openSession(nextOrgId(), { withElicitingPlugin: true });
+      const { client } = yield* openSession(nextOrgId(), {
+        withElicitingPlugin: true,
+        elicitationMode: "native",
+      });
 
       client.setRequestHandler(ElicitRequestSchema, async () => ({
         action: "accept" as const,

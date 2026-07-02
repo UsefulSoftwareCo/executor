@@ -1,17 +1,41 @@
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
-import { Duration, Effect } from "effect";
-import { setCookie, deleteCookie } from "@tanstack/react-start/server";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Duration, Effect, Predicate } from "effect";
+import { isValidOrgSlug } from "@executor-js/api";
 
-import { AUTH_PATHS, CloudAuthApi, CloudAuthPublicApi } from "./api";
-import { NoOrganization, SessionContext } from "./middleware";
+import {
+  AUTH_PATHS,
+  CloudAuthApi,
+  CloudAuthPublicApi,
+  McpExecutionNotFoundError,
+  McpSessionForbiddenError,
+} from "./api";
+import { NoOrganization } from "@executor-js/api/server";
+// Pure constants/codec module (no React) — safe in the backend graph.
+import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
+import { SessionContext, SessionCookies } from "./middleware";
+import { encodeLoginState, decodeLoginState } from "./login-state";
+import { safeReturnTo } from "./return-to";
 import { UserStoreService } from "./context";
-import { authorizeOrganization } from "./authorize-organization";
 import { env } from "cloudflare:workers";
-import { ApiKeyManagementError } from "./api-key-errors";
 import { WorkOSError } from "./errors";
-import { WorkOSAuth } from "./workos";
-import { ApiKeyService } from "./api-keys";
+import { WorkOSClient } from "./workos";
+import { AutumnService } from "../extensions/billing/service";
+import {
+  hasPaidOrganizationSubscription,
+  isOverFreeOrganizationLimit,
+  shouldApplyFreeOrganizationLimit,
+} from "../extensions/billing/plans";
+import {
+  ORG_SELECTOR_HEADER,
+  authorizeOrganization,
+  authorizeOrganizationSelector,
+  resolveOrganization,
+} from "./organization";
+import type {
+  McpSessionApprovalResult,
+  McpSessionResumeApprovalResult,
+} from "../mcp/session-durable-object";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -49,10 +73,7 @@ const DELETE_COOKIE_OPTIONS = {
   secure: true,
 };
 
-const MAX_ORGANIZATIONS_PER_USER = 3;
-const MAX_API_KEY_NAME_LENGTH = 80;
-
-const randomState = (): string => {
+const randomNonce = (): string => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -67,15 +88,67 @@ const timingSafeEqual = (a: string, b: string): boolean => {
   return diff === 0;
 };
 
-const requireSessionOrganization = Effect.gen(function* () {
+const requestHeaders = Effect.map(HttpServerRequest.HttpServerRequest.asEffect(), (req) => ({
+  ...req.headers,
+}));
+
+const firstPathSegment = (path: string): string | null => {
+  const pathname = path.split(/[?#]/, 1)[0] ?? "";
+  const segment = pathname.split("/")[1];
+  return segment && isValidOrgSlug(segment) ? segment : null;
+};
+
+const requestedOrgSelectorFromReturnTo = (returnTo: string): string | null =>
+  firstPathSegment(returnTo);
+
+const requireSelectedOrganization = Effect.gen(function* () {
   const session = yield* SessionContext;
-  if (!session.organizationId) {
+  const headers = yield* requestHeaders;
+  const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+  if (!selector) {
     return yield* new NoOrganization();
   }
-  const org = yield* authorizeOrganization(session.accountId, session.organizationId);
-  if (!org) return yield* new NoOrganization();
-  return { session, org };
+
+  const org = yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
+    Effect.catch(() => Effect.fail(new NoOrganization())),
+  );
+  if (!org) {
+    return yield* new NoOrganization();
+  }
+
+  return {
+    ...session,
+    organizationId: org.id,
+  };
 });
+
+const getMcpSessionStub = (mcpSessionId: string) =>
+  Effect.try({
+    try: () => {
+      const ns = env.MCP_SESSION;
+      return ns.get(ns.idFromString(mcpSessionId));
+    },
+    catch: () => undefined,
+  }).pipe(Effect.orElseSucceed(() => null));
+
+const requireMcpSessionStub = (mcpSessionId: string, executionId: string) =>
+  Effect.gen(function* () {
+    const stub = yield* getMcpSessionStub(mcpSessionId);
+    if (!stub) {
+      return yield* new McpExecutionNotFoundError({ executionId });
+    }
+    return stub;
+  });
+
+const failMcpApprovalResult = (
+  result: { readonly status: "not_found" | "forbidden" },
+  params: { readonly mcpSessionId: string; readonly executionId: string },
+) => {
+  if (result.status === "forbidden") {
+    return Effect.fail(new McpSessionForbiddenError({ mcpSessionId: params.mcpSessionId }));
+  }
+  return Effect.fail(new McpExecutionNotFoundError({ executionId: params.executionId }));
+};
 
 const setResponseCookie = (
   response: HttpServerResponse.HttpServerResponse,
@@ -103,14 +176,19 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
   "cloudAuthPublic",
   (handlers) =>
     handlers
-      .handleRaw("login", () =>
+      .handleRaw("login", ({ query }) =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           // Use the explicit public site URL — in dev, the request's Host
           // header points at the internal proxy target, not the public URL
           // WorkOS needs to redirect back to.
           const origin = env.VITE_PUBLIC_SITE_URL ?? "";
-          const state = randomState();
+          // OAuth round-trips `state` verbatim, so the validated returnTo
+          // rides inside it next to the CSRF nonce — no extra cookie.
+          const state = encodeLoginState({
+            nonce: randomNonce(),
+            returnTo: safeReturnTo(query.returnTo) ?? undefined,
+          });
           const url = workos.getAuthorizationUrl(`${origin}${AUTH_PATHS.callback}`, state);
           return setResponseCookie(
             HttpServerResponse.redirect(url, { status: 302 }),
@@ -122,7 +200,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
       )
       .handleRaw("callback", ({ request, query }) =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const cookieState = request.cookies[STATE_COOKIE] ?? null;
           // CSRF check is only enforced when the redirect carries a state
@@ -145,26 +223,41 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
 
           let sealedSession = result.sealedSession;
 
-          // If the auth response didn't surface an org but the user is already
-          // an *active* member of one, rehydrate the session with it. Pending
-          // memberships (which represent unaccepted invitations on WorkOS's
-          // side) are skipped — refreshing into one 400s, and silently
-          // attaching an unaccepted org would also bypass invite consent.
-          // If they have no active memberships, leave the session org-less —
-          // AuthGate's onboarding flow surfaces pending invites and the
-          // create-org form. We never auto-create organizations on login.
-          if (!result.organizationId && sealedSession) {
+          // Resume where the SSR gate interrupted them. The state passed the
+          // CSRF check above whenever it's present, but it's still a
+          // round-tripped value, so the returnTo inside it is re-validated like
+          // any other untrusted path.
+          const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
+          const requestedOrgSelector = requestedOrgSelectorFromReturnTo(returnTo);
+          const requestedOrg = requestedOrgSelector
+            ? yield* authorizeOrganizationSelector(result.user.id, requestedOrgSelector).pipe(
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
+
+          // Prefer the org in the URL that sent the user to login. If the URL
+          // is bare, or not an org route, fall back to WorkOS's org and then to
+          // the first active membership for org-less sessions. Pending
+          // memberships are skipped because refreshing into one 400s and would
+          // bypass invite consent.
+          let targetOrganizationId = requestedOrg?.id ?? result.organizationId ?? null;
+          if (!targetOrganizationId && !requestedOrgSelector) {
             const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");
-            if (existingActive) {
-              // Best-effort refresh — if WorkOS rejects (e.g. the membership
-              // was just revoked), fall through to an org-less session rather
-              // than 500ing the entire callback.
-              const refreshed = yield* workos
-                .refreshSession(sealedSession, existingActive.organizationId)
-                .pipe(Effect.orElseSucceed(() => null));
-              if (refreshed) sealedSession = refreshed;
-            }
+            targetOrganizationId = existingActive?.organizationId ?? null;
+          }
+
+          if (
+            targetOrganizationId &&
+            targetOrganizationId !== result.organizationId &&
+            sealedSession
+          ) {
+            // Best-effort refresh: if WorkOS rejects, fall through with the
+            // original session instead of 500ing the entire callback.
+            const refreshed = yield* workos
+              .refreshSession(sealedSession, targetOrganizationId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (refreshed) sealedSession = refreshed;
           }
 
           if (!sealedSession) {
@@ -173,13 +266,29 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
 
           return deleteResponseCookie(
             setResponseCookie(
-              HttpServerResponse.redirect("/", { status: 302 }),
+              HttpServerResponse.redirect(returnTo, { status: 302 }),
               "wos-session",
               sealedSession,
               RESPONSE_COOKIE_OPTIONS,
             ),
             STATE_COOKIE,
           );
+        }),
+      )
+      // CLI device-login discovery. The WorkOS device endpoints live on the
+      // WorkOS API host (`WORKOS_API_URL`, or api.workos.com in production,
+      // the SAME base the SDK uses, so e2e points the CLI at the emulator with
+      // zero extra wiring). The CLI runs RFC 8628 against them as a public
+      // client (no secret) and gets a WorkOS access-token JWT back.
+      .handle("cliLogin", () =>
+        Effect.sync(() => {
+          const base = (env.WORKOS_API_URL ?? "https://api.workos.com").replace(/\/+$/, "");
+          return {
+            provider: "workos" as const,
+            deviceAuthorizationEndpoint: `${base}/user_management/authorize/device`,
+            tokenEndpoint: `${base}/user_management/authenticate`,
+            clientId: env.WORKOS_CLIENT_ID,
+          };
         }),
       ),
 );
@@ -207,24 +316,33 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               name: session.name,
               avatarUrl: session.avatarUrl,
             },
-            organization: org ? { id: org.id, name: org.name } : null,
+            organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
           };
         }),
       )
-      .handleRaw("logout", () => {
-        deleteCookie("wos-session", { path: "/" });
-        return Effect.succeed(HttpServerResponse.redirect("/", { status: 302 }));
-      })
+      .handleRaw("logout", () =>
+        Effect.succeed(
+          // The auth-hint travels with the session: leaving it behind would
+          // make the next page load optimistically paint the app shell for a
+          // signed-out browser.
+          deleteResponseCookie(
+            deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+            AUTH_HINT_COOKIE,
+          ),
+        ),
+      )
       .handle("organizations", () =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           const session = yield* SessionContext;
 
           const memberships = yield* workos.listUserMemberships(session.accountId);
+          // Resolve through the mirror (not WorkOS directly) so each org's
+          // URL slug is minted/read — the switcher navigates to `/<slug>`.
           const organizations = yield* Effect.all(
             memberships.data.map((m) =>
-              workos.getOrganization(m.organizationId).pipe(
-                Effect.map((org) => ({ id: org.id, name: org.name })),
+              resolveOrganization(m.organizationId).pipe(
+                Effect.map((org) => ({ id: org.id, name: org.name, slug: org.slug })),
                 Effect.orElseSucceed(() => null),
               ),
             ),
@@ -232,42 +350,56 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           );
 
           return {
-            organizations: organizations.filter(
-              (org): org is NonNullable<typeof org> => org !== null,
-            ),
+            organizations: organizations.filter(Predicate.isNotNull),
             activeOrganizationId: session.organizationId,
           };
         }),
       )
-      .handle("switchOrganization", ({ payload }) =>
-        Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
-          const session = yield* SessionContext;
-
-          const refreshed = yield* workos.refreshSession(
-            session.sealedSession,
-            payload.organizationId,
-          );
-          if (refreshed) {
-            setCookie("wos-session", refreshed, COOKIE_OPTIONS);
-          }
-        }),
-      )
       .handle("createOrganization", ({ payload }) =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const session = yield* SessionContext;
+          const autumn = yield* AutumnService;
 
           const name = payload.name.trim();
           const memberships = yield* workos.listUserMemberships(session.accountId);
-          if (memberships.data.length >= MAX_ORGANIZATIONS_PER_USER) {
-            return yield* new WorkOSError();
+          const activeMemberships = memberships.data.filter(
+            (membership) => membership.status === "active",
+          );
+
+          if (isOverFreeOrganizationLimit(activeMemberships)) {
+            const paidOrganizationIds = yield* Effect.all(
+              activeMemberships.map((membership) =>
+                autumn
+                  .use((client) =>
+                    client.customers.getOrCreate({ customerId: membership.organizationId }),
+                  )
+                  .pipe(
+                    Effect.map((customer) =>
+                      hasPaidOrganizationSubscription(customer.subscriptions)
+                        ? membership.organizationId
+                        : null,
+                    ),
+                  ),
+              ),
+              { concurrency: 3 },
+            ).pipe(
+              Effect.catchTag("AutumnError", () => Effect.fail(new WorkOSError())),
+              Effect.map((ids) => new Set(ids.filter(Predicate.isNotNull))),
+            );
+
+            if (shouldApplyFreeOrganizationLimit(activeMemberships, paidOrganizationIds)) {
+              return yield* new WorkOSError();
+            }
           }
 
           const org = yield* workos.createOrganization(name);
           yield* workos.createMembership(org.id, session.accountId, "admin");
-          yield* users.use((s) => s.upsertOrganization({ id: org.id, name: org.name }));
+          // `upsertOrganization` mints the slug at insert — no separate heal step.
+          const mirrored = yield* users.use((s) =>
+            s.upsertOrganization({ id: org.id, name: org.name }),
+          );
 
           // Try to attach the new org to the current session. This can fail
           // (or silently return a session still scoped to the old org) when
@@ -289,17 +421,17 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
                 verifiedOrgId: verified?.organizationId ?? null,
               },
             );
-            deleteCookie("wos-session", { path: "/" });
+            (yield* SessionCookies).set("wos-session", "", DELETE_COOKIE_OPTIONS);
             return yield* new WorkOSError();
           }
 
-          setCookie("wos-session", refreshed, COOKIE_OPTIONS);
-          return { id: org.id, name: org.name };
+          (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
+          return { id: org.id, name: org.name, slug: mirrored.slug };
         }),
       )
       .handle("pendingInvitations", () =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           const session = yield* SessionContext;
 
           const invitations = yield* workos.listInvitationsByEmail(session.email);
@@ -342,13 +474,13 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           );
 
           return {
-            invitations: enriched.filter((i): i is NonNullable<typeof i> => i !== null),
+            invitations: enriched.filter(Predicate.isNotNull),
           };
         }),
       )
       .handle("acceptInvitation", ({ payload }) =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSAuth;
+          const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const session = yield* SessionContext;
 
@@ -363,9 +495,12 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             return yield* new WorkOSError();
           }
 
-          // Mirror the org locally so domain tables can FK against it.
+          // Mirror the org locally so domain tables can FK against it; the
+          // upsert mints the slug at insert — no separate heal step.
           const org = yield* workos.getOrganization(invitation.organizationId);
-          yield* users.use((s) => s.upsertOrganization({ id: org.id, name: org.name }));
+          const mirrored = yield* users.use((s) =>
+            s.upsertOrganization({ id: org.id, name: org.name }),
+          );
 
           // Attach the just-accepted org to the current session. Same shape
           // as createOrganization: refresh + verify; if we can't pin the
@@ -378,57 +513,77 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           if (!refreshed || !verified || verified.organizationId !== org.id) {
             yield* Effect.logWarning("acceptInvitation: unable to attach org to current session", {
               userId: session.accountId,
-              orgId: org.id,
+              organizationId: org.id,
               refreshReturnedSession: refreshed != null,
               verifiedOrgId: verified?.organizationId ?? null,
             });
-            deleteCookie("wos-session", { path: "/" });
+            (yield* SessionCookies).set("wos-session", "", DELETE_COOKIE_OPTIONS);
             return yield* new WorkOSError();
           }
 
-          setCookie("wos-session", refreshed, COOKIE_OPTIONS);
-          return { id: org.id, name: org.name };
+          (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
+          return { id: org.id, name: org.name, slug: mirrored.slug };
         }),
       )
-      .handle("listApiKeys", () =>
+      .handle("getMcpPaused", ({ params }) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireSessionOrganization;
-          const apiKeys = yield* ApiKeyService;
-          const keys = yield* apiKeys.listUserKeys({
-            accountId: session.accountId,
-            organizationId: org.id,
-          });
-          return { apiKeys: keys };
-        }),
-      )
-      .handle("createApiKey", ({ payload }) =>
-        Effect.gen(function* () {
-          const { session, org } = yield* requireSessionOrganization;
-          const name = payload.name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
-          if (!name) {
-            return yield* new ApiKeyManagementError({ cause: "missing_name" });
+          const owner = yield* requireSelectedOrganization;
+          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const result = yield* Effect.promise(
+            () =>
+              stub.getPausedExecutionForApproval(params.executionId, {
+                accountId: owner.accountId,
+                organizationId: owner.organizationId,
+              }) as Promise<McpSessionApprovalResult>,
+          );
+
+          if (result.status !== "ok") {
+            return yield* failMcpApprovalResult(result, params);
           }
 
-          const apiKeys = yield* ApiKeyService;
-          return yield* apiKeys.createUserKey({
-            accountId: session.accountId,
-            organizationId: org.id,
-            name,
-          });
+          return {
+            text: result.text,
+            structured: result.structured,
+          };
         }),
       )
-      .handle("revokeApiKey", ({ params }) =>
+      .handle("resumeMcpExecution", ({ params, payload }) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireSessionOrganization;
-          const apiKeys = yield* ApiKeyService;
-          const ownedKeys = yield* apiKeys.listUserKeys({
-            accountId: session.accountId,
-            organizationId: org.id,
-          });
-          if (!ownedKeys.some((key) => key.id === params.apiKeyId)) {
-            return yield* new ApiKeyManagementError({ cause: "api_key_not_found" });
+          const owner = yield* requireSelectedOrganization;
+          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const result = yield* Effect.promise(
+            () =>
+              stub.resumeExecutionForApproval(
+                params.executionId,
+                {
+                  accountId: owner.accountId,
+                  organizationId: owner.organizationId,
+                },
+                {
+                  action: payload.action,
+                  content: payload.content as Record<string, unknown> | undefined,
+                },
+              ) as Promise<McpSessionResumeApprovalResult>,
+          );
+
+          if (result.status !== "ok") {
+            return yield* failMcpApprovalResult(result, params);
           }
-          yield* apiKeys.revokeUserKey({ keyId: params.apiKeyId });
+
+          if (result.executionStatus === "paused") {
+            return {
+              status: "paused" as const,
+              text: result.text,
+              structured: result.structured,
+            };
+          }
+
+          return {
+            status: "completed" as const,
+            text: result.text,
+            structured: result.structured,
+            isError: result.isError ?? false,
+          };
         }),
       ),
 );

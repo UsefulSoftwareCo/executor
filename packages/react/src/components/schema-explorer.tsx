@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { ChevronRight } from "lucide-react";
+import * as Option from "effect/Option";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 
 // ---------------------------------------------------------------------------
@@ -19,8 +20,8 @@ type JsonSchema = {
   const?: unknown;
   $ref?: string;
   $defs?: Record<string, JsonSchema>;
-  description?: string;
-  title?: string;
+  description?: SchemaText;
+  title?: SchemaText;
   default?: unknown;
   nullable?: boolean;
   format?: string;
@@ -35,6 +36,16 @@ export const safeSchemaValueLabel = (value: unknown): string => {
   } catch {
     return "[unavailable]";
   }
+};
+
+type SchemaText = string | Option.Option<string>;
+
+const schemaText = (value: SchemaText | undefined): string | undefined => {
+  if (typeof value === "string") return value;
+  if (Option.isOption(value) && Option.isSome(value)) {
+    return value.value;
+  }
+  return undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -181,8 +192,8 @@ const mergeAllOf = (schemas: JsonSchema[], root: JsonSchema): JsonSchema => {
     if (resolved.required) {
       merged.required = [...(merged.required ?? []), ...resolved.required];
     }
-    if (resolved.description && !merged.description) {
-      merged.description = resolved.description;
+    if (schemaText(resolved.description) && !schemaText(merged.description)) {
+      merged.description = schemaText(resolved.description);
     }
   }
   return merged;
@@ -215,7 +226,8 @@ function PropertyRow(props: {
   const expandable = isExpandable(schema, root);
   const typeLabel = getTypeLabel(schema, root);
   const description =
-    schema.description ?? (schema.$ref ? resolveRef(schema.$ref, root)?.description : undefined);
+    schemaText(schema.description) ??
+    (schema.$ref ? schemaText(resolveRef(schema.$ref, root)?.description) : undefined);
 
   const handleToggle = useCallback(() => {
     if (!open && !resolved && schema.$ref) {
@@ -266,9 +278,7 @@ function PropertyRow(props: {
           <p className={typeClasses}>{typeLabel}</p>
           {!hideRequiredBadge &&
             (required ? (
-              <p className="text-xs leading-5 font-medium text-orange-600 dark:text-orange-400">
-                required
-              </p>
+              <p className="text-xs leading-5 font-medium text-muted-foreground">required</p>
             ) : (
               <p className="text-xs leading-5 text-muted-foreground">optional</p>
             ))}
@@ -373,7 +383,7 @@ function PropertyChildren(props: { schema: JsonSchema; root: JsonSchema; depth: 
           {variants.map((variant, i) => (
             <PropertyRow
               key={i}
-              name={variant.title ?? `option ${i + 1}`}
+              name={schemaText(variant.title) ?? `option ${i + 1}`}
               schema={variant}
               root={root}
               required={false}
@@ -422,15 +432,36 @@ const countTopLevelFields = (schema: JsonSchema): number => {
 // SchemaExplorer — main export
 // ---------------------------------------------------------------------------
 
-export function SchemaExplorer(props: { schema: unknown; title?: string }) {
-  const schema = props.schema as JsonSchema | undefined;
-  if (!schema) return null;
+const asSchemaDefinitions = (value: unknown): Record<string, JsonSchema> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonSchema>)
+    : undefined;
 
-  const hasContent = isExpandable(schema, schema);
+export function SchemaExplorer(props: {
+  schema: unknown;
+  schemaDefinitions?: unknown;
+  title?: string;
+}) {
+  const schema = props.schema as JsonSchema | undefined;
+  const root = useMemo(() => {
+    if (!schema) return undefined;
+    const sharedDefs = asSchemaDefinitions(props.schemaDefinitions);
+    if (!sharedDefs && !schema.$defs) return schema;
+    return {
+      ...schema,
+      $defs: {
+        ...sharedDefs,
+        ...schema.$defs,
+      },
+    };
+  }, [schema, props.schemaDefinitions]);
+  if (!schema || !root) return null;
+
+  const hasContent = isExpandable(schema, root);
   const title = props.title;
 
   if (!hasContent) {
-    const typeLabel = getTypeLabel(schema, schema);
+    const typeLabel = getTypeLabel(schema, root);
     return (
       <CardStack>
         {title && <CardStackHeader>{title}</CardStackHeader>}
@@ -443,7 +474,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
     );
   }
 
-  const fieldCount = countTopLevelFields(schema);
+  const fieldCount = countTopLevelFields(root);
   const countLabel =
     fieldCount > 0 ? `${fieldCount} ${fieldCount === 1 ? "field" : "fields"}` : null;
 
@@ -463,7 +494,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
         </CardStackHeader>
       )}
       <CardStackContent>
-        <PropertyChildren schema={schema} root={schema} depth={0} />
+        <PropertyChildren schema={schema} root={root} depth={0} />
       </CardStackContent>
     </CardStack>
   );

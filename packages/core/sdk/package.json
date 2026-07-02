@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/sdk",
-  "version": "1.4.27",
+  "version": "1.5.27",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/sdk",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -18,9 +18,14 @@
   "exports": {
     ".": "./src/index.ts",
     "./core": "./src/index.ts",
+    "./shared": "./src/shared.ts",
+    "./host-internal": "./src/host-internal.ts",
     "./promise": "./src/promise.ts",
     "./client": "./src/client.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./migration": "./src/migration-spec.ts",
+    "./http-auth": "./src/http-auth/index.ts",
+    "./public-origin": "./src/public-origin.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -37,6 +42,18 @@
           "default": "./dist/core.js"
         }
       },
+      "./shared": {
+        "import": {
+          "types": "./dist/shared.d.ts",
+          "default": "./dist/shared.js"
+        }
+      },
+      "./host-internal": {
+        "import": {
+          "types": "./dist/host-internal.d.ts",
+          "default": "./dist/host-internal.js"
+        }
+      },
       "./client": {
         "import": {
           "types": "./dist/client.d.ts",
@@ -48,6 +65,24 @@
           "types": "./dist/testing.d.ts",
           "default": "./dist/testing.js"
         }
+      },
+      "./migration": {
+        "import": {
+          "types": "./dist/migration-spec.d.ts",
+          "default": "./dist/migration-spec.js"
+        }
+      },
+      "./http-auth": {
+        "import": {
+          "types": "./dist/http-auth.d.ts",
+          "default": "./dist/http-auth.js"
+        }
+      },
+      "./public-origin": {
+        "import": {
+          "types": "./dist/public-origin.d.ts",
+          "default": "./dist/public-origin.js"
+        }
       }
     }
   },
@@ -58,9 +93,8 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
-    "@executor-js/storage-core": "workspace:*",
+    "@executor-js/fumadb": "workspace:*",
     "@standard-schema/spec": "^1.1.0",
-    "effect": "catalog:",
     "fractional-indexing": "^3.2.0",
     "oauth4webapi": "^3.8.5"
   },
@@ -68,8 +102,11 @@
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@libsql/client": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
@@ -78,6 +115,7 @@
   "peerDependencies": {
     "@effect/atom-react": "catalog:",
     "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
     "react": "catalog:"
   },
   "peerDependenciesMeta": {

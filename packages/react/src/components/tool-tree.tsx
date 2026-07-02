@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, MoreHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
-import type { EffectivePolicy, ToolPolicyAction } from "@executor-js/sdk";
+import type { EffectivePolicy, Owner, ToolPolicyAction } from "@executor-js/sdk/shared";
+import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
+import { trackEvent } from "../api/analytics";
+import { toPolicyPattern } from "../lib/policy-pattern";
+import { Badge } from "./badge";
 import { Button } from "./button";
 import { Input } from "./input";
 import {
@@ -26,13 +30,87 @@ import {
 export interface ToolSummary {
   readonly id: string;
   readonly name: string;
-  readonly pluginKey: string;
   readonly description?: string;
   /** Resolved policy for this tool — combines user-authored rules and
    *  plugin defaults into one answer. Always present. UI distinguishes
    *  user vs default purely via `policy.source`. */
   readonly policy: EffectivePolicy;
+  /** Owner of the connection that produced this tool. Present only in the
+   *  account-grouped view (`groupByConnection`); ignored in the flat tree. */
+  readonly owner?: Owner;
+  /** Name of the connection (account) that produced this tool. Present only in
+   *  the account-grouped view; ignored in the flat tree. */
+  readonly connection?: string;
+  /** Integration that produced this tool. Used to disambiguate same-name
+   *  connections from different integrations in grouped views. */
+  readonly integration?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Account grouping (v2) — top-level sections keyed by (owner, connection).
+//
+// The global owner toggle is retired: the Tools tab merges BOTH owners and
+// groups tools by the account (connection) that produced them, badging each
+// section with its owner (Personal / Workspace). The SAME tool name can appear
+// under two connections — it is NOT deduped across accounts.
+// ---------------------------------------------------------------------------
+
+export type AccountGroup = {
+  /** Stable key `${owner}:${integration}:${connection}`. */
+  readonly key: string;
+  readonly owner: Owner;
+  readonly integration: string;
+  readonly connection: string;
+  /** Section header, e.g. "Personal · axiom-mcp". */
+  readonly label: string;
+  readonly tools: readonly ToolSummary[];
+};
+
+/**
+ * Partition tools into per-account sections, sorted by owner (Workspace before
+ * Personal) then connection name. Tools missing owner/connection (the flat-tree
+ * case) land in a single empty-keyed group so callers can still render them.
+ * Pure — unit-testable without React.
+ */
+export const buildAccountGroups = (tools: readonly ToolSummary[]): readonly AccountGroup[] => {
+  const byKey = new Map<
+    string,
+    { owner: Owner; integration: string; connection: string; tools: ToolSummary[] }
+  >();
+  for (const tool of tools) {
+    const owner: Owner = tool.owner ?? "org";
+    const integration = tool.integration ?? "";
+    const connection = tool.connection ?? "";
+    const key = `${owner}:${integration}:${connection}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { owner, integration, connection, tools: [] };
+      byKey.set(key, group);
+    }
+    group.tools.push(tool);
+  }
+  // Workspace (org) sorts before Personal (user); then by connection name.
+  const ownerRank = (owner: Owner): number => (owner === "org" ? 0 : 1);
+  return [...byKey.values()]
+    .sort(
+      (a, b) =>
+        ownerRank(a.owner) - ownerRank(b.owner) ||
+        a.integration.localeCompare(b.integration) ||
+        a.connection.localeCompare(b.connection),
+    )
+    .map((group) => ({
+      key: `${group.owner}:${group.integration}:${group.connection}`,
+      owner: group.owner,
+      integration: group.integration,
+      connection: group.connection,
+      label: group.connection
+        ? `${ownerLabel(group.owner)} · ${
+            group.integration ? `${group.integration} / ` : ""
+          }${group.connection}`
+        : ownerLabel(group.owner),
+      tools: group.tools,
+    }));
+};
 
 // What the dot looks like for a given effective policy. Always-run as
 // a plugin default is silent (the safe state — no point cluttering every
@@ -219,13 +297,29 @@ export function ToolTree(props: {
    *  emit the tool's full dotted id; group rows emit `prefix.*`. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  /** Maps the displayed row path into the persisted policy pattern. */
+  patternForDisplay?: (displayPattern: string) => string;
   /** Sorted user-authored policies (most-precedent first). Used to
    *  decide whether a node has its own exact-pattern user rule today
    *  (so the menu can show a "Clear" option). Optional — when absent,
    *  the menu hides "Clear". */
   policies?: ReadonlyArray<{ readonly pattern: string; readonly action: ToolPolicyAction }>;
+  /** When true, render top-level sections per (owner, connection) account, each
+   *  badged with its owner (Personal / Workspace). The dotted-name tree renders
+   *  beneath each section. The same tool name can appear under two accounts (NOT
+   *  deduped). When false/unset, render one flat tree (unchanged). */
+  groupByConnection?: boolean;
 }) {
-  const { tools, selectedToolId, onSelect, onSetPolicy, onClearPolicy, policies } = props;
+  const {
+    tools,
+    selectedToolId,
+    onSelect,
+    onSetPolicy,
+    onClearPolicy,
+    patternForDisplay = toPolicyPattern,
+    policies,
+    groupByConnection,
+  } = props;
   const exactPatterns = useMemo(() => {
     if (!policies) return new Map<string, ToolPolicyAction>();
     const m = new Map<string, ToolPolicyAction>();
@@ -233,9 +327,9 @@ export function ToolTree(props: {
     return m;
   }, [policies]);
   const [search, setSearch] = useState("");
-  const [manualOpen, setManualOpen] = useState<Set<string>>(() => new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedRowRef = useRef<HTMLButtonElement>(null);
+  const ownerDisplay = useOwnerDisplay();
 
   const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
@@ -247,7 +341,139 @@ export function ToolTree(props: {
     });
   }, [tools, terms]);
 
-  const tree = useMemo(() => buildTree(filteredTools), [filteredTools]);
+  // Account sections (only when grouping). Each carries its already-filtered
+  // tools so empty sections drop out under an active search.
+  const accountGroups = useMemo(
+    () => (groupByConnection ? buildAccountGroups(filteredTools) : []),
+    [groupByConnection, filteredTools],
+  );
+
+  // Keyboard shortcuts — `/` focuses search, Escape clears
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === "Escape") {
+        searchRef.current?.blur();
+        if (search.length > 0) setSearch("");
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [search]);
+
+  // Scroll the selected row into view when it changes
+  useEffect(() => {
+    if (!selectedToolId) return;
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedToolId]);
+
+  const bodyProps = {
+    selectedToolId,
+    onSelect,
+    onSetPolicy,
+    onClearPolicy,
+    patternForDisplay,
+    exactPatterns,
+    search,
+    terms,
+    selectedRowRef,
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-muted/20">
+      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+        <SearchIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+        <Input
+          ref={searchRef}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={`Filter ${tools.length} tools…`}
+          aria-label="Filter tools"
+          className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-xs shadow-none outline-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
+        />
+        {search.length > 0 && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setSearch("")}
+            aria-label="Clear search"
+            className="size-4 shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <XIcon className="size-3" />
+          </Button>
+        )}
+      </div>
+      <div className="mx-2 border-t border-border/30" />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {filteredTools.length === 0 ? (
+          <div className="p-4 text-center text-xs text-muted-foreground">
+            {terms.length > 0 ? "No tools match your filter" : "No tools available"}
+          </div>
+        ) : groupByConnection ? (
+          accountGroups.map((group) => (
+            <section key={group.key}>
+              <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/30 bg-muted/40 px-3 py-1.5 backdrop-blur-sm">
+                {ownerDisplay.showOwnerLabels ? (
+                  <Badge variant="outline" className="shrink-0 text-[10px]">
+                    {ownerLabel(group.owner)}
+                  </Badge>
+                ) : null}
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+                  {group.integration && group.connection
+                    ? `${group.integration} / ${group.connection}`
+                    : group.connection || ownerDisplay.label(group.owner)}
+                </span>
+                <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                  {group.tools.length}
+                </span>
+              </header>
+              <ToolTreeBody key={group.key} tools={group.tools} {...bodyProps} />
+            </section>
+          ))
+        ) : (
+          <ToolTreeBody tools={filteredTools} {...bodyProps} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ToolTreeBody — one dotted-name tree for a tools subset. Owns its own
+// expand/collapse state so account sections (grouped mode) expand independently
+// and never share path keys. Already-filtered tools are passed in.
+// ---------------------------------------------------------------------------
+
+function ToolTreeBody(props: {
+  tools: readonly ToolSummary[];
+  selectedToolId: string | null;
+  onSelect: (toolId: string) => void;
+  onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
+  onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
+  exactPatterns: ReadonlyMap<string, ToolPolicyAction>;
+  search: string;
+  terms: readonly string[];
+  selectedRowRef: React.Ref<HTMLButtonElement>;
+}) {
+  const {
+    tools,
+    selectedToolId,
+    onSelect,
+    onSetPolicy,
+    onClearPolicy,
+    patternForDisplay,
+    exactPatterns,
+    search,
+    terms,
+    selectedRowRef,
+  } = props;
+  const [manualOpen, setManualOpen] = useState<Set<string>>(() => new Set());
+
+  const tree = useMemo(() => buildTree(tools), [tools]);
 
   // When searching, expand everything so matches are visible.
   // Also auto-expand groups that contain the selected tool.
@@ -285,92 +511,48 @@ export function ToolTree(props: {
     });
   };
 
-  // Keyboard shortcuts — `/` focuses search, Escape clears
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
-      if (e.key === "Escape") {
-        searchRef.current?.blur();
-        if (search.length > 0) setSearch("");
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [search]);
-
-  // Scroll the selected row into view when it changes
-  useEffect(() => {
-    if (!selectedToolId) return;
-    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
-  }, [selectedToolId, rows]);
-
   return (
-    <div className="flex h-full min-h-0 flex-col bg-muted/20">
-      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <SearchIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-        <Input
-          ref={searchRef}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Filter ${tools.length} tools…`}
-          aria-label="Filter tools"
-          className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-xs shadow-none outline-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
-        />
-        {search.length > 0 && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setSearch("")}
-            aria-label="Clear search"
-            className="size-4 shrink-0 text-muted-foreground hover:text-foreground"
-          >
-            <XIcon className="size-3" />
-          </Button>
-        )}
-      </div>
-      <div className="mx-2 border-t border-border/30" />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {filteredTools.length === 0 ? (
-          <div className="p-4 text-center text-xs text-muted-foreground">
-            {terms.length > 0 ? "No tools match your filter" : "No tools available"}
-          </div>
+    <>
+      {rows.map((row) =>
+        row.kind === "leaf" ? (
+          <ToolLeafRow
+            key={row.tool.id}
+            buttonRef={row.tool.id === selectedToolId ? selectedRowRef : undefined}
+            tool={row.tool}
+            depth={row.depth}
+            active={row.tool.id === selectedToolId}
+            onSelect={() => {
+              const nameParts = row.tool.name.split(".");
+              trackEvent("tool_selected", {
+                integration_slug: nameParts[0] ?? row.tool.name,
+                tool_name: nameParts.slice(1).join(".") || row.tool.name,
+              });
+              onSelect(row.tool.id);
+            }}
+            search={search}
+            onSetPolicy={onSetPolicy}
+            onClearPolicy={onClearPolicy}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(row.tool.name))}
+          />
         ) : (
-          rows.map((row) =>
-            row.kind === "leaf" ? (
-              <ToolLeafRow
-                key={row.path}
-                buttonRef={row.tool.id === selectedToolId ? selectedRowRef : undefined}
-                tool={row.tool}
-                depth={row.depth}
-                active={row.tool.id === selectedToolId}
-                onSelect={() => onSelect(row.tool.id)}
-                search={search}
-                onSetPolicy={onSetPolicy}
-                onClearPolicy={onClearPolicy}
-                exactRule={exactPatterns.get(row.tool.name)}
-              />
-            ) : (
-              <ToolGroupRow
-                key={row.path}
-                path={row.path}
-                segment={row.segment}
-                depth={row.depth}
-                count={row.count}
-                open={row.open}
-                onToggle={() => toggleGroup(row.path)}
-                search={search}
-                onSetPolicy={onSetPolicy}
-                onClearPolicy={onClearPolicy}
-                exactRule={exactPatterns.get(`${row.path}.*`)}
-              />
-            ),
-          )
-        )}
-      </div>
-    </div>
+          <ToolGroupRow
+            key={row.path}
+            path={row.path}
+            segment={row.segment}
+            depth={row.depth}
+            count={row.count}
+            open={row.open}
+            onToggle={() => toggleGroup(row.path)}
+            search={search}
+            onSetPolicy={onSetPolicy}
+            onClearPolicy={onClearPolicy}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(`${row.path}.*`))}
+          />
+        ),
+      )}
+    </>
   );
 }
 
@@ -452,6 +634,7 @@ function ToolGroupRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const showActions = !!props.onSetPolicy;
@@ -489,7 +672,7 @@ function ToolGroupRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={`${props.path}.*`}
+            pattern={props.patternForDisplay(`${props.path}.*`)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}
@@ -510,6 +693,7 @@ function ToolLeafRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const label = props.tool.name.split(".").pop() ?? props.tool.name;
@@ -561,7 +745,7 @@ function ToolLeafRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={props.tool.name}
+            pattern={props.patternForDisplay(props.tool.name)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}

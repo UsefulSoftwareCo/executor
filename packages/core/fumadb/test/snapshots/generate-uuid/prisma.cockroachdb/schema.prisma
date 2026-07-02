@@ -1,0 +1,9 @@
+model users {
+  id String @db.Uuid @id
+  email String @db.String(255)
+  sessionToken String? @map("session_token") @db.Uuid
+}
+datasource db {
+  provider = "cockroachdb"
+  url      = env("DATABASE_URL")
+}

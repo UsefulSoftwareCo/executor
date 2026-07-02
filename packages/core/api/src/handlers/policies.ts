@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import type { ToolPolicy } from "@executor-js/sdk";
+import { PolicyId, type ToolPolicy } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -8,7 +8,7 @@ import { capture } from "@executor-js/api";
 
 const policyToResponse = (p: ToolPolicy) => ({
   id: p.id,
-  scopeId: p.scopeId,
+  owner: p.owner,
   pattern: p.pattern,
   action: p.action,
   position: p.position,
@@ -32,7 +32,7 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const created = yield* executor.policies.create({
-            targetScope: payload.targetScope,
+            owner: payload.owner,
             pattern: payload.pattern,
             action: payload.action,
             position: payload.position,
@@ -46,8 +46,8 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const updated = yield* executor.policies.update({
-            id: path.policyId,
-            targetScope: payload.targetScope,
+            id: PolicyId.make(path.policyId),
+            owner: payload.owner,
             pattern: payload.pattern,
             action: payload.action,
             position: payload.position,
@@ -56,11 +56,14 @@ export const PoliciesHandlers = HttpApiBuilder.group(ExecutorApi, "policies", (h
         }),
       ),
     )
-    .handle("remove", ({ params: path }) =>
+    .handle("remove", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          yield* executor.policies.remove({ id: path.policyId, targetScope: path.scopeId });
+          yield* executor.policies.remove({
+            id: PolicyId.make(path.policyId),
+            owner: payload.owner,
+          });
           return { removed: true };
         }),
       ),

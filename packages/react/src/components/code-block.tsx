@@ -2,14 +2,15 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import {
+  dualThemeOptions,
   getHighlighter,
   ensureLang,
   resolveLang,
-  useResolvedShikiTheme,
   type ShikiThemeProp,
-  type SupportedTheme,
 } from "../lib/shiki";
+import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import { copyToClipboard } from "../lib/clipboard";
 import { Button } from "./button";
 
 // ---------------------------------------------------------------------------
@@ -62,7 +63,7 @@ const CheckIcon = () => (
 // Highlight hook
 // ---------------------------------------------------------------------------
 
-function useHighlighted(code: string, lang: string, theme: SupportedTheme): ReactNode | null {
+function useHighlighted(code: string, lang: string, theme?: ShikiThemeProp): ReactNode | null {
   const [, setTick] = useState(0);
   const resolvedLang = (resolveLang(lang) ?? "json") as Parameters<typeof ensureLang>[0];
 
@@ -71,7 +72,9 @@ function useHighlighted(code: string, lang: string, theme: SupportedTheme): Reac
   if (!isReady) return null;
 
   const highlighter = getHighlighter();
-  const hast = highlighter.codeToHast(code, { lang: resolvedLang, theme });
+  // Dual-theme light-dark() colors: the markup is correct in BOTH color
+  // schemes, so SSR/hydration can't paint the wrong palette first.
+  const hast = highlighter.codeToHast(code, { lang: resolvedLang, ...dualThemeOptions(theme) });
   return toJsxRuntime(hast, { jsx, jsxs, Fragment });
 }
 
@@ -86,25 +89,31 @@ export function CodeBlock(props: {
   maxHeight?: string;
   className?: string;
   theme?: ShikiThemeProp;
+  /** Fires after a successful copy. Receives nothing — the code may be sensitive. */
+  onCopy?: () => void;
 }) {
-  const { code, lang: langHint, title, className, theme } = props;
+  const { code, lang: langHint, title, className, theme, onCopy } = props;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const language = useMemo(() => detectLanguage(code, langHint), [code, langHint]);
-  const resolvedTheme = useResolvedShikiTheme(theme);
-  const highlighted = useHighlighted(code, language, resolvedTheme);
+  const highlighted = useHighlighted(code, language, theme);
 
   const lines = code.split("\n");
   const isLong = lines.length > 24;
   const maxH = !expanded && isLong ? (props.maxHeight ?? "24rem") : undefined;
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(code).then(() => {
+    void copyToClipboard(code).then((ok) => {
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
+      onCopy?.();
       setTimeout(() => setCopied(false), 1500);
     });
-  }, [code]);
+  }, [code, onCopy]);
 
   return (
     <div className={cn("rounded-lg border border-border bg-card/60 overflow-hidden", className)}>

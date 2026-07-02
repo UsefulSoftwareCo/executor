@@ -7,20 +7,15 @@ const config: Configuration = {
   directories: {
     output: "dist",
     // Static build inputs live in build/ (icon.png, entitlements.mac.plist).
-    // Runtime resources staged at build time (sidecar binary, web-ui) live
-    // in resources/ and are wired in via `extraResources` below.
+    // Runtime resources staged at build time (the bundled executor CLI binary)
+    // live in resources/ and are wired in via `extraResources` below.
     buildResources: "build",
   },
   files: ["out/**/*", "package.json"],
   extraResources: [
     {
-      from: "resources/sidecar/",
-      to: "sidecar/",
-      filter: ["**/*"],
-    },
-    {
-      from: "resources/web-ui/",
-      to: "web-ui/",
+      from: "resources/executor/",
+      to: "executor/",
       filter: ["**/*"],
     },
   ],
@@ -29,7 +24,7 @@ const config: Configuration = {
     // Do NOT pin `arch:` inside the target objects. The publish workflow's
     // matrix passes `--arm64` / `--x64` per leg; a config-level arch list
     // would override that flag and force every leg to build both archs from
-    // a single per-leg sidecar binary, shipping mismatched-arch DMGs (errno
+    // a single per-leg bundled executor binary, shipping mismatched-arch DMGs (errno
     // -86 / EBADARCH on Apple Silicon). The CLI flag is the source of truth.
     target: ["dmg", "zip"],
     hardenedRuntime: true,
@@ -43,8 +38,14 @@ const config: Configuration = {
     entitlementsInherit: "build/entitlements.mac.plist",
     notarize: true,
   },
+  // Same arch rule as mac (see comment above): never pin `arch:` in the
+  // target objects. The win/linux pins used to force both archs out of a
+  // single x64 matrix leg, embedding an x64 executor binary inside the
+  // "arm64" installers — DOA on linux-arm64, emulated on win-arm64. Each
+  // workflow leg's --x64/--arm64 flag decides what gets built, so an arm64
+  // artifact only exists once a leg stages an arm64 executor for it.
   win: {
-    target: [{ target: "nsis", arch: ["x64", "arm64"] }],
+    target: ["nsis"],
   },
   nsis: {
     oneClick: true,
@@ -52,11 +53,7 @@ const config: Configuration = {
   },
   linux: {
     category: "Development",
-    target: [
-      { target: "AppImage", arch: ["x64", "arm64"] },
-      { target: "deb", arch: ["x64", "arm64"] },
-      { target: "rpm", arch: ["x64", "arm64"] },
-    ],
+    target: ["AppImage", "deb", "rpm"],
   },
   publish: {
     provider: "github",

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Executor e2e runs</title>
+    <script>
+      // Mounted at /runs via tailscale: without a trailing slash every
+      // relative fetch/asset resolves against the site root. Self-correct.
+      if (!location.pathname.endsWith("/") && !location.pathname.endsWith(".html")) {
+        location.replace(location.pathname + "/" + location.search + location.hash);
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

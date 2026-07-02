@@ -3,15 +3,16 @@
  * Verifies every workspace package directory has a `CHANGELOG.md` file.
  *
  * `changesets/action@v1` (the GitHub Action wrapping the Changesets CLI in
- * `release.yml`) reads every workspace package's `CHANGELOG.md` to build
- * the Version Packages PR description. If any is missing, the action
- * crashes with `ENOENT` at release time and blocks the release.
+ * `release.yml`) creates the Version Packages PR after `changeset version`
+ * updates package versions and changelogs. Every workspace package should have
+ * a `CHANGELOG.md` seed so Changesets has a stable file to update and the
+ * action never falls back to missing-file behavior. Keep seed files H1-only:
+ * Changesets inserts generated version sections immediately after the H1, so
+ * any placeholder prose would become part of the first generated release notes.
  *
- * The CLI alone (with `changelog: false` in `.changeset/config.json`)
- * doesn't need them — but we run via the Action, which does.
- *
- * The stubs themselves are not user-facing. Canonical release notes are
- * at `apps/cli/release-notes/next.md` and on the GitHub Releases page.
+ * GitHub Release notes are still authored separately at
+ * `apps/cli/release-notes/next.md`; package changelogs are generated from
+ * `.changeset/*.md`.
  *
  * Usage:
  *   bun run scripts/check-changelog-stubs.ts        # fail on missing
@@ -39,12 +40,7 @@ const findWorkspacePackages = (): string[] => {
   return [...dirs].sort();
 };
 
-const STUB_TEMPLATE = (name: string) =>
-  `# ${name} changelog\n\n` +
-  "This file exists for `changesets/action@v1` compatibility (it reads every\n" +
-  "workspace package's `CHANGELOG.md` to build the Version Packages PR).\n" +
-  "Canonical user-facing release notes are at `apps/cli/release-notes/next.md`\n" +
-  "and on the GitHub Releases page.\n";
+const STUB_TEMPLATE = (name: string) => `# ${name}\n`;
 
 const fix = process.argv.includes("--fix");
 const missing: string[] = [];
@@ -67,9 +63,8 @@ for (const pkgDir of findWorkspacePackages()) {
 if (!fix && missing.length > 0) {
   console.error(
     `\nMissing CHANGELOG.md in ${missing.length} workspace package(s):\n  - ${missing.join("\n  - ")}\n\n` +
-      "These are required by `changesets/action@v1` (the GitHub Action wrapping\n" +
-      "Changesets in release.yml). Without them, release.yml crashes with ENOENT\n" +
-      "and the Version Packages PR can't open.\n\n" +
+      "These seed files are required so Changesets can update every affected\n" +
+      "workspace changelog during the Version Packages PR.\n\n" +
       "Run `bun run scripts/check-changelog-stubs.ts --fix` to create stubs.\n",
   );
   process.exit(1);

@@ -8,7 +8,7 @@
 // `Writable` I/O object) is opened in request 1's context and reused by
 // request 2, which the runtime forbids:
 //
-//   StorageError: [storage-drizzle] findMany select failed:
+//   StorageError: FumaDB findMany select failed:
 //     Cannot perform I/O on behalf of a different request. (I/O type: Writable)
 //
 // The only primitive that actually rebuilds per request is a custom
@@ -25,8 +25,9 @@ import { describe, it, expect } from "@effect/vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 
+import { requestScopedMiddleware } from "@executor-js/api/server";
+
 import { RequestScopedServicesLive } from "./api/layers";
-import { requestScopedMiddleware } from "./api/request-scoped";
 import { makeApiLive } from "./api/router";
 
 class Counter extends Context.Service<Counter, { readonly id: number }>()("test/Counter") {}
@@ -185,9 +186,10 @@ describe("makeApiLive (prod handler factory) request scoping", () => {
     // Hit a protected route. ExecutionStackMiddleware short-circuits with
     // 403 (no session cookie) but not before `requestScopedMiddleware`
     // has built the per-request layer. We don't care about the response —
-    // only that the layer was built once per request.
-    await handler(new Request("http://test.local/scope"));
-    await handler(new Request("http://test.local/scope"));
+    // only that the layer was built once per request. `/integrations` is a
+    // v2 protected route (the old `/scope` group was removed).
+    await handler(new Request("http://test.local/integrations"), Context.empty());
+    await handler(new Request("http://test.local/integrations"), Context.empty());
 
     expect(counts.acquires).toBe(2);
     expect(counts.releases).toBe(2);

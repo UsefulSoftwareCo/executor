@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Exit } from "effect";
 
-import { createExecutor, definePlugin, makeTestConfig } from "@executor-js/sdk";
+import { createExecutor, definePlugin } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
 import { createExecutionEngine } from "./engine";
@@ -81,6 +82,21 @@ describe("executeWithPause failure propagation", () => {
 
       const result = yield* engine.executeWithPause("noop");
       expect(result.status).toBe("completed");
+    }),
+  );
+});
+
+describe("pausedExecutionCount", () => {
+  it.effect("starts at zero", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: succeedingExecutor,
+      });
+
+      expect(yield* engine.pausedExecutionCount()).toBe(0);
+      expect(yield* engine.hasPausedExecutions()).toBe(false);
     }),
   );
 });

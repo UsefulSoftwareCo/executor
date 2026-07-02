@@ -13,17 +13,21 @@
  *     accept the option at definition time — see effect-atom AtomHttpApi).
  *   - Use the constants below; do not invent ad-hoc string keys at call sites.
  *
- * Per-scope precision is intentionally dropped: a mutation in one scope
- * invalidating another scope's queries is harmless (users see one scope at a
- * time) and keeps the convention ergonomic.
+ * Per-owner precision is intentionally dropped: a mutation under one owner
+ * invalidating another owner's queries is harmless (the UI shows one owner at
+ * a time) and keeps the convention ergonomic.
  */
 export const ReactivityKey = {
-  sources: "sources",
+  /** The integration catalog (was `sources`). */
+  integrations: "integrations",
   tools: "tools",
-  secrets: "secrets",
+  /** Owner-scoped credentials (was `secrets` + `connections`). */
   connections: "connections",
-  scope: "scope",
+  /** Credential-provider discovery. */
+  providers: "providers",
   policies: "policies",
+  /** Registered OAuth clients (apps). */
+  oauthClients: "oauth-clients",
   // cloud-only resources
   orgMembers: "org:members",
   orgDomains: "org:domains",
@@ -32,20 +36,16 @@ export const ReactivityKey = {
   auth: "auth",
 } as const;
 
-/** Mutations that add/remove/refresh a source also affect tool listings. */
-export const sourceWriteKeys = [ReactivityKey.sources, ReactivityKey.tools] as const;
+/** Mutations that add/remove/refresh an integration also affect tool listings. */
+export const integrationWriteKeys = [ReactivityKey.integrations, ReactivityKey.tools] as const;
 
-/** Mutations that mint or revoke secrets. */
-export const secretWriteKeys = [ReactivityKey.secrets] as const;
+/** Mutations that create / remove / refresh a connection. Touches `tools`
+ *  because a connection's tools are produced per-connection — creating or
+ *  refreshing a connection changes the tool catalog. */
+export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.tools] as const;
 
-/** Mutations that create or remove connections. Touches `secrets` too
- *  because connection-owned secret rows are filtered out of the secrets
- *  list — signing out should unhide them (in the future) or remove
- *  them, and either way the secrets page needs to re-query. */
-export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.secrets] as const;
-
-/** Mutations that change scope membership/info. */
-export const scopeWriteKeys = [ReactivityKey.scope] as const;
+/** Mutations that register / replace an OAuth client (app). */
+export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
 
 /** Mutations that mutate tool policies. Also touches `tools` because
  *  `tools.list` filters blocked tools — adding/removing a `block`
@@ -58,7 +58,7 @@ export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
 /** Cloud-only: org domain mutations. */
 export const orgDomainWriteKeys = [ReactivityKey.orgDomains] as const;
 
-/** Cloud-only: org info mutations (name, etc.) — also touches scope/auth. */
+/** Cloud-only: org info mutations (name, etc.) — also touches auth. */
 export const orgInfoWriteKeys = [ReactivityKey.orgInfo, ReactivityKey.auth] as const;
 
 /** Cloud-only: user API key mutations. */
@@ -70,5 +70,4 @@ export const authWriteKeys = [
   ReactivityKey.orgInfo,
   ReactivityKey.orgMembers,
   ReactivityKey.orgDomains,
-  ReactivityKey.scope,
 ] as const;

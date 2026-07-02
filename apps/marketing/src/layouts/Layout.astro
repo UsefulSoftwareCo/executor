@@ -41,9 +41,46 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
     <title>{title}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=Geist:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   </head>
   <body class="antialiased">
     <slot />
+    <script>
+      // Gated PostHog init. Runs only when PUBLIC_POSTHOG_KEY is set in the
+      // deploy env, so it's a no-op in dev / unconfigured builds (and the SDK
+      // isn't even shipped, thanks to the dynamic import). Events are proxied
+      // first-party through src/middleware.ts to survive adblockers.
+      // autocapture and pageviews are off on purpose: we only send the explicit
+      // events the page fires (e.g. the "Set up with your agent" copy). Flip
+      // capture_pageview on if you want a denominator for conversion.
+      const phKey = import.meta.env.PUBLIC_POSTHOG_KEY;
+      if (phKey) {
+        // api_host rides the `/_astro` prefix that the cloud edge forwards to
+        // this worker on executor.sh; src/middleware.ts proxies it to PostHog.
+        const posthogReady = import("posthog-js").then(({ default: posthog }) => {
+          posthog.init(phKey, {
+            api_host: `${window.location.origin}/_astro/_ph`,
+            ui_host: import.meta.env.PUBLIC_POSTHOG_HOST ?? "https://us.posthog.com",
+            autocapture: false,
+            capture_pageview: false,
+            persistence: "localStorage",
+          });
+          return posthog;
+        });
+        // The copy handler (in index.astro) is a separate bundle, so it asks for
+        // a capture via a DOM event rather than reaching for a global. Attached
+        // synchronously so a click during PostHog's async load isn't missed; the
+        // capture waits on the init promise.
+        window.addEventListener("analytics:capture", (e) => {
+          const detail = (
+            e as CustomEvent<{
+              event: string;
+              properties?: Record<string, unknown>;
+            }>
+          ).detail;
+          void posthogReady.then((posthog) => posthog.capture(detail.event, detail.properties));
+        });
+      }
+    </script>
   </body>
 </html>

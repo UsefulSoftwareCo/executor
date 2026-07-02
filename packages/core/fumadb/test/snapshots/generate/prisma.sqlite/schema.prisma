@@ -1,0 +1,25 @@
+model users {
+  id String @id @default(cuid())
+  name String
+  email String
+  image String? @default("my-avatar")
+  account accounts @relation("users_accounts", fields: [id], references: [id], onUpdate: Restrict, onDelete: Restrict)
+  posts posts[] @relation("posts_users")
+}
+
+model accounts {
+  id String @id
+  user users? @relation("users_accounts")
+}
+
+model posts {
+  id String @id @default(cuid())
+  authorId String @map("author_id")
+  content String
+  image Bytes?
+  author users @relation("posts_users", fields: [authorId], references: [id], onUpdate: Restrict, onDelete: Restrict)
+}
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}

@@ -1,0 +1,32 @@
+# Executor
+
+> Executor is an open-source integration layer for AI agents. Configure every integration once (MCP servers, OpenAPI specs, GraphQL APIs) with authentication and per-tool policies, then use that one catalog from any MCP-compatible agent.
+
+Every agent you use (Claude Code, Cursor, ChatGPT, and the rest) otherwise needs its own copy of every integration: the same API keys pasted in three places, the same MCP servers wired up again, no shared idea of what each tool is allowed to do. Executor is the layer in between: add a tool once, give it credentials once, set its policy once, and every agent shares it over MCP.
+
+How it works:
+
+- Add an integration: an MCP server, an OpenAPI spec, a GraphQL API, or a Google Discovery document.
+- Create a connection: one configured (optionally authenticated) instance of that integration. An integration can have many connections.
+- Set policies: decide whether each tool is always allowed, needs approval, or is blocked.
+- Use it from any MCP-compatible agent: one catalog of tools, shared across every client.
+
+Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted on Docker or Cloudflare.
+
+## Docs
+
+- [Documentation](https://executor.sh/docs): guides for adding integrations, connections, policies, and connecting agents over MCP.
+
+## Product
+
+- [Website](https://executor.sh): product overview and getting started.
+- [Pricing](https://executor.sh/#pricing): plans for Executor Cloud.
+- [Install](https://executor.sh/#install): install the CLI and connect your first agent.
+
+## Source
+
+- [GitHub](https://github.com/UsefulSoftwareCo/executor): source for the integration layer, plugins, and hosts.
+
+## Community
+
+- [Discord](https://discord.gg/eF29HBHwM6): support and discussion.

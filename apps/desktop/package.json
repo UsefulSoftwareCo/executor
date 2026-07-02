@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/desktop",
-  "version": "1.4.27",
+  "version": "1.5.27",
   "private": true,
   "homepage": "https://github.com/RhysSullivan/executor",
   "license": "MIT",
@@ -9,44 +9,52 @@
   "scripts": {
     "predev": "bun run --filter @executor-js/local build",
     "dev": "electron-vite dev",
-    "prebuild": "bun run --filter @executor-js/local build && bun ./scripts/build-sidecar.ts",
+    "prebuild": "bun ./scripts/build-sidecar.ts",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --config electron-builder.config.ts",
     "package:mac": "electron-builder --mac --config electron-builder.config.ts",
     "package:win": "electron-builder --win --config electron-builder.config.ts",
     "package:linux": "electron-builder --linux --config electron-builder.config.ts",
+    "test": "bun --bun vitest run",
     "test:smoke": "bun ./scripts/smoke-sidecar.ts",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
+    "@sentry/bun": "^10.57.0",
+    "@sentry/electron": "^7.13.0",
     "electron-log": "^5",
     "electron-store": "^10",
     "electron-updater": "^6",
     "electron-window-state": "^5.0.3"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@executor-js/app": "workspace:*",
     "@executor-js/local": "workspace:*",
     "@executor-js/plugin-desktop-settings": "workspace:*",
     "@executor-js/plugin-file-secrets": "workspace:*",
-    "@executor-js/plugin-google-discovery": "workspace:*",
+    "@executor-js/plugin-google": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-keychain": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
+    "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-onepassword": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
     "@jitl/quickjs-wasmfile-release-sync": "catalog:",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "catalog:",
+    "@zip.js/zip.js": "^2.8.26",
     "bun-types": "catalog:",
     "electron": "41.2.1",
     "electron-builder": "^26",
     "electron-vite": "^5",
     "quickjs-emscripten": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

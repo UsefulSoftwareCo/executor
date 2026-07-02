@@ -2,19 +2,22 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
-import { createExecutor, makeTestConfig } from "../packages/core/sdk/src/index";
+import { createExecutor } from "../packages/core/sdk/src/index";
+import { makeTestConfig } from "../packages/core/sdk/src/testing";
 import { openApiPlugin } from "../packages/plugins/openapi/src/sdk/plugin";
 import { parse, resolveSpecText } from "../packages/plugins/openapi/src/sdk/parse";
+import {
+  convertGoogleDiscoveryToOpenApi,
+  fetchGoogleDiscoveryDocument,
+  isGoogleDiscoveryUrl,
+} from "../packages/plugins/google/src/sdk/discovery";
 import { mcpPlugin } from "../packages/plugins/mcp/src/sdk/plugin";
 import { graphqlPlugin } from "../packages/plugins/graphql/src/sdk/plugin";
 import { introspect } from "../packages/plugins/graphql/src/sdk/introspect";
-import { googleDiscoveryPlugin } from "../packages/plugins/google-discovery/src/sdk/plugin";
-import { extractGoogleDiscoveryManifest } from "../packages/plugins/google-discovery/src/sdk/document";
 
 import { openApiPresets } from "../packages/plugins/openapi/src/sdk/presets";
 import { mcpPresets } from "../packages/plugins/mcp/src/sdk/presets";
 import { graphqlPresets } from "../packages/plugins/graphql/src/sdk/presets";
-import { googleDiscoveryPresets } from "../packages/plugins/google-discovery/src/sdk/presets";
 
 // ---------------------------------------------------------------------------
 // All presets with plugin metadata
@@ -24,7 +27,6 @@ const allPresets = [
   ...openApiPresets.map((p) => ({ ...p, plugin: "openapi" as const })),
   ...mcpPresets.map((p) => ({ ...p, plugin: "mcp" as const })),
   ...graphqlPresets.map((p) => ({ ...p, plugin: "graphql" as const })),
-  ...googleDiscoveryPresets.map((p) => ({ ...p, plugin: "google-discovery" as const })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -37,9 +39,18 @@ describe("openapi presets parse as valid specs", () => {
       preset.name,
       () =>
         Effect.gen(function* () {
-          const specText = yield* resolveSpecText(preset.url).pipe(
-            Effect.provide(FetchHttpClient.layer),
-          );
+          const specText = isGoogleDiscoveryUrl(preset.url)
+            ? yield* fetchGoogleDiscoveryDocument(preset.url).pipe(
+                Effect.provide(FetchHttpClient.layer),
+                Effect.flatMap((documentText) =>
+                  convertGoogleDiscoveryToOpenApi({
+                    discoveryUrl: preset.url,
+                    documentText,
+                  }),
+                ),
+                Effect.map((conversion) => conversion.specText),
+              )
+            : yield* resolveSpecText(preset.url).pipe(Effect.provide(FetchHttpClient.layer));
           const doc = yield* parse(specText);
           expect(doc).toBeDefined();
           expect(doc.openapi).toBeDefined();
@@ -137,30 +148,6 @@ describe("mcp presets are reachable endpoints", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Google Discovery presets — parse through the SDK manifest extractor
-// ---------------------------------------------------------------------------
-
-describe("google discovery presets parse as valid manifests", () => {
-  for (const preset of googleDiscoveryPresets) {
-    it.effect(
-      preset.name,
-      () =>
-        Effect.gen(function* () {
-          const text = yield* Effect.tryPromise(() =>
-            fetch(preset.url, { signal: AbortSignal.timeout(10_000) }).then((r) => r.text()),
-          );
-          const manifest = yield* extractGoogleDiscoveryManifest(text);
-
-          expect(manifest.service).toBeTruthy();
-          expect(manifest.version).toBeTruthy();
-          expect(manifest.methods.length).toBeGreaterThan(0);
-        }),
-      { timeout: 15_000 },
-    );
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Detection — full executor pipeline, only for presets that don't need auth
 // ---------------------------------------------------------------------------
 
@@ -170,19 +157,16 @@ const publicPresets = allPresets.filter(
     !["github-graphql", "linear", "monday", "stripe"].includes(p.id) &&
     // Skip stdio presets (not HTTP-reachable)
     !("transport" in p && (p as Record<string, unknown>).transport === "stdio") &&
-    // Skip host-scoped Google Discovery URLs (forms.googleapis.com/$discovery/...)
-    // — the detector only recognises the central directory pattern today
-    !["google-forms", "google-keep"].includes(p.id) &&
     // Skip endpoints where detection is flaky due to timeout or misdetection
     // (these are detect() implementation issues, not preset issues)
-    !["firecrawl", "gitlab"].includes(p.id),
+    !["digitalocean", "firecrawl", "gitlab", "openai"].includes(p.id),
 );
 
 describe("public preset URLs are detected by the correct plugin", () => {
   const makeExecutor = () =>
     createExecutor(
       makeTestConfig({
-        plugins: [openApiPlugin(), mcpPlugin(), graphqlPlugin(), googleDiscoveryPlugin()] as const,
+        plugins: [openApiPlugin(), mcpPlugin(), graphqlPlugin()] as const,
       }),
     );
 
@@ -203,7 +187,6 @@ describe("public preset URLs are detected by the correct plugin", () => {
             openapi: "openapi",
             mcp: "mcp",
             graphql: "graphql",
-            "google-discovery": "googleDiscovery",
           };
           const best = results[0]!;
           expect(best.kind).toBe(expectedKinds[preset.plugin]);

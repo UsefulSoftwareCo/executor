@@ -1,16 +1,15 @@
 // ---------------------------------------------------------------------------
-// defineExecutorConfig — typed config declaration consumed by both the
-// schema-gen CLI and the host runtime. Single source of truth for the
-// plugin list. First-party and third-party plugins go through the same
-// `bun add @executor-js/plugin-foo` + import-and-call flow.
+// defineExecutorConfig — typed config declaration consumed by host runtimes.
+// Single source of truth for the plugin list. First-party and third-party
+// plugins go through the same `bun add @executor-js/plugin-foo` +
+// import-and-call flow.
 //
 // `plugins` is always a factory `(deps?) => readonly AnyPlugin[]`. Some
 // plugins want runtime values from the host (e.g., the openapi plugin's
 // `configFile` sink, which is keyed to the active scope cwd and so can't
 // be constructed at module-eval time). Deps are optional — the
-// schema-gen CLI and Vite plugin call `plugins()` with no args (they
-// read `plugin.schema` / `plugin.packageName` only); runtime callers
-// pass concrete deps.
+// packaging and static tooling call `plugins()` with no args (they read
+// `plugin.packageName` only); runtime callers pass concrete deps.
 //
 // Each app declares its own deps shape inline on the factory parameter
 // — TS infers `TDeps` from there, so apps don't reach into the SDK's
@@ -18,8 +17,6 @@
 // ---------------------------------------------------------------------------
 
 import type { AnyPlugin } from "./plugin";
-
-export type ExecutorDialect = "pg" | "sqlite" | "mysql";
 
 export type ExecutorPluginsFactory<
   TDeps extends object = object,
@@ -30,16 +27,13 @@ export interface ExecutorCliConfig<
   TDeps extends object = object,
   TPlugins extends readonly AnyPlugin[] = readonly AnyPlugin[],
 > {
-  readonly dialect: ExecutorDialect;
   readonly plugins: ExecutorPluginsFactory<TDeps, TPlugins>;
 }
 
 /**
- * Declare an executor config. The CLI imports this file via jiti and
- * reads `plugins` + `dialect` to generate the drizzle schema; the host
- * runtime imports the same file to instantiate plugins. Plugin runtime
- * credentials passed to the factory may be stubs from the CLI — only
- * `plugin.schema` is read there.
+ * Declare an executor config. Host runtimes import this file to instantiate
+ * plugins, and static tooling can read the same plugin metadata without
+ * constructing runtime credentials.
  *
  * The `const TPlugins` modifier preserves the tuple-literal inference
  * from the factory's return so per-plugin extension typing flows through

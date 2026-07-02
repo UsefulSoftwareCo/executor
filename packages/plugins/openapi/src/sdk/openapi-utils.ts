@@ -4,7 +4,6 @@
 // Wraps the openapi-types V3/V3_1 union mess and provides clean ref resolution.
 // ---------------------------------------------------------------------------
 
-import { Option } from "effect";
 import type { OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import type { ParsedDocument } from "./parse";
 import type { ServerVariable } from "./types";
@@ -19,6 +18,7 @@ export type PathItemObject = OpenAPIV3.PathItemObject | OpenAPIV3_1.PathItemObje
 export type RequestBodyObject = OpenAPIV3.RequestBodyObject | OpenAPIV3_1.RequestBodyObject;
 export type ResponseObject = OpenAPIV3.ResponseObject | OpenAPIV3_1.ResponseObject;
 export type MediaTypeObject = OpenAPIV3.MediaTypeObject | OpenAPIV3_1.MediaTypeObject;
+export type ServerObject = OpenAPIV3.ServerObject | OpenAPIV3_1.ServerObject;
 
 // ---------------------------------------------------------------------------
 // DocResolver — wraps a parsed document for clean $ref resolution
@@ -64,49 +64,20 @@ export const substituteUrlVariables = (url: string, values: Record<string, strin
   return out;
 };
 
-export const OPENAPI_MAX_SERVER_VARIABLE_OPTIONS = 64;
-
-type ServerLike = {
-  url: string;
-  variables: import("effect/Option").Option<Record<string, ServerVariable | string>>;
-};
-
-export const expandServerUrlOptions = (
-  server: ServerLike,
-  limit = OPENAPI_MAX_SERVER_VARIABLE_OPTIONS,
-): readonly string[] => {
-  if (!Option.isSome(server.variables)) return [server.url];
-  let urls: readonly string[] = [server.url];
-  for (const [name, variable] of Object.entries(server.variables.value)) {
-    const enumValues =
-      typeof variable === "string" ? [] : Option.getOrElse(variable.enum, () => []);
-    const values =
-      enumValues.length > 0
-        ? enumValues
-        : [typeof variable === "string" ? variable : variable.default];
-    const next: string[] = [];
-    for (const url of urls) {
-      for (const value of values) {
-        next.push(url.replaceAll(`{${name}}`, value));
-        if (next.length >= limit) return next;
-      }
-    }
-    urls = next;
-  }
-  return urls;
-};
-
-export const resolveBaseUrl = (servers: readonly ServerLike[]): string => {
-  const server = servers[0];
-  if (!server) return "";
-
-  if (!Option.isSome(server.variables)) return server.url;
-
+/** Resolve a templated server URL, filling each `{var}` from `overrides` when
+ *  non-empty, otherwise the variable's spec default. URLs without placeholders
+ *  pass through unchanged. */
+export const resolveServerUrl = (
+  templateUrl: string,
+  variables: Record<string, ServerVariable> | undefined,
+  overrides: Record<string, string>,
+): string => {
   const values: Record<string, string> = {};
-  for (const [name, v] of Object.entries(server.variables.value)) {
-    values[name] = typeof v === "string" ? v : v.default;
+  for (const [name, v] of Object.entries(variables ?? {})) values[name] = v.default;
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value) values[name] = value;
   }
-  return substituteUrlVariables(server.url, values);
+  return substituteUrlVariables(templateUrl, values);
 };
 
 // ---------------------------------------------------------------------------

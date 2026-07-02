@@ -1,75 +1,95 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { useState } from "react";
 
-import { connectionsAtom } from "@executor-js/react/api/atoms";
-import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
-import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { SourceOAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
-import { slugifyNamespace } from "@executor-js/react/plugins/source-identity";
-import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js/react/plugins/credential-bindings";
-import { ScopeId } from "@executor-js/sdk/core";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  OAuthClientSlug,
+  type Connection,
+  type AuthTemplateSlug as AuthTemplateSlugType,
+} from "@executor-js/sdk/shared";
+import { OAuthSignInButton, useOAuthPopupFlow } from "@executor-js/react/plugins/oauth-sign-in";
+import {
+  ConnectionOwnerDropdown,
+  useConnectionOwner,
+} from "@executor-js/react/plugins/connection-owner";
+import { useOwnerDisplay } from "@executor-js/react/api/owner-display";
 
-import { graphqlSourceAtom, graphqlSourceBindingsAtom, setGraphqlSourceBinding } from "./atoms";
-import { GraphqlSourceBindingInput } from "../sdk/types";
+import { graphqlConnectionName } from "./defaults";
 
-export default function GraphqlSignInButton(props: { sourceId: string }) {
-  const scopeId = useScope();
-  const userScopeId = useUserScope();
-  const sourceResult = useAtomValue(graphqlSourceAtom(scopeId, props.sourceId));
-  const source =
-    AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
-  const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
-  const bindingsResult = useAtomValue(
-    graphqlSourceBindingsAtom(userScopeId, props.sourceId, sourceScope),
+// v2 OAuth sign-in. `oauth.start` runs a registered OAuth client for one
+// integration + template, minting an owner-scoped connection (the redirect is
+// driven through the popup; `state` correlates it). There is no per-source
+// connection slot or `oauthConnectionId` anymore — the connection is owned by
+// the chosen owner and identified by (owner, integration, name).
+const GRAPHQL_OAUTH_CLIENT = "graphql-oauth";
+
+export default function GraphqlSignInButton(props: {
+  readonly slug: IntegrationSlug;
+  readonly template: AuthTemplateSlugType;
+  readonly displayName: string;
+  readonly existing: readonly Connection[];
+}) {
+  const { connectionOwner, setConnectionOwner, connectionOwnerOptions } = useConnectionOwner();
+  const oauth = useOAuthPopupFlow({
+    popupName: "graphql-oauth",
+    startErrorMessage: "Failed to start OAuth",
+  });
+  const ownerDisplay = useOwnerDisplay();
+  const [connectedOwner, setConnectedOwner] = useState<string | null>(null);
+
+  const existingForOwner = props.existing.find(
+    (connection) => connection.owner === connectionOwner && connection.template === props.template,
   );
-  const connectionsResult = useAtomValue(connectionsAtom(userScopeId));
-  const setBinding = useAtomSet(setGraphqlSourceBinding, { mode: "promise" });
+  const isConnected = existingForOwner !== undefined || connectedOwner === connectionOwner;
 
-  const oauth2 = source?.auth.kind === "oauth2" ? source.auth : null;
-  const bindings = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : null;
-  const connectionBinding = bindings?.find(
-    (binding) => oauth2 !== null && binding.slot === oauth2.connectionSlot,
-  );
-  const boundConnectionId =
-    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
-  const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : null;
-  const isConnected =
-    boundConnectionId !== null &&
-    connections !== null &&
-    connections.some((c: { readonly id: string }) => c.id === boundConnectionId);
-
-  if (!source || !oauth2) return null;
-  const namespaceSlug = slugifyNamespace(source.namespace) || "graphql";
+  const handleSignIn = (): void => {
+    setConnectedOwner(null);
+    void oauth.start({
+      payload: {
+        client: OAuthClientSlug.make(GRAPHQL_OAUTH_CLIENT),
+        // GraphQL manages its own client per owner — the app and connection
+        // share one owner.
+        clientOwner: connectionOwner,
+        owner: connectionOwner,
+        name: graphqlConnectionName(String(props.slug), connectionOwner),
+        integration: IntegrationSlug.make(String(props.slug)),
+        template: AuthTemplateSlug.make(String(props.template)),
+        identityLabel: `${props.displayName} OAuth`,
+      },
+      onSuccess: (payload: { readonly connection: ConnectionName }) => {
+        // Touch the minted connection name to satisfy the success contract; the
+        // connection list re-reads via reactivity keys after the flow completes.
+        void payload.connection;
+        setConnectedOwner(connectionOwner);
+      },
+    });
+  };
 
   return (
-    <SourceOAuthSignInButton
-      popupName="graphql-oauth"
-      pluginId="graphql"
-      namespace={namespaceSlug}
-      fallbackNamespace="graphql"
-      endpoint={source.endpoint}
-      tokenScope={userScopeId}
-      connectionId={boundConnectionId}
-      sourceLabel={`${source.name.trim() || source.namespace || "GraphQL"} OAuth`}
-      headers={secretBackedValuesFromConfiguredCredentialBindings(source.headers, bindings ?? [])}
-      queryParams={secretBackedValuesFromConfiguredCredentialBindings(
-        source.queryParams,
-        bindings ?? [],
+    <div className="space-y-2">
+      {isConnected && (
+        <p className="text-xs text-foreground">
+          Connected in {ownerDisplay.label(connectionOwner)}
+          {existingForOwner?.identityLabel ? ` as ${existingForOwner.identityLabel}` : ""}.
+        </p>
       )}
-      isConnected={isConnected}
-      onConnected={async (connectionId) => {
-        await setBinding({
-          params: { scopeId: userScopeId },
-          payload: GraphqlSourceBindingInput.make({
-            sourceId: props.sourceId,
-            sourceScope,
-            scope: userScopeId,
-            slot: oauth2.connectionSlot,
-            value: { kind: "connection", connectionId },
-          }),
-          reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
-        });
-      }}
-    />
+      <ConnectionOwnerDropdown
+        value={connectionOwner}
+        options={connectionOwnerOptions}
+        onChange={(owner) => {
+          setConnectionOwner(owner);
+          setConnectedOwner(null);
+        }}
+        label="Connection saved to"
+        help="Choose who can use the OAuth connection."
+      />
+      <OAuthSignInButton
+        busy={oauth.busy}
+        error={oauth.error}
+        isConnected={isConnected}
+        onSignIn={handleSignIn}
+      />
+    </div>
   );
 }

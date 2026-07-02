@@ -108,6 +108,78 @@ const isOAuthErrorBody = (body: string): boolean => {
   return typeof obj.error === "string";
 };
 
+/** RFC 9728 protected-resource-metadata document. We only need the two
+ *  fields that prove the document genuinely describes an OAuth-protected
+ *  resource: `resource` (the resource identifier) and a non-empty
+ *  `authorization_servers` list. */
+const ProtectedResourceMetadata = Schema.Struct({
+  resource: Schema.String,
+  authorization_servers: Schema.Array(Schema.String),
+});
+const decodeProtectedResourceMetadata = Schema.decodeUnknownOption(
+  Schema.fromJsonString(ProtectedResourceMetadata),
+);
+
+/** RFC 9728 §3.1 path-scoped well-known URL: insert
+ *  `/.well-known/oauth-protected-resource` before the resource's path
+ *  component. `https://host/api/mcp` → `https://host/.well-known/oauth-
+ *  protected-resource/api/mcp`. This is exactly the URL the MCP
+ *  authorization spec tells clients to construct. */
+const protectedResourceMetadataUrl = (endpoint: URL): string => {
+  const path = endpoint.pathname === "/" ? "" : endpoint.pathname;
+  return `${endpoint.origin}/.well-known/oauth-protected-resource${path}`;
+};
+
+/** The RFC 9728 `resource` value must actually describe this endpoint
+ *  before we trust the document — an exact URL match, or a same-origin
+ *  parent whose path is a prefix of the endpoint's. Guards against a
+ *  shared host serving protected-resource metadata for some unrelated
+ *  resource. */
+const resourceMatchesEndpoint = (resource: string, endpoint: URL): boolean => {
+  if (!URL.canParse(resource)) return false;
+  const parsed = new URL(resource);
+  if (parsed.origin !== endpoint.origin) return false;
+  const resourcePath = parsed.pathname.replace(/\/+$/, "");
+  const endpointPath = endpoint.pathname.replace(/\/+$/, "");
+  return endpointPath === resourcePath || endpointPath.startsWith(`${resourcePath}/`);
+};
+
+/** Workaround for MCP servers that omit (or under-specify) the
+ *  `WWW-Authenticate` challenge on their 401 — e.g. Datadog's
+ *  `mcp.datadoghq.com` returns a bare `401 {"errors":["Unauthorized"]}`
+ *  with no header at all, so the wire-shape gate above can't tell it
+ *  apart from an unrelated OAuth-protected API and the user lands on the
+ *  manual-credentials prompt instead of an OAuth sign-in.
+ *
+ *  The MCP authorization spec still requires such servers to publish
+ *  RFC 9728 metadata at the path-scoped well-known URL. A document there
+ *  whose `resource` matches this endpoint is a deliberate, MCP-spec-
+ *  specific signal a generic OAuth API would not emit — strong enough to
+ *  classify the endpoint as MCP so the OAuth flow can start. */
+const probeProtectedResourceMetadata = (
+  client: HttpClient.HttpClient,
+  endpoint: URL,
+  timeoutMs: number,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const response = yield* client
+      .execute(
+        HttpClientRequest.get(protectedResourceMetadataUrl(endpoint)).pipe(
+          HttpClientRequest.setHeader("accept", "application/json"),
+        ),
+      )
+      .pipe(Effect.timeout(Duration.millis(timeoutMs)));
+    if (response.status < 200 || response.status >= 300) return false;
+    const body = yield* response.text.pipe(
+      Effect.timeout(Duration.millis(timeoutMs)),
+      Effect.catch(() => Effect.succeed("")),
+    );
+    const metadata = decodeProtectedResourceMetadata(body);
+    if (Option.isNone(metadata)) return false;
+    if (metadata.value.authorization_servers.length === 0) return false;
+    return resourceMatchesEndpoint(metadata.value.resource, endpoint);
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+
 const ErrorMessageShape = Schema.Struct({ message: Schema.String });
 const decodeErrorMessageShape = Schema.decodeUnknownOption(ErrorMessageShape);
 
@@ -203,6 +275,13 @@ export const probeMcpEndpointShape = (
           if (response.status === 401) {
             const wwwAuth = readHeader(response.headers, "www-authenticate");
             if (!wwwAuth || !/^\s*bearer\b/i.test(wwwAuth)) {
+              // Spec-non-compliant 401 (no `Bearer` challenge). Before
+              // giving up, check whether the server still publishes
+              // RFC 9728 protected-resource metadata for this path —
+              // some real MCP servers (Datadog) do exactly this.
+              if (yield* probeProtectedResourceMetadata(client, url, timeoutMs)) {
+                return { kind: "mcp", requiresAuth: true } as const;
+              }
               return {
                 kind: "not-mcp",
                 category: "auth-required",
@@ -245,6 +324,11 @@ export const probeMcpEndpointShape = (
             // arrays or other shapes that fail both checks.
             const body = yield* readBody(response);
             if (!isJsonRpcEnvelope(body) && !isOAuthErrorBody(body)) {
+              // Bearer challenge with no usable accept signal. Same
+              // RFC 9728 fallback as the no-`Bearer` case above.
+              if (yield* probeProtectedResourceMetadata(client, url, timeoutMs)) {
+                return { kind: "mcp", requiresAuth: true } as const;
+              }
               return {
                 kind: "not-mcp",
                 category: "auth-required",

@@ -1,12 +1,14 @@
 // ---------------------------------------------------------------------------
-// Shared OAuth HTTP handlers — thin forwarders over `executor.oauth.*`.
-// Replaces the four per-plugin copies (mcp / openapi / google-discovery
-// each had its own start / complete / callback handler).
+// OAuth HTTP handlers — thin forwarders over `executor.oauth.*` (v2).
+//
+// `createClient` / `cancel` / `probe` are implemented in the SDK;
+// `start` / `complete` are STUBBED there (milestone 2) and fail at runtime —
+// the handlers are wired to call them so the surface is complete.
 // ---------------------------------------------------------------------------
 
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerResponse } from "effect/unstable/http";
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { runOAuthCallback, type PopupErrorMessage } from "../oauth-popup";
 import {
@@ -15,10 +17,9 @@ import {
   OAuthProbeError,
   OAuthSessionNotFoundError,
   OAuthStartError,
-  resolveSecretBackedMap,
-  type Executor,
-  type OAuthStrategy,
-  type SecretBackedValue,
+  OAuthState,
+  type Connection,
+  type ConnectResult,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
@@ -27,28 +28,33 @@ import { ExecutorService } from "../services";
 
 const OAUTH_POPUP_CHANNEL = OAUTH_POPUP_MESSAGE_TYPE;
 
-const resolveOAuthSecretBackedMap = <E extends OAuthProbeError | OAuthStartError>(
-  executor: Executor,
-  values: Record<string, SecretBackedValue> | undefined,
-  makeError: (message: string) => E,
-) =>
-  resolveSecretBackedMap({
-    values,
-    getSecret: executor.secrets.get,
-    onMissing: (name) => makeError(`Secret not found for "${name}"`),
-    onError: (_error, name) => makeError(`Secret not found for "${name}"`),
-  }).pipe(
-    Effect.mapError((error) =>
-      Predicate.isTagged(error, "OAuthProbeError") || Predicate.isTagged(error, "OAuthStartError")
-        ? (error as E)
-        : makeError("Secret resolution failed"),
-    ),
-  );
-
 const decodeOAuthStartError = Schema.decodeUnknownOption(OAuthStartError);
 const decodeOAuthCompleteError = Schema.decodeUnknownOption(OAuthCompleteError);
 const decodeOAuthProbeError = Schema.decodeUnknownOption(OAuthProbeError);
 const decodeOAuthSessionNotFoundError = Schema.decodeUnknownOption(OAuthSessionNotFoundError);
+
+const connectionToResponse = (c: Connection) => ({
+  owner: c.owner,
+  name: c.name,
+  integration: c.integration,
+  template: c.template,
+  provider: c.provider,
+  address: c.address,
+  identityLabel: c.identityLabel ?? null,
+  expiresAt: c.expiresAt ?? null,
+  oauthClient: c.oauthClient ?? null,
+  oauthClientOwner: c.oauthClientOwner ?? null,
+  oauthScope: c.oauthScope ?? null,
+});
+
+const startResultToResponse = (result: ConnectResult) =>
+  result.status === "connected"
+    ? { status: "connected" as const, connection: connectionToResponse(result.connection) }
+    : {
+        status: "redirect" as const,
+        authorizationUrl: result.authorizationUrl,
+        state: result.state,
+      };
 
 const toPopupErrorMessage = (error: unknown): PopupErrorMessage => {
   const completeError = decodeOAuthCompleteError(error);
@@ -76,120 +82,136 @@ const toPopupErrorMessage = (error: unknown): PopupErrorMessage => {
   if (Option.isSome(sessionNotFound))
     return {
       short: "OAuth session expired or not found",
-      details: `Session id: ${sessionNotFound.value.sessionId}`,
+      details: `State: ${sessionNotFound.value.state}`,
     };
 
   return { short: "Authentication failed" };
 };
 
-const requireMatchingTokenScope = (
-  routeScope: string,
-  tokenScope: string,
-): Effect.Effect<void, OAuthStartError> =>
-  routeScope === tokenScope
-    ? Effect.void
-    : Effect.fail(
-        new OAuthStartError({
-          message: "OAuth token scope must match route scope",
-        }),
-      );
-
 export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handlers) =>
   handlers
-    .handle("probe", ({ payload }) =>
+    .handle("createClient", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const headers = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.headers,
-            (message) => new OAuthProbeError({ message }),
-          );
-          const queryParams = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.queryParams,
-            (message) => new OAuthProbeError({ message }),
-          );
-          return yield* executor.oauth.probe({
-            endpoint: payload.endpoint,
-            headers,
-            queryParams,
+          const client = yield* executor.oauth.createClient({
+            owner: payload.owner,
+            slug: payload.slug,
+            authorizationUrl: payload.authorizationUrl,
+            tokenUrl: payload.tokenUrl,
+            grant: payload.grant,
+            clientId: payload.clientId,
+            clientSecret: payload.clientSecret,
+            resource: payload.resource ?? null,
           });
+          return { client };
         }),
       ),
     )
-    .handle("start", ({ params: path, payload }) =>
+    .handle("registerDynamic", ({ payload }) =>
       capture(
         Effect.gen(function* () {
-          yield* requireMatchingTokenScope(path.scopeId, payload.tokenScope);
           const executor = yield* ExecutorService;
-          const headers = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.headers,
-            (message) => new OAuthStartError({ message }),
-          );
-          const queryParams = yield* resolveOAuthSecretBackedMap(
-            executor,
-            payload.queryParams,
-            (message) => new OAuthStartError({ message }),
-          );
-          return yield* executor.oauth.start({
-            endpoint: payload.endpoint,
-            headers,
-            queryParams,
-            redirectUrl: payload.redirectUrl,
-            connectionId: payload.connectionId,
-            tokenScope: payload.tokenScope,
-            strategy: payload.strategy as OAuthStrategy,
-            pluginId: payload.pluginId,
+          const client = yield* executor.oauth.registerDynamicClient({
+            owner: payload.owner,
+            slug: payload.slug,
+            registrationEndpoint: payload.registrationEndpoint,
+            authorizationUrl: payload.authorizationUrl,
+            tokenUrl: payload.tokenUrl,
+            resource: payload.resource ?? null,
+            scopes: payload.scopes,
+            tokenEndpointAuthMethodsSupported: payload.tokenEndpointAuthMethodsSupported,
+            clientName: payload.clientName,
+            redirectUri: payload.redirectUri,
+            originIntegration: payload.originIntegration ?? null,
+          });
+          return { client };
+        }),
+      ),
+    )
+    .handle("listClients", () =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.oauth.listClients();
+        }),
+      ),
+    )
+    .handle("removeClient", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          yield* executor.oauth.removeClient(payload.owner, path.slug);
+          return { removed: true };
+        }),
+      ),
+    )
+    .handle("start", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const result = yield* executor.oauth.start({
+            client: payload.client,
+            clientOwner: payload.clientOwner,
+            owner: payload.owner,
+            name: payload.name,
+            integration: payload.integration,
+            template: payload.template,
             identityLabel: payload.identityLabel,
+            redirectUri: payload.redirectUri,
           });
+          return startResultToResponse(result);
         }),
       ),
     )
-    .handle("complete", ({ params: path, payload }) =>
+    .handle("complete", ({ payload }) =>
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          return yield* executor.oauth.complete({
+          const connection = yield* executor.oauth.complete({
             state: payload.state,
-            tokenScope: path.scopeId,
             code: payload.code,
-            error: payload.error,
+            callbackDomain: payload.callbackDomain ?? null,
           });
+          return connectionToResponse(connection);
         }),
       ),
     )
-    .handle("cancel", ({ params: path, payload }) =>
+    .handle("cancel", ({ payload }) =>
       capture(
         Effect.gen(function* () {
-          if (path.scopeId !== payload.tokenScope) {
-            return yield* new OAuthSessionNotFoundError({
-              sessionId: payload.sessionId,
-            });
-          }
           const executor = yield* ExecutorService;
-          yield* executor.oauth.cancel(payload.sessionId, payload.tokenScope);
+          yield* executor.oauth.cancel(payload.state);
           return { cancelled: true };
         }),
       ),
     )
+    .handle("probe", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          return yield* executor.oauth.probe({ url: payload.url });
+        }),
+      ),
+    )
     .handle("callback", ({ query: urlParams }) =>
-      // The callback always renders HTML, even on failure — the popup
-      // shows the error + messages it back to the opener.
+      // The callback always renders HTML, even on failure — the popup shows the
+      // error + messages it back to the opener.
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const html = yield* runOAuthCallback({
-            complete: ({ state, code, error }) =>
+            complete: ({ state, code, callbackDomain }) =>
               executor.oauth
                 .complete({
-                  state,
-                  code: code ?? undefined,
-                  error: error ?? undefined,
+                  // `runOAuthCallback`'s `state` is a raw string from the URL;
+                  // the SDK speaks the branded `OAuthState` (nominal brand).
+                  state: OAuthState.make(state),
+                  code: code ?? "",
+                  callbackDomain,
                 })
                 .pipe(
-                  Effect.tapError((cause) =>
+                  Effect.tapError((cause: unknown) =>
                     Effect.logError("OAuth callback completion failed", cause),
                   ),
                 ),

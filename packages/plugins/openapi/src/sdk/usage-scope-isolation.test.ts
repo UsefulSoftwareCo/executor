@@ -1,196 +1,23 @@
+// ---------------------------------------------------------------------------
+// removed: scope-isolated credential-usage reporting on the OpenAPI plugin.
+//
+// v1 tracked which sources used a given secret/connection via the plugin's
+// `usagesForSecret` / `usagesForConnection` hooks and the credential_binding
+// table, scoped by the executor scope stack. v2 deletes all of this: there are
+// no secrets, no credential bindings, and no `usagesFor*` hooks — a connection
+// IS the credential and is owner-scoped, so "usage" collapses to the connection
+// rows themselves. The owner partition (org vs user) gives the isolation v1
+// achieved via the scope stack, and it's enforced by the core owner policy.
+//
+// Owner isolation of connections/tools is covered by multi-scope-bearer.test.ts
+// and the keystone owner-policy tests. This stub documents the migration
+// explicitly.
+// ---------------------------------------------------------------------------
+
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
 
-import {
-  ConnectionId,
-  CreateConnectionInput,
-  TokenMaterial,
-  createExecutor,
-  makeTestConfig,
-  Scope,
-  ScopeId,
-  SecretId,
-  type ConnectionProvider,
-  type SecretProvider,
-  SetSecretInput,
-  definePlugin,
-} from "@executor-js/sdk";
-
-import { openApiPlugin } from "./plugin";
-import { OpenApiSourceBindingInput } from "./types";
-
-const specJson = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Scoped Usage", version: "1.0.0" },
-  paths: {
-    "/ping": {
-      get: { operationId: "ping", responses: { "200": { description: "ok" } } },
-    },
-  },
-});
-
-const memorySecretsPlugin = definePlugin(() => {
-  const store = new Map<string, string>();
-
-  const provider: SecretProvider = {
-    key: "memory",
-    writable: true,
-    get: (id, scope) => Effect.sync(() => store.get(`${scope}\u0000${id}`) ?? null),
-    set: (id, value, scope) =>
-      Effect.sync(() => {
-        store.set(`${scope}\u0000${id}`, value);
-      }),
-    delete: (id, scope) => Effect.sync(() => store.delete(`${scope}\u0000${id}`)),
-  };
-
-  return {
-    id: "test-memory-secrets" as const,
-    storage: () => ({}),
-    secretProviders: [provider],
-  };
-});
-
-const connectionProviderPlugin = definePlugin(() => {
-  const provider: ConnectionProvider = {
-    key: "test-oauth",
-  };
-
-  return {
-    id: "test-connection-provider" as const,
-    storage: () => ({}),
-    connectionProviders: [provider],
-  };
-});
-
-describe("OpenAPI usage scope isolation", () => {
-  it.effect("secrets.usages does not expose binding rows outside the scope stack", () =>
-    Effect.gen(function* () {
-      const orgA = Scope.make({
-        id: ScopeId.make("org-a"),
-        name: "Org A",
-        createdAt: new Date(),
-      });
-      const orgB = Scope.make({
-        id: ScopeId.make("org-b"),
-        name: "Org B",
-        createdAt: new Date(),
-      });
-      const plugins = [memorySecretsPlugin(), openApiPlugin()] as const;
-      const config = makeTestConfig({ scopes: [orgA], plugins });
-      const orgAExec = yield* createExecutor({ ...config, scopes: [orgA] });
-      const orgBExec = yield* createExecutor({ ...config, scopes: [orgB] });
-      const secretId = SecretId.make("org-a-api-key");
-
-      yield* orgAExec.secrets.set(
-        SetSecretInput.make({
-          id: secretId,
-          scope: orgA.id,
-          name: "Org A API Key",
-          value: "secret",
-          provider: "memory",
-        }),
-      );
-      yield* orgBExec.secrets.set(
-        SetSecretInput.make({
-          id: secretId,
-          scope: orgB.id,
-          name: "Org B API Key",
-          value: "different-secret",
-          provider: "memory",
-        }),
-      );
-      yield* orgAExec.openapi.addSpec({
-        spec: specJson,
-        scope: String(orgA.id),
-        namespace: "private_source",
-        baseUrl: "http://example.com",
-      });
-      yield* orgAExec.openapi.setSourceBinding(
-        OpenApiSourceBindingInput.make({
-          sourceId: "private_source",
-          sourceScope: orgA.id,
-          scope: orgA.id,
-          slot: "header:authorization",
-          value: { kind: "secret", secretId },
-        }),
-      );
-
-      const usages = yield* orgBExec.secrets.usages(secretId);
-      expect(usages).toEqual([]);
-    }),
-  );
-
-  it.effect("connections.usages does not expose binding rows outside the scope stack", () =>
-    Effect.gen(function* () {
-      const orgA = Scope.make({
-        id: ScopeId.make("org-a"),
-        name: "Org A",
-        createdAt: new Date(),
-      });
-      const orgB = Scope.make({
-        id: ScopeId.make("org-b"),
-        name: "Org B",
-        createdAt: new Date(),
-      });
-      const plugins = [memorySecretsPlugin(), connectionProviderPlugin(), openApiPlugin()] as const;
-      const config = makeTestConfig({ scopes: [orgA], plugins });
-      const orgAExec = yield* createExecutor({ ...config, scopes: [orgA] });
-      const orgBExec = yield* createExecutor({ ...config, scopes: [orgB] });
-      const connectionId = ConnectionId.make("org-a-connection");
-
-      yield* orgAExec.connections.create(
-        CreateConnectionInput.make({
-          id: connectionId,
-          scope: orgA.id,
-          provider: "test-oauth",
-          identityLabel: "Org A connection",
-          accessToken: TokenMaterial.make({
-            secretId: SecretId.make("org-a-connection-access"),
-            name: "Org A access",
-            value: "access",
-          }),
-          refreshToken: null,
-          expiresAt: null,
-          oauthScope: null,
-          providerState: null,
-        }),
-      );
-      yield* orgBExec.connections.create(
-        CreateConnectionInput.make({
-          id: connectionId,
-          scope: orgB.id,
-          provider: "test-oauth",
-          identityLabel: "Org B connection",
-          accessToken: TokenMaterial.make({
-            secretId: SecretId.make("org-b-connection-access"),
-            name: "Org B access",
-            value: "access",
-          }),
-          refreshToken: null,
-          expiresAt: null,
-          oauthScope: null,
-          providerState: null,
-        }),
-      );
-
-      yield* orgAExec.openapi.addSpec({
-        spec: specJson,
-        scope: String(orgA.id),
-        namespace: "private_source",
-        baseUrl: "http://example.com",
-      });
-      yield* orgAExec.openapi.setSourceBinding(
-        OpenApiSourceBindingInput.make({
-          sourceId: "private_source",
-          sourceScope: orgA.id,
-          scope: orgA.id,
-          slot: "oauth:connection",
-          value: { kind: "connection", connectionId },
-        }),
-      );
-
-      const usages = yield* orgBExec.connections.usages(connectionId);
-      expect(usages).toEqual([]);
-    }),
-  );
+describe("OpenAPI usage scope isolation (removed in v2)", () => {
+  it("has no v2 equivalent — usagesFor* + credential_binding are gone", () => {
+    expect(true).toBe(true);
+  });
 });

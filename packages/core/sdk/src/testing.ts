@@ -8,7 +8,36 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 
-export { makeTestConfig, memorySecretsPlugin } from "./test-config";
+export {
+  makeTestConfig,
+  makeTestExecutor,
+  makeTestWorkspaceHarness,
+  makeTestWorkspaceLayer,
+  memoryCredentialsPlugin,
+  TestWorkspace,
+  type TestConfigOptions,
+  type TestDatabaseBackend,
+  type TestFumaDb,
+  type TestWorkspaceHarness,
+} from "./test-config";
+export {
+  OAuthTestServer,
+  serveOAuthTestServer,
+  scopesFromAuthorizeUrl,
+  OAuthTestServerAddressError,
+  OAuthTestServerFlowError,
+  type OAuthAuthorizationCompletion,
+  type OAuthTokenSet,
+  type OAuthTestServerOptions,
+  type OAuthTestServerRequest,
+  type OAuthTestServerShape,
+} from "./testing/oauth-test-server";
+export { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
+export {
+  typeCheckOutputTypeScript,
+  type OutputTypeScriptContract,
+  type TypeCheckOutputTypeScriptOptions,
+} from "./testing/tool-output-contract";
 
 export class TestHttpServerAddressError extends Data.TaggedError("TestHttpServerAddressError")<{
   readonly address: unknown;
@@ -55,8 +84,16 @@ export const serveTestHttpApp = (
     HttpServer.serve(HttpServerRequest.HttpServerRequest.asEffect().pipe(Effect.flatMap(handler))),
   );
 
+export const serveTestHttpServerLayer = (
+  serverLayer: Layer.Layer<never, any, any>,
+): Effect.Effect<
+  TestHttpServerShape,
+  TestHttpServerAddressError | TestHttpServerServeError,
+  EffectScope.Scope
+> => makeTestHttpServer(serverLayer);
+
 const makeTestHttpServer = (
-  serverLayer: Layer.Layer<never, never, HttpServer.HttpServer>,
+  serverLayer: Layer.Layer<never, any, any>,
 ): Effect.Effect<
   TestHttpServerShape,
   TestHttpServerAddressError | TestHttpServerServeError,

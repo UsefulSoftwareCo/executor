@@ -1,22 +1,56 @@
 export { parse, resolveSpecText, fetchSpecText } from "./parse";
-export { extract } from "./extract";
-export { invoke, invokeWithLayer, resolveHeaders, annotationsForOperation } from "./invoke";
+export { extract, streamOperationBindingsFromStructure } from "./extract";
+export {
+  structuralSplit,
+  isStreamableSpec,
+  indexSchemas,
+  collectReferencedSchemas,
+  parseEntry,
+  parseHead,
+  parseSmallComponents,
+  type SpecStructure,
+  type ByteRange,
+  type KeepPathItem,
+} from "./split";
+export { invoke, invokeWithLayer, buildRequest, annotationsForOperation } from "./invoke";
+export {
+  buildDefsJsonStreaming,
+  compileAndPersistOpenApiOperations,
+  compileAndPersistOpenApiSpec,
+  compileAndPersistOpenApiSpecStreaming,
+  compileOpenApiDocument,
+  compileOpenApiSpec,
+  extractOpenApiUpstreamMessage,
+  invokeOpenApiBackedTool,
+  loadOpenApiSpecText,
+  normalizeOpenApiRefs,
+  openApiStoredOperationsFromCompiled,
+  openApiToolDefsFromCompiled,
+  resolveOpenApiBackedAnnotations,
+  resolveOpenApiBackedTools,
+  validateOpenApiBackedToolArgs,
+  type CompiledOpenApiSpec,
+  type OpenApiPersistResult,
+} from "./backing";
+export type { ParsedDocument } from "./parse";
 export {
   openApiPlugin,
   type OpenApiSpecConfig,
+  type OpenApiConfigureInput,
+  type OpenApiSpecInput,
+  type OpenApiPreviewInput,
   type OpenApiPluginExtension,
   type OpenApiPluginOptions,
-  type OpenApiUpdateSourceInput,
 } from "./plugin";
+export { type OpenapiStore, type StoredOperation, makeDefaultOpenapiStore } from "./store";
 export {
-  openapiSchema,
-  type OpenapiSchema,
-  type OpenapiStore,
-  type StoredOperation,
-  type StoredSource,
-  type SourceConfig,
-  makeDefaultOpenapiStore,
-} from "./store";
+  decodeOpenApiIntegrationConfig,
+  renderAuthTemplate,
+  AuthenticationSchema,
+  OpenApiIntegrationConfigSchema,
+  type OpenApiIntegrationConfig,
+  type RenderedAuth,
+} from "./config";
 export {
   previewSpec,
   SecurityScheme,
@@ -31,7 +65,7 @@ export {
 } from "./preview";
 export {
   DocResolver,
-  resolveBaseUrl,
+  resolveServerUrl,
   substituteUrlVariables,
   preferredContent,
 } from "./openapi-utils";
@@ -41,6 +75,7 @@ export {
   OpenApiExtractionError,
   OpenApiInvocationError,
   OpenApiOAuthError,
+  OpenApiAuthRequiredError,
 } from "./errors";
 
 export {
@@ -49,10 +84,6 @@ export {
   ExtractionResult,
   InvocationResult,
   MediaBinding,
-  OAuth2SourceConfig,
-  OpenApiSourceBindingInput,
-  OpenApiSourceBindingRef,
-  OpenApiSourceBindingValue,
   OperationBinding,
   OperationParameter,
   OperationRequestBody,
@@ -61,4 +92,21 @@ export {
   OperationId,
   HttpMethod,
   ParameterLocation,
+  TOKEN_VARIABLE,
+  normalizeOpenApiAuthInputs,
+  type Authentication,
+  type AuthenticationInput,
+  type APIKeyAuthentication,
 } from "./types";
+// Request-shaped authoring: `headers: { Authorization: ["Bearer ", variable("token")] }`.
+export { variable, type ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
+
+export { migrateOpenApiAuthConfig } from "./migrate-config";
+
+export {
+  openApiOutputSchemaDataMigration,
+  runSqliteOpenApiOutputSchemaMigration,
+  unwrapOpenApiTransportEnvelope,
+} from "./output-schema-migration";
+
+export { openApiSpecBlobDataMigration } from "./spec-blob-migration";

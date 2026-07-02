@@ -1,30 +1,29 @@
-import type { ScopeId } from "@executor-js/sdk/core";
+import type { IntegrationSlug } from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { sourcesOptimisticAtom } from "@executor-js/react/api/atoms";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
 import { OpenApiClient } from "./client";
 
 // ---------------------------------------------------------------------------
-// Query atoms
+// Query atoms — v2: the integration catalog is the unit of identity (the v1
+// per-scope `source` row is gone). `getIntegration` returns the catalog entry
+// (slug/description/kind/canRemove/canRefresh); credentials are owner-scoped
+// connections read from the shared `connections` API, not bound per source.
 // ---------------------------------------------------------------------------
 
-export const openApiSourceAtom = (scopeId: ScopeId, namespace: string) =>
-  OpenApiClient.query("openapi", "getSource", {
-    params: { scopeId, namespace },
+export const openApiIntegrationAtom = (slug: IntegrationSlug) =>
+  OpenApiClient.query("openapi", "getIntegration", {
+    params: { slug },
     timeToLive: "15 seconds",
-    reactivityKeys: [ReactivityKey.sources, ReactivityKey.tools],
+    reactivityKeys: [ReactivityKey.integrations, ReactivityKey.tools],
   });
 
-export const openApiSourceBindingsAtom = (
-  scopeId: ScopeId,
-  namespace: string,
-  sourceScopeId: ScopeId,
-) =>
-  OpenApiClient.query("openapi", "listSourceBindings", {
-    params: { scopeId, namespace, sourceScopeId },
+// The full opaque config (including `authenticationTemplate`), used by the
+// configure UX to render existing auth methods and add custom ones.
+export const openApiConfigAtom = (slug: IntegrationSlug) =>
+  OpenApiClient.query("openapi", "getConfig", {
+    params: { slug },
     timeToLive: "15 seconds",
-    reactivityKeys: [ReactivityKey.sources, ReactivityKey.secrets, ReactivityKey.connections],
+    reactivityKeys: [ReactivityKey.integrations, ReactivityKey.tools],
   });
 
 // ---------------------------------------------------------------------------
@@ -35,35 +34,18 @@ export const previewOpenApiSpec = OpenApiClient.mutation("openapi", "previewSpec
 
 export const addOpenApiSpec = OpenApiClient.mutation("openapi", "addSpec");
 
-export const addOpenApiSpecOptimistic = Atom.family((scopeId: ScopeId) =>
-  sourcesOptimisticAtom(scopeId).pipe(
-    Atom.optimisticFn({
-      reducer: (current, arg) =>
-        AsyncResult.map(current, (rows) => {
-          const id = arg.payload.namespace ?? `pending-${Math.random().toString(36).slice(2)}`;
-          const source = {
-            id,
-            scopeId: arg.payload.targetScope,
-            kind: "openapi",
-            pluginId: "openapi",
-            name: arg.payload.name ?? id,
-            ...(arg.payload.baseUrl ? { url: arg.payload.baseUrl } : {}),
-            canRemove: false,
-            canRefresh: false,
-            canEdit: false,
-            runtime: false,
-          };
-          return [source, ...rows.filter((row) => row.id !== id)].sort((a, b) =>
-            a.name.localeCompare(b.name),
-          );
-        }),
-      fn: addOpenApiSpec,
-    }),
-  ),
-);
+export const removeOpenApiSpec = OpenApiClient.mutation("openapi", "removeSpec");
 
-export const updateOpenApiSource = OpenApiClient.mutation("openapi", "updateSource");
+/** Re-fetch (or replace) the integration's spec and rebuild its tools in
+ *  place — connections, policies, and the description survive. Pass
+ *  `reactivityKeys: integrationWriteKeys` at the call site. */
+export const updateOpenApiSpec = OpenApiClient.mutation("openapi", "updateSpec");
 
-export const setOpenApiSourceBinding = OpenApiClient.mutation("openapi", "setSourceBinding");
+// Add / merge custom auth methods onto an integration's `authenticationTemplate`.
+export const openapiConfigure = OpenApiClient.mutation("openapi", "configure");
 
-export const removeOpenApiSourceBinding = OpenApiClient.mutation("openapi", "removeSourceBinding");
+// `getIntegration` is read-only; the atom family lets a caller pass a slug.
+export const openApiIntegrationFamily = Atom.family(openApiIntegrationAtom);
+
+// `getConfig` is read-only; the atom family lets a caller pass a slug.
+export const openApiConfigFamily = Atom.family(openApiConfigAtom);

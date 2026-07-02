@@ -41,7 +41,7 @@ const config: KnipConfig = {
     "packages/plugins/file-secrets": {
       includeEntryExports: true,
     },
-    "packages/plugins/google-discovery": {
+    "packages/plugins/google": {
       includeEntryExports: true,
     },
     "packages/plugins/onepassword": {

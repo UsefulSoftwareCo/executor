@@ -1,0 +1,4 @@
+dist/
+.dev.vars
+.wrangler/
+wrangler.preview.jsonc

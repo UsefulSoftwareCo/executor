@@ -14,9 +14,12 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import {
+  CodeCompilationError,
   recoverExecutionBody,
+  SandboxRuntimeError,
   stripTypeScript,
   type CodeExecutor,
+  type ExecuteOutputItem,
   type ExecuteResult,
   type SandboxToolInvoker,
 } from "@executor-js/codemode-core";
@@ -160,6 +163,103 @@ const renderTransportMessage = (value: unknown): string => {
   return String(value);
 };
 
+const serializedErrorName = (value: SerializedWorkerErrorValue): string | null =>
+  typeof value === "object" &&
+  value !== null &&
+  "name" in value &&
+  typeof (value as { name?: unknown }).name === "string"
+    ? (value as { name: string }).name
+    : null;
+
+/**
+ * Signatures of a compile error in the user's own code. Not all syntax
+ * errors are caught while stripping TypeScript: smart quotes from a
+ * paste, an unbalanced brace, and other plain-JS parse errors slip past
+ * sucrase and only fail when workerd compiles the generated module,
+ * surfacing as "Failed to start Worker: Uncaught SyntaxError: ...". The
+ * bare V8 phrasings ("Unexpected token ...", "Invalid or unexpected
+ * token") are matched too, since some surfaces report the inner message
+ * without the wrapper.
+ */
+const COMPILE_SIGNATURES = [
+  "Failed to start Worker",
+  "SyntaxError",
+  "Unexpected token",
+  "Invalid or unexpected token",
+] as const;
+
+/**
+ * Signatures of a sandbox runtime condition that is the user's own
+ * concern (or transient and retryable) rather than an executor defect: a
+ * non-serializable return value, the isolate's CPU or memory limit, and
+ * being momentarily at worker capacity. These are the real categories
+ * seen in production on the `executor.runtime.*` spans, all of which were
+ * being collapsed to an opaque internal error before the model could act
+ * on them.
+ */
+const RUNTIME_SIGNATURES = [
+  "could not be cloned",
+  "does not support serialization",
+  "Could not serialize",
+  "exceeded CPU",
+  "exceeded memory",
+  "Too many concurrent dynamic workers",
+] as const;
+
+export type SandboxFailureKind = "compilation" | "runtime" | "internal";
+
+/**
+ * Classify a sandbox rejection so the runtime knows whether to surface
+ * its message descriptively (the user's mistake or a transient,
+ * safe-to-report condition) or collapse it to an opaque internal error (a
+ * genuine, unexpected sandbox defect). Tool-invocation failures never
+ * reach here: the sandbox reports those through its own result envelope,
+ * so this only sees module compile failures, return-value serialization
+ * failures, isolate resource limits, and capacity rejections. Anything
+ * unrecognized stays "internal" and opaque, preserving the host's
+ * failure-channel boundary.
+ */
+export const classifySandboxFailure = (
+  serialized: SerializedWorkerErrorValue,
+  message: string,
+): SandboxFailureKind => {
+  const name = serializedErrorName(serialized);
+  if (
+    name === "SyntaxError" ||
+    COMPILE_SIGNATURES.some((signature) => message.includes(signature))
+  ) {
+    return "compilation";
+  }
+  if (
+    name === "DataCloneError" ||
+    RUNTIME_SIGNATURES.some((signature) => message.includes(signature))
+  ) {
+    return "runtime";
+  }
+  return "internal";
+};
+
+/**
+ * Map a raw sandbox rejection (a thrown value from the worker loader or
+ * the `evaluate` RPC) to the typed error its classification calls for.
+ * Compilation and runtime conditions carry the verbatim message through
+ * the descriptive channel; unrecognized defects stay opaque.
+ */
+const toSandboxFailure = (
+  cause: unknown,
+): CodeCompilationError | SandboxRuntimeError | DynamicWorkerExecutionError => {
+  const serialized = serializeWorkerErrorValue(cause);
+  const message = renderTransportMessage(serialized);
+  switch (classifySandboxFailure(serialized, message)) {
+    case "compilation":
+      return new CodeCompilationError({ runtime: "dynamic-worker", message, cause });
+    case "runtime":
+      return new SandboxRuntimeError({ runtime: "dynamic-worker", message, cause });
+    default:
+      return new DynamicWorkerExecutionError({ message });
+  }
+};
+
 export const serializeWorkerCause = (cause: Cause.Cause<unknown>): SerializedWorkerError => {
   const failures = cause.reasons
     .filter(Cause.isFailReason)
@@ -267,6 +367,7 @@ const rehydrateBinary = (value: unknown, seen = new WeakSet<object>()): unknown 
   }
   seen.add(value);
   if (isBinaryEnvelope(value)) {
+    seen.delete(value);
     if (value.kind === "file" && typeof value.name === "string") {
       return new File([value.buffer], value.name, {
         type: value.type,
@@ -275,12 +376,20 @@ const rehydrateBinary = (value: unknown, seen = new WeakSet<object>()): unknown 
     }
     return new Blob([value.buffer], { type: value.type });
   }
-  if (Array.isArray(value)) return value.map((item) => rehydrateBinary(item, seen));
-  if (!isPlainObject(value)) return value;
+  if (Array.isArray(value)) {
+    const out = value.map((item) => rehydrateBinary(item, seen));
+    seen.delete(value);
+    return out;
+  }
+  if (!isPlainObject(value)) {
+    seen.delete(value);
+    return value;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     out[k] = rehydrateBinary(v, seen);
   }
+  seen.delete(value);
   return out;
 };
 
@@ -294,7 +403,7 @@ const encodeBinary = async (value: unknown, seen = new WeakSet<object>()): Promi
   }
   seen.add(value);
   if (typeof File !== "undefined" && value instanceof File) {
-    return {
+    const out = {
       __executorBinary: 1 as const,
       kind: "file" as const,
       type: value.type,
@@ -302,21 +411,33 @@ const encodeBinary = async (value: unknown, seen = new WeakSet<object>()): Promi
       lastModified: value.lastModified,
       buffer: await value.arrayBuffer(),
     };
+    seen.delete(value);
+    return out;
   }
   if (value instanceof Blob) {
-    return {
+    const out = {
       __executorBinary: 1 as const,
       kind: "blob" as const,
       type: value.type,
       buffer: await value.arrayBuffer(),
     };
+    seen.delete(value);
+    return out;
   }
-  if (Array.isArray(value)) return Promise.all(value.map((item) => encodeBinary(item, seen)));
-  if (!isPlainObject(value)) return value;
+  if (Array.isArray(value)) {
+    const out = await Promise.all(value.map((item) => encodeBinary(item, seen)));
+    seen.delete(value);
+    return out;
+  }
+  if (!isPlainObject(value)) {
+    seen.delete(value);
+    return value;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     out[k] = await encodeBinary(v, seen);
   }
+  seen.delete(value);
   return out;
 };
 
@@ -392,6 +513,7 @@ export class ToolDispatcher extends RpcTarget {
 type DynamicWorkerEntrypoint = {
   evaluate(dispatcher: ToolDispatcher): Promise<{
     result: unknown;
+    output?: ExecuteOutputItem[];
     error?: SerializedWorkerError;
     logs?: string[];
   }>;
@@ -410,36 +532,55 @@ const startDynamicWorker = (
   options: DynamicWorkerExecutorOptions,
   code: string,
   timeoutMs: number,
-): Effect.Effect<DynamicWorkerEntrypoint, DynamicWorkerExecutionError> =>
-  Effect.try({
-    try: (): DynamicWorkerEntrypoint => {
-      const recoveredBody = recoverExecutionBody(code);
-      // The dynamic Worker isolate only accepts plain JavaScript; TS type
-      // syntax in user code (`: T`, `as T`, generics) would otherwise
-      // surface as "Unexpected token ':'" inside `evaluate()` and bubble
-      // out via DynamicWorkerExecutionError. Stripping here gives the
-      // model a clear syntax-error message at the front door instead.
-      const strippedBody = stripTypeScript(recoveredBody);
-      const executorModule = buildExecutorModule(strippedBody, timeoutMs);
-      const { [ENTRY_MODULE]: _, ...safeModules } = options.modules ?? {};
+): Effect.Effect<
+  DynamicWorkerEntrypoint,
+  DynamicWorkerExecutionError | CodeCompilationError | SandboxRuntimeError
+> =>
+  Effect.gen(function* () {
+    // The dynamic Worker isolate only accepts plain JavaScript; TS type
+    // syntax in user code (`: T`, `as T`, generics) would otherwise
+    // surface as "Unexpected token ':'" inside `evaluate()`. Stripping
+    // here means valid TS just works. But this step is also where a
+    // genuine syntax error (smart quotes from a paste, an unbalanced
+    // brace, `const = 5`) first surfaces, with the parser's precise
+    // "Unexpected token (line:col)" message. That is the user's mistake,
+    // not a sandbox defect, so it gets its own `CodeCompilationError`
+    // and flows back through the descriptive `ExecuteResult.error`
+    // channel rather than collapsing to an opaque internal error.
+    const strippedBody = yield* Effect.try({
+      try: () => stripTypeScript(recoverExecutionBody(code)),
+      catch: (cause) =>
+        new CodeCompilationError({
+          runtime: "dynamic-worker",
+          message: renderTransportMessage(serializeWorkerErrorValue(cause)),
+          cause,
+        }),
+    });
 
-      const worker = options.loader.get(`executor-${crypto.randomUUID()}`, () => ({
-        compatibilityDate: "2025-06-01",
-        compatibilityFlags: ["nodejs_compat"],
-        mainModule: ENTRY_MODULE,
-        modules: {
-          ...safeModules,
-          [ENTRY_MODULE]: executorModule,
-        },
-        globalOutbound: options.globalOutbound ?? null,
-      }));
+    return yield* Effect.try({
+      try: (): DynamicWorkerEntrypoint => {
+        const executorModule = buildExecutorModule(strippedBody, timeoutMs);
+        const { [ENTRY_MODULE]: _, ...safeModules } = options.modules ?? {};
 
-      return asDynamicWorkerEntrypoint(worker.getEntrypoint());
-    },
-    catch: (cause) =>
-      new DynamicWorkerExecutionError({
-        message: renderTransportMessage(serializeWorkerErrorValue(cause)),
-      }),
+        const worker = options.loader.get(`executor-${crypto.randomUUID()}`, () => ({
+          compatibilityDate: "2025-06-01",
+          compatibilityFlags: ["nodejs_compat"],
+          mainModule: ENTRY_MODULE,
+          modules: {
+            ...safeModules,
+            [ENTRY_MODULE]: executorModule,
+          },
+          globalOutbound: options.globalOutbound ?? null,
+        }));
+
+        return asDynamicWorkerEntrypoint(worker.getEntrypoint());
+      },
+      // A compile error that escaped the strip step, or a capacity
+      // rejection, can surface here at worker startup rather than at
+      // `evaluate`. Classify it so the user-actionable reason reaches the
+      // model instead of an opaque internal error.
+      catch: toSandboxFailure,
+    });
   }).pipe(
     Effect.withSpan("executor.runtime.startup", {
       attributes: {
@@ -455,7 +596,10 @@ const evaluate = (
   options: DynamicWorkerExecutorOptions,
   code: string,
   toolInvoker: SandboxToolInvoker,
-): Effect.Effect<ExecuteResult, DynamicWorkerExecutionError> => {
+): Effect.Effect<
+  ExecuteResult,
+  DynamicWorkerExecutionError | CodeCompilationError | SandboxRuntimeError
+> => {
   const timeoutMs = Math.max(100, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
   return Effect.gen(function* () {
@@ -464,10 +608,11 @@ const evaluate = (
     const entrypoint = yield* startDynamicWorker(options, code, timeoutMs);
     const response = yield* Effect.tryPromise({
       try: () => entrypoint.evaluate(dispatcher),
-      catch: (cause) =>
-        new DynamicWorkerExecutionError({
-          message: renderTransportMessage(serializeWorkerErrorValue(cause)),
-        }),
+      // The evaluate RPC rejects for module compile failures that escaped
+      // the strip step, non-serializable return values, isolate resource
+      // limits, and capacity. All are the user's concern or transient, so
+      // classify and surface them descriptively rather than opaquely.
+      catch: toSandboxFailure,
     }).pipe(
       Effect.withSpan("executor.runtime.evaluate", {
         attributes: { "executor.runtime": "dynamic-worker" },
@@ -477,6 +622,8 @@ const evaluate = (
     return {
       result: error ? null : response.result,
       error,
+      output:
+        Array.isArray(response.output) && response.output.length > 0 ? response.output : undefined,
       logs: response.logs,
     } satisfies ExecuteResult;
   });
@@ -492,6 +639,20 @@ const runInDynamicWorker = (
   toolInvoker: SandboxToolInvoker,
 ): Effect.Effect<ExecuteResult, DynamicWorkerExecutionError> =>
   evaluate(options, code, toolInvoker).pipe(
+    // A compile error or a reportable sandbox runtime condition (a
+    // non-serializable result, a CPU/memory limit, capacity) is the
+    // user's own concern or transient, not a sandbox defect. Fold both
+    // into the success channel as a descriptive `ExecuteResult.error` so
+    // the precise reason reaches the model, exactly as a thrown runtime
+    // error does, instead of being collapsed to an opaque internal error
+    // by the host failure path. Unrecognized defects stay on
+    // `DynamicWorkerExecutionError` and remain opaque.
+    Effect.catchTags({
+      CodeCompilationError: (error) =>
+        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+      SandboxRuntimeError: (error) =>
+        Effect.succeed({ result: null, error: error.message } satisfies ExecuteResult),
+    }),
     Effect.withSpan("executor.code.exec.dynamic_worker", {
       attributes: { "executor.runtime": "dynamic-worker" },
     }),

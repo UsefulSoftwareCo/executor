@@ -1,16 +1,20 @@
 import { Layer } from "effect";
+import { HttpRouter } from "effect/unstable/http";
+
+import { RouterConfigLive, requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
-import { DbService } from "../services/db";
+import { DbService } from "../db/db";
+import { makeAccountApiLive } from "../account/account-api";
 
-import { AutumnRoutesLive } from "./autumn";
-import { ApiErrorLoggingLive } from "./error-logging";
+import { AutumnRoutesLive } from "../extensions/billing/route";
+import { CloudDocsLive } from "../extensions/docs";
+import { ApiErrorLoggingLive } from "../observability/error-logging";
 import {
   BootSharedServices,
   RequestScopedServicesLive,
-  RouterConfig,
-  makeNonProtectedApiLive,
   makeOrgApiLive,
+  makeNonProtectedApiLive,
 } from "./layers";
 import { makeProtectedApiLive } from "./protected";
 
@@ -25,13 +29,21 @@ import { makeProtectedApiLive } from "./protected";
 // so tests can substitute a counting fake for `DbService.Live` and
 // assert per-request semantics — see
 // `apps/cloud/src/api.request-scope.node.test.ts`.
-export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) =>
-  Layer.mergeAll(
+export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) => {
+  const BillingRoutesLive = AutumnRoutesLive.pipe(
+    Layer.provide(requestScopedMiddleware(requestScopedLive).layer),
+  );
+  return Layer.mergeAll(
     makeNonProtectedApiLive(requestScopedLive),
     makeOrgApiLive(requestScopedLive),
+    makeAccountApiLive(requestScopedLive),
+    CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),
-    AutumnRoutesLive,
+    BillingRoutesLive,
     ApiErrorLoggingLive,
-  ).pipe(Layer.provideMerge(RouterConfig), Layer.provideMerge(BootSharedServices));
+  ).pipe(Layer.provideMerge(RouterConfigLive), Layer.provideMerge(BootSharedServices));
+};
 
 export const ApiLive = makeApiLive(RequestScopedServicesLive);
+
+export const handleApiRequest = HttpRouter.toWebHandler(ApiLive).handler;

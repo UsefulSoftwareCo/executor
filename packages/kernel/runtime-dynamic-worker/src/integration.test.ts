@@ -16,20 +16,37 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/postgres-js";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/unstable/http";
+import { fumadb } from "@executor-js/fumadb";
+import {
+  createDrizzleRuntimeSchemaFromTables,
+  drizzleAdapter,
+} from "@executor-js/fumadb/adapters/drizzle";
+import { schema as fumaSchema } from "@executor-js/fumadb/schema";
+import postgres from "postgres";
 
 import {
+  collectTables,
   createExecutor,
-  definePlugin,
-  makeTestConfig,
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ProviderItemId,
+  ProviderKey,
+  Subject,
+  Tenant,
+  type CredentialProvider,
   type InvokeOptions,
-  type SecretProvider,
+  type ProviderEntry,
+  type FumaDb,
+  type FumaTables,
 } from "@executor-js/sdk";
 import { makeExecutorToolInvoker } from "@executor-js/execution";
-import { openApiPlugin } from "@executor-js/plugin-openapi";
+import { openApiPlugin, variable, type AuthenticationInput } from "@executor-js/plugin-openapi";
 
 import { makeDynamicWorkerExecutor } from "./executor";
 
@@ -38,28 +55,44 @@ import { makeDynamicWorkerExecutor } from "./executor";
 // ---------------------------------------------------------------------------
 
 const autoApprove: InvokeOptions = { onElicitation: "accept-all" };
-const TEST_SCOPE = "test-scope";
+const TEST_TENANT = "test-tenant";
+const TEST_SUBJECT = "test-subject";
+const DATABASE_NAMESPACE = "executor_worker_test";
+const DATABASE_URL =
+  (env as { DATABASE_URL?: string }).DATABASE_URL ??
+  "postgresql://postgres:postgres@127.0.0.1:5435/postgres";
 
-const memoryProvider: SecretProvider = (() => {
+// v2 credential provider: a connection IS the credential, resolved by an opaque
+// id (no scope arg). Registered via `createExecutor({ providers })`. These tests
+// don't exercise real auth, so the value is a throwaway token whose only job is
+// to make the apiKey template render so per-connection tools get produced.
+const memoryProvider = (): CredentialProvider => {
   const store = new Map<string, string>();
   return {
-    key: "memory",
+    key: ProviderKey.make("memory"),
     writable: true,
-    get: (id, scope) => Effect.sync(() => store.get(`${scope}:${id}`) ?? null),
-    set: (id, value, scope) =>
-      Effect.sync(() => {
-        store.set(`${scope}:${id}`, value);
-      }),
-    delete: (id, scope) => Effect.sync(() => store.delete(`${scope}:${id}`)),
-    list: () => Effect.sync(() => []),
+    get: (id: ProviderItemId) => Effect.sync(() => store.get(String(id)) ?? null),
+    set: (id: ProviderItemId, value: string) =>
+      Effect.sync(() => void store.set(String(id), value)),
+    has: (id: ProviderItemId) => Effect.sync(() => store.has(String(id))),
+    list: () =>
+      Effect.sync((): readonly ProviderEntry[] =>
+        Array.from(store.keys()).map((key) => ({
+          id: ProviderItemId.make(key),
+          name: key,
+        })),
+      ),
   };
-})();
+};
 
-const memorySecretsPlugin = definePlugin(() => ({
-  id: "memory-secrets" as const,
-  storage: () => ({}),
-  secretProviders: [memoryProvider],
-}));
+// Minimal apiKey template: the resolved connection value renders into an
+// `x-api-key` header. The body round-trip tests don't assert on auth, but a
+// template + connection are required for tools to exist per-connection.
+const apiKeyTemplate: AuthenticationInput = {
+  slug: "apiKey",
+  type: "apiKey",
+  headers: { "x-api-key": [variable("token")] },
+};
 
 type CapturedRequest = {
   url: string;
@@ -146,21 +179,88 @@ const makeSpec = (contentType: string, schema: Record<string, unknown> = { type:
     },
   });
 
-const buildSandboxBridge = (spec: string, namespace: string, baseUrl = "https://upstream.test") =>
-  Effect.gen(function* () {
-    const recording = makeRecordingHttpClient();
-    const executor = yield* createExecutor(
-      makeTestConfig({
-        plugins: [
-          openApiPlugin({ httpClientLayer: recording.layer }),
-          memorySecretsPlugin(),
-        ] as const,
+const createPostgresFumaDb = <const TTables extends FumaTables>(
+  db: unknown,
+  tables: TTables,
+): FumaDb<any> => {
+  const version = "1.0.0" as const;
+  const factory = fumadb({
+    namespace: DATABASE_NAMESPACE,
+    schemas: [
+      fumaSchema({
+        version,
+        tables,
       }),
-    );
-    yield* executor.openapi.addSpec({ spec, scope: TEST_SCOPE, namespace, baseUrl });
-    const invoker = makeExecutorToolInvoker(executor, { invokeOptions: autoApprove });
-    return { executor, invoker, captured: recording.captured };
+    ],
   });
+  const fuma = factory.client(
+    drizzleAdapter({
+      db,
+      provider: "postgresql",
+    }),
+  );
+  return fuma.orm(version);
+};
+
+const buildSandboxBridge = (spec: string, slug: string, baseUrl = "https://upstream.test") =>
+  Effect.acquireRelease(
+    Effect.gen(function* () {
+      const recording = makeRecordingHttpClient();
+      const plugins = [openApiPlugin({ httpClientLayer: recording.layer })] as const;
+      const tables = collectTables();
+      const sql = postgres(DATABASE_URL, {
+        max: 1,
+        idle_timeout: 0,
+        max_lifetime: 60,
+        connect_timeout: 10,
+        fetch_types: false,
+        prepare: true,
+        onnotice: () => undefined,
+      });
+      const schema = createDrizzleRuntimeSchemaFromTables({
+        tables,
+        namespace: DATABASE_NAMESPACE,
+        version: "1.0.0",
+        provider: "postgresql",
+      });
+      const db = createPostgresFumaDb(drizzle(sql, { schema }), tables);
+      const executor = yield* createExecutor({
+        tenant: Tenant.make(TEST_TENANT),
+        subject: Subject.make(TEST_SUBJECT),
+        db,
+        providers: [memoryProvider()],
+        plugins,
+        onElicitation: "accept-all",
+      });
+      // v2: addSpec registers the integration; tools are produced per-connection,
+      // so an org `main` connection is required for the operation to be callable.
+      yield* executor.openapi.addSpec({
+        spec: { kind: "blob", value: spec },
+        slug,
+        baseUrl,
+        authenticationTemplate: [apiKeyTemplate],
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make(slug),
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "test-token",
+      });
+      const invoker = makeExecutorToolInvoker(executor, { invokeOptions: autoApprove });
+      return { executor, invoker, captured: recording.captured, sql };
+    }),
+    ({ executor, sql }) =>
+      executor.close().pipe(
+        Effect.ignore,
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => sql.end({ timeout: 0 }),
+            catch: (cause) => cause,
+          }).pipe(Effect.ignore),
+        ),
+      ),
+  );
 
 const loader = (env as { LOADER: WorkerLoader }).LOADER;
 
@@ -180,7 +280,7 @@ describe("sandbox → openApiPlugin integration", () => {
       const result = yield* sandbox.execute(
         `async () => {
           const file = new Blob(["hello multipart"], { type: "text/plain" });
-          await tools.mp.body.submit({ body: { file, name: "Acme" } });
+          await tools.mp.org.main.body.submit({ body: { file, name: "Acme" } });
         }`,
         invoker,
       );
@@ -196,7 +296,7 @@ describe("sandbox → openApiPlugin integration", () => {
       // Regression guard for the JSON-stringify bug — the symptom was
       // either an empty body part or `[object Object]` in place of bytes.
       expect(wire).not.toContain("[object Object]");
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("multipart with Uint8Array: bytes survive intact", () =>
@@ -210,7 +310,7 @@ describe("sandbox → openApiPlugin integration", () => {
       const result = yield* sandbox.execute(
         `async () => {
           const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-          await tools.u8.body.submit({ body: { file: bytes } });
+          await tools.u8.org.main.body.submit({ body: { file: bytes } });
         }`,
         invoker,
       );
@@ -232,7 +332,7 @@ describe("sandbox → openApiPlugin integration", () => {
         }
       }
       expect(found).toBe(true);
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("application/json: primitive object body round-trips unchanged", () =>
@@ -242,15 +342,14 @@ describe("sandbox → openApiPlugin integration", () => {
 
       const result = yield* sandbox.execute(
         `async () => {
-          await tools.j.body.submit({ body: { name: "Acme", count: 7, ok: true } });
+          await tools.j.org.main.body.submit({ body: { name: "Acme", count: 7, ok: true } });
         }`,
         invoker,
       );
-
       expect(result.error).toBeUndefined();
       const json = JSON.parse(new TextDecoder().decode(captured[0]!.body));
       expect(json).toEqual({ name: "Acme", count: 7, ok: true });
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("application/octet-stream: Uint8Array body matches byte-for-byte", () =>
@@ -264,13 +363,13 @@ describe("sandbox → openApiPlugin integration", () => {
       const result = yield* sandbox.execute(
         `async () => {
           const payload = new Uint8Array([1, 2, 3, 4, 5, 0xff, 0x00, 0x7f]);
-          await tools.oct.body.submit({ body: payload });
+          await tools.oct.org.main.body.submit({ body: payload });
         }`,
         invoker,
       );
 
       expect(result.error).toBeUndefined();
       expect(Array.from(captured[0]!.body)).toEqual([1, 2, 3, 4, 5, 0xff, 0x00, 0x7f]);
-    }),
+    }).pipe(Effect.scoped),
   );
 });

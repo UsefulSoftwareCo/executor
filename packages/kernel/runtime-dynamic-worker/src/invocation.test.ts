@@ -4,7 +4,9 @@ import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
+import { ExecutionToolError } from "@executor-js/execution";
 import {
+  classifySandboxFailure,
   ToolDispatcher,
   makeDynamicWorkerExecutor,
   renderWorkerError,
@@ -113,6 +115,19 @@ describe("ToolDispatcher", () => {
     });
   });
 
+  it("allows shared object references in RPC args", async () => {
+    const invoker = makeInvoker(({ args }) => args);
+    const dispatcher = new ToolDispatcher(invoker, Effect.runPromise);
+    const shared = { value: 1 };
+
+    const result = await dispatcher.call("test.tool", { first: shared, second: shared });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { first: { value: 1 }, second: { value: 1 } },
+    });
+  });
+
   it("passes the tool path correctly", async () => {
     let capturedPath = "";
     const invoker = makeInvoker(({ path }) => {
@@ -139,6 +154,52 @@ describe("serializeWorkerCause", () => {
     expect(serialized.kind).toBe("interrupt");
     expect(serialized.interrupted).toBe(true);
     expect(renderWorkerError(serialized)).toBe("Interrupted");
+  });
+});
+
+describe("classifySandboxFailure", () => {
+  // Each string here is a real `status.message` seen on the
+  // executor.runtime.* spans in production. They reject the worker loader
+  // or the evaluate RPC and were collapsed to an opaque "Internal tool
+  // error" before the model could act on them. CPU/memory/capacity limits
+  // can't be triggered deterministically inside a unit-test isolate, so we
+  // pin their classification here; the syntax and serialization paths also
+  // have live WorkerLoader coverage above.
+  it.each([
+    ["Failed to start Worker:\nUncaught SyntaxError: Unexpected token '='", "compilation"],
+    ["Unexpected token '{'", "compilation"],
+    ["Invalid or unexpected token", "compilation"],
+    ["Symbol(nope) could not be cloned.", "runtime"],
+    [
+      'Could not serialize object of type "Cloudflare". This type does not support serialization.',
+      "runtime",
+    ],
+    ["Worker exceeded CPU time limit.", "runtime"],
+    ["Worker exceeded memory limit.", "runtime"],
+    ["Too many concurrent dynamic workers", "runtime"],
+  ] as const)("classifies %j as %s", (message, expected) => {
+    expect(classifySandboxFailure({ __type: "Error", name: "Error", message }, message)).toBe(
+      expected,
+    );
+  });
+
+  it("classifies a SyntaxError by name even when the message is bare", () => {
+    expect(
+      classifySandboxFailure({ __type: "Error", name: "SyntaxError", message: "boom" }, "boom"),
+    ).toBe("compilation");
+  });
+
+  it("classifies a DataCloneError by name even when the message is bare", () => {
+    expect(
+      classifySandboxFailure({ __type: "Error", name: "DataCloneError", message: "boom" }, "boom"),
+    ).toBe("runtime");
+  });
+
+  it("leaves an unrecognized defect opaque (internal)", () => {
+    const message = "the RPC receiver does not implement the method";
+    expect(classifySandboxFailure({ __type: "Error", name: "TypeError", message }, message)).toBe(
+      "internal",
+    );
   });
 });
 
@@ -246,7 +307,7 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.result).toBe(7);
   });
 
-  it("surfaces tool errors in execution result", async () => {
+  it("surfaces infra defects through the worker bridge as an opaque generic", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const invoker = failingInvoker("not authorized");
 
@@ -254,7 +315,81 @@ describe("makeDynamicWorkerExecutor", () => {
       executor.execute("async () => { return await tools.secret.read({}); }", invoker),
     );
 
-    expect(result.error).toBe("not authorized");
+    expect(result.error).toBe("Internal tool error");
+  });
+
+  it("surfaces a syntax error with the parser's descriptive message, not an opaque generic", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = makeInvoker(() => null);
+
+    // A genuine parse error: `const` with no binding name. Before the fix
+    // this threw in stripTypeScript, became a DynamicWorkerExecutionError
+    // on the failure channel, and the host collapsed it to the opaque
+    // "Internal tool error". The model needs the real reason to self-correct.
+    const result = await Effect.runPromise(
+      executor.execute("async () => { const = 5; return 1; }", invoker),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBeDefined();
+    expect(result.error).not.toBe("Internal tool error");
+    expect(result.error).not.toContain("Internal tool error");
+    expect(result.error?.toLowerCase()).toContain("unexpected");
+  });
+
+  it("surfaces smart-quote paste errors descriptively", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = makeInvoker(() => null);
+
+    // Curly quotes from a copy-paste are the most common real-world cause:
+    // the snippet looks fine to a human but is invalid JavaScript.
+    const result = await Effect.runPromise(
+      executor.execute("async () => { return “hello”; }", invoker),
+    );
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBeDefined();
+    expect(result.error).not.toBe("Internal tool error");
+  });
+
+  it("surfaces a non-serializable return value descriptively, not opaquely", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = makeInvoker(() => null);
+
+    // Returning a value that can't cross the sandbox boundary (a Symbol, a
+    // host object) rejects the evaluate RPC with a DataCloneError. That is
+    // the user's own code, not a sandbox defect, so the model needs to be
+    // told what it returned can't be serialized rather than getting an
+    // opaque "Internal tool error". Production analog: "Could not serialize
+    // object of type Cloudflare".
+    const result = await Effect.runPromise(executor.execute("async () => Symbol('nope')", invoker));
+
+    expect(result.result).toBeNull();
+    expect(result.error).toBeDefined();
+    expect(result.error).not.toBe("Internal tool error");
+    expect(result.error).not.toContain("Internal tool error");
+    expect(result.error?.toLowerCase()).toContain("could not be cloned");
+  });
+
+  it("preserves public ExecutionToolError messages across the worker bridge", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const invoker = {
+      invoke: () =>
+        Effect.fail(
+          new ExecutionToolError({
+            message:
+              "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
+          }),
+        ),
+    } satisfies SandboxToolInvoker;
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.search('github')", invoker),
+    );
+
+    expect(result.error).toBe(
+      "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
+    );
   });
 
   it("does not expose host error stack details to sandbox error handlers", async () => {
@@ -284,11 +419,12 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.error).toBeUndefined();
-    expect(result.result).toMatchObject({ message: "not authorized" });
+    expect(result.result).toMatchObject({ message: "Internal tool error" });
     expect((result.result as { stack?: string }).stack).not.toContain("secret host stack");
+    expect((result.result as { message?: string }).message).not.toContain("not authorized");
   });
 
-  it("surfaces object-shaped tool errors in execution result", async () => {
+  it("collapses object-shaped tool defects to an opaque generic", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const invoker = {
       invoke: () =>
@@ -302,11 +438,11 @@ describe("makeDynamicWorkerExecutor", () => {
       executor.execute("async () => { return await tools.secret.read({}); }", invoker),
     );
 
-    expect(result.error).toBe('{"code":"forbidden","detail":"missing team access"}');
+    expect(result.error).toBe("Internal tool error");
     expect(result.result).toBeNull();
   });
 
-  it("surfaces message-bearing object tool errors in execution result", async () => {
+  it("collapses message-bearing object tool defects to an opaque generic", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const invoker = {
       invoke: () =>
@@ -320,7 +456,8 @@ describe("makeDynamicWorkerExecutor", () => {
       executor.execute("async () => { return await tools.records.query({}); }", invoker),
     );
 
-    expect(result.error).toBe('Field with name "DisplayName" does not exist');
+    expect(result.error).toBe("Internal tool error");
+    expect(result.error).not.toContain("DisplayName");
     expect(result.result).toBeNull();
   });
 
@@ -366,7 +503,7 @@ describe("makeDynamicWorkerExecutor", () => {
     expect(result.error).toBe("Tool RPC payload contains a circular reference");
   });
 
-  it("returns an execution error for circular tool results", async () => {
+  it("returns an opaque generic when a tool result can't be serialized", async () => {
     const executor = makeDynamicWorkerExecutor({ loader });
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
@@ -377,7 +514,20 @@ describe("makeDynamicWorkerExecutor", () => {
     );
 
     expect(result.result).toBeNull();
-    expect(result.error).toBe("Tool RPC payload contains a circular reference");
+    expect(result.error).toBe("Internal tool error");
+  });
+
+  it("returns shared object references from tool results", async () => {
+    const executor = makeDynamicWorkerExecutor({ loader });
+    const shared = { _tag: "None" };
+    const invoker = makeInvoker(() => ({ first: shared, second: shared }));
+
+    const result = await Effect.runPromise(
+      executor.execute("async () => await tools.shared.read({})", invoker),
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.result).toEqual({ first: { _tag: "None" }, second: { _tag: "None" } });
   });
 
   it("respects timeout", async () => {
@@ -499,6 +649,90 @@ describe("makeDynamicWorkerExecutor", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.result).toEqual({ kind: "Blob", type: "text/plain", text: "DOWNLOAD" });
+    }),
+  );
+
+  it.effect("accumulates helper output separately from returned data", () =>
+    Effect.gen(function* () {
+      const executor = makeDynamicWorkerExecutor({ loader });
+      const invoker = makeInvoker(() => ({
+        _tag: "ToolFile",
+        name: "photo.png",
+        mimeType: "image/png",
+        encoding: "base64",
+        data: "iVBORw0KGgo=",
+        byteLength: 8,
+      }));
+
+      const result = yield* executor.execute(
+        `async () => {
+          const attachment = await tools.download.fetch({});
+          const values = [
+            emit("hello"),
+            emit(attachment),
+            emit({ type: "text", text: "mcp hello" }),
+            emit({ type: "image", data: "Zm9v", mimeType: "image/png" }),
+            emit({ type: "audio", data: "SUQz", mimeType: "audio/mpeg" }),
+            emit({
+              type: "resource",
+              resource: { uri: "executor-file:///report.pdf", mimeType: "application/pdf", blob: "JVBERg==" },
+            }),
+            emit({
+              type: "resource_link",
+              uri: "executor-file:///remote.pdf",
+              name: "remote.pdf",
+              mimeType: "application/pdf",
+            }),
+            emit({ arbitrary: true }),
+          ];
+          return { values: values.map((value) => value === undefined), keptReturn: true };
+        }`,
+        invoker,
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        values: [true, true, true, true, true, true, true, true],
+        keptReturn: true,
+      });
+      expect(result.output).toEqual([
+        { type: "content", content: { type: "text", text: "hello" } },
+        {
+          type: "file",
+          file: {
+            _tag: "ToolFile",
+            name: "photo.png",
+            mimeType: "image/png",
+            encoding: "base64",
+            data: "iVBORw0KGgo=",
+            byteLength: 8,
+          },
+        },
+        { type: "content", content: { type: "text", text: "mcp hello" } },
+        { type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/png" } },
+        { type: "content", content: { type: "audio", data: "SUQz", mimeType: "audio/mpeg" } },
+        {
+          type: "content",
+          content: {
+            type: "resource",
+            resource: {
+              uri: "executor-file:///report.pdf",
+              mimeType: "application/pdf",
+              blob: "JVBERg==",
+            },
+          },
+        },
+        {
+          type: "content",
+          content: {
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          },
+        },
+        { type: "content", content: { type: "text", text: '{"arbitrary":true}' } },
+      ]);
     }),
   );
 

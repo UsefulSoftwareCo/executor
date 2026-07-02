@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Predicate } from "effect";
 import { Schema } from "effect";
 
 import { parse, resolveSpecText, type ParsedDocument } from "./parse";
@@ -102,10 +102,20 @@ export const OAuth2Preset = Schema.Struct({
   authorizationUrl: Schema.OptionFromOptional(Schema.String),
   /** Token endpoint to exchange the code / refresh. */
   tokenUrl: Schema.String,
+  /** RFC 8707 resource indicator discovered from protected-resource metadata. */
+  resource: Schema.OptionFromOptional(Schema.String),
   /** Optional refresh endpoint if the spec declares one separately. */
   refreshUrl: Schema.OptionFromOptional(Schema.String),
   /** Declared scopes for this flow: `{ scope: description }`. */
   scopes: Schema.Record(Schema.String, Schema.String),
+  /** Identity scopes to request alongside API scopes. `"auto"` discovers standard OIDC scopes. */
+  identityScopes: Schema.Union([
+    Schema.Literal("auto"),
+    Schema.Literal(false),
+    Schema.Array(Schema.String),
+  ]),
+  /** Provider metadata advertised Client ID Metadata Document support. */
+  supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
 });
 export type OAuth2Preset = typeof OAuth2Preset.Type;
 
@@ -129,6 +139,8 @@ export type PreviewOperation = typeof PreviewOperation.Type;
 
 export const SpecPreview = Schema.Struct({
   title: Schema.OptionFromOptional(Schema.String),
+  /** The spec's `info.description` — prefills the add form's description field. */
+  description: Schema.OptionFromOptional(Schema.String),
   version: Schema.OptionFromOptional(Schema.String),
   /** Reuses ServerInfo from extraction */
   servers: Schema.Array(ServerInfo),
@@ -145,6 +157,37 @@ export const SpecPreview = Schema.Struct({
   oauth2Presets: Schema.Array(OAuth2Preset),
 });
 export type SpecPreview = typeof SpecPreview.Type;
+
+// HTTP/UI preview deliberately omits the per-operation list. Graph-sized specs
+// can define 16k+ operations, while the add flow only needs counts, tags,
+// servers, and auth metadata before registration.
+export const SpecPreviewSummary = Schema.Struct({
+  title: Schema.OptionFromOptional(Schema.String),
+  description: Schema.OptionFromOptional(Schema.String),
+  version: Schema.OptionFromOptional(Schema.String),
+  servers: Schema.Array(ServerInfo),
+  operationCount: Schema.Number,
+  tags: Schema.Array(Schema.String),
+  securitySchemes: Schema.Array(SecurityScheme),
+  authStrategies: Schema.Array(AuthStrategy),
+  headerPresets: Schema.Array(HeaderPreset),
+  oauth2Presets: Schema.Array(OAuth2Preset),
+});
+export type SpecPreviewSummary = typeof SpecPreviewSummary.Type;
+
+export const specPreviewSummary = (preview: SpecPreview): SpecPreviewSummary =>
+  SpecPreviewSummary.make({
+    title: preview.title,
+    description: preview.description,
+    version: preview.version,
+    servers: preview.servers,
+    operationCount: preview.operationCount,
+    tags: preview.tags,
+    securitySchemes: preview.securitySchemes,
+    authStrategies: preview.authStrategies,
+    headerPresets: preview.headerPresets,
+    oauth2Presets: preview.oauth2Presets,
+  });
 
 // ---------------------------------------------------------------------------
 // Security scheme extraction
@@ -255,7 +298,7 @@ const buildHeaderPresets = (
   return strategies.flatMap((strategy) => {
     const resolved = strategy.schemes
       .map((name) => schemeMap.get(name))
-      .filter((s): s is SecurityScheme => s !== undefined);
+      .filter(Predicate.isNotUndefined);
 
     if (resolved.length === 0) return [];
 
@@ -326,8 +369,10 @@ const buildOAuth2Presets = (schemes: readonly SecurityScheme[]): OAuth2Preset[] 
           flow: "authorizationCode",
           authorizationUrl: Option.some(flow.authorizationUrl),
           tokenUrl: flow.tokenUrl,
+          resource: Option.none(),
           refreshUrl: flow.refreshUrl,
           scopes: flow.scopes,
+          identityScopes: "auto",
         }),
       );
     }
@@ -341,8 +386,10 @@ const buildOAuth2Presets = (schemes: readonly SecurityScheme[]): OAuth2Preset[] 
           flow: "clientCredentials",
           authorizationUrl: Option.none(),
           tokenUrl: flow.tokenUrl,
+          resource: Option.none(),
           refreshUrl: flow.refreshUrl,
           scopes: flow.scopes,
+          identityScopes: false,
         }),
       );
     }
@@ -366,10 +413,9 @@ const collectTags = (result: ExtractionResult): string[] => {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Preview an OpenAPI spec — extract metadata without registering anything.
- *  Accepts either a URL or raw JSON/YAML text. */
-export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: string) {
-  const specText = yield* resolveSpecText(input);
+/** Preview already-resolved spec text — extract metadata without registering
+ *  anything and without any HTTP dependency. */
+export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (specText: string) {
   const doc: ParsedDocument = yield* parse(specText);
   const result = yield* extract(doc);
 
@@ -389,6 +435,7 @@ export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: st
 
   return SpecPreview.make({
     title: result.title,
+    description: result.description,
     version: result.version,
     servers: result.servers,
     operationCount: result.operations.length,
@@ -408,4 +455,11 @@ export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: st
     headerPresets: buildHeaderPresets(securitySchemes, authStrategies),
     oauth2Presets: buildOAuth2Presets(securitySchemes),
   });
+});
+
+/** Preview an OpenAPI spec — extract metadata without registering anything.
+ *  Accepts either a URL or raw JSON/YAML text. */
+export const previewSpec = Effect.fn("OpenApi.previewSpec")(function* (input: string) {
+  const specText = yield* resolveSpecText(input);
+  return yield* previewSpecText(specText);
 });

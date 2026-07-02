@@ -33,81 +33,59 @@ Does **not** ship in the CLI:
 - Only the Changesets-generated `Version Packages` PR should move `apps/cli/package.json`. If a normal PR directly changes that version, merging it to `main` can make `.github/workflows/release.yml` tag the commit and dispatch `publish-executor-package.yml`, causing an immediate CLI publish.
 - `@executor-js/*` library packages have their own publish path.
 
-## Release notes: single source of truth, curated, not auto-generated
+## Release notes: standard Changesets flow — the changeset body IS the changelog
 
-The owner doesn't want GitHub's auto-generated "PR title by @user" list. Release notes live at `apps/cli/release-notes/` and `apps/cli/src/release.ts` prefers them over `--generate-notes`.
-
-**`apps/cli/release-notes/next.md` is the canonical user-facing changelog.** Per-package workspace `CHANGELOG.md` files are one-line stubs required by `changesets/action@v1` (the GitHub Action wrapping the CLI in `release.yml`) — it reads each bumped package's `CHANGELOG.md` to build the Version Packages PR description and crashes with `ENOENT` if any is missing. The stubs satisfy that read; don't put release content in them.
+As of v1.5.0 this repo uses the canonical Changesets pipeline. The old
+`apps/cli/release-notes/next.md` rolling file is gone — do not recreate it.
 
 ### How it's wired
 
-`apps/cli/src/release.ts` reads `apps/cli/release-notes/next.md` and uses
-its contents as the GitHub Release body. If the file is missing or empty,
-falls back to `gh release create --generate-notes`. There's no
-per-version archive in the repo — historical release bodies live on
-GitHub Releases (durable, indexed, linkable).
+- Every user-visible PR adds a `.changeset/*.md`; its **body** is the
+  user-facing changelog entry.
+- `changeset version` (run by `changesets/action@v1` when building the
+  Version Packages PR) compiles changeset bodies into each bumped
+  package's `CHANGELOG.md` using `@changesets/changelog-github`
+  (configured in `.changeset/config.json`), which prefixes each entry
+  with the PR link and credits the author automatically.
+- `apps/cli/src/release.ts` (`changelogSectionForVersion`) extracts the
+  released version's `## <version>` section from `apps/cli/CHANGELOG.md`
+  and uses it as the GitHub Release body. Missing section → falls back to
+  `--generate-notes`.
+- Per-package `CHANGELOG.md` seed files are still required for every
+  workspace package (`bun run lint:changelog-stubs --fix` creates them);
+  `changesets/action@v1` crashes with `ENOENT` on missing files.
+- `@changesets/changelog-github` needs `GITHUB_TOKEN` during
+  `changeset version`. CI provides it; locally:
+  `GITHUB_TOKEN=$(gh auth token) bun run changeset:version`.
 
-### Writing conventions
+### Writing changeset bodies
 
-Structure release-notes files as:
+- Lead with user-visible behavior, not implementation. One sentence for a
+  typical fix; a short paragraph for a feature.
+- Big releases: a changeset body can be a full markdown section — use
+  **bold sub-headings** + bullets, never `#`/`##` headings (they end up
+  nested inside a changelog list item).
+- Breaking changes: include the before/after surface in the body.
+- Don't duplicate content across changesets — every changeset in the
+  release lands in the same version section.
+- Attribution is automatic via changelog-github; don't hand-write
+  `Thanks @...` lines.
 
-```
-## Highlights
-### <user-facing story>     # e.g. "Per-user OAuth for OpenAPI and MCP sources"
-  bullets of concrete user value
+### When drafting a release-spanning changeset from `git log`
 
-## New presets              # optional
-
-## Performance              # optional
-
-## Fixes
-
-## Breaking changes
-### <specific surface>
-  before / after code blocks for migrations
-```
-
-Lead with **user-visible stories**, not commit subjects. Group related commits into one story (e.g. 6 commits about Connections → one "Per-user OAuth" section). Include before/after CLI snippets for any breaking change. Keep bullets single-line.
-
-### Attribution
-
-External contributor bullets end with `Thanks @<user> (#PR)`:
-
-```markdown
-- OAuth2 client-credentials flow end-to-end. Thanks @octocat (#456)
-```
-
-Do not `Thanks` maintainers, bots, or the repo owner — the lint script rejects `@claude`, `@anthropic`, `@github-actions`, `@dependabot`, `@renovate`, `@rhyssullivan`, `@rhys-sullivan`. Run `bun run lint:release-notes` before pushing notes.
-
-### When drafting from `git log`
-
-- Look at `git diff v<last>..HEAD -- README.md` first — it's the best single view of user-facing changes.
-- Read commit messages in bulk (`git log --oneline v<last>..HEAD -- apps/cli apps/local packages`), then bucket by theme before writing prose.
-- Don't list every commit. Merge PRs and refactor-chain commits into one line.
-
-### Pairing with changesets
-
-- A `.changeset/*.md` describes the version bump (semver level + a short summary for the Version Packages PR description). It is **not** the user-facing changelog.
-- If your PR adds a `.changeset/*.md` for the `executor` package, also edit `apps/cli/release-notes/next.md` for the user-facing story. They have different audiences.
-- The `.changeset/*.md` body can be a one-liner pointing at the release-notes section it expands; users read the GitHub release body, not the changeset.
-- Frontmatter is `"executor": patch` (or `minor`/`major` if owner says so).
-
-### Starting a new release cycle
-
-There's no post-release rename step. When you start work on the next
-release, replace the existing `next.md` content with new entries — the
-previous cycle's content is already preserved on the matching `vX.Y.Z`
-GitHub Release page, so overwriting locally is safe. If `next.md` content
-looks stale (i.e. mentions features already shipped), that's the signal
-to clear it.
+- Look at `git diff v<last>..HEAD -- README.md` first — best single view of user-facing changes.
+- Read commits in bulk (`git log --oneline v<last>..HEAD -- apps/cli apps/local packages`), bucket by theme, then write prose.
+- Merged PRs without changesets still ship in the release — their content
+  ships regardless; only the changelog text is driven by changesets. If
+  something important landed without a changeset, fold its story into a
+  release-summary changeset.
 
 ## Beta release flow
 
 ```
 git checkout -b rs/beta-v<next>-start
 bun run release:beta:start                 # creates .changeset/pre.json
-# write .changeset/executor-<next>-beta.md (patch frontmatter by default)
-# write apps/cli/release-notes/next.md     (curated notes)
+# write .changeset/executor-<next>-beta.md (frontmatter + user-facing body)
 git add ... && git commit                  # ONLY when owner says commit
 git push -u origin rs/beta-v<next>-start
 # Open PR -> merge -> release.yml opens "Version Packages (beta)" PR -> merge to publish
@@ -135,7 +113,7 @@ Identical to beta except skip `release:beta:start`/`stop`. Changesets produce a 
 
 ```
 bun run changeset                          # interactive; or write .changeset/*.md directly
-bun run lint:release-notes                 # validate apps/cli/release-notes/next.md
+bun run lint:changelog-stubs --fix         # seed missing per-package CHANGELOG.md files
 bun run release:beta:start                 # enter prerelease
 bun run release:beta:stop                  # exit prerelease
 bun run release:publish:dry-run            # build full CLI payload without publishing

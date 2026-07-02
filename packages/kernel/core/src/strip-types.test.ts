@@ -59,11 +59,11 @@ describe("stripTypeScript", () => {
     // axiom://7bf76f79c5d807272781e9554040aab3 — typed annotation in
     // a function expression.
     const code = `
-      const fetchDeals = async (sourceId: string): Promise<Array<{ id: string }>> => {
+      const fetchResources = async (sourceId: string): Promise<Array<{ id: string }>> => {
         const result = await tools.executor.sources.list();
         return result.items;
       };
-      return fetchDeals('dealcloud');
+      return fetchResources('example-source');
     `;
     const out = stripTypeScript(code);
     expect(out).not.toContain(": string");

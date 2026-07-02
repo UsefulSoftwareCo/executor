@@ -17,13 +17,18 @@
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.14.2",
+    "@cloudflare/vitest-pool-workers": "^0.15.0",
     "@cloudflare/workers-types": "^4.20250620.0",
     "@effect/vitest": "catalog:",
+    "@electric-sql/pglite": "^0.4.4",
+    "@electric-sql/pglite-socket": "^0.1.4",
     "@executor-js/execution": "workspace:*",
+    "@executor-js/fumadb": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@types/node": "catalog:",
+    "drizzle-orm": "catalog:",
+    "postgres": "^3.4.9",
     "vitest": "catalog:",
     "wrangler": "^4.81.0"
   }

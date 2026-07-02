@@ -1,0 +1,9 @@
+model users {
+  id String @id
+  email String
+  sessionToken String? @map("session_token")
+}
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}

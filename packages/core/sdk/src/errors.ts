@@ -1,187 +1,189 @@
-import { Data, Schema } from "effect";
+import { Schema } from "effect";
 
-import { ConnectionId, ToolId, SecretId } from "./ids";
+import { ElicitationDeclinedError } from "./elicitation";
+import type { StorageFailure } from "./fuma-runtime";
+import { ConnectionName, IntegrationSlug, Owner, ProviderKey, ToolAddress } from "./ids";
+
+/* The failure set the SDK surfaces. `execute`'s invoke failures are ported from
+ * v1 but re-keyed by `address` (the full `tools.<integration>.<owner>.<connection>.<tool>`
+ * handle) instead of an opaque tool id. Storage failures reuse fuma-runtime's
+ * `StorageError`/`UniqueViolationError` (`StorageFailure`) — not redefined here. */
 
 // ---------------------------------------------------------------------------
 // Tool lifecycle
 // ---------------------------------------------------------------------------
 
+/* Tagged errors without an explicit `message` field define a `message` getter:
+ * `Schema.TaggedErrorClass` instances are real Errors with `message: ""`, and
+ * an empty message propagates everywhere errors are rendered — span
+ * status.message in the tracer, Cause.pretty output, log lines — leaving the
+ * failure unlabeled in telemetry. The getter is derived from the schema fields
+ * (not an own property), so encoding/serialization is unaffected. */
+
 export class ToolNotFoundError extends Schema.TaggedErrorClass<ToolNotFoundError>()(
   "ToolNotFoundError",
-  { toolId: ToolId },
-) {}
-
-export class ToolInvocationError extends Data.TaggedError("ToolInvocationError")<{
-  readonly toolId: ToolId;
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
-
-/** Tool row exists in the DB but its owning plugin isn't loaded. Means
- *  the tool was registered by a plugin that's no longer present in the
- *  current executor config — usually a stale row from an older session. */
-export class PluginNotLoadedError extends Schema.TaggedErrorClass<PluginNotLoadedError>()(
-  "PluginNotLoadedError",
   {
-    pluginId: Schema.String,
-    toolId: ToolId,
+    address: ToolAddress,
+    suggestions: Schema.optional(Schema.Array(ToolAddress)),
+  },
+) {
+  override get message(): string {
+    return `Tool not found: ${this.address}`;
+  }
+}
+
+export class ToolInvocationError extends Schema.TaggedErrorClass<ToolInvocationError>()(
+  "ToolInvocationError",
+  {
+    address: ToolAddress,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
   },
 ) {}
 
-/** Tool was found but its owning plugin has no `invokeTool` handler —
- *  the plugin only declares static tools and this one's id matched
- *  dynamically somehow. Shouldn't happen in practice; guards against
- *  programmer error. */
-export class NoHandlerError extends Schema.TaggedErrorClass<NoHandlerError>()("NoHandlerError", {
-  toolId: ToolId,
-  pluginId: Schema.String,
-}) {}
-
-/** Tool invocation was rejected because a workspace `tool_policy` rule
- *  with `action: "block"` matched. `pattern` is the matched policy
- *  pattern so callers / agents can render a useful "this is blocked
- *  by your `vercel.dns.*` rule" message. */
+/** Tool invocation was rejected because a workspace `tool_policy` rule with
+ *  `action: "block"` matched. `pattern` is the matched policy pattern. */
 export class ToolBlockedError extends Schema.TaggedErrorClass<ToolBlockedError>()(
   "ToolBlockedError",
   {
-    toolId: ToolId,
+    address: ToolAddress,
     pattern: Schema.String,
   },
-) {}
+) {
+  override get message(): string {
+    return `Tool blocked by policy "${this.pattern}": ${this.address}`;
+  }
+}
 
-// ---------------------------------------------------------------------------
-// Source lifecycle
-// ---------------------------------------------------------------------------
-
-export class SourceNotFoundError extends Schema.TaggedErrorClass<SourceNotFoundError>()(
-  "SourceNotFoundError",
-  { sourceId: Schema.String },
-) {}
-
-/** `executor.sources.remove({ id, targetScope })` was called on a
- *  source with `canRemove: false` — typically a static source declared
- *  by a plugin at startup. Removing static sources is a bug in the
- *  caller. */
-export class SourceRemovalNotAllowedError extends Schema.TaggedErrorClass<SourceRemovalNotAllowedError>()(
-  "SourceRemovalNotAllowedError",
-  { sourceId: Schema.String },
-) {}
-
-// ---------------------------------------------------------------------------
-// Secrets
-// ---------------------------------------------------------------------------
-
-export class SecretNotFoundError extends Schema.TaggedErrorClass<SecretNotFoundError>()(
-  "SecretNotFoundError",
-  { secretId: SecretId },
-) {}
-
-export class SecretResolutionError extends Schema.TaggedErrorClass<SecretResolutionError>()(
-  "SecretResolutionError",
+/** Tool row exists but its owning plugin isn't loaded in this executor config. */
+export class PluginNotLoadedError extends Schema.TaggedErrorClass<PluginNotLoadedError>()(
+  "PluginNotLoadedError",
   {
-    secretId: SecretId,
-    message: Schema.String,
+    address: ToolAddress,
+    pluginId: Schema.String,
   },
-) {}
+) {
+  override get message(): string {
+    return `Plugin "${this.pluginId}" is not loaded for tool: ${this.address}`;
+  }
+}
 
-/** Raised when `secrets.remove({ id, targetScope })` is called on a secret whose row has
- *  `owned_by_connection_id` set. The connection owns the lifecycle —
- *  callers must go through `connections.remove(connectionId)` to
- *  delete it along with its siblings. */
-export class SecretOwnedByConnectionError extends Schema.TaggedErrorClass<SecretOwnedByConnectionError>()(
-  "SecretOwnedByConnectionError",
-  {
-    secretId: SecretId,
-    connectionId: ConnectionId,
-  },
-) {}
-
-/** Raised when `secrets.remove({ id, targetScope })` is called on a secret that's still
- *  referenced by one or more sources / bindings across plugins. The UI's
- *  "Used by" list tells the user which sources to detach first. App-
- *  level RESTRICT — the codebase doesn't enforce DB-level FKs because
- *  composite `(scope_id, id)` PKs make single-column references
- *  impossible to constrain in sqlite. `usageCount` is a hint for the
- *  caller; the full list is queryable via `secrets.usages(id)`. */
-export class SecretInUseError extends Schema.TaggedErrorClass<SecretInUseError>()(
-  "SecretInUseError",
-  {
-    secretId: SecretId,
-    usageCount: Schema.Number,
-  },
-) {}
+/** Tool was found but its owning plugin has no `invokeTool` handler. */
+export class NoHandlerError extends Schema.TaggedErrorClass<NoHandlerError>()("NoHandlerError", {
+  address: ToolAddress,
+  pluginId: Schema.String,
+}) {
+  override get message(): string {
+    return `Plugin "${this.pluginId}" has no invokeTool handler for tool: ${this.address}`;
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Connections
+// Integration / connection lifecycle
 // ---------------------------------------------------------------------------
+
+export class IntegrationNotFoundError extends Schema.TaggedErrorClass<IntegrationNotFoundError>()(
+  "IntegrationNotFoundError",
+  { slug: IntegrationSlug },
+) {
+  override get message(): string {
+    return `Integration not found: ${this.slug}`;
+  }
+}
+
+/** An "add integration" operation targeted a slug (namespace) that is already
+ *  registered. The core `integrations.register` primitive upserts by design
+ *  (for idempotent boot re-registration); add-operation layers gate on this to
+ *  prevent silently clobbering an existing integration's tools, connections,
+ *  and policies. */
+export class IntegrationAlreadyExistsError extends Schema.TaggedErrorClass<IntegrationAlreadyExistsError>()(
+  "IntegrationAlreadyExistsError",
+  { slug: IntegrationSlug },
+  { httpApiStatus: 409 },
+) {
+  override get message(): string {
+    return `Integration already exists: ${this.slug}`;
+  }
+}
+
+/** `integrations.remove` was called on an integration declared statically by a
+ *  plugin at startup (`canRemove: false`). */
+export class IntegrationRemovalNotAllowedError extends Schema.TaggedErrorClass<IntegrationRemovalNotAllowedError>()(
+  "IntegrationRemovalNotAllowedError",
+  { slug: IntegrationSlug },
+) {
+  override get message(): string {
+    return `Integration cannot be removed (declared statically by a plugin): ${this.slug}`;
+  }
+}
 
 export class ConnectionNotFoundError extends Schema.TaggedErrorClass<ConnectionNotFoundError>()(
   "ConnectionNotFoundError",
-  { connectionId: ConnectionId },
-) {}
-
-export class ConnectionProviderNotRegisteredError extends Schema.TaggedErrorClass<ConnectionProviderNotRegisteredError>()(
-  "ConnectionProviderNotRegisteredError",
   {
-    provider: Schema.String,
-    connectionId: Schema.optional(ConnectionId),
+    owner: Owner,
+    integration: IntegrationSlug,
+    name: ConnectionName,
   },
+) {
+  override get message(): string {
+    return `Connection not found: ${this.integration}.${this.owner}.${this.name}`;
+  }
+}
+
+/** A connection create request was rejected before anything was written: the
+ *  input is structurally invalid (no credential inputs for a credentialed
+ *  template, mixed pasted/external origins, …) or targets owner `user` in a
+ *  context that has no user subject. The message says which — it is safe to
+ *  show to the caller. */
+export class InvalidConnectionInputError extends Schema.TaggedErrorClass<InvalidConnectionInputError>()(
+  "InvalidConnectionInputError",
+  { message: Schema.String },
 ) {}
 
-export class ConnectionRefreshNotSupportedError extends Schema.TaggedErrorClass<ConnectionRefreshNotSupportedError>()(
-  "ConnectionRefreshNotSupportedError",
-  {
-    connectionId: ConnectionId,
-    provider: Schema.String,
-  },
-) {}
+/** A connection references a credential provider key that isn't registered on
+ *  the executor. */
+export class CredentialProviderNotRegisteredError extends Schema.TaggedErrorClass<CredentialProviderNotRegisteredError>()(
+  "CredentialProviderNotRegisteredError",
+  { provider: ProviderKey },
+) {
+  override get message(): string {
+    return `Credential provider not registered: ${this.provider}`;
+  }
+}
 
-/**
- * Raised by `connections.accessToken(id)` when the provider's refresh
- * handler reported that the stored refresh token is permanently
- * invalid (RFC 6749 §5.2 `invalid_grant` and friends). The caller —
- * typically a tool invocation — surfaces this so the UI can prompt the
- * user to sign in again. Distinct from `ConnectionRefreshError` so
- * "the network flaked, retry later" and "the grant is dead, re-auth"
- * don't collapse into one error tag at the plugin boundary.
- */
-export class ConnectionReauthRequiredError extends Schema.TaggedErrorClass<ConnectionReauthRequiredError>()(
-  "ConnectionReauthRequiredError",
+/** A connection's value could not be resolved — the provider returned nothing,
+ *  or an OAuth token refresh failed and the user must re-auth. */
+export class CredentialResolutionError extends Schema.TaggedErrorClass<CredentialResolutionError>()(
+  "CredentialResolutionError",
   {
-    connectionId: ConnectionId,
-    provider: Schema.String,
+    owner: Owner,
+    integration: IntegrationSlug,
+    name: ConnectionName,
     message: Schema.String,
-  },
-) {}
-
-/** Raised when `connections.remove(id)` is called on a connection that's
- *  still referenced by sources / bindings. Mirrors `SecretInUseError`. */
-export class ConnectionInUseError extends Schema.TaggedErrorClass<ConnectionInUseError>()(
-  "ConnectionInUseError",
-  {
-    connectionId: ConnectionId,
-    usageCount: Schema.Number,
+    /** True when the stored grant is permanently invalid and the user must
+     *  sign in again (RFC 6749 §5.2 invalid_grant and friends). */
+    reauthRequired: Schema.optional(Schema.Boolean),
   },
 ) {}
 
 // ---------------------------------------------------------------------------
-// Union type for convenience in signatures.
+// Union — the failure channel of `execute`.
 // ---------------------------------------------------------------------------
 
-export type ExecutorError =
+export type ExecuteError =
   | ToolNotFoundError
   | ToolInvocationError
+  | ToolBlockedError
   | PluginNotLoadedError
   | NoHandlerError
-  | ToolBlockedError
-  | SourceNotFoundError
-  | SourceRemovalNotAllowedError
-  | SecretNotFoundError
-  | SecretResolutionError
-  | SecretOwnedByConnectionError
-  | SecretInUseError
   | ConnectionNotFoundError
-  | ConnectionProviderNotRegisteredError
-  | ConnectionRefreshNotSupportedError
-  | ConnectionReauthRequiredError
-  | ConnectionInUseError;
+  | CredentialProviderNotRegisteredError
+  | CredentialResolutionError
+  | ElicitationDeclinedError
+  | StorageFailure;
+
+/** Convenience union spanning every typed error the SDK raises. */
+export type ExecutorError =
+  | ExecuteError
+  | IntegrationNotFoundError
+  | IntegrationRemovalNotAllowedError;

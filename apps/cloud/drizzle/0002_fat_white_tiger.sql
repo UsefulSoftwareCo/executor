@@ -1,1 +1,0 @@
-ALTER TABLE "mcp_oauth_session" ALTER COLUMN "expires_at" SET DATA TYPE bigint;

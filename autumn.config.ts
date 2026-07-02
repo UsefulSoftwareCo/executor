@@ -64,8 +64,13 @@ export const team = plan({
   addOn: false,
   autoEnable: false,
   price: {
-    amount: 49,
+    amount: 150,
     interval: "month",
+  },
+  freeTrial: {
+    durationLength: 14,
+    durationType: "day",
+    cardRequired: true,
   },
   items: [
     item({
@@ -75,6 +80,25 @@ export const team = plan({
         amount: 0.2,
         billingUnits: 1000,
         billingMethod: "usage_based",
+        interval: "month",
+      },
+    }),
+    item({
+      featureId: domainVerification.id,
+    }),
+  ],
+});
+
+export const enterprise = plan({
+  id: "enterprise",
+  name: "Enterprise",
+  addOn: false,
+  autoEnable: false,
+  items: [
+    item({
+      featureId: executions.id,
+      unlimited: true,
+      reset: {
         interval: "month",
       },
     }),

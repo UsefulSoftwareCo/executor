@@ -1,0 +1,28 @@
+{
+  "name": "@executor-js/test-servers",
+  "version": "1.4.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/worker.ts"
+  },
+  "scripts": {
+    "deploy:cloudflare": "wrangler deploy",
+    "dev:cloudflare": "wrangler dev",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "effect": "catalog:",
+    "graphql-yoga": "^5.17.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "@effect/vitest": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "^4.81.0"
+  }
+}

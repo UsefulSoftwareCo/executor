@@ -1,93 +1,104 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useMemo, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { ScopeId } from "@executor-js/sdk/core";
-import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
-import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { connectionsAtom } from "@executor-js/react/api/atoms";
-import { SourceOAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
-import { slugifyNamespace } from "@executor-js/react/plugins/source-identity";
-import { secretBackedValuesFromConfiguredCredentialBindings } from "@executor-js/react/plugins/credential-bindings";
+import {
+  AuthTemplateSlug,
+  IntegrationSlug,
+  type Connection,
+  type Owner,
+} from "@executor-js/sdk/shared";
+import { connectionsAllAtom } from "@executor-js/react/api/atoms";
+import { AddAccountModal } from "@executor-js/react/components/add-account-modal";
+import { OAuthSignInButton } from "@executor-js/react/plugins/oauth-sign-in";
+import type { AuthMethod } from "@executor-js/react/lib/auth-placements";
 
-import { mcpSourceAtom, mcpSourceBindingsAtom, setMcpSourceBinding } from "./atoms";
-import type { McpStoredSourceSchemaType } from "../sdk/stored-source";
-import { McpSourceBindingInput } from "../sdk/types";
+import { mcpServerAtom } from "./atoms";
+import type { McpAuthMethod } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
-// McpSignInButton — top-bar action on the source detail page.
+// McpSignInButton — top-bar action on the integration detail page (v2).
 //
-// Reads the source's stored endpoint + oauth2 slot, re-runs the DCR /
-// authorization-code flow against a stable `mcp-oauth2-${namespace}`
-// connection id, and on success writes the user's credential binding.
+// Reads the integration's declared auth methods; when one is `oauth2` it runs
+// the OAuth flow to mint a connection through that method. "Connected" is
+// derived from whether ANY owner already has a connection for this integration
+// (the global owner toggle is retired, so the check merges both owners). The
+// NEW connection's owner is a real create-target — chosen EXPLICITLY via the
+// `owner` prop (default Workspace `org` on an org-scoped host, Local `org` on
+// a non-org host like local), never read from an ambient owner.
 // ---------------------------------------------------------------------------
 
-export default function McpSignInButton(props: { sourceId: string }) {
-  const scopeId = useScope();
-  const userScopeId = useUserScope();
-  const sourceResult = useAtomValue(
-    mcpSourceAtom(scopeId, props.sourceId),
-  ) as AsyncResult.AsyncResult<McpStoredSourceSchemaType | null, unknown>;
-  const source =
-    AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
-  const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
-  const bindingsResult = useAtomValue(
-    mcpSourceBindingsAtom(userScopeId, props.sourceId, sourceScope),
-  );
-  const connectionsResult = useAtomValue(connectionsAtom(userScopeId));
-  const setBinding = useAtomSet(setMcpSourceBinding, { mode: "promise" });
+export default function McpSignInButton(props: { sourceId: string; owner?: Owner }) {
+  const slug = IntegrationSlug.make(props.sourceId);
+  const targetOwner: Owner = props.owner ?? "org";
+  const serverResult = useAtomValue(mcpServerAtom(slug));
+  const connectionsResult = useAtomValue(connectionsAllAtom);
+  const [modalOpen, setModalOpen] = useState(false);
 
-  const remote = source && source.config.transport === "remote" ? source.config : null;
-  const oauth2 = remote && remote.auth.kind === "oauth2" ? remote.auth : null;
-  const connections = AsyncResult.isSuccess(connectionsResult)
-    ? (connectionsResult.value as readonly { readonly id: string }[])
-    : null;
-  const bindings = AsyncResult.isSuccess(bindingsResult) ? bindingsResult.value : null;
-  const connectionBinding = bindings?.find(
-    (binding) => binding.slot === oauth2?.connectionSlot && binding.value.kind === "connection",
+  const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
+  const remote = server !== null && server.config.transport === "remote" ? server.config : null;
+  const oauthMethod =
+    remote?.authenticationTemplate.find((method: McpAuthMethod) => method.kind === "oauth2") ??
+    null;
+  const connections: readonly Connection[] = AsyncResult.isSuccess(connectionsResult)
+    ? connectionsResult.value
+    : [];
+  const hasConnection = connections.some(
+    (connection: Connection) => connection.integration === slug,
   );
-  const connectionId =
-    connectionBinding?.value.kind === "connection" ? connectionBinding.value.connectionId : null;
-  const isConnected =
-    oauth2 !== null &&
-    connections !== null &&
-    connectionId !== null &&
-    connections.some((c) => c.id === connectionId);
 
-  if (!remote || !oauth2 || !source) return null;
-  const namespaceSlug = slugifyNamespace(source.namespace) || "mcp";
+  const methods = useMemo<readonly AuthMethod[]>(
+    () =>
+      remote === null || oauthMethod === null
+        ? []
+        : [
+            {
+              id: oauthMethod.slug,
+              label: "OAuth",
+              kind: "oauth",
+              source: "spec",
+              template: AuthTemplateSlug.make(oauthMethod.slug),
+              placements: [],
+              oauth: { discoveryUrl: remote.endpoint, supportsDynamicRegistration: true },
+            },
+          ],
+    [remote, oauthMethod],
+  );
+  const initialState = useMemo(
+    () =>
+      modalOpen && server && oauthMethod
+        ? {
+            key: `${String(slug)}:${targetOwner}:oauth`,
+            owner: targetOwner,
+            template: oauthMethod.slug,
+            label: `${server.description || String(slug)} OAuth`,
+          }
+        : null,
+    [modalOpen, oauthMethod, server, slug, targetOwner],
+  );
+
+  if (oauthMethod === null) return null;
 
   return (
-    <SourceOAuthSignInButton
-      popupName="mcp-oauth"
-      pluginId="mcp"
-      namespace={namespaceSlug}
-      fallbackNamespace="mcp"
-      endpoint={remote.endpoint}
-      tokenScope={userScopeId}
-      connectionId={connectionId}
-      sourceLabel={`${source.name.trim() || source.namespace || "MCP"} OAuth`}
-      headers={secretBackedValuesFromConfiguredCredentialBindings(remote.headers, bindings ?? [])}
-      queryParams={secretBackedValuesFromConfiguredCredentialBindings(
-        remote.queryParams,
-        bindings ?? [],
-      )}
-      isConnected={isConnected}
-      detectPopupClosed={false}
-      onConnected={async (nextConnectionId) => {
-        await setBinding({
-          params: { scopeId: userScopeId },
-          payload: McpSourceBindingInput.make({
-            sourceId: props.sourceId,
-            sourceScope,
-            scope: userScopeId,
-            slot: oauth2.connectionSlot,
-            value: { kind: "connection", connectionId: nextConnectionId },
-          }),
-          reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
-        });
-      }}
-      reconnectingLabel="Reconnecting…"
-      signingInLabel="Signing in…"
-    />
+    <>
+      <OAuthSignInButton
+        busy={false}
+        error={null}
+        isConnected={hasConnection}
+        onSignIn={() => setModalOpen(true)}
+        reconnectingLabel="Reconnecting…"
+        signingInLabel="Signing in…"
+      />
+      {server ? (
+        <AddAccountModal
+          integration={slug}
+          integrationName={server.description || String(slug)}
+          methods={methods}
+          open={modalOpen}
+          onOpenChange={setModalOpen}
+          initialState={initialState}
+        />
+      ) : null}
+    </>
   );
 }

@@ -5,78 +5,22 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1776367901699,
-      "tag": "0000_overconfident_sharon_carter",
+      "when": 1780729924132,
+      "tag": "0000_v2_baseline",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "6",
-      "when": 1776680432025,
-      "tag": "0001_sour_catseye",
+      "when": 1780991784172,
+      "tag": "0001_past_doctor_strange",
       "breakpoints": true
     },
     {
       "idx": 2,
       "version": "6",
-      "when": 1776732062873,
-      "tag": "0002_lively_sue_storm",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1776976132767,
-      "tag": "0003_little_silk_fever",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1777800000000,
-      "tag": "0004_add_tool_policy",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1777850000000,
-      "tag": "0005_repair_mcp_oauth_session",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "6",
-      "when": 1777850000001,
-      "tag": "0006_neat_terror",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "6",
-      "when": 1778100000000,
-      "tag": "0007_normalize_plugin_secret_refs",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "6",
-      "when": 1778128200000,
-      "tag": "0008_scoped_credentials_cutover",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "6",
-      "when": 1778192434062,
-      "tag": "0009_repair_openapi_oauth_cutover_residue",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "6",
-      "when": 1778192434063,
-      "tag": "0010_add_credential_binding_secret_scope",
+      "when": 1782150869757,
+      "tag": "0002_empty_rictor",
       "breakpoints": true
     }
   ]

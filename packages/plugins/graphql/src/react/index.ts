@@ -1,3 +1,3 @@
-export { graphqlSourcePlugin } from "./source-plugin";
+export { graphqlIntegrationPlugin } from "./source-plugin";
 export { GraphqlClient } from "./client";
-export { addGraphqlSource } from "./atoms";
+export { addGraphqlIntegration, graphqlIntegrationConfigAtom } from "./atoms";

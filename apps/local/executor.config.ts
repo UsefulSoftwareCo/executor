@@ -1,40 +1,43 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
-import type { ConfigFileSink } from "@executor-js/config";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
+import { googleHttpPlugin } from "@executor-js/plugin-google/api";
+import { microsoftHttpPlugin } from "@executor-js/plugin-microsoft/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
-import { googleDiscoveryHttpPlugin } from "@executor-js/plugin-google-discovery/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { keychainPlugin } from "@executor-js/plugin-keychain";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
 import { onepasswordHttpPlugin } from "@executor-js/plugin-onepassword/api";
 import { desktopSettingsPlugin } from "@executor-js/plugin-desktop-settings/server";
+import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 // ---------------------------------------------------------------------------
 // Single source of truth for the local app's plugin list.
 //
-// Consumed by:
-//   - the schema-gen CLI (reads `plugin.schema` only; calls `plugins({})`)
-//   - the host runtime (calls `plugins({ configFile })` with a real sink)
+// Consumed by the host runtime. Executor owns the storage tables; plugins use
+// host-provided storage facades instead of contributing schema.
 //
-// `TDeps` is inferred from the factory parameter annotation directly.
 // First-party and third-party plugins use the same import-and-call flow.
 // ---------------------------------------------------------------------------
 
 interface LocalPluginDeps {
-  readonly configFile?: ConfigFileSink;
+  readonly activeToolkitSlug?: string;
 }
 
 export default defineExecutorConfig({
-  dialect: "sqlite",
-  plugins: ({ configFile }: LocalPluginDeps = {}) =>
+  plugins: ({ activeToolkitSlug }: LocalPluginDeps = {}) =>
     [
-      openApiHttpPlugin({ configFile }),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true, configFile }),
-      googleDiscoveryHttpPlugin(),
-      graphqlHttpPlugin({ configFile }),
+      openApiHttpPlugin(),
+      googleHttpPlugin(),
+      microsoftHttpPlugin(),
+      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
+      graphqlHttpPlugin(),
+      toolkitsPlugin({ activeToolkitSlug }),
       keychainPlugin(),
       fileSecretsPlugin(),
       onepasswordHttpPlugin(),
-      desktopSettingsPlugin(),
+      desktopSettingsPlugin({
+        webBaseUrl:
+          process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`,
+      }),
     ] as const,
 });

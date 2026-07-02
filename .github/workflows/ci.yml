@@ -74,6 +74,47 @@ jobs:
 
       - run: bun run test
 
+  e2e-local:
+    name: E2E (stdio MCP)
+    # Skipped on pull_request: the local scenario boots a real `executor web`
+    # plus a browser and is currently flaky on PRs. Still runs on push to main.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      # The local scenarios boot a real `executor web` (which spawns a Node
+      # sidecar) and some drive a browser, so pin Node 22 and install Chromium.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      # `chromium` and the new `chromium-headless-shell` ship as separate
+      # downloads; the browser-driven scenarios launch the headless shell.
+      # Install from e2e so bunx resolves ITS pinned playwright (the version the
+      # tests run against) rather than floating to the latest, which would fetch
+      # a browser build the test runtime does not look for.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        working-directory: e2e
+
+      # The `local` project is excluded from the default `test` chain (each
+      # scenario boots its own `executor web`). Run just the stdio MCP scenario
+      # here: it is the auto-connect / env-as-secret regression guard, and
+      # running it alone avoids the boot-resource accumulation and the
+      # pre-existing browser flakiness of the rest of the local suite. Expanding
+      # to the full `local` project (bun run test:local) is a follow-up once
+      # those are stabilized.
+      - name: Run the stdio MCP scenario
+        run: bunx vitest run --project local local/stdio-mcp.test.ts
+        working-directory: e2e
+
   desktop-smoke:
     name: Desktop smoke build
     runs-on: ubuntu-latest
@@ -89,7 +130,7 @@ jobs:
       - name: Build web app
         run: bun run --filter @executor-js/local build
 
-      - name: Build sidecar + stage web UI
+      - name: Build bundled executor
         env:
           BUN_TARGET: bun-linux-x64
         run: bun ./scripts/build-sidecar.ts
@@ -98,3 +139,20 @@ jobs:
       - name: Build Electron main/preload/renderer
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
+
+  selfhost-docker-smoke:
+    name: Self-host Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build self-host image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/host-selfhost/Dockerfile
+          push: false
+          tags: executor-selfhost:ci

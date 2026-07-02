@@ -3,8 +3,9 @@
  * @executor-js/plugin-desktop-settings/client
  *
  * A single page mounted at `/plugins/desktop-settings/` that lets the user
- * configure the Electron sidecar's port, auth, and password. Talks to the
- * main process via `window.executor.*` (exposed by `apps/desktop/src/preload`).
+ * inspect and configure the Electron sidecar's server connection. Talks to
+ * the main process via `window.executor.*` (exposed by
+ * `apps/desktop/src/preload`).
  *
  * The plugin is bundled into apps/local's renderer too (because executor
  * web + desktop share the same client bundle pipeline), but the page
@@ -12,7 +13,7 @@
  * module-init time — so the web UI doesn't show a non-functional link.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useState } from "react";
 import { defineClientPlugin } from "@executor-js/sdk/client";
 
 // ---------------------------------------------------------------------------
@@ -25,23 +26,40 @@ import { defineClientPlugin } from "@executor-js/sdk/client";
 
 interface DesktopServerSettings {
   readonly port: number;
-  readonly requireAuth: boolean;
-  readonly password: string;
+}
+
+interface DesktopServerConnection {
+  readonly kind: "desktop-sidecar";
+  readonly key: "desktop-sidecar";
+  readonly origin: string;
+  readonly apiBaseUrl: string;
+  readonly displayName: string;
 }
 
 interface ExecutorBridge {
+  readonly getServerConnection: () => Promise<DesktopServerConnection | null>;
+  // The bearer token, fetched on demand to display the CLI/MCP connect command.
+  readonly getServerAuthToken?: () => Promise<string | null>;
   readonly getSettings: () => Promise<DesktopServerSettings>;
   readonly updateSettings: (
     patch: Partial<DesktopServerSettings>,
   ) => Promise<DesktopServerSettings>;
-  readonly regeneratePassword: () => Promise<DesktopServerSettings>;
-  readonly restartServer: () => Promise<{ readonly port: number; readonly baseUrl: string }>;
+  readonly rotateToken: () => Promise<DesktopServerConnection>;
+  readonly restartServer: () => Promise<DesktopServerConnection>;
+  // Optional: present in desktop builds that ship the diagnostics export.
+  readonly exportDiagnostics?: () => Promise<string>;
 }
 
 const readBridge = (): ExecutorBridge | null => {
   if (typeof window === "undefined") return null;
   const candidate = (window as Window & { readonly executor?: ExecutorBridge }).executor;
-  if (!candidate || typeof candidate.getSettings !== "function") return null;
+  if (
+    !candidate ||
+    typeof candidate.getSettings !== "function" ||
+    typeof candidate.getServerConnection !== "function"
+  ) {
+    return null;
+  }
   return candidate;
 };
 
@@ -54,23 +72,51 @@ const inDesktop = readBridge() !== null;
 const describeIpcError = (_err: unknown): string =>
   "Save failed — check the desktop console for details.";
 
+const pageFrameStyle: CSSProperties = {
+  minHeight: 0,
+  height: "100%",
+  overflowY: "auto",
+};
+
 // ---------------------------------------------------------------------------
 // SettingsPage
 // ---------------------------------------------------------------------------
 
 function SettingsPage() {
   const bridge = readBridge();
+  const [connection, setConnection] = useState<DesktopServerConnection | null>(null);
   const [settings, setSettings] = useState<DesktopServerSettings | null>(null);
   const [draft, setDraft] = useState<DesktopServerSettings | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "saving" | "restarting" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!bridge) return;
-    void bridge.getSettings().then((s) => {
-      setSettings(s);
-      setDraft(s);
+    void Promise.all([
+      bridge.getSettings(),
+      bridge.getServerConnection(),
+      bridge.getServerAuthToken?.() ?? Promise.resolve(null),
+    ]).then(([nextSettings, nextConnection, nextToken]) => {
+      setSettings(nextSettings);
+      setDraft(nextSettings);
+      setConnection(nextConnection);
+      setAuthToken(nextToken);
     });
+  }, [bridge]);
+
+  const restartAndRefreshConnection = useCallback(async () => {
+    if (!bridge) return;
+    setStatus("restarting");
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC, errors surface in the form
+    try {
+      setConnection(await bridge.restartServer());
+    } catch (err) {
+      setError(describeIpcError(err));
+      setStatus("error");
+      return;
+    }
+    setStatus("idle");
   }, [bridge]);
 
   const apply = useCallback(
@@ -89,39 +135,35 @@ function SettingsPage() {
       }
       setSettings(next);
       setDraft(next);
-      setStatus("restarting");
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: same as above
-      try {
-        await bridge.restartServer();
-      } catch (err) {
-        setError(describeIpcError(err));
-        setStatus("error");
-        return;
-      }
-      // Window reload happens on the main side after restart resolves.
-      setStatus("idle");
+      await restartAndRefreshConnection();
     },
-    [bridge],
+    [bridge, restartAndRefreshConnection],
   );
 
-  const regenerate = useCallback(async () => {
-    if (!bridge) return;
-    setStatus("saving");
-    let next: DesktopServerSettings;
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC
+  const [diagnostics, setDiagnostics] = useState<
+    { readonly state: "idle" | "exporting" } | { readonly state: "done"; readonly path: string }
+  >({ state: "idle" });
+
+  const exportDiagnostics = useCallback(async () => {
+    if (!bridge?.exportDiagnostics) return;
+    setDiagnostics({ state: "exporting" });
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC, errors surface in the form
     try {
-      next = await bridge.regeneratePassword();
-    } catch (err) {
-      setError(describeIpcError(err));
-      setStatus("error");
-      return;
+      const path = await bridge.exportDiagnostics();
+      setDiagnostics({ state: "done", path });
+    } catch {
+      setError("Diagnostics export failed — check the desktop log for details.");
+      setDiagnostics({ state: "idle" });
     }
-    setSettings(next);
-    setDraft(next);
+  }, [bridge]);
+
+  const rotate = useCallback(async () => {
+    if (!bridge) return;
     setStatus("restarting");
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC
     try {
-      await bridge.restartServer();
+      setConnection(await bridge.rotateToken());
+      setAuthToken((await bridge.getServerAuthToken?.()) ?? null);
     } catch (err) {
       setError(describeIpcError(err));
       setStatus("error");
@@ -132,86 +174,110 @@ function SettingsPage() {
 
   if (!bridge) {
     return (
-      <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>
-        <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Desktop server settings</h1>
-        <p style={{ color: "var(--muted-foreground, #888)" }}>
-          This panel configures the Executor Desktop app's local server. Open this page from the
-          desktop app to change the port, auth, or password.
-        </p>
+      <div style={pageFrameStyle}>
+        <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>
+          <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Desktop server settings</h1>
+          <p style={{ color: "var(--muted-foreground, #888)" }}>
+            Open this page from Executor Desktop to inspect and change the active server connection.
+          </p>
+        </div>
       </div>
     );
   }
 
-  if (!settings || !draft) {
-    return <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>;
+  if (!settings || !draft || !connection) {
+    return (
+      <div style={pageFrameStyle}>
+        <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>
+      </div>
+    );
   }
 
-  const dirty =
-    draft.port !== settings.port ||
-    draft.requireAuth !== settings.requireAuth ||
-    draft.password !== settings.password;
+  const dirty = draft.port !== settings.port;
+
+  const authLabel = "Bearer token";
+  const cliProfileCommand = `executor server add desktop ${connection.origin} --default`;
+  const cliUseCommand = authToken
+    ? `EXECUTOR_AUTH_TOKEN=${authToken} executor tools sources --server desktop`
+    : "executor tools sources --server desktop";
 
   return (
-    <div style={{ maxWidth: 640, margin: "2rem auto", padding: "1.5rem" }}>
-      <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.25rem" }}>
-        Desktop server
-      </h1>
-      <p
-        style={{
-          fontSize: "0.875rem",
-          color: "var(--muted-foreground, #888)",
-          marginBottom: "1.5rem",
-        }}
-      >
-        Configure how the local HTTP server in the desktop app accepts connections. Changes restart
-        the server immediately.
-      </p>
+    <div style={pageFrameStyle}>
+      <div style={{ maxWidth: 760, margin: "2rem auto", padding: "1.5rem" }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+          Desktop server connection
+        </h1>
+        <p
+          style={{
+            fontSize: "0.875rem",
+            color: "var(--muted-foreground, #888)",
+            marginBottom: "1.5rem",
+          }}
+        >
+          {connection.displayName}
+        </p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-          <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Port</span>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <input
-            type="number"
-            min={1}
-            max={65535}
-            value={draft.port}
-            onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })}
-            style={{
-              padding: "0.5rem 0.7rem",
-              borderRadius: 6,
-              border: "1px solid var(--border, #ddd)",
-              fontFamily: "inherit",
-              fontSize: "0.95rem",
-              width: "8rem",
-            }}
-          />
-          <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-            Default 4789. The desktop opens at <code>http://127.0.0.1:{draft.port}</code>.
-          </span>
-        </label>
+        <section
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(14rem, 1fr))",
+            gap: "0.75rem",
+            marginBottom: "1.5rem",
+          }}
+        >
+          <ConnectionField label="Origin" value={connection.origin} />
+          <ConnectionField label="API" value={connection.apiBaseUrl} />
+          <ConnectionField label="Auth" value={authLabel} />
+          <ConnectionField label="Kind" value={connection.kind} />
+        </section>
 
-        <label style={{ display: "flex", alignItems: "flex-start", gap: "0.6rem" }}>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <input
-            type="checkbox"
-            checked={!draft.requireAuth}
-            onChange={(e) => setDraft({ ...draft, requireAuth: !e.target.checked })}
-            style={{ marginTop: "0.25rem" }}
-          />
-          <span style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Use without a password</span>
+        <section
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.5rem",
+            marginBottom: "1.5rem",
+            padding: "0.85rem",
+            borderRadius: 6,
+            border: "1px solid var(--border, #ddd)",
+            background: "var(--muted, #f5f5f5)",
+          }}
+        >
+          <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>CLI profile</div>
+          <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+            {cliProfileCommand}
+          </code>
+          <code style={{ overflow: "auto", whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+            {cliUseCommand}
+          </code>
+        </section>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Port</span>
+            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              value={draft.port}
+              onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })}
+              style={{
+                padding: "0.5rem 0.7rem",
+                borderRadius: 6,
+                border: "1px solid var(--border, #ddd)",
+                fontFamily: "inherit",
+                fontSize: "0.95rem",
+                width: "8rem",
+              }}
+            />
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              Disables HTTP Basic auth on the sidecar. Any process running as you on this machine
-              can hit <code>/api</code> directly. The host allowlist still blocks browser-based
-              attacks. Recommended only on personal devices.
+              Changes restart the connection at <code>http://127.0.0.1:{draft.port}</code>.
             </span>
-          </span>
-        </label>
+          </label>
 
-        {draft.requireAuth && (
           <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Password</span>
+            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Bearer token</span>
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
               <code
                 style={{
@@ -225,12 +291,12 @@ function SettingsPage() {
                   whiteSpace: "nowrap",
                 }}
               >
-                {settings.password}
+                {authToken ?? "—"}
               </code>
               {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
               <button
                 type="button"
-                onClick={() => void regenerate()}
+                onClick={() => void rotate()}
                 disabled={status !== "idle"}
                 style={{
                   padding: "0.45rem 0.85rem",
@@ -242,50 +308,113 @@ function SettingsPage() {
                   cursor: status === "idle" ? "pointer" : "default",
                 }}
               >
-                Regenerate
+                Rotate
               </button>
             </div>
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              The renderer sends this as <code>Authorization: Basic</code>. AI clients using the
-              HTTP MCP integration need this value too — regenerating invalidates existing client
-              configs.
+              The sidecar enforces this token on <code>/api</code> and <code>/mcp</code>. Rotating
+              it restarts the connection and invalidates existing MCP client configs — re-run your
+              connect command afterwards.
             </span>
           </div>
-        )}
 
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <button
-            type="button"
-            disabled={!dirty || status !== "idle"}
-            onClick={() =>
-              void apply({
-                port: draft.port,
-                requireAuth: draft.requireAuth,
-              })
-            }
-            style={{
-              padding: "0.55rem 1.1rem",
-              borderRadius: 6,
-              border: "1px solid transparent",
-              background: dirty ? "var(--primary, #0d0d10)" : "var(--muted, #eee)",
-              color: dirty ? "var(--primary-foreground, white)" : "var(--muted-foreground, #888)",
-              fontFamily: "inherit",
-              fontSize: "0.9rem",
-              cursor: dirty && status === "idle" ? "pointer" : "default",
-            }}
-          >
-            {status === "saving"
-              ? "Saving…"
-              : status === "restarting"
-                ? "Restarting server…"
-                : "Save"}
-          </button>
-          {error && (
-            <span style={{ fontSize: "0.8rem", color: "var(--destructive, #c00)" }}>{error}</span>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+            <button
+              type="button"
+              disabled={!dirty || status !== "idle"}
+              onClick={() => void apply({ port: draft.port })}
+              style={{
+                padding: "0.55rem 1.1rem",
+                borderRadius: 6,
+                border: "1px solid transparent",
+                background: dirty ? "var(--primary, #0d0d10)" : "var(--muted, #eee)",
+                color: dirty ? "var(--primary-foreground, white)" : "var(--muted-foreground, #888)",
+                fontFamily: "inherit",
+                fontSize: "0.9rem",
+                cursor: dirty && status === "idle" ? "pointer" : "default",
+              }}
+            >
+              {status === "saving"
+                ? "Saving…"
+                : status === "restarting"
+                  ? "Restarting server…"
+                  : "Save"}
+            </button>
+            {error && (
+              <span style={{ fontSize: "0.8rem", color: "var(--destructive, #c00)" }}>{error}</span>
+            )}
+          </div>
+
+          {bridge.exportDiagnostics && (
+            <section
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.5rem",
+                padding: "0.85rem",
+                borderRadius: 6,
+                border: "1px solid var(--border, #ddd)",
+              }}
+            >
+              <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
+              <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
+                Packs app and server logs, crash dumps, and version info into a zip in your
+                Downloads folder — attach it when reporting a bug. Your sources, secrets, and bearer
+                token are not included.
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+                <button
+                  type="button"
+                  onClick={() => void exportDiagnostics()}
+                  disabled={diagnostics.state === "exporting"}
+                  style={{
+                    padding: "0.45rem 0.85rem",
+                    borderRadius: 6,
+                    border: "1px solid var(--border, #ddd)",
+                    background: "var(--background, white)",
+                    fontFamily: "inherit",
+                    fontSize: "0.85rem",
+                    cursor: diagnostics.state === "exporting" ? "default" : "pointer",
+                    width: "fit-content",
+                  }}
+                >
+                  {diagnostics.state === "exporting" ? "Exporting…" : "Export diagnostics"}
+                </button>
+                {diagnostics.state === "done" && (
+                  <code style={{ fontSize: "0.75rem", overflow: "auto", whiteSpace: "nowrap" }}>
+                    {diagnostics.path}
+                  </code>
+                )}
+              </div>
+            </section>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ConnectionField(props: { readonly label: string; readonly value: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        minWidth: 0,
+        flexDirection: "column",
+        gap: "0.2rem",
+        padding: "0.75rem",
+        borderRadius: 6,
+        border: "1px solid var(--border, #ddd)",
+      }}
+    >
+      <span style={{ fontSize: "0.7rem", color: "var(--muted-foreground, #888)" }}>
+        {props.label}
+      </span>
+      <code style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {props.value}
+      </code>
     </div>
   );
 }

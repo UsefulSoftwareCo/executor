@@ -3,6 +3,7 @@ export interface McpRemotePreset {
   readonly name: string;
   readonly summary: string;
   readonly url: string;
+  readonly endpoint: string;
   readonly icon?: string;
   readonly featured?: boolean;
   readonly transport?: undefined;
@@ -24,11 +25,20 @@ export type McpPreset = McpRemotePreset | McpStdioPreset;
 
 export const mcpPresets: readonly McpPreset[] = [
   {
+    id: "emulate-mcp",
+    name: "Emulate MCP",
+    summary: "Deterministic MCP fixtures for validating native text and image content.",
+    url: "https://emulators.dev/mcp/query/mcp?token=demo-token",
+    endpoint: "https://emulators.dev/mcp/query/mcp?token=demo-token",
+    icon: "https://emulators.dev/favicon.ico",
+  },
+  {
     id: "deepwiki",
     name: "DeepWiki",
     summary: "Search and read documentation from any GitHub repo.",
     url: "https://mcp.deepwiki.com/mcp",
-    icon: "https://deepwiki.com/favicon.ico",
+    endpoint: "https://mcp.deepwiki.com/mcp",
+    icon: "https://integrations.sh/logo/deepwiki.com",
     featured: true,
   },
   {
@@ -36,7 +46,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Context7",
     summary: "Up-to-date docs and code examples for any library.",
     url: "https://mcp.context7.com/mcp",
-    icon: "https://context7.com/favicon.ico",
+    endpoint: "https://mcp.context7.com/mcp",
+    icon: "https://integrations.sh/logo/context7.com",
     featured: true,
   },
   {
@@ -44,7 +55,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Browserbase",
     summary: "Cloud browser sessions for web scraping and automation.",
     url: "https://mcp.browserbase.com/mcp",
-    icon: "https://www.browserbase.com/favicon.ico",
+    endpoint: "https://mcp.browserbase.com/mcp",
+    icon: "https://integrations.sh/logo/browserbase.com",
     featured: true,
   },
   {
@@ -52,7 +64,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Firecrawl",
     summary: "Crawl and scrape websites into structured data.",
     url: "https://mcp.firecrawl.dev/mcp",
-    icon: "https://www.firecrawl.dev/favicon.ico",
+    endpoint: "https://mcp.firecrawl.dev/mcp",
+    icon: "https://integrations.sh/logo/firecrawl.dev",
     featured: true,
   },
   {
@@ -60,7 +73,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Neon",
     summary: "Serverless Postgres — branches, queries, and management.",
     url: "https://mcp.neon.tech/mcp",
-    icon: "https://neon.tech/favicon/favicon.ico",
+    endpoint: "https://mcp.neon.tech/mcp",
+    icon: "https://integrations.sh/logo/neon.tech",
     featured: true,
   },
   {
@@ -68,7 +82,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Axiom",
     summary: "Query, analyze, and monitor your logs and event data.",
     url: "https://mcp.axiom.co/mcp",
-    icon: "https://axiom.co/favicon.ico",
+    endpoint: "https://mcp.axiom.co/mcp",
+    icon: "https://integrations.sh/logo/axiom.co",
     featured: true,
   },
   {
@@ -76,7 +91,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Stripe",
     summary: "Manage payments, subscriptions, and billing via MCP.",
     url: "https://mcp.stripe.com",
-    icon: "https://stripe.com/favicon.ico",
+    endpoint: "https://mcp.stripe.com",
+    icon: "https://integrations.sh/logo/stripe.com",
     featured: true,
   },
   {
@@ -84,7 +100,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Linear",
     summary: "Issues, projects, teams, and cycles via MCP.",
     url: "https://mcp.linear.app/mcp",
-    icon: "https://linear.app/favicon.ico",
+    endpoint: "https://mcp.linear.app/mcp",
+    icon: "https://integrations.sh/logo/linear.app",
     featured: true,
   },
   {
@@ -92,7 +109,8 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Notion",
     summary: "Databases, pages, blocks, and search via MCP.",
     url: "https://mcp.notion.com/mcp",
-    icon: "https://www.notion.com/front-static/favicon.ico",
+    endpoint: "https://mcp.notion.com/mcp",
+    icon: "https://integrations.sh/logo/notion.com",
     featured: true,
   },
   {
@@ -100,14 +118,16 @@ export const mcpPresets: readonly McpPreset[] = [
     name: "Sentry",
     summary: "Error monitoring, issues, and performance data.",
     url: "https://mcp.sentry.dev/mcp",
-    icon: "https://sentry-brand.storage.googleapis.com/sentry-glyph-black.png",
+    endpoint: "https://mcp.sentry.dev/mcp",
+    icon: "https://svgl.app/library/sentry.svg",
   },
   {
     id: "cloudflare",
     name: "Cloudflare",
     summary: "Workers, KV, D1, R2, and DNS management via MCP.",
     url: "https://mcp.cloudflare.com/mcp",
-    icon: "https://cloudflare.com/favicon.ico",
+    endpoint: "https://mcp.cloudflare.com/mcp",
+    icon: "https://integrations.sh/logo/cloudflare.com",
   },
   {
     id: "chrome-devtools",

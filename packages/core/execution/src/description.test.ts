@@ -1,98 +1,192 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 
-import { createExecutor, definePlugin, makeTestConfig } from "@executor-js/sdk";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ProviderItemId,
+  ProviderKey,
+  createExecutor,
+  definePlugin,
+  type CredentialProvider,
+} from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { buildExecuteDescription } from "./description";
 
-const EmptyInputSchema = Schema.toStandardSchemaV1(
-  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
-);
+const memoryProvider = (): CredentialProvider => {
+  const store = new Map<string, string>();
+  return {
+    key: ProviderKey.make("memory"),
+    writable: true,
+    get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+    set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+    has: (id) => Effect.sync(() => store.has(String(id))),
+    list: () =>
+      Effect.sync(() =>
+        Array.from(store.keys()).map((key) => ({
+          id: ProviderItemId.make(key),
+          name: key,
+        })),
+      ),
+  };
+};
 
-// Two plugins registering static sources whose ids are distinct from their
-// pluginIds/names. If `buildExecuteDescription` ever renders the wrong field
-// (e.g. pluginId, an internal UUID, or the source name), these assertions
-// fail — which is the class of bug a hand-rolled fake `Executor` would miss.
+const GITHUB = IntegrationSlug.make("github");
+const SLACK = IntegrationSlug.make("slack");
+const TEMPLATE = AuthTemplateSlug.make("apiKey");
+
+// The execute description lists the top-level integrations the user has
+// connected: one bare line per integration slug, deduped across connections,
+// names only (no per-integration descriptions).
 const githubPlugin = definePlugin(() => ({
   id: "github-plugin" as const,
+  credentialProviders: [memoryProvider()],
   storage: () => ({}),
-  staticSources: () => [
-    {
-      id: "github",
-      kind: "in-memory",
-      name: "GitHub",
-      tools: [
-        {
-          name: "noop",
-          description: "noop",
-          inputSchema: EmptyInputSchema,
-          handler: () => Effect.succeed(null),
-        },
-      ],
-    },
-  ],
-}));
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: GITHUB,
+        description: "GitHub",
+        config: {},
+      }),
+  }),
+}))();
 
 const slackPlugin = definePlugin(() => ({
   id: "slack-plugin" as const,
   storage: () => ({}),
-  staticSources: () => [
-    {
-      id: "slack",
-      kind: "in-memory",
-      name: "Slack Workspace",
-      tools: [
-        {
-          name: "noop",
-          description: "noop",
-          inputSchema: EmptyInputSchema,
-          handler: () => Effect.succeed(null),
-        },
-      ],
-    },
-  ],
-}));
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: SLACK,
+        name: "Slack",
+        description: "Send and read workspace messages.",
+        config: {},
+      }),
+  }),
+}))();
+
+const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
 
 describe("buildExecuteDescription", () => {
-  it.effect("renders real source ids as namespaces (sorted) through the real executor flow", () =>
+  it.effect("lists the connected integrations, not the connection prefixes", () =>
     Effect.gen(function* () {
-      // Intentionally register in non-alphabetical order — the formatter
-      // is expected to sort by source id.
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [slackPlugin(), githubPlugin()] as const }),
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
       );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
 
       const description = yield* buildExecuteDescription(executor);
 
-      // Stable anchor from the workflow preamble.
+      // Stable anchor from the short preamble.
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
-      // The namespaces section header.
-      expect(description).toContain("## Available namespaces");
-      // Each source renders with its ACTUAL id, without display labels or plugin ids.
+      // The full how-to now lives behind the `skills` tool, so the description
+      // points there rather than inlining the workflow/rules.
+      expect(description).toContain('skills({ name: "execute" })');
+      expect(description).not.toContain("Use `emit(value)` to append user-visible output");
+      expect(description).not.toContain("## Workflow");
+      expect(description).not.toContain("## Rules");
+      // Top-level integration slug, deduped across the two github connections.
+      expect(description).toContain("## Available integrations");
       expect(description).toContain("- `github`");
-      expect(description).toContain("- `slack`");
-      expect(description).not.toContain("GitHub");
-      expect(description).not.toContain("Slack Workspace");
+      expect(occurrences(description, "- `github`")).toBe(1);
+      // The per-connection prefixes are gone.
+      expect(description).not.toContain("github.org.prod");
+      expect(description).not.toContain("github.user.personal");
+      // Slack is registered but unconnected, so it is not listed.
+      expect(description).not.toContain("- `slack`");
+      expect(description).not.toContain("workspace messages");
       expect(description).not.toContain("`github-plugin`");
       expect(description).not.toContain("`slack-plugin`");
-
-      // Sort order: `github` before `slack`.
-      const githubIdx = description.indexOf("`github`");
-      const slackIdx = description.indexOf("`slack`");
-      expect(githubIdx).toBeGreaterThan(-1);
-      expect(slackIdx).toBeGreaterThan(-1);
-      expect(githubIdx).toBeLessThan(slackIdx);
     }),
   );
 
-  it.effect("omits the Available namespaces section when no plugins register sources", () =>
+  it.effect("lists integration names only, with no descriptions", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: SLACK,
+        template: TEMPLATE,
+        value: "slack-token",
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      // Bare slugs, sorted, with no per-integration description riding the line
+      // (Slack's "Send and read workspace messages." is dropped).
+      expect(description).toContain("- `github`");
+      expect(description).toContain("- `slack`");
+      expect(description).not.toContain("Send and read workspace messages");
+      expect(description).not.toContain("- `slack` —");
+      expect(description).not.toContain("- `github` —");
+    }),
+  );
+
+  it.effect("dedupes many connections of one integration into a single line", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(occurrences(description, "- `github`")).toBe(1);
+      expect(description).not.toContain(".org.prod");
+      expect(description).not.toContain(".user.personal");
+    }),
+  );
+
+  it.effect("omits the Available integrations section when no connections exist", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [] as const }));
 
       const description = yield* buildExecuteDescription(executor);
 
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
-      expect(description).not.toContain("## Available namespaces");
+      expect(description).not.toContain("## Available integrations");
     }),
   );
 });

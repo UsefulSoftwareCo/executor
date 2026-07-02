@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-desktop-settings",
-  "version": "1.4.27",
+  "version": "1.5.27",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/desktop-settings",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -38,6 +38,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "test": "vitest run",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit"
   },

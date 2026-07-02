@@ -1,285 +1,342 @@
-// ---------------------------------------------------------------------------
-// Core data model — the SDK owns these tables. Plugins write into them via
-// `ctx.core.sources.register(...)` and `ctx.core.definitions.register(...)`;
-// the executor reads from them directly on every list / invoke / schema
-// call. There is no in-memory registry layered on top.
-//
-// Static (code-declared) sources and tools are NOT in these tables — they
-// live in an in-memory map built at executor startup from each plugin's
-// `staticSources` declaration. See executor.ts. The DB only holds
-// dynamic (runtime-registered) rows.
-// ---------------------------------------------------------------------------
+import { column, idColumn, table, type AnyColumn, type AnyTable } from "@executor-js/fumadb/schema";
+import type { Condition, ConditionBuilder } from "@executor-js/fumadb/query";
 
-import type { DBSchema, InferDBFieldsOutput } from "@executor-js/storage-core";
+import { StorageError, type FumaRow } from "./fuma-runtime";
+import {
+  assertOwnerPatch,
+  assertOwnerWritable,
+  executorOwnerPolicyName,
+  executorTenantPolicyName,
+  executorUnscopedPolicyName,
+  ownerVisibilityCondition,
+  type ExecutorOwnerPolicyContext,
+} from "./owner-policy";
 
-export const credentialBindingKinds = ["text", "secret", "connection"] as [
-  "text",
-  "secret",
+type UserColumns = Record<string, AnyColumn>;
+type AnyConditionBuilder = ConditionBuilder<Record<string, AnyColumn>>;
+
+// Column helpers. Index-participating columns use `varchar(255)` so unique
+// indexes stay portable (TEXT can't be indexed without a prefix length on
+// MySQL); free-form columns use `string` (TEXT).
+export const textColumn = (name: string) => column(name, "string");
+export const nullableTextColumn = (name: string) => column(name, "string").nullable();
+export const keyColumn = (name: string) => column(name, "varchar(255)");
+export const nullableKeyColumn = (name: string) => column(name, "varchar(255)").nullable();
+export const boolColumn = (name: string, defaultValue: boolean) =>
+  column(name, "bool").defaultTo(defaultValue);
+export const bigintColumn = (name: string) => column(name, "bigint");
+export const nullableBigintColumn = (name: string) => column(name, "bigint").nullable();
+export const jsonColumn = (name: string) => column(name, "json");
+export const nullableJsonColumn = (name: string) => column(name, "json").nullable();
+export const dateColumn = (name: string) => column(name, "timestamp");
+
+// The policy callback hands us a `ConditionBuilder` typed to the specific table's
+// columns; it isn't assignable to the generic `Record<string, AnyColumn>` builder
+// (column-name positions are contravariant), so accept it loosely and re-narrow.
+const ownerVisibility = (builder: unknown, context: ExecutorOwnerPolicyContext) =>
+  ownerVisibilityCondition(builder as AnyConditionBuilder, context) as Condition | boolean;
+
+/** A truly global table (the blob store). Isolation is carried in the row's
+ *  `namespace` (which encodes the owner partition + plugin id), not a policy. */
+const unscopedExecutorTable = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    id: keyColumn("id"),
+  });
+  out.unique(`${name}_id_uidx`, ["id"]);
+  return out.policy({ name: executorUnscopedPolicyName });
+};
+
+/** A tenant-shared table (catalog / blobs) — partitioned only by `tenant`. */
+const tenantExecutorTable = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+  uniqueKey: readonly string[],
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    tenant: keyColumn("tenant"),
+  });
+  out.unique(`${name}_uidx`, [...uniqueKey]);
+  return out.policy<ExecutorOwnerPolicyContext>({
+    name: executorTenantPolicyName,
+    onRead: ({ builder, context }) => builder("tenant", "=", context.tenant),
+    onCreate: ({ values, context }) => {
+      if (values.tenant !== context.tenant) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB table policy callbacks are promise callbacks, not Effect effects
+        throw new StorageError({
+          message: `Storage write on table "${name}" is outside the executor tenant.`,
+          cause: undefined,
+        });
+      }
+    },
+    onUpdate: ({ builder, context }) => builder("tenant", "=", context.tenant),
+    onDelete: ({ builder, context }) => builder("tenant", "=", context.tenant),
+  });
+};
+
+/** An owner-scoped table — partitioned by `(tenant, owner, subject)`, guarded by
+ *  the executor owner policy. `uniqueKey` must include those three columns. */
+const ownedExecutorTable = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+  uniqueKey: readonly string[],
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    tenant: keyColumn("tenant"),
+    owner: keyColumn("owner"),
+    subject: keyColumn("subject"),
+  });
+  out.unique(`${name}_uidx`, [...uniqueKey]);
+  return out.policy<ExecutorOwnerPolicyContext>({
+    name: executorOwnerPolicyName,
+    onRead: ({ builder, context }) => ownerVisibility(builder, context),
+    onCreate: ({ values, context }) => assertOwnerWritable(name, values, context),
+    onUpdate: ({ builder, set, create, context }) => {
+      assertOwnerPatch(name, set, context);
+      assertOwnerPatch(name, create, context);
+      return ownerVisibility(builder, context);
+    },
+    onDelete: ({ builder, context }) => ownerVisibility(builder, context),
+  });
+};
+
+const defineTables = <const TTables extends Record<string, AnyTable>>(tables: TTables): TTables =>
+  tables;
+
+export const coreTables = defineTables({
+  // The catalog — tenant-shared integration definitions. `config` is the owning
+  // plugin's opaque blob (openapi auth templates + spec; mcp url). Core never
+  // parses it.
+  integration: tenantExecutorTable(
+    "integration",
+    {
+      slug: keyColumn("slug"),
+      plugin_id: textColumn("plugin_id"),
+      // Display name. The pre-split field: `description` used to hold the
+      // name, so cloud backfills `name` from it (migration 0006) and other
+      // hosts fall back at read time (see rowToIntegration). Nullable because
+      // SQLite boot-ensure hosts cannot add a NOT NULL column to existing
+      // tables, so the column stays nullable even though it is always present
+      // in practice.
+      name: nullableTextColumn("name"),
+      // Actual prose description, now distinct from the name. Nullable: absent
+      // until a user/spec supplies one (cloud clears the old duplicated title
+      // to NULL in 0006).
+      description: nullableTextColumn("description"),
+      config: nullableJsonColumn("config"),
+      // Epoch ms of the last tool-affecting config change (spec update, auth
+      // template edit). Compared against each connection's `tools_synced_at`
+      // so OTHER subjects' connections — whose tool rows the updater cannot
+      // write under the owner policy — lazily rebuild on their next read.
+      config_revised_at: nullableBigintColumn("config_revised_at"),
+      can_remove: boolColumn("can_remove", true),
+      can_refresh: boolColumn("can_refresh", false),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "slug"],
+  ),
+
+  // THE saved credential, one per (owner, integration, name). Resolves each named
+  // input via `provider` + the `item_ids` map (variable → provider item id). A
+  // single-secret connection is `{ "token": <id> }`; an apiKey method with two
+  // distinct inputs (e.g. Datadog) carries one entry per variable. All of a
+  // connection's inputs share the one `provider`. OAuth fields null for static.
+  connection: ownedExecutorTable(
+    "connection",
+    {
+      integration: keyColumn("integration"),
+      name: keyColumn("name"),
+      template: textColumn("template"),
+      provider: textColumn("provider"),
+      item_ids: jsonColumn("item_ids"),
+      identity_label: nullableTextColumn("identity_label"),
+      // User-curated, agent-visible "what is this connection for". Settable at
+      // create, editable after; never reset by OAuth re-mints.
+      description: nullableTextColumn("description"),
+      // Epoch ms of the last tool (re)production for this connection. Stale
+      // vs the integration's `config_revised_at` → re-produced on next read.
+      tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      oauth_client: nullableTextColumn("oauth_client"),
+      // The OWNER of `oauth_client` (a Personal connection may be minted through
+      // a shared Workspace app), set together with `oauth_client`; null for
+      // static creds. Stored so every deref (refresh/complete/reconnect) reads it
+      // verbatim instead of re-deriving it via a sharing rule.
+      oauth_client_owner: nullableTextColumn("oauth_client_owner"),
+      refresh_item_id: nullableTextColumn("refresh_item_id"),
+      expires_at: nullableBigintColumn("expires_at"),
+      oauth_scope: nullableTextColumn("oauth_scope"),
+      // Per-connection token endpoint override. Set only when the code was
+      // redeemed at a region other than the oauth_client's configured token host
+      // (multi-site providers like Datadog signal the org's region on the
+      // callback). Null means refresh uses the oauth_client's `token_url`.
+      oauth_token_url: nullableTextColumn("oauth_token_url"),
+      provider_state: nullableJsonColumn("provider_state"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "integration", "name"],
+  ),
+
+  // A registered OAuth app — owner-scoped (shared org app or a member's BYO app).
+  // A registered OAuth app — pure app identity (id/secret + endpoints). It carries
+  // NO scopes: what to request is the integration's concern, so the same app can
+  // back any integration. The granted scope is recorded per-connection
+  // (`connection.oauth_scope`).
+  oauth_client: ownedExecutorTable(
+    "oauth_client",
+    {
+      slug: keyColumn("slug"),
+      authorization_url: textColumn("authorization_url"),
+      token_url: textColumn("token_url"),
+      grant: textColumn("grant"),
+      client_id: textColumn("client_id"),
+      // The client secret is NOT stored inline — it's a provider `item_id` that
+      // resolves to the value via the default writable credential provider
+      // (WorkOS Vault on cloud, the local store on desktop). Null for public /
+      // PKCE clients (no secret). Keeps secrets out of plaintext columns.
+      client_secret_item_id: nullableTextColumn("client_secret_item_id"),
+      // RFC 8707 Resource Indicator (MCP). Sent on the refresh request so the
+      // re-minted access token stays bound to the same resource. Null when the
+      // provider doesn't use resource indicators.
+      resource: nullableTextColumn("resource"),
+      // Where this oauth_client came from. Null in old databases is treated as
+      // "manual" by the service layer.
+      origin_kind: nullableTextColumn("origin_kind"),
+      origin_integration: nullableTextColumn("origin_integration"),
+      created_at: dateColumn("created_at"),
+    },
+    ["tenant", "owner", "subject", "slug"],
+  ),
+
+  // In-flight OAuth authorization-code flow, keyed by the minted `state`.
+  oauth_session: ownedExecutorTable(
+    "oauth_session",
+    {
+      state: keyColumn("state"),
+      client_slug: textColumn("client_slug"),
+      integration: textColumn("integration"),
+      name: textColumn("name"),
+      template: textColumn("template"),
+      redirect_url: textColumn("redirect_url"),
+      pkce_verifier: nullableTextColumn("pkce_verifier"),
+      identity_label: nullableTextColumn("identity_label"),
+      payload: jsonColumn("payload"),
+      expires_at: bigintColumn("expires_at"),
+      created_at: dateColumn("created_at"),
+    },
+    ["tenant", "state"],
+  ),
+
+  // Persisted, per-connection tools (option C). Address is derived from
+  // (integration, owner, connection, name).
+  tool: ownedExecutorTable(
+    "tool",
+    {
+      integration: keyColumn("integration"),
+      connection: keyColumn("connection"),
+      plugin_id: textColumn("plugin_id"),
+      name: keyColumn("name"),
+      description: textColumn("description"),
+      input_schema: nullableJsonColumn("input_schema"),
+      output_schema: nullableJsonColumn("output_schema"),
+      annotations: nullableJsonColumn("annotations"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "integration", "connection", "name"],
+  ),
+
+  // Shared JSON-schema $defs, per-connection (mirrors `tool`).
+  definition: ownedExecutorTable(
+    "definition",
+    {
+      integration: keyColumn("integration"),
+      connection: keyColumn("connection"),
+      plugin_id: textColumn("plugin_id"),
+      name: keyColumn("name"),
+      schema: jsonColumn("schema"),
+      created_at: dateColumn("created_at"),
+    },
+    ["tenant", "owner", "subject", "integration", "connection", "name"],
+  ),
+
+  // User-authored tool policies (approve / require_approval / block).
+  tool_policy: ownedExecutorTable(
+    "tool_policy",
+    {
+      id: keyColumn("id"),
+      pattern: textColumn("pattern"),
+      action: textColumn("action"),
+      position: textColumn("position"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "id"],
+  ),
+
+  // Host-owned plugin storage (shared `plugin_storage` table, owner-scoped).
+  plugin_storage: ownedExecutorTable(
+    "plugin_storage",
+    {
+      plugin_id: keyColumn("plugin_id"),
+      collection: keyColumn("collection"),
+      key: keyColumn("key"),
+      data: jsonColumn("data"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "plugin_id", "collection", "key"],
+  ),
+
+  // Opaque blob store, global. Isolation is carried in `namespace` (which
+  // encodes the owner partition + plugin id), so this table is unscoped.
+  blob: unscopedExecutorTable("blob", {
+    namespace: keyColumn("namespace"),
+    key: keyColumn("key"),
+    value: textColumn("value"),
+  }),
+});
+
+export const coreSchema = coreTables;
+export type CoreSchema = typeof coreTables;
+
+export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
+export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
+export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
+export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
+export type ToolRow = FumaRow<CoreSchema["tool"]>;
+/** The tool-row projection the invoke/list hot paths load: everything except
+ *  the heavy `input_schema`/`output_schema` JSON, which only `tools.schema`
+ *  (describe) needs. Plugin `invokeTool` receives this shape — operation
+ *  details ride in plugin storage or `annotations`, not the row schemas. */
+export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema">;
+/** The columns backing {@link ToolInvocationRow}, for `select` projections. */
+export const TOOL_INVOCATION_COLUMNS = [
+  "tenant",
+  "owner",
+  "subject",
+  "integration",
   "connection",
-];
-
-export const coreSchema = {
-  source: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      kind: { type: "string", required: true },
-      name: { type: "string", required: true },
-      url: { type: "string", required: false },
-      can_remove: {
-        type: "boolean",
-        required: true,
-        defaultValue: true,
-      },
-      can_refresh: {
-        type: "boolean",
-        required: true,
-        defaultValue: false,
-      },
-      can_edit: {
-        type: "boolean",
-        required: true,
-        defaultValue: false,
-      },
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
-    },
-  },
-  tool: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      description: { type: "string", required: true },
-      input_schema: { type: "json", required: false },
-      output_schema: { type: "json", required: false },
-      // NOTE: tool annotations (requiresApproval, approvalDescription,
-      // mayElicit) are NOT stored on this row. They're derived at read
-      // time from plugin-owned data via `plugin.resolveAnnotations`,
-      // because the source of truth already lives in each plugin's own
-      // storage (openapi's OperationBinding, etc.) and duplicating it
-      // here would just mean bulk-rewriting rows every time the
-      // derivation logic changes.
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
-    },
-  },
-  // Shared JSON-schema `$defs` stored once per source. Tool input/output
-  // schemas carry `$ref: "#/$defs/X"` pointers; the read path attaches
-  // matching defs under `$defs` before returning. Keyed by synthetic id
-  // `${source_id}.${name}` so cleanup on source removal is a single
-  // deleteMany by source_id.
-  definition: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      schema: { type: "json", required: true },
-      created_at: { type: "date", required: true },
-    },
-  },
-  // Secrets live in the core surface as metadata (id, display name,
-  // provider key). Actual values never touch this table — they live in
-  // the secret provider (keychain, 1password, file, etc.) and are
-  // resolved on demand via `ctx.secrets.get(id)`.
-  //
-  // `owned_by_connection_id` ties the row to a connection. Connection-
-  // owned secrets are plumbing, not user-facing values: `ctx.secrets.list`
-  // filters them out (the user sees the Connection instead), and
-  // `ctx.secrets.remove` refuses to delete them (Connection.remove is
-  // the single owner of the lifecycle). The FK is nullable so existing
-  // "bare" secrets (API keys entered by the user, pre-connection OAuth
-  // rows during migration) remain visible and removable unchanged.
-  secret: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      provider: { type: "string", required: true, index: true },
-      owned_by_connection_id: {
-        type: "string",
-        required: false,
-        index: true,
-      },
-      created_at: { type: "date", required: true },
-    },
-  },
-  // Connections — sign-in state for one identity against one remote
-  // provider. A Connection owns one or more `secret` rows (access +
-  // refresh tokens, etc.) via `secret.owned_by_connection_id`, and the
-  // SDK exposes `ctx.connections.accessToken(id)` which transparently
-  // refreshes the backing secrets when they're near expiry. Plugins
-  // contribute refresh behavior via `plugin.connectionProviders[].refresh`
-  // keyed by `provider`, same pattern as `secretProviders`.
-  //
-  // `provider_state` is plugin-owned opaque JSON — token endpoint URL,
-  // scopes, issuer, auth-server metadata — whatever the provider's
-  // refresh handler needs to re-hit the token endpoint. It's NOT
-  // sensitive (all secrets go through the provider-backed secret rows);
-  // it's just enough metadata to drive a refresh without re-running
-  // discovery.
-  connection: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      /** Routing key into `plugin.connectionProviders`. OAuth2 connections
-       *  use the shared `oauth2` provider. Mirrors `secret.provider`. */
-      provider: { type: "string", required: true, index: true },
-      /** Display label shown in the Connections UI. Usually the account
-       *  email / handle / org name the user signed in as. */
-      identity_label: { type: "string", required: false },
-      /** Stable id of the access-token secret. Always present. */
-      access_token_secret_id: { type: "string", required: true },
-      /** Stable id of the refresh-token secret. Null for flows that
-       *  don't mint a refresh token (client_credentials, etc.). */
-      refresh_token_secret_id: { type: "string", required: false },
-      /** Epoch ms when the access token expires. Null if the provider
-       *  didn't declare an expiry. Used as the refresh trigger. Stored as
-       *  `bigint` because `Date.now()` overflows int32. */
-      expires_at: { type: "number", required: false, bigint: true },
-      /** Scope string as returned by the token endpoint. */
-      scope: { type: "string", required: false },
-      /** Opaque plugin-owned JSON — token endpoint URL, scopes list,
-       *  discovery hints, etc. Never sensitive. */
-      provider_state: { type: "json", required: false },
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
-    },
-  },
-  // Pending OAuth authorization rows shared by every OAuth-capable plugin.
-  // Rows are short-lived and deleted after completion/cancel; the resulting
-  // `connection` row is the durable sign-in state.
-  oauth2_session: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      strategy: { type: "string", required: true },
-      connection_id: { type: "string", required: true, index: true },
-      token_scope: { type: "string", required: true },
-      redirect_url: { type: "string", required: true },
-      payload: { type: "json", required: true },
-      expires_at: { type: "number", required: true, bigint: true },
-      created_at: { type: "date", required: true },
-    },
-  },
-  // Shared credential slot bindings. Plugins keep source-specific semantics
-  // local, but credential ownership and resolution use one scoped shape.
-  credential_binding: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      source_scope_id: { type: "string", required: true, index: true },
-      slot_key: { type: "string", required: true, index: true },
-      /** "text" | "secret" | "connection". */
-      kind: { type: credentialBindingKinds, required: true, index: true },
-      text_value: { type: "string", required: false },
-      secret_id: { type: "string", required: false, index: true },
-      secret_scope_id: { type: "string", required: false, index: true },
-      connection_id: { type: "string", required: false, index: true },
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
-    },
-  },
-  // User-authored overrides for tool permissions. Each row is one rule:
-  // a glob-ish pattern + an action (approve / require_approval / block).
-  // Resolution walks the scope stack innermost-first, then `position`
-  // ascending within each scope; first match wins. Plugin-derived
-  // annotations from `resolveAnnotations` apply only when no rule
-  // matches.
-  //
-  // Pattern grammar (v1):
-  //   - `*`                  every tool id (universal)
-  //   - `vercel.dns.create`  exact tool id
-  //   - `vercel.dns.*`       any tool whose id starts with `vercel.dns.`
-  //   - `vercel.*`           plugin-wide
-  // No `**`, no brace expansion, no leading-`*` prefixes (`*foo`, `*.foo`).
-  tool_policy: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      pattern: { type: "string", required: true },
-      /** "approve" | "require_approval" | "block". */
-      action: { type: "string", required: true },
-      /** Fractional-indexing key (Jira lexorank style). Lower lex order =
-       *  higher precedence. New rules default to a key generated above
-       *  the current minimum. Strings instead of numbers so we can
-       *  always lengthen the key to insert between two adjacent rows
-       *  without precision loss; see `fractional-indexing` in
-       *  `policies.ts`. */
-      position: { type: "string", required: true, index: true },
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
-    },
-  },
-} as const satisfies DBSchema;
-
-export type CoreSchema = typeof coreSchema;
-
-// ---------------------------------------------------------------------------
-// Row types — derived from the schema. Adding a field to coreSchema.fields
-// adds it to the row type automatically.
-// ---------------------------------------------------------------------------
-
-export type SourceRow = InferDBFieldsOutput<CoreSchema["source"]["fields"]> &
-  Record<string, unknown>;
-
-export type ToolRow = InferDBFieldsOutput<CoreSchema["tool"]["fields"]> & Record<string, unknown>;
-
-export type DefinitionRow = InferDBFieldsOutput<CoreSchema["definition"]["fields"]> &
-  Record<string, unknown>;
-
-export type SecretRow = InferDBFieldsOutput<CoreSchema["secret"]["fields"]> &
-  Record<string, unknown>;
-
-export type ConnectionRow = InferDBFieldsOutput<CoreSchema["connection"]["fields"]> &
-  Record<string, unknown>;
-
-type CredentialBindingRowFields = InferDBFieldsOutput<CoreSchema["credential_binding"]["fields"]>;
-type CredentialBindingRowBase = Omit<
-  CredentialBindingRowFields,
-  "kind" | "text_value" | "secret_id" | "secret_scope_id" | "connection_id"
->;
-
-export type CredentialBindingRow = CredentialBindingRowBase &
-  (
-    | {
-        kind: "text";
-        text_value: string;
-      }
-    | {
-        kind: "secret";
-        secret_id: string;
-        secret_scope_id?: string;
-      }
-    | {
-        kind: "connection";
-        connection_id: string;
-      }
-  ) &
-  Record<string, unknown>;
-
-export type ToolPolicyRow = InferDBFieldsOutput<CoreSchema["tool_policy"]["fields"]> &
-  Record<string, unknown>;
-
-// ---------------------------------------------------------------------------
-// Tool policy — user-authored override of the default approval behavior.
-// `action` tells the executor what to do at invoke time and at search /
-// list time:
-//   - approve          : skip the upfront approval prompt, just run.
-//   - require_approval : force an approval prompt even if the plugin's
-//                        annotations would have skipped it.
-//   - block            : invisible to search / list, hard-fail at invoke
-//                        with `ToolBlockedError`.
-// Mid-invocation elicitations (`mayElicit`) are NOT affected by policies.
-// ---------------------------------------------------------------------------
+  "plugin_id",
+  "name",
+  "description",
+  "annotations",
+  "created_at",
+  "updated_at",
+] as const satisfies readonly (keyof ToolRow)[];
+export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
+export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
+export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
+export type BlobRow = FumaRow<CoreSchema["blob"]>;
 
 export type ToolPolicyAction = "approve" | "require_approval" | "block";
 
@@ -291,76 +348,3 @@ export const TOOL_POLICY_ACTIONS = [
 
 export const isToolPolicyAction = (value: unknown): value is ToolPolicyAction =>
   typeof value === "string" && (TOOL_POLICY_ACTIONS as readonly string[]).includes(value);
-
-// ---------------------------------------------------------------------------
-// Tool annotations — default-policy metadata the executor consults
-// before invocation. Returned by `plugin.resolveAnnotations` (dynamic
-// tools) or declared inline on `StaticToolDecl` (static tools). Never
-// stored on `tool` rows — every field here is derived at read time
-// from plugin-owned data.
-//
-// OpenAPI derives from HTTP method:
-//   - GET / HEAD / OPTIONS → {} (auto-approved)
-//   - POST / PUT / PATCH / DELETE → { requiresApproval: true,
-//                                     approvalDescription: "DELETE /users/:id" }
-//
-// MCP derives from the server's tool declaration (mcp has its own
-// may-elicit and approval signals).
-// ---------------------------------------------------------------------------
-
-export interface ToolAnnotations {
-  /** If true, the executor will call the invoke-time elicitation handler
-   *  before running the tool and abort if the user declines. */
-  readonly requiresApproval?: boolean;
-  /** Free-text message shown in the approval prompt. Falls back to the
-   *  tool's id / description if unset. */
-  readonly approvalDescription?: string;
-  /** Hint for UI — tool may suspend to ask the user for input mid-invocation.
-   *  Not enforced by the executor; purely a UI signal. */
-  readonly mayElicit?: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// SourceInput — what a plugin passes to `ctx.core.sources.register(...)`.
-// Writes both the source row and all its tool rows in one transaction.
-// Annotations are NOT part of this input — they're computed from
-// plugin-owned data via `plugin.resolveAnnotations` when the executor
-// needs them.
-// ---------------------------------------------------------------------------
-
-export interface SourceInputTool {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema?: unknown;
-  readonly outputSchema?: unknown;
-}
-
-export interface SourceInput {
-  readonly id: string;
-  /** Scope id this source belongs to. Must be one of the executor's
-   *  configured scopes. Callers (plugins) pick the target scope
-   *  explicitly — typically the scope the source was authored against. */
-  readonly scope: string;
-  readonly kind: string;
-  readonly name: string;
-  readonly url?: string;
-  readonly canRemove?: boolean;
-  readonly canRefresh?: boolean;
-  readonly canEdit?: boolean;
-  readonly tools: readonly SourceInputTool[];
-}
-
-// ---------------------------------------------------------------------------
-// DefinitionsInput — paired with SourceInput when a plugin registers
-// shared JSON-schema `$defs` alongside a source. Usually called inside
-// the same `ctx.transaction` as `sources.register` so a failure rolls
-// back both the source rows and the def rows.
-// ---------------------------------------------------------------------------
-
-export interface DefinitionsInput {
-  readonly sourceId: string;
-  /** Scope id these definitions belong to — should match the scope of
-   *  the source they're registered under. */
-  readonly scope: string;
-  readonly definitions: Record<string, unknown>;
-}

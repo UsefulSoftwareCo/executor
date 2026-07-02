@@ -1,0 +1,62 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "aspen",
+  "name": "Executor",
+  "fonts": {
+    "heading": { "family": "Geist", "weight": 600 },
+    "body": { "family": "Geist" }
+  },
+  "appearance": {
+    "default": "system"
+  },
+  "colors": {
+    "primary": "#111111",
+    "light": "#ededed",
+    "dark": "#0a0a0a"
+  },
+  "background": {
+    "color": {
+      "light": "#ffffff",
+      "dark": "#0a0a0a"
+    }
+  },
+  "favicon": "/favicon.png",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": ["index", "mcp-proxy"]
+      },
+      {
+        "group": "Local",
+        "pages": ["local/cli", "local/desktop"]
+      },
+      {
+        "group": "Hosted",
+        "pages": ["hosted/cloud", "hosted/docker", "hosted/cloudflare"]
+      },
+      {
+        "group": "Concepts",
+        "pages": ["concepts/integrations", "concepts/connections", "concepts/policies"]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/RhysSullivan/executor"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Open Executor",
+      "href": "https://executor.sh"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/RhysSullivan/executor"
+    }
+  }
+}

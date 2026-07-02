@@ -18,6 +18,8 @@ export interface McpToolManifestEntry {
 export interface McpServerMetadata {
   readonly name: string | null;
   readonly version: string | null;
+  /** The server's `instructions` from initialize, when it sent any. */
+  readonly instructions: string | null;
 }
 
 export interface McpToolManifest {
@@ -42,16 +44,30 @@ const ListToolsResult = Schema.Struct({
   tools: Schema.Array(ListedTool),
 });
 
+// One page of a paginated `tools/list` response. Entries stay opaque here so a
+// page with foreign tool shapes still pages correctly; per-entry decoding
+// happens in `extractManifestFromListToolsResult` over the merged list.
+const ListToolsPage = Schema.Struct({
+  tools: Schema.Array(Schema.Unknown),
+  nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+export interface McpListToolsPage {
+  readonly tools: readonly unknown[];
+  readonly nextCursor?: string | null;
+}
+
 const ServerInfo = Schema.Struct({
   name: Schema.optional(Schema.String),
   version: Schema.optional(Schema.String),
 });
 
 const decodeListToolsResult = Schema.decodeUnknownOption(ListToolsResult);
+const decodeListToolsPageOption = Schema.decodeUnknownOption(ListToolsPage);
 const decodeServerInfo = Schema.decodeUnknownOption(ServerInfo);
 
-export const isListToolsResult = (value: unknown): boolean =>
-  Option.isSome(decodeListToolsResult(value));
+export const decodeListToolsPage = (value: unknown): Option.Option<McpListToolsPage> =>
+  decodeListToolsPageOption(value);
 
 // ---------------------------------------------------------------------------
 // Tool ID sanitization
@@ -82,7 +98,7 @@ export const joinToolPath = (namespace: string | undefined, toolId: string): str
 
 export const extractManifestFromListToolsResult = (
   listToolsResult: unknown,
-  metadata?: { serverInfo?: unknown },
+  metadata?: { serverInfo?: unknown; instructions?: string | undefined },
 ): McpToolManifest => {
   const seen = new Map<string, number>();
 
@@ -96,6 +112,7 @@ export const extractManifestFromListToolsResult = (
       (info): McpServerMetadata => ({
         name: info.name ?? null,
         version: info.version ?? null,
+        instructions: metadata?.instructions ?? null,
       }),
     ),
     Option.getOrNull,

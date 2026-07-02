@@ -1,0 +1,162 @@
+create one
+{ id: 'generated-cuid', name: 'fuma' }
+create other users
+[ { _id: 'alfon' }, { _id: 'test' } ]
+initial data ready
+[
+  { id: 'alfon', name: 'alfon' },
+  { id: 'generated-cuid', name: 'fuma' },
+  { id: 'test', name: 'Test User' }
+]
+[
+  {
+    content: 'Hello World 1 by alfon',
+    id: '1',
+    image: null,
+    mentionId: null,
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'Hello World 2 by alfon',
+    id: '2',
+    image: null,
+    mentionId: '1',
+    parent: null,
+    user: 'alfon'
+  }
+]
+test joins: user -> messages -> mentioned by
+[
+  {
+    id: 'alfon',
+    messages: [
+      {
+        content: 'Hello World 1 by alfon',
+        id: '1',
+        image: null,
+        mentionId: null,
+        mentionedBy: {
+          author: { id: 'alfon', name: 'alfon' },
+          content: 'Hello World 2 by alfon',
+          id: '2',
+          image: null,
+          mentionId: '1',
+          parent: null,
+          user: 'alfon'
+        },
+        parent: null,
+        user: 'alfon'
+      },
+      {
+        content: 'Hello World 2 by alfon',
+        id: '2',
+        image: null,
+        mentionId: '1',
+        mentionedBy: null,
+        parent: null,
+        user: 'alfon'
+      }
+    ],
+    name: 'alfon'
+  },
+  { id: 'generated-cuid', messages: [], name: 'fuma' },
+  { id: 'test', messages: [], name: 'Test User' }
+]
+test joins: user -> messages (conditional) -> author
+[
+  {
+    id: 'alfon',
+    messages: [
+      {
+        author: { id: 'alfon', name: 'alfon' },
+        content: 'Hello World 1 by alfon'
+      }
+    ],
+    name: 'alfon'
+  },
+  { id: 'generated-cuid', messages: [], name: 'fuma' },
+  { id: 'test', messages: [], name: 'Test User' }
+]
+count users: 3
+upsert bob: should be created as sad
+{ id: 'bob', name: 'Bob is sad' }
+upsert bob: should be updated to happy
+{ id: 'bob', name: 'Bob is happy' }
+insert with binary data
+{
+  content: 'test',
+  id: 'image-test',
+  image: Uint8Array(8) [
+    1, 2, 3, 4,
+    5, 6, 7, 8
+  ],
+  mentionId: null,
+  parent: null,
+  user: 'alfon'
+}
+should be able to select affected records in transaction
+[
+  {
+    content: 'Hello World 1 by alfon',
+    id: '1',
+    image: null,
+    mentionId: null,
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'Hello World 2 by alfon',
+    id: '2',
+    image: null,
+    mentionId: '1',
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'test message',
+    id: 'transaction-1',
+    image: null,
+    mentionId: null,
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'haha',
+    id: 'transaction-2',
+    image: null,
+    mentionId: null,
+    parent: null,
+    user: 'bob'
+  }
+]
+after rollback, the changes should not be kept
+[
+  {
+    content: 'Hello World 1 by alfon',
+    id: '1',
+    image: null,
+    mentionId: null,
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'Hello World 2 by alfon',
+    id: '2',
+    image: null,
+    mentionId: '1',
+    parent: null,
+    user: 'alfon'
+  },
+  {
+    content: 'test',
+    id: 'image-test',
+    image: Uint8Array(8) [
+      1, 2, 3, 4,
+      5, 6, 7, 8
+    ],
+    mentionId: null,
+    parent: null,
+    user: 'alfon'
+  }
+]

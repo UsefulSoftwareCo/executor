@@ -1,0 +1,18 @@
+---
+title: Integrations
+description: "An integration is something Executor connects to, defined by an MCP server, an OpenAPI spec, or a GraphQL endpoint."
+---
+
+An **integration** is something Executor can connect to. Each integration is defined by
+a source that describes the available tools:
+
+- an **MCP server**
+- an **OpenAPI** specification
+- a **GraphQL** endpoint
+
+The integration describes the catalog of tools; on its own it isn't a live, authenticated
+connection. To actually call tools, you create a [connection](/concepts/connections).
+
+<Card title="Add your first integration →" href="/local/cli" horizontal>
+  See the CLI page for adding an integration from the web UI or the CLI.
+</Card>

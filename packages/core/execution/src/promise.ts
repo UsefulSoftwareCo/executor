@@ -18,7 +18,6 @@ import type {
   ElicitationResponse,
   Executor as EffectExecutor,
 } from "@executor-js/sdk/core";
-import { ToolId } from "@executor-js/sdk/core";
 import type { Executor as PromiseExecutor } from "@executor-js/sdk/promise";
 import type { CodeExecutionError, CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
@@ -42,104 +41,101 @@ export type ExecutionEngine = {
     code: string,
     options: { readonly onElicitation: ElicitationHandler },
   ) => Promise<ExecuteResult>;
-  readonly executeWithPause: (code: string) => Promise<ExecutionResult>;
+  readonly executeWithPause: (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) => Promise<ExecutionResult>;
   readonly resume: (
     executionId: string,
     response: ResumeResponse,
   ) => Promise<ExecutionResult | null>;
+  readonly getPausedExecution: (executionId: string) => Promise<PausedExecution | null>;
+  readonly pausedExecutionCount: () => Promise<number>;
+  readonly hasPausedExecutions: () => Promise<boolean>;
   readonly getDescription: () => Promise<string>;
 };
 
 /**
- * Wrap a Promise-style executor into the Effect shape the engine consumes.
+ * Wrap a Promise thunk into the Effect shape the engine consumes. The Promise
+ * executor façade has already erased the SDK typed error channel (rejections
+ * carry the tagged error as the rejected value), so we re-orphan it as a defect.
  */
 const fromPromise = <A>(try_: () => Promise<A>): Effect.Effect<A> =>
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Promise executor facade has already erased the SDK typed error channel
   Effect.tryPromise({ try: try_, catch: (cause) => cause }).pipe(Effect.orDie);
 
-type EffectInvokeOptions = Parameters<EffectExecutor["tools"]["invoke"]>[2];
-type PromiseInvokeOptions = Parameters<PromiseExecutor["tools"]["invoke"]>[2];
+// ---------------------------------------------------------------------------
+// wrapPromiseExecutor — adapt the v2 Promise `Executor` back into an Effect
+// `Executor` so the Effect-native engine can drive it. The engine only touches
+// `execute`, `tools.list`, `tools.schema`, and `integrations.list`; we wrap
+// those and orphan the typed error channel. The remaining surface is filled
+// with the same Promise-backed wrappers where the shapes line up so the cast to
+// `EffectExecutor` is structurally honest for the methods callers can reach.
+// ---------------------------------------------------------------------------
 
-const toPromiseInvokeOptions = (options: EffectInvokeOptions): PromiseInvokeOptions => {
-  const onElicitation = options?.onElicitation;
-  if (!onElicitation) return undefined;
-  if (onElicitation === "accept-all") return { onElicitation };
-
-  return {
-    onElicitation: (ctx) =>
-      onElicitation({
-        ...ctx,
-        toolId: ToolId.make(ctx.toolId),
-      }),
+const wrapPromiseExecutor = (pe: PromiseExecutor): EffectExecutor => {
+  const adapter = {
+    integrations: {
+      list: () => fromPromise(() => pe.integrations.list()),
+      get: (slug: Parameters<PromiseExecutor["integrations"]["get"]>[0]) =>
+        fromPromise(() => pe.integrations.get(slug)),
+      update: (
+        slug: Parameters<PromiseExecutor["integrations"]["update"]>[0],
+        patch: Parameters<PromiseExecutor["integrations"]["update"]>[1],
+      ) => fromPromise(() => pe.integrations.update(slug, patch)),
+      remove: (slug: Parameters<PromiseExecutor["integrations"]["remove"]>[0]) =>
+        fromPromise(() => pe.integrations.remove(slug)),
+      detect: (url: Parameters<PromiseExecutor["integrations"]["detect"]>[0]) =>
+        fromPromise(() => pe.integrations.detect(url)),
+    },
+    connections: {
+      create: (input: Parameters<PromiseExecutor["connections"]["create"]>[0]) =>
+        fromPromise(() => pe.connections.create(input)),
+      list: (filter?: Parameters<PromiseExecutor["connections"]["list"]>[0]) =>
+        fromPromise(() => pe.connections.list(filter)),
+      get: (ref: Parameters<PromiseExecutor["connections"]["get"]>[0]) =>
+        fromPromise(() => pe.connections.get(ref)),
+      update: (
+        ref: Parameters<PromiseExecutor["connections"]["update"]>[0],
+        input: Parameters<PromiseExecutor["connections"]["update"]>[1],
+      ) => fromPromise(() => pe.connections.update(ref, input)),
+      remove: (ref: Parameters<PromiseExecutor["connections"]["remove"]>[0]) =>
+        fromPromise(() => pe.connections.remove(ref)),
+      refresh: (ref: Parameters<PromiseExecutor["connections"]["refresh"]>[0]) =>
+        fromPromise(() => pe.connections.refresh(ref)),
+    },
+    tools: {
+      list: (filter?: Parameters<PromiseExecutor["tools"]["list"]>[0]) =>
+        fromPromise(() => pe.tools.list(filter)),
+      schema: (address: Parameters<PromiseExecutor["tools"]["schema"]>[0]) =>
+        fromPromise(() => pe.tools.schema(address)),
+    },
+    providers: {
+      list: () => fromPromise(() => pe.providers.list()),
+      items: (key: Parameters<PromiseExecutor["providers"]["items"]>[0]) =>
+        fromPromise(() => pe.providers.items(key)),
+    },
+    policies: {
+      list: () => fromPromise(() => pe.policies.list()),
+      create: (input: Parameters<PromiseExecutor["policies"]["create"]>[0]) =>
+        fromPromise(() => pe.policies.create(input)),
+      update: (input: Parameters<PromiseExecutor["policies"]["update"]>[0]) =>
+        fromPromise(() => pe.policies.update(input)),
+      remove: (input: Parameters<PromiseExecutor["policies"]["remove"]>[0]) =>
+        fromPromise(() => pe.policies.remove(input)),
+      resolve: (address: Parameters<PromiseExecutor["policies"]["resolve"]>[0]) =>
+        fromPromise(() => pe.policies.resolve(address)),
+    },
+    execute: (
+      address: Parameters<PromiseExecutor["execute"]>[0],
+      args: Parameters<PromiseExecutor["execute"]>[1],
+      options?: Parameters<PromiseExecutor["execute"]>[2],
+    ) => fromPromise(() => pe.execute(address, args, options)),
+    close: () => fromPromise(() => pe.close()),
   };
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: the Promise executor mirrors the Effect surface structurally; the engine only reaches execute/tools/integrations, all wrapped here
+  return adapter as unknown as EffectExecutor;
 };
-
-const wrapPromiseExecutor = (pe: PromiseExecutor): EffectExecutor => ({
-  scopes: pe.scopes,
-  tools: {
-    invoke: (id, args, options) =>
-      fromPromise(() => pe.tools.invoke(id, args, toPromiseInvokeOptions(options))),
-    list: (filter) => fromPromise(() => pe.tools.list(filter)),
-    schema: (id) => fromPromise(() => pe.tools.schema(id)),
-    definitions: () => fromPromise(() => pe.tools.definitions()),
-  },
-  sources: {
-    list: () => fromPromise(() => pe.sources.list()),
-    remove: (input) => fromPromise(() => pe.sources.remove(input)),
-    refresh: (input) => fromPromise(() => pe.sources.refresh(input)),
-    detect: (url) => fromPromise(() => pe.sources.detect(url)),
-    definitions: (id) => fromPromise(() => pe.sources.definitions(id)),
-  },
-  secrets: {
-    get: (id) => fromPromise(() => pe.secrets.get(id)),
-    getAtScope: (id, scope) => fromPromise(() => pe.secrets.getAtScope(id, scope)),
-    status: (id) => fromPromise(() => pe.secrets.status(id)),
-    set: (input) => fromPromise(() => pe.secrets.set(input)),
-    remove: (input) => fromPromise(() => pe.secrets.remove(input)),
-    list: () => fromPromise(() => pe.secrets.list()),
-    listAll: () => fromPromise(() => pe.secrets.listAll()),
-    usages: (id) => fromPromise(() => pe.secrets.usages(id)),
-    providers: () => fromPromise(() => pe.secrets.providers()),
-  },
-  connections: {
-    get: (id) => fromPromise(() => pe.connections.get(id)),
-    getAtScope: (id, scope) => fromPromise(() => pe.connections.getAtScope(id, scope)),
-    list: () => fromPromise(() => pe.connections.list()),
-    create: (input) => fromPromise(() => pe.connections.create(input)),
-    updateTokens: (input) => fromPromise(() => pe.connections.updateTokens(input)),
-    setIdentityLabel: (id, label) => fromPromise(() => pe.connections.setIdentityLabel(id, label)),
-    accessToken: (id) => fromPromise(() => pe.connections.accessToken(id)),
-    accessTokenAtScope: (id, scope) =>
-      fromPromise(() => pe.connections.accessTokenAtScope(id, scope)),
-    remove: (input) => fromPromise(() => pe.connections.remove(input)),
-    usages: (id) => fromPromise(() => pe.connections.usages(id)),
-    providers: () => fromPromise(() => pe.connections.providers()),
-  },
-  credentialBindings: {
-    listForSource: (input) => fromPromise(() => pe.credentialBindings.listForSource(input)),
-    resolve: (input) => fromPromise(() => pe.credentialBindings.resolve(input)),
-    set: (input) => fromPromise(() => pe.credentialBindings.set(input)),
-    remove: (input) => fromPromise(() => pe.credentialBindings.remove(input)),
-    replaceForSource: (input) => fromPromise(() => pe.credentialBindings.replaceForSource(input)),
-    removeForSource: (input) => fromPromise(() => pe.credentialBindings.removeForSource(input)),
-    usagesForSecret: (id) => fromPromise(() => pe.credentialBindings.usagesForSecret(id)),
-    usagesForConnection: (id) => fromPromise(() => pe.credentialBindings.usagesForConnection(id)),
-  },
-  oauth: {
-    probe: (input) => fromPromise(() => pe.oauth.probe(input)),
-    start: (input) => fromPromise(() => pe.oauth.start(input)),
-    complete: (input) => fromPromise(() => pe.oauth.complete(input)),
-    cancel: (sessionId, tokenScope) => fromPromise(() => pe.oauth.cancel(sessionId, tokenScope)),
-  },
-  policies: {
-    list: () => fromPromise(() => pe.policies.list()),
-    create: (input) => fromPromise(() => pe.policies.create(input)),
-    update: (input) => fromPromise(() => pe.policies.update(input)),
-    remove: (input) => fromPromise(() => pe.policies.remove(input)),
-    resolve: (id) => fromPromise(() => pe.policies.resolve(id)),
-  },
-  close: () => fromPromise(() => pe.close()),
-});
 
 /**
  * Promise-wrap an Effect-native `ExecutionEngine` (from `./engine`).
@@ -158,8 +154,11 @@ export const toPromiseExecutionEngine = <E extends Cause.YieldableError>(
           Effect.tryPromise(() => options.onElicitation(ctx)).pipe(Effect.orDie),
       }),
     ),
-  executeWithPause: (code) => Effect.runPromise(engine.executeWithPause(code)),
+  executeWithPause: (code, options) => Effect.runPromise(engine.executeWithPause(code, options)),
   resume: (executionId, response) => Effect.runPromise(engine.resume(executionId, response)),
+  getPausedExecution: (executionId) => Effect.runPromise(engine.getPausedExecution(executionId)),
+  pausedExecutionCount: () => Effect.runPromise(engine.pausedExecutionCount()),
+  hasPausedExecutions: () => Effect.runPromise(engine.hasPausedExecutions()),
   getDescription: () => Effect.runPromise(engine.getDescription),
 });
 
@@ -179,7 +178,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 
 export { formatExecuteResult, formatPausedExecution } from "./engine";
 
-export type { ExecutionResult, PausedExecution, ResumeResponse };
+export type { ExecutionResult, PausedExecution, ResumeResponse, ExecuteResult };
 
 export { buildExecuteDescription } from "./description";
 export { ExecutionToolError } from "./errors";

@@ -1,0 +1,25 @@
+model users {
+  id String @db.String(255) @id @default(cuid())
+  name String @db.String(255)
+  email String @db.String(255)
+  image String? @db.String(200) @default("my-avatar")
+  account accounts @relation("users_accounts", fields: [id], references: [id], onUpdate: Restrict, onDelete: Restrict)
+  posts posts[] @relation("posts_users")
+}
+
+model accounts {
+  id String @db.String(255) @id
+  user users? @relation("users_accounts")
+}
+
+model posts {
+  id String @db.String(255) @id @default(cuid())
+  authorId String @map("author_id") @db.String(255)
+  content String
+  image Bytes?
+  author users @relation("posts_users", fields: [authorId], references: [id], onUpdate: Restrict, onDelete: Restrict)
+}
+datasource db {
+  provider = "cockroachdb"
+  url      = env("DATABASE_URL")
+}

@@ -1,76 +1,93 @@
 import { Effect } from "effect";
-import type { Executor, Source } from "@executor-js/sdk/core";
+import type { Connection, Executor } from "@executor-js/sdk/core";
 
 /**
- * Builds a tool description dynamically.
+ * Builds the `execute` tool description dynamically.
  *
  * Structure:
- *   1. Workflow (top — critical, least likely to be truncated)
- *   2. Available namespaces (bottom)
+ *   1. One-line intro + pointer to the `execute` skill (the full how-to lives
+ *      behind the `skills` tool, see ./skills.ts, to keep this always-loaded
+ *      description small)
+ *   2. Available integrations (the live, per-session inventory): the top-level
+ *      integration slugs the user has connected, deduped across connections,
+ *      names only. The same block is appended to the `execute` skill content.
  */
+
+/** The header that opens the live integration inventory. Exported so the host
+ *  can locate (and re-use) the inventory block inside the built description. */
+export const INTEGRATION_INVENTORY_HEADER = "## Available integrations";
+
 export const buildExecuteDescription = (executor: Executor): Effect.Effect<string> =>
   Effect.gen(function* () {
-    const sources: readonly Source[] = yield* executor.sources.list().pipe(
+    const connections: readonly Connection[] = yield* executor.connections.list().pipe(
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.getDescription currently exposes no error channel; engine typed-error widening is covered separately
       Effect.orDie,
-      Effect.withSpan("executor.sources.list"),
+      Effect.withSpan("executor.connections.list"),
     );
 
-    const description = yield* Effect.sync(() => formatDescription(sources)).pipe(
+    const description = yield* Effect.sync(() => {
+      const lines = [
+        "Execute TypeScript in a sandboxed runtime.",
+        "",
+        'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
+      ];
+      const inventory = formatIntegrationInventory(connections);
+      if (inventory.length > 0) {
+        lines.push("");
+        lines.push(inventory);
+      }
+      return lines.join("\n");
+    }).pipe(
       Effect.withSpan("schema.compile.description", {
-        attributes: { "executor.source_count": sources.length },
+        attributes: { "executor.connection_count": connections.length },
       }),
     );
 
     yield* Effect.annotateCurrentSpan({
-      "executor.source_count": sources.length,
+      "executor.connection_count": connections.length,
       "schema.kind": "execute",
+      // Connection inventory so a failing session build (which runs this during
+      // init) names the callable prefixes it resolved without listing tools.
+      "executor.connection_addresses": connections
+        .map((connection) => connectionPath(connection))
+        .slice(0, 50)
+        .join(","),
+      "executor.connection_integrations": [
+        ...new Set(connections.map((connection) => String(connection.integration))),
+      ].join(","),
+      "executor.connection_owners": [
+        ...new Set(connections.map((connection) => connection.owner)),
+      ].join(","),
     });
 
     return description;
   }).pipe(Effect.withSpan("schema.describe.execute"));
 
-const formatDescription = (sources: readonly Source[]): string => {
-  const lines: string[] = [
-    "Execute TypeScript in a sandboxed runtime with access to configured API tools.",
+const connectionPath = (connection: Connection): string => {
+  const address = String(connection.address);
+  return address.startsWith("tools.") ? address.slice("tools.".length) : address;
+};
+
+// The live inventory block: the top-level integrations the user has connected,
+// one bare line per integration slug (deduped across connections, sorted), no
+// per-connection prefixes and no descriptions. Empty string when nothing is
+// connected.
+const INVENTORY_LIMIT = 50;
+
+const formatIntegrationInventory = (connections: readonly Connection[]): string => {
+  const slugs = [...new Set(connections.map((connection) => String(connection.integration)))].sort(
+    (a, b) => a.localeCompare(b),
+  );
+  if (slugs.length === 0) return "";
+  const shown = slugs.slice(0, INVENTORY_LIMIT);
+  const lines = [
+    INTEGRATION_INVENTORY_HEADER,
     "",
-    "## Workflow",
-    "",
-    '1. `const { items: matches } = await tools.search({ query: "<intent + key nouns>", limit: 12 });`',
-    '2. `const path = matches[0]?.path; if (!path) return "No matching tools found.";`',
-    "3. `const details = await tools.describe.tool({ path });`",
-    "4. Use `details.inputTypeScript` / `details.outputTypeScript` and `details.typeScriptDefinitions` for compact shapes.",
-    "5. Use `tools.executor.sources.list()` when you need configured source inventory.",
-    "6. Call the tool: `const result = await tools.<path>(input);`",
-    "",
-    "## Rules",
-    "",
-    "- `tools.search()` returns paginated, ranked matches: `{ items, total, hasMore, nextOffset }`. Best-first. Use short intent phrases like `github issues`, `repo details`, or `create calendar event`.",
-    '- When you already know the namespace, narrow with `tools.search({ namespace: "github", query: "issues" })`.',
-    "- `tools.executor.sources.list()` returns the same paged shape: `{ items: [{ id, toolCount, ... }], total, hasMore, nextOffset }`.",
-    "- If `hasMore` is true and you didn't find what you need, fetch the next page: `tools.search({ query, offset: nextOffset, limit })`. Same `offset` parameter on `tools.executor.sources.list({ offset, limit })`.",
-    "- Always use the namespace prefix when calling tools: `tools.<namespace>.<tool>(args)`. Example: `tools.home_assistant_rest_api.states.getState(...)` — not `tools.states.getState(...)`.",
-    "- The `tools` object is a lazy proxy — `Object.keys(tools)` won't work. Use `tools.search()` or `tools.executor.sources.list()` instead.",
-    '- Pass an object to system tools, e.g. `tools.search({ query: "..." })`, `tools.executor.sources.list()`, and `tools.describe.tool({ path })`.',
-    "- `tools.describe.tool()` returns compact TypeScript shapes. Use `inputTypeScript`, `outputTypeScript`, and `typeScriptDefinitions`.",
-    "- For tools that return large collections (e.g. `getStates`, `getAll`), filter results in code rather than calling per-item tools.",
-    "- Do not use `fetch` — all API calls go through `tools.*`.",
-    "- If execution pauses for interaction, resume it with the returned `resumePayload`.",
-    "- TypeScript type syntax (`: T`, `as T`, generics, interfaces, type aliases) is stripped before execution — feel free to write idiomatic TypeScript using the shapes from `tools.describe.tool()`. Decorators and `enum` are not supported.",
+    "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
+    ...shown.map((slug) => `- \`${slug}\``),
   ];
-
-  if (sources.length > 0) {
-    lines.push("");
-    lines.push("## Available namespaces");
-    lines.push("");
-    const sorted = [...sources].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 50);
-    for (const source of sorted) {
-      lines.push(`- \`${source.id}\``);
-    }
-    if (sources.length > sorted.length) {
-      lines.push(`- ... ${sources.length - sorted.length} more`);
-    }
+  if (slugs.length > shown.length) {
+    lines.push(`- ... ${slugs.length - shown.length} more`);
   }
-
   return lines.join("\n");
 };

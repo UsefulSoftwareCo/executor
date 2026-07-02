@@ -3,8 +3,8 @@ import { Effect, Layer } from "effect";
 
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
-import { WorkOSAuth, type WorkOSAuthService } from "../auth/workos";
-import { resolveProtectedIdentity } from "./protected";
+import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
+import { resolveProtectedPrincipal } from "./protected";
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -25,8 +25,8 @@ const stubApiKeys = Layer.succeed(ApiKeyService)({
 });
 
 const stubWorkOS = Layer.succeed(
-  WorkOSAuth,
-  new Proxy({} as WorkOSAuthService, {
+  WorkOSClient,
+  new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
       if (prop === "listUserMemberships") {
         return (userId: string) =>
@@ -37,7 +37,7 @@ const stubWorkOS = Layer.succeed(
                 : [],
           });
       }
-      return () => Effect.die(`unexpected WorkOSAuth.${String(prop)} call`);
+      return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
@@ -50,15 +50,27 @@ const stubUsers = Layer.succeed(UserStoreService)({
         getAccount: async (id: string) => ({ id, createdAt }),
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
+          slug: `org-slug-${org.id}`,
           createdAt,
         }),
-        getOrganization: async (id: string) => ({ id, name: `Org ${id}`, createdAt }),
+        getOrganization: async (id: string) => ({
+          id,
+          name: `Org ${id}`,
+          slug: `org-slug-${id}`,
+          createdAt,
+        }),
+        getOrganizationBySlug: async (slug: string) => ({
+          id: "org_by_slug",
+          name: `Org ${slug}`,
+          slug,
+          createdAt,
+        }),
       }),
     ),
 });
 
 const run = (request: Request) =>
-  resolveProtectedIdentity(request).pipe(
+  resolveProtectedPrincipal(request).pipe(
     Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers)),
   );
 
@@ -75,9 +87,11 @@ describe("protected API key auth", () => {
         accountId: "user_123",
         organizationId: "org_123",
         organizationName: "Org org_123",
+        organizationSlug: "org-slug-org_123",
         email: "",
         name: null,
         avatarUrl: null,
+        roles: [],
       });
     }),
   );
@@ -92,9 +106,13 @@ describe("protected API key auth", () => {
         ),
       );
 
+      // The resolver now raises the SHARED `Unauthorized` carrying the same
+      // machine code; cloud's failure strategy renders it as the byte-identical
+      // 401 `{ error: "Invalid API key", code: "invalid_api_key" }`.
       expect(error).toMatchObject({
-        status: 401,
+        _tag: "Unauthorized",
         code: "invalid_api_key",
+        message: "Invalid API key",
       });
     }),
   );

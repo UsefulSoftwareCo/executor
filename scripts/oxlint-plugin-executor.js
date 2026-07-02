@@ -27,6 +27,7 @@ import noUnknownErrorMessage from "./oxlint-plugin-executor/rules/no-unknown-err
 import noUnknownShapeProbing from "./oxlint-plugin-executor/rules/no-unknown-shape-probing.js";
 import noUnsupportedEffectApi from "./oxlint-plugin-executor/rules/no-unsupported-effect-api.js";
 import noVitestImport from "./oxlint-plugin-executor/rules/no-vitest-import.js";
+import preferEffectPredicate from "./oxlint-plugin-executor/rules/prefer-effect-predicate.js";
 import preferSchemaInferredTypes from "./oxlint-plugin-executor/rules/prefer-schema-inferred-types.js";
 import preferYieldTaggedError from "./oxlint-plugin-executor/rules/prefer-yield-tagged-error.js";
 import preferValueInferredExtensionTypes from "./oxlint-plugin-executor/rules/prefer-value-inferred-extension-types.js";
@@ -67,6 +68,7 @@ export default {
     "no-unknown-error-message": noUnknownErrorMessage,
     "no-unknown-shape-probing": noUnknownShapeProbing,
     "no-unsupported-effect-api": noUnsupportedEffectApi,
+    "prefer-effect-predicate": preferEffectPredicate,
     "prefer-schema-inferred-types": preferSchemaInferredTypes,
     "prefer-value-inferred-extension-types": preferValueInferredExtensionTypes,
     "prefer-yield-tagged-error": preferYieldTaggedError,

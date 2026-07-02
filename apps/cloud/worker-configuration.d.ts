@@ -14,7 +14,7 @@ declare namespace Cloudflare {
     WORKOS_COOKIE_PASSWORD: string;
     APP_URL: string;
     WORKOS_CLAIM_TOKEN: string;
-    MCP_SESSION: DurableObjectNamespace<import("./src/server").McpSessionDO>;
+    MCP_SESSION: DurableObjectNamespace<import("./src/server").McpSessionDOSqlite>;
     MARKETING: Fetcher /* executor-marketing */;
   }
 }

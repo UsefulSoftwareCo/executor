@@ -1,78 +1,258 @@
-import { Effect, Match, Option, Predicate } from "effect";
+import { Effect, Predicate } from "effect";
 import * as Cause from "effect/Cause";
 import type {
   Executor,
-  ToolId,
-  Tool,
-  ToolSchema,
   InvokeOptions,
-  Source,
+  Integration,
+  ToolError,
+  Tool,
+  ToolSchemaView,
+} from "@executor-js/sdk/core";
+import {
+  annotateToolResultOutcome,
+  authToolFailure,
+  isToolResult,
+  ToolResult,
+  ToolAddress,
+  parseToolAddress,
 } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
 
+const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
+const TOOL_DESCRIBE_SUGGESTION_LIMIT = 5;
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
+// Present on HTTP-backed tools (OpenAPI): transport facts beside the payload
+// so callers can read pagination/rate-limit headers without the payload
+// being wrapped in an envelope.
+const TOOL_HTTP_META_TYPESCRIPT = "{ status: number; headers: { [k: string]: string; } }";
+const TOOL_FILE_TYPESCRIPT =
+  '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }';
+
+const wrapOutputTypeScript = (outputTypeScript?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"}; http?: ToolHttpMeta } | { ok: false; error: ToolError }`;
+
+const withToolResultDefinitions = (
+  definitions?: Record<string, string>,
+): Record<string, string> => ({
+  ...(definitions ?? {}),
+  ToolError: TOOL_ERROR_TYPESCRIPT,
+  ToolHttpMeta: TOOL_HTTP_META_TYPESCRIPT,
+  ToolFile: TOOL_FILE_TYPESCRIPT,
+});
+
+const ADDRESS_PREFIX = "tools.";
+
 /**
- * Extract the source namespace from a tool path. Tool paths look like
- * "<sourceId>.<op>" or "<sourceId>.<group>.<op>" — we take the first
- * segment as a cheap, non-lookup stand-in for the source id so the span
- * attribute is always populated without hitting `executor.sources.list()`
- * per call.
+ * Map a sandbox tool path to the executor's `execute` address.
+ *
+ * v2 dynamic tools are addressed `tools.<integration>.<owner>.<connection>.<tool>`.
+ * The sandbox proxy strips the leading `tools.` (the proxy root), so a model
+ * writing `tools.github.org.main.getRepo(args)` produces the path
+ * `github.org.main.getRepo`. Re-prefix it so it parses as a 5-segment address.
+ *
+ * Plugin-contributed static tools (core-tools under `executor`, plugin executor
+ * namespaces) are addressed by their fqid with no prefix; the executor resolves
+ * those from its static map directly, so leave them untouched.
  */
-const extractSourceNamespace = (path: string): string => {
-  const idx = path.indexOf(".");
-  return idx === -1 ? path : path.slice(0, idx);
-};
-
-const hasStringMessage = (value: unknown): value is { readonly message: string } =>
-  value !== null &&
-  typeof value === "object" &&
-  "message" in value &&
-  typeof value.message === "string";
-
-const messageFromErrorLike = (value: unknown): string | undefined => {
-  if (hasStringMessage(value)) {
-    return value.message;
+const pathToAddress = (path: string): ToolAddress => {
+  if (path.startsWith(ADDRESS_PREFIX)) return ToolAddress.make(path);
+  if (parseToolAddress(`${ADDRESS_PREFIX}${path}`)) {
+    return ToolAddress.make(`${ADDRESS_PREFIX}${path}`);
   }
-  return undefined;
+  return ToolAddress.make(path);
 };
 
-const renderToolErrorMessage = (error: unknown): string =>
-  messageFromErrorLike(error) ??
-  (typeof error === "undefined" ? "Tool execution failed" : renderUnknownPrimitive(error));
+/** Strip the proxy-root `tools.` prefix from a full address so it becomes the
+ *  sandbox-callable path the model writes after `tools.`. */
+const addressToPath = (address: string): string =>
+  address.startsWith(ADDRESS_PREFIX) ? address.slice(ADDRESS_PREFIX.length) : address;
 
-const renderUnknownPrimitive = (value: unknown): string =>
-  Match.value(value).pipe(
-    Match.when(Match.string, (s) => s),
-    Match.whenOr(Match.number, Match.boolean, Match.bigint, Match.symbol, (x) => x.toString()),
-    Match.option,
-    Option.getOrElse(() => "Tool execution failed"),
-  );
-
-type ToolResultEnvelope = {
-  readonly error?: unknown;
-  readonly data?: unknown;
+type DescribedTool = {
+  readonly path: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly inputTypeScript?: string;
+  readonly outputTypeScript?: string;
+  readonly typeScriptDefinitions?: Record<string, string>;
+  /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
+  readonly error?: {
+    readonly code: "tool_not_found";
+    readonly message: string;
+    readonly suggestions?: readonly string[];
+  };
 };
 
-const isToolResultEnvelope = (value: unknown): value is ToolResultEnvelope =>
-  value !== null && typeof value === "object" && ("error" in value || "data" in value);
+const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
+  string,
+  DescribedTool
+>([
+  [
+    "search",
+    {
+      path: "search",
+      name: "search",
+      description: "Search available Executor tools.",
+      inputTypeScript: "{ query: string; namespace?: string; limit?: number; offset?: number; }",
+      outputTypeScript:
+        "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+      typeScriptDefinitions: {
+        ToolDiscoveryResult:
+          "{ path: string; name: string; description?: string; integration: string; score: number; }",
+      },
+    },
+  ],
+  [
+    "executor.sources.list",
+    {
+      path: "executor.sources.list",
+      name: "executor.sources.list",
+      description: "List configured Executor integrations.",
+      inputTypeScript: "{ query?: string; limit?: number; offset?: number; }",
+      outputTypeScript:
+        "{ items: ExecutorSourceListItem[]; total: number; hasMore: boolean; nextOffset: number | null; }",
+      typeScriptDefinitions: {
+        ExecutorSourceListItem:
+          "{ id: string; name: string; description?: string; kind: string; canRemove?: boolean; canRefresh?: boolean; toolCount: number; }",
+      },
+    },
+  ],
+  [
+    "describe.tool",
+    {
+      path: "describe.tool",
+      name: "describe.tool",
+      description: "Describe a tool's compact TypeScript input and output shapes.",
+      inputTypeScript: "{ path: string; }",
+      outputTypeScript: "DescribedTool",
+      typeScriptDefinitions: {
+        DescribedTool:
+          '{ path: string; name: string; description?: string; inputTypeScript?: string; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; error?: { code: "tool_not_found"; message: string; suggestions?: string[]; }; }',
+      },
+    },
+  ],
+]);
 
-const hasToolResultError = (
-  value: ToolResultEnvelope,
-): value is ToolResultEnvelope & { readonly error: unknown } =>
-  value.error !== null && value.error !== undefined;
+const newCorrelationId = (): string => {
+  // 8-hex-char correlation id; enough entropy to disambiguate within a
+  // single deployment without leaking host process info.
+  return Math.floor(Math.random() * 0x1_0000_0000)
+    .toString(16)
+    .padStart(8, "0");
+};
+
+const validationIssues = (value: unknown): readonly unknown[] | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const issues = (value as { readonly issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
+};
+
+// Pre-flight OpenAPI invocation failures (missing/unresolved path params,
+// missing or malformed request body) are caller-argument errors raised before
+// any HTTP request is sent. Their messages are generated locally from the
+// spec (no upstream data, no transport internals), so they are safe to
+// surface, and actionable: the fix is renaming or adding an argument.
+// Discriminator: pre-flight raises carry `statusCode: None` and no `cause`.
+// Transport failures share `statusCode: None` but wrap the raw client error
+// (which can hold internal URLs) as `cause`, and post-response failures carry
+// a status code; both stay on the opaque-defect path. Matched structurally
+// because this package does not depend on the openapi plugin.
+const openApiPreflightMessage = (value: unknown): string | null => {
+  if (!Predicate.isTagged(value, "OpenApiInvocationError")) return null;
+  const err = value as {
+    readonly message?: unknown;
+    readonly statusCode?: unknown;
+    readonly cause?: unknown;
+  };
+  if (err.cause !== undefined) return null;
+  if (!Predicate.isTagged(err.statusCode, "None")) return null;
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: structural match on the openapi plugin's tagged error; the pre-flight message is locally generated (no upstream data) and is the payload being surfaced
+  return typeof err.message === "string" && err.message.length > 0 ? err.message : null;
+};
+
+const credentialResolutionToolFailure = (input: {
+  readonly label: string;
+  readonly message: string;
+  readonly reauthRequired?: boolean;
+}) =>
+  authToolFailure({
+    code: input.reauthRequired === true ? "oauth_reauth_required" : "oauth_refresh_failed",
+    message:
+      input.reauthRequired === true
+        ? `OAuth connection "${input.label}" requires reauthorization: ${input.message}`
+        : `OAuth connection "${input.label}" could not be resolved: ${input.message}`,
+    credential: {
+      kind: "oauth",
+      label: input.label,
+    },
+  });
+
+const expectedToolFailure = (value: unknown): ToolError | null => {
+  if (Predicate.isTagged(value, "ToolNotFoundError") && "address" in value) {
+    const suggestions =
+      "suggestions" in value && Array.isArray(value.suggestions)
+        ? value.suggestions.map((suggestion) => addressToPath(String(suggestion)))
+        : undefined;
+    const address = addressToPath(String(value.address));
+    return {
+      code: "tool_not_found",
+      message: `Tool not found: ${address}`,
+      details: { path: address, ...(suggestions ? { suggestions } : {}) },
+    };
+  }
+  if (Predicate.isTagged(value, "ToolBlockedError") && "address" in value) {
+    return {
+      code: "tool_blocked",
+      message: `Tool blocked by policy: ${addressToPath(String(value.address))}`,
+      details: value,
+    };
+  }
+  if (Predicate.isTagged(value, "ToolInvocationError")) {
+    const cause = (value as { readonly cause?: unknown }).cause;
+    const issues = validationIssues(cause);
+    if (issues) {
+      return {
+        code: "invalid_tool_arguments",
+        message: "Tool arguments did not match the input schema.",
+        details: { issues },
+      };
+    }
+    const preflight = openApiPreflightMessage(cause);
+    if (preflight) {
+      return {
+        code: "invalid_tool_arguments",
+        message: preflight,
+      };
+    }
+  }
+  return null;
+};
 
 /**
- * Bridges QuickJS `tools.someSource.someOp(args)` calls into
- * `executor.tools.invoke(toolId, args)`.
+ * Extract the integration namespace from a tool path. v2 addresses look like
+ * `<integration>.<owner>.<connection>.<tool>`; static fqids look like
+ * `<source>.<op>`. We take the first segment as a cheap, non-lookup namespace
+ * for the span attribute so it's always populated without a catalog read.
+ */
+const extractNamespace = (path: string): string => {
+  const normalized = addressToPath(path);
+  const idx = normalized.indexOf(".");
+  return idx === -1 ? normalized : normalized.slice(0, idx);
+};
+
+/**
+ * Bridges QuickJS `tools.<integration>.<owner>.<connection>.<tool>(args)` calls
+ * into `executor.execute(address, args)`.
  *
  * Wrapped in `Effect.fn("mcp.tool.dispatch")` so every tool call becomes a
  * span in the Effect tracer. Attributes:
- *   - `mcp.tool.name`      — full tool path (e.g. "github.repos.get")
- *   - `mcp.tool.source_id` — first segment of the path (namespace)
+ *   - `mcp.tool.name`         — full tool path (e.g. "github.org.main.getRepo")
+ *   - `mcp.tool.integration`  — first segment of the path (namespace)
  *
  * `mcp.tool.kind` (openapi | mcp | graphql | code) is NOT annotated here
- * because it would require a `sources.list()` lookup on every invocation.
- * Callers that already know the source kind can annotate at their own span.
+ * because it would require an `integrations.list()` lookup on every invocation.
+ * Callers that already know the integration kind can annotate at their own span.
  */
 export const makeExecutorToolInvoker = (
   executor: Executor,
@@ -81,41 +261,70 @@ export const makeExecutorToolInvoker = (
   invoke: Effect.fn("mcp.tool.dispatch")(function* ({ path, args }) {
     yield* Effect.annotateCurrentSpan({
       "mcp.tool.name": path,
-      "mcp.tool.source_id": extractSourceNamespace(path),
+      "mcp.tool.integration": extractNamespace(path),
     });
 
-    const result = yield* executor.tools.invoke(path as ToolId, args, options.invokeOptions).pipe(
-      Effect.catchCause((cause): Effect.Effect<never, ExecutionToolError> => {
+    const address = pathToAddress(path);
+    const result = yield* executor.execute(address, args, options.invokeOptions).pipe(
+      Effect.catchTag("CredentialResolutionError", (err) =>
+        Effect.succeed(
+          credentialResolutionToolFailure({
+            label: `${err.integration}.${err.owner}.${err.name}`,
+            message: err.message,
+            reauthRequired: err.reauthRequired,
+          }),
+        ),
+      ),
+      Effect.catchCause((cause) => {
         const err = cause.reasons.find(Cause.isFailReason)?.error;
-        if (!isElicitationDeclinedError(err)) {
+        const expected = expectedToolFailure(err);
+        if (expected) {
+          return Effect.succeed(ToolResult.fail(expected));
+        }
+        if (isElicitationDeclinedError(err)) {
           return Effect.fail(
             new ExecutionToolError({
-              message: renderToolErrorMessage(err),
-              cause: err ?? cause,
+              message: `Tool "${addressToPath(String(err.address))}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
+              cause: err,
             }),
           );
         }
-        return Effect.fail(
-          new ExecutionToolError({
-            message: `Tool "${err.toolId}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
-            cause: err,
+        // Any other failure here is an infra/plugin defect. Emit an
+        // opaque generic with a correlation id so internal context (URLs
+        // with tokens, DB connection strings, file paths in stacks)
+        // can't leak through Error.message into the sandbox. The full
+        // cause is logged with the same correlation id so operators can
+        // still trace the failure.
+        const correlationId = newCorrelationId();
+        return Effect.logError("tool dispatch failed", cause).pipe(
+          Effect.annotateLogs({
+            "executor.correlation_id": correlationId,
+            "mcp.tool.name": path,
           }),
+          Effect.flatMap(() =>
+            Effect.fail(
+              new ExecutionToolError({
+                message: `${OPAQUE_DEFECT_MESSAGE} [${correlationId}]`,
+                cause: err ?? cause,
+              }),
+            ),
+          ),
         );
       }),
     );
-    if (!isToolResultEnvelope(result)) {
+
+    // Strict: plugins emit ToolResult<T>. Anything else is treated as a
+    // raw success value and wrapped — keeps the sandbox-facing contract
+    // uniform without forcing every tiny test plugin to import
+    // `ToolResult.ok`.
+    // Expected failures resolve through the success channel, so without the
+    // outcome annotation the dispatch span reads as healthy even when the
+    // caller hit an upstream error or auth wall.
+    yield* annotateToolResultOutcome(result);
+    if (isToolResult(result)) {
       return result;
     }
-    if (hasToolResultError(result)) {
-      return yield* new ExecutionToolError({
-        message: renderToolErrorMessage(result.error),
-        cause: result.error,
-      });
-    }
-    if ("data" in result) {
-      return result.data;
-    }
-    return result;
+    return { ok: true, data: result };
   }),
 });
 
@@ -123,14 +332,14 @@ const isElicitationDeclinedError = (
   value: unknown,
 ): value is {
   readonly _tag: "ElicitationDeclinedError";
-  readonly toolId: string;
+  readonly address: string;
   readonly action: "cancel" | "decline";
 } =>
   Predicate.isTagged(value, "ElicitationDeclinedError") &&
   value !== null &&
   typeof value === "object" &&
-  "toolId" in value &&
-  typeof value.toolId === "string" &&
+  "address" in value &&
+  typeof value.address === "string" &&
   "action" in value &&
   (value.action === "cancel" || value.action === "decline");
 
@@ -138,19 +347,33 @@ export type ToolDiscoveryResult = {
   readonly path: string;
   readonly name: string;
   readonly description?: string;
-  readonly sourceId: string;
+  readonly integration: string;
   readonly score: number;
 };
 
 export type ExecutorSourceListItem = {
   readonly id: string;
   readonly name: string;
+  readonly description?: string;
   readonly kind: string;
-  readonly runtime?: boolean;
   readonly canRemove?: boolean;
   readonly canRefresh?: boolean;
   readonly toolCount: number;
 };
+
+export type ToolDiscoveryInput = {
+  readonly executor: Executor;
+  readonly query: string;
+  readonly namespace?: string;
+  readonly limit: number;
+  readonly offset: number;
+};
+
+export interface ToolDiscoveryProvider {
+  readonly searchTools: (
+    input: ToolDiscoveryInput,
+  ) => Effect.Effect<PagedResult<ToolDiscoveryResult>, ExecutionToolError>;
+}
 
 /**
  * Page of results from a list-style discovery tool. Shared by
@@ -186,7 +409,21 @@ const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedRes
   };
 };
 
-type SearchableTool = Pick<Tool, "id" | "sourceId" | "name" | "description">;
+/** What `searchTools` ranks over — the sandbox-callable path plus the v2
+ *  identity fields a query can match against. */
+type SearchableTool = {
+  readonly path: string;
+  readonly integration: string;
+  readonly name: string;
+  readonly description?: string;
+};
+
+const toSearchableTool = (tool: Tool): SearchableTool => ({
+  path: addressToPath(String(tool.address)),
+  integration: String(tool.integration),
+  name: String(tool.name),
+  description: tool.description,
+});
 
 type PreparedField = {
   readonly raw: string;
@@ -195,7 +432,7 @@ type PreparedField = {
 
 const SEARCH_FIELD_WEIGHTS = {
   path: 12,
-  sourceId: 8,
+  integration: 8,
   name: 10,
   description: 5,
 } as const;
@@ -288,13 +525,13 @@ const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => 
     return true;
   }
 
-  const sourceTokens = tokenizeSearchText(tool.sourceId);
-  const pathTokens = tokenizeSearchText(tool.id);
+  const integrationTokens = tokenizeSearchText(tool.integration);
+  const pathTokens = tokenizeSearchText(tool.path);
 
   const isPrefixMatch = (tokens: readonly string[]): boolean =>
     namespaceTokens.every((token, index) => tokens[index] === token);
 
-  return isPrefixMatch(sourceTokens) || isPrefixMatch(pathTokens);
+  return isPrefixMatch(integrationTokens) || isPrefixMatch(pathTokens);
 };
 
 const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResult | null => {
@@ -305,14 +542,14 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
     return null;
   }
 
-  const path = prepareField(tool.id);
-  const sourceId = prepareField(tool.sourceId);
+  const path = prepareField(tool.path);
+  const integration = prepareField(tool.integration);
   const name = prepareField(tool.name);
   const description = prepareField(tool.description);
 
   const fieldScores = [
     scorePreparedField(normalizedQuery, queryTokens, path, SEARCH_FIELD_WEIGHTS.path),
-    scorePreparedField(normalizedQuery, queryTokens, sourceId, SEARCH_FIELD_WEIGHTS.sourceId),
+    scorePreparedField(normalizedQuery, queryTokens, integration, SEARCH_FIELD_WEIGHTS.integration),
     scorePreparedField(normalizedQuery, queryTokens, name, SEARCH_FIELD_WEIGHTS.name),
     scorePreparedField(normalizedQuery, queryTokens, description, SEARCH_FIELD_WEIGHTS.description),
   ];
@@ -351,17 +588,17 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
   }
 
   if (
-    normalizeSearchText(tool.id) === normalizedQuery ||
+    normalizeSearchText(tool.path) === normalizedQuery ||
     normalizeSearchText(tool.name) === normalizedQuery
   ) {
     score += 20;
   }
 
   return {
-    path: tool.id,
+    path: tool.path,
     name: tool.name,
     description: tool.description,
-    sourceId: tool.sourceId,
+    integration: tool.integration,
     score,
   };
 };
@@ -401,10 +638,11 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
         }),
     ),
   );
-  const ranked = all
-    .filter((tool: Tool) => matchesNamespace(tool, options?.namespace))
-    .map((tool: Tool) => scoreToolMatch(tool, query))
-    .filter((tool): tool is ToolDiscoveryResult => tool !== null)
+  const searchable = all.map(toSearchableTool);
+  const ranked = searchable
+    .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
+    .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+    .filter(Predicate.isNotNull)
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
@@ -418,7 +656,14 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   return page;
 });
 
-/** What `tools.executor.sources.list()` calls inside the sandbox. */
+export const defaultToolDiscoveryProvider: ToolDiscoveryProvider = {
+  searchTools: ({ executor, query, namespace, limit, offset }) =>
+    searchTools(executor, query, limit, { namespace, offset }),
+};
+
+/** What `tools.executor.sources.list()` calls inside the sandbox. v2: the
+ *  "sources" are the integration catalog; tool counts come from the
+ *  per-connection tool list. */
 export const listExecutorSources = Effect.fn("executor.sources.list")(function* (
   executor: Executor,
   options?: {
@@ -430,11 +675,11 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
   const normalizedQuery = normalizeSearchText(options?.query ?? "");
   const limit = options?.limit ?? 50;
   const offset = options?.offset ?? 0;
-  const sources = yield* executor.sources.list().pipe(
+  const integrations = yield* executor.integrations.list().pipe(
     Effect.mapError(
       (cause) =>
         new ExecutionToolError({
-          message: "Failed to list executor sources",
+          message: "Failed to list executor integrations",
           cause,
         }),
     ),
@@ -442,38 +687,48 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
 
   const filtered =
     normalizedQuery.length === 0
-      ? sources
-      : sources.filter((source: Source) => {
-          const haystack = normalizeSearchText([source.id, source.name, source.kind].join(" "));
+      ? integrations
+      : integrations.filter((integration: Integration) => {
+          const haystack = normalizeSearchText(
+            [String(integration.slug), integration.description, integration.kind].join(" "),
+          );
           return tokenizeSearchText(normalizedQuery).every((token) => haystack.includes(token));
         });
 
-  // Single query for all tools, then count per source in memory.
+  // Single query for all tools, then count per integration in memory.
   const allTools = yield* executor.tools.list({ includeAnnotations: false }).pipe(
     Effect.mapError(
       (cause) =>
         new ExecutionToolError({
-          message: "Failed to list tools for source counts",
+          message: "Failed to list tools for integration counts",
           cause,
         }),
     ),
   );
-  const toolCountBySource = new Map<string, number>();
+  const toolCountByIntegration = new Map<string, number>();
   for (const tool of allTools) {
-    toolCountBySource.set(tool.sourceId, (toolCountBySource.get(tool.sourceId) ?? 0) + 1);
+    const key = String(tool.integration);
+    toolCountByIntegration.set(key, (toolCountByIntegration.get(key) ?? 0) + 1);
   }
 
   const sortedWithCounts = filtered
     .map(
-      (source: Source) =>
+      (integration: Integration) =>
         ({
-          id: source.id,
-          name: source.name,
-          kind: source.kind,
-          runtime: source.runtime,
-          canRemove: source.canRemove,
-          canRefresh: source.canRefresh,
-          toolCount: toolCountBySource.get(source.id) ?? 0,
+          id: String(integration.slug),
+          name: String(integration.slug),
+          // The integration's catalog description — user-editable context the
+          // agent can use to pick a source. Omitted when it just repeats the
+          // slug or display name (no information beyond identity).
+          ...(integration.description &&
+          integration.description.toLowerCase() !== String(integration.slug).toLowerCase() &&
+          integration.description.toLowerCase() !== integration.name.toLowerCase()
+            ? { description: integration.description }
+            : {}),
+          kind: integration.kind,
+          canRemove: integration.canRemove,
+          canRefresh: integration.canRefresh,
+          toolCount: toolCountByIntegration.get(String(integration.slug)) ?? 0,
         }) satisfies ExecutorSourceListItem,
     )
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
@@ -481,7 +736,7 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
   const page = paginate(sortedWithCounts, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
-    "executor.sources.candidate_count": sources.length,
+    "executor.sources.candidate_count": integrations.length,
     "executor.sources.match_count": sortedWithCounts.length,
     "executor.sources.result_count": page.items.length,
     "executor.sources.has_more": page.hasMore,
@@ -496,24 +751,51 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
 ) {
   yield* Effect.annotateCurrentSpan({ "mcp.tool.name": path });
 
+  const builtin = BUILTIN_TOOL_DESCRIPTIONS.get(path);
+  if (builtin) return builtin;
+
+  const address = pathToAddress(path);
+
   // Single tools.schema() call — it already fetches the tool row
   // internally. No need to also call tools.list() just for name/description.
-  const schema: ToolSchema | null = yield* executor.tools.schema(path);
+  const schema: ToolSchemaView | null = yield* executor.tools.schema(address);
 
-  // tools.schema() returns null if the tool doesn't exist. Fall back to
-  // a minimal stub so callers can still render something.
+  // tools.schema() returns null if the tool doesn't exist. Mirror the
+  // invoke path's tool_not_found shape (error + suggestions) instead of a
+  // bare stub — a silent `{ path, name }` reads as "tool exists, schema
+  // unavailable" and sends callers down the wrong debugging path.
   if (schema === null) {
-    return { path, name: path };
+    const lastDot = path.lastIndexOf(".");
+    const leaf = lastDot === -1 ? path : path.slice(lastDot + 1);
+    const scoped = yield* searchTools(executor, leaf, TOOL_DESCRIBE_SUGGESTION_LIMIT, {
+      namespace: extractNamespace(path),
+    });
+    const matches =
+      scoped.items.length > 0
+        ? scoped.items
+        : (yield* searchTools(executor, leaf, TOOL_DESCRIBE_SUGGESTION_LIMIT)).items;
+    const suggestions = matches.map((item) => item.path);
+    const notFound: DescribedTool = {
+      path,
+      name: path,
+      error: {
+        code: "tool_not_found",
+        message: `Tool not found: ${path}`,
+        ...(suggestions.length > 0 ? { suggestions } : {}),
+      },
+    };
+    return notFound;
   }
 
-  // The schema's id is the tool path; name/description come from the
+  // The schema's address is the tool address; name/description come from the
   // tool row which tools.schema() already loaded.
-  return {
+  const described: DescribedTool = {
     path,
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: schema.outputTypeScript,
-    typeScriptDefinitions: schema.typeScriptDefinitions,
+    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
+  return described;
 });

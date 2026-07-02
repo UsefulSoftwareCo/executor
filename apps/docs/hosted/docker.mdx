@@ -1,0 +1,95 @@
+---
+title: Self Hosted Docker
+description: "Run the whole Executor server in one Docker container over a SQLite file: API, MCP, auth, code execution, and the web UI."
+---
+
+The self-hosted image is the entire Executor server in a single container: the
+typed API, the MCP server, authentication, QuickJS code execution, and the web
+console, all in one process over a libSQL (SQLite) file. There is no external
+database, worker, or proxy to run.
+
+## Run it
+
+Using the published image:
+
+```bash
+docker run -d \
+  --name executor-selfhost \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  ghcr.io/rhyssullivan/executor-selfhost:latest
+```
+
+Or build from a clone of the [repo](https://github.com/RhysSullivan/executor),
+from `apps/host-selfhost`:
+
+```bash
+docker compose up -d --build
+```
+
+No configuration is required. Open [http://localhost:4788](http://localhost:4788);
+the first person to create an account becomes the owner. After that, people join
+through single-use invite links you mint from the **Admin** page, and open signup
+is closed.
+
+## Storage
+
+Everything that must persist (the SQLite database and the generated encryption
+keys) lives in the data directory, mounted at **`/data`** in the container. Always
+mount a volume there so it survives restarts and upgrades:
+
+```bash
+-v executor-data:/data     # named volume (what compose uses)
+# or a host path:
+-v /srv/executor:/data
+```
+
+Back it up by snapshotting that volume (or copying `/data`, primarily `data.db`).
+`EXECUTOR_DATA_DIR` (default `/data`) sets the directory, and `EXECUTOR_DB_PATH`
+(default `<data dir>/data.db`) sets the database file.
+
+## Environment variables
+
+Everything is optional: a bare run boots a working instance. The defaults below are
+the container defaults.
+
+| Variable                            | Default                         | Purpose                                                                                         |
+| ----------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `PORT`                              | `4788`                          | HTTP port the server listens on.                                                                |
+| `EXECUTOR_HOST`                     | `0.0.0.0`                       | Bind address. The image binds all interfaces.                                                   |
+| `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                              |
+| `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                           |
+| `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                           |
+| `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                     |
+| `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                             |
+| `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`    | unset                           | Pre-create the admin headlessly (with the password below); skips browser first-run.             |
+| `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` | unset                           | Password for the bootstrap admin.                                                               |
+| `EXECUTOR_BOOTSTRAP_ADMIN_NAME`     | `Admin`                         | Display name for the bootstrap admin.                                                           |
+| `EXECUTOR_ORG_NAME`                 | `Default`                       | Display name of the single org every user joins.                                                |
+| `EXECUTOR_ORG_SLUG`                 | `default`                       | URL slug for that org.                                                                          |
+| `EXECUTOR_ALLOW_LOCAL_NETWORK`      | `false`                         | Allow sandboxed code to reach loopback / private addresses. Keep off unless you trust the code. |
+
+## Behind a domain or TLS
+
+<Warning>
+  Set `EXECUTOR_WEB_BASE_URL` to the exact public URL you load in the browser (scheme, host, and
+  port). If it does not match, browser logins are rejected with an invalid-origin error.
+</Warning>
+
+```bash
+docker run -d \
+  -p 4788:4788 \
+  -v executor-data:/data \
+  -e EXECUTOR_WEB_BASE_URL=https://executor.example.com \
+  ghcr.io/rhyssullivan/executor-selfhost:latest
+```
+
+For a headless deploy (CI or infra-as-code), set `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`
+and `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` to create the admin without the browser
+setup screen.
+
+## Connect an agent
+
+The server exposes a streamable-HTTP MCP endpoint at `/mcp`. Point your client at
+`http://localhost:4788/mcp` (or your public URL). See [MCP Proxy](/mcp-proxy) for
+how that endpoint exposes your integrations.

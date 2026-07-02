@@ -3,14 +3,27 @@ import { Effect, Schema } from "effect";
 import {
   definePlugin,
   StorageError,
+  ToolResult,
+  tool,
+  ProviderItemId,
+  ProviderKey,
+  type CredentialProvider,
+  type Owner,
   type PluginCtx,
   type PluginBlobStore,
-  type SecretProvider,
+  type ProviderEntry,
+  type StaticToolSchema,
   type StorageFailure,
 } from "@executor-js/sdk/core";
 
-import { OnePasswordConfig, Vault, ConnectionStatus } from "./types";
-import type { OnePasswordAuth } from "./types";
+import {
+  OnePasswordAuth,
+  OnePasswordConfig,
+  RedactedOnePasswordConfig,
+  Vault,
+  ConnectionStatus,
+  redactConfig,
+} from "./types";
 import { OnePasswordError } from "./errors";
 import { makeOnePasswordService, type ResolvedAuth, type OnePasswordService } from "./service";
 
@@ -21,30 +34,74 @@ import { makeOnePasswordService, type ResolvedAuth, type OnePasswordService } fr
 const CREDENTIAL_FIELD = "credential";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const CONFIG_KEY = "config";
+const PROVIDER_KEY = ProviderKey.make("onepassword");
+
+const schemaToStaticToolSchema = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
+  Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
+    A,
+    I
+  >;
+
+const OnePasswordConfigureInput = Schema.Struct({
+  auth: OnePasswordAuth,
+  vaultId: Schema.String,
+  name: Schema.String,
+});
+
+const OnePasswordConfigureOutput = Schema.Struct({
+  configured: Schema.Boolean,
+});
+
+const OnePasswordGetConfigOutput = Schema.Struct({
+  config: Schema.NullOr(RedactedOnePasswordConfig),
+});
+
+const OnePasswordListVaultsInput = OnePasswordAuth;
+
+const OnePasswordListVaultsOutput = Schema.Struct({
+  vaults: Schema.Array(Vault),
+});
+
+const OnePasswordRemoveConfigOutput = Schema.Struct({
+  removed: Schema.Boolean,
+});
+
+const OnePasswordStatusOutput = ConnectionStatus;
+
+const OnePasswordConfigureInputStd = schemaToStaticToolSchema<
+  typeof OnePasswordConfigureInput.Type,
+  typeof OnePasswordConfigureInput.Encoded
+>(OnePasswordConfigureInput);
+const OnePasswordConfigureOutputStd = schemaToStaticToolSchema(OnePasswordConfigureOutput);
+const OnePasswordGetConfigOutputStd = schemaToStaticToolSchema(OnePasswordGetConfigOutput);
+const OnePasswordListVaultsInputStd = schemaToStaticToolSchema<
+  typeof OnePasswordListVaultsInput.Type,
+  typeof OnePasswordListVaultsInput.Encoded
+>(OnePasswordListVaultsInput);
+const OnePasswordListVaultsOutputStd = schemaToStaticToolSchema(OnePasswordListVaultsOutput);
+const OnePasswordRemoveConfigOutputStd = schemaToStaticToolSchema(OnePasswordRemoveConfigOutput);
+const OnePasswordStatusOutputStd = schemaToStaticToolSchema(OnePasswordStatusOutput);
 
 // ---------------------------------------------------------------------------
 // Shared failure alias.
 //
-// Every extension method either touches storage (`ctx.storage` blobs or
-// `ctx.secrets`) or reaches the 1Password backend. Storage I/O surfaces
-// as `StorageFailure`; the HTTP edge (`withCapture`) translates
-// `StorageError` to `InternalError({ traceId })`. Domain problems (not
-// configured, service-account token missing, backend RPC failure) stay
-// as `OnePasswordError` and encode to 502 via the schema annotation on
-// the class.
+// Every extension method either touches storage (`ctx.storage` blobs) or
+// reaches the 1Password backend. Storage I/O surfaces as `StorageFailure`;
+// the HTTP edge (`withCapture`) translates `StorageError` to
+// `InternalError({ traceId })`. Domain problems (not configured, backend RPC
+// failure) stay as `OnePasswordError` and encode to 502 via the schema
+// annotation on the class.
 // ---------------------------------------------------------------------------
 
 export type OnePasswordExtensionFailure = OnePasswordError | StorageFailure;
 
 // ---------------------------------------------------------------------------
-// Plugin extension — public API on executor.onepassword
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Typed config store — single blob, JSON encoded. Blob I/O failures surface
-// as `StorageError` (HTTP edge translates to `InternalError`); decode
-// failures stay `OnePasswordError` — the blob's contents are a plugin
-// concern, not an infrastructure one.
+// Typed config store — single blob, JSON encoded, owner-partitioned. The
+// stored config carries the auth credential (desktop account name, or
+// service-account token) plus the selected vault. v1 keyed this by executor
+// scope; v2 partitions by `owner` — the plugin-owned config row owns the
+// partition, mirroring the connection model. Blob I/O failures surface as
+// `StorageError`; decode failures stay `OnePasswordError`.
 // ---------------------------------------------------------------------------
 
 export interface OnePasswordStore {
@@ -54,9 +111,9 @@ export interface OnePasswordStore {
   >;
   readonly saveConfig: (
     config: OnePasswordConfig,
-    targetScope: string,
+    owner: Owner,
   ) => Effect.Effect<void, StorageError>;
-  readonly deleteConfig: (targetScope: string) => Effect.Effect<void, StorageError>;
+  readonly deleteConfig: (owner: Owner) => Effect.Effect<void, StorageError>;
 }
 
 const decodeConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(OnePasswordConfig));
@@ -87,7 +144,7 @@ export const makeOnePasswordStore = (blobs: PluginBlobStore): OnePasswordStore =
       }),
     ),
 
-  saveConfig: (config, targetScope) =>
+  saveConfig: (config, owner) =>
     blobs
       .put(
         CONFIG_KEY,
@@ -96,123 +153,96 @@ export const makeOnePasswordStore = (blobs: PluginBlobStore): OnePasswordStore =
           vaultId: config.vaultId,
           name: config.name,
         }),
-        { scope: targetScope },
+        { owner },
       )
       .pipe(Effect.mapError(blobStorageError("write"))),
 
-  deleteConfig: (targetScope) =>
-    blobs
-      .delete(CONFIG_KEY, { scope: targetScope })
-      .pipe(Effect.mapError(blobStorageError("delete"))),
+  deleteConfig: (owner) =>
+    blobs.delete(CONFIG_KEY, { owner }).pipe(Effect.mapError(blobStorageError("delete"))),
 });
 
 // ---------------------------------------------------------------------------
 // Helpers — auth resolution + service construction
 // ---------------------------------------------------------------------------
 
-const resolveAuth = (
-  auth: OnePasswordAuth,
-  ctx: PluginCtx<OnePasswordStore>,
-): Effect.Effect<ResolvedAuth, OnePasswordError | StorageFailure> => {
-  if (auth.kind === "desktop-app") {
-    return Effect.succeed({
-      kind: "desktop-app" as const,
-      accountName: auth.accountName,
-    });
-  }
-  return ctx.secrets.get(auth.tokenSecretId).pipe(
-    Effect.catchTag("SecretOwnedByConnectionError", () =>
-      Effect.fail(
-        new OnePasswordError({
-          operation: "auth resolution",
-          message: `Service account token secret "${auth.tokenSecretId}" not found`,
-        }),
-      ),
-    ),
-    Effect.flatMap((token) => {
-      if (token === null) {
-        return Effect.fail(
-          new OnePasswordError({
-            operation: "auth resolution",
-            message: `Service account token secret "${auth.tokenSecretId}" not found`,
-          }),
-        );
-      }
-      return Effect.succeed({
-        kind: "service-account" as const,
-        token,
-      });
-    }),
-  );
-};
+const resolveAuth = (auth: OnePasswordAuth): ResolvedAuth =>
+  auth.kind === "desktop-app"
+    ? { kind: "desktop-app", accountName: auth.accountName }
+    : { kind: "service-account", token: auth.token };
 
 const getServiceFromConfig = (
   config: OnePasswordConfig,
-  ctx: PluginCtx<OnePasswordStore>,
   timeoutMs: number,
   preferSdk: boolean | undefined,
-): Effect.Effect<OnePasswordService, OnePasswordError | StorageFailure> =>
-  resolveAuth(config.auth, ctx).pipe(
-    Effect.flatMap((resolved) => makeOnePasswordService(resolved, { timeoutMs, preferSdk })),
-  );
+): Effect.Effect<OnePasswordService, OnePasswordError> =>
+  makeOnePasswordService(resolveAuth(config.auth), { timeoutMs, preferSdk });
 
-const configuredVaultUri = (config: OnePasswordConfig, secretId: string): string | null => {
-  if (!secretId.startsWith("op://")) {
-    return `op://${config.vaultId}/${secretId}/${CREDENTIAL_FIELD}`;
+const configuredVaultUri = (config: OnePasswordConfig, itemId: string): string | null => {
+  if (!itemId.startsWith("op://")) {
+    return `op://${config.vaultId}/${itemId}/${CREDENTIAL_FIELD}`;
   }
-  const match = secretId.match(/^op:\/\/([^/]+)\/.+/);
+  const match = itemId.match(/^op:\/\/([^/]+)\/.+/);
   if (!match || match[1] !== config.vaultId) return null;
-  return secretId;
+  return itemId;
 };
 
 // ---------------------------------------------------------------------------
-// SecretProvider — read-only, resolves op:// URIs or vaultId-based lookups
+// CredentialProvider — read-only, resolves op:// URIs or vaultId-based lookups.
+//
+// v2: `get(id)` receives only an opaque `ProviderItemId` — no scope. The id is
+// either a fully-qualified `op://vault/item/field` URI or a bare item id that
+// the stored config's vault scopes. The plugin's stored config supplies the
+// auth + vault binding; the provider never writes (writable: false).
 // ---------------------------------------------------------------------------
 
 const makeProvider = (
   ctx: PluginCtx<OnePasswordStore>,
   timeoutMs: number,
   preferSdk: boolean | undefined,
-): SecretProvider => ({
-  key: "onepassword",
+): CredentialProvider => ({
+  key: PROVIDER_KEY,
   writable: false,
-  allowFallback: false,
 
-  // 1Password vaults are named in the stored config; the executor-scope
-  // arg isn't used for routing here. A future refactor could let the
-  // plugin store per-scope vault bindings and pick based on `scope`.
-  get: (secretId, _scope) =>
+  get: (id: ProviderItemId): Effect.Effect<string | null, StorageFailure> =>
     ctx.storage.getConfig().pipe(
       Effect.flatMap((config) => {
         if (!config) return Effect.succeed(null as string | null);
 
-        const uri = configuredVaultUri(config, secretId);
+        const uri = configuredVaultUri(config, id);
         if (uri === null) return Effect.succeed(null as string | null);
 
-        return getServiceFromConfig(config, ctx, timeoutMs, preferSdk).pipe(
+        return getServiceFromConfig(config, timeoutMs, preferSdk).pipe(
           Effect.flatMap((svc) => svc.resolveSecret(uri)),
           Effect.map((v): string | null => v),
           Effect.orElseSucceed(() => null),
         );
       }),
-      Effect.orElseSucceed(() => null),
+      Effect.catch(() => Effect.succeed(null as string | null)),
     ),
 
-  list: () =>
+  list: (): Effect.Effect<readonly ProviderEntry[], StorageFailure> =>
     ctx.storage.getConfig().pipe(
       Effect.flatMap((config) => {
-        if (!config) return Effect.succeed([] as ReadonlyArray<{ id: string; name: string }>);
-        return getServiceFromConfig(config, ctx, timeoutMs, preferSdk).pipe(
+        if (!config) return Effect.succeed([] as readonly ProviderEntry[]);
+        return getServiceFromConfig(config, timeoutMs, preferSdk).pipe(
           Effect.flatMap((svc) => svc.listItems(config.vaultId)),
-          Effect.map(
-            (items): ReadonlyArray<{ id: string; name: string }> =>
-              items.map((item) => ({ id: item.id, name: item.title })),
+          Effect.map((items): readonly ProviderEntry[] =>
+            items.map((item) => ({ id: ProviderItemId.make(item.id), name: item.title })),
           ),
         );
       }),
-      Effect.orElseSucceed(() => [] as ReadonlyArray<{ id: string; name: string }>),
+      Effect.catch(() => Effect.succeed([] as readonly ProviderEntry[])),
     ),
 });
+
+// ---------------------------------------------------------------------------
+// Owner resolution — config is a single shared 1Password binding. We persist
+// it under the `user` partition when the executor is bound to a subject, else
+// the shared `org` partition.
+// ---------------------------------------------------------------------------
+
+const ownerForCtx = (ctx: PluginCtx<OnePasswordStore>): Owner =>
+  ctx.owner.subject === null ? "org" : "user";
 
 const makeOnePasswordExtension = (
   ctx: PluginCtx<OnePasswordStore>,
@@ -220,12 +250,15 @@ const makeOnePasswordExtension = (
   preferSdk: boolean | undefined,
 ) => {
   return {
-    configure: (config: OnePasswordConfig, targetScope: string) =>
-      ctx.storage.saveConfig(config, targetScope),
+    configure: (config: OnePasswordConfig) => ctx.storage.saveConfig(config, ownerForCtx(ctx)),
 
-    getConfig: () => ctx.storage.getConfig(),
+    getConfig: (): Effect.Effect<
+      RedactedOnePasswordConfig | null,
+      StorageError | OnePasswordError
+    > =>
+      ctx.storage.getConfig().pipe(Effect.map((config) => (config ? redactConfig(config) : null))),
 
-    removeConfig: (targetScope: string) => ctx.storage.deleteConfig(targetScope),
+    removeConfig: () => ctx.storage.deleteConfig(ownerForCtx(ctx)),
 
     status: () =>
       Effect.gen(function* () {
@@ -236,7 +269,7 @@ const makeOnePasswordExtension = (
             error: "Not configured",
           });
         }
-        const svc = yield* getServiceFromConfig(config, ctx, timeoutMs, preferSdk);
+        const svc = yield* getServiceFromConfig(config, timeoutMs, preferSdk);
         const vaults = yield* svc.listVaults();
         const vault = vaults.find((v) => v.id === config.vaultId);
         return ConnectionStatus.make({
@@ -247,8 +280,7 @@ const makeOnePasswordExtension = (
 
     listVaults: (auth: OnePasswordAuth) =>
       Effect.gen(function* () {
-        const resolved = yield* resolveAuth(auth, ctx);
-        const svc = yield* makeOnePasswordService(resolved, {
+        const svc = yield* makeOnePasswordService(resolveAuth(auth), {
           timeoutMs,
           preferSdk,
         });
@@ -274,7 +306,7 @@ const makeOnePasswordExtension = (
             message: "1Password secret URI is outside the configured vault",
           });
         }
-        const svc = yield* getServiceFromConfig(config, ctx, timeoutMs, preferSdk);
+        const svc = yield* getServiceFromConfig(config, timeoutMs, preferSdk);
         return yield* svc.resolveSecret(scopedUri);
       }),
   };
@@ -304,7 +336,67 @@ export const onepasswordPlugin = definePlugin((options?: OnePasswordPluginOption
 
     extension: (ctx) => makeOnePasswordExtension(ctx, timeoutMs, preferSdk),
 
-    secretProviders: (ctx) => [makeProvider(ctx, timeoutMs, preferSdk)],
+    staticSources: (self) => [
+      {
+        id: "onepassword",
+        kind: "executor",
+        name: "1Password",
+        tools: [
+          tool({
+            name: "status",
+            description:
+              "Check whether the 1Password credential provider is configured and can reach its selected vault. This returns status only, never secret values.",
+            outputSchema: OnePasswordStatusOutputStd,
+            execute: () => Effect.map(self.status(), ToolResult.ok),
+          }),
+          tool({
+            name: "getConfig",
+            description:
+              "Read the current 1Password provider configuration. This returns account/vault metadata only; service-account token values are never returned.",
+            outputSchema: OnePasswordGetConfigOutputStd,
+            execute: () => Effect.map(self.getConfig(), (config) => ToolResult.ok({ config })),
+          }),
+          tool({
+            name: "listVaults",
+            description:
+              "List available 1Password vaults before configuring the provider. For service-account auth, pass the service account token directly.",
+            inputSchema: OnePasswordListVaultsInputStd,
+            outputSchema: OnePasswordListVaultsOutputStd,
+            execute: (input) =>
+              Effect.map(self.listVaults(input), (vaults) => ToolResult.ok({ vaults })),
+          }),
+          tool({
+            name: "configure",
+            description:
+              "Configure the 1Password credential provider for the acting owner. Use desktop-app auth for local biometric access, or service-account auth with the token. The token is stored in the plugin's owner-partitioned config and never surfaced again.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Configure the 1Password credential provider",
+            },
+            inputSchema: OnePasswordConfigureInputStd,
+            outputSchema: OnePasswordConfigureOutputStd,
+            execute: (input) =>
+              Effect.as(
+                self.configure({ auth: input.auth, vaultId: input.vaultId, name: input.name }),
+                ToolResult.ok({ configured: true }),
+              ),
+          }),
+          tool({
+            name: "removeConfig",
+            description:
+              "Remove the 1Password provider configuration for the acting owner. Future 1Password secret resolution stops until reconfigured.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Remove the 1Password credential provider configuration",
+            },
+            outputSchema: OnePasswordRemoveConfigOutputStd,
+            execute: () => Effect.as(self.removeConfig(), ToolResult.ok({ removed: true })),
+          }),
+        ],
+      },
+    ],
+
+    credentialProviders: (ctx) => [makeProvider(ctx, timeoutMs, preferSdk)],
   };
   // HTTP transport (routes/handlers/extensionService) is layered on by
   // the api-aware factory in `@executor-js/plugin-onepassword/api`. Hosts

@@ -42,7 +42,7 @@ describe("openOAuthPopup", () => {
     expect(openFailed).toBe(true);
   });
 
-  it("opens supported OAuth URLs through a reserved popup", () => {
+  it("opens supported OAuth URLs through a reserved popup with opener available", () => {
     let features = "";
     let opened = "";
     const popup: FakePopup = { closed: false, close: () => {}, location: { href: "" } };
@@ -81,7 +81,7 @@ describe("openOAuthPopup", () => {
       writable: true,
     });
     expect(opened).toBe("about:blank");
-    expect(popup.opener).toBe(null);
+    expect(popup.opener).toBeUndefined();
     expect(popup.location.href).toBe("https://auth.example/authorize");
     expect(features).toContain("popup=1");
     expect(features).not.toContain("noopener");
@@ -128,7 +128,7 @@ describe("openOAuthPopup", () => {
     });
     expect(opened).toBe("about:blank");
     expect(reservedPopup).not.toBeNull();
-    expect(popup.opener).toBe(null);
+    expect(popup.opener).toBeUndefined();
     expect(popup.location.href).toBe("https://auth.example/authorize");
   });
 

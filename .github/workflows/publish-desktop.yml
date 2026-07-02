@@ -2,8 +2,8 @@ name: Publish Desktop App
 run-name: "${{ format('publish desktop {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}"
 
 # Triggered manually or by publish-executor-package.yml after a CLI release
-# lands. Builds Electron distributables for mac/win/linux with the Bun-compiled
-# sidecar bundled in `resources/sidecar/`, then attaches them to the GitHub
+# lands. Builds Electron distributables for mac/win/linux with the compiled
+# executor CLI bundled in `resources/executor/`, then attaches them to the GitHub
 # release matching the tag so electron-updater can pick them up.
 
 on:
@@ -29,24 +29,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # smoke: run the compiled-sidecar smoke test on legs whose target
+          # matches the runner (the mac x64 leg cross-compiles on an arm64
+          # runner, so its binary can't be executed natively there).
           - os: macos-latest
             arch: arm64
             platform: mac
             bun-target: bun-darwin-arm64
+            smoke: true
           - os: macos-latest
             arch: x64
             platform: mac
             bun-target: bun-darwin-x64
+            smoke: false
           - os: ubuntu-latest
             arch: x64
             platform: linux
             bun-target: bun-linux-x64
+            smoke: true
           - os: windows-latest
             arch: x64
             platform: win
             bun-target: bun-windows-x64
+            smoke: true
 
     runs-on: ${{ matrix.os }}
+
+    # A healthy leg finishes in ~10 minutes. Without a deadline, a hung step
+    # wedges the whole publish queue: the concurrency group below queues later
+    # runs behind this one without cancelling it (v1.5.7's mac leg sat 4 hours
+    # on a bun install that errored without exiting, holding v1.5.8 pending).
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -84,13 +97,27 @@ jobs:
       - name: Build web app
         run: bun run --filter @executor-js/local build
 
-      - name: Build sidecar binary + stage web UI
+      - name: Build bundled executor
         env:
           BUN_TARGET: ${{ matrix.bun-target }}
         run: bun ./scripts/build-sidecar.ts
         working-directory: apps/desktop
 
+      # Gate the release on the compiled binary actually booting. v1.5.0/.1
+      # shipped local-server binaries that died on launch (missing libsql native
+      # binding) — a regression dev mode can't catch because `bun run` resolves
+      # node_modules that `bun build --compile` does not bundle.
+      - name: Smoke test bundled executor
+        if: matrix.smoke
+        run: bun run test:smoke
+        working-directory: apps/desktop
+
       - name: Build Electron main/preload/renderer
+        env:
+          # Crash-report DSN baked into the main bundle (see the define in
+          # electron.vite.config.ts). Unset (forks, local) → crash reporting
+          # is compiled out and dumps stay local.
+          DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_SENTRY_DSN }}
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
 
@@ -123,6 +150,16 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
+
+      # The two mac legs each emit a latest-mac.yml listing only their own
+      # arch. Rename per-arch here; the release job merges them back into the
+      # single latest-mac.yml electron-updater clients fetch. Without this,
+      # merge-multiple in the release job lets one arch clobber the other and
+      # every Mac gets pointed at whichever leg uploaded last.
+      - name: Rename mac update manifest per arch
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: mv apps/desktop/dist/latest-mac.yml "apps/desktop/dist/latest-mac-${{ matrix.arch }}.yml"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -165,6 +202,15 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Merge mac update manifests
+        run: |
+          set -euo pipefail
+          bun scripts/merge-latest-mac-yml.ts \
+            artifacts/latest-mac-x64.yml \
+            artifacts/latest-mac-arm64.yml \
+            artifacts/latest-mac.yml
+          rm artifacts/latest-mac-x64.yml artifacts/latest-mac-arm64.yml
 
       - name: Upload to GitHub Release
         env:

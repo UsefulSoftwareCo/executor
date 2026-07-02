@@ -1,13 +1,28 @@
-import { Match, Option } from "effect";
+import { hoistDefinitions, normalizeRefs } from "./schema-refs";
+import { compile } from "./vendor/json-schema-to-typescript";
 
 type JsonSchemaRecord = Record<string, unknown>;
+type CompilerJsonSchema = JsonSchemaRecord | boolean;
+type CompilerFormatOptions = {
+  [key: string]: unknown;
+  printWidth?: number;
+  semi?: boolean;
+  singleQuote?: boolean;
+  trailingComma?: "none" | "es5" | "all";
+};
+type SchemaCompilerOptions = {
+  [key: string]: unknown;
+  additionalProperties?: boolean;
+  bannerComment?: string;
+  enableConstEnums?: boolean;
+  format?: boolean;
+  style?: CompilerFormatOptions;
+  unknownAny?: boolean;
+  unreachableDefinitions?: boolean;
+};
 
 export type TypeScriptRenderOptions = {
-  maxLength?: number;
-  maxDepth?: number;
-  maxProperties?: number;
-  maxRefDepth?: number;
-  maxCompositeMembers?: number;
+  compilerOptions?: Partial<SchemaCompilerOptions>;
 };
 
 export type TypeScriptSchemaPreview = {
@@ -15,97 +30,743 @@ export type TypeScriptSchemaPreview = {
   readonly definitions: Record<string, string>;
 };
 
-const VALID_IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const REF_PATTERN = /^#\/(?:\$defs|definitions)\/(.+)$/;
+const ROOT_WRAPPER_NAME = "SchemaPreview";
+const ROOT_PROPERTY_NAME = "__root";
+const TOOL_INPUT_PROPERTY_NAME = "__input";
+const TOOL_OUTPUT_PROPERTY_NAME = "__output";
+
+const DEFAULT_COMPILER_OPTIONS = {
+  additionalProperties: false,
+  bannerComment: "",
+  enableConstEnums: false,
+  format: false,
+  unknownAny: true,
+  unreachableDefinitions: false,
+  style: {
+    printWidth: 120,
+    semi: true,
+    singleQuote: false,
+    trailingComma: "none",
+  },
+} satisfies Partial<SchemaCompilerOptions>;
+
+const DEFINITION_REF_PATTERN = /^#\/definitions\/(.+)$/;
+const IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 const asRecord = (value: unknown): JsonSchemaRecord =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as JsonSchemaRecord)
     : {};
 
-const asStringArray = (value: unknown): Array<string> =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const asCompilerSchema = (value: unknown): CompilerJsonSchema => {
+  if (typeof value === "boolean") {
+    return value;
+  }
 
-const truncate = (value: string, maxLength: number): string =>
-  value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 4))} ...`;
+  if (value !== null && typeof value === "object") {
+    return value as JsonSchemaRecord;
+  }
 
-const formatPropertyKey = (value: string): string =>
-  VALID_IDENTIFIER_PATTERN.test(value) ? value : JSON.stringify(value);
+  return {};
+};
 
-const refNameFromPointer = (ref: string): string | undefined => ref.match(REF_PATTERN)?.[1];
+const isNullSchema = (value: unknown): boolean => {
+  if (value === false) {
+    return false;
+  }
 
-const refFallbackLabel = (ref: string): string =>
-  refNameFromPointer(ref) ?? ref.split("/").at(-1) ?? ref;
+  const schema = asRecord(value);
+  return schema.type === "null" || schema.const === null;
+};
 
-const summarizeLargeComposite = (
-  schema: JsonSchemaRecord,
-  maxCompositeMembers: number,
-): { kind: "oneOf" | "anyOf"; count: number } | null => {
-  for (const kind of ["oneOf", "anyOf"] as const) {
-    const items = schema[kind];
-    if (Array.isArray(items) && items.length > maxCompositeMembers) {
-      return { kind, count: items.length };
+const appendNullSchema = (schemas: ReadonlyArray<unknown>): Array<unknown> =>
+  schemas.some(isNullSchema) ? [...schemas] : [...schemas, { type: "null" }];
+
+const schemaAlreadyAllowsNull = (schema: JsonSchemaRecord): boolean => {
+  if (schema.type === "null" || schema.const === null) {
+    return true;
+  }
+
+  if (Array.isArray(schema.type) && schema.type.includes("null")) {
+    return true;
+  }
+
+  if (Array.isArray(schema.enum) && schema.enum.includes(null)) {
+    return true;
+  }
+
+  const compositeSchemas = [
+    ...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
+    ...(Array.isArray(schema.oneOf) ? schema.oneOf : []),
+  ];
+  return compositeSchemas.some(isNullSchema);
+};
+
+const normalizeNullable = (schema: JsonSchemaRecord): JsonSchemaRecord => {
+  if (schema.nullable !== true) {
+    return schema;
+  }
+
+  const { nullable: _nullable, ...base } = schema;
+  if (schemaAlreadyAllowsNull(base)) {
+    return base;
+  }
+
+  if ("const" in base) {
+    const { const: constValue, type: _type, ...rest } = base;
+    return { ...rest, enum: [constValue, null] };
+  }
+
+  if (Array.isArray(base.enum)) {
+    return { ...base, enum: [...base.enum, null] };
+  }
+
+  if (typeof base.type === "string") {
+    return { ...base, type: [base.type, "null"] };
+  }
+
+  if (Array.isArray(base.type)) {
+    const types = base.type.filter((value): value is string => typeof value === "string");
+    return types.length > 0
+      ? { ...base, type: [...types, "null"] }
+      : { anyOf: [base, { type: "null" }] };
+  }
+
+  if (Array.isArray(base.oneOf)) {
+    return { ...base, oneOf: appendNullSchema(base.oneOf) };
+  }
+
+  if (Array.isArray(base.anyOf)) {
+    return { ...base, anyOf: appendNullSchema(base.anyOf) };
+  }
+
+  return { anyOf: [base, { type: "null" }] };
+};
+
+const normalizeSchema = (node: unknown): unknown => {
+  if (node === null || typeof node !== "object") {
+    return node;
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((item) => normalizeSchema(item));
+  }
+
+  const schema = node as JsonSchemaRecord;
+  const normalized: JsonSchemaRecord = {};
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "$ref" && typeof value === "string") {
+      const definitionName = value.match(DEFINITION_REF_PATTERN)?.[1];
+      normalized[key] = definitionName ? `#/$defs/${definitionName}` : value;
+      continue;
+    }
+
+    normalized[key] = normalizeSchema(value);
+  }
+
+  const nullable = normalizeNullable(normalized);
+  if (
+    nullable.type === "object" &&
+    nullable.properties === undefined &&
+    nullable.additionalProperties === undefined
+  ) {
+    return { ...nullable, additionalProperties: {} };
+  }
+  return nullable;
+};
+
+const mergeDefinitions = (
+  externalDefs: ReadonlyMap<string, unknown>,
+  localDefs: Record<string, unknown>,
+): Record<string, unknown> => {
+  const merged: Record<string, unknown> = {};
+
+  for (const [name, schema] of externalDefs) {
+    merged[name] = normalizeSchema(normalizeRefs(asCompilerSchema(schema)));
+  }
+
+  for (const [name, schema] of Object.entries(localDefs)) {
+    merged[name] = normalizeSchema(normalizeRefs(asCompilerSchema(schema)));
+  }
+
+  return merged;
+};
+
+const buildWrappedObjectSchema = (
+  properties: ReadonlyArray<readonly [string, unknown]>,
+  defs: ReadonlyMap<string, unknown>,
+): JsonSchemaRecord => {
+  const normalizedProperties: Record<string, unknown> = {};
+  const localDefs: Record<string, unknown> = {};
+
+  for (const [name, schema] of properties) {
+    const normalizedSchema = normalizeSchema(normalizeRefs(asCompilerSchema(schema)));
+    const { stripped, defs: schemaDefs } = hoistDefinitions(normalizedSchema);
+    normalizedProperties[name] = asCompilerSchema(stripped);
+    Object.assign(localDefs, schemaDefs);
+  }
+
+  const mergedDefs = mergeDefinitions(defs, localDefs);
+  const wrappedSchema: JsonSchemaRecord = {
+    type: "object",
+    properties: normalizedProperties,
+    required: properties.map(([name]) => name),
+    additionalProperties: false,
+  };
+
+  if (Object.keys(mergedDefs).length > 0) {
+    wrappedSchema.$defs = mergedDefs;
+  }
+
+  return wrappedSchema;
+};
+
+const buildWrappedSchema = (
+  schema: unknown,
+  defs: ReadonlyMap<string, unknown>,
+): JsonSchemaRecord => buildWrappedObjectSchema([[ROOT_PROPERTY_NAME, schema]], defs);
+
+const compilerOptionsFrom = (options: TypeScriptRenderOptions): Partial<SchemaCompilerOptions> => ({
+  ...DEFAULT_COMPILER_OPTIONS,
+  ...options.compilerOptions,
+  bannerComment: "",
+  format: false,
+  style: {
+    ...DEFAULT_COMPILER_OPTIONS.style,
+    ...options.compilerOptions?.style,
+  },
+});
+
+type GeneratedDeclaration = {
+  readonly kind: "interface" | "type";
+  readonly name: string;
+  readonly body: string;
+};
+
+type ScanState = {
+  quote: '"' | "'" | "`" | null;
+  escaping: boolean;
+  lineComment: boolean;
+  blockComment: boolean;
+};
+
+const emptyScanState = (): ScanState => ({
+  quote: null,
+  escaping: false,
+  lineComment: false,
+  blockComment: false,
+});
+
+const stepScanState = (state: ScanState, current: string, next: string): { skipNext: boolean } => {
+  if (state.lineComment) {
+    if (current === "\n" || current === "\r") {
+      state.lineComment = false;
+    }
+    return { skipNext: false };
+  }
+
+  if (state.blockComment) {
+    if (current === "*" && next === "/") {
+      state.blockComment = false;
+      return { skipNext: true };
+    }
+    return { skipNext: false };
+  }
+
+  if (state.quote) {
+    if (state.escaping) {
+      state.escaping = false;
+      return { skipNext: false };
+    }
+
+    if (current === "\\") {
+      state.escaping = true;
+      return { skipNext: false };
+    }
+
+    if (current === state.quote) {
+      state.quote = null;
+    }
+    return { skipNext: false };
+  }
+
+  if (current === "/" && next === "/") {
+    state.lineComment = true;
+    return { skipNext: true };
+  }
+
+  if (current === "/" && next === "*") {
+    state.blockComment = true;
+    return { skipNext: true };
+  }
+
+  if (current === '"' || current === "'" || current === "`") {
+    state.quote = current;
+  }
+
+  return { skipNext: false };
+};
+
+const findMatchingBrace = (source: string, start: number): number => {
+  const state = emptyScanState();
+  let depth = 0;
+
+  for (let index = start; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    const wasCode = !state.quote && !state.lineComment && !state.blockComment;
+    const { skipNext } = stepScanState(state, current, next);
+
+    if (wasCode && !state.quote && !state.lineComment && !state.blockComment) {
+      if (current === "{") {
+        depth += 1;
+      } else if (current === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return index;
+        }
+      }
+    }
+
+    if (skipNext) {
+      index += 1;
     }
   }
 
-  return null;
+  return -1;
 };
 
-const primitiveTypeName = (value: string): string =>
-  Match.value(value).pipe(
-    Match.whenOr("integer", "number", () => "number"),
-    Match.whenOr("string", "boolean", "null", (v) => v),
-    Match.when("array", () => "unknown[]"),
-    Match.when("object", () => "Record<string, unknown>"),
-    Match.option,
-    Option.getOrElse(() => "unknown"),
+const findMatchingParen = (source: string, start: number): number => {
+  const state = emptyScanState();
+  let depth = 0;
+
+  for (let index = start; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    const wasCode = !state.quote && !state.lineComment && !state.blockComment;
+    const { skipNext } = stepScanState(state, current, next);
+
+    if (wasCode && !state.quote && !state.lineComment && !state.blockComment) {
+      if (current === "(") {
+        depth += 1;
+      } else if (current === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          return index;
+        }
+      }
+    }
+
+    if (skipNext) {
+      index += 1;
+    }
+  }
+
+  return -1;
+};
+
+const findTypeAliasEnd = (source: string, start: number): number => {
+  const state = emptyScanState();
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let seenToken = false;
+
+  for (let index = start; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    const wasCode = !state.quote && !state.lineComment && !state.blockComment;
+    const { skipNext } = stepScanState(state, current, next);
+
+    if (wasCode && !state.quote && !state.lineComment && !state.blockComment) {
+      if (current === "{") {
+        braceDepth += 1;
+      } else if (current === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+      } else if (current === "[") {
+        bracketDepth += 1;
+      } else if (current === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+      } else if (current === "(") {
+        parenDepth += 1;
+      } else if (current === ")") {
+        parenDepth = Math.max(0, parenDepth - 1);
+      }
+
+      if (!/\s/.test(current)) {
+        seenToken = true;
+      }
+
+      if (
+        seenToken &&
+        (current === ";" || current === "\n" || current === "\r") &&
+        braceDepth === 0 &&
+        bracketDepth === 0 &&
+        parenDepth === 0
+      ) {
+        return index;
+      }
+    }
+
+    if (skipNext) {
+      index += 1;
+    }
+  }
+
+  return -1;
+};
+
+const parseGeneratedDeclarations = (source: string): Array<GeneratedDeclaration> => {
+  const declarations: Array<GeneratedDeclaration> = [];
+  const pattern = /export\s+(interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    const kind = match[1] as "interface" | "type";
+    const name = match[2] ?? "";
+
+    if (!IDENTIFIER_PATTERN.test(name)) {
+      continue;
+    }
+
+    if (kind === "interface") {
+      const braceStart = source.indexOf("{", pattern.lastIndex);
+      if (braceStart < 0) {
+        continue;
+      }
+
+      const braceEnd = findMatchingBrace(source, braceStart);
+      if (braceEnd < 0) {
+        continue;
+      }
+
+      declarations.push({
+        kind,
+        name,
+        body: source.slice(braceStart, braceEnd + 1),
+      });
+      pattern.lastIndex = braceEnd + 1;
+      continue;
+    }
+
+    const equalsIndex = source.indexOf("=", pattern.lastIndex);
+    if (equalsIndex < 0) {
+      continue;
+    }
+
+    const end = findTypeAliasEnd(source, equalsIndex + 1);
+    if (end < 0) {
+      continue;
+    }
+
+    declarations.push({
+      kind,
+      name,
+      body: source.slice(equalsIndex + 1, end).trim(),
+    });
+    pattern.lastIndex = end + 1;
+  }
+
+  return declarations;
+};
+
+const extractPropertyType = (interfaceBody: string, propertyName: string): string | null => {
+  const propertyIndex = interfaceBody.indexOf(propertyName);
+  if (propertyIndex < 0) {
+    return null;
+  }
+
+  const colonIndex = interfaceBody.indexOf(":", propertyIndex + propertyName.length);
+  if (colonIndex < 0) {
+    return null;
+  }
+
+  const end = findTypeAliasEnd(interfaceBody, colonIndex + 1);
+  if (end < 0) {
+    return null;
+  }
+
+  return interfaceBody.slice(colonIndex + 1, end).trim();
+};
+
+const containsTopLevelUnion = (source: string): boolean => {
+  const state = emptyScanState();
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    const wasCode = !state.quote && !state.lineComment && !state.blockComment;
+    const { skipNext } = stepScanState(state, current, next);
+
+    if (wasCode && !state.quote && !state.lineComment && !state.blockComment) {
+      if (current === "{") {
+        braceDepth += 1;
+      } else if (current === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+      } else if (current === "[") {
+        bracketDepth += 1;
+      } else if (current === "]") {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+      } else if (current === "(") {
+        parenDepth += 1;
+      } else if (current === ")") {
+        parenDepth = Math.max(0, parenDepth - 1);
+      } else if (current === "|" && braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) {
+        return true;
+      }
+    }
+
+    if (skipNext) {
+      index += 1;
+    }
+  }
+
+  return false;
+};
+
+const significantBefore = (source: string, start: number): string => {
+  for (let index = start; index >= 0; index -= 1) {
+    const char = source[index] ?? "";
+    if (!/\s/.test(char)) {
+      return char;
+    }
+  }
+  return "";
+};
+
+const significantAfter = (source: string, start: number): string => {
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index] ?? "";
+    if (!/\s/.test(char)) {
+      return char;
+    }
+  }
+  return "";
+};
+
+const stripRedundantUnionParens = (source: string): string => {
+  let output = "";
+
+  for (let index = 0; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    if (current !== "(") {
+      output += current;
+      continue;
+    }
+
+    const end = findMatchingParen(source, index);
+    if (end < 0) {
+      output += current;
+      continue;
+    }
+
+    const previous = significantBefore(source, index - 1);
+    const next = significantAfter(source, end + 1);
+    const inner = source.slice(index + 1, end);
+    const keepParens =
+      !containsTopLevelUnion(inner) ||
+      /[A-Za-z0-9_$]/.test(previous) ||
+      next === "[" ||
+      next === "." ||
+      next === "<";
+
+    if (keepParens) {
+      output += source.slice(index, end + 1);
+    } else {
+      output += stripRedundantUnionParens(inner);
+    }
+    index = end;
+  }
+
+  return output;
+};
+
+const compactTypeScript = (value: string): string => {
+  const state = emptyScanState();
+  let output = "";
+  let pendingWhitespace = false;
+  let braceDepth = 0;
+
+  const emitWhitespace = () => {
+    if (output.length > 0) {
+      pendingWhitespace = true;
+    }
+  };
+
+  const previousSignificant = (): string => output.trimEnd().at(-1) ?? "";
+
+  const nextSignificant = (start: number): string => {
+    for (let index = start; index < value.length; index += 1) {
+      const char = value[index] ?? "";
+      if (!/\s/.test(char)) {
+        return char;
+      }
+    }
+    return "";
+  };
+
+  const terminateMemberAtNewline = (index: number): void => {
+    if (braceDepth <= 0) {
+      return;
+    }
+
+    const previous = previousSignificant();
+    if (!previous || previous === "{" || previous === ";" || previous === "|" || previous === "&") {
+      return;
+    }
+
+    const next = nextSignificant(index + 1);
+    if (!next || next === "|" || next === "&" || next === ")" || next === "]" || next === ",") {
+      return;
+    }
+
+    output = output.trimEnd() + ";";
+    pendingWhitespace = true;
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value[index] ?? "";
+    const next = value[index + 1] ?? "";
+
+    if (!state.quote && !state.lineComment && !state.blockComment) {
+      if (current === "/" && next === "/") {
+        emitWhitespace();
+        index += 1;
+        state.lineComment = true;
+        continue;
+      }
+
+      if (current === "/" && next === "*") {
+        emitWhitespace();
+        index += 1;
+        state.blockComment = true;
+        continue;
+      }
+
+      if (/\s/.test(current)) {
+        if (current === "\n" || current === "\r") {
+          terminateMemberAtNewline(index);
+        }
+        emitWhitespace();
+        continue;
+      }
+    }
+
+    if (state.lineComment) {
+      if (current === "\n" || current === "\r") {
+        state.lineComment = false;
+      }
+      continue;
+    }
+
+    if (state.blockComment) {
+      if (current === "*" && next === "/") {
+        state.blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (pendingWhitespace && output.length > 0) {
+      output += " ";
+    }
+    pendingWhitespace = false;
+    output += current;
+
+    if (state.quote) {
+      if (state.escaping) {
+        state.escaping = false;
+      } else if (current === "\\") {
+        state.escaping = true;
+      } else if (current === state.quote) {
+        state.quote = null;
+      }
+      continue;
+    }
+
+    if (current === '"' || current === "'" || current === "`") {
+      state.quote = current;
+      continue;
+    }
+
+    if (current === "{") {
+      braceDepth += 1;
+    } else if (current === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+    }
+  }
+
+  return stripRedundantUnionParens(output.trim());
+};
+
+const getDefinitionsFromDeclarations = (
+  declarations: ReadonlyArray<GeneratedDeclaration>,
+): Record<string, string> =>
+  Object.fromEntries(
+    declarations
+      .filter((declaration) => declaration.name !== ROOT_WRAPPER_NAME)
+      .map((declaration) => [declaration.name, compactTypeScript(declaration.body)])
+      .sort(([left], [right]) => left.localeCompare(right)),
   );
 
-const renderComposite = (input: {
-  key: "oneOf" | "anyOf" | "allOf";
-  schema: JsonSchemaRecord;
-  render: (value: unknown, depthRemaining: number) => string;
-  depthRemaining: number;
-}): string | null => {
-  const rawItems = input.schema[input.key];
-  const items: JsonSchemaRecord[] = Array.isArray(rawItems)
-    ? rawItems.map((item: unknown) => asRecord(item))
-    : [];
-  if (items.length === 0) {
-    return null;
-  }
+const previewFromCompiledTypeScript = (source: string): TypeScriptSchemaPreview => {
+  const declarations = parseGeneratedDeclarations(source);
+  const rootDeclaration = declarations.find(
+    (declaration) => declaration.name === ROOT_WRAPPER_NAME,
+  );
+  const rootType =
+    rootDeclaration?.kind === "interface"
+      ? extractPropertyType(rootDeclaration.body, ROOT_PROPERTY_NAME)
+      : null;
 
-  const labels = items
-    .map((item: JsonSchemaRecord) => input.render(item, input.depthRemaining - 1))
-    .filter((label: string) => label.length > 0);
-
-  if (labels.length === 0) {
-    return null;
-  }
-
-  return labels.join(input.key === "allOf" ? " & " : " | ");
+  return {
+    type: compactTypeScript(rootType ?? "unknown"),
+    definitions: getDefinitionsFromDeclarations(declarations),
+  };
 };
 
-const localDefinitionsFromSchema = (schema: unknown): Map<string, unknown> => {
-  const root = asRecord(schema);
-  const defs = new Map<string, unknown>();
+const previewToolFromCompiledTypeScript = (source: string): ToolTypeScriptPreview => {
+  const declarations = parseGeneratedDeclarations(source);
+  const rootDeclaration = declarations.find(
+    (declaration) => declaration.name === ROOT_WRAPPER_NAME,
+  );
+  const inputType =
+    rootDeclaration?.kind === "interface"
+      ? extractPropertyType(rootDeclaration.body, TOOL_INPUT_PROPERTY_NAME)
+      : null;
+  const outputType =
+    rootDeclaration?.kind === "interface"
+      ? extractPropertyType(rootDeclaration.body, TOOL_OUTPUT_PROPERTY_NAME)
+      : null;
+  const definitions = getDefinitionsFromDeclarations(declarations);
 
-  for (const [key, value] of Object.entries(asRecord(root.$defs))) {
-    defs.set(key, value);
-  }
+  return {
+    ...(inputType ? { inputTypeScript: compactTypeScript(inputType) } : {}),
+    ...(outputType ? { outputTypeScript: compactTypeScript(outputType) } : {}),
+    ...(Object.keys(definitions).length > 0 ? { typeScriptDefinitions: definitions } : {}),
+  };
+};
 
-  for (const [key, value] of Object.entries(asRecord(root.definitions))) {
-    defs.set(key, value);
-  }
-
-  return defs;
+const compileSchemaPreview = async (
+  schema: unknown,
+  defs: ReadonlyMap<string, unknown>,
+  options: TypeScriptRenderOptions,
+): Promise<TypeScriptSchemaPreview> => {
+  const wrappedSchema = buildWrappedSchema(schema, defs);
+  const source = compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(options));
+  return previewFromCompiledTypeScript(source);
 };
 
 export const schemaToTypeScriptPreview = (
   schema: unknown,
   options: TypeScriptRenderOptions = {},
-): TypeScriptSchemaPreview => {
-  const localDefs = localDefinitionsFromSchema(schema);
+): Promise<TypeScriptSchemaPreview> => {
+  const localDefs = new Map<string, unknown>(
+    Object.entries(hoistDefinitions(asCompilerSchema(schema)).defs),
+  );
   return schemaToTypeScriptPreviewWithDefs(schema, localDefs, options);
 };
 
@@ -113,250 +774,14 @@ export const schemaToTypeScriptPreviewWithDefs = (
   schema: unknown,
   defs: ReadonlyMap<string, unknown>,
   options: TypeScriptRenderOptions = {},
-): TypeScriptSchemaPreview => {
-  const maxLength = options.maxLength ?? 400;
-  const maxDepth = options.maxDepth ?? 6;
-  const maxProperties = options.maxProperties ?? 12;
-  const maxRefDepth = options.maxRefDepth ?? 3;
-  const maxCompositeMembers = options.maxCompositeMembers ?? 8;
-
-  const render = (input: {
-    currentInput: unknown;
-    depthRemaining: number;
-    refDepthRemaining: number;
-  }): string => {
-    const current = asRecord(input.currentInput);
-
-    if (input.depthRemaining <= 0) {
-      if (typeof current.title === "string" && current.title.length > 0) {
-        return current.title;
-      }
-
-      if (current.type === "array") {
-        return "unknown[]";
-      }
-
-      if (current.type === "object" || current.properties) {
-        return "Record<string, unknown>";
-      }
-
-      return "unknown";
-    }
-
-    if (typeof current.$ref === "string") {
-      const refLabel = refFallbackLabel(current.$ref);
-      return input.refDepthRemaining > 0 ? refLabel : `unknown /* ${refLabel} omitted */`;
-    }
-
-    if ("const" in current) {
-      return JSON.stringify(current.const);
-    }
-
-    const enumValues = Array.isArray(current.enum) ? current.enum : [];
-    if (enumValues.length > 0) {
-      return truncate(enumValues.map((value) => JSON.stringify(value)).join(" | "), maxLength);
-    }
-
-    const largeComposite = summarizeLargeComposite(current, maxCompositeMembers);
-    if (largeComposite) {
-      return `unknown /* ${largeComposite.count}-way ${largeComposite.kind} omitted */`;
-    }
-
-    const renderNested = (value: unknown): string =>
-      render({
-        currentInput: value,
-        depthRemaining: input.depthRemaining - 1,
-        refDepthRemaining: input.refDepthRemaining,
-      });
-
-    const composite =
-      renderComposite({
-        key: "oneOf",
-        schema: current,
-        render: (value) => renderNested(value),
-        depthRemaining: input.depthRemaining,
-      }) ??
-      renderComposite({
-        key: "anyOf",
-        schema: current,
-        render: (value) => renderNested(value),
-        depthRemaining: input.depthRemaining,
-      }) ??
-      renderComposite({
-        key: "allOf",
-        schema: current,
-        render: (value) => renderNested(value),
-        depthRemaining: input.depthRemaining,
-      });
-    if (composite) {
-      return truncate(composite, maxLength);
-    }
-
-    if (current.nullable === true) {
-      const { nullable: _nullable, ...rest } = current;
-      return truncate(
-        `${render({
-          currentInput: rest,
-          depthRemaining: input.depthRemaining,
-          refDepthRemaining: input.refDepthRemaining,
-        })} | null`,
-        maxLength,
-      );
-    }
-
-    if (current.type === "array") {
-      const itemLabel = current.items
-        ? render({
-            currentInput: current.items,
-            depthRemaining: input.depthRemaining - 1,
-            refDepthRemaining: input.refDepthRemaining,
-          })
-        : "unknown";
-      return truncate(`${itemLabel}[]`, maxLength);
-    }
-
-    if (current.type === "object" || current.properties) {
-      const properties = asRecord(current.properties);
-      const propertyKeys = Object.keys(properties);
-      const required = new Set(asStringArray(current.required));
-
-      const additionalProperties = current.additionalProperties;
-      const additionalPropertiesLabel =
-        additionalProperties && typeof additionalProperties === "object"
-          ? render({
-              currentInput: additionalProperties,
-              depthRemaining: input.depthRemaining - 1,
-              refDepthRemaining: input.refDepthRemaining,
-            })
-          : additionalProperties === true
-            ? "unknown"
-            : null;
-
-      if (propertyKeys.length === 0) {
-        if (additionalPropertiesLabel) {
-          return truncate(`Record<string, ${additionalPropertiesLabel}>`, maxLength);
-        }
-
-        return "Record<string, unknown>";
-      }
-
-      const visibleKeys = propertyKeys.slice(0, maxProperties);
-      const parts = visibleKeys.map(
-        (key) =>
-          `${formatPropertyKey(key)}${required.has(key) ? "" : "?"}: ${render({
-            currentInput: properties[key],
-            depthRemaining: input.depthRemaining - 1,
-            refDepthRemaining: input.refDepthRemaining,
-          })}`,
-      );
-
-      if (visibleKeys.length < propertyKeys.length) {
-        parts.push("...");
-      }
-
-      if (additionalPropertiesLabel) {
-        parts.push(`[key: string]: ${additionalPropertiesLabel}`);
-      }
-
-      return truncate(`{ ${parts.join("; ")} }`, maxLength);
-    }
-
-    if (Array.isArray(current.type)) {
-      return truncate(
-        current.type
-          .filter((value): value is string => typeof value === "string")
-          .map(primitiveTypeName)
-          .join(" | "),
-        maxLength,
-      );
-    }
-
-    if (typeof current.type === "string") {
-      return primitiveTypeName(current.type);
-    }
-
-    return "unknown";
-  };
-
-  const referencedDepths = new Map<string, number>();
-
-  const collectPreviewRefs = (currentInput: unknown, refDepth: number): void => {
-    const current = asRecord(currentInput);
-
-    if (summarizeLargeComposite(current, maxCompositeMembers)) {
-      return;
-    }
-
-    if (typeof current.$ref === "string") {
-      const name = refNameFromPointer(current.$ref);
-      if (!name) {
-        return;
-      }
-
-      const existingDepth = referencedDepths.get(name);
-      if (existingDepth !== undefined && existingDepth <= refDepth) {
-        return;
-      }
-
-      referencedDepths.set(name, refDepth);
-
-      if (refDepth >= maxRefDepth) {
-        return;
-      }
-
-      const target = defs.get(name);
-      if (target !== undefined) {
-        collectPreviewRefs(target, refDepth + 1);
-      }
-      return;
-    }
-
-    for (const value of Object.values(current)) {
-      if (value && typeof value === "object") {
-        if (Array.isArray(value)) {
-          for (const item of value) {
-            collectPreviewRefs(item, refDepth);
-          }
-        } else {
-          collectPreviewRefs(value, refDepth);
-        }
-      }
-    }
-  };
-
-  collectPreviewRefs(schema, 1);
-
-  const definitions = Object.fromEntries(
-    [...referencedDepths.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([name, refDepth]) => {
-        const target = defs.get(name);
-        if (target === undefined) {
-          return [];
-        }
-
-        return [
-          [
-            name,
-            render({
-              currentInput: target,
-              depthRemaining: maxDepth,
-              refDepthRemaining: Math.max(0, maxRefDepth - refDepth),
-            }),
-          ],
-        ] as const;
-      }),
-  );
-
-  return {
-    type: render({
-      currentInput: schema,
-      depthRemaining: maxDepth,
-      refDepthRemaining: maxRefDepth,
+): Promise<TypeScriptSchemaPreview> =>
+  compileSchemaPreview(schema, defs, options).then(
+    (preview) => preview,
+    () => ({
+      type: "unknown",
+      definitions: {},
     }),
-    definitions,
-  };
-};
+  );
 
 export type ToolTypeScriptPreview = {
   inputTypeScript?: string;
@@ -364,31 +789,31 @@ export type ToolTypeScriptPreview = {
   typeScriptDefinitions?: Record<string, string>;
 };
 
-export const buildToolTypeScriptPreview = (input: {
+export const buildToolTypeScriptPreview = async (input: {
   inputSchema?: unknown;
   outputSchema?: unknown;
   defs: ReadonlyMap<string, unknown>;
   options?: TypeScriptRenderOptions;
-}): ToolTypeScriptPreview => {
-  const inputPreview =
-    input.inputSchema !== undefined
-      ? schemaToTypeScriptPreviewWithDefs(input.inputSchema, input.defs, input.options)
-      : null;
-  const outputPreview =
-    input.outputSchema !== undefined
-      ? schemaToTypeScriptPreviewWithDefs(input.outputSchema, input.defs, input.options)
-      : null;
+}): Promise<ToolTypeScriptPreview> => {
+  const properties: Array<readonly [string, unknown]> = [];
+  if (input.inputSchema !== undefined) {
+    properties.push([TOOL_INPUT_PROPERTY_NAME, input.inputSchema]);
+  }
+  if (input.outputSchema !== undefined) {
+    properties.push([TOOL_OUTPUT_PROPERTY_NAME, input.outputSchema]);
+  }
+  if (properties.length === 0) {
+    return {};
+  }
 
-  const mergedDefinitions = {
-    ...inputPreview?.definitions,
-    ...outputPreview?.definitions,
-  };
-
-  return {
-    ...(inputPreview ? { inputTypeScript: inputPreview.type } : {}),
-    ...(outputPreview ? { outputTypeScript: outputPreview.type } : {}),
-    ...(Object.keys(mergedDefinitions).length > 0
-      ? { typeScriptDefinitions: mergedDefinitions }
-      : {}),
-  };
+  const wrappedSchema = buildWrappedObjectSchema(properties, input.defs);
+  return Promise.resolve()
+    .then(() => compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(input.options ?? {})))
+    .then(
+      (source) => previewToolFromCompiledTypeScript(source),
+      () => ({
+        ...(input.inputSchema !== undefined ? { inputTypeScript: "unknown" } : {}),
+        ...(input.outputSchema !== undefined ? { outputTypeScript: "unknown" } : {}),
+      }),
+    );
 };

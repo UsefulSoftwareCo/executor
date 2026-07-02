@@ -2,8 +2,6 @@ import { useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
-import { useScope } from "@executor-js/react/api/scope-context";
 import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
@@ -35,8 +33,9 @@ import {
   onepasswordVaultsAtom,
   configureOnePassword,
   removeOnePasswordConfig,
+  onepasswordWriteKeys,
 } from "./atoms";
-import type { OnePasswordConfig } from "../sdk/types";
+import type { RedactedOnePasswordConfig } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Vault picker
@@ -49,8 +48,7 @@ function VaultPicker(props: {
   onVaultSelect: (id: string, name: string) => void;
 }) {
   const account = props.accountName.trim();
-  const scopeId = useScope();
-  const vaultsResult = useAtomValue(onepasswordVaultsAtom(props.authKind, account, scopeId));
+  const vaultsResult = useAtomValue(onepasswordVaultsAtom(props.authKind, account));
 
   const { vaults, isLoading, error } = AsyncResult.matchWithError(
     vaultsResult as AsyncResult.AsyncResult<
@@ -75,8 +73,12 @@ function VaultPicker(props: {
       }),
       onSuccess: ({ value }) => {
         const v = value.vaults;
-        if (v.length > 0 && !props.vaultId) {
-          queueMicrotask(() => props.onVaultSelect(v[0].id, v[0].name));
+        const defaultVault = v[0];
+        if (
+          defaultVault &&
+          (!props.vaultId || (v.length === 1 && props.vaultId !== defaultVault.id))
+        ) {
+          queueMicrotask(() => props.onVaultSelect(defaultVault.id, defaultVault.name));
         }
         return { vaults: [...v], isLoading: false, error: null };
       },
@@ -91,27 +93,35 @@ function VaultPicker(props: {
     );
   }
 
+  const singleVault = vaults.length === 1 ? vaults[0] : null;
+
   return (
     <div className="grid gap-2">
-      <Select
-        disabled={isLoading || vaults.length === 0}
-        value={props.vaultId}
-        onValueChange={(id) => {
-          const v = vaults.find((vault) => vault.id === id);
-          if (v) props.onVaultSelect(v.id, v.name);
-        }}
-      >
-        <SelectTrigger className="h-9 text-[13px]">
-          <SelectValue placeholder={isLoading ? "Loading…" : "Select a vault"} />
-        </SelectTrigger>
-        <SelectContent>
-          {vaults.map((v) => (
-            <SelectItem key={v.id} value={v.id}>
-              {v.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {singleVault ? (
+        <div className="flex h-9 items-center rounded-md border border-input bg-muted/30 px-3 text-[13px] text-foreground">
+          <span className="truncate">{singleVault.name}</span>
+        </div>
+      ) : (
+        <Select
+          disabled={isLoading || vaults.length === 0}
+          value={props.vaultId}
+          onValueChange={(id) => {
+            const v = vaults.find((vault) => vault.id === id);
+            if (v) props.onVaultSelect(v.id, v.name);
+          }}
+        >
+          <SelectTrigger className="h-9 text-[13px]">
+            <SelectValue placeholder={isLoading ? "Loading…" : "Select a vault"} />
+          </SelectTrigger>
+          <SelectContent>
+            {vaults.map((v) => (
+              <SelectItem key={v.id} value={v.id}>
+                {v.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       {error && (
         <div className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-1.5">
           <p className="text-[11px] text-destructive leading-relaxed whitespace-pre-line">
@@ -130,7 +140,12 @@ function VaultPicker(props: {
 function ConfigDialog(props: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  initial?: { authKind: string; accountName: string; vaultId: string; name: string };
+  initial?: {
+    authKind: string;
+    accountName: string;
+    vaultId: string;
+    name: string;
+  };
 }) {
   const isEdit = !!props.initial;
   const [authKind, setAuthKind] = useState<"desktop-app" | "service-account">(
@@ -142,7 +157,6 @@ function ConfigDialog(props: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const scopeId = useScope();
   const doConfigure = useAtomSet(configureOnePassword, { mode: "promiseExit" });
 
   const reset = () => {
@@ -164,12 +178,15 @@ function ConfigDialog(props: {
     const auth =
       authKind === "desktop-app"
         ? { kind: "desktop-app" as const, accountName: accountName.trim() }
-        : { kind: "service-account" as const, tokenSecretId: accountName.trim() };
+        : { kind: "service-account" as const, token: accountName.trim() };
 
     const exit = await doConfigure({
-      params: { scopeId },
-      payload: { auth, vaultId: vaultId.trim(), name: vaultName.trim() || "1Password" },
-      reactivityKeys: [ReactivityKey.secrets],
+      payload: {
+        auth,
+        vaultId: vaultId.trim(),
+        name: vaultName.trim() || "1Password",
+      },
+      reactivityKeys: onepasswordWriteKeys,
     });
     if (Exit.isFailure(exit)) {
       setError("Failed to save configuration");
@@ -222,10 +239,10 @@ function ConfigDialog(props: {
           {/* Account / token */}
           <div className="grid gap-1.5">
             <Label className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-              {authKind === "desktop-app" ? "Account domain" : "Token secret ID"}
+              {authKind === "desktop-app" ? "Account domain" : "Service account token"}
             </Label>
             <Input
-              placeholder={authKind === "desktop-app" ? "my.1password.com" : "op-service-token"}
+              placeholder={authKind === "desktop-app" ? "my.1password.com" : "ops_..."}
               value={accountName}
               onChange={(e) => setAccountName((e.target as HTMLInputElement).value)}
               className="font-mono text-[13px] h-9"
@@ -233,7 +250,7 @@ function ConfigDialog(props: {
             <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
               {authKind === "desktop-app"
                 ? "Requires the 1Password desktop app with biometric unlock."
-                : "Reference an executor secret that holds the service account token."}
+                : "The token is stored in this provider's owner-scoped config and never surfaced again."}
             </p>
           </div>
 
@@ -251,7 +268,6 @@ function ConfigDialog(props: {
                 setVaultName(name);
               }}
             />
-            {vaultId && <p className="font-mono text-[10px] text-muted-foreground/50">{vaultId}</p>}
           </div>
 
           {/* Display name */}
@@ -299,20 +315,23 @@ function ConfigDialog(props: {
 
 export default function OnePasswordSettings() {
   const [configOpen, setConfigOpen] = useState(false);
-  const scopeId = useScope();
-  const configResult = useAtomValue(onepasswordConfigAtom(scopeId));
+  const configResult = useAtomValue(onepasswordConfigAtom);
   const doRemove = useAtomSet(removeOnePasswordConfig, { mode: "promiseExit" });
 
   const handleRemove = async () => {
-    await doRemove({ params: { scopeId }, reactivityKeys: [ReactivityKey.secrets] });
+    await doRemove({ reactivityKeys: onepasswordWriteKeys });
   };
 
-  const config: OnePasswordConfig | null = AsyncResult.match(
-    configResult as AsyncResult.AsyncResult<OnePasswordConfig | null, unknown>,
-    { onInitial: () => null, onFailure: () => null, onSuccess: ({ value }) => value },
+  const config: RedactedOnePasswordConfig | null = AsyncResult.match(
+    configResult as AsyncResult.AsyncResult<RedactedOnePasswordConfig | null, unknown>,
+    {
+      onInitial: () => null,
+      onFailure: () => null,
+      onSuccess: ({ value }) => value,
+    },
   );
   const isLoading = AsyncResult.match(
-    configResult as AsyncResult.AsyncResult<OnePasswordConfig | null, unknown>,
+    configResult as AsyncResult.AsyncResult<RedactedOnePasswordConfig | null, unknown>,
     {
       onInitial: () => true,
       onFailure: () => false,
@@ -320,7 +339,7 @@ export default function OnePasswordSettings() {
     },
   );
   const isError = AsyncResult.match(
-    configResult as AsyncResult.AsyncResult<OnePasswordConfig | null, unknown>,
+    configResult as AsyncResult.AsyncResult<RedactedOnePasswordConfig | null, unknown>,
     {
       onInitial: () => false,
       onFailure: () => true,
@@ -347,9 +366,6 @@ export default function OnePasswordSettings() {
               <span className="text-muted-foreground/60">Vault</span>
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-foreground/80 truncate">{config.name}</span>
-                <span className="font-mono text-[10px] text-muted-foreground/40 truncate">
-                  {config.vaultId}
-                </span>
               </div>
             </div>
           ) : (
@@ -402,10 +418,9 @@ export default function OnePasswordSettings() {
             config
               ? {
                   authKind: config.auth.kind,
-                  accountName:
-                    config.auth.kind === "desktop-app"
-                      ? config.auth.accountName
-                      : config.auth.tokenSecretId,
+                  // Service-account tokens are never surfaced (redacted); the
+                  // user re-enters the token when editing that auth method.
+                  accountName: config.auth.kind === "desktop-app" ? config.auth.accountName : "",
                   vaultId: config.vaultId,
                   name: config.name,
                 }

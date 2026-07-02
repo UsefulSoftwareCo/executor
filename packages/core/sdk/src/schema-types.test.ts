@@ -7,6 +7,7 @@ import {
   schemaToTypeScriptPreview,
   schemaToTypeScriptPreviewWithDefs,
 } from "./schema-types";
+import { compile } from "./vendor/json-schema-to-typescript";
 
 const StripeBalanceTransactionsFixture = Schema.Struct({
   schema: Schema.Unknown,
@@ -23,7 +24,7 @@ const stripeBalanceTransactionsFixture = Schema.decodeUnknownSync(
 );
 
 describe("schema-types", () => {
-  it("reuses referenced definitions instead of inlining them", () => {
+  it("reuses referenced definitions instead of inlining them", async () => {
     const schema = {
       type: "object",
       properties: {
@@ -46,15 +47,15 @@ describe("schema-types", () => {
       },
     };
 
-    expect(schemaToTypeScriptPreview(schema)).toEqual({
-      type: "{ homeAddress: Address; workAddress: Address }",
+    expect(await schemaToTypeScriptPreview(schema)).toEqual({
+      type: "{ homeAddress: Address; workAddress: Address; }",
       definitions: {
-        Address: "{ street: string; city: string; zip: string }",
+        Address: "{ street: string; city: string; zip: string; }",
       },
     });
   });
 
-  it("can render against shared definitions provided externally", () => {
+  it("can render against shared definitions provided externally", async () => {
     const schema = {
       type: "object",
       properties: {
@@ -78,15 +79,15 @@ describe("schema-types", () => {
       ],
     ]);
 
-    expect(schemaToTypeScriptPreviewWithDefs(schema, defs)).toEqual({
-      type: "{ headquarters: Address }",
+    expect(await schemaToTypeScriptPreviewWithDefs(schema, defs)).toEqual({
+      type: "{ headquarters: Address; }",
       definitions: {
-        Address: "{ city: string }",
+        Address: "{ city: string; }",
       },
     });
   });
 
-  it("limits referenced definitions to 3 levels and marks deeper refs as omitted", () => {
+  it("renders transitive referenced definitions", async () => {
     const defs = new Map<string, unknown>([
       [
         "LevelOne",
@@ -135,7 +136,7 @@ describe("schema-types", () => {
     ]);
 
     expect(
-      schemaToTypeScriptPreviewWithDefs(
+      await schemaToTypeScriptPreviewWithDefs(
         {
           $ref: "#/$defs/LevelOne",
         },
@@ -144,14 +145,15 @@ describe("schema-types", () => {
     ).toEqual({
       type: "LevelOne",
       definitions: {
-        LevelOne: "{ next: LevelTwo }",
-        LevelTwo: "{ next: LevelThree }",
-        LevelThree: "{ next: unknown /* LevelFour omitted */ }",
+        LevelFour: "{ value: string; }",
+        LevelOne: "{ next: LevelTwo; }",
+        LevelThree: "{ next: LevelFour; }",
+        LevelTwo: "{ next: LevelThree; }",
       },
     });
   });
 
-  it("keeps ordinary unions expanded when they stay under the composite threshold", () => {
+  it("keeps ordinary unions expanded", async () => {
     const defs = new Map<string, unknown>([
       [
         "Pet",
@@ -195,7 +197,7 @@ describe("schema-types", () => {
     ]);
 
     expect(
-      schemaToTypeScriptPreviewWithDefs(
+      await schemaToTypeScriptPreviewWithDefs(
         {
           $ref: "#/$defs/Pet",
         },
@@ -204,30 +206,134 @@ describe("schema-types", () => {
     ).toEqual({
       type: "Pet",
       definitions: {
-        Cat: "{ meow: boolean }",
-        Dog: "{ bark: boolean }",
-        Lizard: "{ scales: boolean }",
+        Cat: "{ meow: boolean; }",
+        Dog: "{ bark: boolean; }",
+        Lizard: "{ scales: boolean; }",
         Pet: "Dog | Cat | Lizard",
       },
     });
   });
 
-  it("summarizes large unions from real Stripe fixtures without pulling in the whole schema graph", () => {
+  it("renders large unions from real Stripe fixtures", async () => {
     const defs = new Map(Object.entries(stripeBalanceTransactionsFixture.defs));
 
-    expect(
-      schemaToTypeScriptPreviewWithDefs(stripeBalanceTransactionsFixture.schema, defs),
-    ).toEqual({
-      type: "balance_transaction",
+    const preview = await schemaToTypeScriptPreviewWithDefs(
+      stripeBalanceTransactionsFixture.schema,
+      defs,
+    );
+
+    expect(preview.type).toBe("BalanceTransaction");
+    expect(preview.definitions.BalanceTransaction).toContain("fee_details: Fee[]");
+    expect(preview.definitions.BalanceTransaction).toContain("source: string | Polymorphic | null");
+    expect(preview.definitions.Fee).toBe(
+      "{ amount: number; application: string | null; currency: string; description: string | null; type: string; }",
+    );
+    expect(preview.definitions.Polymorphic).toContain("Charge");
+    expect(preview.definitions.Polymorphic).toContain("Refund");
+    expect(preview.definitions.Polymorphic).toContain("Payout");
+    expect(preview.definitions.Polymorphic).not.toContain("unknown");
+    expect(Object.keys(preview.definitions).length).toBeGreaterThan(100);
+  });
+
+  it("sanitizes dashed definition names and quotes dashed property keys", async () => {
+    const preview = await schemaToTypeScriptPreview({
+      type: "object",
+      properties: {
+        "dash-prop": { type: ["string", "null"] },
+        child: { $ref: "#/$defs/foo-bar" },
+      },
+      required: ["dash-prop", "child"],
+      additionalProperties: false,
+      $defs: {
+        "foo-bar": {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+          },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(preview).toEqual({
+      type: '{ "dash-prop": string | null; child: FooBar; }',
       definitions: {
-        balance_transaction: expect.stringContaining("fee_details: fee[]"),
-        balance_transaction_source: "unknown /* 16-way anyOf omitted */",
-        fee: "{ amount: number; application: string | null; currency: string; description: string | null; type: string }",
+        FooBar: "{ id: string; }",
+      },
+    });
+    expect(preview.definitions).not.toHaveProperty("foo-bar");
+  });
+
+  it("normalizes OpenAPI nullable schemas before compiling", async () => {
+    const preview = await schemaToTypeScriptPreview({
+      type: "object",
+      properties: {
+        maybeObject: {
+          type: "object",
+          nullable: true,
+          properties: {
+            id: { type: "string" },
+          },
+          required: ["id"],
+          additionalProperties: false,
+        },
+        maybeEnum: {
+          enum: ["created", "updated"],
+          nullable: true,
+        },
+        maybeConst: {
+          const: "ok",
+          nullable: true,
+        },
+      },
+      required: ["maybeObject", "maybeEnum", "maybeConst"],
+      additionalProperties: false,
+    });
+
+    expect(preview.type).toBe(
+      '{ maybeObject: { id: string; } | null; maybeEnum: "created" | "updated" | null; maybeConst: "ok" | null; }',
+    );
+  });
+
+  it("handles recursive refs through the compiler wrapper", async () => {
+    const preview = await schemaToTypeScriptPreview({
+      $ref: "#/$defs/IssueFilter",
+      $defs: {
+        IssueFilter: {
+          type: "object",
+          properties: {
+            and: {
+              type: "array",
+              items: { $ref: "#/$defs/IssueFilter" },
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(preview).toEqual({
+      type: "IssueFilter",
+      definitions: {
+        IssueFilter: "{ and?: IssueFilter[]; }",
       },
     });
   });
 
-  it("merges input and output TypeScript definitions", () => {
+  it("rejects external refs instead of loading them", () => {
+    expect(() =>
+      compile(
+        {
+          $ref: "file:///tmp/executor-schema-ref-should-not-load.json",
+        },
+        "ExternalRef",
+        { bannerComment: "", format: false },
+      ),
+    ).toThrow(/Only same-document JSON Pointer refs are supported/);
+  });
+
+  it("merges input and output TypeScript definitions", async () => {
     const defs = new Map<string, unknown>([
       [
         "Address",
@@ -255,7 +361,7 @@ describe("schema-types", () => {
     ]);
 
     expect(
-      buildToolTypeScriptPreview({
+      await buildToolTypeScriptPreview({
         inputSchema: {
           type: "object",
           properties: {
@@ -270,12 +376,62 @@ describe("schema-types", () => {
         defs,
       }),
     ).toEqual({
-      inputTypeScript: "{ address: Address }",
+      inputTypeScript: "{ address: Address; }",
       outputTypeScript: "Contact",
       typeScriptDefinitions: {
-        Address: "{ city: string }",
-        Contact: "{ id: string; address: Address }",
+        Address: "{ city: string; }",
+        Contact: "{ id: string; address: Address; }",
       },
+    });
+  });
+
+  it("renders unconstrained schemas as unknown", async () => {
+    await expect(
+      buildToolTypeScriptPreview({
+        inputSchema: {
+          type: "object",
+          properties: {
+            account_id: { type: "string" },
+            body: {},
+          },
+          required: ["account_id", "body"],
+          additionalProperties: false,
+        },
+        outputSchema: {},
+        defs: new Map(),
+      }),
+    ).resolves.toEqual({
+      inputTypeScript: "{ account_id: string; body: unknown; }",
+      outputTypeScript: "unknown",
+    });
+  });
+
+  it("renders open object schemas as unknown-key records", async () => {
+    await expect(
+      buildToolTypeScriptPreview({
+        inputSchema: {
+          type: "object",
+          properties: {
+            resourceMetadata: {
+              anyOf: [{ type: "object" }, { type: "null" }],
+            },
+          },
+          required: ["resourceMetadata"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            metadata: { type: "object" },
+          },
+          required: ["metadata"],
+          additionalProperties: false,
+        },
+        defs: new Map(),
+      }),
+    ).resolves.toEqual({
+      inputTypeScript: "{ resourceMetadata: { [k: string]: unknown; } | null; }",
+      outputTypeScript: "{ metadata: { [k: string]: unknown; }; }",
     });
   });
 });

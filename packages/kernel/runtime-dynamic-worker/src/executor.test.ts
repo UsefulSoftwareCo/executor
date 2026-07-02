@@ -37,9 +37,10 @@ describe("buildExecutorModule", () => {
     expect(module).toContain("console.error =");
   });
 
-  it("returns result and logs on success", () => {
+  it("returns result, output, and logs on success", () => {
     const module = buildExecutorModule("return 42;", 5000);
-    expect(module).toContain("return { result, logs: __logs }");
+    expect(module).toContain("return { result, output:");
+    expect(module).toContain("logs: __logs }");
   });
 
   it("catches errors and returns them", () => {

@@ -1,0 +1,64 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "executor-cloudflare",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/worker.ts",
+  "observability": { "enabled": true },
+  // The web UI (Workers Static Assets) — the shared multiplayer SPA built by
+  // `vite build` into ./dist. `single-page-application` serves index.html for
+  // client routes (e.g. /policies); `run_worker_first` forces the API, MCP, and
+  // app-level routes (e.g. /v1/app/npm/dist-tags, the update check) to the
+  // Worker instead of the SPA fallback.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/.well-known/*", "/v1", "/v1/*"],
+  },
+  // D1 is the app's SQLite store (the DbProvider seam). `wrangler deploy`
+  // auto-provisions it on first deploy; replace database_id after that, or run
+  // `wrangler d1 create executor` and paste the id here.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "executor",
+      "database_id": "ae748ca1-032c-4427-a1a0-fe39db77d1a9",
+    },
+  ],
+  // Plugin blob seam backend: multi-MB values (resolved OpenAPI specs,
+  // introspection snapshots) live here, not in D1 (which caps a value at
+  // ~1-2MB). `wrangler r2 bucket create executor-blobs` provisions it.
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "executor-blobs",
+    },
+  ],
+  // The MCP session Durable Object: one addressable isolate per MCP session (the
+  // DO id IS the session id) so a session survives across the Worker's stateless
+  // isolates — without it, `tools/list` after `initialize` can land on a fresh
+  // isolate that never saw the session ("Not connected"). `new_sqlite_classes`
+  // is the free-tier-eligible SQLite-backed DO storage.
+  "durable_objects": {
+    "bindings": [{ "name": "MCP_SESSION", "class_name": "McpSessionDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["McpSessionDO"] }],
+  // Cloudflare Access is the entire auth layer: the Worker validates the
+  // Cf-Access-Jwt-Assertion JWT against the team JWKS. Set these to your Zero
+  // Trust team domain + the Access application's AUD tag. EXECUTOR_SECRET_KEY
+  // (the at-rest secret-encryption key) is a SECRET — set it with
+  // `wrangler secret put EXECUTOR_SECRET_KEY`, never in vars.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
+    "ACCESS_AUD": "",
+    "ACCESS_NAME_CLAIM": "name",
+    "ACCESS_GROUPS_CLAIM": "groups",
+    "ADMIN_EMAILS": "",
+    "SELF_HOSTED_ORG_ID": "default",
+    "SELF_HOSTED_ORG_NAME": "Default",
+    // VITE_PUBLIC_SITE_URL is intentionally unset: with no static URL the worker
+    // derives the web base URL from each request's origin (RequestWebOrigin), so
+    // secret/OAuth handoff links match whatever host the user actually reached.
+    // Set it only to force a canonical URL (e.g. behind a proxy that rewrites Host).
+  },
+}

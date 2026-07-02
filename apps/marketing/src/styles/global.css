@@ -9,20 +9,21 @@
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Clean minimal palette */
-  --color-surface: #fafaf7;
-  --color-surface-2: #f3f3ee;
-  --color-ink: #0d0d10;
-  --color-ink-2: #4a4a4e;
-  --color-ink-3: #8a8a8e;
-  --color-rule: rgba(13, 13, 16, 0.07);
-  --color-rule-strong: rgba(13, 13, 16, 0.14);
+  /* Registry-grade grayscale palette, matched to the app design system.
+     No brand hue: accent resolves to near-black so it reads as ink, not color. */
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
+  --color-ink: #111111;
+  --color-ink-2: #666666;
+  --color-ink-3: #888888;
+  --color-rule: #eaeaea;
+  --color-rule-strong: #d4d4d4;
 
-  --color-accent: #635bff;
-  --color-accent-hover: #5048e6;
+  --color-accent: #0a0a0a;
+  --color-accent-hover: #333333;
 }
 
 html {
@@ -66,7 +67,7 @@ body {
   opacity: 0.08;
 }
 
-/* Soft fade overlay — paint the surface color back over the pattern's bottom */
+/* Soft fade overlay: paint the surface color back over the pattern's bottom */
 .pattern-fade-overlay {
   position: absolute;
   inset: 0;
@@ -75,13 +76,14 @@ body {
   z-index: 0;
 }
 
-/* Italic serif accent — pairs with sharp Geist display */
+/* Was an italic-serif violet accent; neutralized to match the grayscale,
+   no-serif system. The headline now reads as one uniform Geist phrase. */
 .serif-italic {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: var(--color-accent);
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
 }
 
 /* Page-load reveals */
@@ -111,7 +113,7 @@ body {
   animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
 }
 
-/* Hairline-bordered surface for the beam panel — minimal elevation */
+/* Hairline-bordered surface for the beam panel: minimal elevation */
 .surface-card {
   background: white;
   border: 1px solid var(--color-rule);
@@ -136,6 +138,41 @@ body {
   background: #1f1f24;
 }
 
+/* Compact nav variant: height matched to the gh-star pill (and its 7px radius)
+   so the right cluster reads as one even row. */
+.btn-primary--nav {
+  display: inline-flex;
+  align-items: center;
+  height: 31px;
+  padding: 0 0.95rem;
+  border-radius: 7px;
+}
+
+/* Light, bordered counterpart to .btn-primary, a real secondary CTA. Sized to
+   match .btn-primary--hero so it balances under the hero's primary button. */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  padding: 0.7rem 1.25rem;
+  font-family: inherit;
+  font-weight: 500;
+  font-size: 14.5px;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.btn-secondary:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-ink-3);
+}
+
 .btn-link {
   color: var(--color-ink-2);
   font-weight: 500;
@@ -153,6 +190,38 @@ body {
 }
 .btn-link:hover {
   color: var(--color-ink);
+}
+
+/* GitHub "star on github" pill (nav), matching integrations.sh: a gold star,
+   a lowercase mono label, and the count behind a hairline divider. All mono,
+   the metadata voice. The star is the one bit of color, kept to the icon. */
+.gh-star {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--color-rule);
+  border-radius: 7px;
+  color: var(--color-ink-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.gh-star:hover {
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+}
+.gh-star__ico {
+  flex-shrink: 0;
+}
+.gh-star__n {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-3);
+  padding-left: 8px;
+  border-left: 1px solid var(--color-rule);
 }
 
 .copy-icons {
@@ -184,7 +253,7 @@ body {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Hero toggle — segmented "Try in Cloud / Try locally" control.
+   Hero toggle: segmented "Try in Cloud / Try locally" control.
    A sliding white pill animates between two equal-width tabs.
    The active pane is revealed below; inactive panes hide.
    ─────────────────────────────────────────────────────────── */
@@ -246,7 +315,7 @@ body {
   display: flex;
 }
 
-/* Per-pane description — sits above the CTA. Smaller than the hero tagline,
+/* Per-pane description: sits above the CTA. Smaller than the hero tagline,
    tight max-width so two lines wrap naturally on narrow widths. */
 .pane-desc {
   font-size: 14.5px;
@@ -259,7 +328,7 @@ body {
   margin: 0;
 }
 
-/* Subtle metadata strip under each pane's CTA — uppercase mono dots */
+/* Subtle metadata strip under each pane's CTA: uppercase mono dots */
 .pane-meta {
   display: inline-flex;
   flex-wrap: wrap;
@@ -309,18 +378,13 @@ body {
   user-select: none;
   font-size: 13px;
   color: var(--color-ink-3);
-  padding: 0.4rem 0.6rem;
-  border-radius: 8px;
-  transition:
-    color 0.15s ease,
-    background 0.15s ease;
+  transition: color 0.15s ease;
 }
 .download-other > summary::-webkit-details-marker {
   display: none;
 }
 .download-other > summary:hover {
   color: var(--color-ink-2);
-  background: var(--color-surface-2);
 }
 .download-other[open] > summary {
   color: var(--color-ink);
@@ -359,14 +423,14 @@ body {
   background: var(--color-surface-2);
 }
 
-/* Larger primary button for the hero pane — keeps btn-primary base sizing
+/* Larger primary button for the hero pane: keeps btn-primary base sizing
    for nav/cards but bumps the hero's CTA to a more confident scale */
 .btn-primary--hero {
   padding: 0.7rem 1.25rem;
   font-size: 14.5px;
 }
 
-/* Accent-colored inline link — for secondary callouts inside card bodies */
+/* Accent-colored inline link: for secondary callouts inside card bodies */
 .link-accent {
   color: var(--color-accent);
   font-weight: 500;
@@ -444,4 +508,1168 @@ body {
 .legal-prose strong {
   color: var(--color-ink);
   font-weight: 600;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   COMPONENT KIT: sections beyond the hero
+   Built to echo the reference sites' best parts while staying on
+   Executor's off-white / graph-paper / Geist + serif-italic brand:
+   - Harbor: code window, trace waterfall, auditable security cards, FAQ
+   - Corsair: connection matrix, permission-gate card, mono path chips,
+     plus-mark grid corners
+   - Zapier: trust strip with agent logos + capability badges
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Section heading helpers ── */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--color-ink-3);
+}
+.section-title {
+  font-size: clamp(2rem, 4.2vw, 3rem);
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  line-height: 1.06;
+  color: var(--color-ink);
+  text-wrap: balance;
+}
+.section-sub {
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+}
+
+/* ── Trust strip (Zapier): agent logos + capability badges ── */
+.logo-wall {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 14px;
+  overflow: hidden;
+}
+@media (min-width: 640px) {
+  .logo-wall {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (min-width: 900px) {
+  .logo-wall {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+.logo-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 1.4rem 0.75rem;
+  background: white;
+  transition: background 0.15s ease;
+}
+.logo-cell:hover {
+  background: var(--color-surface);
+}
+.logo-cell svg {
+  width: 26px;
+  height: 26px;
+  color: var(--color-ink);
+  opacity: 0.82;
+}
+.logo-cell .logo-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+  letter-spacing: -0.005em;
+}
+
+.badge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-3);
+}
+.badge-chip svg {
+  width: 13px;
+  height: 13px;
+  color: var(--color-accent);
+}
+.badge-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-ink-3);
+  opacity: 0.4;
+}
+
+/* ── Code window (Harbor / Corsair): light, brand-matched ── */
+.code-window {
+  background: white;
+  border: 1px solid var(--color-rule);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.03),
+    0 18px 40px -28px rgba(13, 13, 16, 0.14);
+}
+.code-window__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--color-rule);
+  background: color-mix(in srgb, var(--color-surface-2) 55%, white);
+}
+.code-window__dots {
+  display: inline-flex;
+  gap: 6px;
+}
+.code-window__dots i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--color-rule-strong);
+}
+.code-window__file {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--color-ink-2);
+  letter-spacing: -0.005em;
+}
+.code-window__tag {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-accent);
+}
+.code-window__body {
+  margin: 0;
+  padding: 1.25rem 1.4rem;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--color-ink);
+  overflow-x: auto;
+  tab-size: 2;
+}
+.code-window__body code {
+  font-family: inherit;
+}
+.tok-c {
+  color: var(--color-ink-3);
+}
+.tok-k {
+  color: #8250df;
+}
+.tok-s {
+  color: #2f7d52;
+}
+.tok-f {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.tok-a {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+.tok-n {
+  color: #b4690e;
+}
+.tok-p {
+  color: var(--color-ink-3);
+}
+
+/* ── Capability grid ── */
+.cap-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 16px;
+  overflow: hidden;
+}
+@media (min-width: 720px) {
+  .cap-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1040px) {
+  .cap-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.cap-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1.6rem 1.5rem 1.7rem;
+  background: white;
+  transition: background 0.15s ease;
+}
+/* Coming-soon card: greyed out, with a corner badge that stays legible. */
+.cap-card--soon > :not(.cap-soon-badge) {
+  opacity: 0.45;
+}
+.cap-soon-badge {
+  position: absolute;
+  top: 1.45rem;
+  right: 1.4rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-3);
+}
+.cap-card:hover {
+  background: var(--color-surface);
+}
+.cap-card .cap-num {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-3);
+  margin-bottom: 0.75rem;
+}
+.cap-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+.cap-card p {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+}
+.cap-card .cap-visual {
+  margin-top: 0.5rem;
+}
+
+/* ── Trace waterfall (Harbor) ── */
+.trace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.trace-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.trace-row .lbl {
+  flex-shrink: 0;
+  width: 8.5rem;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-row .track {
+  position: relative;
+  flex: 1;
+  height: 7px;
+  background: var(--color-surface-2);
+  border-radius: 999px;
+}
+.trace-row .bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--color-accent);
+  opacity: 0.85;
+  border-radius: 999px;
+}
+.trace-row.is-root .bar {
+  background: var(--color-ink);
+  opacity: 0.75;
+}
+.trace-row .dur {
+  flex-shrink: 0;
+  width: 3rem;
+  text-align: right;
+  color: var(--color-ink-3);
+}
+
+/* ── Connection matrix (Corsair) ── */
+.matrix {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.matrix-head,
+.matrix-row {
+  display: grid;
+  grid-template-columns: 5.5rem repeat(5, minmax(0, 1fr));
+  align-items: center;
+  gap: 0.3rem;
+}
+.matrix-head {
+  color: var(--color-ink-3);
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--color-rule);
+}
+.matrix-head span {
+  text-align: center;
+}
+.matrix-row {
+  padding: 0.28rem 0;
+}
+.matrix-row .who {
+  color: var(--color-ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.matrix-row .cell {
+  display: flex;
+  justify-content: center;
+}
+.stat {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+.stat-ok {
+  background: #2f9e6f;
+}
+.stat-warn {
+  background: #d9883a;
+}
+.stat-off {
+  background: var(--color-ink-3);
+  opacity: 0.3;
+}
+
+/* ── Permission-gate card (Corsair) ── */
+.gate-card {
+  background: white;
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.gate-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.95rem;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+}
+.gate-card__body {
+  padding: 0.95rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-2);
+}
+.gate-card__body .subj {
+  font-weight: 600;
+  color: var(--color-ink);
+  margin-bottom: 0.3rem;
+}
+.gate-card__actions {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 0.95rem 0.95rem;
+}
+.gate-btn {
+  flex: 1;
+  text-align: center;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--color-rule);
+}
+.gate-btn.deny {
+  color: var(--color-ink-2);
+  background: white;
+}
+.gate-btn.approve {
+  color: white;
+  background: var(--color-accent);
+  border-color: transparent;
+}
+
+/* ── Auditable security cards (Harbor) ── */
+.check-list {
+  list-style: none;
+  display: grid;
+  gap: 0.65rem;
+  padding: 0;
+  margin: 0;
+}
+.check-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-ink-2);
+}
+.check-list li svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  color: var(--color-accent);
+}
+
+/* ── Choose your path mono chips (Corsair) ── */
+.path-chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--color-ink-2);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 7px;
+  padding: 0.3rem 0.6rem;
+}
+
+/* ── FAQ accordion (Harbor / Corsair) ── */
+.faq-item {
+  border-bottom: 1px solid var(--color-rule);
+}
+.faq-item summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+  transition: color 0.15s ease;
+}
+.faq-item summary::-webkit-details-marker {
+  display: none;
+}
+.faq-item summary:hover {
+  color: var(--color-accent);
+}
+.faq-item .faq-mark {
+  flex-shrink: 0;
+  position: relative;
+  width: 14px;
+  height: 14px;
+  transition: transform 0.2s ease;
+  color: var(--color-ink-3);
+}
+.faq-item[open] .faq-mark {
+  transform: rotate(45deg);
+  color: var(--color-accent);
+}
+.faq-item .faq-body {
+  padding: 0 0 1.4rem;
+  max-width: 68ch;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+}
+
+/* ── Plus-mark grid corners (Corsair signature) ── */
+.plus-grid {
+  position: relative;
+}
+.plus-mark {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  color: var(--color-accent);
+  opacity: 0.4;
+  pointer-events: none;
+}
+.plus-mark::before,
+.plus-mark::after {
+  content: "";
+  position: absolute;
+  background: currentColor;
+}
+.plus-mark::before {
+  left: 50%;
+  top: 0;
+  width: 1.5px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+.plus-mark::after {
+  top: 50%;
+  left: 0;
+  height: 1.5px;
+  width: 100%;
+  transform: translateY(-50%);
+}
+
+/* ── Final CTA band ── */
+.cta-band {
+  background: var(--color-surface-2);
+  border-top: 1px solid var(--color-rule);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   MOTION KIT: scroll reveals + accents
+   Adapted from magicui (blur-fade, border-beam, animated-shiny-text)
+   and launch-ui (hero glow, badge), kept restrained for the off-white
+   editorial brand. Every effect is subtle, accent-tinted, and fully
+   disabled under prefers-reduced-motion. The hidden reveal state is
+   only applied by JS, so no-JS visitors see everything revealed.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Scroll reveal (magicui blur-fade, restrained): blocks rise, fade,
+   and de-blur as they enter the viewport. `.reveal-init` is added by
+   the page script; without it (no JS / reduced motion) content is
+   fully visible. */
+.reveal.reveal-init {
+  opacity: 0;
+  transform: translateY(14px);
+  filter: blur(5px);
+  will-change: opacity, transform, filter;
+}
+.reveal.reveal-init.is-visible {
+  opacity: 1;
+  transform: none;
+  filter: none;
+  transition:
+    opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Trace waterfall bars grow from their start as the capability grid
+   reveals, staggered so it reads like a live trace filling in. */
+.reveal.reveal-init .trace-row .bar {
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+.reveal.reveal-init.is-visible .trace-row .bar {
+  transform: scaleX(1);
+  transition: transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.reveal.reveal-init.is-visible .trace-row:nth-child(1) .bar {
+  transition-delay: 0.18s;
+}
+.reveal.reveal-init.is-visible .trace-row:nth-child(2) .bar {
+  transition-delay: 0.3s;
+}
+.reveal.reveal-init.is-visible .trace-row:nth-child(3) .bar {
+  transition-delay: 0.42s;
+}
+.reveal.reveal-init.is-visible .trace-row:nth-child(4) .bar {
+  transition-delay: 0.54s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal.reveal-init,
+  .reveal.reveal-init.is-visible {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
+  .reveal.reveal-init .trace-row .bar,
+  .reveal.reveal-init.is-visible .trace-row .bar {
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Hero glow (launch-ui): a soft accent bloom sitting behind the beam
+   card, warming the off-white surface without fighting the graph
+   paper. Purely decorative, never interactive. */
+/* Decorative hero glow removed: the grayscale system gets its depth from
+   hairlines and tone, not colored blurs. */
+.hero-glow {
+  display: none;
+}
+
+/* Hero announcement badge (launch-ui): a pill above the headline that
+   links to the repo, with a slow shine sweep over the label (magicui
+   animated-shiny-text, toned down so it stays readable mid-sweep). */
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.32rem 0.7rem 0.32rem 0.62rem;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: white;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  box-shadow: 0 1px 2px rgba(13, 13, 16, 0.03);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.hero-badge:hover {
+  border-color: var(--color-rule-strong);
+  box-shadow: 0 1px 3px rgba(13, 13, 16, 0.06);
+}
+.hero-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  flex-shrink: 0;
+}
+.hero-badge .label {
+  background: linear-gradient(
+    100deg,
+    var(--color-ink-2) 38%,
+    var(--color-ink) 50%,
+    var(--color-ink-2) 62%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: badge-shine 6.5s linear infinite;
+}
+.hero-badge .arrow {
+  color: var(--color-ink-3);
+  transition: transform 0.15s ease;
+}
+.hero-badge:hover .arrow {
+  transform: translateX(2px);
+}
+@keyframes badge-shine {
+  to {
+    background-position: -220% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-badge .label {
+    animation: none;
+  }
+}
+
+/* Hero CTA: a "For humans / For agents" audience toggle. A lightweight text
+   switch (not a heavy segmented control) flips between the human signup path
+   and the agent-native copyable setup. */
+.hero-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.audience-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.15rem;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.audience-toggle button {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--color-ink-3);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.audience-toggle button:hover {
+  color: var(--color-ink-2);
+}
+.audience-toggle button[aria-selected="true"] {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.audience-sep {
+  width: 1px;
+  height: 13px;
+  background: var(--color-rule-strong);
+}
+.audience-pane {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+.audience-pane[hidden] {
+  display: none;
+}
+/* The agent "command pill": a rounded, mono, copyable control echoing a
+   terminal prompt. Copies the full setup prompt via the .copy-btn pattern. */
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: 999px;
+  background: var(--color-surface);
+  padding: 0.62rem 1rem 0.62rem 1.2rem;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
+  color: var(--color-ink);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.agent-pill:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-ink-3);
+}
+
+/* Border beam (magicui, restrained): a slow accent arc travels around
+   the featured card's border to draw the eye to the recommended path.
+   The ring is fixed to the card edges; only the gradient angle spins,
+   so the bright arc sweeps the border rather than detaching from it. */
+@property --beam-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.beam-card {
+  position: relative;
+}
+.beam-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.25px;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0deg,
+    transparent 290deg,
+    color-mix(in srgb, var(--color-accent) 75%, transparent) 340deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: beam-rotate 7s linear infinite;
+}
+@keyframes beam-rotate {
+  to {
+    --beam-angle: 360deg;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beam-card::after {
+    animation: none;
+    background: conic-gradient(
+      from 320deg,
+      transparent 0deg,
+      transparent 300deg,
+      color-mix(in srgb, var(--color-accent) 45%, transparent) 340deg,
+      transparent 360deg
+    );
+  }
+}
+
+/* Featured-path cards: a restrained lift on hover for tactile polish. */
+.path-card {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+.path-card:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.03),
+    0 18px 40px -22px rgba(13, 13, 16, 0.18);
+}
+@media (prefers-reduced-motion: reduce) {
+  .path-card:hover {
+    transform: none;
+  }
+}
+
+/* ══ Context-bloat demo (interactive "no context bloat") ══ */
+/* Context-bloat demo: Effect-style layout (complexity gauge + service checklist
+   on top, two code windows below). Check a service to connect it; the naive
+   prompt balloons (tall + scrollable) while Executor stays at one tool. */
+.cbloat {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Top band: complexity gauge + service checklist */
+.cbloat-top {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+}
+@media (min-width: 880px) {
+  .cbloat-top {
+    grid-template-columns: 0.82fr 1fr;
+    gap: 3rem;
+    align-items: start;
+  }
+}
+
+.cbloat-gauge__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.cbloat-gauge__sub {
+  font-size: 12px;
+  color: var(--color-ink-3);
+  margin-bottom: 1.4rem;
+}
+.cbloat-gauge__row {
+  margin-bottom: 1.1rem;
+}
+.cbloat-gauge__line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 12.5px;
+  margin-bottom: 0.45rem;
+}
+.cbloat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.cbloat-dot--naive {
+  background: rgba(13, 13, 16, 0.4);
+}
+.cbloat-dot--exec {
+  background: var(--color-accent);
+}
+.cbloat-gauge__name {
+  color: var(--color-ink-2);
+  font-weight: 500;
+}
+.cbloat-gauge__val {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+  white-space: nowrap;
+}
+
+.cbloat-checklist {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.cbloat-check {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.58rem 0.72rem;
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.cbloat-check:hover {
+  border-color: var(--color-rule-strong);
+  background: var(--color-surface);
+}
+.cbloat-check[data-on="true"] {
+  border-color: rgba(99, 91, 255, 0.4);
+  background: color-mix(in srgb, var(--color-accent) 5%, white);
+}
+.cbloat-check:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.cbloat-check__box {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--color-rule-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.cbloat-check[data-on="true"] .cbloat-check__box {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.cbloat-check__icon {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--color-ink-2);
+}
+.cbloat-check__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+.cbloat-check__count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-ink-3);
+  white-space: nowrap;
+}
+
+/* Bottom band: two code windows */
+.cbloat-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+@media (min-width: 880px) {
+  .cbloat-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.cbloat-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cbloat-col__title {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+  margin-bottom: 0.75rem;
+}
+.cbloat-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cbloat-panel__count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-3);
+  white-space: nowrap;
+}
+.cbloat-panel--naive .cbloat-num {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.cbloat-panel--executor .cbloat-num {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.cbloat-bar {
+  height: 6px;
+  width: 100%;
+  background: var(--color-rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.cbloat-bar__fill {
+  height: 100%;
+  min-width: 3px;
+  border-radius: 3px;
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cbloat-bar--naive .cbloat-bar__fill {
+  background: rgba(13, 13, 16, 0.4);
+}
+.cbloat-bar--executor .cbloat-bar__fill {
+  background: var(--color-accent);
+}
+
+.cbloat-body {
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cbloat-body--scroll {
+  height: 440px;
+  overflow-y: auto;
+}
+.cbloat-line {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cbloat-bar__fill {
+    transition: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   BLOG: editorial prose for Markdown-rendered posts (/blog/[slug]).
+   Reads off the same tokens as the rest of the site (ink / accent /
+   rule / surface) so posts stay on-brand without a separate palette.
+   ═══════════════════════════════════════════════════════════════ */
+.blog-prose {
+  color: color-mix(in srgb, var(--color-ink) 88%, transparent);
+  font-size: 17px;
+  line-height: 1.75;
+  letter-spacing: -0.011em;
+}
+.blog-prose > :first-child {
+  margin-top: 0;
+}
+.blog-prose p {
+  margin: 1.25rem 0;
+  text-wrap: pretty;
+}
+.blog-prose h2 {
+  margin-top: 2.75rem;
+  margin-bottom: 0.9rem;
+  font-family: var(--font-sans);
+  font-size: clamp(1.4rem, 2.6vw, 1.7rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--color-ink);
+}
+.blog-prose h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.18rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+.blog-prose ul,
+.blog-prose ol {
+  margin: 1.25rem 0;
+  padding-left: 0;
+  list-style: none;
+}
+.blog-prose li {
+  position: relative;
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.blog-prose ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.78rem;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  opacity: 0.75;
+}
+.blog-prose ol {
+  counter-reset: blog-ol;
+}
+.blog-prose ol > li {
+  counter-increment: blog-ol;
+}
+.blog-prose ol > li::before {
+  content: counter(blog-ol) ".";
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+.blog-prose a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  text-underline-offset: 3px;
+  transition:
+    color 0.15s ease,
+    text-decoration-color 0.15s ease;
+}
+.blog-prose a:hover {
+  color: var(--color-accent-hover);
+  text-decoration-color: var(--color-accent-hover);
+}
+.blog-prose strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.blog-prose em {
+  font-style: italic;
+}
+.blog-prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  color: var(--color-ink-2);
+  font-style: italic;
+}
+.blog-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+}
+.blog-prose pre {
+  margin: 1.5rem 0;
+  padding: 1.1rem 1.25rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.blog-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.blog-prose hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-rule);
+}
+.blog-prose h2 + p,
+.blog-prose h3 + p {
+  margin-top: 0;
 }

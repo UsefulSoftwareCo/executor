@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { GraphqlIntrospectionError } from "./errors";
@@ -84,37 +84,37 @@ const INTROSPECTION_QUERY = `
 const IntrospectionTypeRefLeaf = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.Null,
+  ofType: Schema.optional(Schema.Null),
 });
 
 const IntrospectionTypeRef5 = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.NullOr(IntrospectionTypeRefLeaf),
+  ofType: Schema.optional(Schema.NullOr(IntrospectionTypeRefLeaf)),
 });
 
 const IntrospectionTypeRef4 = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.NullOr(IntrospectionTypeRef5),
+  ofType: Schema.optional(Schema.NullOr(IntrospectionTypeRef5)),
 });
 
 const IntrospectionTypeRef3 = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.NullOr(IntrospectionTypeRef4),
+  ofType: Schema.optional(Schema.NullOr(IntrospectionTypeRef4)),
 });
 
 const IntrospectionTypeRef2 = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.NullOr(IntrospectionTypeRef3),
+  ofType: Schema.optional(Schema.NullOr(IntrospectionTypeRef3)),
 });
 
 const IntrospectionTypeRefSchema = Schema.Struct({
   kind: Schema.String,
   name: Schema.NullOr(Schema.String),
-  ofType: Schema.NullOr(IntrospectionTypeRef2),
+  ofType: Schema.optional(Schema.NullOr(IntrospectionTypeRef2)),
 });
 
 const IntrospectionInputValueSchema = Schema.Struct({
@@ -160,10 +160,24 @@ const IntrospectionResponseSchema = Schema.Struct({
   errors: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 
+const UpstreamErrorResponseSchema = Schema.Struct({
+  message: Schema.optional(Schema.String),
+  errors: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        message: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+
 const IntrospectionJsonSchema = Schema.Union([
   Schema.Struct({ data: IntrospectionResultSchema }),
   IntrospectionResultSchema,
 ]);
+const JsonTextSchema = Schema.fromJsonString(Schema.Unknown);
+
+const decodeUpstreamErrorResponse = Schema.decodeUnknownOption(UpstreamErrorResponseSchema);
 
 export type IntrospectionTypeRef = typeof IntrospectionTypeRefSchema.Type;
 export type IntrospectionInputValue = typeof IntrospectionInputValueSchema.Type;
@@ -174,6 +188,42 @@ export type IntrospectionEnumValue = NonNullable<
 export type IntrospectionType = typeof IntrospectionTypeSchema.Type;
 export type IntrospectionSchema = (typeof IntrospectionResultSchema.Type)["__schema"];
 export type IntrospectionResult = typeof IntrospectionResultSchema.Type;
+
+const firstUpstreamErrorMessage = (value: unknown): string | null => {
+  const decoded = decodeUpstreamErrorResponse(value);
+  return Option.match(decoded, {
+    onNone: () => null,
+    onSome: (response) => {
+      if (response.message) return response.message;
+      for (const entry of response.errors ?? []) {
+        const message = entry.message;
+        if (message) return message;
+      }
+      return null;
+    },
+  });
+};
+
+const redactUpstreamBody = (body: string): string =>
+  body
+    .replaceAll(
+      /("(?:access_token|refresh_token|id_token|client_secret|token|authorization)"\s*:\s*")[^"]*(")/gi,
+      "$1[redacted]$2",
+    )
+    .replaceAll(
+      /((?:access_token|refresh_token|id_token|client_secret|token|authorization)=)[^&\s]*/gi,
+      "$1[redacted]",
+    )
+    .replaceAll(
+      /((?:authorization|access-token|refresh-token|id-token|client-secret|token)\s*:\s*)(?:bearer\s+)?[^\s,;]+/gi,
+      "$1[redacted]",
+    );
+
+const upstreamTextMessage = (body: string): string | null => {
+  const text = redactUpstreamBody(body.replaceAll(/\s+/g, " ").trim());
+  if (text.length === 0) return null;
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+};
 
 // ---------------------------------------------------------------------------
 // Introspect a GraphQL endpoint
@@ -198,6 +248,8 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
 
   let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
+    HttpClientRequest.setHeader("Accept", "application/json"),
+    HttpClientRequest.setHeader("User-Agent", "executor-graphql"),
     HttpClientRequest.bodyJsonUnsafe({
       query: INTROSPECTION_QUERY,
     }),
@@ -220,8 +272,19 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (response.status !== 200) {
+    const responseText = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")));
+    const raw = responseText
+      ? yield* Schema.decodeUnknownEffect(JsonTextSchema)(responseText).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        )
+      : null;
+    const upstreamMessage = upstreamTextMessage(
+      (raw === null ? null : firstUpstreamErrorMessage(raw)) ?? responseText,
+    );
     return yield* new GraphqlIntrospectionError({
-      message: `Introspection failed with status ${response.status}`,
+      message: upstreamMessage
+        ? `Introspection failed with status ${response.status}: ${upstreamMessage}`
+        : `Introspection failed with status ${response.status}`,
     });
   }
 
@@ -245,8 +308,11 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
   );
 
   if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+    const upstreamMessage = firstUpstreamErrorMessage(json);
     return yield* new GraphqlIntrospectionError({
-      message: `Introspection returned ${json.errors.length} error(s)`,
+      message: upstreamMessage
+        ? `Introspection returned ${json.errors.length} error(s): ${upstreamMessage}`
+        : `Introspection returned ${json.errors.length} error(s)`,
     });
   }
 

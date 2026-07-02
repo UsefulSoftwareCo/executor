@@ -52,6 +52,83 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
     }),
   );
 
+  it.effect("accumulates helper output separately from returned data", () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor();
+      const toolInvoker = makeTestInvoker({
+        "files.get": () => ({
+          _tag: "ToolFile",
+          name: "photo.png",
+          mimeType: "image/png",
+          encoding: "base64",
+          data: "iVBORw0KGgo=",
+          byteLength: 8,
+        }),
+      });
+
+      const output = yield* executor.execute(
+        [
+          "const attachment = await tools.files.get({});",
+          [
+            'const values = [emit("hello"), emit(attachment),',
+            'emit({ type: "text", text: "mcp hello" }),',
+            'emit({ type: "image", data: "Zm9v", mimeType: "image/png" }),',
+            'emit({ type: "audio", data: "SUQz", mimeType: "audio/mpeg" }),',
+            'emit({ type: "resource", resource: { uri: "executor-file:///report.pdf", mimeType: "application/pdf", blob: "JVBERg==" } }),',
+            'emit({ type: "resource_link", uri: "executor-file:///remote.pdf", name: "remote.pdf", mimeType: "application/pdf" }),',
+            "emit({ arbitrary: true })];",
+          ].join(" "),
+          "return { values: values.map((value) => value === undefined), keptReturn: true };",
+        ].join("\n"),
+        toolInvoker,
+      );
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({
+        values: [true, true, true, true, true, true, true, true],
+        keptReturn: true,
+      });
+      expect(output.output).toEqual([
+        { type: "content", content: { type: "text", text: "hello" } },
+        {
+          type: "file",
+          file: {
+            _tag: "ToolFile",
+            name: "photo.png",
+            mimeType: "image/png",
+            encoding: "base64",
+            data: "iVBORw0KGgo=",
+            byteLength: 8,
+          },
+        },
+        { type: "content", content: { type: "text", text: "mcp hello" } },
+        { type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/png" } },
+        { type: "content", content: { type: "audio", data: "SUQz", mimeType: "audio/mpeg" } },
+        {
+          type: "content",
+          content: {
+            type: "resource",
+            resource: {
+              uri: "executor-file:///report.pdf",
+              mimeType: "application/pdf",
+              blob: "JVBERg==",
+            },
+          },
+        },
+        {
+          type: "content",
+          content: {
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          },
+        },
+        { type: "content", content: { type: "text", text: '{"arbitrary":true}' } },
+      ]);
+    }),
+  );
+
   it.effect("recovers prose-wrapped fenced async arrow input", () =>
     Effect.gen(function* () {
       const executor = makeDenoSubprocessExecutor();

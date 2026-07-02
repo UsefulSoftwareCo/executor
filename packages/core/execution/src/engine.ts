@@ -1,5 +1,6 @@
-import { Deferred, Effect, Fiber, Predicate, Ref } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Queue } from "effect";
 import type * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 
 import type {
   Executor,
@@ -12,10 +13,11 @@ import { CodeExecutionError } from "@executor-js/codemode-core";
 import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
 import {
+  defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
-  searchTools,
   listExecutorSources,
   describeTool,
+  type ToolDiscoveryProvider,
 } from "./tool-invoker";
 import { ExecutionToolError } from "./errors";
 import { buildExecuteDescription } from "./description";
@@ -27,6 +29,7 @@ import { buildExecuteDescription } from "./description";
 export type ExecutionEngineConfig<E extends Cause.YieldableError = CodeExecutionError> = {
   readonly executor: Executor;
   readonly codeExecutor: CodeExecutor<E>;
+  readonly toolDiscoveryProvider?: ToolDiscoveryProvider;
 };
 
 export type ExecutionResult =
@@ -42,13 +45,17 @@ export type PausedExecution = {
 type InternalPausedExecution<E> = PausedExecution & {
   readonly response: Deferred.Deferred<typeof ElicitationResponse.Type>;
   readonly fiber: Fiber.Fiber<ExecuteResult, E>;
-  readonly pauseSignalRef: Ref.Ref<Deferred.Deferred<InternalPausedExecution<E>>>;
+  readonly pauseQueue: Queue.Queue<InternalPausedExecution<E>>;
 };
 
 export type ResumeResponse = {
   readonly action: "accept" | "decline" | "cancel";
   readonly content?: Record<string, unknown>;
 };
+
+// Auto-accept every elicitation. Used by the `autoApprove` path where the
+// caller is itself the human approver (the operator-facing Run/Test panel).
+const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
 
 // ---------------------------------------------------------------------------
 // Result formatting
@@ -77,22 +84,43 @@ export const formatExecuteResult = (
 
   const logText = result.logs && result.logs.length > 0 ? result.logs.join("\n") : null;
 
+  // `emit()` output is shown to the user, not returned to the model, so a
+  // script that only emits comes back with a null result. Acknowledge the
+  // emitted items in the envelope so an emit-without-return reads as "output
+  // went to the user" rather than a silent void.
+  const emitted = result.output?.length ?? 0;
+  const emittedNote =
+    emitted > 0 ? `${emitted} item${emitted === 1 ? "" : "s"} emitted to the user` : null;
+  const emittedField = emitted > 0 ? { emitted } : {};
+
   if (result.error) {
     const parts = [`Error: ${result.error}`, ...(logText ? [`\nLogs:\n${logText}`] : [])];
     return {
       text: truncate(parts.join("\n"), MAX_PREVIEW_CHARS),
-      structured: { status: "error", error: result.error, logs: result.logs ?? [] },
+      structured: {
+        status: "error",
+        error: result.error,
+        ...emittedField,
+        logs: result.logs ?? [],
+      },
       isError: true,
     };
   }
 
-  const parts = [
-    ...(resultText ? [truncate(resultText, MAX_PREVIEW_CHARS)] : ["(no result)"]),
-    ...(logText ? [`\nLogs:\n${logText}`] : []),
-  ];
+  const resultPart = resultText
+    ? truncate(resultText, MAX_PREVIEW_CHARS)
+    : emittedNote
+      ? `(no return value; ${emittedNote})`
+      : "(no result)";
+  const parts = [resultPart, ...(logText ? [`\nLogs:\n${logText}`] : [])];
   return {
     text: parts.join("\n"),
-    structured: { status: "completed", result: result.result ?? null, logs: result.logs ?? [] },
+    structured: {
+      status: "completed",
+      result: result.result ?? null,
+      ...emittedField,
+      logs: result.logs ?? [],
+    },
     isError: false,
   };
 };
@@ -107,19 +135,31 @@ export const formatPausedExecution = (
   const lines: string[] = [`Execution paused: ${req.message}`];
   const isUrlElicitation = Predicate.isTagged(req, "UrlElicitation");
   const isFormElicitation = Predicate.isTagged(req, "FormElicitation");
+  const requestedSchema = isFormElicitation ? req.requestedSchema : undefined;
+  const hasRequestedSchema =
+    requestedSchema !== undefined && Object.keys(requestedSchema).length > 0;
+  const instructions = isUrlElicitation
+    ? `The user needs to open this URL in a browser and complete the flow. After the user finishes, call the resume tool with executionId "${paused.id}" and action "accept".`
+    : hasRequestedSchema
+      ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
+      : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
 
   if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
-    lines.push("\nAfter the browser flow, resume with the executionId below:");
+    lines.push('\nAfter the browser flow, call the resume tool with action "accept".');
+  } else if (hasRequestedSchema) {
+    lines.push(
+      "\nAsk the user for a response matching the requested schema, then call the resume tool.",
+    );
+    lines.push(`\nRequested schema:\n${JSON.stringify(requestedSchema, null, 2)}`);
   } else {
-    lines.push("\nResume with the executionId below and a response matching the requested schema:");
-    const schema = req.requestedSchema;
-    if (schema && Object.keys(schema).length > 0) {
-      lines.push(`\nRequested schema:\n${JSON.stringify(schema, null, 2)}`);
-    }
+    lines.push(
+      '\nThis is a model-side confirmation gate; no browser form is waiting. Ask the user whether to approve, then call the resume tool with action "accept", "decline", or "cancel".',
+    );
   }
 
   lines.push(`\nexecutionId: ${paused.id}`);
+  lines.push(`\ninstructions: ${instructions}`);
 
   return {
     text: lines.join("\n"),
@@ -129,6 +169,9 @@ export const formatPausedExecution = (
       interaction: {
         kind: isUrlElicitation ? "url" : "form",
         message: req.message,
+        instructions,
+        address: String(paused.elicitationContext.address),
+        args: paused.elicitationContext.args,
         ...(isUrlElicitation ? { url: req.url } : {}),
         ...(isFormElicitation ? { requestedSchema: req.requestedSchema } : {}),
       },
@@ -171,7 +214,11 @@ const readOptionalOffset = (value: unknown, toolName: string): number | Executio
   return Math.floor(value);
 };
 
-const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): SandboxToolInvoker => {
+const makeFullInvoker = (
+  executor: Executor,
+  invokeOptions: InvokeOptions,
+  toolDiscoveryProvider: ToolDiscoveryProvider,
+): SandboxToolInvoker => {
   const base = makeExecutorToolInvoker(executor, { invokeOptions });
   return {
     invoke: ({ path, args }) => {
@@ -211,14 +258,19 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
           return Effect.fail(offset);
         }
 
-        return searchTools(executor, args.query ?? "", limit, {
-          namespace: args.namespace,
-          offset,
-        }).pipe(
-          Effect.withSpan("mcp.tool.dispatch", {
-            attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
-          }),
-        );
+        return toolDiscoveryProvider
+          .searchTools({
+            executor,
+            query: args.query ?? "",
+            limit,
+            namespace: args.namespace,
+            offset,
+          })
+          .pipe(
+            Effect.withSpan("mcp.tool.dispatch", {
+              attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
+            }),
+          );
       }
       if (path === "executor.sources.list") {
         if (args !== undefined && !isRecord(args)) {
@@ -322,8 +374,17 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    * Execute code, intercepting the first elicitation as a pause point.
    * Use this when the host doesn't support inline elicitation.
    * Returns either a completed result or a paused execution that can be resumed.
+   *
+   * `options.autoApprove` treats the caller as the human in the loop: every
+   * elicitation is accepted inline, so an approval-gated tool runs to
+   * completion instead of pausing. The operator-facing Run/Test panel sets
+   * this because clicking Run IS the approval. `block` policies still fail
+   * before any elicitation, so this never bypasses a hard block.
    */
-  readonly executeWithPause: (code: string) => Effect.Effect<ExecutionResult, E>;
+  readonly executeWithPause: (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) => Effect.Effect<ExecutionResult, E>;
 
   /**
    * Resume a paused execution. Returns a completed result, a new pause, or
@@ -335,6 +396,18 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   ) => Effect.Effect<ExecutionResult | null, E>;
 
   /**
+   * Inspect a paused execution without resuming it. Returns null if the id is
+   * unknown or has already been resumed.
+   */
+  readonly getPausedExecution: (executionId: string) => Effect.Effect<PausedExecution | null>;
+
+  /** Count of executions currently paused awaiting resume. */
+  readonly pausedExecutionCount: () => Effect.Effect<number>;
+
+  /** Whether any executions are paused awaiting resume. */
+  readonly hasPausedExecutions: () => Effect.Effect<boolean>;
+
+  /**
    * Get the dynamic tool description (workflow + namespaces).
    */
   readonly getDescription: Effect.Effect<string>;
@@ -343,12 +416,34 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
 export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
   config: ExecutionEngineConfig<E>,
 ): ExecutionEngine<E> => {
-  const { executor, codeExecutor } = config;
+  const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
-  let nextId = 0;
+  // Outcomes of executions that already settled (resumed to completion, hit a
+  // new pause, or died while paused). MCP clients retry `resume` when a
+  // response gets lost in transit; without this cache the retry of an
+  // already-delivered resume answers "no paused execution" (observed in
+  // production seconds after a successful resume). Bounded FIFO — pause
+  // volume is tiny (human approvals), so a small window is plenty.
+  const settledOutcomes = new Map<string, Exit.Exit<ExecutionResult, E>>();
+  const SETTLED_OUTCOME_LIMIT = 64;
+  // Resumes whose outcome is still being computed, so a concurrent duplicate
+  // awaits the same result instead of missing the (already-consumed) pause.
+  const pendingResumes = new Map<string, Deferred.Deferred<ExecutionResult, E>>();
+
+  // Exits (not just successes) so a replayed failure re-fails through the
+  // typed channel — hosts render engine failures opaquely, and a replay must
+  // not bypass that by flattening the cause into result text.
+  const recordSettledOutcome = (executionId: string, exit: Exit.Exit<ExecutionResult, E>): void => {
+    settledOutcomes.set(executionId, exit);
+    while (settledOutcomes.size > SETTLED_OUTCOME_LIMIT) {
+      const oldest = settledOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      settledOutcomes.delete(oldest);
+    }
+  };
 
   /**
-   * Race a running fiber against a pause signal. Returns when either
+   * Race a running fiber against the pause queue. Returns when either
    * the fiber completes or an elicitation handler fires (whichever
    * comes first). Re-used by both executeWithPause and resume.
    *
@@ -362,13 +457,13 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    */
   const awaitCompletionOrPause = (
     fiber: Fiber.Fiber<ExecuteResult, E>,
-    pauseSignal: Deferred.Deferred<InternalPausedExecution<E>>,
+    pauseQueue: Queue.Queue<InternalPausedExecution<E>>,
   ): Effect.Effect<ExecutionResult, E> =>
     Effect.raceFirst(
       Fiber.join(fiber).pipe(
         Effect.map((result): ExecutionResult => ({ status: "completed", result })),
       ),
-      Deferred.await(pauseSignal).pipe(
+      Queue.take(pauseQueue).pipe(
         Effect.map((paused): ExecutionResult => ({ status: "paused", execution: paused })),
       ),
     );
@@ -379,16 +474,27 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    * The sandbox is forked as a daemon because paused executions can outlive the
    * caller scope that returned the first pause, such as an HTTP request handler.
    */
-  const startPausableExecution = Effect.fn("mcp.execute")(function* (code: string) {
+  const startPausableExecution = Effect.fn("mcp.execute")(function* (
+    code: string,
+    options?: { readonly autoApprove?: boolean },
+  ) {
     yield* Effect.annotateCurrentSpan({
       "mcp.execute.mode": "pausable",
       "mcp.execute.code_length": code.length,
     });
 
-    // Ref holds the current pause signal. The elicitation handler reads
-    // it each time it fires, so resume() can swap in a fresh Deferred
-    // before unblocking the fiber.
-    const pauseSignalRef = yield* Ref.make(yield* Deferred.make<InternalPausedExecution<E>>());
+    // Operator-approved invoke: run through the inline path with an accept-all
+    // handler so an approval gate resolves itself instead of pausing. Never
+    // pauses, so the caller always gets a completed result.
+    if (options?.autoApprove) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.auto_approve": true });
+      const result = yield* runInlineExecution(code, { onElicitation: acceptAllHandler });
+      return { status: "completed", result } satisfies ExecutionResult;
+    }
+
+    // Queue preserves pauses that arrive before the previous approval has
+    // returned to the caller, which can happen with concurrent tool calls.
+    const pauseQueue = yield* Queue.unbounded<InternalPausedExecution<E>>();
 
     // Will be set once the fiber is forked.
     let fiber: Fiber.Fiber<ExecuteResult, E>;
@@ -396,37 +502,71 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const elicitationHandler: ElicitationHandler = (ctx) =>
       Effect.gen(function* () {
         const responseDeferred = yield* Deferred.make<typeof ElicitationResponse.Type>();
-        const id = `exec_${++nextId}`;
+        // Globally unique — engine instances are rebuilt on host restarts
+        // (Durable Object cold restores, redeploys), so a counter would
+        // re-mint the same ids and let a stale client resume bind to a
+        // different execution's pause.
+        const id = `exec_${crypto.randomUUID()}`;
 
         const paused: InternalPausedExecution<E> = {
           id,
           elicitationContext: ctx,
           response: responseDeferred,
           fiber: fiber!,
-          pauseSignalRef,
+          pauseQueue,
         };
         pausedExecutions.set(id, paused);
 
-        const currentSignal = yield* Ref.get(pauseSignalRef);
-        yield* Deferred.succeed(currentSignal, paused);
+        yield* Queue.offer(pauseQueue, paused);
 
         // Suspend until resume() completes responseDeferred.
         return yield* Deferred.await(responseDeferred);
       });
 
-    const invoker = makeFullInvoker(executor, { onElicitation: elicitationHandler });
+    const invoker = makeFullInvoker(
+      executor,
+      { onElicitation: elicitationHandler },
+      toolDiscoveryProvider,
+    );
     fiber = yield* Effect.forkDetach(
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
 
-    const initialSignal = yield* Ref.get(pauseSignalRef);
-    return (yield* awaitCompletionOrPause(fiber, initialSignal)) as ExecutionResult;
+    // When the fiber settles on its own (sandbox timeout, failure) while
+    // pauses are still outstanding, drop them: getPausedExecution must not
+    // report a pause whose fiber can no longer consume a response, and the
+    // map must not grow forever. A resume retry still finds the terminal
+    // outcome via the settled-outcome cache.
+    const sandboxFiber = fiber;
+    yield* Effect.forkDetach(
+      Fiber.await(sandboxFiber).pipe(
+        Effect.flatMap((exit) =>
+          Effect.sync(() => {
+            const outcome = Exit.map(
+              exit,
+              (result): ExecutionResult => ({ status: "completed", result }),
+            );
+            for (const [id, paused] of pausedExecutions) {
+              if (paused.fiber !== sandboxFiber) continue;
+              pausedExecutions.delete(id);
+              recordSettledOutcome(id, outcome);
+            }
+          }),
+        ),
+      ),
+    );
+
+    return (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
   });
 
   /**
-   * Resume a paused execution. Swaps in a fresh pause signal, completes
-   * the response Deferred to unblock the fiber, then races completion
-   * against the next pause.
+   * Resume a paused execution. Completes the response Deferred to unblock the
+   * fiber, then races completion against the next queued or future pause.
+   *
+   * Idempotent per executionId: MCP clients retry `resume` when a response is
+   * lost in transit, so a duplicate of an already-delivered resume replays the
+   * recorded outcome, and a duplicate that arrives while the first is still
+   * in flight awaits the same outcome instead of reporting a missing pause.
    */
   const resumeExecution = Effect.fn("mcp.execute.resume")(function* (
     executionId: string,
@@ -436,21 +576,39 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.resume.action": response.action,
     });
 
+    const settled = settledOutcomes.get(executionId);
+    if (settled) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.replayed": true });
+      return (yield* settled) as ExecutionResult;
+    }
+
+    const pending = pendingResumes.get(executionId);
+    if (pending) {
+      yield* Effect.annotateCurrentSpan({ "mcp.execute.resume.joined_inflight": true });
+      return (yield* Deferred.await(pending)) as ExecutionResult;
+    }
+
     const paused = pausedExecutions.get(executionId);
     if (!paused) return null;
     pausedExecutions.delete(executionId);
 
-    // Swap in a fresh pause signal BEFORE unblocking the fiber, so the
-    // next elicitation handler call signals this new Deferred.
-    const nextSignal = yield* Deferred.make<InternalPausedExecution<E>>();
-    yield* Ref.set(paused.pauseSignalRef, nextSignal);
+    const inflight = yield* Deferred.make<ExecutionResult, E>();
+    pendingResumes.set(executionId, inflight);
 
     yield* Deferred.succeed(paused.response, {
       action: response.action as typeof ElicitationResponse.Type.action,
       content: response.content,
     });
 
-    return (yield* awaitCompletionOrPause(paused.fiber, nextSignal)) as ExecutionResult;
+    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          recordSettledOutcome(executionId, exit);
+          pendingResumes.delete(executionId);
+          yield* Deferred.done(inflight, exit);
+        }),
+      ),
+    )) as ExecutionResult;
   });
 
   /**
@@ -465,9 +623,13 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.mode": "inline",
       "mcp.execute.code_length": code.length,
     });
-    const invoker = makeFullInvoker(executor, {
-      onElicitation: options.onElicitation,
-    });
+    const invoker = makeFullInvoker(
+      executor,
+      {
+        onElicitation: options.onElicitation,
+      },
+      toolDiscoveryProvider,
+    );
     return yield* codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec"));
   });
 
@@ -475,6 +637,10 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     execute: runInlineExecution,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
+    getPausedExecution: (executionId) =>
+      Effect.sync(() => pausedExecutions.get(executionId) ?? null),
+    pausedExecutionCount: () => Effect.sync(() => pausedExecutions.size),
+    hasPausedExecutions: () => Effect.sync(() => pausedExecutions.size > 0),
     getDescription: buildExecuteDescription(executor),
   };
 };

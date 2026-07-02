@@ -26,9 +26,21 @@ export interface SandboxToolInvoker {
   invoke(input: { path: string; args: unknown }): Effect.Effect<unknown, unknown, never>;
 }
 
+/** User-visible output accumulated by sandbox helpers. */
+export type ExecuteOutputItem =
+  | {
+      readonly type: "file";
+      readonly file: unknown;
+    }
+  | {
+      readonly type: "content";
+      readonly content: unknown;
+    };
+
 /** Result of executing code in a sandbox */
 export type ExecuteResult = {
   result: unknown;
+  output?: ExecuteOutputItem[];
   error?: string;
   logs?: string[];
 };

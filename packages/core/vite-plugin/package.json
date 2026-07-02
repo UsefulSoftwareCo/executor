@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/vite-plugin",
-  "version": "0.0.12",
+  "version": "0.0.44",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/vite-plugin",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -35,6 +35,7 @@
   },
   "scripts": {
     "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "build:bundle": "tsup",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "typecheck:slow": "tsc --noEmit"

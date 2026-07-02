@@ -4,7 +4,7 @@ import { defineConfig } from "drizzle-kit";
 // migrate) ignores it. Default to the local PGlite socket started by
 // `bun run dev:db`; override via `DATABASE_URL` for prod studio sessions.
 // drizzle-kit uses node-postgres (`pg`) for studio and the `ssl` option in
-// dbCredentials doesn't reliably reach the pool — append `sslmode=require`
+// dbCredentials doesn't reliably reach the pool - append `sslmode=require`
 // directly to the URL instead, which `pg` honours.
 const DEFAULT_DEV_URL = "postgresql://postgres:postgres@127.0.0.1:5433/postgres";
 
@@ -15,7 +15,7 @@ const withSslMode = (url: string): string => {
 };
 
 export default defineConfig({
-  schema: ["./src/services/schema.ts", "./src/services/executor-schema.ts"],
+  schema: ["./src/db/schema.ts", "./src/db/executor-schema.ts"],
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {

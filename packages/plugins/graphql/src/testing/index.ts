@@ -9,9 +9,14 @@ import {
   Scope,
 } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { GraphQLNonNull, GraphQLObjectType, GraphQLSchema, GraphQLString } from "graphql";
-import { createYoga, type GraphQLParams, type YogaInitialContext } from "graphql-yoga";
-import { serveTestHttpApp } from "@executor-js/sdk/testing";
+import type { GraphQLSchema } from "graphql";
+import {
+  createSchema,
+  createYoga,
+  type GraphQLParams,
+  type YogaInitialContext,
+} from "graphql-yoga";
+import { OAuthTestServer, serveTestHttpApp } from "@executor-js/sdk/testing";
 
 const GraphqlRequestPayload = EffectSchema.Struct({
   query: EffectSchema.optional(EffectSchema.String),
@@ -36,6 +41,10 @@ export interface GraphqlTestContext {
 export interface GraphqlTestServerOptions {
   readonly schema: GraphQLSchema;
   readonly path?: string;
+  readonly auth?: {
+    readonly validateAuthorization: (authorization: string | null) => Effect.Effect<boolean>;
+    readonly wwwAuthenticate?: string;
+  };
 }
 
 export interface GraphqlTestServerShape {
@@ -108,6 +117,23 @@ export const serveGraphqlTestServer = (
 
     const server = yield* serveTestHttpApp((request) =>
       Effect.gen(function* () {
+        if (options.auth) {
+          const accepted = yield* options.auth.validateAuthorization(
+            request.headers.authorization ?? null,
+          );
+          if (!accepted) {
+            const responseOptions = options.auth.wwwAuthenticate
+              ? {
+                  status: 401,
+                  headers: { "www-authenticate": options.auth.wwwAuthenticate },
+                }
+              : { status: 401 };
+            return HttpServerResponse.jsonUnsafe(
+              { errors: [{ message: "Unauthorized" }] },
+              responseOptions,
+            );
+          }
+        }
         const webRequest = yield* HttpServerRequest.toWeb(request);
         const response = yield* Effect.promise(() => Promise.resolve(yoga.handle(webRequest, {})));
         return HttpServerResponse.fromWeb(response);
@@ -137,11 +163,46 @@ export const serveGraphqlTestServer = (
     };
   });
 
+export const serveGraphqlFailureTestServer = (options: {
+  readonly status: number;
+  readonly body: string;
+  readonly contentType?: string;
+  readonly path?: string;
+}) =>
+  serveTestHttpApp(() =>
+    Effect.succeed(
+      HttpServerResponse.text(options.body, {
+        status: options.status,
+        contentType: options.contentType ?? "text/plain",
+      }),
+    ),
+  ).pipe(
+    Effect.map((server) => ({
+      endpoint: server.url(options.path ?? "/graphql"),
+      httpClientLayer: server.httpClientLayer,
+    })),
+  );
+
 export class GraphqlTestServer extends Context.Service<GraphqlTestServer, GraphqlTestServerShape>()(
   "@executor-js/plugin-graphql/testing/GraphqlTestServer",
 ) {
   static readonly layer = (options: GraphqlTestServerOptions) =>
     Layer.effect(GraphqlTestServer, serveGraphqlTestServer(options));
+
+  static readonly layerWithOAuth = (options: Omit<GraphqlTestServerOptions, "auth">) =>
+    Layer.effect(
+      GraphqlTestServer,
+      Effect.gen(function* () {
+        const oauth = yield* OAuthTestServer;
+        return yield* serveGraphqlTestServer({
+          ...options,
+          auth: {
+            validateAuthorization: oauth.acceptsAuthorizationHeader,
+            wwwAuthenticate: 'Bearer error="invalid_token"',
+          },
+        });
+      }),
+    );
 }
 
 const stringArgument = (
@@ -153,38 +214,116 @@ const stringArgument = (
   return typeof value === "string" ? value : fallback;
 };
 
-export const makeGreetingGraphqlSchema = (): GraphQLSchema => {
-  const Query = new GraphQLObjectType<unknown, GraphqlTestContext>({
-    name: "Query",
-    fields: {
-      hello: {
-        type: GraphQLString,
-        description: "Say hello",
-        args: {
-          name: { type: GraphQLString },
-        },
-        resolve: (_source, args) => `Hello ${stringArgument(args, "name", "world")}`,
+export const makeGreetingGraphqlSchema = (
+  options: { readonly includeMutation?: boolean } = {},
+): GraphQLSchema => {
+  const includeMutation = options.includeMutation ?? true;
+  return createSchema<GraphqlTestContext>({
+    typeDefs: /* GraphQL */ `
+      type Query {
+        hello(name: String): String
+      }
+
+      ${
+        includeMutation
+          ? /* GraphQL */ `
+              type Mutation {
+                setGreeting(message: String!): String
+              }
+            `
+          : ""
+      }
+    `,
+    resolvers: {
+      Query: {
+        hello: (_source: unknown, args: Readonly<Record<string, unknown>>) =>
+          `Hello ${stringArgument(args, "name", "world")}`,
       },
+      ...(includeMutation
+        ? {
+            Mutation: {
+              setGreeting: (_source: unknown, args: Readonly<Record<string, unknown>>) =>
+                stringArgument(args, "message", ""),
+            },
+          }
+        : {}),
     },
   });
-
-  const Mutation = new GraphQLObjectType<unknown, GraphqlTestContext>({
-    name: "Mutation",
-    fields: {
-      setGreeting: {
-        type: GraphQLString,
-        description: "Set greeting message",
-        args: {
-          message: { type: new GraphQLNonNull(GraphQLString) },
-        },
-        resolve: (_source, args) => stringArgument(args, "message", ""),
-      },
-    },
-  });
-
-  return new GraphQLSchema({ query: Query, mutation: Mutation });
 };
+
+// A small GitLab-shaped schema that reproduces the two failure modes from issue
+// #1146 when the plugin auto-generates selection sets against it:
+//   1. `metadata.featureFlags(names: [String!]!)` has a REQUIRED nested argument
+//      the generator cannot fill.
+//   2. `currentUser` nests connections deep enough that composite leaf fields
+//      (`author`, `assignees`) sit past the recursion depth cap, so a naive
+//      generator emits them with no sub-selection.
+// graphql-yoga validates with graphql-js, exactly like the @emulators/gitlab
+// surface, so a generated operation that validates clean here is valid GraphQL.
+export const makeGitlab1146Schema = (): GraphQLSchema =>
+  createSchema<GraphqlTestContext>({
+    typeDefs: /* GraphQL */ `
+      type Query {
+        metadata: Metadata
+        currentUser: User
+      }
+
+      type Metadata {
+        version: String
+        revision: String
+        enterprise: Boolean
+        featureFlags(names: [String!]!): [FeatureFlag!]!
+        kas: Kas
+      }
+
+      type FeatureFlag {
+        name: String
+        enabled: Boolean
+      }
+
+      type Kas {
+        enabled: Boolean
+        externalUrl: String
+      }
+
+      type User {
+        active: Boolean
+        admin: Boolean
+        mergeRequests: MergeRequestConnection
+      }
+
+      type MergeRequestConnection {
+        count: Int
+        nodes: [MergeRequest!]
+        pageInfo: PageInfo
+      }
+
+      type PageInfo {
+        hasNextPage: Boolean
+        endCursor: String
+      }
+
+      type MergeRequest {
+        id: ID
+        title: String
+        author: Author
+        assignees: AssigneeConnection
+      }
+
+      type Author {
+        name: String
+        username: String
+      }
+
+      type AssigneeConnection {
+        count: Int
+        nodes: [Author!]
+      }
+    `,
+  });
 
 export const TestLayers = {
   greeting: () => GraphqlTestServer.layer({ schema: makeGreetingGraphqlSchema() }),
+  greetingWithOAuth: () =>
+    GraphqlTestServer.layerWithOAuth({ schema: makeGreetingGraphqlSchema() }),
 };

@@ -3,10 +3,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { PlusIcon } from "lucide-react";
-import { SourceFavicon } from "./source-favicon";
-import { sourcesOptimisticAtom } from "../api/atoms";
-import { useScope } from "../hooks/use-scope";
-import { useSourcePlugins } from "@executor-js/sdk/client";
+import { trackEvent } from "../api/analytics";
+import type { Integration } from "@executor-js/sdk/shared";
+import { IntegrationFavicon, integrationPresetIconUrl } from "./integration-favicon";
+import { integrationsOptimisticAtom } from "../api/atoms";
+import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import {
   CommandDialog,
   CommandEmpty,
@@ -24,15 +25,14 @@ import {
 // Order of entries:
 //   1. Connected sources (priority, shown first)
 //   2. Add <Plugin> actions for each available source plugin
-//   3. Popular sources (plugin presets)
+//   3. Popular integrations (plugin presets)
 // ---------------------------------------------------------------------------
 
 export function CommandPalette() {
-  const sourcePlugins = useSourcePlugins();
+  const integrationPlugins = useIntegrationPlugins();
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
-  const scopeId = useScope();
-  const sourcesResult = useAtomValue(sourcesOptimisticAtom(scopeId));
+  const integrationsResult = useAtomValue(integrationsOptimisticAtom);
 
   // Toggle with ⌘K / Ctrl+K
   useEffect(() => {
@@ -48,26 +48,18 @@ export function CommandPalette() {
 
   const connectedSources = useMemo(
     () =>
-      AsyncResult.match(sourcesResult, {
-        onInitial: () =>
-          [] as Array<{
-            id: string;
-            name: string;
-            kind: string;
-            url?: string;
-            runtime?: boolean;
-          }>,
-        onFailure: () =>
-          [] as Array<{
-            id: string;
-            name: string;
-            kind: string;
-            url?: string;
-            runtime?: boolean;
-          }>,
-        onSuccess: ({ value }) => value.filter((s: { readonly runtime?: boolean }) => !s.runtime),
+      AsyncResult.match(integrationsResult, {
+        onInitial: () => [] as Array<{ id: string; name: string; kind: string; url?: string }>,
+        onFailure: () => [] as Array<{ id: string; name: string; kind: string; url?: string }>,
+        onSuccess: ({ value }) =>
+          value.map((integration: Integration) => ({
+            id: String(integration.slug),
+            name: integration.name || String(integration.slug),
+            kind: integration.kind,
+            url: integration.displayUrl,
+          })),
       }),
-    [sourcesResult],
+    [integrationsResult],
   );
 
   const presetEntries = useMemo(() => {
@@ -80,7 +72,7 @@ export function CommandPalette() {
       presetUrl?: string;
       presetIcon?: string;
     }> = [];
-    for (const plugin of sourcePlugins) {
+    for (const plugin of integrationPlugins) {
       for (const preset of plugin.presets ?? []) {
         entries.push({
           pluginKey: plugin.key,
@@ -94,14 +86,15 @@ export function CommandPalette() {
       }
     }
     return entries;
-  }, [sourcePlugins]);
+  }, [integrationPlugins]);
 
   const close = useCallback(() => setOpen(false), []);
 
-  const goToSource = useCallback(
+  const goToIntegration = useCallback(
     (id: string) => {
       close();
-      void navigate({ to: "/sources/$namespace", params: { namespace: id } });
+      trackEvent("command_palette_navigated", { kind: "integration", plugin_key: id });
+      void navigate({ to: "/{-$orgSlug}/integrations/$namespace", params: { namespace: id } });
     },
     [close, navigate],
   );
@@ -109,8 +102,10 @@ export function CommandPalette() {
   const goToAdd = useCallback(
     (pluginKey: string) => {
       close();
+      trackEvent("command_palette_navigated", { kind: "add_integration", plugin_key: pluginKey });
+      trackEvent("integration_add_started", { plugin_key: pluginKey, via: "command_palette" });
       void navigate({
-        to: "/sources/add/$pluginKey",
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
       });
     },
@@ -120,10 +115,16 @@ export function CommandPalette() {
   const goToPreset = useCallback(
     (pluginKey: string, presetId: string, presetUrl?: string) => {
       close();
+      trackEvent("command_palette_navigated", { kind: "preset", plugin_key: pluginKey });
+      trackEvent("integration_add_started", {
+        plugin_key: pluginKey,
+        via: "command_palette",
+        preset_id: presetId,
+      });
       const search: Record<string, string> = { preset: presetId };
       if (presetUrl) search.url = presetUrl;
       void navigate({
-        to: "/sources/add/$pluginKey",
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
         search,
       });
@@ -133,7 +134,7 @@ export function CommandPalette() {
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder="Search sources or jump to add…" />
+      <CommandInput placeholder="Search integrations or jump to add…" />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
@@ -149,9 +150,12 @@ export function CommandPalette() {
                 <CommandItem
                   key={`source-${s.id}`}
                   value={`connected ${s.name} ${s.id} ${s.kind}`}
-                  onSelect={() => goToSource(s.id)}
+                  onSelect={() => goToIntegration(s.id)}
                 >
-                  <SourceFavicon url={s.url} />
+                  <IntegrationFavicon
+                    icon={integrationPresetIconUrl(s, integrationPlugins)}
+                    url={s.url}
+                  />
                   <span className="flex-1 truncate">{s.name}</span>
                   <CommandShortcut>{s.kind}</CommandShortcut>
                 </CommandItem>
@@ -160,11 +164,11 @@ export function CommandPalette() {
           </CommandGroup>
         )}
 
-        {connectedSources.length > 0 && sourcePlugins.length > 0 && <CommandSeparator />}
+        {connectedSources.length > 0 && integrationPlugins.length > 0 && <CommandSeparator />}
 
-        {sourcePlugins.length > 0 && (
-          <CommandGroup heading="Add source">
-            {sourcePlugins.map((plugin) => (
+        {integrationPlugins.length > 0 && (
+          <CommandGroup heading="Add integration">
+            {integrationPlugins.map((plugin) => (
               <CommandItem
                 key={`add-${plugin.key}`}
                 value={`add ${plugin.label} ${plugin.key}`}
@@ -180,7 +184,7 @@ export function CommandPalette() {
         {presetEntries.length > 0 && <CommandSeparator />}
 
         {presetEntries.length > 0 && (
-          <CommandGroup heading="Popular sources">
+          <CommandGroup heading="Popular integrations">
             {presetEntries.map((e) => (
               <CommandItem
                 key={`preset-${e.pluginKey}-${e.presetId}`}

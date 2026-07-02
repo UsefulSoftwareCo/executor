@@ -1,7 +1,7 @@
 import type { OpenAPI, OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
 import { Duration, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import YAML from "yaml";
+import { JSON_SCHEMA, load as parseYamlDocument } from "js-yaml";
 
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
 
@@ -18,9 +18,8 @@ class OpenApiExtractionErrorFromParse extends OpenApiExtractionError {}
 /**
  * Fetch an OpenAPI spec URL and return its body text. Uses the Effect
  * HttpClient so the caller chooses the transport via layer — in Cloudflare
- * Workers, `FetchHttpClient.layer` binds to the Workers-native `fetch` and
- * avoids json-schema-ref-parser's Node-polyfill http resolver, which hangs
- * in production. Bounded by a 60s timeout.
+ * Workers, `FetchHttpClient.layer` binds to the Workers-native `fetch`.
+ * Bounded by a 60s timeout.
  */
 export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
   url: string,
@@ -51,7 +50,7 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
       message: `Failed to fetch OpenAPI document: HTTP ${response.status}`,
     });
   }
-  return yield* response.text.pipe(
+  const specText = yield* response.text.pipe(
     Effect.mapError(
       (_cause) =>
         new OpenApiParseError({
@@ -59,6 +58,7 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
         }),
     ),
   );
+  return specText;
 });
 
 /**
@@ -129,7 +129,7 @@ const parseJsonText = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Un
 
 const parseJsonLike = (text: string): Effect.Effect<unknown, unknown> => {
   const parseYaml = Effect.try({
-    try: () => YAML.parse(text) as unknown,
+    try: () => parseYamlDocument(text, { json: true, schema: JSON_SCHEMA }) as unknown,
     catch: () => "YamlParseFailed" as const,
   });
   if (!text.startsWith("{") && !text.startsWith("[")) return parseYaml;

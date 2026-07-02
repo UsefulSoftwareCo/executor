@@ -11,10 +11,11 @@
 import {
   isOAuthPopupResult as sharedIsOAuthPopupResult,
   type OAuthPopupResult,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/shared";
+import { getExecutorServerAuthorizationHeader } from "./server-connection";
 
-export { OAUTH_POPUP_MESSAGE_TYPE } from "@executor-js/sdk";
-export type { OAuthPopupResult } from "@executor-js/sdk";
+export { OAUTH_POPUP_MESSAGE_TYPE } from "@executor-js/sdk/shared";
+export type { OAuthPopupResult } from "@executor-js/sdk/shared";
 
 export const isOAuthPopupResult = sharedIsOAuthPopupResult;
 
@@ -72,15 +73,9 @@ export const reserveOAuthPopup = (input: {
 }): ReservedOAuthPopup | null => {
   const popup = window.open("about:blank", input.popupName, oauthPopupFeatures(input));
   if (!popup) return null;
-  // The app keeps a WindowProxy for navigation/closed polling, but the
-  // provider should not receive opener access after the reserved window
-  // is navigated cross-origin. The callback uses BroadcastChannel.
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: popup opener access can throw in browser-specific states
-  try {
-    popup.opener = null;
-  } catch {
-    // Best-effort hardening; the popup handle is still usable for the flow.
-  }
+  // Keep opener available for the same-origin callback page. Browser
+  // BroadcastChannel delivery can be partitioned in popup flows, so the
+  // callback's postMessage path is the primary completion signal.
   return { popup };
 };
 
@@ -114,6 +109,29 @@ export const openOAuthPopup = <TAuth>(input: OpenOAuthPopupInput<TAuth>): (() =>
     handleResult(event.data);
   };
 
+  // localStorage `storage` events are the reliable same-origin completion path:
+  // they fire on the opener when the (same-origin) callback page writes, survive
+  // the provider's COOP severing `window.opener`, and aren't lost to the popup's
+  // auto-close (unlike a raced BroadcastChannel). The callback writes the result
+  // under `channelName`; we read it, clean up, and settle.
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== input.channelName || event.newValue === null) return;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: JSON.parse of a foreign storage value can throw
+    try {
+      // oxlint-disable-next-line executor/no-json-parse -- boundary: browser-only helper, no Effect runtime; parsing a same-origin localStorage signal
+      const data: unknown = JSON.parse(event.newValue);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw (private mode / disabled)
+      try {
+        window.localStorage.removeItem(input.channelName);
+      } catch {
+        // best-effort cleanup
+      }
+      handleResult(data);
+    } catch {
+      // Malformed value — ignore; another channel may still deliver.
+    }
+  };
+
   const stopPolling = () => {
     if (pollHandle !== null) {
       clearInterval(pollHandle);
@@ -136,6 +154,7 @@ export const openOAuthPopup = <TAuth>(input: OpenOAuthPopupInput<TAuth>): (() =>
     if (settled) return;
     settled = true;
     window.removeEventListener("message", onMessage);
+    window.removeEventListener("storage", onStorage);
     channel?.close();
     stopPolling();
   };
@@ -148,6 +167,7 @@ export const openOAuthPopup = <TAuth>(input: OpenOAuthPopupInput<TAuth>): (() =>
   };
 
   window.addEventListener("message", onMessage);
+  window.addEventListener("storage", onStorage);
   if (channel) channel.onmessage = (event) => handleResult(event.data);
 
   const popup =
@@ -248,9 +268,14 @@ export const openOAuthSystemBrowser = <TAuth>(
     if (settled) return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch can reject for transient network errors during polling
     try {
+      // The await poll is now gated like the rest of /api — carry the bearer
+      // (standalone web). On desktop the connection has no client-side auth and
+      // the main process injects the header instead.
+      const authorization = getExecutorServerAuthorizationHeader();
       const response = await fetch(`/api/oauth/await/${encodeURIComponent(input.sessionId)}`, {
         signal: controller.signal,
         cache: "no-store",
+        ...(authorization ? { headers: { authorization } } : {}),
       });
       if (!response.ok) return;
       const body = (await response.json()) as unknown;

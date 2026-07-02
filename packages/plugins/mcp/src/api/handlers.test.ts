@@ -24,14 +24,12 @@ const unused = Effect.die("unused");
 const failingExtension: McpPluginExtension = {
   // oxlint-disable-next-line executor/no-error-constructor -- boundary: test injects a defect to verify opaque handler error responses
   probeEndpoint: () => Effect.die(new Error("Not implemented")),
-  addSource: () => unused,
-  removeSource: () => unused,
-  refreshSource: () => unused,
-  getSource: () => Effect.succeed(null),
-  updateSource: () => unused,
-  listSourceBindings: () => Effect.succeed([]),
-  setSourceBinding: () => unused,
-  removeSourceBinding: () => unused,
+  addServer: () => unused,
+  removeServer: () => unused,
+  reconcileStdioConnections: () => unused,
+  getServer: () => Effect.succeed(null),
+  configureServer: () => unused,
+  configureAuth: () => unused,
 };
 
 const Api = addGroup(McpGroup);
@@ -77,7 +75,7 @@ describe("McpHandlers", () => {
       const web = yield* WebHandler;
       const response = yield* Effect.promise(() =>
         (web.handler as (request: Request) => Promise<Response>)(
-          new Request("http://localhost/scopes/scope_1/mcp/probe", {
+          new Request("http://localhost/mcp/probe", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ endpoint: "https://example.com/mcp" }),
@@ -106,7 +104,7 @@ describe("McpHandlers", () => {
       });
       const response = yield* Effect.promise(() =>
         (web.handler as (request: Request) => Promise<Response>)(
-          new Request("http://localhost/scopes/scope_1/mcp/probe", {
+          new Request("http://localhost/mcp/probe", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ endpoint: "https://ui.sh/mcp" }),

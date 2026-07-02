@@ -35,6 +35,87 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it.effect("accumulates helper output separately from returned data", () =>
+    Effect.gen(function* () {
+      const result = yield* executor.execute(
+        `
+        const attachment = {
+          _tag: "ToolFile",
+          name: "photo.png",
+          mimeType: "image/png",
+          encoding: "base64",
+          data: "iVBORw0KGgo=",
+          byteLength: 8,
+        };
+        const values = [
+          emit("hello"),
+          emit(attachment),
+          emit({ type: "text", text: "mcp hello" }),
+          emit({ type: "image", data: "Zm9v", mimeType: "image/png" }),
+          emit({ type: "audio", data: "SUQz", mimeType: "audio/mpeg" }),
+          emit({
+            type: "resource",
+            resource: { uri: "executor-file:///report.pdf", mimeType: "application/pdf", blob: "JVBERg==" },
+          }),
+          emit({
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          }),
+          emit({ arbitrary: true }),
+        ];
+        return { values: values.map((value) => value === undefined), keptReturn: true };
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toEqual({
+        values: [true, true, true, true, true, true, true, true],
+        keptReturn: true,
+      });
+      expect(result.output).toEqual([
+        { type: "content", content: { type: "text", text: "hello" } },
+        {
+          type: "file",
+          file: {
+            _tag: "ToolFile",
+            name: "photo.png",
+            mimeType: "image/png",
+            encoding: "base64",
+            data: "iVBORw0KGgo=",
+            byteLength: 8,
+          },
+        },
+        { type: "content", content: { type: "text", text: "mcp hello" } },
+        { type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/png" } },
+        { type: "content", content: { type: "audio", data: "SUQz", mimeType: "audio/mpeg" } },
+        {
+          type: "content",
+          content: {
+            type: "resource",
+            resource: {
+              uri: "executor-file:///report.pdf",
+              mimeType: "application/pdf",
+              blob: "JVBERg==",
+            },
+          },
+        },
+        {
+          type: "content",
+          content: {
+            type: "resource_link",
+            uri: "executor-file:///remote.pdf",
+            name: "remote.pdf",
+            mimeType: "application/pdf",
+          },
+        },
+        { type: "content", content: { type: "text", text: '{"arbitrary":true}' } },
+      ]);
+    }),
+  );
+
   it.effect("recovers prose-wrapped fenced async arrow input", () =>
     Effect.gen(function* () {
       const result = yield* executor.execute(
@@ -118,6 +199,52 @@ describe("quickjs executor", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.result).toContain("caught:");
+    }),
+  );
+
+  it.effect("internal defects reach the sandbox as an opaque generic only", () =>
+    Effect.gen(function* () {
+      // Plugin defect carrying sensitive context. The bridge's reject
+      // path must strip everything except the canonical
+      // "Internal tool error [<corrId>]" shape — or fall back to the
+      // bare generic if the upstream invoker hasn't already stamped
+      // the correlation id (this test exercises the latter path
+      // because it bypasses makeExecutorToolInvoker).
+      const invoker: SandboxToolInvoker = {
+        invoke: () =>
+          Effect.fail(
+            Object.assign(
+              new Error("Authorization: Bearer SECRET_TOKEN_xyz failed against host 10.0.0.5"),
+              {
+                stack: "Error\n    at /home/svc/executor/packages/plugins/foo:142:11",
+              },
+            ) as never,
+          ),
+      };
+
+      const result = yield* executor.execute(
+        `
+        try {
+          await tools.leaky.call({});
+          return "should not reach";
+        } catch (e) {
+          return e.message;
+        }
+        `,
+        invoker,
+      );
+
+      expect(result.error).toBeUndefined();
+      const message = String(result.result);
+      // Either the canonical opaque generic with a correlation id, or
+      // the bare fallback. Neither must contain any sensitive context.
+      expect(
+        message === "Internal tool error" || /^Internal tool error \[[0-9a-f]{8}\]$/.test(message),
+      ).toBe(true);
+      expect(message).not.toContain("SECRET_TOKEN_xyz");
+      expect(message).not.toContain("Authorization");
+      expect(message).not.toContain("10.0.0.5");
+      expect(message).not.toContain("packages/plugins");
     }),
   );
 

@@ -1,0 +1,518 @@
+/* Dark GitHub-ish palette. */
+body {
+  font:
+    15px/1.55 ui-sans-serif,
+    system-ui;
+  margin: 0;
+  color: #d7dce5;
+  background: #0b0f17;
+}
+.page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px;
+}
+a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+h1 {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+.hint {
+  color: #6b7785;
+  font-size: 13px;
+  margin-top: 2px;
+}
+.dim {
+  color: #3d4651;
+}
+.stamp {
+  color: #3d4651;
+  font-size: 12px;
+  margin-top: 1.2rem;
+}
+.ok-text {
+  color: #7ee787;
+}
+.error-text {
+  color: #ff7b72;
+}
+
+/* matrix */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 1rem;
+}
+th,
+td {
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid #161b22;
+  text-align: left;
+  font-size: 14px;
+}
+th {
+  color: #6b7785;
+  font-weight: 600;
+}
+a.watch {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  background: #0f1620;
+  white-space: nowrap;
+  font-weight: 600;
+}
+a.watch:hover {
+  border-color: #388bfd;
+  background: #101a2a;
+}
+a.watch.ok {
+  color: #7ee787;
+}
+a.watch.no {
+  color: #ff7b72;
+}
+.d {
+  color: #6b7785;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+/* run page */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.tool-link {
+  font-size: 13px;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  background: #0f1620;
+  padding: 0.25rem 0.7rem;
+  margin-left: 8px;
+}
+.tool-link:hover {
+  border-color: #388bfd;
+}
+.errbox {
+  background: #160b0b;
+  border: 1px solid #6e2a2a;
+  color: #ff7b72;
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  font-size: 12.5px;
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre-wrap;
+}
+.hero-video {
+  display: block;
+  width: 100%;
+  margin-top: 0.8rem;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  background: #010409;
+}
+.shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 1rem;
+}
+.shots figure {
+  margin: 0;
+}
+.shots img {
+  display: block;
+  width: 100%;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+}
+.shots figcaption {
+  color: #8b98a9;
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+
+/* test source (monaco) */
+.section {
+  font-size: 13px;
+  color: #6b7785;
+  font-weight: 600;
+  margin: 1.2rem 0 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.code {
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* run-page tabs (video / source) */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 1rem 0 0.6rem;
+  border-bottom: 1px solid #161b22;
+}
+.tab {
+  font: inherit;
+  font-size: 13px;
+  color: #6b7785;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+.tab:hover {
+  color: #d7dce5;
+}
+.tab.active {
+  color: #d7dce5;
+  border-bottom-color: #388bfd;
+}
+
+.cast-player {
+  margin-top: 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #2a2a2a;
+}
+
+/* session player — synthetic window chrome + synced two-recording stage */
+.player {
+  margin-top: 0.8rem;
+}
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  padding: 7px 12px;
+  min-height: 22px;
+}
+.chrome .lights {
+  display: inline-flex;
+  gap: 6px;
+}
+.chrome .lights i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #2d333b;
+}
+.chrome.browser .lights i:nth-child(1) {
+  background: #ff5f57;
+}
+.chrome.browser .lights i:nth-child(2) {
+  background: #febc2e;
+}
+.chrome.browser .lights i:nth-child(3) {
+  background: #28c840;
+}
+.chrome.terminal .lights i:nth-child(1) {
+  background: #ff5f57;
+}
+.chrome.terminal .lights i:nth-child(2) {
+  background: #febc2e;
+}
+.chrome.terminal .lights i:nth-child(3) {
+  background: #28c840;
+}
+.urlbar {
+  flex: 1;
+  font:
+    12.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: #aeb8c4;
+  background: #0b0f17;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  padding: 4px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.urlbar .lock {
+  color: #58a6ff;
+  margin-right: 7px;
+}
+.termtitle {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  color: #6b7785;
+}
+.chrome-link {
+  font-size: 12px;
+  color: #58a6ff;
+  white-space: nowrap;
+}
+/* Fixed 16:10 stage (the browser records at 1280x800): the size never
+   changes when the act cuts between terminal and browser — both
+   recordings letterbox into the same box, like one screen. */
+.stage {
+  border: 1px solid #21262d;
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+  background: #010409;
+  aspect-ratio: 16 / 10;
+  position: relative;
+}
+.stage .layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.stage .layer video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+.stage .layer .cast-stage {
+  width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+.cast-stage :is(.ap-player) {
+  border-radius: 0;
+}
+
+/* transport bar */
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.playbtn {
+  font: inherit;
+  font-size: 14px;
+  width: 38px;
+  height: 30px;
+  color: #d7dce5;
+  background: #0f1620;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.playbtn:hover {
+  border-color: #388bfd;
+}
+.scrub {
+  position: relative;
+  flex: 1;
+  height: 22px;
+  cursor: pointer;
+}
+.scrub .seg {
+  position: absolute;
+  top: 8px;
+  height: 6px;
+  border-radius: 3px;
+}
+.scrub .seg.terminal {
+  background: #1f3d2b;
+}
+.scrub .seg.browser {
+  background: #1d3a5f;
+}
+.scrub .tick {
+  position: absolute;
+  top: 5px;
+  width: 2px;
+  height: 12px;
+  background: #d29922;
+  opacity: 0.85;
+}
+.scrub .head {
+  position: absolute;
+  top: 2px;
+  width: 2px;
+  height: 18px;
+  background: #e6edf3;
+  box-shadow: 0 0 6px #58a6ff;
+}
+.clock {
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: #6b7785;
+  min-width: 86px;
+  text-align: right;
+}
+
+/* timeline-aligned trace table */
+.trace-now td {
+  background: #14222e;
+}
+.seeklink {
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: #58a6ff;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.seeklink:hover {
+  text-decoration: underline;
+}
+
+/* session player split: stage left, trace rail right */
+.page:has(.player-split) {
+  max-width: 1340px;
+}
+.player-split {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+.player-main {
+  flex: 1;
+  min-width: 0;
+}
+.trace-rail {
+  width: 300px;
+  flex: none;
+  max-height: 700px;
+  overflow-y: auto;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  background: #0d1219;
+}
+.rail-head {
+  position: sticky;
+  top: 0;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7785;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  z-index: 1;
+}
+.rail-sub {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  color: #3d4651;
+}
+.trace-row {
+  padding: 6px 12px 7px;
+  border-bottom: 1px solid #141a22;
+  cursor: pointer;
+}
+.trace-row:hover {
+  background: #101722;
+}
+.trace-row.now {
+  background: #14222e;
+  box-shadow: inset 2px 0 0 #388bfd;
+}
+.trace-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font:
+    11.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.trace-at {
+  color: #58a6ff;
+  flex: none;
+}
+.trace-path {
+  flex: 1;
+  min-width: 0;
+  color: #8b98a9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-ms {
+  flex: none;
+  color: #7ee787;
+}
+.trace-ms.slow {
+  color: #d29922;
+  font-weight: 700;
+}
+.trace-ms.err {
+  color: #ff7b72;
+  font-weight: 700;
+}
+.trace-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.trace-meter .trace-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: #2ea04366;
+  border-right: 2px solid #2ea043;
+}
+.trace-meter .trace-bar.slow {
+  background: #d2992266;
+  border-right-color: #d29922;
+}
+.trace-id {
+  margin-left: auto;
+  font:
+    10.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: #3d4651;
+}
+.trace-id:hover {
+  color: #58a6ff;
+}
+
+/* trace source tag: terminal (MCP/CLI) vs browser */
+.trace-src {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+.trace-src.terminal {
+  color: #7ee787;
+  background: #1f3d2b66;
+}
+.trace-src.browser {
+  color: #79c0ff;
+  background: #1d3a5f66;
+}

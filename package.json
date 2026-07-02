@@ -25,28 +25,34 @@
     "packages/react",
     "packages/app",
     "apps/*",
-    "examples/*"
+    "examples/*",
+    "e2e"
   ],
   "type": "module",
   "scripts": {
+    "bootstrap": "bun run scripts/bootstrap.ts",
+    "reap": "bun run scripts/reap-dev-servers.ts",
     "dev": "turbo run dev --filter='!@executor-js/desktop' --filter='!@executor-js/cloud'",
     "dev:desktop": "turbo run dev",
-    "dev:cli": "bun run apps/cli/src/main.ts",
-    "test": "turbo run test",
+    "dev:cli": "EXECUTOR_DEV=1 EXECUTOR_DATA_DIR=${EXECUTOR_DATA_DIR:-apps/local/.executor-dev} bun run apps/cli/src/main.ts",
+    "test": "turbo run test --filter=!@executor-js/e2e",
+    "test:e2e": "bun run --cwd e2e test",
     "test:release:bootstrap": "vitest run tests/release-bootstrap-smoke.test.ts",
-    "build:packages": "bun run --filter='@executor-js/storage-core' build && bun run --filter='@executor-js/codemode-core' build && bun run --filter='@executor-js/runtime-quickjs' build && bun run --filter='@executor-js/sdk' build && bun run --filter='@executor-js/config' build && bun run --filter='@executor-js/execution' build && bun run --filter='@executor-js/cli' build && bun run --filter='@executor-js/plugin-*' build",
+    "build:packages": "bun run --filter='@executor-js/fumadb' build && bun run --filter='@executor-js/codemode-core' build && bun run --filter='@executor-js/runtime-quickjs' build && bun run --filter='@executor-js/sdk' build && bun run --filter='@executor-js/config' build && bun run --filter='@executor-js/execution' build && bun run --filter='@executor-js/cli' build && bun run --filter='@executor-js/plugin-*' build",
     "typecheck": "turbo run typecheck",
     "typecheck:slow": "turbo run typecheck:slow",
     "ci": "bun run lint && bun run typecheck && bun run test",
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings && bun run lint:changelog-stubs",
-    "lint:release-notes": "bun run scripts/check-release-notes.ts",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
+    "docs:snippets": "bun run scripts/generate-doc-snippets.ts",
+    "docs:smoke:install": "bun run scripts/smoke-docs-install.ts",
+    "smoke:agent-config": "bun run scripts/agent-config-smoke.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "pull:references": "bun run scripts/pull-references.ts",
     "changeset": "changeset",
-    "changeset:version": "changeset version && bun install --lockfile-only",
+    "changeset:version": "changeset version && bun install --lockfile-only && oxfmt .",
     "release:check": "bun run --cwd apps/cli typecheck && bun run test:release:bootstrap && bun run release:publish:dry-run",
     "release:pre:enter": "changeset pre enter beta",
     "release:pre:exit": "changeset pre exit",
@@ -59,10 +65,11 @@
     "release:publish:packages:prepare": "bun run scripts/publish-packages.ts --prepare-only",
     "release:smoke:packages": "bun run scripts/smoke-test-packed.ts",
     "clean": "bun run scripts/clean.ts",
-    "prepare": "effect-language-service patch && effect-tsgo patch"
+    "prepare": "effect-language-service patch && effect-tsgo patch && bun run --cwd packages/core/vite-plugin build:bundle && bun run --cwd packages/react build"
   },
   "dependencies": {},
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.30.0",
     "@effect/language-service": "^0.85.1",
     "@effect/tsgo": "^0.5.2",
@@ -95,6 +102,8 @@
     "bun-types": "^1.2.22",
     "drizzle-orm": "^0.45.0",
     "drizzle-kit": "^0.31.10",
+    "@libsql/client": "^0.17.3",
+    "@libsql/kysely-libsql": "^0.4.1",
     "@vitest/expect": "^4.1.5",
     "@vitest/mocker": "^4.1.5",
     "@vitest/pretty-format": "^4.1.5",
@@ -121,6 +130,7 @@
   },
   "patchedDependencies": {
     "postgres@3.4.9": "patches/postgres@3.4.9.patch",
-    "@cloudflare/vite-plugin@1.31.2": "patches/@cloudflare%2Fvite-plugin@1.31.2.patch"
+    "@cloudflare/vite-plugin@1.31.2": "patches/@cloudflare%2Fvite-plugin@1.31.2.patch",
+    "libsql@0.5.29": "patches/libsql@0.5.29.patch"
   }
 }

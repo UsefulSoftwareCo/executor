@@ -72,6 +72,7 @@ export const OAuthAuthorizationServerMetadataSchema = Schema.Struct({
   authorization_endpoint: Schema.String,
   token_endpoint: Schema.String,
   registration_endpoint: Schema.optional(Schema.String),
+  client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
   scopes_supported: Schema.optional(StringArray),
   response_types_supported: Schema.optional(StringArray),
   grant_types_supported: Schema.optional(StringArray),
@@ -685,6 +686,8 @@ export interface BeginDynamicAuthorizationInput {
     readonly resourceMetadata?: OAuthProtectedResourceMetadata | null;
     readonly resourceMetadataUrl?: string | null;
     readonly clientInformation?: OAuthClientInformation | null;
+    readonly resource?: string | null;
+    readonly scopes?: readonly string[] | null;
   };
 }
 
@@ -780,6 +783,7 @@ export const beginDynamicAuthorization = (
     // them explicitly via `input.scopes`.
     const scopes: readonly string[] =
       input.scopes ??
+      prior.scopes ??
       (resource?.metadata.scopes_supported && resource.metadata.scopes_supported.length > 0
         ? resource.metadata.scopes_supported
         : []);
@@ -795,6 +799,10 @@ export const beginDynamicAuthorization = (
       });
     }
 
+    // EXPLICIT registration shape (not a fallback of optional input): this DCR
+    // flow always registers the interactive authorization_code + refresh_token
+    // grants and the `code` response type. If the AS rejects refresh_token the
+    // registration request fails loudly rather than silently downgrading.
     const baseClientMetadata: DynamicClientMetadata = {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -824,9 +832,11 @@ export const beginDynamicAuthorization = (
         );
       })());
 
-    const resourceValue = resource?.metadata.resource
-      ? yield* validateResourceIndicator(resource.metadata.resource, expectedResource)
-      : expectedResource;
+    const resourceValue = prior.resource
+      ? yield* validateResourceIndicator(prior.resource, expectedResource)
+      : resource?.metadata.resource
+        ? yield* validateResourceIndicator(resource.metadata.resource, expectedResource)
+        : expectedResource;
 
     const codeVerifier = createPkceCodeVerifier();
     const codeChallenge = yield* Effect.promise(() => createPkceCodeChallenge(codeVerifier));

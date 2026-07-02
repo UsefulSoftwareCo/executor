@@ -1,5 +1,6 @@
 import { Data, Schema } from "effect";
 import type { Option } from "effect";
+import type { AuthToolFailureCode } from "@executor-js/sdk/core";
 
 // HTTP status lives on the class declaration so HttpApiBuilder's error
 // encoder (which reads `ast.annotations` off the schema it stored on
@@ -37,3 +38,21 @@ export class OpenApiOAuthError extends Schema.TaggedErrorClass<OpenApiOAuthError
   },
   { httpApiStatus: 400 },
 ) {}
+
+// ---------------------------------------------------------------------------
+// Auth required — v2 reframes this around the connection (owner/integration/
+// name) that supplies the missing credential, not v1's source/slot/secret.
+// ---------------------------------------------------------------------------
+
+export class OpenApiAuthRequiredError extends Data.TaggedError("OpenApiAuthRequiredError")<{
+  readonly code: AuthToolFailureCode;
+  readonly message: string;
+  readonly owner: "org" | "user";
+  readonly integration: string;
+  readonly connection: string;
+  readonly credentialKind: "secret" | "oauth" | "upstream";
+  readonly credentialLabel?: string;
+  readonly status?: number;
+  readonly details?: unknown;
+  readonly cause?: unknown;
+}> {}

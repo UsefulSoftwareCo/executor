@@ -1,0 +1,105 @@
+{
+  "name": "@executor-js/plugin-toolkits",
+  "version": "1.5.19",
+  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/toolkits",
+  "bugs": {
+    "url": "https://github.com/RhysSullivan/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "directory": "packages/plugins/toolkits"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./client": "./src/client.tsx",
+    "./shared": "./src/shared.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      "./server": {
+        "import": {
+          "types": "./dist/server.d.ts",
+          "default": "./dist/server.js"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        }
+      },
+      "./shared": {
+        "import": {
+          "types": "./dist/shared.d.ts",
+          "default": "./dist/shared.js"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup && (tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src || true)",
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "typecheck:slow": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@executor-js/api": "workspace:*",
+    "@executor-js/react": "workspace:*",
+    "@tanstack/react-router": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "bun-types": "catalog:",
+    "effect": "catalog:",
+    "fractional-indexing": "^3.2.0",
+    "lucide-react": "^1.7.0",
+    "react": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@executor-js/api": "workspace:*",
+    "@executor-js/react": "workspace:*",
+    "@tanstack/react-router": "catalog:",
+    "effect": "catalog:",
+    "fractional-indexing": "^3.2.0",
+    "lucide-react": "^1.7.0",
+    "react": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "@executor-js/api": {
+      "optional": true
+    },
+    "@executor-js/react": {
+      "optional": true
+    },
+    "@tanstack/react-router": {
+      "optional": true
+    },
+    "fractional-indexing": {
+      "optional": true
+    },
+    "lucide-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}

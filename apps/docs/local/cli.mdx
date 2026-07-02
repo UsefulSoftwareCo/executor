@@ -1,0 +1,111 @@
+---
+title: CLI
+description: "Run Executor as a local background service and drive it from the command line."
+---
+
+The CLI runs a small HTTP runtime on your machine: a durable background service
+that any MCP-compatible agent can connect to. Your integrations, credentials, and
+policies stay local.
+
+## Install
+
+Requires Node.js 20 or newer.
+
+<CodeGroup>
+
+```bash npm
+npm install -g executor
+```
+
+```bash pnpm
+pnpm add -g executor
+```
+
+```bash bun
+bun add -g executor
+```
+
+```bash yarn
+yarn global add executor
+```
+
+</CodeGroup>
+
+## Start the service
+
+Install the durable background service, then open the web UI:
+
+```bash
+executor install   # install/start the durable background service
+executor web        # open the web UI at http://127.0.0.1:4788
+```
+
+`executor install` registers Executor so it keeps running across restarts. For a
+throwaway foreground runtime instead, run `executor web --foreground`.
+
+## Connect an agent
+
+Add Executor to any MCP client (Claude Code, Cursor, OpenCode) with `npx add-mcp`.
+It detects the client and writes its config for you. Connect over HTTP or through
+the CLI:
+
+<Tabs>
+  <Tab title="HTTP">
+    Executor serves a streamable-HTTP MCP endpoint at `http://127.0.0.1:4788/mcp`:
+
+    ```bash
+    npx add-mcp http://127.0.0.1:4788/mcp --transport http --name executor
+    ```
+
+    The **Connect** card in the web UI shows this command with your exact URL
+    (and port, if it differs) already filled in.
+
+  </Tab>
+  <Tab title="CLI (stdio)">
+    With the `executor` CLI on your PATH, the client launches `executor mcp`
+    directly (no URL needed):
+
+    ```bash
+    npx add-mcp "executor mcp" --name executor
+    ```
+
+  </Tab>
+</Tabs>
+
+## Add an integration
+
+From the web UI, click **Add Source** and paste an OpenAPI, GraphQL, or MCP URL.
+Executor detects the type, indexes the tools, and handles auth. Or add one from the
+CLI:
+
+```bash
+executor call executor openapi addSource '{
+  "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+  "namespace": "petstore",
+  "baseUrl": "https://petstore3.swagger.io/api/v3"
+}'
+```
+
+Use `baseUrl` when the OpenAPI document has relative `servers` entries (e.g. `"/api/v3"`).
+
+Confirm it's live:
+
+```bash
+executor tools sources   # lists configured integrations + tool counts
+```
+
+## Call tools
+
+```bash
+executor tools search "send email"      # find tools by intent
+executor call github issues --help      # browse a namespace
+executor call github issues create '{"owner":"octocat","repo":"Hello-World","title":"Hi"}'
+```
+
+`executor call`, `executor resume`, and `executor tools …` auto-start the local
+daemon if it isn't already running. If an execution pauses for auth or approval,
+resume it:
+
+```bash
+executor resume --execution-id exec_123
+```

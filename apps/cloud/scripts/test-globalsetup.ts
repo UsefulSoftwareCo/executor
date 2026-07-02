@@ -1,17 +1,18 @@
 // ---------------------------------------------------------------------------
 // Vitest globalSetup — starts an in-process PGlite socket server so tests
 // running in the Cloudflare Workers runtime can connect to a real Postgres
-// via postgres.js. Port must match DATABASE_URL in wrangler.test.jsonc.
+// via postgres.js. Port must match DATABASE_URL in vitest.config.ts.
 // ---------------------------------------------------------------------------
 
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { resolve, dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
 const PORT = 5434;
 const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
 
@@ -24,6 +25,7 @@ export default async function setup() {
 
   server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1" });
   await server.start();
+
   // eslint-disable-next-line no-console
   console.log(`[test-db] PGlite socket server listening on 127.0.0.1:${PORT}`);
 

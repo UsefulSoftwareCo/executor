@@ -3,7 +3,7 @@ export {
   getServerHandlers,
   disposeServerHandlers,
   type ServerHandlers,
-} from "./server/main";
+} from "./main";
 export {
   createExecutorHandle,
   disposeExecutor,
@@ -11,6 +11,12 @@ export {
   reloadExecutor,
   type ExecutorHandle,
   type LocalExecutor,
-} from "./server/executor";
-export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./server/mcp";
+} from "./executor";
+export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./mcp";
 export { startServer, type StartServerOptions, type ServerInstance } from "./serve";
+export {
+  DataDirOwnershipHeld,
+  findDataDirOwnershipHeld,
+  type DataDirOwnership,
+} from "./db/data-dir-ownership";
+export { loadOrMintLocalAuthToken, rotateLocalAuthToken, localAuthTokenPath } from "./auth";

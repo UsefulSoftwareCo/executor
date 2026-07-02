@@ -27,7 +27,7 @@ const PACKAGE_SCOPE = "@executor-js";
  * directory under `packages/plugins/` does not accidentally ship to npm.
  */
 const PUBLIC_PACKAGE_DIRS = [
-  "packages/core/storage-core",
+  "packages/core/fumadb",
   "packages/kernel/core",
   "packages/kernel/runtime-quickjs",
   "packages/core/sdk",
@@ -36,7 +36,6 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/core/cli",
   "packages/plugins/example",
   "packages/plugins/file-secrets",
-  "packages/plugins/google-discovery",
   "packages/plugins/graphql",
   "packages/plugins/keychain",
   "packages/plugins/mcp",

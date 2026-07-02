@@ -33,7 +33,7 @@
 import { Cause, Context, Effect, Layer, Option, Result, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiMiddleware, type HttpApi, type HttpApiGroup } from "effect/unstable/httpapi";
-import type { StorageFailure } from "@executor-js/storage-core";
+import type { StorageFailure } from "@executor-js/sdk/core";
 import { InternalError } from "@executor-js/sdk/core";
 
 // Re-export so existing `@executor-js/api` consumers keep working.

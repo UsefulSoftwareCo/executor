@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const PUBLIC_PACKAGE_DIRS = [
-  "packages/core/storage-core",
+  "packages/core/fumadb",
   "packages/kernel/core",
   "packages/kernel/runtime-quickjs",
   "packages/core/sdk",
@@ -42,7 +42,6 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/core/cli",
   "packages/plugins/example",
   "packages/plugins/file-secrets",
-  "packages/plugins/google-discovery",
   "packages/plugins/graphql",
   "packages/plugins/keychain",
   "packages/plugins/mcp",

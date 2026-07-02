@@ -7,6 +7,9 @@ export {
 } from "./plugin";
 export {
   OnePasswordConfig,
+  RedactedOnePasswordConfig,
+  RedactedOnePasswordAuth,
+  redactConfig,
   Vault,
   ConnectionStatus,
   OnePasswordAuth,
