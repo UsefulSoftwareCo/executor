@@ -1,5 +1,5 @@
 diff --git a/dist/mcp/index.d.ts b/dist/mcp/index.d.ts
-index c8fad44..439da01 100644
+index c8fad448e8797b89690a99d93490d1363851b225..439da01e789713d217778e8bdebfa1a9d52a71e2 100644
 --- a/dist/mcp/index.d.ts
 +++ b/dist/mcp/index.d.ts
 @@ -29,6 +29,7 @@ import {
@@ -19,7 +19,7 @@ index c8fad44..439da01 100644
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c..707f1cf 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..0ba4f5bff8e6a968aa18c609952e576cedf13d8f 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,14 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -178,7 +178,7 @@ index 1edcf0c..707f1cf 100644
  					props: ctx.props,
  					jurisdiction: options.jurisdiction
  				});
-@@ -306,27 +344,66 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -306,27 +344,86 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  				if (!ws) {
  					await writer.close();
  					return new Response("Failed to establish WS to DO", { status: 500 });
@@ -187,7 +187,7 @@ index 1edcf0c..707f1cf 100644
 -				ws.addEventListener("message", (event) => {
 +					}
 +					ws.accept();
-+					const __closeSse = () => {
++					const __abortSse = () => {
 +						__sseClosed = true;
 +						try {
 +							clearInterval(keepAlive);
@@ -197,22 +197,42 @@ index 1edcf0c..707f1cf 100644
 +						} catch {}
 +						writer.abort(new Error("SSE client not draining")).catch(() => {});
 +					};
++					const __closeSseGracefully = () => {
++						__sseClosed = true;
++						try {
++							clearInterval(keepAlive);
++						} catch {}
++						try {
++							const finalFrame = encoder.encode(": max-age rotation, reconnect\n\n");
++							__writeChain = __writeChain.then(() => writer.write(finalFrame)).catch(() => {}).then(() => writer.close()).catch(() => {
++								writer.abort().catch(() => {});
++							});
++						} catch {
++							__writeChain = writer.close().catch(() => {
++								writer.abort().catch(() => {});
++							});
++						}
++						try {
++							ws.close(1000, "sse_max_age_rotation");
++						} catch {}
++						return __writeChain;
++					};
 +					const __forwardSse = (frame) => {
 +						if (__sseClosed) return __writeChain;
 +						const ageMs = Date.now() - __openedAt;
 +						if (ageMs > MAX_SSE_AGE_MS) {
-+							console.error(JSON.stringify({
++							console.log(JSON.stringify({
 +								event: "sse_max_age_close",
 +								sessionId,
 +								variant: "streamable-get",
 +								ageMs,
 +								pendingBytes: __pendingBytes
 +							}));
-+							__closeSse();
++							__closeSseGracefully();
 +							return Promise.resolve();
 +						}
 +						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
-+							__closeSse();
++							__abortSse();
 +							return Promise.resolve();
 +						}
 +						__pendingBytes += frame.byteLength;
@@ -260,7 +280,7 @@ index 1edcf0c..707f1cf 100644
  				return new Response(readable, {
  					headers: {
  						"Cache-Control": "no-cache",
-@@ -389,10 +466,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -389,10 +486,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  		const url = new URL(request.url);
  		if (request.method === "GET" && basePattern.test(url)) {
  			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
@@ -281,7 +301,7 @@ index 1edcf0c..707f1cf 100644
  			endpointUrl.pathname = encodeURI(`${basePath}/message`);
  			endpointUrl.searchParams.set("sessionId", sessionId);
  			const endpointMessage = `event: endpoint\ndata: ${endpointUrl.pathname + endpointUrl.search + endpointUrl.hash}\n\n`;
-@@ -414,35 +497,74 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -414,35 +517,94 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  				console.error("Failed to establish WebSocket connection");
  				await writer.close();
  				return new Response("Failed to establish WebSocket connection", { status: 500 });
@@ -290,7 +310,7 @@ index 1edcf0c..707f1cf 100644
 -			ws.addEventListener("message", (event) => {
 +				}
 +				ws.accept();
-+				const __closeSse = () => {
++				const __abortSse = () => {
 +					__sseClosed = true;
 +					try {
 +						clearInterval(keepAlive);
@@ -300,22 +320,42 @@ index 1edcf0c..707f1cf 100644
 +					} catch {}
 +					writer.abort(new Error("SSE client not draining")).catch(() => {});
 +				};
++				const __closeSseGracefully = () => {
++					__sseClosed = true;
++					try {
++						clearInterval(keepAlive);
++					} catch {}
++					try {
++						const finalFrame = encoder.encode(": max-age rotation, reconnect\n\n");
++						__writeChain = __writeChain.then(() => writer.write(finalFrame)).catch(() => {}).then(() => writer.close()).catch(() => {
++							writer.abort().catch(() => {});
++						});
++					} catch {
++						__writeChain = writer.close().catch(() => {
++							writer.abort().catch(() => {});
++						});
++					}
++					try {
++						ws.close(1000, "sse_max_age_rotation");
++					} catch {}
++					return __writeChain;
++				};
 +				const __forwardSse = (frame) => {
 +					if (__sseClosed) return __writeChain;
 +					const ageMs = Date.now() - __openedAt;
 +					if (ageMs > MAX_SSE_AGE_MS) {
-+						console.error(JSON.stringify({
++						console.log(JSON.stringify({
 +							event: "sse_max_age_close",
 +							sessionId,
 +							variant: "legacy-sse",
 +							ageMs,
 +							pendingBytes: __pendingBytes
 +						}));
-+						__closeSse();
++						__closeSseGracefully();
 +						return Promise.resolve();
 +					}
 +					if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
-+						__closeSse();
++						__abortSse();
 +						return Promise.resolve();
 +					}
 +					__pendingBytes += frame.byteLength;
@@ -374,13 +414,11 @@ index 1edcf0c..707f1cf 100644
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -1698,6 +1820,6 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1698,6 +1860,6 @@ var McpAgent = class McpAgent extends Agent {
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
  //#endregion
 -export { DurableObjectEventStore, ElicitRequestSchema, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
 +export { DurableObjectEventStore, ElicitRequestSchema, MAX_SSE_AGE_MS, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
  
--//# sourceMappingURL=index.js.map
-\ No newline at end of file
-+//# sourceMappingURL=index.js.map
+ //# sourceMappingURL=index.js.map
