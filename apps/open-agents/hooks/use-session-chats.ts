@@ -501,6 +501,8 @@ export function useSessionChats(
       id: crypto.randomUUID(),
       sessionId,
       title: "New chat",
+      scopeKind: null,
+      scopeId: null,
       modelId: data?.defaultModelId ?? null,
       lastAssistantMessageAt: null,
       createdAt: now,

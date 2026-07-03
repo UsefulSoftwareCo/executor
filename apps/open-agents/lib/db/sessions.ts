@@ -64,6 +64,8 @@ export async function createSessionWithInitialChat(input: CreateSessionWithIniti
         id: input.initialChat.id,
         sessionId: session.id,
         title: input.initialChat.title,
+        scopeKind: session.scopeKind,
+        scopeId: session.scopeId,
         modelId: input.initialChat.modelId,
       })
       .returning();
@@ -343,6 +345,8 @@ export async function getChatSummariesBySessionId(
       id: chats.id,
       sessionId: chats.sessionId,
       title: chats.title,
+      scopeKind: chats.scopeKind,
+      scopeId: chats.scopeId,
       modelId: chats.modelId,
       lastAssistantMessageAt: chats.lastAssistantMessageAt,
       createdAt: chats.createdAt,

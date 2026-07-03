@@ -6,6 +6,7 @@ import { resolveOpenAgentsProfile } from "./open-agents-profile";
 
 const databaseUrl = process.env.POSTGRES_URL;
 if (!databaseUrl) {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: DB-backed test requires local Postgres configuration before hooks run
   throw new Error("POSTGRES_URL is required for Open Agents profile tests");
 }
 
@@ -29,6 +30,7 @@ beforeAll(async () => {
     select id from organizations where slug = 'goaugment' limit 1
   `;
   if (!org) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: DB-backed test cannot build the fixture without the migrated default org
     throw new Error("goaugment organization is required for Open Agents profile tests");
   }
   goaugmentOrgId = org.id;

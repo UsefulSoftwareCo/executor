@@ -6,6 +6,8 @@ import { automationRouterWorkflow } from "./automation-router";
 type AutomationScopeKind =
   | "system"
   | "user"
+  | "group"
+  | "org"
   | "thread"
   | "session"
   | "repo"

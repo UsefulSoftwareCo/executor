@@ -399,6 +399,7 @@ export async function initializeOpenAgentsSlackSessionSandbox(session: OpenAgent
     sourceCount: session.sandboxSources.length,
   });
 
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Slack sandbox setup must persist lifecycle failure before surfacing the original initialization failure
   try {
     await initializeSandbox({
       sessionId: session.sessionId,
@@ -409,6 +410,7 @@ export async function initializeOpenAgentsSlackSessionSandbox(session: OpenAgent
       sessionId: session.sessionId,
       error,
     });
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve the original sandbox initialization rejection for the Slack handler
     throw error;
   }
 
@@ -582,6 +584,7 @@ async function initializeSandbox(input: {
 
 async function markSandboxInitializationFailed(input: { sessionId: string; error: unknown }) {
   const sql = getSql();
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: lifecycle_error stores the sandbox initialization failure detail for operators
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   await sql`
     update sessions

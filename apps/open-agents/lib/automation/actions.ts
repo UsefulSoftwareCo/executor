@@ -320,6 +320,8 @@ async function createAutomationSession(params: {
     session: {
       id: nanoid(),
       userId: params.userId,
+      scopeKind: "user",
+      scopeId: params.userId,
       title,
       repoOwner: repo.repoOwner,
       repoName: repo.repoName,

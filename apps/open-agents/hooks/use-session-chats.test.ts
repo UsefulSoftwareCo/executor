@@ -16,6 +16,8 @@ function createChat(
     id,
     sessionId: "session-1",
     title: `Chat ${id}`,
+    scopeKind: null,
+    scopeId: null,
     modelId: "anthropic/claude-haiku-4.5",
     lastAssistantMessageAt: null,
     createdAt: now,

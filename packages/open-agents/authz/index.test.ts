@@ -3,7 +3,6 @@ import postgres from "postgres";
 import {
   AuthzError,
   canAccess,
-  createOpenAgentsAuthz,
   getDefaultOrgId,
   invalidateMembership,
   requireChatAccess,
@@ -137,12 +136,17 @@ describe("canAccess", () => {
       manage: false,
       admin: false,
     });
-    await expectVerbMatrix(actors.anonymousSlack, scopes.org, {
-      read: true,
-      write: true,
-      manage: false,
-      admin: false,
-    }, { anonymousSlackOrgId: "org_a" });
+    await expectVerbMatrix(
+      actors.anonymousSlack,
+      scopes.org,
+      {
+        read: true,
+        write: true,
+        manage: false,
+        admin: false,
+      },
+      { anonymousSlackOrgId: "org_a" },
+    );
     await expectVerbMatrix(actors.serviceOrg, scopes.org, {
       read: true,
       write: true,

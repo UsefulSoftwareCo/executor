@@ -117,6 +117,8 @@ export default async function RepoPage({ params }: RepoPageProps) {
     session: {
       id: nanoid(),
       userId: session.user.id,
+      scopeKind: "user",
+      scopeId: session.user.id,
       title,
       status: "running",
       repoOwner: username,
