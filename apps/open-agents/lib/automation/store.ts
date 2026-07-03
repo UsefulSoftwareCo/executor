@@ -25,7 +25,6 @@ import {
   automationTimelineEvents,
   automationVersions,
   chats,
-  sessions,
   type AutomationDefinition as AutomationDefinitionRow,
   type AutomationEvent as AutomationEventRow,
   type AutomationInvocation,
@@ -268,7 +267,6 @@ export async function listAutomationsForUser(
           eq(automationDefinitions.ownerKind, "user"),
           eq(automationDefinitions.ownerId, userId),
         ),
-        eq(automationDefinitions.scopeKind, "system"),
       ),
     )
     .orderBy(desc(automationDefinitions.updatedAt));
@@ -653,7 +651,6 @@ function canReadAutomation(
   userId: string,
 ): boolean {
   return (
-    definition.scopeKind === "system" ||
     (definition.scopeKind === "user" && definition.scopeId === userId) ||
     (definition.ownerKind === "user" && definition.ownerId === userId)
   );
@@ -821,47 +818,16 @@ export async function matchAutomationsForEvent(
 }
 
 async function getCandidateAutomationsForEvent(event: AutomationEventRow) {
-  const scopePredicates = [
-    and(
-      eq(automationDefinitions.scopeKind, "system"),
-      eq(automationDefinitions.scopeId, "global"),
-    ),
-    and(
-      eq(automationDefinitions.scopeKind, event.scopeKind),
-      eq(automationDefinitions.scopeId, event.scopeId),
-    ),
-  ];
-
-  if (event.scopeKind === "session") {
-    const session = await db.query.sessions.findFirst({
-      where: eq(sessions.id, event.scopeId),
-    });
-    if (session) {
-      scopePredicates.push(
-        and(
-          eq(automationDefinitions.scopeKind, "user"),
-          eq(automationDefinitions.scopeId, session.userId),
-        ),
-      );
-    }
-  }
-
-  if (event.repoOwner && event.repoName) {
-    scopePredicates.push(
-      and(
-        eq(automationDefinitions.scopeKind, "repo"),
-        eq(
-          automationDefinitions.scopeId,
-          `${event.repoOwner}/${event.repoName}`.toLowerCase(),
-        ),
-      ),
-    );
-  }
-
   return db
     .select()
     .from(automationDefinitions)
-    .where(and(eq(automationDefinitions.enabled, true), or(...scopePredicates)));
+    .where(
+      and(
+        eq(automationDefinitions.enabled, true),
+        eq(automationDefinitions.scopeKind, event.scopeKind),
+        eq(automationDefinitions.scopeId, event.scopeId),
+      ),
+    );
 }
 
 function triggerMatchesEvent(

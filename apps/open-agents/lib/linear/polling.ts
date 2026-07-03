@@ -62,7 +62,7 @@ type LinearPollingState = {
 };
 
 type LinearPollingAutomationScope = {
-  kind: "system" | "user" | "thread" | "session" | "repo" | "automation";
+  kind: "user" | "group" | "org";
   id: string;
 };
 
@@ -281,9 +281,7 @@ function getLinearPollingAutomationId(userId = getLinearPollingOwnerUserId()): s
 }
 
 function toLinearPollingScope(userId = getLinearPollingOwnerUserId()) {
-  return process.env.OPEN_AGENTS_LINEAR_USER_ID
-    ? ({ kind: "user" as const, id: userId })
-    : ({ kind: "system" as const, id: "global" });
+  return { kind: "user" as const, id: userId };
 }
 
 function buildLinearPollingEvaluatorCode(): string {

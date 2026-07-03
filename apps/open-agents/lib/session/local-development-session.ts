@@ -1,6 +1,7 @@
 import "server-only";
 
 import { db } from "@/lib/db/client";
+import { ensureUserDefaultOrganizationMembership } from "@/lib/db/organizations";
 import { users } from "@/lib/db/schema";
 import type { Session } from "./types";
 
@@ -60,6 +61,8 @@ export async function ensureLocalDevelopmentUser(): Promise<void> {
         lastLoginAt: now,
       },
     });
+
+  await ensureUserDefaultOrganizationMembership(user.id);
 }
 
 export async function getLocalDevelopmentSession(): Promise<Session> {

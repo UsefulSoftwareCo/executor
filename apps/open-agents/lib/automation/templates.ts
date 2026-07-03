@@ -18,7 +18,7 @@ export type AutomationTemplate = {
 type TemplateParams = {
   userId: string;
   scope?: {
-    kind: "user" | "system" | "session" | "repo";
+    kind: "user" | "group" | "org";
     id: string;
   };
 };

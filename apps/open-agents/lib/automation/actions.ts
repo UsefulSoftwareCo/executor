@@ -320,8 +320,8 @@ async function createAutomationSession(params: {
     session: {
       id: nanoid(),
       userId: params.userId,
-      scopeKind: "user",
-      scopeId: params.userId,
+      scopeKind: params.context.definition.scope.kind,
+      scopeId: params.context.definition.scope.id,
       title,
       repoOwner: repo.repoOwner,
       repoName: repo.repoName,
@@ -450,10 +450,7 @@ async function resolveMessageTarget(params: {
     throw new FatalError("No correlated session exists for messageSession");
   }
 
-  const target =
-    params.context.event.scopeKind === "session"
-      ? await resolveAttachedSessionTarget(params)
-      : await createAutomationSession(params);
+  const target = await createAutomationSession(params);
 
   await upsertAutomationCorrelation({
     automationId: params.context.automation.id,
@@ -469,24 +466,6 @@ async function resolveMessageTarget(params: {
   });
 
   return { ...target, correlationKey };
-}
-
-async function resolveAttachedSessionTarget(params: {
-  context: AutomationExecutionContext;
-  action: Extract<AutomationAction, { kind: "startSession" | "messageSession" }>;
-  userId: string;
-  prompt: string;
-}) {
-  const session = await getSessionById(params.context.event.scopeId);
-  if (!session || session.userId !== params.userId) {
-    return createAutomationSession(params);
-  }
-
-  const chat = await createChatForSession({
-    sessionId: session.id,
-    title: truncateTitle(params.prompt),
-  });
-  return { session, chat, isNew: true as const };
 }
 
 async function runStartSessionAction(
@@ -505,20 +484,12 @@ async function runStartSessionAction(
   const identity = resolveIdentityUserId(context.definition);
   await ensureSyntheticAutomationUser(identity.userId);
 
-  const target =
-    action.mode === "thread-attached" && context.event.scopeKind === "session"
-      ? await resolveAttachedSessionTarget({
-          context,
-          action,
-          userId: identity.userId,
-          prompt,
-        })
-      : await createAutomationSession({
-          context,
-          action,
-          userId: identity.userId,
-          prompt,
-        });
+  const target = await createAutomationSession({
+    context,
+    action,
+    userId: identity.userId,
+    prompt,
+  });
 
   await linkAutomationRunToSessionChat({
     runId: context.run.id,
@@ -760,14 +731,7 @@ function parseEventScope(
   context: AutomationExecutionContext,
 ): NormalizedAutomationEventInput["scope"] {
   if (isRecord(value) && typeof value.kind === "string" && typeof value.id === "string") {
-    if (
-      value.kind === "system" ||
-      value.kind === "user" ||
-      value.kind === "thread" ||
-      value.kind === "session" ||
-      value.kind === "repo" ||
-      value.kind === "automation"
-    ) {
+    if (value.kind === "user" || value.kind === "group" || value.kind === "org") {
       return { kind: value.kind, id: value.id };
     }
   }

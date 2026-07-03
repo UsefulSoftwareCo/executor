@@ -2,6 +2,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { after } from "next/server";
 import { emitAndRouteAutomationEvent } from "@/lib/automation/dispatch";
+import { getDefaultOrganizationId } from "@/lib/db/organizations";
 
 const LINEAR_SIGNATURE_HEADER = "linear-signature";
 const LINEAR_WEBHOOK_TOLERANCE_MS = 60 * 1000;
@@ -95,7 +96,7 @@ async function emitLinearAutomationEvent(payload: LinearWebhookPayload) {
     type: `${type.toLowerCase()}.${action}`,
     scope: process.env.OPEN_AGENTS_LINEAR_USER_ID
       ? { kind: "user", id: process.env.OPEN_AGENTS_LINEAR_USER_ID }
-      : { kind: "system", id: "global" },
+      : { kind: "org", id: await getDefaultOrganizationId() },
     subject: {
       kind: type === "Issue" ? "linear_issue" : "linear_event",
       id: issueId,

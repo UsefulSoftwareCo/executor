@@ -766,11 +766,7 @@ function buildDefinitionFromBuilder(
     name: builder.name.trim() || "Untitled automation",
     description: builder.description.trim() || undefined,
     enabled: builder.enabled,
-    scope:
-      baseDefinition?.scope ??
-      (attachedSessionId
-        ? { kind: "session", id: attachedSessionId }
-        : { kind: "user", id: "current-user" }),
+    scope: baseDefinition?.scope ?? { kind: "user", id: "current-user" },
     owner: baseDefinition?.owner ?? { kind: "user", id: "current-user" },
     identity:
       baseDefinition?.identity ?? { kind: "user", userId: "current-user" },
@@ -1319,14 +1315,10 @@ function buildLineDiff(beforeText: string, afterText: string): DiffLine[] {
 }
 
 function matchesAttachedSession(
-  automation: AutomationListItem,
-  attachedSessionId: string | null | undefined,
+  _automation: AutomationListItem,
+  _attachedSessionId: string | null | undefined,
 ): boolean {
-  return (
-    !attachedSessionId ||
-    (automation.version?.definitionJson.scope.kind === "session" &&
-      automation.version.definitionJson.scope.id === attachedSessionId)
-  );
+  return true;
 }
 
 export function AutomationsShell({
@@ -1521,9 +1513,7 @@ export function AutomationsShell({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             templateId,
-            scope: attachedSessionId
-              ? { kind: "session", id: attachedSessionId }
-              : undefined,
+            scope: undefined,
           }),
         });
         const saved = await readJson<{ automation: AutomationListItem }>(response);
@@ -2663,9 +2653,7 @@ function AutomationBuilder({
                 </BuilderField>
                 <BuilderField label="Scope">
                   <div className="flex h-9 items-center rounded-md border bg-muted/20 px-3 text-sm text-muted-foreground">
-                    {attachedSessionId
-                      ? `session:${attachedSessionId}`
-                      : "current user"}
+                    current user
                   </div>
                 </BuilderField>
               </div>

@@ -9,6 +9,7 @@ import {
 } from "@/lib/db/installations";
 import { emitAndRouteAutomationEvent } from "@/app/api/automations/_lib/dispatch";
 import { startGitHubPullRequestLifecycleWorkflow } from "@/app/workflows/github-pr-lifecycle";
+import { getDefaultOrganizationId } from "@/lib/db/organizations";
 
 const installationWebhookSchema = z.object({
   action: z.string(),
@@ -63,18 +64,18 @@ function getNumber(value: unknown): number | undefined {
 
 async function getGitHubAutomationScopes(payload: unknown) {
   if (!isRecord(payload)) {
-    return [{ kind: "system" as const, id: "global" }];
+    return [{ kind: "org" as const, id: await getDefaultOrganizationId() }];
   }
 
   const installation = getNestedRecord(payload, "installation");
   const installationId = getNumber(installation?.id);
   if (!installationId) {
-    return [{ kind: "system" as const, id: "global" }];
+    return [{ kind: "org" as const, id: await getDefaultOrganizationId() }];
   }
 
   const rows = await getInstallationsByInstallationId(installationId);
   if (rows.length === 0) {
-    return [{ kind: "system" as const, id: "global" }];
+    return [{ kind: "org" as const, id: await getDefaultOrganizationId() }];
   }
 
   return rows.map((row) => ({ kind: "user" as const, id: row.userId }));

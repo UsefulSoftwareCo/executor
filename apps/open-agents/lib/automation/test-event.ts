@@ -28,18 +28,9 @@ function readRecord(record: JsonRecord, key: string): JsonRecord | undefined {
   return isRecord(value) ? value : undefined;
 }
 
-function toEventScope(
-  scope: AutomationDefinition["scope"],
-  fallbackUserId: string,
-) {
-  if (scope.kind === "external-thread") {
-    return { kind: "user" as const, id: fallbackUserId };
-  }
+function toEventScope(scope: AutomationDefinition["scope"]): AutomationEventInput["scope"] {
   return {
-    kind: scope.kind as Exclude<
-      AutomationDefinition["scope"]["kind"],
-      "external-thread"
-    >,
+    kind: scope.kind,
     id: scope.id,
   };
 }
@@ -58,15 +49,15 @@ function getDefaultEventTrigger(definition: AutomationDefinition) {
   return definition.triggers.find((trigger) => trigger.kind === "event");
 }
 
-function readScopeFromBody(body: JsonRecord | undefined) {
+function readScopeFromBody(body: JsonRecord | undefined): AutomationEventInput["scope"] | undefined {
   const scope = body ? readRecord(body, "scope") : undefined;
   const kind = scope ? readString(scope, "kind") : undefined;
   const id = scope ? readString(scope, "id") : undefined;
-  return kind && id
-    ? ({
+  return (kind === "user" || kind === "group" || kind === "org") && id
+    ? {
         kind,
         id,
-      } as AutomationEventInput["scope"])
+      }
     : undefined;
 }
 
@@ -133,7 +124,7 @@ export function buildAutomationTestEventInput({
     source: record ? readString(record, "source") ?? defaultSource : defaultSource,
     type: record ? readString(record, "type") ?? defaultType : defaultType,
     scope:
-      readScopeFromBody(record) ?? toEventScope(definition.scope, userId),
+      readScopeFromBody(record) ?? toEventScope(definition.scope),
     subject: readSubjectFromBody(record, automationId),
     actor: readActor(record, userId),
     occurredAt: record

@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import type { GithubProfile, VercelProfile } from "better-auth/social-providers";
 import { nanoid } from "nanoid";
+import { ensureUserDefaultOrganizationMembership } from "../db/organizations";
 import { authDb } from "./db";
 import { deriveAuthUsername } from "./username";
 import * as schema from "../db/auth-schema";
@@ -63,6 +64,9 @@ export const auth = betterAuth({
             username: deriveAuthUsername(user),
           },
         }),
+        after: async (user) => {
+          await ensureUserDefaultOrganizationMembership(user.id);
+        },
       },
     },
   },

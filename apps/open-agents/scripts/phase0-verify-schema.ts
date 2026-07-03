@@ -98,6 +98,11 @@ try {
     assert(indexes.has(index), `missing index ${index}`);
   }
 
+  const [systemUser] = await sql<{ id: string }[]>`
+    select id from users where id = 'open-agents-system'
+  `;
+  assert(systemUser, "missing open-agents-system user");
+
   const [org] = await sql<{ id: string; slug: string; name: string }[]>`
     select id, slug, name from organizations where slug = 'goaugment'
   `;
@@ -153,11 +158,22 @@ try {
   `);
   assert(legacyEventScopes === 0, `found ${legacyEventScopes} automation events with legacy scopes`);
 
+  const systemAdminCount = await count(sql`
+    select count(*)
+    from organization_members
+    where org_id = ${org.id}
+      and user_id = 'open-agents-system'
+      and role = 'admin'
+  `);
+  assert(systemAdminCount === 1, "open-agents-system must be an org admin");
+
   const summary = {
     orgId: org.id,
+    systemUserId: systemUser.id,
     users: userCount,
     organizationMembers: memberCount,
     organizationAdmins: adminCount,
+    systemAdminMemberships: systemAdminCount,
     sessionsWithoutScope: nullSessionScopes,
     defaultOrgLibraryRows,
     legacyAutomationDefinitionScopes: legacyDefinitionScopes,

@@ -20,10 +20,7 @@ function toDedupeKey(request: Request, automationId: string, bodyText: string): 
   );
 }
 
-function toEventScope(scope: AutomationDefinition["scope"], automationId: string) {
-  if (scope.kind === "external-thread") {
-    return { kind: "automation" as const, id: automationId };
-  }
+function toEventScope(scope: AutomationDefinition["scope"]) {
   return { kind: scope.kind, id: scope.id };
 }
 
@@ -149,7 +146,7 @@ export async function POST(request: Request, context: RouteContext) {
   const result = await emitAndRouteAutomationEvent({
     source: request.headers.get("x-open-agents-event-source") ?? "webhook",
     type: request.headers.get("x-open-agents-event-type") ?? "webhook.received",
-    scope: toEventScope(definition.scope, automation.id),
+    scope: toEventScope(definition.scope),
     subject,
     actor: {
       kind: "public-webhook",

@@ -3,19 +3,10 @@ import { getStepMetadata } from "workflow";
 import { start } from "workflow/api";
 import { automationRouterWorkflow } from "./automation-router";
 
-type AutomationScopeKind =
-  | "system"
-  | "user"
-  | "group"
-  | "org"
-  | "thread"
-  | "session"
-  | "repo"
-  | "automation"
-  | "external-thread";
+type AutomationScopeKind = "user" | "group" | "org";
 
 type EventScope = {
-  kind: Exclude<AutomationScopeKind, "external-thread">;
+  kind: AutomationScopeKind;
   id: string;
 };
 
@@ -61,13 +52,16 @@ type SchedulerEmission = {
   blockedPolls: number;
 };
 
-function toEventScope(
-  definition: AutomationDefinitionLike,
-): EventScope {
-  if (definition.scope.kind === "external-thread") {
-    return { kind: "user", id: definition.owner.id };
-  }
+function toEventScope(definition: AutomationDefinitionLike): EventScope {
   return { kind: definition.scope.kind, id: definition.scope.id };
+}
+
+function isEventScope(value: unknown): value is EventScope {
+  return (
+    isRecord(value) &&
+    (value.kind === "user" || value.kind === "group" || value.kind === "org") &&
+    typeof value.id === "string"
+  );
 }
 
 function resolveIdentityUserId(definition: AutomationDefinitionLike): string {
@@ -196,7 +190,7 @@ function toPollEventInputs(params: {
     return params.value.events.filter(isRecord).map((event, index) => ({
       source: typeof event.source === "string" ? event.source : "poll",
       type: typeof event.type === "string" ? event.type : "automation.poll.event",
-      scope: isRecord(event.scope) ? event.scope : toEventScope(params.definition),
+      scope: isEventScope(event.scope) ? event.scope : toEventScope(params.definition),
       subject: isRecord(event.subject)
         ? event.subject
         : { kind: "poll", id: params.stateKey },
@@ -370,8 +364,8 @@ async function emitDueScheduleEventsStep(nowIso: string): Promise<SchedulerEmiss
             typeof eventInput.type === "string"
               ? eventInput.type
               : "automation.schedule.due",
-          scope: isRecord(eventInput.scope)
-            ? (eventInput.scope as { kind: EventScope["kind"]; id: string })
+          scope: isEventScope(eventInput.scope)
+            ? eventInput.scope
             : toEventScope(item.definition),
           subject: isRecord(eventInput.subject)
             ? (eventInput.subject as { kind: string; id: string })

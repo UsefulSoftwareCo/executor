@@ -26,7 +26,7 @@ const createAutomationSchema = z.object({
     .optional(),
   scope: z
     .object({
-      kind: z.enum(["user", "system", "session", "repo"]),
+      kind: z.enum(["user", "group", "org"]),
       id: z.string().min(1),
     })
     .optional(),

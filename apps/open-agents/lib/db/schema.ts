@@ -380,16 +380,7 @@ export type AutomationDefinitionJson = {
   description?: string;
   enabled?: boolean;
   scope: {
-    kind:
-      | "system"
-      | "user"
-      | "group"
-      | "org"
-      | "thread"
-      | "session"
-      | "repo"
-      | "automation"
-      | "external-thread";
+    kind: "user" | "group" | "org";
     id: string;
   };
   owner: {
@@ -419,19 +410,7 @@ export const automationDefinitions = pgTable(
   {
     id: text("id").primaryKey(),
     currentVersionId: text("current_version_id"),
-    scopeKind: text("scope_kind", {
-      enum: [
-        "system",
-        "user",
-        "group",
-        "org",
-        "thread",
-        "session",
-        "repo",
-        "automation",
-        "external-thread",
-      ],
-    }).notNull(),
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] }).notNull(),
     scopeId: text("scope_id").notNull(),
     ownerKind: text("owner_kind", {
       enum: ["user", "app-bot", "service-account"],
@@ -477,9 +456,7 @@ export const automationEvents = pgTable(
     source: text("source").notNull(),
     type: text("type").notNull(),
     version: integer("version").notNull().default(1),
-    scopeKind: text("scope_kind", {
-      enum: ["system", "user", "group", "org", "thread", "session", "repo", "automation"],
-    }).notNull(),
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] }).notNull(),
     scopeId: text("scope_id").notNull(),
     subjectKind: text("subject_kind").notNull(),
     subjectId: text("subject_id").notNull(),
