@@ -210,8 +210,27 @@ function assertServiceConfig(config: Record<string, unknown>): void {
     }
   }
 
-  if (config.rewrites !== undefined) {
-    fail("vercel.json must not define rewrites; withEve routes Eve callbacks under its mounted service");
+  const rewrites = config.rewrites;
+  if (!Array.isArray(rewrites) || rewrites.length !== 1) {
+    fail("vercel.json must define exactly one web workflow rewrite");
+  }
+
+  const [workflowRewrite] = rewrites;
+  if (!workflowRewrite || typeof workflowRewrite !== "object" || Array.isArray(workflowRewrite)) {
+    fail("vercel.json rewrites[0] must be an object");
+  }
+
+  const destination = (workflowRewrite as Record<string, unknown>).destination;
+  const service =
+    destination && typeof destination === "object" && !Array.isArray(destination)
+      ? (destination as Record<string, unknown>).service
+      : undefined;
+
+  if (
+    (workflowRewrite as Record<string, unknown>).source !== "/.well-known/workflow/(.*)" ||
+    service !== "web"
+  ) {
+    fail("vercel.json must route /.well-known/workflow/(.*) to the web service, not Eve");
   }
 }
 
