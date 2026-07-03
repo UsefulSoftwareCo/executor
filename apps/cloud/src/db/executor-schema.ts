@@ -3,10 +3,10 @@ import {
   varchar,
   text,
   json,
+  bigint,
   boolean,
   timestamp,
   uniqueIndex,
-  bigint,
 } from "drizzle-orm/pg-core";
 import { createId } from "@executor-js/fumadb/cuid";
 
@@ -17,8 +17,9 @@ export const integration = pgTable(
     plugin_id: text("plugin_id").notNull(),
     name: text("name"),
     description: text("description"),
-    config_revised_at: bigint("config_revised_at", { mode: "bigint" }),
     config: json("config"),
+    health_check: json("health_check"),
+    config_revised_at: bigint("config_revised_at", { mode: "bigint" }),
     can_remove: boolean("can_remove").notNull().default(true),
     can_refresh: boolean("can_refresh").notNull().default(false),
     created_at: timestamp("created_at").notNull(),
@@ -42,6 +43,7 @@ export const connection = pgTable(
     item_ids: json("item_ids").notNull(),
     identity_label: text("identity_label"),
     description: text("description"),
+    last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
@@ -162,7 +164,7 @@ export const definition = pgTable(
     integration: varchar("integration", { length: 255 }).notNull(),
     connection: varchar("connection", { length: 255 }).notNull(),
     plugin_id: text("plugin_id").notNull(),
-    name: text("name").notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
     schema: json("schema").notNull(),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })

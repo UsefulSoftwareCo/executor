@@ -76,6 +76,25 @@ export const integrationAtom = (slug: IntegrationSlug) =>
     (integrations) => integrations.find((i) => i.slug === slug) ?? null,
   );
 
+/** The integration's currently declared health check (null when none is set).
+ *  Backs the editor's "current selection" and the status surfaces deciding
+ *  whether a connection can be probed at all. */
+export const integrationHealthCheckAtom = (slug: IntegrationSlug) =>
+  ExecutorApiClient.query("integrations", "healthCheckGet", {
+    params: { slug },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.healthChecks],
+  });
+
+/** Operations the user can pick as the health check, server-ranked
+ *  (non-destructive + fewest-required-args first). Backs the editor picker. */
+export const integrationHealthCheckCandidatesAtom = (slug: IntegrationSlug) =>
+  ExecutorApiClient.query("integrations", "healthCheckCandidates", {
+    params: { slug },
+    timeToLive: "5 minutes",
+    reactivityKeys: [ReactivityKey.integrations],
+  });
+
 // ---------------------------------------------------------------------------
 // Connections — owner-scoped credentials (was `secrets` + `connections`).
 // ---------------------------------------------------------------------------
@@ -147,11 +166,31 @@ export const updateConnection = ExecutorApiClient.mutation("connections", "updat
 
 export const refreshConnection = ExecutorApiClient.mutation("connections", "refresh");
 
+/** Probe a SAVED connection's health on demand (the "Check now" button). The
+ *  server persists the verdict on the connection row (`last_health`), so a check
+ *  that changes the verdict must invalidate the connections cache or a later
+ *  read within the atom TTL serves the pre-check state. Callers pass
+ *  `reactivityKeys: connectionCheckKeys` (see `use-connection-health.ts` for the
+ *  manual-vs-automatic split that keeps the automatic path from churning the
+ *  cache on every load). */
+export const checkConnectionHealth = ExecutorApiClient.mutation("connections", "checkHealth");
+
+/** Validate an IN-FLIGHT credential without saving it (the key-first connect
+ *  flow). Returns the probe result the UI derives a connection name from. */
+export const validateConnection = ExecutorApiClient.mutation("connections", "validate");
+
 export const updateIntegration = ExecutorApiClient.mutation("integrations", "update");
 
 export const removeIntegration = ExecutorApiClient.mutation("integrations", "remove");
 
 export const detectIntegration = ExecutorApiClient.mutation("integrations", "detect");
+
+/** Set or clear an integration's declared health check.
+ *  Pass `reactivityKeys: healthCheckWriteKeys` at the call site. */
+export const setIntegrationHealthCheck = ExecutorApiClient.mutation(
+  "integrations",
+  "healthCheckSet",
+);
 
 // ---------------------------------------------------------------------------
 // OAuth — v2 flow. `start` runs a registered client to mint a connection for an
@@ -327,6 +366,7 @@ export const addConnectionOptimistic = Atom.family((owner: Owner) =>
             oauthClient: null,
             oauthClientOwner: null,
             oauthScope: null,
+            lastHealth: null,
           };
           return [optimistic, ...rows];
         }),

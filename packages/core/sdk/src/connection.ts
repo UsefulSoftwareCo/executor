@@ -8,6 +8,7 @@ import type {
   ProviderItemId,
   ProviderKey,
 } from "./ids";
+import type { HealthCheckResult, HealthCheckSpec } from "./health-check";
 
 /* A Connection is THE saved credential — secret, account, and connection are one
  * concept — bound to exactly ONE integration (born wired; there is no unwired
@@ -53,6 +54,10 @@ export interface Connection {
    *  declared scopes to decide whether this connection must reconnect to grant
    *  newly-needed access. Null for static creds / when the AS omitted `scope`. */
   readonly oauthScope?: string | null;
+  /** Last health-check verdict, persisted by every `checkHealth` run. Answers
+   *  "has this expired?" at a glance in the connections list without probing.
+   *  Null/absent = never checked. */
+  readonly lastHealth?: HealthCheckResult | null;
 }
 
 /** Identify one connection — unique by (owner, integration, name). */
@@ -93,6 +98,19 @@ export type CreateConnectionInput = {
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
   readonly description?: string | null;
+} & ConnectionValueInput;
+
+/** Validate an in-flight credential WITHOUT saving it (the key-first connect
+ *  flow). Resolves the pasted value(s) the same way `create` would, then runs
+ *  the integration's declared health check so the UI can confirm the key works
+ *  and derive a connection name from the returned identity before anything is
+ *  persisted. `spec` overrides the integration's declared check (used by the
+ *  editor to preview a candidate against a live key). */
+export type ValidateConnectionInput = {
+  readonly owner: Owner;
+  readonly integration: IntegrationSlug;
+  readonly template: AuthTemplateSlug;
+  readonly spec?: HealthCheckSpec;
 } & ConnectionValueInput;
 
 /** Edit a connection's user-curated metadata. Only the provided fields change;

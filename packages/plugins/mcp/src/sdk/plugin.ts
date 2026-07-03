@@ -17,6 +17,8 @@ import {
   tool,
   ToolResult,
   type AuthMethodDescriptor,
+  classifyHttpStatus,
+  type HealthCheckResult,
   type Integration,
   type IntegrationConfig,
   type IntegrationRecord,
@@ -65,6 +67,30 @@ import {
 } from "./types";
 
 const MCP_PLUGIN_ID = "mcp" as const;
+
+/** Classify a failed liveness probe. The structural `httpStatus` carried on the
+ *  connect error is the primary signal (401/403 = auth wall = expired); message
+ *  substrings are only a fallback for causes with no status (OAuth
+ *  re-authorization, servers whose auth rejection isn't an HTTP status).
+ *  Anything else (server down, wrong transport) is degraded, not a credential
+ *  problem. */
+const mcpLivenessFailureStatus = (failure: {
+  readonly message: string;
+  readonly httpStatus?: number;
+}): "expired" | "degraded" => {
+  if (failure.httpStatus !== undefined) {
+    // A failed connect can't be healthy; the shared classifier decides
+    // expired vs degraded so "which statuses mean expired" lives in one place.
+    const classified = classifyHttpStatus(failure.httpStatus);
+    return classified === "expired" ? "expired" : "degraded";
+  }
+  const lower = failure.message.toLowerCase();
+  const authWalled =
+    lower.includes("oauth re-authorization") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden");
+  return authWalled ? "expired" : "degraded";
+};
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
   const slug = value
@@ -1293,6 +1319,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           ),
         ),
         Effect.catchTag("McpConnectionError", (error) => {
+          // A 401/403 during the connect handshake is the same auth wall as a
+          // rejected tool call: tell the user the credential is the problem
+          // (expired token / missing scope), not a generic connection failure.
+          if (error.httpStatus === 401 || error.httpStatus === 403) {
+            return Effect.succeed(
+              mcpInvocationAuthFailure({
+                status: error.httpStatus,
+                integration: String(credential.integration),
+                connection: String(credential.connection),
+              }),
+            );
+          }
           return Effect.succeed(
             authToolFailure({
               code: "connection_rejected",
@@ -1418,6 +1456,54 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }
         return out;
       }),
+
+    // Liveness-only health check. MCP has no usable identity source (no
+    // id_token/userinfo, no standard whoami), so this answers "is this
+    // credential still alive?" by dialing the server and listing tools (the same
+    // path resolveTools uses); identity stays the user-supplied connection label.
+    // Only checkHealth is implemented (no candidates/describe/set), so the
+    // operation/identity editor stays hidden while the status dot + "Check now"
+    // light up.
+    checkHealth: ({ ctx, credential }) =>
+      Effect.gen(function* () {
+        const parsed = parseMcpIntegrationConfig(credential.config);
+        if (!parsed) {
+          return { status: "unknown" as const, checkedAt: Date.now() } satisfies HealthCheckResult;
+        }
+        const connector = yield* buildConnectorInput(
+          parsed,
+          credential.values,
+          credential.template === null ? null : String(credential.template),
+          allowStdio,
+          options?.httpClientLayer ?? ctx.httpClientLayer,
+        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+
+        return yield* discoverTools(connector).pipe(
+          Effect.map(
+            () =>
+              ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,
+          ),
+          Effect.catchTag("McpToolDiscoveryError", (error) =>
+            Effect.succeed({
+              status: mcpLivenessFailureStatus(error),
+              checkedAt: Date.now(),
+              ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+              detail: error.message,
+            } satisfies HealthCheckResult),
+          ),
+        );
+      }).pipe(
+        // buildConnectorInput rejects (e.g. stdio disabled / missing config).
+        Effect.catchTag("McpConnectionError", (error) =>
+          Effect.succeed({
+            status: mcpLivenessFailureStatus(error),
+            checkedAt: Date.now(),
+            ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+            detail: error.message,
+          } satisfies HealthCheckResult),
+        ),
+        Effect.withSpan("mcp.plugin.check_health"),
+      ),
 
     describeAuthMethods: describeMcpAuthMethods,
     describeIntegrationDisplay: describeMcpIntegrationDisplay,

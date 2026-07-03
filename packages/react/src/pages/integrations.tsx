@@ -38,6 +38,7 @@ import {
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
+import { IntegrationHealthSummary } from "../components/integration-health-summary";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
@@ -467,6 +468,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
                       <SummaryComponent sourceId={slug} />
                     </Suspense>
                   )}
+                  <IntegrationHealthSummary integration={integration.slug} />
                 </CardStackEntryActions>
               </Link>
             </CardStackEntry>

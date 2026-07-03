@@ -92,6 +92,7 @@ export type {
   ConnectionValueInput,
   CreateConnectionInput,
   UpdateConnectionInput,
+  ValidateConnectionInput,
 } from "./connection";
 export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 
@@ -100,6 +101,26 @@ export type { CredentialProvider, ProviderEntry } from "./provider";
 
 // Public projections / detection.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+
+// Health-check vocabulary (pure Schema + helpers).
+export {
+  HealthStatus,
+  HealthCheckSpec,
+  HealthCheckResult,
+  HealthCheckResponseSample,
+  HealthCheckCandidate,
+  HealthCheckCandidateParameter,
+  HealthCheckResponseField,
+  classifyHttpStatus,
+  extractIdentity,
+  compareHealthCheckCandidates,
+  candidateIdentityTier,
+  sortHealthCheckCandidatesByIdentity,
+  projectResponseFields,
+  extractResponseFields,
+  identityPathTier,
+  rankResponseSample,
+} from "./health-check";
 
 // Core schema.
 export {
@@ -297,6 +318,8 @@ export {
   type ResolveToolsInput,
   type ResolveToolsResult,
   type ToolInvocationCredential,
+  type HealthCheckInput,
+  type HealthCheckCandidatesInput,
   type Elicit,
   definePlugin,
   tool,

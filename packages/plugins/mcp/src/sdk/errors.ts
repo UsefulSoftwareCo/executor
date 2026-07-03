@@ -8,6 +8,10 @@ export class McpConnectionError extends Schema.TaggedErrorClass<McpConnectionErr
   {
     transport: Schema.String,
     message: Schema.String,
+    /** HTTP status the handshake observed (e.g. 401 on an auth wall), when the
+     *  transport surfaced one. Structural, so the liveness classifier and the
+     *  auto-transport fallback never string-match the message. */
+    httpStatus: Schema.optional(Schema.Number),
   },
   { httpApiStatus: 400 },
 ) {}
@@ -17,6 +21,8 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
   {
     stage: Schema.Literals(["connect", "list_tools"]),
     message: Schema.String,
+    /** HTTP status from the underlying connect failure, when known. */
+    httpStatus: Schema.optional(Schema.Number),
   },
   { httpApiStatus: 400 },
 ) {}

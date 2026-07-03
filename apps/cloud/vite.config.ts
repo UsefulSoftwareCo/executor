@@ -65,6 +65,32 @@ export default defineConfig(({ command, mode }) => {
     delete (publicEnv as Record<string, string | undefined>).VITE_PUBLIC_OTLP_TRACES_URL;
   }
 
+  // Deps vite only discovers once a lazy-loaded React chunk actually renders
+  // (e.g. opening the MCP/OpenAPI "add source" flow). Discovering them mid-run
+  // forces a re-optimize + full program reload; in workerd (apps/cloud's SSR
+  // worker) each reload stacks a new isolate's heap on top of the last one
+  // without freeing it, so a handful of reloads exhausts the worker's heap
+  // limit and crashes the dev server. Pre-bundling them at boot means vite
+  // never discovers them mid-run, so it never reloads. Keep this list scoped
+  // to deps actually imported by UI code (grep `from "effect/` under
+  // packages/react/src and packages/plugins/*/src/react, plus js-yaml pulled
+  // in via packages/plugins/openapi/src/sdk) rather than including the world.
+  // js-yaml is a transitive dep (via @executor-js/plugin-openapi), not hoisted
+  // into apps/cloud/node_modules under bun's isolated install, so a plain
+  // "js-yaml" specifier fails to resolve here and silently falls out of the
+  // pre-bundle. The "<pkg> > <dep>" syntax resolves it starting from that
+  // package's own node_modules instead.
+  const lateDiscoveredDeps = [
+    "effect/Match",
+    "effect/Predicate",
+    "effect/Exit",
+    "effect/Option",
+    "effect/Cause",
+    "effect/Data",
+    "effect/Schema",
+    "@executor-js/plugin-openapi > js-yaml",
+  ];
+
   return {
     define: Object.fromEntries(
       Object.entries(publicEnv)
@@ -81,6 +107,22 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     resolve: { tsconfigPaths: true },
+    // Client-side pre-bundle. See lateDiscoveredDeps comment above.
+    optimizeDeps: {
+      include: lateDiscoveredDeps,
+    },
+    // SSR/worker-side pre-bundle for the same deps, keyed under the "ssr"
+    // environment name that `cloudflare({ viteEnvironment: { name: "ssr" } })`
+    // below uses. The cloudflare plugin sets its own environments.ssr.optimizeDeps
+    // (entries/exclude for worker externals); vite merges include arrays rather
+    // than replacing them, so this only adds to that, it doesn't fight it.
+    environments: {
+      ssr: {
+        optimizeDeps: {
+          include: lateDiscoveredDeps,
+        },
+      },
+    },
     plugins: [
       devCrashGuard(),
       tailwindcss(),

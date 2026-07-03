@@ -39,8 +39,10 @@ import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
 import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileOpenApiSpec,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
@@ -1012,6 +1014,19 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
     describeAuthMethods: describeOpenApiAuthMethods,
     describeIntegrationDisplay: describeOpenApiIntegrationDisplay,
+
+    // Health checks: the declared liveness/identity probe. Core owns the spec
+    // storage; the plugin only enumerates candidates and runs probes.
+    listHealthCheckCandidates: (input) =>
+      listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+    checkHealth: (input) =>
+      checkHealthOpenApi({
+        ctx: input.ctx,
+        integration: input.integration,
+        credential: input.credential,
+        spec: input.spec,
+        httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
+      }),
 
     // Produce one tool per spec operation. Spec-derived, identical for every
     // connection on the integration - so `getValue` is never called here. The

@@ -19,7 +19,9 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
+  listHealthCheckCandidatesOpenApi,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
@@ -197,6 +199,22 @@ const makeMicrosoftPluginExtension = (
           return yield* persistGraphOperations(graph, String(slug), specHash);
         }),
       );
+
+      // Default the health check to `GET /me` (the canonical Graph identity
+      // endpoint) when the selected workloads include it, so connections report
+      // alive/expired + who-am-I out of the box. The operations were streamed
+      // to storage above, so find the binding there. Best-effort: a Graph
+      // selection without /me just leaves the check unconfigured (the editor
+      // remains available).
+      const meOperation = (yield* ctx.storage.listOperations(String(slug))).find(
+        (op) => op.binding.method.toLowerCase() === "get" && op.binding.pathTemplate === "/me",
+      );
+      if (meOperation) {
+        yield* ctx.core.integrations.setHealthCheck(slug, {
+          operation: meOperation.toolName,
+          identityField: "userPrincipalName",
+        });
+      }
 
       return { slug, toolCount: persisted.toolCount };
     });
@@ -378,6 +396,19 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
       ctx,
       integration: String(integration),
       toolRows,
+    }),
+
+  // Health checks reuse the OpenAPI backing (same store). GET /me is
+  // auto-defaulted at addGraph when present; core owns the stored spec.
+  listHealthCheckCandidates: (input) =>
+    listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+  checkHealth: (input) =>
+    checkHealthOpenApi({
+      ctx: input.ctx,
+      integration: input.integration,
+      credential: input.credential,
+      spec: input.spec,
+      httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
     }),
 
   removeConnection: () => Effect.void,

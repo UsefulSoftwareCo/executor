@@ -8,6 +8,11 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  identityPathTier,
+  rankResponseSample,
+  type HealthCheckCandidate,
+  type HealthCheckResult,
+  type HealthCheckSpec,
   type OAuthClientSummary,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -18,15 +23,25 @@ import {
   addConnectionOptimistic,
   connectionsAllAtom,
   createOAuthClientOptimistic,
+  integrationHealthCheckAtom,
+  integrationHealthCheckCandidatesAtom,
   oauthClientsOptimisticAtom,
   probeOAuth,
   providerItemsAtom,
   providersAtom,
   registerDynamicOAuthClient,
   removeOAuthClientOptimistic,
+  setIntegrationHealthCheck,
   startOAuth,
+  validateConnection,
 } from "../api/atoms";
-import { connectionWriteKeys, oauthClientWriteKeys } from "../api/reactivity-keys";
+import {
+  connectionWriteKeys,
+  healthCheckWriteKeys,
+  oauthClientWriteKeys,
+} from "../api/reactivity-keys";
+import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { messageFromExit } from "../api/error-reporting";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
@@ -73,7 +88,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
-import { ChevronDown, PlusIcon, XIcon } from "lucide-react";
+import { ChevronDown, EyeIcon, EyeOffIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -156,6 +171,25 @@ function isOnePasswordRegistered(
   });
 }
 
+/** Constant-label reveal control (aria-pressed carries the state, per the
+ *  screen-reader guidance against relabeling toggles). Masked keys make typos
+ *  invisible; every credential field pairs with one of these. */
+function RevealKeyButton(props: { readonly revealed: boolean; readonly onToggle: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label="Show key"
+      aria-pressed={props.revealed}
+      className="shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
+      onClick={props.onToggle}
+    >
+      {props.revealed ? <EyeOffIcon /> : <EyeIcon />}
+    </Button>
+  );
+}
+
 function PasteCredentialInputs(props: {
   readonly inputs: readonly CredentialInput[];
   readonly singleInput: boolean;
@@ -169,6 +203,10 @@ function PasteCredentialInputs(props: {
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Record<string, string>) => void;
 }) {
+  // One reveal state for the whole group: a user checking their paste wants
+  // to see all of it, not toggle per field.
+  const [revealed, setRevealed] = useState(false);
+  const inputType = revealed ? "text" : "password";
   if (!props.singleInput) {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
@@ -182,25 +220,27 @@ function PasteCredentialInputs(props: {
                 {input.label}
               </Label>
             </div>
-            <Input
-              id={`credential-input-${input.variable}`}
-              type="password"
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              data-form-type="other"
-              placeholder={`paste ${input.label}`}
-              value={props.values[input.variable] ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                props.onChange({
-                  ...props.values,
-                  [input.variable]: e.target.value,
-                })
-              }
-              className="h-9 font-mono text-sm"
-              data-ph-block
-            />
+            <div className="flex items-center gap-1">
+              <Input
+                id={`credential-input-${input.variable}`}
+                type={inputType}
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+                value={props.values[input.variable] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onChange({
+                    ...props.values,
+                    [input.variable]: e.target.value,
+                  })
+                }
+                className="h-9 font-mono text-sm"
+                data-ph-block
+              />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
+            </div>
           </div>
         ))}
       </div>
@@ -231,40 +271,55 @@ function PasteCredentialInputs(props: {
               </span>
               {/* oxlint-disable-next-line react/forbid-elements */}
               <input
-                type="password"
+                type={inputType}
+                autoComplete="off"
+                // The key is the modal's real first input: the display name is
+                // derived from it, so this is where typing starts.
+                // oxlint-disable-next-line jsx_a11y/no-autofocus -- deliberate: the credential drives everything else in the form
+                autoFocus
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+                // No visible label or placeholder here (the affix carries the
+                // instruction visually), so the accessible name comes from
+                // aria-label instead, matching the multi-input grid's Label
+                // text one-for-one.
+                aria-label={input.label}
+                value={props.values[input.variable] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onChange({ ...props.values, [input.variable]: e.target.value })
+                }
+                className="min-w-0 flex-1 bg-transparent px-3 outline-none"
+                data-ph-block
+              />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <Input
+                type={inputType}
                 autoComplete="off"
                 data-1p-ignore
                 data-lpignore="true"
                 data-bwignore
                 data-form-type="other"
-                placeholder="token"
+                // The Label above (when labelled) has no htmlFor, so it isn't
+                // programmatically associated with this input; aria-label is
+                // the only accessible name in either case.
+                aria-label={input.label}
                 value={props.values[input.variable] ?? ""}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  props.onChange({ ...props.values, [input.variable]: e.target.value })
+                  props.onChange({
+                    ...props.values,
+                    [input.variable]: e.target.value,
+                  })
                 }
-                className="min-w-0 flex-1 bg-transparent px-3 outline-none placeholder:text-muted-foreground/60"
+                className="font-mono"
                 data-ph-block
               />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
             </div>
-          ) : (
-            <Input
-              type="password"
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              data-form-type="other"
-              placeholder={labelled ? "secret value" : "paste the value / token"}
-              value={props.values[input.variable] ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                props.onChange({
-                  ...props.values,
-                  [input.variable]: e.target.value,
-                })
-              }
-              className="font-mono"
-              data-ph-block
-            />
           )}
         </div>
       ))}
@@ -839,6 +894,192 @@ export function AddAccountModal(props: AddAccountModalProps) {
   return props.open ? <AddAccountModalView {...props} /> : null;
 }
 
+// ---------------------------------------------------------------------------
+// Key-check verdict: ONE line beside the Validate button carrying everything
+// (status dot, label, auto-picked identity, and the "change" escape hatch). It
+// shares the button's row (no reserved block, no reveal shift), and the
+// in-flight state lives only on the button's spinner.
+// ---------------------------------------------------------------------------
+/** One verdict line: status dot, label, `· identity` when healthy, `: detail`
+ *  when not. Shared by the step-2 recap and the request panel's response
+ *  status so the verdict reads identically everywhere. */
+function HealthStatusLine(props: {
+  readonly result: HealthCheckResult;
+  /** Mono + http status for the request panel; sans for the recap line. */
+  readonly variant?: "line" | "response";
+}) {
+  const { status, identity, detail, httpStatus } = props.result;
+  const healthy = status === "healthy";
+  const tone = healthy ? "text-muted-foreground" : "text-destructive";
+  const font = props.variant === "response" ? "font-mono" : "";
+  return (
+    <div className={`flex min-w-0 items-center gap-2 text-xs ${tone} ${font}`}>
+      <span
+        aria-hidden
+        className={`size-2 shrink-0 rounded-full ${HEALTH_INDICATOR_COLOR[status].dot}`}
+      />
+      {props.variant === "response" && httpStatus !== undefined ? (
+        <span className="shrink-0">{httpStatus}</span>
+      ) : null}
+      <span className="min-w-0 truncate">
+        <span className="font-medium">{HEALTH_STATUS_LABEL[status]}</span>
+        {healthy && identity ? (
+          <>
+            {" · "}
+            <span className="text-foreground">{identity}</span>
+          </>
+        ) : null}
+        {!healthy && detail ? <span className="opacity-80">: {detail}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The key check as a request/response panel: the system's code-window
+// pattern, because that is literally what this is: one hairline-framed panel
+// whose titlebar is the request line (method chip + operation + Check) and
+// whose body is the response the key actually got. The operation arrives
+// pre-seeded with the best read-only candidate and is editable in place, so
+// the user always SEES what will run without filling in a form. The response
+// renders read-only, identity fields first; the identity pick happens on
+// step 2 as the display name.
+// ---------------------------------------------------------------------------
+function RequestCheckPanel(props: {
+  readonly candidates: readonly HealthCheckCandidate[];
+  readonly selected: HealthCheckCandidate | null;
+  /** The operation in the request line (pre-seeded or user-picked). */
+  readonly operation: string;
+  readonly onOperationChange: (operation: string) => void;
+  /** Static request line for an already-configured check (no combobox). */
+  readonly configuredOperation: string | null;
+  readonly args: Record<string, string>;
+  readonly onArgChange: (name: string, value: string) => void;
+  readonly ready: boolean;
+  readonly validating: boolean;
+  readonly result: HealthCheckResult | null;
+  readonly onCheck: () => void;
+}) {
+  const { candidates, selected, operation, configuredOperation, result } = props;
+  const operationOptions = useMemo<FreeformComboboxOption[]>(
+    () =>
+      candidates
+        .filter((c) => !c.destructive)
+        .map((c) => ({
+          value: c.operation,
+          label: c.operation,
+          description: c.summary,
+        })),
+    [candidates],
+  );
+  const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
+  const healthy = result?.status === "healthy";
+  // Identity-looking fields first, then response order; capped so a chatty
+  // response can't blow the modal up (the hidden tail adds nothing, since the
+  // interesting fields rank first).
+  const { sample, hiddenCount } = useMemo(() => {
+    const full = result?.status === "healthy" ? (result.responseSample ?? []) : [];
+    const capped = rankResponseSample(full).slice(0, 8);
+    return { sample: capped, hiddenCount: full.length - capped.length };
+  }, [result]);
+  const method = configuredOperation ? "GET" : (selected?.method ?? "get").toUpperCase();
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-lg border border-border">
+      {/* Request line: METHOD operation … Check. The operation is a frameless
+      combobox so the whole line reads as one request, not a form row. */}
+      <div className="flex h-10 min-w-0 items-center bg-muted/40 pr-1.5">
+        <span className="shrink-0 select-none pl-3 pr-2.5 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          {method}
+        </span>
+        {configuredOperation ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+            {configuredOperation}
+          </span>
+        ) : (
+          <FreeformCombobox
+            id="hc-pick-operation"
+            value={operation}
+            onValueChange={props.onOperationChange}
+            options={operationOptions}
+            placeholder="pick a call"
+            emptyLabel="No matching operations"
+            disabled={props.validating}
+            className="h-10 min-w-0 flex-1 rounded-none border-0 bg-transparent shadow-none focus-within:border-0 has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent"
+            inputClassName="h-10 px-0 font-mono text-xs"
+          />
+        )}
+        <Button
+          type="button"
+          variant="secondary"
+          size="xs"
+          loading={props.validating}
+          disabled={!props.ready}
+          onClick={props.onCheck}
+          className="ml-2 shrink-0"
+        >
+          Check
+        </Button>
+      </div>
+
+      {/* Required args, only when the chosen call needs them. */}
+      {!configuredOperation && requiredParams.length > 0 ? (
+        <div className="space-y-2 border-t border-border px-3 py-2.5">
+          {requiredParams.map((param) => (
+            <div key={param.name} className="flex min-w-0 items-center gap-2.5">
+              <Label
+                htmlFor={`hc-pick-arg-${param.name}`}
+                className="w-32 shrink-0 truncate font-mono text-xs font-normal text-muted-foreground"
+              >
+                {param.name}
+              </Label>
+              <Input
+                id={`hc-pick-arg-${param.name}`}
+                value={props.args[param.name] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onArgChange(param.name, e.target.value)
+                }
+                placeholder={param.description ?? "required"}
+                disabled={props.validating}
+                className="h-7 font-mono text-xs"
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Response: status line, then a read-only view of what came back. The
+      identity pick happens on step 2 (the display name), not here. */}
+      {result && !props.validating ? (
+        <div className="border-t border-border">
+          <div className="px-3 py-2">
+            <HealthStatusLine result={result} variant="response" />
+          </div>
+          {healthy && sample.length > 0 ? (
+            // No inner scroller: nested scroll areas trap the wheel mid-modal.
+            // The modal is the one scroll context; the row cap bounds height.
+            <div className="border-t border-border px-3 py-1.5">
+              {sample.map((field) => (
+                <div
+                  key={field.path}
+                  className="flex min-w-0 items-baseline gap-2.5 py-0.5 font-mono text-xs"
+                >
+                  <span className="w-40 shrink-0 truncate text-muted-foreground">{field.path}</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground">{field.value}</span>
+                </div>
+              ))}
+              {hiddenCount > 0 ? (
+                <div className="py-0.5 font-mono text-[11px] text-muted-foreground">
+                  +{hiddenCount} more
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
@@ -882,6 +1123,27 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [credentialOrigin, setCredentialOrigin] = useState<CredentialOrigin>("paste");
   const [onePasswordItemId, setOnePasswordItemId] = useState("");
   const [label, setLabel] = useState("");
+  // Key check, probe-first: we auto-pick the top-ranked read-only zero-arg
+  // operation and the user just clicks "Check the key works": no form to fill
+  // before anything has been seen. The probe's REAL response then doubles as
+  // the identity picker (click the field that names the account), so identity
+  // is chosen from data, never guessed from a schema. `hcOperation`/`hcArgs`
+  // only carry a manual override ("change" escape hatch). All of this lives in
+  // the view, so closing the modal unmounts and resets it.
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
+  const [hcOperation, setHcOperation] = useState("");
+  const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+  // Credential methods run as a TWO-STEP wizard in the same modal: step 1 is
+  // the key + proving it works (the request/response panel sits right below
+  // the key, which stays visible and editable the whole time); step 2 is
+  // naming the connection and picking where it lives. No submodal.
+  const [wizardStep, setWizardStep] = useState<"validate" | "place">("validate");
+  // The spec a healthy candidate probe saved (the step-2 name pick upgrades it).
+  const [savedInlineSpec, setSavedInlineSpec] = useState<HealthCheckSpec | null>(null);
+  // Whether the display name was auto-filled from a probed identity (so a later
+  // probe may overwrite it, but a hand-typed name is never clobbered).
+  const nameAutofilled = useRef(false);
   // Explicit create-time choice (no ambient owner). Cloud defaults to Personal;
   // local/desktop hide the picker and save to the one local workspace.
   const [owner, setOwner] = useState<Owner>(defaultOwner);
@@ -923,6 +1185,22 @@ function AddAccountModalView(props: AddAccountModalProps) {
     mode: "promiseExit",
   });
   const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promise" });
+  const doValidate = useAtomSet(validateConnection, { mode: "promiseExit" });
+  const doSetHealthCheck = useAtomSet(setIntegrationHealthCheck, { mode: "promiseExit" });
+
+  // The integration's declared health check + its candidate operations. When a
+  // check is configured we probe against it; when not, the user picks one of the
+  // candidates inline to test the key (and we save it).
+  const healthCheckResult = useAtomValue(integrationHealthCheckAtom(integration));
+  const configuredHealthCheck = AsyncResult.isSuccess(healthCheckResult)
+    ? healthCheckResult.value
+    : null;
+  const hasHealthCheck = configuredHealthCheck !== null;
+  const candidatesResult = useAtomValue(integrationHealthCheckCandidatesAtom(integration));
+  const healthCheckCandidates = useMemo(
+    () => (AsyncResult.isSuccess(candidatesResult) ? candidatesResult.value : []),
+    [candidatesResult],
+  );
 
   // Full registered-app summaries (carry endpoints + resource the picker's
   // lightweight options omit) and the connection→app usage map that powers the
@@ -1024,6 +1302,55 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   const isOAuth = method?.kind === "oauth";
   const isNoAuth = method?.kind === "none";
+
+  // Key check (pasteable credentials only): offer it whenever the integration
+  // either has a configured check OR exposes candidate operations to test
+  // against. The request line arrives pre-seeded with the best read-only
+  // zero-argument candidate so the user SEES what will run and edits in place.
+  // Candidates arrive pre-sorted best-first (identity-aware, server-side);
+  // the seed is simply the best one that can run without arguments, falling
+  // back to the best non-destructive one.
+  const hcBestCandidate = useMemo(
+    () =>
+      healthCheckCandidates.find(
+        (candidate) => !candidate.destructive && candidate.requiredArgCount === 0,
+      ) ??
+      healthCheckCandidates.find((candidate) => !candidate.destructive) ??
+      null,
+    [healthCheckCandidates],
+  );
+  useEffect(() => {
+    if (hcBestCandidate && hcOperation.length === 0) {
+      setHcOperation(hcBestCandidate.operation);
+    }
+    // Seed once per candidate load; a user clearing the field mid-session is
+    // re-seeded only when candidates change, which is the useful behavior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hcBestCandidate]);
+  const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
+  // Step 2's display name offers the response's identity-looking fields as
+  // options (email > login > name > id); picking one also stores it as the
+  // check's identityField so future probes label the connection live.
+  const nameOptions = useMemo<FreeformComboboxOption[]>(() => {
+    const sample =
+      validationResult?.status === "healthy" ? (validationResult.responseSample ?? []) : [];
+    return rankResponseSample(sample)
+      .filter((field) => identityPathTier(field.path) !== -1)
+      .map((field) => ({
+        value: field.value,
+        label: field.value,
+        description: field.path,
+      }));
+  }, [validationResult]);
+  const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
+  const hcMissingRequired = hcRequiredParams.some(
+    (p) => (hcArgs[p.name] ?? "").trim().length === 0,
+  );
+  const canCheckKey = !isOAuth && !isNoAuth && (hasHealthCheck || healthCheckCandidates.length > 0);
+  // Pick mode's probe is runnable once an operation is chosen and its required
+  // args are filled.
+  const hcCandidateReady = hcOperation.length > 0 && !hcMissingRequired;
+
   // The distinct credential inputs the selected method needs — one per variable
   // across its placements. A single-input method yields one field (`token`); a
   // multi-input method (e.g. Datadog) yields one per key. Two placements sharing
@@ -1212,6 +1539,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     setDcrFailed(false);
     setOAuthFallbackProbe(null);
     setDcrFallbackMessage(null);
+    setWizardStep("validate");
   };
 
   // A just-created custom method joins the in-session list and is auto-selected
@@ -1266,6 +1594,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
   });
 
   const canSubmit = method != null && !submitting && credentialPayloadOrigin !== null;
+  // The two-step wizard applies to credential methods only (OAuth connects in
+  // one act; its flow is unchanged).
+  const wizardActive = !isOAuth && !isNoAuth;
+  // Continue is NEVER disabled (a disabled button hides the reason and drops
+  // out of tab order). Clicking it with no key says exactly what's missing.
+  const [continueError, setContinueError] = useState<string | null>(null);
+  // Which wizard sections show. OAuth/no-auth methods aren't a wizard, so
+  // they show everything at once.
+  const showValidateStep = !wizardActive || wizardStep === "validate";
+  const showPlaceStep = !wizardActive || wizardStep === "place";
 
   const handleSubmit = async () => {
     const payloadOrigin = createCredentialPayloadOrigin({
@@ -1304,6 +1642,122 @@ function AddAccountModalView(props: AddAccountModalProps) {
     }
     toast.success("Connection added");
     close();
+  };
+
+  // A pasted credential (or the picked operation) changed; the prior verdict is
+  // stale. Clear it so the status line doesn't show a result for a key/operation
+  // that is no longer what's in the form.
+  const clearKeyCheck = (): void => {
+    if (validationResult !== null) setValidationResult(null);
+    if (savedInlineSpec !== null) setSavedInlineSpec(null);
+    if (continueError !== null) setContinueError(null);
+  };
+
+  // Check the key works: probe the pasted credential WITHOUT saving the
+  // connection. When the integration has a configured health check we run it;
+  // otherwise we run the inline-picked candidate and, if it comes back healthy,
+  // save it as the integration's health check (so it's configured "then").
+  // Probe the pasted credential WITHOUT saving the connection. With a
+  // configured check the panel's Check runs this directly; with none it runs
+  // via handleCandidateProbe, which drafts a spec from the picked candidate.
+  const handleValidate = async (draftSpec?: HealthCheckSpec) => {
+    const payloadOrigin = createCredentialPayloadOrigin({
+      origin: credentialOrigin,
+      inputs: credentialInputs,
+      values,
+      onePasswordItemId,
+      singleInput,
+    });
+    if (!method || payloadOrigin === null || validating) return;
+    setValidating(true);
+    const exit = await doValidate({
+      payload: {
+        owner,
+        integration,
+        template: method.template,
+        ...(draftSpec ? { spec: draftSpec } : {}),
+        ...("from" in payloadOrigin
+          ? { from: payloadOrigin.from }
+          : { values: payloadOrigin.values }),
+      },
+    });
+    setValidating(false);
+    if (Exit.isFailure(exit)) {
+      setValidationResult(null);
+      toast.error(messageFromExit(exit, "Couldn't check the key"));
+      return;
+    }
+    const result = exit.value;
+    setValidationResult(result);
+    // A drafted candidate spec that probes healthy becomes the integration's
+    // health check, so the editor + status surfaces pick it up; the step-2
+    // name pick can upgrade it with an identity field after.
+    if (draftSpec && result.status === "healthy") {
+      const saved = await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec: draftSpec },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+      if (Exit.isSuccess(saved)) {
+        setSavedInlineSpec(draftSpec);
+      } else {
+        // The key is healthy but the spec did NOT persist: say so, or the
+        // user walks away believing the check is configured.
+        toast.error(messageFromExit(saved, "The key works, but saving the health check failed"));
+      }
+    }
+    // Derive the connection name from the probed identity, unless the user
+    // hand-typed one (only fill when empty or a prior auto-fill). Read the
+    // CURRENT label via the functional updater, not the closure's snapshot:
+    // the user may have typed a name while the probe was in flight, and a
+    // hand-typed name is never clobbered.
+    const probedIdentity = result.identity?.trim();
+    if (result.status === "healthy" && probedIdentity && probedIdentity.length > 0) {
+      setLabel((current) => {
+        if (current.trim().length > 0 && !nameAutofilled.current) return current;
+        nameAutofilled.current = true;
+        return probedIdentity;
+      });
+    }
+  };
+
+  // No configured check: build a draft spec from the picked candidate and
+  // probe with it.
+  const handleCandidateProbe = async () => {
+    if (!hcCandidateReady) return;
+    const argEntries = Object.entries(hcArgs)
+      .map(([key, value]) => [key, value.trim()] as const)
+      .filter(([, value]) => value.length > 0);
+    await handleValidate({
+      operation: hcOperation,
+      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+    });
+  };
+
+  // The user clicked a field in the probe's response: that field IS the
+  // identity. Upgrade the just-saved spec with it, and (unless hand-typed)
+  // adopt its value as the display name: it's the account label, live.
+  const handlePickIdentity = async (path: string, value: string) => {
+    if (savedInlineSpec) {
+      const upgraded: HealthCheckSpec = { ...savedInlineSpec, identityField: path };
+      const saved = await doSetHealthCheck({
+        params: { slug: integration },
+        payload: { spec: upgraded },
+        reactivityKeys: healthCheckWriteKeys,
+      });
+      if (Exit.isSuccess(saved)) {
+        setSavedInlineSpec(upgraded);
+      } else {
+        toast.error(messageFromExit(saved, "Couldn't save the identity field"));
+        return;
+      }
+    }
+    setValidationResult((current) => (current ? { ...current, identity: value } : current));
+    setLabel((current) => {
+      if (current.trim().length > 0 && !nameAutofilled.current) return current;
+      nameAutofilled.current = true;
+      return value;
+    });
   };
 
   const handleOAuthConnect = async () => {
@@ -1555,8 +2009,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // Non-modal for the same reason as the health-check editor sheet: a modal
+    // dialog's react-remove-scroll locks the wheel to the dialog subtree, so
+    // the operation combobox's PORTALED popup (and the modal body while it is
+    // open) cannot scroll. The overlay still dims and outside-click still
+    // closes; the portaled-popup guard in DialogContent keeps option clicks
+    // from dismissing.
+    <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
+        forceOverlay
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing
@@ -1679,7 +2140,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Add connection · {integrationName}</DialogTitle>
+              <DialogTitle>
+                Add connection · {integrationName}
+                {wizardActive ? (
+                  <span className="ml-2 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    Step {wizardStep === "validate" ? 1 : 2} of 2
+                  </span>
+                ) : null}
+              </DialogTitle>
               <DialogDescription>
                 {ownerDisplay.showOwnerLabels
                   ? "A connection is a saved way to use this integration, owned by you or the workspace."
@@ -1688,26 +2156,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             </DialogHeader>
 
             <div className="flex w-full min-w-0 flex-col gap-5">
-              <div className="space-y-2">
-                <StepHeader
-                  index={1}
-                  label="Display name"
-                  hint="how you'll tell accounts apart"
-                  htmlFor="connection-name"
-                />
-                <Input
-                  id="connection-name"
-                  placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
-                  value={label}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  This connection will be callable as{" "}
-                  <span className="font-mono text-foreground">{String(callableName)}</span>.
-                </p>
-              </div>
-
-              {(!dcrActive || createCustomMethod) && (
+              {(!dcrActive || createCustomMethod) && showValidateStep && (
                 <Tabs
                   value={methodId}
                   onValueChange={selectMethod}
@@ -1795,7 +2244,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
                       {!isNoAuth && (
                         <div className="space-y-2">
-                          <StepHeader index={2} label={authStepLabel} />
+                          <StepHeader index={1} label={authStepLabel} />
 
                           {isOAuth && method ? (
                             cimdActive ? (
@@ -2023,22 +2472,31 @@ function AddAccountModalView(props: AddAccountModalProps) {
                               </div>
                             )
                           ) : (
-                            <CredentialValueFields
-                              inputs={credentialInputs}
-                              singleInput={singleInput}
-                              showLabels={isEnvMethod}
-                              affix={singleCredentialAffix}
-                              allowExternalProvider={!isEnvMethod}
-                              values={values}
-                              onValuesChange={setValues}
-                              origin={credentialOrigin}
-                              onOriginChange={(next) => {
-                                setCredentialOrigin(next);
-                                if (next === "paste") setOnePasswordItemId("");
-                              }}
-                              onePasswordItemId={onePasswordItemId}
-                              onOnePasswordItemIdChange={setOnePasswordItemId}
-                            />
+                            <div className="space-y-2">
+                              <CredentialValueFields
+                                inputs={credentialInputs}
+                                singleInput={singleInput}
+                                showLabels={isEnvMethod}
+                                affix={singleCredentialAffix}
+                                allowExternalProvider={!isEnvMethod}
+                                values={values}
+                                onValuesChange={(next) => {
+                                  setValues(next);
+                                  clearKeyCheck();
+                                }}
+                                origin={credentialOrigin}
+                                onOriginChange={(next) => {
+                                  setCredentialOrigin(next);
+                                  if (next === "paste") setOnePasswordItemId("");
+                                  clearKeyCheck();
+                                }}
+                                onePasswordItemId={onePasswordItemId}
+                                onOnePasswordItemIdChange={(next) => {
+                                  setOnePasswordItemId(next);
+                                  clearKeyCheck();
+                                }}
+                              />
+                            </div>
                           )}
                           {isOAuth && oauthPopup.error ? (
                             <p className="text-xs text-destructive">{oauthPopup.error}</p>
@@ -2050,6 +2508,124 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 </Tabs>
               )}
 
+              {/* The key check, as one request/response panel below the tabs.
+              Always visible for credential methods: the request line shows
+              exactly what will run (pre-seeded with the best identity-bearing
+              read-only call, editable in place), Check runs it, and the
+              response renders read-only (the identity pick happens on step 2
+              as the display name). */}
+              {showValidateStep && canCheckKey ? (
+                <div className="space-y-1.5">
+                  <StepHeader
+                    index={2}
+                    label="Check the key works"
+                    hint="runs one read-only call with your key, saved as this integration's health check"
+                  />
+                  <RequestCheckPanel
+                    candidates={healthCheckCandidates}
+                    selected={hcSelected}
+                    operation={hcOperation}
+                    onOperationChange={(next) => {
+                      setHcOperation(next);
+                      setHcArgs({});
+                      clearKeyCheck();
+                    }}
+                    configuredOperation={configuredHealthCheck?.operation ?? null}
+                    args={hcArgs}
+                    onArgChange={(name, value) => {
+                      setHcArgs((prev) => ({ ...prev, [name]: value }));
+                      clearKeyCheck();
+                    }}
+                    ready={
+                      credentialPayloadOrigin !== null &&
+                      !validating &&
+                      (hasHealthCheck || hcCandidateReady)
+                    }
+                    validating={validating}
+                    result={validationResult}
+                    onCheck={() => {
+                      if (hasHealthCheck) {
+                        void handleValidate();
+                      } else {
+                        void handleCandidateProbe();
+                      }
+                    }}
+                  />
+                </div>
+              ) : null}
+
+              {/* Step 2 (credential wizard): a one-line recap of what step 1
+              proved, so the key's verdict travels with the user instead of
+              disappearing behind Back. */}
+              {wizardActive && wizardStep === "place" && validationResult ? (
+                <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <HealthStatusLine result={validationResult} />
+                </div>
+              ) : null}
+
+              {/* Step 2 (credential wizard): name it and place it. The name is
+              DERIVED (validating filled it from the account's identity), so
+              it arrives prefilled, editable for the rare override. OAuth
+              methods aren't a wizard; they show this alongside the picker. */}
+              {showPlaceStep && (
+                <div className="space-y-2">
+                  <StepHeader
+                    index={wizardActive ? 1 : 2}
+                    label="Display name"
+                    hint={
+                      nameOptions.length > 0
+                        ? "from the account your key returned, or type your own"
+                        : "how you'll tell accounts apart"
+                    }
+                    htmlFor="connection-name"
+                  />
+                  {nameOptions.length > 0 ? (
+                    // The response's identity fields are the options; picking
+                    // one also stores its path as the check's identityField.
+                    <FreeformCombobox
+                      id="connection-name"
+                      value={label}
+                      onValueChange={(next) => {
+                        const match = nameOptions.find((option) => option.value === next);
+                        setLabel(next);
+                        nameAutofilled.current = match !== undefined;
+                        if (match && typeof match.description === "string") {
+                          void handlePickIdentity(match.description, next);
+                        }
+                      }}
+                      options={nameOptions}
+                      placeholder={connectionLabelForHost(
+                        "",
+                        owner,
+                        integrationName,
+                        organizationId,
+                      )}
+                      emptyLabel="Type any name"
+                    />
+                  ) : (
+                    <Input
+                      id="connection-name"
+                      placeholder={connectionLabelForHost(
+                        "",
+                        owner,
+                        integrationName,
+                        organizationId,
+                      )}
+                      value={label}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        setLabel(e.target.value);
+                        // A hand-typed name takes over: a later probe won't overwrite it.
+                        nameAutofilled.current = false;
+                      }}
+                    />
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    This connection will be callable as{" "}
+                    <span className="font-mono text-foreground">{String(callableName)}</span>.
+                  </p>
+                </div>
+              )}
+
               {/* Connection saved-to. Hidden while registering a new OAuth app
               (the connection, and where it's saved, only exists once you
               connect). Pickable everywhere else: for a PICKED OAuth app a
@@ -2057,9 +2633,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
               while a Personal app mints Personal only in cloud;
               for transparent DCR the app + connection land under the chosen
               owner; for a credential method it's the plain owner choice. */}
-              {showSavedToPicker && (
+              {showSavedToPicker && showPlaceStep && (
                 <div className="space-y-2">
-                  <StepHeader index={3} label="Connection saved to" />
+                  <StepHeader index={wizardActive ? 2 : 3} label="Connection saved to" />
                   <ConnectionOwnerDropdown
                     value={savedToOwner}
                     options={savedToOptions}
@@ -2070,6 +2646,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
               )}
             </div>
 
+            {continueError ? (
+              <p role="alert" className="px-1 text-xs text-destructive">
+                {continueError}
+              </p>
+            ) : null}
             <DialogFooter>
               <Button
                 type="button"
@@ -2115,10 +2696,39 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       ? "Connect"
                       : "Connect with OAuth"}
                 </Button>
-              ) : (
-                <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
-                  {submitting ? "Adding…" : "Add connection"}
+              ) : wizardActive && wizardStep === "validate" ? (
+                <Button
+                  type="button"
+                  onClick={() => {
+                    if (credentialPayloadOrigin === null) {
+                      setContinueError(
+                        singleInput ? "Enter the key first" : "Fill in every credential field",
+                      );
+                      return;
+                    }
+                    setContinueError(null);
+                    setWizardStep("place");
+                  }}
+                  loading={validating}
+                >
+                  Continue
                 </Button>
+              ) : (
+                <>
+                  {wizardActive ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setWizardStep("validate")}
+                      disabled={submitting}
+                    >
+                      Back
+                    </Button>
+                  ) : null}
+                  <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit}>
+                    {submitting ? "Adding…" : "Add connection"}
+                  </Button>
+                </>
               )}
             </DialogFooter>
           </>

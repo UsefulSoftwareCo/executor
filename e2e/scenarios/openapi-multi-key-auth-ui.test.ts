@@ -75,18 +75,18 @@ scenario(
             const dialog = page.getByRole("dialog", { name: /Add connection/ });
 
             const credentialInputs = dialog.locator('input[type="password"]');
-            await dialog.getByPlaceholder("paste X-Auth-Email").waitFor();
-            await dialog.getByPlaceholder("paste X-Auth-Key").waitFor();
+            await dialog.getByRole("textbox", { name: "X-Auth-Email" }).waitFor();
+            await dialog.getByRole("textbox", { name: "X-Auth-Key" }).waitFor();
             expect(
               await credentialInputs.count(),
               "the modal renders one secret input for each required header",
             ).toBe(2);
             expect(
-              await dialog.getByPlaceholder("paste X-Auth-Email").isVisible(),
+              await dialog.getByRole("textbox", { name: "X-Auth-Email" }).isVisible(),
               "email has its own input",
             ).toBe(true);
             expect(
-              await dialog.getByPlaceholder("paste X-Auth-Key").isVisible(),
+              await dialog.getByRole("textbox", { name: "X-Auth-Key" }).isVisible(),
               "API key has its own input",
             ).toBe(true);
           });

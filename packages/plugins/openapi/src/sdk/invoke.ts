@@ -959,7 +959,7 @@ export const invokeWithLayer = (
 // Derive annotations from HTTP method
 // ---------------------------------------------------------------------------
 
-const REQUIRE_APPROVAL = new Set(["post", "put", "patch", "delete"]);
+export const REQUIRE_APPROVAL = new Set(["post", "put", "patch", "delete"]);
 
 export const annotationsForOperation = (
   method: string,

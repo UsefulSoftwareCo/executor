@@ -36,6 +36,7 @@ const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
 const DRIVE_URL = "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest";
 const PHOTOS_LIBRARY_URL = "https://www.googleapis.com/discovery/v1/apis/photoslibrary/v1/rest";
 const PHOTOS_PICKER_URL = "https://photospicker.googleapis.com/$discovery/rest?version=v1";
+const PEOPLE_URL = "https://www.googleapis.com/discovery/v1/apis/people/v1/rest";
 
 const calendarDoc = {
   name: "calendar",
@@ -212,6 +213,49 @@ const photosPickerDoc = {
   schemas: {},
 };
 
+const peopleDoc = {
+  name: "people",
+  version: "v1",
+  title: "People API",
+  rootUrl: "https://people.googleapis.com/",
+  servicePath: "",
+  auth: {
+    oauth2: {
+      scopes: {
+        "https://www.googleapis.com/auth/userinfo.email": { description: "See your email" },
+      },
+    },
+  },
+  resources: {
+    people: {
+      methods: {
+        get: {
+          id: "people.people.get",
+          httpMethod: "GET",
+          path: "v1/{+resourceName}",
+          scopes: ["https://www.googleapis.com/auth/userinfo.email"],
+          parameters: {
+            resourceName: { location: "path", required: true, type: "string" },
+            personFields: { location: "query", type: "string" },
+          },
+          response: { $ref: "Person" },
+        },
+      },
+    },
+  },
+  schemas: {
+    Person: {
+      id: "Person",
+      type: "object",
+      properties: {
+        resourceName: { type: "string" },
+        emailAddresses: { type: "array", items: { $ref: "EmailAddress" } },
+      },
+    },
+    EmailAddress: { id: "EmailAddress", type: "object", properties: { value: { type: "string" } } },
+  },
+};
+
 const toJson = (value: unknown): string => JSON.stringify(value);
 
 const DISCOVERY_BODIES: Readonly<Record<string, string>> = {
@@ -220,6 +264,7 @@ const DISCOVERY_BODIES: Readonly<Record<string, string>> = {
   [DRIVE_URL]: toJson(driveDoc),
   [PHOTOS_LIBRARY_URL]: toJson(photosLibraryDoc),
   [PHOTOS_PICKER_URL]: toJson(photosPickerDoc),
+  [PEOPLE_URL]: toJson(peopleDoc),
 };
 
 // A stub HTTP client that serves the canned Discovery document for whichever
@@ -468,6 +513,68 @@ describe("Google bundle add flow", () => {
         expect(toolNames).toContain("photoslibrary.mediaItems.search");
         expect(toolNames).not.toContain("photospicker.mediaItems.list");
         expect(toolNames).not.toContain("photoslibrary.albums.list");
+      }),
+    ),
+  );
+});
+
+describe("Google health-check default", () => {
+  it.effect("addBundle with the People API auto-configures the identity health check", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+
+        yield* executor.google.addBundle({
+          urls: [PEOPLE_URL, CALENDAR_URL],
+          slug: "google_people",
+          description: "Google",
+        });
+
+        // The default probe is the People identity call with its required args
+        // pinned and the account email as the identity field - the zero-config
+        // answer to "has this Google connection expired?".
+        const stored = yield* executor.integrations.healthCheck.get(
+          IntegrationSlug.make("google_people"),
+        );
+        expect(stored?.operation, "the default check targets the People identity call").toBe(
+          "people.people.get",
+        );
+        expect(stored?.args, "the People call's required args are pinned").toEqual({
+          resourceName: "people/me",
+          personFields: "names,emailAddresses",
+        });
+        expect(stored?.identityField, "the default reads the account email").toBe(
+          "emailAddresses.0.value",
+        );
+
+        // The check is offered as a candidate with typed response fields, so
+        // the editor's identity picker lists the email path.
+        const candidates = yield* executor.integrations.healthCheck.candidates(
+          IntegrationSlug.make("google_people"),
+        );
+        const peopleGet = candidates.find((c) => c.operation === "people.people.get");
+        expect(peopleGet, "the People call is a ranked candidate").toBeDefined();
+        expect(
+          (peopleGet?.responseFields ?? []).map((field) => field.path),
+          "the email identity field is projected from the response schema",
+        ).toContain("emailAddresses.0.value");
+      }),
+    ),
+  );
+
+  it.effect("addBundle without the People API leaves the health check unset", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+        yield* executor.google.addBundle({
+          urls: [CALENDAR_URL],
+          slug: "google_cal_only",
+          description: "Google",
+        });
+        const stored = yield* executor.integrations.healthCheck.get(
+          IntegrationSlug.make("google_cal_only"),
+        );
+        expect(stored, "no People API in the bundle means no default check").toBeNull();
       }),
     ),
   );

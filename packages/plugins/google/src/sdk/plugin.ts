@@ -11,6 +11,7 @@ import {
   mergeAuthTemplates,
   sha256Hex,
   type AuthMethodDescriptor,
+  type HealthCheckSpec,
   type Integration,
   type IntegrationConfig,
   type IntegrationRecord,
@@ -18,8 +19,10 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  checkHealthOpenApi,
   compileOpenApiSpec,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
   openApiStoredOperationsFromCompiled,
@@ -42,6 +45,35 @@ import {
   googlePhotosOpenApiBundlePreset,
   googlePhotosOpenApiPresets,
 } from "./presets";
+
+/** The default health check for a Google bundle: the People API identity call
+ *  (`people.get` with the required `resourceName`/`personFields` pinned), when
+ *  the bundle includes the People API. People API is the canonical Google
+ *  identity endpoint; if it isn't bundled, no default is written (the editor
+ *  remains available). The user can adjust the identity field via the editor. */
+const defaultGoogleHealthCheck = (
+  urls: readonly string[],
+  definitions: readonly {
+    readonly toolPath: string;
+    readonly operation: { readonly method: string; readonly pathTemplate: string };
+  }[],
+): HealthCheckSpec | undefined => {
+  const hasPeopleApi = urls.some((url) => url.includes("/people/"));
+  if (!hasPeopleApi) return undefined;
+  const peopleGet = definitions.find(
+    (def) =>
+      def.operation.method.toLowerCase() === "get" &&
+      (def.toolPath === "people.people.get" ||
+        def.operation.pathTemplate === "/v1/{+resourceName}"),
+  );
+  return peopleGet
+    ? {
+        operation: peopleGet.toolPath,
+        args: { resourceName: "people/me", personFields: "names,emailAddresses" },
+        identityField: "emailAddresses.0.value",
+      }
+    : undefined;
+};
 
 export interface GoogleBundleConfig {
   readonly urls: readonly string[];
@@ -192,6 +224,15 @@ const makeGooglePluginExtension = (
           );
         }),
       );
+
+      // Default the health check to the People API identity call (`people.get`
+      // with `resourceName=people/me`) when the bundle includes the People API,
+      // so connections report alive/expired + identity out of the box. Declared
+      // through core's own storage; the user can adjust it via the editor.
+      const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
+      if (defaultHealthCheck) {
+        yield* ctx.core.integrations.setHealthCheck(slug, defaultHealthCheck);
+      }
 
       return { slug, toolCount: compiled.definitions.length };
     });
@@ -350,6 +391,20 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
       ctx,
       integration: String(integration),
       toolRows,
+    }),
+
+  // Health checks reuse the OpenAPI backing (same store). The People API
+  // identity call is auto-defaulted at addBundle when present; core owns the
+  // stored spec, the user adjusts it via the editor.
+  listHealthCheckCandidates: (input) =>
+    listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
+  checkHealth: (input) =>
+    checkHealthOpenApi({
+      ctx: input.ctx,
+      integration: input.integration,
+      credential: input.credential,
+      spec: input.spec,
+      httpClientLayer: options?.httpClientLayer ?? input.ctx.httpClientLayer,
     }),
 
   removeConnection: () => Effect.void,

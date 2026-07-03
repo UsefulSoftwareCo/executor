@@ -190,6 +190,29 @@ export default defineConfig({
     alias: { "@executor-app": APP_ROOT },
     dedupe: ["react", "react-dom"],
   },
+  // This SPA shares packages/app's shell and packages/react's lazy-loaded
+  // "add source" UI with apps/cloud, so the same deps only surface once a
+  // lazy chunk actually renders (e.g. opening the MCP/OpenAPI add-source
+  // flow). Pre-bundle them at boot so vite never discovers them mid-run and
+  // never has to re-optimize + reload. No SSR/worker environment here (this
+  // app has no cloudflare plugin, it's a plain SPA build), so only the
+  // client optimizeDeps applies. Keep in sync with apps/cloud/vite.config.ts.
+  // js-yaml is a transitive dep (via @executor-js/plugin-openapi) that isn't
+  // hoisted into this app's node_modules under bun's isolated install, so a
+  // plain "js-yaml" specifier fails to resolve; "<pkg> > <dep>" resolves it
+  // from that package's own node_modules instead.
+  optimizeDeps: {
+    include: [
+      "effect/Match",
+      "effect/Predicate",
+      "effect/Exit",
+      "effect/Option",
+      "effect/Cause",
+      "effect/Data",
+      "effect/Schema",
+      "@executor-js/plugin-openapi > js-yaml",
+    ],
+  },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION ?? "0.0.0"),
     // Self-host upgrades by pulling/rebuilding the image (or git + rebuild), not

@@ -2,7 +2,7 @@
 // MCP tool discovery — connect to an MCP server and list its tools
 // ---------------------------------------------------------------------------
 
-import { Effect, Option } from "effect";
+import { Duration, Effect, Option, Predicate } from "effect";
 
 import type { McpConnection, McpConnector } from "./connection";
 import { McpToolDiscoveryError } from "./errors";
@@ -16,6 +16,18 @@ import {
 // The spec puts no bound on page count; a compliant server terminates by
 // omitting `nextCursor`, so any real catalog fits well inside this.
 const MAX_LIST_TOOLS_PAGES = 100;
+
+// Every caller of `discoverTools` (resolveTools, detect, probeEndpoint,
+// checkHealth) is a probe: dial a server we don't control and list its
+// tools. Neither the MCP SDK's transport connect nor its `listTools` call
+// carries a deadline of its own against a server that never answers (a
+// closed/half-open loopback socket, a server wedged mid-handshake), so
+// without a bound here a single unresponsive endpoint hangs the calling
+// fiber forever. Mirrors the shape-probe fallback's default
+// (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) at a slightly longer
+// bound since a real handshake + listTools round-trip is heavier than the
+// shape probe's single unauth POST.
+const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -70,20 +82,35 @@ const listAllTools = (
 /**
  * Connect to an MCP server and discover all available tools.
  * Returns the parsed manifest containing server metadata and tool entries.
+ *
+ * Bounded by `timeoutMs` (default `DEFAULT_DISCOVER_TIMEOUT`): every caller
+ * is dialing a server we don't control, and neither the connect handshake
+ * nor `listTools` has a deadline of its own, so an unresponsive endpoint
+ * (dead loopback port, wedged mid-handshake) would otherwise hang the
+ * calling fiber (and, transitively, the server-side request handling it)
+ * forever. On timeout, any connection that DID get established is closed
+ * before the timeout error is raised (`Effect.onExit` still fires for an
+ * interrupted fiber).
  */
 export const discoverTools = (
   connector: McpConnector,
+  timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
 ): Effect.Effect<McpToolManifest, McpToolDiscoveryError> =>
   Effect.gen(function* () {
     // Acquire connection
     const connection = yield* connector.pipe(
-      Effect.mapError(
-        ({ message }) =>
-          new McpToolDiscoveryError({
-            stage: "connect",
-            message: `Failed connecting to MCP server: ${message}`,
-          }),
-      ),
+      Effect.mapError((failure) => {
+        // Preserve the handshake HTTP status (401/403 = auth wall) so the
+        // liveness health check can classify structurally.
+        const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
+          ? failure.httpStatus
+          : undefined;
+        return new McpToolDiscoveryError({
+          stage: "connect",
+          message: `Failed connecting to MCP server: ${failure.message}`,
+          ...(httpStatus !== undefined ? { httpStatus } : {}),
+        });
+      }),
     );
 
     const manifest = yield* listAllTools(connection).pipe(
@@ -91,7 +118,18 @@ export const discoverTools = (
     );
 
     return manifest;
-  });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: Duration.millis(timeoutMs),
+      orElse: () =>
+        Effect.fail(
+          new McpToolDiscoveryError({
+            stage: "connect",
+            message: `MCP discovery timed out after ${timeoutMs}ms`,
+          }),
+        ),
+    }),
+  );
 
 const closeConnection = (connection: {
   readonly close: () => Promise<void>;

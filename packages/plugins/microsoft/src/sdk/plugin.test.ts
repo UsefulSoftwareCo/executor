@@ -619,3 +619,29 @@ describe("Microsoft Graph provider", () => {
     ),
   );
 });
+
+describe("Microsoft Graph health-check default", () => {
+  it.effect("addGraph with a /me workload auto-configures the identity health check", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addGraph({
+          presetIds: ["profile", "mail"],
+          slug: "microsoft_graph_hc",
+          description: "Microsoft Graph",
+        });
+
+        // GET /me is the canonical Graph identity endpoint: the default probe
+        // answers alive/expired + who-am-I with zero configuration.
+        const stored = yield* executor.integrations.healthCheck.get(
+          IntegrationSlug.make("microsoft_graph_hc"),
+        );
+        expect(stored?.operation, "the default check targets GET /me").toBe("me.getUser");
+        expect(stored?.identityField, "the default reads the principal name").toBe(
+          "userPrincipalName",
+        );
+      }),
+    ),
+  );
+});

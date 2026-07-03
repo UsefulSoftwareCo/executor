@@ -3,17 +3,34 @@
 // (cloud.boot.ts — emulated WorkOS + Autumn + the app's real dev stack, the
 // same recipe the dev CLI uses). Set E2E_CLOUD_URL to attach to a running
 // stack instead.
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { claimAndBoot } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
 import { waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
 import { bootMotel, motelExporterEnv } from "./motel";
+import { RUNS_DIR } from "../src/scenario";
+
+// dev-db + vite dev stdout/stderr, swept into the failure-only artifact
+// upload (CI uploads e2e/runs/**): see .github/workflows/ci.yml. A
+// mid-shard OOM abort or a 500 cascade otherwise leaves no trace: boot.ts
+// defaults to stdio "ignore" unless E2E_VERBOSE=1. Skip the file when
+// E2E_VERBOSE is set so local `E2E_VERBOSE=1` keeps its inherited,
+// live-in-terminal output (boot.ts prioritizes logFile over E2E_VERBOSE, so
+// passing both would silently swallow the verbose stream into the file).
+const bootLogFile = process.env.E2E_VERBOSE
+  ? undefined
+  : resolve(RUNS_DIR, "cloud", "server-logs", "boot.log");
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_CLOUD_URL) {
     await waitForHttp(process.env.E2E_CLOUD_URL);
     return;
   }
+
+  if (bootLogFile) mkdirSync(resolve(bootLogFile, ".."), { recursive: true });
 
   // Suite-owned trace store — every run captures distributed traces. Booted
   // once outside the retry: it binds its own OS-assigned port (not a claimed
@@ -50,6 +67,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
           workosClientId: E2E_WORKOS_CLIENT_ID,
           cookiePassword: E2E_COOKIE_PASSWORD,
           publicUrl,
+          logFile: bootLogFile,
           // Server + browser spans → the suite's motel. The app's exporter is
           // endpoint-agnostic, so the same layer that ships prod traces to
           // Axiom ships e2e traces to the suite store — "why was that page

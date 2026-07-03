@@ -14,6 +14,8 @@ import {
   startOAuth,
 } from "../api/atoms";
 import { connectionWriteKeys } from "../api/reactivity-keys";
+import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
@@ -69,16 +71,69 @@ function AccountRow(props: {
   readonly onRemove: () => void;
 }) {
   const { connection, needsReconsent } = props;
-  const displayLabel =
-    connection.identityLabel && connection.identityLabel.length > 0
+  const [checking, setChecking] = useState(false);
+
+  // The status renders WITHOUT any clicking: every checkHealth run persists its
+  // verdict on the connection row, so the list answers "has this expired?" at a
+  // glance. A live check from this session takes precedence. We deliberately do
+  // NOT derive expiry from the stored `expiresAt`: that's the access-token
+  // lifetime, which refreshes, so a passive countdown means nothing.
+  //
+  // Health checks are AUTOMATIC: the hook revalidates on mount, stale-while-
+  // revalidate style (shared with the integrations-list summary), and the
+  // persisted verdict renders instantly while the probe corrects it in place.
+  const { probe, status, runCheck } = useConnectionHealth(connection);
+  const indicator = HEALTH_INDICATOR_COLOR[status];
+
+  // Prefer a probed identity (the live account), then the stored label, then the
+  // connection name. The probe is the whole point: it shows WHICH account this is.
+  const identity =
+    (probe?.identity && probe.identity.length > 0 ? probe.identity : null) ??
+    (connection.identityLabel && connection.identityLabel.length > 0
       ? connection.identityLabel
-      : String(connection.name);
+      : null);
+  const displayLabel = identity ?? String(connection.name);
+
+  const expired = status === "expired";
+
+  const handleCheck = async () => {
+    if (checking) return;
+    setChecking(true);
+    const exit = await runCheck();
+    setChecking(false);
+    if (Exit.isFailure(exit)) {
+      toast.error(messageFromExit(exit, "Health check failed"));
+      return;
+    }
+    // The hook already folded the fresh probe into the live state.
+    if (exit.value.status === "healthy") {
+      toast.success(
+        exit.value.identity ? `Healthy: ${exit.value.identity}` : "Connection is healthy",
+      );
+    } else if (exit.value.status === "expired") {
+      toast.error("Connection expired, reconnect to restore access");
+    } else if (exit.value.status === "degraded") {
+      toast.warning(exit.value.detail ?? "Connection check returned an error");
+    } else {
+      toast.message("No health check is configured for this integration");
+    }
+  };
 
   return (
     <CardStackEntry className="flex-wrap items-start">
       <CardStackEntryContent>
         <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
+          <span
+            aria-label={`Status: ${HEALTH_STATUS_LABEL[status]}`}
+            title={HEALTH_STATUS_LABEL[status]}
+            className={`size-2 shrink-0 rounded-full ${indicator.dot}`}
+          />
           <span className="truncate">{displayLabel}</span>
+          {expired ? (
+            <Badge variant="destructive" className="shrink-0">
+              Expired
+            </Badge>
+          ) : null}
           {needsReconsent ? (
             <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
               Reconnect to grant access
@@ -115,6 +170,13 @@ function AccountRow(props: {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem
+              className="text-sm"
+              disabled={checking}
+              onClick={() => void handleCheck()}
+            >
+              {checking ? "Checking…" : "Check now"}
+            </DropdownMenuItem>
             <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
               Edit
             </DropdownMenuItem>

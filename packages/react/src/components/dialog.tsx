@@ -37,19 +37,42 @@ function DialogOverlay({
   );
 }
 
+// base-ui popups (combobox/select) portal their list OUTSIDE the dialog content,
+// so clicking an option reads as an interaction outside the dialog and would
+// dismiss it before the selection lands. Keep the dialog open for interactions
+// that originate inside such a popup.
+const PORTALED_POPUP_SELECTOR = "[data-slot='combobox-content'],[data-slot='select-content']";
+
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onInteractOutside,
+  forceOverlay = false,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
+  /** Pair with `<Dialog modal={false}>`: Radix renders no overlay in non-modal
+   *  mode, so this renders a plain dim layer instead. It still eats outside
+   *  clicks (which dismiss via onInteractOutside), so the dialog keeps its
+   *  modal look while the wheel stays free for portaled popups. */
+  forceOverlay?: boolean;
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
+      {forceOverlay ? (
+        <div aria-hidden data-slot="dialog-overlay" className="fixed inset-0 z-50 bg-black/50" />
+      ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        onInteractOutside={(event) => {
+          const target = event.detail.originalEvent.target;
+          if (target instanceof Element && target.closest(PORTALED_POPUP_SELECTOR)) {
+            event.preventDefault();
+          }
+          onInteractOutside?.(event);
+        }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className,

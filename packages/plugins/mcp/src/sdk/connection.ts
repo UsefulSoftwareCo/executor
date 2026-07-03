@@ -17,6 +17,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import type { McpRemoteIntegrationConfig, McpStdioIntegrationConfig } from "./types";
 import { McpConnectionError, McpOAuthReauthorizationRequired } from "./errors";
+import { httpStatusFromCause } from "./http-status";
 
 // ---------------------------------------------------------------------------
 // Connection type
@@ -185,7 +186,15 @@ const connectionFailure = (
   if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
     return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
   }
-  return new McpConnectionError({ transport, message });
+  // Carry the handshake HTTP status structurally (and in the message for
+  // humans) so the liveness health check can classify a rejected credential
+  // as expired rather than a generic connection failure.
+  const status = httpStatusFromCause(cause);
+  return new McpConnectionError({
+    transport,
+    message: status === undefined ? message : `${message} (HTTP ${status})`,
+    ...(status === undefined ? {} : { httpStatus: status }),
+  });
 };
 
 const connectClient = (input: {
@@ -281,12 +290,17 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   if (remoteTransport === "streamable-http") return connectStreamableHttp;
   if (remoteTransport === "sse") return connectSse;
 
-  // auto: try streamable-http first, fall back to SSE for transport failures.
+  // auto: try streamable-http first, fall back to SSE for TRANSPORT failures
+  // only. A definitive auth wall (401/403) is about the credential, not the
+  // transport: the same endpoint would reject SSE too, and retrying it via
+  // SSE loses the HTTP status (the SSE POST failure is a different, opaque
+  // error), which used to misclassify an expired token as a generic
+  // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) =>
-      Predicate.isTagged(error, "McpOAuthReauthorizationRequired")
-        ? Effect.fail(error)
-        : connectSse,
-    ),
+    Effect.catch((error) => {
+      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
+      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
+      return connectSse;
+    }),
   );
 };

@@ -38,8 +38,12 @@ scenario(
             waitUntil: "networkidle",
           });
           // The URL auto-probes (debounced); the method list appears once
-          // the probe lands.
-          await page.getByText("How does this server authenticate?").waitFor();
+          // the probe lands. Generous timeout: the probe request can queue
+          // behind a busy dev server under CI load, and there is no clean
+          // client-side re-trigger to poke mid-flight (the debounced probe
+          // only re-fires on a URL change, and "Try again" only appears
+          // after the probe has already failed).
+          await page.getByText("How does this server authenticate?").waitFor({ timeout: 90_000 });
         });
 
         await step("The probe seeded the detected method", async () => {

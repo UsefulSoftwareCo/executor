@@ -49,7 +49,10 @@ scenario(
           await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
             waitUntil: "networkidle",
           });
-          await page.getByText("How does this server authenticate?").waitFor();
+          // Generous timeout: the debounced probe request can queue behind a
+          // busy dev server under CI load, and there is no clean client-side
+          // re-trigger to poke it mid-flight.
+          await page.getByText("How does this server authenticate?").waitFor({ timeout: 90_000 });
         });
 
         await step("The probe detected OAuth", async () => {
@@ -142,10 +145,18 @@ scenario(
           });
 
           await step("Connect through the new method", async () => {
-            // Custom "Authorization: Bearer " method renders the affixed field,
-            // whose value input placeholder is "token".
-            await page.getByRole("dialog").getByPlaceholder("token").fill(token);
-            await page.getByRole("button", { name: "Add connection" }).click();
+            // Custom "Authorization: Bearer " method renders the affixed field
+            // with no placeholder; its accessible name is the placement name
+            // ("Authorization"). The credential wizard is two steps: Continue
+            // (validate) then Add connection (name + place).
+            await page
+              .getByRole("dialog")
+              .getByRole("textbox", { name: "Authorization" })
+              .fill(token);
+            await page.getByRole("button", { name: "Continue" }).click();
+            // Scoped to the dialog: the page also has its own "Add connection"
+            // trigger button, which would otherwise make this ambiguous.
+            await page.getByRole("dialog").getByRole("button", { name: "Add connection" }).click();
             await page.getByText("Connection added").waitFor();
           });
         });
@@ -222,15 +233,21 @@ scenario(
             await page.getByRole("tab", { name: "API key (Authorization)" }).waitFor();
           });
 
+          const dialog = page.getByRole("dialog");
           await step("The method renders one field per credential input", async () => {
-            await page.getByPlaceholder("paste Authorization").waitFor();
-            await page.getByPlaceholder("paste team_id").waitFor();
+            await dialog.getByRole("textbox", { name: "Authorization" }).waitFor();
+            await dialog.getByRole("textbox", { name: "team_id" }).waitFor();
           });
 
           await step("Fill both values and connect", async () => {
-            await page.getByPlaceholder("paste Authorization").fill(apiToken);
-            await page.getByPlaceholder("paste team_id").fill(teamId);
-            await page.getByRole("button", { name: "Add connection" }).click();
+            await dialog.getByRole("textbox", { name: "Authorization" }).fill(apiToken);
+            await dialog.getByRole("textbox", { name: "team_id" }).fill(teamId);
+            // The credential wizard is two steps: Continue (validate) then Add
+            // connection (name + place).
+            await page.getByRole("button", { name: "Continue" }).click();
+            // Scoped to the dialog: the page also has its own "Add connection"
+            // trigger button, which would otherwise make this ambiguous.
+            await dialog.getByRole("button", { name: "Add connection" }).click();
             await page.getByText("Connection added").waitFor();
           });
         });

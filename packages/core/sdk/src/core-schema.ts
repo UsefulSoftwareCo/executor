@@ -132,6 +132,12 @@ export const coreTables = defineTables({
       // to NULL in 0006).
       description: nullableTextColumn("description"),
       config: nullableJsonColumn("config"),
+      // The declared health check (HealthCheckSpec JSON): which authenticated
+      // operation a connection runs to prove its credential is alive and whose
+      // account it is. CORE-owned, deliberately NOT inside `config`, so no
+      // plugin's config decode/re-encode cycle can silently strip it and no
+      // plugin schema has to declare it. Null = no check declared.
+      health_check: nullableJsonColumn("health_check"),
       // Epoch ms of the last tool-affecting config change (spec update, auth
       // template edit). Compared against each connection's `tools_synced_at`
       // so OTHER subjects' connections — whose tool rows the updater cannot
@@ -162,6 +168,11 @@ export const coreTables = defineTables({
       // User-curated, agent-visible "what is this connection for". Settable at
       // create, editable after; never reset by OAuth re-mints.
       description: nullableTextColumn("description"),
+      // Last health-check outcome (HealthCheckResult JSON: status, httpStatus,
+      // checkedAt, identity, detail). Written by every checkHealth run so the
+      // accounts list shows alive/expired AT A GLANCE (the customer ask)
+      // instead of only after a per-row manual probe. Null = never checked.
+      last_health: nullableJsonColumn("last_health"),
       // Epoch ms of the last tool (re)production for this connection. Stale
       // vs the integration's `config_revised_at` → re-produced on next read.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),

@@ -210,15 +210,23 @@ const runScenario = (input: {
 
       await step("Paste the emulator API key", async () => {
         // The single-input bearer method renders an affixed field ("Authorization:
-        // Bearer " prefix) whose value input placeholder is "token". Scope to the
-        // dialog so the match stays unique.
-        const credential = page.getByRole("dialog").getByPlaceholder("token");
+        // Bearer " prefix) with no placeholder; its accessible name is the
+        // placement name ("Authorization"). Scope to the dialog so the match
+        // stays unique.
+        const credential = page.getByRole("dialog").getByRole("textbox", { name: "Authorization" });
         await credential.waitFor({ timeout: 15_000 });
         await credential.fill(apiKey);
       });
 
       await step("Submit Add connection", async () => {
-        await page.getByRole("button", { name: "Add connection", exact: true }).click();
+        // The credential wizard is two steps: Continue (validate) then Add
+        // connection (name + place). Scope the submit click to the dialog,
+        // since the page also has its own "Add connection" trigger button.
+        await page.getByRole("button", { name: "Continue" }).click();
+        await page
+          .getByRole("dialog")
+          .getByRole("button", { name: "Add connection", exact: true })
+          .click();
         await page
           .getByRole("heading", { name: /Add connection/ })
           .waitFor({ state: "hidden", timeout: 20_000 });

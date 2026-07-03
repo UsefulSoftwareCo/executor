@@ -15,6 +15,7 @@ export {
 export { invoke, invokeWithLayer, buildRequest, annotationsForOperation } from "./invoke";
 export {
   buildDefsJsonStreaming,
+  checkHealthOpenApi,
   compileAndPersistOpenApiOperations,
   compileAndPersistOpenApiSpec,
   compileAndPersistOpenApiSpecStreaming,
@@ -22,6 +23,7 @@ export {
   compileOpenApiSpec,
   extractOpenApiUpstreamMessage,
   invokeOpenApiBackedTool,
+  listHealthCheckCandidatesOpenApi,
   loadOpenApiSpecText,
   normalizeOpenApiRefs,
   openApiStoredOperationsFromCompiled,
