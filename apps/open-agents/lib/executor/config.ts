@@ -1,14 +1,17 @@
-import { join } from "node:path";
 import { defineExecutorConfig } from "@executor-js/sdk";
-import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
+import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { openAgentsAutomationPlugin } from "@/lib/automation/executor-plugin";
 
-const dataDir =
-  process.env.OPEN_AGENTS_EXECUTOR_DATA_DIR ??
-  join(process.cwd(), ".open-agents-executor");
+function resolveExecutorSecretKey(): string {
+  const secretKey = process.env.EXECUTOR_SECRET_KEY?.trim();
+  if (!secretKey) {
+    throw new Error("EXECUTOR_SECRET_KEY must be set");
+  }
+  return secretKey;
+}
 
 const executorConfig = defineExecutorConfig({
   plugins: () =>
@@ -16,7 +19,7 @@ const executorConfig = defineExecutorConfig({
       openApiHttpPlugin(),
       mcpHttpPlugin(),
       graphqlHttpPlugin(),
-      fileSecretsPlugin({ directory: dataDir }),
+      encryptedSecretsPlugin({ key: resolveExecutorSecretKey() }),
       openAgentsAutomationPlugin(),
     ] as const,
 });

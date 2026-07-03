@@ -9,10 +9,7 @@ import {
   integrationsRegistryLayer,
   type IntegrationCatalogEntryType,
 } from "@executor-js/integrations-registry";
-import {
-  StorageError,
-  type IntegrationPresetCatalogEntry,
-} from "@executor-js/sdk";
+import { StorageError, type IntegrationPresetCatalogEntry } from "@executor-js/sdk";
 
 const USER_AGENT = buildUserAgent({
   channel: "dev",
@@ -24,10 +21,7 @@ const integrationsRuntime = ManagedRuntime.make(
   integrationsRegistryLayer({
     userAgent: USER_AGENT,
     cacheDir: join(tmpdir(), "open-agents-integrations-cache"),
-  }).pipe(
-    Layer.provide(FetchHttpClient.layer),
-    Layer.provide(NodeFileSystem.layer),
-  ),
+  }).pipe(Layer.provide(FetchHttpClient.layer), Layer.provide(NodeFileSystem.layer)),
 );
 
 const officialRemoteMcpEndpoints: Readonly<
@@ -35,29 +29,39 @@ const officialRemoteMcpEndpoints: Readonly<
     string,
     {
       readonly endpoint: string;
+      readonly id?: string;
       readonly name?: string;
+      readonly namespace?: string;
       readonly summary?: string;
     }
   >
 > = {
   "mcp/slack": {
     endpoint: "https://mcp.slack.com/mcp",
+    id: "slack",
     name: "Slack",
+    namespace: "slack",
     summary: "Search Slack, retrieve conversations, send messages, and manage canvases via MCP.",
   },
   "mcp/notion": {
     endpoint: "https://mcp.notion.com/mcp",
+    id: "notion",
     name: "Notion",
+    namespace: "notion",
     summary: "Search, read, and update Notion workspace content via MCP.",
   },
   "discovered/datadoghq-com-mcp": {
     endpoint: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=all",
+    id: "datadog",
     name: "Datadog",
+    namespace: "datadog",
     summary: "Query Datadog logs, metrics, traces, incidents, and monitors via MCP.",
   },
   "discovered/braintrust-dev-mcp": {
     endpoint: "https://api.braintrust.dev/mcp",
+    id: "braintrust",
     name: "Braintrust",
+    namespace: "braintrust",
     summary: "Inspect Braintrust projects, logs, traces, prompts, and evals via MCP.",
   },
 };
@@ -73,20 +77,17 @@ const pluginIdForKind = (kind: string): "mcp" | "openapi" | "graphql" | null => 
   }
 };
 
-const iconUrl = (entry: IntegrationCatalogEntryType): string | undefined =>
-  entry.icon ?? undefined;
+const iconUrl = (entry: IntegrationCatalogEntryType): string | undefined => entry.icon ?? undefined;
 
 const catalogSummary = (entry: IntegrationCatalogEntryType): string => entry.description;
 
-const mcpPreset = (
-  entry: IntegrationCatalogEntryType,
-): IntegrationPresetCatalogEntry | null => {
+const mcpPreset = (entry: IntegrationCatalogEntryType): IntegrationPresetCatalogEntry | null => {
   const official = officialRemoteMcpEndpoints[entry.id];
   if (!official) return null;
   return {
     pluginId: "mcp",
-    id: entry.slug,
-    namespace: entry.slug,
+    id: official.id ?? entry.slug,
+    namespace: official.namespace ?? entry.slug,
     name: official.name ?? entry.name,
     summary: official.summary ?? catalogSummary(entry),
     url: official.endpoint,
@@ -139,14 +140,14 @@ export const openAgentsIntegrationPresets = (): Effect.Effect<
   Effect.tryPromise({
     try: async () => {
       const catalog = await integrationsRuntime.runPromise(
-        IntegrationsRegistry.asEffect().pipe(
-          Effect.flatMap((registry) => registry.get()),
-        ),
+        IntegrationsRegistry.asEffect().pipe(Effect.flatMap((registry) => registry.get())),
       );
-      return catalog.flatMap((entry) => {
-        const preset = catalogPreset(entry);
-        return preset ? [preset] : [];
-      }).sort(comparePresets);
+      return catalog
+        .flatMap((entry) => {
+          const preset = catalogPreset(entry);
+          return preset ? [preset] : [];
+        })
+        .sort(comparePresets);
     },
     catch: (cause) =>
       new StorageError({

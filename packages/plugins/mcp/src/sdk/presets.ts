@@ -126,6 +126,7 @@ export const mcpPresets: readonly McpPreset[] = [
     url: "https://api.braintrust.dev/mcp",
     endpoint: "https://api.braintrust.dev/mcp",
     icon: "https://integrations.sh/logo/braintrust.dev",
+    featured: true,
   },
   {
     id: "sentry",

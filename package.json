@@ -69,8 +69,12 @@
     "prepare": "effect-language-service patch && effect-tsgo patch && bun run --cwd packages/core/vite-plugin build:bundle && bun run --cwd packages/react build"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@cfworker/json-schema": "^4.1.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@open-agents/authz": "workspace:*",
     "@open-agents/sandbox": "workspace:*",
+    "@paralleldrive/cuid2": "^3.3.0",
     "@vercel/oidc": "^3.8.0",
     "@vercel/sandbox": "^2.3.0",
     "ai": "catalog:",
@@ -79,8 +83,13 @@
     "better-auth": "^1.6.5",
     "drizzle-orm": "catalog:",
     "eve": "^0.18.2",
+    "fractional-indexing": "^3.2.0",
     "nanoid": "^5.1.6",
-    "postgres": "^3.4.8"
+    "oauth4webapi": "^3.8.5",
+    "postgres": "^3.4.8",
+    "semver": "^7.8.5",
+    "sucrase": "^3.35.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",

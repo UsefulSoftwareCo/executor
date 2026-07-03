@@ -461,12 +461,15 @@ const tokenResponseFrom = (r: oauth.TokenEndpointResponse): OAuth2TokenResponse 
   scope: r.scope,
 });
 
-// MCP source connections are pure OAuth 2.0 — we never request `openid` and
-// never consume `id_token`. Some providers (PostHog, etc.) front an OIDC
-// backend and emit an `id_token` anyway; oauth4webapi then strict-validates
-// its claims against the AS metadata and rejects mismatches we don't care
-// about. Strip the field before delegation.
-const stripIdToken = async (response: Response): Promise<Response> => {
+const stringField = (record: Record<string, unknown>, key: string): string | undefined =>
+  typeof record[key] === "string" ? record[key] : undefined;
+
+const numberField = (record: Record<string, unknown>, key: string): number | undefined =>
+  typeof record[key] === "number" ? record[key] : undefined;
+
+// MCP source connections are pure OAuth 2.0: ignore provider-emitted OIDC
+// `id_token`s, and normalize Slack MCP's documented `authed_user` token envelope.
+const normalizeTokenEndpointResponse = async (response: Response): Promise<Response> => {
   const body = await response
     .clone()
     .json()
@@ -474,11 +477,30 @@ const stripIdToken = async (response: Response): Promise<Response> => {
       (value: unknown) => value,
       () => null,
     );
-  if (!body || typeof body !== "object" || !("id_token" in (body as Record<string, unknown>))) {
+  if (!body || typeof body !== "object") {
     return response;
   }
-  const { id_token: _ignored, ...rest } = body as Record<string, unknown>;
-  return new Response(JSON.stringify(rest), {
+  const source = body as Record<string, unknown>;
+  const { id_token: _ignored, ...rest } = source;
+  const authedUser =
+    rest.authed_user && typeof rest.authed_user === "object"
+      ? (rest.authed_user as Record<string, unknown>)
+      : null;
+  const next = { ...rest };
+  let changed = "id_token" in source;
+  if (authedUser && typeof next.access_token !== "string") {
+    const accessToken = stringField(authedUser, "access_token");
+    if (accessToken) {
+      next.access_token = accessToken;
+      next.token_type = stringField(authedUser, "token_type") ?? "Bearer";
+      next.refresh_token = stringField(authedUser, "refresh_token") ?? next.refresh_token;
+      next.expires_in = numberField(authedUser, "expires_in") ?? next.expires_in;
+      next.scope = stringField(authedUser, "scope") ?? next.scope;
+      changed = true;
+    }
+  }
+  if (!changed) return response;
+  return new Response(JSON.stringify(next), {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
@@ -491,7 +513,11 @@ const processTokenEndpointResponse = async (
   response: Response,
 ): Promise<OAuth2TokenResponse> =>
   tokenResponseFrom(
-    await oauth.processGenericTokenEndpointResponse(as, client, await stripIdToken(response)),
+    await oauth.processGenericTokenEndpointResponse(
+      as,
+      client,
+      await normalizeTokenEndpointResponse(response),
+    ),
   );
 
 // ---------------------------------------------------------------------------
@@ -681,7 +707,7 @@ export const refreshAccessToken = (
       const result = await oauth.processRefreshTokenResponse(
         as,
         client,
-        await stripIdToken(response),
+        await normalizeTokenEndpointResponse(response),
       );
       return tokenResponseFrom(result);
     },

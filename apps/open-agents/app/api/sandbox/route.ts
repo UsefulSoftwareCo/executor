@@ -296,6 +296,16 @@ export async function POST(req: Request) {
     sessionRecord,
   });
 
+  console.info("[sandbox-create] resolved sources", {
+    sessionId,
+    sandboxName,
+    branch,
+    currentBranch,
+    hasSource: !!source,
+    sourceCount: sources?.length ?? 0,
+    accessTargets,
+  });
+
   // verify repo access (user permissions ∩ installation scope) and get
   // a repo-scoped read token for clone/setup when a repo is provided
   let setupToken: ScopedInstallationToken | undefined;
@@ -314,6 +324,12 @@ export async function POST(req: Request) {
   }
   setupToken = setupTokenResult.setupToken;
   setupGithubToken = setupTokenResult.setupGithubToken;
+
+  console.info("[sandbox-create] resolved setup token", {
+    sessionId,
+    hasScopedInstallationToken: !!setupToken,
+    hasSetupGithubToken: !!setupGithubToken,
+  });
 
   // ============================================
   // CREATE OR RESUME: Create a named persistent sandbox for this session.
@@ -335,6 +351,14 @@ export async function POST(req: Request) {
         session.user.email ??
         `${session.user.username}@users.noreply.github.com`,
     };
+
+    console.info("[sandbox-create] connect start", {
+      sessionId,
+      sandboxName,
+      persistent: !!sandboxName,
+      resume: !!sandboxName,
+      createIfMissing: !!sandboxName,
+    });
 
     sandbox = await connectSandbox(
       {
@@ -358,6 +382,25 @@ export async function POST(req: Request) {
         },
       },
     );
+    console.info("[sandbox-create] connect complete", {
+      sessionId,
+      sandboxName,
+      durationMs: Date.now() - startTime,
+      sandboxType: sandbox.type,
+      workingDirectory: sandbox.workingDirectory,
+      hasState: !!sandbox.getState,
+    });
+  } catch (error) {
+    console.error(
+      "[sandbox-create] connect failed",
+      {
+        sessionId,
+        sandboxName,
+        durationMs: Date.now() - startTime,
+      },
+      error,
+    );
+    throw error;
   } finally {
     if (setupToken) {
       await revokeInstallationToken(setupToken.token);
@@ -370,6 +413,11 @@ export async function POST(req: Request) {
       sandboxState: nextState,
       lifecycleVersion: getNextLifecycleVersion(sessionRecord?.lifecycleVersion),
       ...buildActiveLifecycleUpdate(nextState),
+    });
+    console.info("[sandbox-create] persisted active state", {
+      sessionId,
+      durationMs: Date.now() - startTime,
+      sandboxType: nextState.type,
     });
 
     if (sessionRecord) {

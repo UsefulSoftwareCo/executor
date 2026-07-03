@@ -60,6 +60,7 @@ const REQUIRED_ENV_GROUPS: Record<string, readonly string[]> = {
     "BETTER_AUTH_URL",
     "NEXT_PUBLIC_VERCEL_APP_CLIENT_ID",
     "VERCEL_APP_CLIENT_SECRET",
+    "EXECUTOR_SECRET_KEY",
     "OPEN_AGENTS_AUTH_MODE",
     "OPEN_AGENTS_ALLOW_PUBLIC_REPO_SESSIONS",
     "OPEN_AGENTS_RESOURCE_PROFILE",
@@ -67,14 +68,12 @@ const REQUIRED_ENV_GROUPS: Record<string, readonly string[]> = {
   ],
 };
 
-const STORAGE_ENV_KEYS = new Set([
-  ...REQUIRED_ENV_GROUPS.postgres,
-  ...REQUIRED_ENV_GROUPS.redis,
-]);
+const STORAGE_ENV_KEYS = new Set([...REQUIRED_ENV_GROUPS.postgres, ...REQUIRED_ENV_GROUPS.redis]);
 
 const ALLOW_EMPTY_ENCRYPTED_PULL_VALUES = new Set([
   "BETTER_AUTH_SECRET",
   "VERCEL_APP_CLIENT_SECRET",
+  "EXECUTOR_SECRET_KEY",
 ]);
 
 const FORBIDDEN_STORAGE_VALUE_FRAGMENTS = [
@@ -186,7 +185,9 @@ function assertProject(project: Record<string, unknown>): void {
   for (const [key, expected] of Object.entries(EXPECTED_PROJECT)) {
     const actual = projectSetting(project, key);
     if (actual !== expected) {
-      fail(`Vercel project ${key} must be ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      fail(
+        `Vercel project ${key} must be ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+      );
     }
   }
 }
@@ -230,7 +231,10 @@ function assertServiceConfig(config: Record<string, unknown>): void {
         ? (destination as Record<string, unknown>).service
         : undefined;
 
-    if ((rewrite as Record<string, unknown>).source !== expected.source || service !== expected.service) {
+    if (
+      (rewrite as Record<string, unknown>).source !== expected.source ||
+      service !== expected.service
+    ) {
       fail(
         `vercel.json rewrites[${index}] must route ${expected.source} to service ${expected.service}`,
       );
@@ -260,7 +264,9 @@ function assertEnv(env: Map<string, string>): void {
 
   const authMode = env.get("OPEN_AGENTS_AUTH_MODE");
   if (authMode !== "oauth") {
-    fail('OPEN_AGENTS_AUTH_MODE must be "oauth" so production uses the signed-in Vercel OAuth user');
+    fail(
+      'OPEN_AGENTS_AUTH_MODE must be "oauth" so production uses the signed-in Vercel OAuth user',
+    );
   }
 
   for (const [key, value] of env) {
@@ -317,8 +323,10 @@ function assertOptionalJsonSecrets(env: Map<string, string>): void {
 }
 
 const workspaceRoot = findWorkspaceRoot();
-const projectFile = readArg("--project-file") ?? path.join(workspaceRoot, ".vercel", "project.json");
-const envFile = readArg("--env-file") ?? path.join(workspaceRoot, ".vercel", ".env.production.local");
+const projectFile =
+  readArg("--project-file") ?? path.join(workspaceRoot, ".vercel", "project.json");
+const envFile =
+  readArg("--env-file") ?? path.join(workspaceRoot, ".vercel", ".env.production.local");
 
 if (!existsSync(projectFile)) {
   fail(`Missing Vercel project file: ${projectFile}`);
@@ -334,5 +342,9 @@ assertEnv(readEnvFile(envFile));
 console.log("✓ openagents Vercel project settings and pulled production env are valid");
 console.log(`  project: ${projectFile}`);
 console.log(`  env: ${envFile}`);
-console.log("  storage policy: only openagents-postgres/openagents-redis are allowed; known shared Augment resource names are blocked");
-console.log("  optional CLI secrets: Braintrust, Datadog Pup, and Snowflake shapes are validated when configured");
+console.log(
+  "  storage policy: only openagents-postgres/openagents-redis are allowed; known shared Augment resource names are blocked",
+);
+console.log(
+  "  optional CLI secrets: Braintrust, Datadog Pup, and Snowflake shapes are validated when configured",
+);

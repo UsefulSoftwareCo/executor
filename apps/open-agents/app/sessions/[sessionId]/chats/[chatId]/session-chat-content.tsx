@@ -2,12 +2,7 @@
 
 import { formatTokens } from "@open-agents/shared";
 import type { AskUserQuestionInput } from "@/lib/chat/tool-contracts";
-import {
-  isReasoningUIPart,
-  isToolUIPart,
-  type FileUIPart,
-  type LanguageModelUsage,
-} from "ai";
+import { isReasoningUIPart, isToolUIPart, type FileUIPart, type LanguageModelUsage } from "ai";
 import {
   Archive,
   ArrowDown,
@@ -31,22 +26,12 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
 import type { ChatRefreshResponse } from "@/app/api/sessions/[sessionId]/chats/[chatId]/route";
 import type { MergePullRequestResult } from "@/lib/github/actions/pr";
-import {
-  getDeploymentUrl,
-  type PrDeploymentResponse,
-} from "@/lib/github/queries/deployment";
+import { getDeploymentUrl, type PrDeploymentResponse } from "@/lib/github/queries/deployment";
 import type { CheckRun } from "@/lib/github/pulls";
 import type {
   WebAgentCommitDataPart,
@@ -56,10 +41,7 @@ import type {
   WebAgentUIMessagePart,
   WebAgentUIToolPart,
 } from "@/app/types";
-import {
-  AssistantFileLink,
-  type AssistantFileLinkProps,
-} from "@/components/assistant-file-link";
+import { AssistantFileLink, type AssistantFileLinkProps } from "@/components/assistant-file-link";
 import { FileSuggestionsDropdown } from "@/components/file-suggestions-dropdown";
 import { ImageAttachmentsPreview } from "@/components/image-attachments-preview";
 import { TextAttachmentsPreview } from "@/components/text-attachments-preview";
@@ -69,10 +51,7 @@ import { SlashCommandDropdown } from "@/components/slash-command-dropdown";
 import { SnippetChip } from "@/components/snippet-chip";
 import { AssistantMessageGroups } from "@/components/assistant-message-groups";
 import { MessageModelPill } from "@/components/message-model-pill";
-import {
-  PinnedTodoPanel,
-  getLatestTodos,
-} from "@/components/pinned-todo-panel";
+import { PinnedTodoPanel, getLatestTodos } from "@/components/pinned-todo-panel";
 import { ThinkingBlock } from "@/components/thinking-block";
 import { ToolCall } from "@/components/tool-call";
 import { OpenFileProvider } from "@/components/tool-call/open-file-context";
@@ -88,11 +67,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAudioRecording } from "@/hooks/use-audio-recording";
 import { useFileSuggestions } from "@/hooks/use-file-suggestions";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
@@ -145,10 +120,7 @@ import "streamdown/styles.css";
 const ACTIVITY_PING_THROTTLE_MS = 5 * 60 * 1000;
 const ENABLE_BACKGROUND_POLLING = process.env.NODE_ENV === "production";
 
-const DiffViewer = dynamic(
-  () => import("./diff-viewer").then((m) => m.DiffViewer),
-  { ssr: false },
-);
+const DiffViewer = dynamic(() => import("./diff-viewer").then((m) => m.DiffViewer), { ssr: false });
 
 const MergePrDialog = dynamic(
   () => import("@/components/merge-pr-dialog").then((m) => m.MergePrDialog),
@@ -160,22 +132,16 @@ const ClosePrDialog = dynamic(
 );
 
 const CreateRepoDialog = dynamic(
-  () =>
-    import("@/components/create-repo-dialog").then((m) => m.CreateRepoDialog),
+  () => import("@/components/create-repo-dialog").then((m) => m.CreateRepoDialog),
   { ssr: false },
 );
-const Streamdown = dynamic(
-  () => import("streamdown").then((m) => m.Streamdown),
-  { ssr: false },
-);
-const DiffTabView = dynamic(
-  () => import("./diff-tab-view").then((m) => m.DiffTabView),
-  { ssr: false },
-);
-const FileTabView = dynamic(
-  () => import("./file-tab-view").then((m) => m.FileTabView),
-  { ssr: false },
-);
+const Streamdown = dynamic(() => import("streamdown").then((m) => m.Streamdown), { ssr: false });
+const DiffTabView = dynamic(() => import("./diff-tab-view").then((m) => m.DiffTabView), {
+  ssr: false,
+});
+const FileTabView = dynamic(() => import("./file-tab-view").then((m) => m.FileTabView), {
+  ssr: false,
+});
 const GitPanel = dynamic(() => import("./git-panel").then((m) => m.GitPanel), {
   ssr: false,
 });
@@ -190,10 +156,7 @@ function useHasMounted() {
   );
 }
 
-type ReasoningMessagePart = Extract<
-  WebAgentUIMessagePart,
-  { type: "reasoning" }
->;
+type ReasoningMessagePart = Extract<WebAgentUIMessagePart, { type: "reasoning" }>;
 
 type MessageRenderGroup =
   | {
@@ -248,11 +211,7 @@ function getReasoningGroupText(parts: ReasoningMessagePart[]): string {
     .join("\n\n");
 }
 
-function GitDataPartCard({
-  part,
-}: {
-  part: WebAgentCommitDataPart | WebAgentPrDataPart;
-}) {
+function GitDataPartCard({ part }: { part: WebAgentCommitDataPart | WebAgentPrDataPart }) {
   const isCommit = part.type === "data-commit";
   const { status } = part.data;
   const isPending = status === "pending";
@@ -262,10 +221,7 @@ function GitDataPartCard({
   const url = part.data.url;
 
   // Commit-specific data
-  const shortSha =
-    isCommit && part.data.commitSha
-      ? part.data.commitSha.slice(0, 7)
-      : undefined;
+  const shortSha = isCommit && part.data.commitSha ? part.data.commitSha.slice(0, 7) : undefined;
   const commitMessage = isCommit ? part.data.commitMessage : undefined;
 
   // PR-specific data
@@ -318,12 +274,9 @@ function GitDataPartCard({
   );
 
   // For commits with both a SHA and a message, show the message beneath
-  const subtitle =
-    isCommit && shortSha && commitMessage ? commitMessage : undefined;
+  const subtitle = isCommit && shortSha && commitMessage ? commitMessage : undefined;
 
-  const textColor = isError
-    ? "text-red-500/70 dark:text-red-400/70"
-    : "text-muted-foreground/70";
+  const textColor = isError ? "text-red-500/70 dark:text-red-400/70" : "text-muted-foreground/70";
 
   const Wrapper = url && !isPending ? "a" : "div";
   const wrapperProps =
@@ -353,9 +306,7 @@ function GitDataPartCard({
           className={cn(
             "truncate text-xs font-medium",
             textColor,
-            url &&
-              !isPending &&
-              "group-hover/sep:text-foreground transition-colors",
+            url && !isPending && "group-hover/sep:text-foreground transition-colors",
           )}
         >
           {label}
@@ -367,9 +318,7 @@ function GitDataPartCard({
               className={cn(
                 "truncate font-mono text-[11px]",
                 textColor,
-                url &&
-                  !isPending &&
-                  "group-hover/sep:text-foreground transition-colors",
+                url && !isPending && "group-hover/sep:text-foreground transition-colors",
               )}
             >
               {detail}
@@ -443,9 +392,7 @@ function getCachedInputTokens(usage: LanguageModelUsage | undefined): number {
   return usage?.inputTokenDetails.cacheReadTokens ?? 0;
 }
 
-function getUsageTotals(
-  usage: LanguageModelUsage | undefined,
-): MessageUsageTotals {
+function getUsageTotals(usage: LanguageModelUsage | undefined): MessageUsageTotals {
   return {
     inputTokens: usage?.inputTokens ?? 0,
     cachedInputTokens: getCachedInputTokens(usage),
@@ -453,9 +400,7 @@ function getUsageTotals(
   };
 }
 
-function getLatestContextUsage(
-  messages: WebAgentUIMessage[],
-): MessageUsageTotals {
+function getLatestContextUsage(messages: WebAgentUIMessage[]): MessageUsageTotals {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.role === "assistant" && message.metadata?.lastStepUsage) {
@@ -466,16 +411,13 @@ function getLatestContextUsage(
   return getUsageTotals(undefined);
 }
 
-function getConversationUsage(
-  messages: WebAgentUIMessage[],
-): MessageUsageTotals {
+function getConversationUsage(messages: WebAgentUIMessage[]): MessageUsageTotals {
   return messages.reduce<MessageUsageTotals>((total, message) => {
     if (message.role !== "assistant") {
       return total;
     }
 
-    const usage =
-      message.metadata?.totalMessageUsage ?? message.metadata?.lastStepUsage;
+    const usage = message.metadata?.totalMessageUsage ?? message.metadata?.lastStepUsage;
     if (!usage) {
       return total;
     }
@@ -483,8 +425,7 @@ function getConversationUsage(
     const usageTotals = getUsageTotals(usage);
     return {
       inputTokens: total.inputTokens + usageTotals.inputTokens,
-      cachedInputTokens:
-        total.cachedInputTokens + usageTotals.cachedInputTokens,
+      cachedInputTokens: total.cachedInputTokens + usageTotals.cachedInputTokens,
       outputTokens: total.outputTokens + usageTotals.outputTokens,
     };
   }, getUsageTotals(undefined));
@@ -522,27 +463,19 @@ function getConversationCost(
     }
 
     const gatewayCost = message.metadata?.totalMessageCost;
-    if (
-      typeof gatewayCost === "number" &&
-      Number.isFinite(gatewayCost) &&
-      gatewayCost >= 0
-    ) {
+    if (typeof gatewayCost === "number" && Number.isFinite(gatewayCost) && gatewayCost >= 0) {
       total += gatewayCost;
       hasAnyCost = true;
       sawGateway = true;
       continue;
     }
 
-    const usage =
-      message.metadata?.totalMessageUsage ?? message.metadata?.lastStepUsage;
+    const usage = message.metadata?.totalMessageUsage ?? message.metadata?.lastStepUsage;
     if (!usage) {
       continue;
     }
 
-    const estimatedCost = estimateModelUsageCost(
-      getUsageTotals(usage),
-      modelCost,
-    );
+    const estimatedCost = estimateModelUsageCost(getUsageTotals(usage), modelCost);
     if (estimatedCost === undefined) {
       continue;
     }
@@ -623,8 +556,7 @@ function ContextUsageIndicator({
     return null;
   }
 
-  const percentage =
-    contextLimit > 0 ? Math.round((inputTokens / contextLimit) * 100) : 0;
+  const percentage = contextLimit > 0 ? Math.round((inputTokens / contextLimit) * 100) : 0;
   const uncachedConversationInputTokens = Math.max(
     0,
     conversationInputTokens - conversationCachedInputTokens,
@@ -679,9 +611,7 @@ function ContextUsageIndicator({
                     ? "Cost (partial est.)"
                     : "Est. cost"}
               </span>
-              <span className="tabular-nums">
-                {formatUsd(conversationCost.total)}
-              </span>
+              <span className="tabular-nums">{formatUsd(conversationCost.total)}</span>
             </div>
           ) : null}
         </div>
@@ -828,9 +758,7 @@ function ShareDialog({
 
     const loadShareId = async () => {
       try {
-        const res = await fetch(
-          `/api/sessions/${sessionId}/chats/${chatId}/share`,
-        );
+        const res = await fetch(`/api/sessions/${sessionId}/chats/${chatId}/share`);
         if (!res.ok) {
           return;
         }
@@ -855,12 +783,9 @@ function ShareDialog({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/sessions/${sessionId}/chats/${chatId}/share`,
-        {
-          method: "POST",
-        },
-      );
+      const res = await fetch(`/api/sessions/${sessionId}/chats/${chatId}/share`, {
+        method: "POST",
+      });
       if (!res.ok) {
         setError("Failed to enable sharing");
         return;
@@ -878,12 +803,9 @@ function ShareDialog({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/sessions/${sessionId}/chats/${chatId}/share`,
-        {
-          method: "DELETE",
-        },
-      );
+      const res = await fetch(`/api/sessions/${sessionId}/chats/${chatId}/share`, {
+        method: "DELETE",
+      });
       if (!res.ok) {
         setError("Failed to disable sharing");
         return;
@@ -959,9 +881,7 @@ function ShareDialog({
                 onClick={() => void disableSharing()}
                 disabled={isLoading}
               >
-                {isLoading ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : null}
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Revoke link
               </Button>
               <DialogClose asChild>
@@ -973,11 +893,7 @@ function ShareDialog({
           </>
         ) : (
           <DialogFooter>
-            <Button
-              onClick={() => void enableSharing()}
-              disabled={isLoading}
-              className="w-full"
-            >
+            <Button onClick={() => void enableSharing()} disabled={isLoading} className="w-full">
               {isLoading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -1016,18 +932,15 @@ export function SessionChatContent({
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [repoDialogOpen, setRepoDialogOpen] = useState(false);
   const [showDiffPanel, setShowDiffPanel] = useState(false);
-  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<
-    string | null
-  >(null);
+  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<string | null>(null);
   const [mobileArchiveDialogOpen, setMobileArchiveDialogOpen] = useState(false);
   const [mobileShareOpen, setMobileShareOpen] = useState(false);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [copiedAssistantMessageId, setCopiedAssistantMessageId] = useState<
-    string | null
-  >(null);
-  const [branchPreviewUrlChangeBaseline, setBranchPreviewUrlChangeBaseline] =
-    useState<string | null | undefined>(undefined);
+  const [copiedAssistantMessageId, setCopiedAssistantMessageId] = useState<string | null>(null);
+  const [branchPreviewUrlChangeBaseline, setBranchPreviewUrlChangeBaseline] = useState<
+    string | null | undefined
+  >(undefined);
   const hasMounted = useHasMounted();
   const {
     activeView,
@@ -1076,42 +989,37 @@ export function SessionChatContent({
     clearRecordingError();
     const transcribedText = await toggleRecording();
     if (transcribedText) {
-      setInput((prev) =>
-        prev ? `${prev} ${transcribedText}` : transcribedText,
-      );
+      setInput((prev) => (prev ? `${prev} ${transcribedText}` : transcribedText));
       inputRef.current?.focus();
     }
   };
 
-  const handleCopyAssistantMessage = useCallback(
-    async (messageId: string, text: string) => {
-      const trimmedText = text.trim();
-      if (trimmedText.length === 0) {
-        return;
-      }
+  const handleCopyAssistantMessage = useCallback(async (messageId: string, text: string) => {
+    const trimmedText = text.trim();
+    if (trimmedText.length === 0) {
+      return;
+    }
 
-      if (typeof navigator === "undefined" || !navigator.clipboard) {
-        return;
-      }
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      return;
+    }
 
-      try {
-        await navigator.clipboard.writeText(trimmedText);
-        setCopiedAssistantMessageId(messageId);
-        if (copyResetTimeoutRef.current !== null) {
-          window.clearTimeout(copyResetTimeoutRef.current);
-        }
-        copyResetTimeoutRef.current = window.setTimeout(() => {
-          setCopiedAssistantMessageId((currentMessageId) =>
-            currentMessageId === messageId ? null : currentMessageId,
-          );
-          copyResetTimeoutRef.current = null;
-        }, 2000);
-      } catch (copyError) {
-        console.error("Failed to copy assistant message:", copyError);
+    try {
+      await navigator.clipboard.writeText(trimmedText);
+      setCopiedAssistantMessageId(messageId);
+      if (copyResetTimeoutRef.current !== null) {
+        window.clearTimeout(copyResetTimeoutRef.current);
       }
-    },
-    [],
-  );
+      copyResetTimeoutRef.current = window.setTimeout(() => {
+        setCopiedAssistantMessageId((currentMessageId) =>
+          currentMessageId === messageId ? null : currentMessageId,
+        );
+        copyResetTimeoutRef.current = null;
+      }, 2000);
+    } catch (copyError) {
+      console.error("Failed to copy assistant message:", copyError);
+    }
+  }, []);
 
   // Auto-resize textarea up to 3 lines
   useEffect(() => {
@@ -1151,14 +1059,9 @@ export function SessionChatContent({
     fileInputRef,
     openFilePicker,
   } = useImageAttachments();
-  const {
-    textAttachments,
-    addTextAttachment,
-    removeTextAttachment,
-    clearTextAttachments,
-  } = useTextAttachments();
-  const { containerRef, isAtBottom, scrollToBottom } =
-    useScrollToBottom<HTMLDivElement>();
+  const { textAttachments, addTextAttachment, removeTextAttachment, clearTextAttachments } =
+    useTextAttachments();
+  const { containerRef, isAtBottom, scrollToBottom } = useScrollToBottom<HTMLDivElement>();
   const {
     session,
     chatInfo,
@@ -1252,14 +1155,8 @@ export function SessionChatContent({
     addToolApprovalResponse,
     addInputResponse,
   } = chat;
-  const {
-    chats,
-    markChatRead,
-    setChatStreaming,
-    setChatTitle,
-    clearChatTitle,
-    refreshChats,
-  } = useSessionChats(session.id);
+  const { chats, markChatRead, setChatStreaming, setChatTitle, clearChatTitle, refreshChats } =
+    useSessionChats(session.id);
   const currentChatListItem = useMemo(
     () => chats.find((candidate) => candidate.id === chatInfo.id) ?? null,
     [chatInfo.id, chats],
@@ -1272,10 +1169,7 @@ export function SessionChatContent({
   // idle state while the runtime settles the aborted request.
   const [userStopped, setUserStopped] = useState(false);
   const isChatInFlight = isChatInFlightStatus(status) && !userStopped;
-  const lastMessage = useMemo(
-    () => renderMessages[renderMessages.length - 1],
-    [renderMessages],
-  );
+  const lastMessage = useMemo(() => renderMessages[renderMessages.length - 1], [renderMessages]);
   const gitFinalizationState = useMemo(
     () =>
       getGitFinalizationState({
@@ -1357,8 +1251,7 @@ export function SessionChatContent({
   }, [isChatInFlight, hasPendingResponse, hasAssistantRenderableContent]);
 
   const hasSeenAssistantRenderableContent =
-    hasAssistantRenderableContent ||
-    hasSeenAssistantRenderableContentRef.current;
+    hasAssistantRenderableContent || hasSeenAssistantRenderableContentRef.current;
   const effectiveStatus = userStopped
     ? "ready"
     : hasPendingResponse || shouldUseChatListStreaming
@@ -1443,8 +1336,7 @@ export function SessionChatContent({
       return {
         message,
         groups,
-        isStreaming:
-          isChatInFlight && messageIndex === renderMessages.length - 1,
+        isStreaming: isChatInFlight && messageIndex === renderMessages.length - 1,
       };
     });
   }, [renderMessages, isChatInFlight]);
@@ -1496,32 +1388,21 @@ export function SessionChatContent({
 
   const requestMarkChatRead = useCallback(
     async (mode: "normal" | "force" = "normal"): Promise<void> => {
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState !== "visible"
-      ) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
 
       // For passive/background-triggered marks, require focus too.
       // Force marks run on route entry/turn completion and should not wait for
       // focus when the tab is already visible.
-      if (
-        mode === "normal" &&
-        typeof document !== "undefined" &&
-        !document.hasFocus()
-      ) {
+      if (mode === "normal" && typeof document !== "undefined" && !document.hasFocus()) {
         return;
       }
 
       const now = Date.now();
       const isSameChat = markReadRef.current.lastChatId === chatInfo.id;
       if (markReadRef.current.inFlight) return;
-      if (
-        mode === "normal" &&
-        isSameChat &&
-        now - markReadRef.current.lastAt < 3_000
-      ) {
+      if (mode === "normal" && isSameChat && now - markReadRef.current.lastAt < 3_000) {
         return;
       }
 
@@ -1551,12 +1432,9 @@ export function SessionChatContent({
       return;
     }
 
-    const response = await fetch(
-      `/api/sessions/${session.id}/chats/${chatInfo.id}`,
-      {
-        cache: "no-store",
-      },
-    );
+    const response = await fetch(`/api/sessions/${session.id}/chats/${chatInfo.id}`, {
+      cache: "no-store",
+    });
     if (!response.ok) {
       return;
     }
@@ -1625,11 +1503,7 @@ export function SessionChatContent({
 
   // Refresh chats list when the first message completes to pick up the auto-generated title
   useEffect(() => {
-    if (
-      !hadInitialMessages &&
-      status === "ready" &&
-      messages.some((m) => m.role === "assistant")
-    ) {
+    if (!hadInitialMessages && status === "ready" && messages.some((m) => m.role === "assistant")) {
       refreshChats();
     }
   }, [hadInitialMessages, status, messages, refreshChats]);
@@ -1694,11 +1568,7 @@ export function SessionChatContent({
     [modelOptions, chatInfo.modelId],
   );
 
-  const handleFileSelect = (
-    value: string,
-    mentionStart: number,
-    cursorPos: number,
-  ) => {
+  const handleFileSelect = (value: string, mentionStart: number, cursorPos: number) => {
     const before = input.slice(0, mentionStart);
     const after = input.slice(cursorPos);
     const newInput = `${before}@${value} ${after}`;
@@ -1729,11 +1599,7 @@ export function SessionChatContent({
     onSelect: handleFileSelect,
   });
 
-  const handleSlashCommandSelect = (
-    skillName: string,
-    slashStart: number,
-    cursorPos: number,
-  ) => {
+  const handleSlashCommandSelect = (skillName: string, slashStart: number, cursorPos: number) => {
     const before = input.slice(0, slashStart);
     const after = input.slice(cursorPos);
     const newInput = `${before}/${skillName} ${after}`;
@@ -1748,32 +1614,74 @@ export function SessionChatContent({
     }, 0);
   };
 
-  const {
-    showSlashCommands,
-    slashSuggestions,
-    selectedSlashIndex,
-    handleSlashKeyDown,
-    slashInfo,
-  } = useSlashCommands({
-    inputValue: input,
-    cursorPosition,
-    skills,
-    onSelect: handleSlashCommandSelect,
-  });
+  const { showSlashCommands, slashSuggestions, selectedSlashIndex, handleSlashKeyDown, slashInfo } =
+    useSlashCommands({
+      inputValue: input,
+      cursorPosition,
+      skills,
+      onSelect: handleSlashCommandSelect,
+    });
 
-  const [sandboxCreateError, setSandboxCreateError] =
-    useState<SandboxCreateErrorDetails | null>(null);
+  const [sandboxCreateError, setSandboxCreateError] = useState<SandboxCreateErrorDetails | null>(
+    null,
+  );
+  const isArchived = session.status === "archived";
   shouldSkipServerSnapshotOverwriteRef.current = hasPendingResponse;
+
+  const ensureSandboxForMessage = useCallback(async () => {
+    if (isArchived || sandboxInfo || isCreatingSandbox) {
+      return;
+    }
+
+    setIsCreatingSandbox(true);
+    setSandboxCreateError(null);
+
+    try {
+      const branchExistsOnOrigin = session.prNumber != null;
+      const shouldCreateNewBranch = session.isNewBranch && !branchExistsOnOrigin;
+      const newSandbox = await createSandbox(
+        session.cloneUrl ?? undefined,
+        session.branch ?? undefined,
+        shouldCreateNewBranch,
+        session.id,
+        preferredSandboxType,
+      );
+      setSandboxInfo(newSandbox);
+      setSandboxTypeFromUnknown(newSandbox.type);
+      setSandboxCreateError(null);
+      void requestStatusSync("force");
+    } catch (err) {
+      const details = getSandboxCreateErrorDetails(err);
+      setSandboxCreateError(details);
+      console.error("Failed to create sandbox:", err);
+      throw err;
+    } finally {
+      setIsCreatingSandbox(false);
+    }
+  }, [
+    isArchived,
+    sandboxInfo,
+    isCreatingSandbox,
+    session.prNumber,
+    session.isNewBranch,
+    session.cloneUrl,
+    session.branch,
+    session.id,
+    preferredSandboxType,
+    setSandboxInfo,
+    setSandboxTypeFromUnknown,
+    requestStatusSync,
+  ]);
 
   const sendMessageWithPendingState = useCallback(
     async (message: Parameters<typeof sendMessage>[0]) => {
-      setHasPendingResponse(true);
-      setUserStopped(false);
-      lastSendTimestampRef.current = Date.now();
-      hasSeenAssistantRenderableContentRef.current = false;
-      void setChatStreaming(chatInfo.id, true);
-
       try {
+        await ensureSandboxForMessage();
+        setHasPendingResponse(true);
+        setUserStopped(false);
+        lastSendTimestampRef.current = Date.now();
+        hasSeenAssistantRenderableContentRef.current = false;
+        void setChatStreaming(chatInfo.id, true);
         await sendMessage(message);
       } catch (error) {
         setHasPendingResponse(false);
@@ -1781,7 +1689,7 @@ export function SessionChatContent({
         throw error;
       }
     },
-    [chatInfo.id, sendMessage, setChatStreaming],
+    [chatInfo.id, ensureSandboxForMessage, sendMessage, setChatStreaming],
   );
 
   const handleFixChecks = useCallback(
@@ -1847,44 +1755,6 @@ export function SessionChatContent({
     [sendMessageWithPendingState],
   );
 
-  const _handleCreateNewSandbox = useCallback(async () => {
-    setIsCreatingSandbox(true);
-    setSandboxCreateError(null);
-
-    try {
-      const branchExistsOnOrigin = session.prNumber != null;
-      const shouldCreateNewBranch =
-        session.isNewBranch && !branchExistsOnOrigin;
-      const newSandbox = await createSandbox(
-        session.cloneUrl ?? undefined,
-        session.branch ?? undefined,
-        shouldCreateNewBranch,
-        session.id,
-        preferredSandboxType,
-      );
-      setSandboxInfo(newSandbox);
-      setSandboxTypeFromUnknown(newSandbox.type);
-      setSandboxCreateError(null);
-      void requestStatusSync("force");
-    } catch (err) {
-      const details = getSandboxCreateErrorDetails(err);
-      setSandboxCreateError(details);
-      console.error("Failed to create sandbox:", err);
-    } finally {
-      setIsCreatingSandbox(false);
-    }
-  }, [
-    session.prNumber,
-    session.isNewBranch,
-    session.cloneUrl,
-    session.branch,
-    session.id,
-    preferredSandboxType,
-    setSandboxInfo,
-    setSandboxTypeFromUnknown,
-    requestStatusSync,
-  ]);
-
   useEffect(() => {
     if (isAtBottom) {
       scrollToBottom();
@@ -1927,11 +1797,7 @@ export function SessionChatContent({
     }
 
     let followUpTimeout: ReturnType<typeof setTimeout> | null = null;
-    if (
-      (wasStreaming || wasSubmitted) &&
-      status === "ready" &&
-      isMountedRef.current
-    ) {
+    if ((wasStreaming || wasSubmitted) && status === "ready" && isMountedRef.current) {
       if (!userStopped) {
         markAutoCommitStarted();
       }
@@ -1979,27 +1845,15 @@ export function SessionChatContent({
     userStopped,
   ]);
 
-  const isArchived = session.status === "archived";
-
   // Attempt a single reconnect probe on entry to pick up authoritative server state
   // (connected sandbox, no sandbox, and resumable sandbox availability).
   // Skip for archived sessions -- they should never spin up a sandbox.
   useEffect(() => {
     if (isArchived) return;
-    if (
-      !sandboxInfo &&
-      !isCreatingSandbox &&
-      reconnectionStatus === "idle"
-    ) {
+    if (!sandboxInfo && !isCreatingSandbox && reconnectionStatus === "idle") {
       void attemptReconnection();
     }
-  }, [
-    isArchived,
-    sandboxInfo,
-    isCreatingSandbox,
-    reconnectionStatus,
-    attemptReconnection,
-  ]);
+  }, [isArchived, sandboxInfo, isCreatingSandbox, reconnectionStatus, attemptReconnection]);
 
   // Server-authoritative lifecycle state: lightweight status poll every 15s.
   useEffect(() => {
@@ -2007,10 +1861,7 @@ export function SessionChatContent({
 
     const poll = () => {
       if (reconnectionStatus === "checking") return;
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState !== "visible"
-      ) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
       void requestStatusSync("normal");
@@ -2023,11 +1874,7 @@ export function SessionChatContent({
 
     const interval = setInterval(poll, 15_000);
     return () => clearInterval(interval);
-  }, [
-    isCreatingSandbox,
-    reconnectionStatus,
-    requestStatusSync,
-  ]);
+  }, [isCreatingSandbox, reconnectionStatus, requestStatusSync]);
 
   // Track tool completions to trigger diff refresh
   const prevToolStatesRef = useRef<Map<string, string>>(new Map());
@@ -2067,8 +1914,7 @@ export function SessionChatContent({
         const toolState = part.state;
         const prevState = prevToolStatesRef.current.get(toolId);
         const isFileModifyingTool = fileModifyingTools.includes(part.type);
-        const justCompleted =
-          toolState === "output-available" && prevState !== "output-available";
+        const justCompleted = toolState === "output-available" && prevState !== "output-available";
 
         if (isFileModifyingTool && justCompleted) {
           hasFileChange = true;
@@ -2086,25 +1932,13 @@ export function SessionChatContent({
       refreshGitStatus().catch(() => {});
       refreshFiles().catch(() => {});
     }
-  }, [
-    currentToolStates,
-    messages,
-    refreshDiff,
-    refreshGitStatus,
-    refreshFiles,
-  ]);
+  }, [currentToolStates, messages, refreshDiff, refreshGitStatus, refreshFiles]);
 
   // Note: SWR handles automatic fetching when sandbox becomes available
   // and caching/deduplication of requests
 
-  const tokenUsage = useMemo(
-    () => getLatestContextUsage(renderMessages),
-    [renderMessages],
-  );
-  const conversationUsage = useMemo(
-    () => getConversationUsage(renderMessages),
-    [renderMessages],
-  );
+  const tokenUsage = useMemo(() => getLatestContextUsage(renderMessages), [renderMessages]);
+  const conversationUsage = useMemo(() => getConversationUsage(renderMessages), [renderMessages]);
   const conversationCost = useMemo(
     () => getConversationCost(renderMessages, selectedModelOption?.cost),
     [renderMessages, selectedModelOption?.cost],
@@ -2114,11 +1948,7 @@ export function SessionChatContent({
     const lastMessage = renderMessages[renderMessages.length - 1];
     if (lastMessage?.role === "assistant") {
       for (const p of lastMessage.parts) {
-        if (
-          isToolUIPart(p) &&
-          p.type === "tool-ask_question" &&
-          p.state === "approval-requested"
-        ) {
+        if (isToolUIPart(p) && p.type === "tool-ask_question" && p.state === "approval-requested") {
           return {
             pendingQuestion: p.input as AskUserQuestionInput,
             questionRequestId: p.approval.id,
@@ -2162,9 +1992,7 @@ export function SessionChatContent({
   const showInlineQuestion = inlineQuestion.isActive;
 
   const isReconnectingSandbox =
-    reconnectionStatus === "checking" &&
-    !sandboxInfo &&
-    !isCreatingSandbox;
+    reconnectionStatus === "checking" && !sandboxInfo && !isCreatingSandbox;
   const isHibernatingTransition =
     isReconnectingSandbox && hasResumableSandbox && !hasRuntimeSandboxState;
   const isArchivePausePending = isArchived && hasRuntimeSandboxState;
@@ -2260,12 +2088,8 @@ export function SessionChatContent({
   const hasRepo = Boolean(session.cloneUrl);
   const hasExistingPr = session.prNumber != null;
   const previewLookupBranch =
-    gitStatus?.branch && gitStatus.branch !== "HEAD"
-      ? gitStatus.branch
-      : session.branch;
-  const hasBranchPreviewLookup = Boolean(
-    session.vercelProjectId && previewLookupBranch,
-  );
+    gitStatus?.branch && gitStatus.branch !== "HEAD" ? gitStatus.branch : session.branch;
+  const hasBranchPreviewLookup = Boolean(session.vercelProjectId && previewLookupBranch);
   const existingPrUrl =
     hasExistingPr && session.repoOwner && session.repoName
       ? `https://github.com/${session.repoOwner}/${session.repoName}/pull/${session.prNumber}`
@@ -2276,37 +2100,33 @@ export function SessionChatContent({
       ...(previewLookupBranch ? { branch: previewLookupBranch } : {}),
     }),
   ).toString();
-  const { data: prDeploymentData, mutate: refreshPrDeployment } =
-    useSWR<PrDeploymentResponse>(
-      hasExistingPr || hasBranchPreviewLookup
-        ? `/api/sessions/${session.id}/pr-deployment${
-            prDeploymentQuery ? `?${prDeploymentQuery}` : ""
-          }`
-        : null,
-      async () =>
-        getDeploymentUrl({
-          sessionId: session.id,
-          ...(hasExistingPr && session.prNumber
-            ? { prNumber: session.prNumber }
-            : {}),
-          ...(previewLookupBranch ? { branch: previewLookupBranch } : {}),
+  const { data: prDeploymentData, mutate: refreshPrDeployment } = useSWR<PrDeploymentResponse>(
+    hasExistingPr || hasBranchPreviewLookup
+      ? `/api/sessions/${session.id}/pr-deployment${
+          prDeploymentQuery ? `?${prDeploymentQuery}` : ""
+        }`
+      : null,
+    async () =>
+      getDeploymentUrl({
+        sessionId: session.id,
+        ...(hasExistingPr && session.prNumber ? { prNumber: session.prNumber } : {}),
+        ...(previewLookupBranch ? { branch: previewLookupBranch } : {}),
+      }),
+    {
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      // Poll while we're still waiting for the first deployment, or while a
+      // branch preview is rolling forward to a newer deployment after a push.
+      refreshInterval: (latestData) =>
+        getPrDeploymentRefreshInterval({
+          shouldPoll: hasExistingPr || hasBranchPreviewLookup,
+          deploymentUrl: latestData?.deploymentUrl,
+          documentHasFocus: typeof document === "undefined" ? true : document.hasFocus(),
+          waitForDeploymentUrlChangeFrom: branchPreviewUrlChangeBaseline,
         }),
-      {
-        revalidateOnFocus: true,
-        revalidateOnReconnect: true,
-        // Poll while we're still waiting for the first deployment, or while a
-        // branch preview is rolling forward to a newer deployment after a push.
-        refreshInterval: (latestData) =>
-          getPrDeploymentRefreshInterval({
-            shouldPoll: hasExistingPr || hasBranchPreviewLookup,
-            deploymentUrl: latestData?.deploymentUrl,
-            documentHasFocus:
-              typeof document === "undefined" ? true : document.hasFocus(),
-            waitForDeploymentUrlChangeFrom: branchPreviewUrlChangeBaseline,
-          }),
-        shouldRetryOnError: false,
-      },
-    );
+      shouldRetryOnError: false,
+    },
+  );
   const prDeploymentUrl = prDeploymentData?.deploymentUrl ?? null;
   const buildingDeploymentUrl = prDeploymentData?.buildingDeploymentUrl ?? null;
   const failedDeploymentUrl = prDeploymentData?.failedDeploymentUrl ?? null;
@@ -2326,25 +2146,16 @@ export function SessionChatContent({
     if (prDeploymentUrl !== branchPreviewUrlChangeBaseline) {
       setBranchPreviewUrlChangeBaseline(undefined);
     }
-  }, [
-    hasExistingPr,
-    hasBranchPreviewLookup,
-    branchPreviewUrlChangeBaseline,
-    prDeploymentUrl,
-  ]);
+  }, [hasExistingPr, hasBranchPreviewLookup, branchPreviewUrlChangeBaseline, prDeploymentUrl]);
 
   const isDeploymentStale = branchPreviewUrlChangeBaseline !== undefined;
   const isDeploymentFailed =
-    !prDeploymentUrl &&
-    !buildingDeploymentUrl &&
-    !hasExistingPr &&
-    Boolean(failedDeploymentUrl);
+    !prDeploymentUrl && !buildingDeploymentUrl && !hasExistingPr && Boolean(failedDeploymentUrl);
   const previewDeploymentTargetUrl =
     (isDeploymentStale ? buildingDeploymentUrl : null) ??
     prDeploymentUrl ??
     (isDeploymentFailed ? failedDeploymentUrl : null);
-  const showHeaderActions =
-    canRunDevServer || Boolean(previewDeploymentTargetUrl);
+  const showHeaderActions = canRunDevServer || Boolean(previewDeploymentTargetUrl);
 
   // When auto-commit lands (transitions from committing to clean), mark the
   // current preview deployment as stale so the UI shows "Deploying…" until
@@ -2354,11 +2165,7 @@ export function SessionChatContent({
     const wasAutoCommitting = prevIsAutoCommittingRef.current;
     prevIsAutoCommittingRef.current = isAutoCommitting;
 
-    if (
-      wasAutoCommitting &&
-      !isAutoCommitting &&
-      (hasExistingPr || hasBranchPreviewLookup)
-    ) {
+    if (wasAutoCommitting && !isAutoCommitting && (hasExistingPr || hasBranchPreviewLookup)) {
       setBranchPreviewUrlChangeBaseline(prDeploymentUrl);
       refreshPrDeployment().catch(() => undefined);
     }
@@ -2373,8 +2180,7 @@ export function SessionChatContent({
   const hasUncommittedGitChanges = gitStatus?.hasUncommittedChanges ?? false;
   const hasUnpushedCommits = gitStatus?.hasUnpushedCommits ?? false;
   const showCommitAction =
-    hasRepo &&
-    (hasUncommittedGitChanges || (hasExistingPr && hasUnpushedCommits));
+    hasRepo && (hasUncommittedGitChanges || (hasExistingPr && hasUnpushedCommits));
 
   // Sync the "action needed" indicator for the right sidebar toggle button
   useEffect(() => {
@@ -2391,18 +2197,9 @@ export function SessionChatContent({
   // changes, no PR created yet, and no uncommitted changes to deal with
   useEffect(() => {
     setHasCommittedChanges(
-      hasRepo &&
-        totalChangesCount > 0 &&
-        !hasExistingPr &&
-        !hasUncommittedGitChanges,
+      hasRepo && totalChangesCount > 0 && !hasExistingPr && !hasUncommittedGitChanges,
     );
-  }, [
-    hasRepo,
-    totalChangesCount,
-    hasExistingPr,
-    hasUncommittedGitChanges,
-    setHasCommittedChanges,
-  ]);
+  }, [hasRepo, totalChangesCount, hasExistingPr, hasUncommittedGitChanges, setHasCommittedChanges]);
   const hasOpenPr = hasExistingPr && session.prStatus === "open";
   const canCloseAndArchive = hasOpenPr && !isArchived;
   const handleCommitted = useCallback(async () => {
@@ -2439,10 +2236,7 @@ export function SessionChatContent({
       });
 
       if (mergeResult.branchDeleteError) {
-        console.warn(
-          "PR merged but source branch was not deleted:",
-          mergeResult.branchDeleteError,
-        );
+        console.warn("PR merged but source branch was not deleted:", mergeResult.branchDeleteError);
       }
 
       try {
@@ -2450,9 +2244,7 @@ export function SessionChatContent({
         router.push("/sessions");
       } catch (archiveError) {
         const archiveMessage =
-          archiveError instanceof Error
-            ? archiveError.message
-            : "Failed to archive session";
+          archiveError instanceof Error ? archiveError.message : "Failed to archive session";
         throw new Error(
           `Pull request merged, but archiving the session failed: ${archiveMessage}`,
           {
@@ -2476,9 +2268,7 @@ export function SessionChatContent({
         router.push("/sessions");
       } catch (archiveError) {
         const archiveMessage =
-          archiveError instanceof Error
-            ? archiveError.message
-            : "Failed to archive session";
+          archiveError instanceof Error ? archiveError.message : "Failed to archive session";
         throw new Error(
           `Pull request closed, but archiving the session failed: ${archiveMessage}`,
           {
@@ -2559,10 +2349,7 @@ export function SessionChatContent({
                       </Button>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent
-                    side="bottom"
-                    className="max-w-72 text-pretty"
-                  >
+                  <TooltipContent side="bottom" className="max-w-72 text-pretty">
                     {codeEditorDisabledReason ?? codeEditor.menuLabel}
                   </TooltipContent>
                 </Tooltip>
@@ -2580,9 +2367,7 @@ export function SessionChatContent({
                             <Globe className="h-3 w-3" />
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent side="bottom">
-                          Open dev server
-                        </TooltipContent>
+                        <TooltipContent side="bottom">Open dev server</TooltipContent>
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -2595,21 +2380,14 @@ export function SessionChatContent({
                             <Square className="h-2.5 w-2.5 fill-current" />
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent side="bottom">
-                          Stop dev server
-                        </TooltipContent>
+                        <TooltipContent side="bottom">Stop dev server</TooltipContent>
                       </Tooltip>
                     </div>
                   ) : devServer.state.status === "starting" ||
                     devServer.state.status === "stopping" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          disabled
-                        >
+                        <Button variant="ghost" size="icon" className="h-7 w-7" disabled>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         </Button>
                       </TooltipTrigger>
@@ -2631,9 +2409,7 @@ export function SessionChatContent({
                           <Play className="h-3.5 w-3.5 fill-current" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        Start dev server
-                      </TooltipContent>
+                      <TooltipContent side="bottom">Start dev server</TooltipContent>
                     </Tooltip>
                   )}
                 </div>
@@ -2662,9 +2438,7 @@ export function SessionChatContent({
                         className={cn(
                           "h-3.5 w-3.5",
                           isDeploymentFailed && "text-red-500",
-                          !isDeploymentFailed &&
-                            !isDeploymentStale &&
-                            "text-green-500",
+                          !isDeploymentFailed && !isDeploymentStale && "text-green-500",
                           !isDeploymentFailed &&
                             isDeploymentStale &&
                             "animate-pulse text-amber-500",
@@ -2697,16 +2471,13 @@ export function SessionChatContent({
         />
 
         {/* Archive confirmation dialog */}
-        <Dialog
-          open={mobileArchiveDialogOpen}
-          onOpenChange={setMobileArchiveDialogOpen}
-        >
+        <Dialog open={mobileArchiveDialogOpen} onOpenChange={setMobileArchiveDialogOpen}>
           <DialogContent showCloseButton={false}>
             <DialogHeader>
               <DialogTitle>Archive session?</DialogTitle>
               <DialogDescription>
-                This will stop the sandbox and archive the session. You can
-                still view it in the archive tab.
+                This will stop the sandbox and archive the session. You can still view it in the
+                archive tab.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -2757,34 +2528,23 @@ export function SessionChatContent({
               <div className="relative flex-1 overflow-hidden">
                 <div ref={containerRef} className="h-full overflow-y-auto">
                   <div className="mx-auto max-w-4xl overflow-hidden px-4 py-8">
-                    <OpenFileProvider
-                      onOpenFile={(fp) => setSelectedWorkspaceFile(fp)}
-                    >
+                    <OpenFileProvider onOpenFile={(fp) => setSelectedWorkspaceFile(fp)}>
                       <div className="space-y-6">
-                        {groupedRenderMessages.length === 0 &&
-                          !hasPendingResponse && (
-                            <div className="flex h-full min-h-[40vh] items-center justify-center">
-                              <p className="text-sm text-muted-foreground">
-                                Send a message to get started
-                              </p>
-                            </div>
-                          )}
+                        {groupedRenderMessages.length === 0 && !hasPendingResponse && (
+                          <div className="flex h-full min-h-[40vh] items-center justify-center">
+                            <p className="text-sm text-muted-foreground">
+                              Send a message to get started
+                            </p>
+                          </div>
+                        )}
                         {groupedRenderMessages.map(
-                          ({
-                            message: m,
-                            groups,
-                            isStreaming: isMessageStreaming,
-                          }) => {
-                            const renderGroups = (
-                              isToolCallsExpanded: boolean,
-                            ) =>
+                          ({ message: m, groups, isStreaming: isMessageStreaming }) => {
+                            const renderGroups = (isToolCallsExpanded: boolean) =>
                               groups.map((group) => {
                                 if (group.type === "reasoning-group") {
                                   if (!isToolCallsExpanded) return null;
                                   const hasRenderableContentAfterGroup = m.parts
-                                    .slice(
-                                      group.startIndex + group.parts.length,
-                                    )
+                                    .slice(group.startIndex + group.parts.length)
                                     .some(hasRenderableAssistantPart);
 
                                   return (
@@ -2793,20 +2553,14 @@ export function SessionChatContent({
                                       className="max-w-full pl-[22px]"
                                     >
                                       <ThinkingBlock
-                                        text={getReasoningGroupText(
-                                          group.parts,
-                                        )}
-                                        isStreaming={shouldKeepCollapsedReasoningStreaming(
-                                          {
-                                            isMessageStreaming,
-                                            hasStreamingReasoningPart:
-                                              group.parts.some(
-                                                (part) =>
-                                                  part.state === "streaming",
-                                              ),
-                                            hasRenderableContentAfterGroup,
-                                          },
-                                        )}
+                                        text={getReasoningGroupText(group.parts)}
+                                        isStreaming={shouldKeepCollapsedReasoningStreaming({
+                                          isMessageStreaming,
+                                          hasStreamingReasoningPart: group.parts.some(
+                                            (part) => part.state === "streaming",
+                                          ),
+                                          hasRenderableContentAfterGroup,
+                                        })}
                                         partCount={group.parts.length}
                                       />
                                     </div>
@@ -2828,14 +2582,11 @@ export function SessionChatContent({
                                     >
                                       <ThinkingBlock
                                         text={p.text}
-                                        isStreaming={shouldKeepCollapsedReasoningStreaming(
-                                          {
-                                            isMessageStreaming,
-                                            hasStreamingReasoningPart:
-                                              p.state === "streaming",
-                                            hasRenderableContentAfterGroup,
-                                          },
-                                        )}
+                                        isStreaming={shouldKeepCollapsedReasoningStreaming({
+                                          isMessageStreaming,
+                                          hasStreamingReasoningPart: p.state === "streaming",
+                                          hasRenderableContentAfterGroup,
+                                        })}
                                       />
                                     </div>
                                   );
@@ -2850,10 +2601,7 @@ export function SessionChatContent({
                                     m.role === "assistant" &&
                                     !m.parts
                                       .slice(group.index + 1)
-                                      .some(
-                                        (messagePart) =>
-                                          messagePart.type === "text",
-                                      );
+                                      .some((messagePart) => messagePart.type === "text");
 
                                   // When collapsed, hide every text part except the
                                   // final one.  The final text part streams in live so
@@ -2876,13 +2624,9 @@ export function SessionChatContent({
                                       key={`${m.id}-${group.renderKey}`}
                                       className={cn(
                                         "flex min-w-0 py-2",
-                                        m.role === "user"
-                                          ? "justify-end"
-                                          : "justify-start",
+                                        m.role === "user" ? "justify-end" : "justify-start",
                                         // Breathing room above final assistant text after tool calls
-                                        isFinalAssistantTextPart &&
-                                          group.index > 0 &&
-                                          "mt-4",
+                                        isFinalAssistantTextPart && group.index > 0 && "mt-4",
                                         // Indent non-final text parts (they're collapsible content)
                                         m.role === "assistant" &&
                                           !isFinalAssistantTextPart &&
@@ -2909,11 +2653,7 @@ export function SessionChatContent({
                                                   }
                                                 : undefined
                                             }
-                                            mode={
-                                              isMessageStreaming
-                                                ? "streaming"
-                                                : "static"
-                                            }
+                                            mode={isMessageStreaming ? "streaming" : "static"}
                                             isAnimating={isMessageStreaming}
                                             components={streamdownComponents}
                                             plugins={streamdownPlugins}
@@ -2930,16 +2670,12 @@ export function SessionChatContent({
                                                   <button
                                                     type="button"
                                                     onClick={() =>
-                                                      void handleCopyAssistantMessage(
-                                                        m.id,
-                                                        p.text,
-                                                      )
+                                                      void handleCopyAssistantMessage(m.id, p.text)
                                                     }
                                                     aria-label="Copy assistant response"
                                                     className="rounded p-1 text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
                                                   >
-                                                    {copiedAssistantMessageId ===
-                                                    m.id ? (
+                                                    {copiedAssistantMessageId === m.id ? (
                                                       <Check className="h-4 w-4" />
                                                     ) : (
                                                       <Copy className="h-4 w-4" />
@@ -2953,9 +2689,7 @@ export function SessionChatContent({
                                                   <span className="opacity-0 transition group-hover:opacity-100">
                                                     <MessageModelPill
                                                       metadata={m.metadata}
-                                                      modelOptions={
-                                                        modelOptions
-                                                      }
+                                                      modelOptions={modelOptions}
                                                     />
                                                   </span>
                                                 )}
@@ -3001,24 +2735,15 @@ export function SessionChatContent({
                                   }
 
                                   return (
-                                    <div
-                                      key={`${m.id}-${group.renderKey}`}
-                                      className="max-w-full"
-                                    >
+                                    <div key={`${m.id}-${group.renderKey}`} className="max-w-full">
                                       <GitDataPartCard part={p} />
                                     </div>
                                   );
                                 }
 
                                 // Render image attachments
-                                if (
-                                  p.type === "file" &&
-                                  p.mediaType?.startsWith("image/")
-                                ) {
-                                  if (
-                                    !isToolCallsExpanded &&
-                                    m.role === "assistant"
-                                  ) {
+                                if (p.type === "file" && p.mediaType?.startsWith("image/")) {
+                                  if (!isToolCallsExpanded && m.role === "assistant") {
                                     return null;
                                   }
                                   return (
@@ -3039,10 +2764,7 @@ export function SessionChatContent({
                                 }
 
                                 if (p.type === "data-snippet") {
-                                  if (
-                                    !isToolCallsExpanded &&
-                                    m.role === "assistant"
-                                  ) {
+                                  if (!isToolCallsExpanded && m.role === "assistant") {
                                     return null;
                                   }
                                   return (
@@ -3050,9 +2772,7 @@ export function SessionChatContent({
                                       key={`${m.id}-${group.renderKey}`}
                                       className={cn(
                                         "flex",
-                                        m.role === "user"
-                                          ? "justify-end"
-                                          : "justify-start",
+                                        m.role === "user" ? "justify-end" : "justify-start",
                                       )}
                                     >
                                       <div className="group relative w-fit max-w-[80%]">
@@ -3079,9 +2799,7 @@ export function SessionChatContent({
                                     messageStartedAtMap[m.id] ??
                                     (isMessageStreaming
                                       ? lastSendTimestampRef.current
-                                        ? new Date(
-                                            lastSendTimestampRef.current,
-                                          ).toISOString()
+                                        ? new Date(lastSendTimestampRef.current).toISOString()
                                         : lastUserMessageSentAt
                                       : null)
                                   }
@@ -3194,17 +2912,11 @@ export function SessionChatContent({
                           e.preventDefault();
                           // When inline question is active, don't send a chat message
                           if (showInlineQuestion) return;
-                          if (
-                            isArchived ||
-                            isChatInFlight ||
-                            hasPendingResponse
-                          ) {
+                          if (isArchived || isChatInFlight || hasPendingResponse) {
                             return;
                           }
                           const hasContent =
-                            input.trim() ||
-                            images.length > 0 ||
-                            textAttachments.length > 0;
+                            input.trim() || images.length > 0 || textAttachments.length > 0;
                           if (!hasContent) return;
 
                           const messageText = input;
@@ -3214,9 +2926,7 @@ export function SessionChatContent({
                           // present we use the parts-based form so we can include
                           // data-snippet parts alongside text and file parts.
                           const hasSnippets = textAttachments.length > 0;
-                          let messagePayload: Parameters<
-                            typeof sendMessageWithPendingState
-                          >[0];
+                          let messagePayload: Parameters<typeof sendMessageWithPendingState>[0];
 
                           if (hasSnippets) {
                             const parts: WebAgentUIMessage["parts"] = [];
@@ -3253,53 +2963,41 @@ export function SessionChatContent({
                           clearImages();
                           clearTextAttachments();
 
-                          const isFirstChatInSession =
-                            initialIsOnlyChatInSession;
+                          const isFirstChatInSession = initialIsOnlyChatInSession;
                           const shouldSetOptimisticTitle =
-                            isFirstChatInSession &&
-                            !hadInitialMessages &&
-                            messages.length === 0;
+                            isFirstChatInSession && !hadInitialMessages && messages.length === 0;
                           const trimmedText = messageText.trim();
                           const shouldGenerateSessionTitle =
                             shouldSetOptimisticTitle &&
                             trimmedText.length > 0 &&
                             !hasRequestedSessionTitleGenerationRef.current;
-                          if (
-                            shouldSetOptimisticTitle &&
-                            trimmedText.length > 0
-                          ) {
+                          if (shouldSetOptimisticTitle && trimmedText.length > 0) {
                             const nextTitle =
                               trimmedText.length > 80
                                 ? `${trimmedText.slice(0, 80)}...`
                                 : trimmedText;
-                            pendingOptimisticTitleChatIdRef.current =
-                              chatInfo.id;
+                            pendingOptimisticTitleChatIdRef.current = chatInfo.id;
                             void setChatTitle(chatInfo.id, nextTitle);
 
                             if (shouldGenerateSessionTitle) {
                               hasRequestedSessionTitleGenerationRef.current = true;
                               // Generate a title in parallel and persist it as soon as it
                               // resolves, without waiting for the assistant response.
-                              const generatedTitlePromise = fetch(
-                                "/api/generate-title",
-                                {
-                                  method: "POST",
-                                  headers: {
-                                    "Content-Type": "application/json",
-                                  },
-                                  body: JSON.stringify({
-                                    message: trimmedText,
-                                  }),
+                              const generatedTitlePromise = fetch("/api/generate-title", {
+                                method: "POST",
+                                headers: {
+                                  "Content-Type": "application/json",
                                 },
-                              )
+                                body: JSON.stringify({
+                                  message: trimmedText,
+                                }),
+                              })
                                 .then(async (res) => {
                                   if (!res.ok) {
                                     return null;
                                   }
 
-                                  const data = (await res
-                                    .json()
-                                    .catch(() => null)) as {
+                                  const data = (await res.json().catch(() => null)) as {
                                     title?: unknown;
                                   } | null;
                                   if (typeof data?.title !== "string") {
@@ -3327,9 +3025,7 @@ export function SessionChatContent({
                             await sendMessageWithPendingState(messagePayload);
                           } catch (err) {
                             if (pendingOptimisticTitleChatIdRef.current) {
-                              void clearChatTitle(
-                                pendingOptimisticTitleChatIdRef.current,
-                              );
+                              void clearChatTitle(pendingOptimisticTitleChatIdRef.current);
                               pendingOptimisticTitleChatIdRef.current = null;
                             }
                             console.error("Failed to send message:", err);
@@ -3343,9 +3039,7 @@ export function SessionChatContent({
                           e.preventDefault();
                           // Only set isDragging to false if we're leaving the form entirely
                           // (not just moving to a child element)
-                          if (
-                            !e.currentTarget.contains(e.relatedTarget as Node)
-                          ) {
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
                             setIsDragging(false);
                           }
                         }}
@@ -3401,17 +3095,11 @@ export function SessionChatContent({
                             onFocus={handleTextareaFocus}
                             onChange={(e) => {
                               setInput(e.currentTarget.value);
-                              setCursorPosition(
-                                e.currentTarget.selectionStart ?? 0,
-                              );
+                              setCursorPosition(e.currentTarget.selectionStart ?? 0);
                             }}
                             onKeyDown={(e) => {
                               // When inline question is active, Enter advances the question
-                              if (
-                                showInlineQuestion &&
-                                e.key === "Enter" &&
-                                !e.shiftKey
-                              ) {
+                              if (showInlineQuestion && e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 inlineQuestion.handleNext();
                                 return;
@@ -3438,14 +3126,10 @@ export function SessionChatContent({
                               }
                             }}
                             onKeyUp={(e) => {
-                              setCursorPosition(
-                                e.currentTarget.selectionStart ?? 0,
-                              );
+                              setCursorPosition(e.currentTarget.selectionStart ?? 0);
                             }}
                             onClick={(e) => {
-                              setCursorPosition(
-                                e.currentTarget.selectionStart ?? 0,
-                              );
+                              setCursorPosition(e.currentTarget.selectionStart ?? 0);
                             }}
                             onPaste={(e) => {
                               const items = e.clipboardData?.items;
@@ -3465,8 +3149,7 @@ export function SessionChatContent({
                               }
 
                               // Handle large text pastes – convert to file attachment
-                              const pastedText =
-                                e.clipboardData?.getData("text/plain");
+                              const pastedText = e.clipboardData?.getData("text/plain");
                               if (pastedText && isLargeText(pastedText)) {
                                 e.preventDefault();
                                 addTextAttachment(pastedText);
@@ -3494,9 +3177,7 @@ export function SessionChatContent({
                             {chatInfo.modelId && (
                               <div
                                 className={
-                                  isChatInFlight ||
-                                  isUpdatingModel ||
-                                  modelOptionsLoading
+                                  isChatInFlight || isUpdatingModel || modelOptionsLoading
                                     ? "pointer-events-none opacity-60"
                                     : undefined
                                 }
@@ -3505,9 +3186,7 @@ export function SessionChatContent({
                                   value={chatInfo.modelId}
                                   modelOptions={modelOptions}
                                   disabled={
-                                    isChatInFlight ||
-                                    isUpdatingModel ||
-                                    modelOptionsLoading
+                                    isChatInFlight || isUpdatingModel || modelOptionsLoading
                                   }
                                   onCloseAutoFocus={() => {
                                     window.requestAnimationFrame(() => {
@@ -3535,19 +3214,11 @@ export function SessionChatContent({
                             )}
                             <ContextUsageIndicator
                               inputTokens={tokenUsage.inputTokens}
-                              conversationInputTokens={
-                                conversationUsage.inputTokens
-                              }
-                              conversationCachedInputTokens={
-                                conversationUsage.cachedInputTokens
-                              }
-                              conversationOutputTokens={
-                                conversationUsage.outputTokens
-                              }
+                              conversationInputTokens={conversationUsage.inputTokens}
+                              conversationCachedInputTokens={conversationUsage.cachedInputTokens}
+                              conversationOutputTokens={conversationUsage.outputTokens}
                               conversationCost={conversationCost}
-                              contextLimit={
-                                contextLimit ?? DEFAULT_CONTEXT_LIMIT
-                              }
+                              contextLimit={contextLimit ?? DEFAULT_CONTEXT_LIMIT}
                             />
                           </div>
 
@@ -3557,9 +3228,7 @@ export function SessionChatContent({
                               variant="ghost"
                               size="icon"
                               onClick={handleMicClick}
-                              disabled={
-                                isArchived || recordingState === "processing"
-                              }
+                              disabled={isArchived || recordingState === "processing"}
                               className={`relative h-8 w-8 rounded-full ${
                                 recordingState === "recording"
                                   ? "text-red-500"
@@ -3646,9 +3315,7 @@ export function SessionChatContent({
 
                     {/* Recording error message */}
                     {recordingError && (
-                      <p className="mt-2 text-sm text-destructive">
-                        {recordingError}
-                      </p>
+                      <p className="mt-2 text-sm text-destructive">{recordingError}</p>
                     )}
                   </div>
                 </div>
@@ -3672,9 +3339,7 @@ export function SessionChatContent({
             setMergeDialogOpen(false);
             await handleFixChecks(failedRuns);
           }}
-          onFixConflicts={(baseBranchRef) =>
-            handleFixConflicts(baseBranchRef, true)
-          }
+          onFixConflicts={(baseBranchRef) => handleFixConflicts(baseBranchRef, true)}
         />
       )}
 
@@ -3718,8 +3383,7 @@ export function SessionChatContent({
           }
         }}
         editorBusy={
-          codeEditor.state.status === "starting" ||
-          codeEditor.state.status === "stopping"
+          codeEditor.state.status === "starting" || codeEditor.state.status === "stopping"
         }
         editorDisabledReason={codeEditorDisabledReason}
         onOpenInEditor={(filePath) => {

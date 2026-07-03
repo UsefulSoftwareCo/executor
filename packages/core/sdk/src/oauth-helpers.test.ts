@@ -323,6 +323,37 @@ describe("exchangeAuthorizationCode", () => {
     ),
   );
 
+  it.effect("normalizes Slack MCP user-token envelopes", () =>
+    Effect.gen(function* () {
+      const result = yield* exchangeAuthorizationCode({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        fetch: async () =>
+          Response.json({
+            ok: true,
+            authed_user: {
+              access_token: "xoxp-user",
+              token_type: "Bearer",
+              refresh_token: "xoxe-refresh",
+              expires_in: 3600,
+              scope: "search:read.public channels:read",
+            },
+          }),
+      });
+      expect(result).toEqual({
+        access_token: "xoxp-user",
+        token_type: "bearer",
+        refresh_token: "xoxe-refresh",
+        expires_in: 3600,
+        scope: "search:read.public channels:read",
+      });
+    }),
+  );
+
   it.effect("omits resource parameter when not provided", () =>
     withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {
@@ -726,6 +757,35 @@ describe("refreshAccessToken", () => {
         expect((yield* calls)[0]!.body.get("resource")).toBe("https://api.example.com/v1/mcp");
       }),
     ),
+  );
+
+  it.effect("normalizes Slack MCP refresh envelopes", () =>
+    Effect.gen(function* () {
+      const result = yield* refreshAccessToken({
+        tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+        clientId: "cid",
+        clientSecret: "secret",
+        refreshToken: "rtok",
+        fetch: async () =>
+          Response.json({
+            ok: true,
+            authed_user: {
+              access_token: "xoxp-refreshed",
+              token_type: "Bearer",
+              refresh_token: "xoxe-next",
+              expires_in: 3600,
+              scope: "channels:read",
+            },
+          }),
+      });
+      expect(result).toEqual({
+        access_token: "xoxp-refreshed",
+        token_type: "bearer",
+        refresh_token: "xoxe-next",
+        expires_in: 3600,
+        scope: "channels:read",
+      });
+    }),
   );
 
   it.effect("strips refreshed id_tokens whose iss does not match AS metadata", () =>
