@@ -14,6 +14,7 @@ import {
   OAUTH2_REFRESH_SKEW_MS,
   OAuth2Error,
   buildAuthorizationUrl,
+  providerAudienceParam,
   providerAuthorizeExtras,
   createPkceCodeChallenge,
   createPkceCodeVerifier,
@@ -98,6 +99,24 @@ const tokenResponse =
   () =>
     json(200, body);
 
+// Auth0 token URLs can't point at the loopback fixture (the audience mapping
+// keys off the `*.auth0.com` host), so capture the wire request through the
+// injected fetch and answer with a canned token response instead.
+const capturingFetch = (body: unknown) => {
+  const bodies: URLSearchParams[] = [];
+  const fetchImpl: typeof globalThis.fetch = (async (input, init) => {
+    const text = input instanceof Request ? await input.clone().text() : String(init?.body ?? "");
+    bodies.push(new URLSearchParams(text));
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof globalThis.fetch;
+  return { fetchImpl, bodies } as const;
+};
+
+const auth0TokenUrl = "https://tenant.us.auth0.com/oauth/token";
+
 // ---------------------------------------------------------------------------
 // PKCE
 // ---------------------------------------------------------------------------
@@ -140,6 +159,45 @@ describe("providerAuthorizeExtras (Google offline/consent quirk)", () => {
     expect(providerAuthorizeExtras("https://accounts.spotify.com/authorize")).toEqual({});
     expect(providerAuthorizeExtras("https://oauth2.googleapis.com/token")).toEqual({});
     expect(providerAuthorizeExtras("not a url")).toEqual({});
+  });
+});
+
+describe("providerAudienceParam (Auth0 audience quirk)", () => {
+  it("mirrors the resource into audience for Auth0 tenant hosts", () => {
+    expect(
+      providerAudienceParam("https://tenant.auth0.com/oauth/token", "https://api.example.com"),
+    ).toBe("https://api.example.com");
+    expect(
+      providerAudienceParam("https://tenant.us.auth0.com/authorize", "https://api.example.com"),
+    ).toBe("https://api.example.com");
+  });
+
+  it("matches the Auth0 host case-insensitively", () => {
+    expect(
+      providerAudienceParam("https://Tenant.AUTH0.com/oauth/token", "https://api.example.com"),
+    ).toBe("https://api.example.com");
+  });
+
+  it("returns undefined for non-Auth0 hosts, lookalike hosts, and unparseable URLs", () => {
+    expect(
+      providerAudienceParam("https://oauth2.googleapis.com/token", "https://api.example.com"),
+    ).toBeUndefined();
+    // Suffix check is on the hostname label boundary: `evilauth0.com` is not Auth0.
+    expect(
+      providerAudienceParam("https://evilauth0.com/oauth/token", "https://api.example.com"),
+    ).toBeUndefined();
+    expect(
+      providerAudienceParam("https://auth0.com.evil.com/token", "https://api.example.com"),
+    ).toBeUndefined();
+    expect(providerAudienceParam("not a url", "https://api.example.com")).toBeUndefined();
+  });
+
+  it("returns undefined when no resource is known", () => {
+    expect(
+      providerAudienceParam("https://tenant.auth0.com/oauth/token", undefined),
+    ).toBeUndefined();
+    expect(providerAudienceParam("https://tenant.auth0.com/oauth/token", null)).toBeUndefined();
+    expect(providerAudienceParam("https://tenant.auth0.com/oauth/token", "")).toBeUndefined();
   });
 });
 
@@ -217,6 +275,44 @@ describe("buildAuthorizationUrl", () => {
   it("omits resource parameter when not provided", () => {
     const url = new URL(buildAuthorizationUrl(baseInput));
     expect(url.searchParams.has("resource")).toBe(false);
+  });
+
+  it("mirrors resource into Auth0's audience param for Auth0 authorize hosts", () => {
+    const url = new URL(
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "https://tenant.us.auth0.com/authorize",
+        resource: "https://api.example.com/v1/mcp",
+      }),
+    );
+    expect(url.searchParams.get("resource")).toBe("https://api.example.com/v1/mcp");
+    expect(url.searchParams.get("audience")).toBe("https://api.example.com/v1/mcp");
+  });
+
+  it("does not add audience for non-Auth0 hosts or when no resource is set", () => {
+    const nonAuth0 = new URL(
+      buildAuthorizationUrl({ ...baseInput, resource: "https://api.example.com/v1/mcp" }),
+    );
+    expect(nonAuth0.searchParams.has("audience")).toBe(false);
+    const noResource = new URL(
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "https://tenant.us.auth0.com/authorize",
+      }),
+    );
+    expect(noResource.searchParams.has("audience")).toBe(false);
+  });
+
+  it("lets an explicit extraParams audience override the Auth0 auto-mapping", () => {
+    const url = new URL(
+      buildAuthorizationUrl({
+        ...baseInput,
+        authorizationUrl: "https://tenant.us.auth0.com/authorize",
+        resource: "https://api.example.com/v1/mcp",
+        extraParams: { audience: "https://other-api.example.com" },
+      }),
+    );
+    expect(url.searchParams.get("audience")).toBe("https://other-api.example.com");
   });
 
   it("rejects unsupported authorization URL schemes", () => {
@@ -334,6 +430,41 @@ describe("exchangeAuthorizationCode", () => {
           code: "abc",
         });
         expect((yield* calls)[0]!.body.has("resource")).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("sends Auth0's audience param alongside resource for *.auth0.com token URLs", () =>
+    Effect.gen(function* () {
+      const { fetchImpl, bodies } = capturingFetch(validCodeBody);
+      yield* exchangeAuthorizationCode({
+        tokenUrl: auth0TokenUrl,
+        clientId: "cid",
+        redirectUrl: "https://app.example.com/cb",
+        codeVerifier: "verifier",
+        code: "abc",
+        resource: "https://api.example.com/v1/mcp",
+        fetch: fetchImpl,
+      });
+      const body = bodies[0]!;
+      expect(body.get("grant_type")).toBe("authorization_code");
+      expect(body.get("resource")).toBe("https://api.example.com/v1/mcp");
+      expect(body.get("audience")).toBe("https://api.example.com/v1/mcp");
+    }),
+  );
+
+  it.effect("does not send audience to non-Auth0 token endpoints", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          resource: "https://api.example.com/v1/mcp",
+        });
+        expect((yield* calls)[0]!.body.has("audience")).toBe(false);
       }),
     ),
   );
@@ -665,6 +796,52 @@ describe("exchangeClientCredentials", () => {
       expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
     }),
   );
+
+  it.effect("sends Auth0's audience param alongside resource for *.auth0.com token URLs", () =>
+    Effect.gen(function* () {
+      const { fetchImpl, bodies } = capturingFetch(validRefreshBody);
+      yield* exchangeClientCredentials({
+        tokenUrl: auth0TokenUrl,
+        clientId: "cid",
+        clientSecret: "secret",
+        resource: "https://api.example.com/v1/mcp",
+        fetch: fetchImpl,
+      });
+      const body = bodies[0]!;
+      expect(body.get("grant_type")).toBe("client_credentials");
+      expect(body.get("resource")).toBe("https://api.example.com/v1/mcp");
+      expect(body.get("audience")).toBe("https://api.example.com/v1/mcp");
+    }),
+  );
+
+  it.effect("omits audience for Auth0 token URLs when no resource is known", () =>
+    Effect.gen(function* () {
+      const { fetchImpl, bodies } = capturingFetch(validRefreshBody);
+      yield* exchangeClientCredentials({
+        tokenUrl: auth0TokenUrl,
+        clientId: "cid",
+        clientSecret: "secret",
+        fetch: fetchImpl,
+      });
+      expect(bodies[0]!.has("audience")).toBe(false);
+    }),
+  );
+
+  it.effect("does not send audience to non-Auth0 token endpoints", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeClientCredentials({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "secret",
+          resource: "https://api.example.com/v1/mcp",
+        });
+        const body = (yield* calls)[0]!.body;
+        expect(body.get("resource")).toBe("https://api.example.com/v1/mcp");
+        expect(body.has("audience")).toBe(false);
+      }),
+    ),
+  );
 });
 
 describe("refreshAccessToken", () => {
@@ -724,6 +901,37 @@ describe("refreshAccessToken", () => {
           resource: "https://api.example.com/v1/mcp",
         });
         expect((yield* calls)[0]!.body.get("resource")).toBe("https://api.example.com/v1/mcp");
+      }),
+    ),
+  );
+
+  it.effect("sends Auth0's audience param alongside resource for *.auth0.com token URLs", () =>
+    Effect.gen(function* () {
+      const { fetchImpl, bodies } = capturingFetch(validRefreshBody);
+      yield* refreshAccessToken({
+        tokenUrl: auth0TokenUrl,
+        clientId: "cid",
+        refreshToken: "old",
+        resource: "https://api.example.com/v1/mcp",
+        fetch: fetchImpl,
+      });
+      const body = bodies[0]!;
+      expect(body.get("grant_type")).toBe("refresh_token");
+      expect(body.get("resource")).toBe("https://api.example.com/v1/mcp");
+      expect(body.get("audience")).toBe("https://api.example.com/v1/mcp");
+    }),
+  );
+
+  it.effect("does not send audience on refresh to non-Auth0 token endpoints", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refreshAccessToken({
+          tokenUrl,
+          clientId: "cid",
+          refreshToken: "old",
+          resource: "https://api.example.com/v1/mcp",
+        });
+        expect((yield* calls)[0]!.body.has("audience")).toBe(false);
       }),
     ),
   );

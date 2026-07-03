@@ -160,12 +160,47 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
   if (input.resource) {
     url.searchParams.set("resource", input.resource);
   }
+  // Auth0: mirror the resource indicator into the proprietary `audience`
+  // param (see `providerAudienceParam`). Set before `extraParams` so an
+  // explicit caller-provided `audience` still wins.
+  const audience = providerAudienceParam(input.authorizationUrl, input.resource);
+  if (audience) {
+    url.searchParams.set("audience", audience);
+  }
   if (input.extraParams) {
     for (const [k, v] of Object.entries(input.extraParams)) {
       url.searchParams.set(k, v);
     }
   }
   return url.toString();
+};
+
+/** Auth0 quirk: Auth0 does not implement RFC 8707 Resource Indicators. Its
+ *  authorization and token endpoints select the target API (resource server)
+ *  via a proprietary `audience` parameter instead, and silently ignore
+ *  `resource`. Without `audience`, a client_credentials exchange against an
+ *  Auth0 tenant fails outright with 403 `access_denied` ("No audience
+ *  parameter was provided, and no default audience has been configured"), and
+ *  authorization-code grants fall back to an opaque token that resource
+ *  servers cannot validate. Auth0 documents `audience` as its equivalent of
+ *  the resource indicator and takes the same value: the API identifier URI.
+ *
+ *  Mirror the RFC 8707 `resource` value into `audience` when the endpoint
+ *  host is an Auth0 tenant domain (`<tenant>.auth0.com`, including regional
+ *  `<tenant>.<region>.auth0.com`), keyed off the host exactly like
+ *  `providerAuthorizeExtras`. Custom Auth0 domains cannot be auto-detected
+ *  from the URL; those tenants should configure a default audience on the
+ *  Auth0 side. Returns the `audience` value to send, or `undefined` when the
+ *  endpoint is not Auth0 or no resource is known. */
+export const providerAudienceParam = (
+  endpointUrl: string,
+  resource: string | null | undefined,
+): string | undefined => {
+  if (!resource) return undefined;
+  if (!URL.canParse(endpointUrl)) return undefined;
+  const hostname = new URL(endpointUrl).hostname.toLowerCase();
+  if (hostname === "auth0.com" || hostname.endsWith(".auth0.com")) return resource;
+  return undefined;
 };
 
 /** Provider-specific authorize-URL extras that are NOT RFC 6749 params, so the
@@ -544,6 +579,12 @@ export const exchangeAuthorizationCode = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
+      // Auth0: mirror the resource indicator into the proprietary `audience`
+      // param (see `providerAudienceParam`).
+      const audience = providerAudienceParam(input.tokenUrl, input.resource);
+      if (audience) {
+        params.set("audience", audience);
+      }
       const response = await oauth.genericTokenEndpointRequest(
         as,
         client,
@@ -598,6 +639,14 @@ export const exchangeClientCredentials = (
       }
       if (input.resource) {
         params.set("resource", input.resource);
+      }
+      // Auth0: mirror the resource indicator into the proprietary `audience`
+      // param. Auth0 hard-fails client_credentials without it (403
+      // access_denied, "No audience parameter was provided, and no default
+      // audience has been configured").
+      const audience = providerAudienceParam(input.tokenUrl, input.resource);
+      if (audience) {
+        params.set("audience", audience);
       }
       const response = await oauth.clientCredentialsGrantRequest(
         as,
@@ -660,6 +709,12 @@ export const refreshAccessToken = (
       }
       if (input.resource) {
         extraParams.set("resource", input.resource);
+      }
+      // Auth0: mirror the resource indicator into the proprietary `audience`
+      // param (see `providerAudienceParam`).
+      const audience = providerAudienceParam(input.tokenUrl, input.resource);
+      if (audience) {
+        extraParams.set("audience", audience);
       }
       const additionalParameters =
         Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
