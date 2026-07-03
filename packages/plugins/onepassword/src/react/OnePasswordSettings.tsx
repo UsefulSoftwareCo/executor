@@ -41,6 +41,13 @@ import type { RedactedOnePasswordConfig } from "../sdk/types";
 // Vault picker
 // ---------------------------------------------------------------------------
 
+const VAULT_LIST_ERROR_FALLBACK = "Failed to list vaults";
+
+const formatVaultListError = (error: Error): string => {
+  const message = error.message.trim();
+  return message ? `${VAULT_LIST_ERROR_FALLBACK}: ${message}` : VAULT_LIST_ERROR_FALLBACK;
+};
+
 function VaultPicker(props: {
   authKind: "desktop-app" | "service-account";
   accountName: string;
@@ -61,15 +68,15 @@ function VaultPicker(props: {
         isLoading: true,
         error: null,
       }),
-      onError: () => ({
+      onError: (queryError) => ({
         vaults: [] as { id: string; name: string }[],
         isLoading: false,
-        error: "Failed to list vaults",
+        error: formatVaultListError(queryError),
       }),
       onDefect: () => ({
         vaults: [] as { id: string; name: string }[],
         isLoading: false,
-        error: "Failed to list vaults",
+        error: VAULT_LIST_ERROR_FALLBACK,
       }),
       onSuccess: ({ value }) => {
         const v = value.vaults;
