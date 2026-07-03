@@ -95,10 +95,17 @@ await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 // thousands of half-closed sockets, starved real queries, drove request
 // latency into the tens of seconds, and eventually hung the stack: the CI e2e
 // "cloud dev stack degrades after minutes of sustained load" cascade flake.
-// PGlite still runs queries serially (its internal QueryQueueManager executes
-// each under `runExclusive`), so allowing many connections is safe: they queue
-// instead of being rejected. Raise the cap so concurrent requests wait their
-// turn instead of storming.
+// PGlite runs queries serially (its internal QueryQueueManager executes each
+// under `runExclusive`), so allowing many connections means they queue instead
+// of being rejected. One caveat makes that safe: stock pglite-socket 0.1.4
+// enqueues each wire FRAME separately, so two connections' extended-protocol
+// pipelines (Parse/Bind/Execute/Sync) would interleave inside the one shared
+// PGlite session and corrupt each other ("bind message supplies N parameters,
+// but prepared statement requires M" -> random 500s on whichever request lost
+// the race). The patch in patches/@electric-sql%2Fpglite-socket@0.1.4.patch
+// batches each socket data event into one queue entry and holds handler
+// affinity while a pipeline is open;
+// src/db/dev-db-socket-concurrency.node.test.ts is the regression test.
 const server = new PGLiteSocketServer({
   db,
   port: PORT,
