@@ -10,25 +10,21 @@ const EXPECTED_PROJECT = {
 
 const EXPECTED_SERVICE_CONFIG = {
   web: {
+    type: "web",
     root: "apps/open-agents",
     framework: "nextjs",
-    installCommand: "bun install --frozen-lockfile --minimum-release-age=0",
+    mount: "/",
     buildCommand: "bun run build",
   },
   eve: {
+    type: "web",
     root: "apps/open-agents",
     framework: "eve",
-    installCommand: "bun install --frozen-lockfile --minimum-release-age=0",
+    mount: "/_eve_internal/eve",
     buildCommand:
       "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts",
   },
 };
-
-const EXPECTED_SERVICE_REWRITES = [
-  { source: "/eve/v1/(.*)", service: "eve" },
-  { source: "/.well-known/workflow/(.*)", service: "eve" },
-  { source: "/(.*)", service: "web" },
-];
 
 const REQUIRED_ENV_GROUPS: Record<string, readonly string[]> = {
   postgres: [
@@ -193,52 +189,29 @@ function assertProject(project: Record<string, unknown>): void {
 }
 
 function assertServiceConfig(config: Record<string, unknown>): void {
-  const services = config.services;
+  const services = config.experimentalServices;
   if (!services || typeof services !== "object" || Array.isArray(services)) {
-    fail("vercel.json must define services");
+    fail("vercel.json must define experimentalServices");
   }
 
   for (const [serviceName, expected] of Object.entries(EXPECTED_SERVICE_CONFIG)) {
     const service = (services as Record<string, unknown>)[serviceName];
     if (!service || typeof service !== "object" || Array.isArray(service)) {
-      fail(`vercel.json must define services.${serviceName}`);
+      fail(`vercel.json must define experimentalServices.${serviceName}`);
     }
 
     for (const [key, expectedValue] of Object.entries(expected)) {
       const actual = (service as Record<string, unknown>)[key];
       if (actual !== expectedValue) {
         fail(
-          `vercel.json services.${serviceName}.${key} must be ${JSON.stringify(expectedValue)}, got ${JSON.stringify(actual)}`,
+          `vercel.json experimentalServices.${serviceName}.${key} must be ${JSON.stringify(expectedValue)}, got ${JSON.stringify(actual)}`,
         );
       }
     }
   }
 
-  const rewrites = config.rewrites;
-  if (!Array.isArray(rewrites)) {
-    fail("vercel.json must define service rewrites");
-  }
-
-  for (const [index, expected] of EXPECTED_SERVICE_REWRITES.entries()) {
-    const rewrite = rewrites[index];
-    if (!rewrite || typeof rewrite !== "object" || Array.isArray(rewrite)) {
-      fail(`vercel.json rewrites[${index}] is missing`);
-    }
-
-    const destination = (rewrite as Record<string, unknown>).destination;
-    const service =
-      destination && typeof destination === "object" && !Array.isArray(destination)
-        ? (destination as Record<string, unknown>).service
-        : undefined;
-
-    if (
-      (rewrite as Record<string, unknown>).source !== expected.source ||
-      service !== expected.service
-    ) {
-      fail(
-        `vercel.json rewrites[${index}] must route ${expected.source} to service ${expected.service}`,
-      );
-    }
+  if (config.rewrites !== undefined) {
+    fail("vercel.json must not define rewrites; withEve routes Eve callbacks under its mounted service");
   }
 }
 
