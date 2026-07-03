@@ -664,6 +664,7 @@
         "@types/node": "catalog:",
         "bun-types": "catalog:",
         "typescript": "catalog:",
+        "urlpattern-polyfill": "^10.1.0",
         "vitest": "catalog:",
       },
     },

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 import { MAX_SSE_AGE_MS, McpAgent } from "agents/mcp";
+import { Effect, Option, Schema } from "effect";
 
 const KEEPALIVE_INTERVAL_MS = 25_000;
 const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
@@ -27,6 +28,18 @@ type RotationLog = {
 };
 
 const encoder = new TextEncoder();
+const RotationLogEvent = Schema.Struct({
+  ageMs: Schema.Number,
+  event: Schema.Literal("sse_max_age_close"),
+  pendingBytes: Schema.Number,
+  sessionId: Schema.String,
+  variant: Schema.Union([
+    Schema.Literal("streamable-get"),
+    Schema.Literal("streamable-post"),
+    Schema.Literal("legacy-sse"),
+  ]),
+});
+const decodeRotationLogEvent = Schema.decodeUnknownOption(Schema.fromJsonString(RotationLogEvent));
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -39,18 +52,22 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
     if (predicate()) return;
     await flushMicrotasks();
   }
-  throw new Error("Timed out waiting for test condition");
+  expect(predicate()).toBe(true);
 };
 
 const drainResponse = (response: Response): Promise<void> => {
-  return (
-    response.body
-      ?.pipeTo(
-        new WritableStream<Uint8Array>({
-          write: () => {},
-        }),
-      )
-      .catch(() => {}) ?? Promise.resolve()
+  return Effect.runPromise(
+    Effect.ignore(
+      Effect.tryPromise({
+        try: () =>
+          response.body?.pipeTo(
+            new WritableStream<Uint8Array>({
+              write: () => {},
+            }),
+          ) ?? Promise.resolve(),
+        catch: () => undefined,
+      }),
+    ),
   );
 };
 
@@ -91,11 +108,11 @@ const installStallingTransformStream = () => {
   };
 };
 
-const makeExecutionContext = (): ExecutionContext =>
-  ({
-    passThroughOnException: () => {},
-    waitUntil: () => {},
-  }) as unknown as ExecutionContext;
+const makeExecutionContext = (): ExecutionContext => ({
+  passThroughOnException: () => {},
+  props: undefined,
+  waitUntil: () => {},
+});
 
 const makeWebSocket = (): FakeWebSocket => {
   const ws = new EventTarget() as FakeWebSocket;
@@ -209,28 +226,10 @@ const emitClose = (ws: FakeWebSocket): void => {
 };
 
 const rotationLogs = (logs: ReadonlyArray<string>): ReadonlyArray<RotationLog> =>
-  logs
-    .map((line) => {
-      try {
-        return JSON.parse(line) as {
-          readonly event?: string;
-          readonly sessionId?: string;
-          readonly variant?: string;
-          readonly ageMs?: number;
-          readonly pendingBytes?: number;
-        };
-      } catch {
-        return null;
-      }
-    })
-    .filter(
-      (event): event is RotationLog =>
-        event?.event === "sse_max_age_close" &&
-        typeof event.sessionId === "string" &&
-        typeof event.variant === "string" &&
-        typeof event.ageMs === "number" &&
-        typeof event.pendingBytes === "number",
-    );
+  logs.flatMap((line) => {
+    const decoded = decodeRotationLogEvent(line);
+    return Option.isSome(decoded) ? [decoded.value] : [];
+  });
 
 describe("agents SSE max-age rotation", () => {
   let errorLogs: string[] = [];
