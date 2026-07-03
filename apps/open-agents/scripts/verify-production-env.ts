@@ -26,6 +26,13 @@ const EXPECTED_SERVICE_CONFIG = {
   },
 };
 
+const EXPECTED_REWRITES = [
+  {
+    source: "/.well-known/workflow/(.*)",
+    destination: { service: "eve" },
+  },
+];
+
 const REQUIRED_ENV_GROUPS: Record<string, readonly string[]> = {
   postgres: [
     "POSTGRES_URL",
@@ -210,8 +217,11 @@ function assertServiceConfig(config: Record<string, unknown>): void {
     }
   }
 
-  if (config.rewrites !== undefined) {
-    fail("vercel.json must not define rewrites; withEve routes Eve callbacks under its mounted service");
+  const rewrites = config.rewrites;
+  if (JSON.stringify(rewrites) !== JSON.stringify(EXPECTED_REWRITES)) {
+    fail(
+      `vercel.json must define only the Eve workflow callback rewrite: ${JSON.stringify(EXPECTED_REWRITES)}`,
+    );
   }
 }
 
