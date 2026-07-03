@@ -23,6 +23,9 @@ node_modules
 **/.env
 **/.env.*
 
+tmp
+**/tmp
+
 coverage
 **/coverage
 test-results
