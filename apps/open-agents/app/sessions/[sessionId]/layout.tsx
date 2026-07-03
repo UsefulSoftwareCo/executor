@@ -1,3 +1,4 @@
+import { canAccess } from "@open-agents/authz";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
@@ -13,10 +14,7 @@ interface SessionLayoutProps {
   children: ReactNode;
 }
 
-export default async function SessionLayout({
-  params,
-  children,
-}: SessionLayoutProps) {
+export default async function SessionLayout({ params, children }: SessionLayoutProps) {
   const { sessionId } = await params;
 
   const sessionPromise = getServerSession();
@@ -32,7 +30,12 @@ export default async function SessionLayout({
     notFound();
   }
 
-  if (sessionRecord.userId !== session.user.id) {
+  const canReadSession = await canAccess(
+    { kind: "user", userId: session.user.id },
+    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
+    "read",
+  );
+  if (!canReadSession) {
     redirect("/");
   }
 
@@ -49,11 +52,7 @@ export default async function SessionLayout({
       getChatSummariesBySessionId(sessionId, session.user.id),
       getUserPreferences(session.user.id),
     ]);
-    const preferences = sanitizeUserPreferencesForSession(
-      rawPreferences,
-      session,
-      requestHost,
-    );
+    const preferences = sanitizeUserPreferencesForSession(rawPreferences, session, requestHost);
     initialChatsData = {
       chats,
       defaultModelId: preferences.defaultModelId,
@@ -63,10 +62,7 @@ export default async function SessionLayout({
   }
 
   return (
-    <SessionLayoutShell
-      session={sessionRecord}
-      initialChatsData={initialChatsData}
-    >
+    <SessionLayoutShell session={sessionRecord} initialChatsData={initialChatsData}>
       {children}
     </SessionLayoutShell>
   );

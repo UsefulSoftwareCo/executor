@@ -1,3 +1,4 @@
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox } from "@open-agents/sandbox";
 import { checkBotProtection } from "@/lib/botid";
 import { generateBranchName, looksLikeCommitHash } from "@/lib/git/helpers";
@@ -58,8 +59,13 @@ export async function POST(req: Request) {
   if (!sessionRecord) {
     return Response.json({ error: "Session not found" }, { status: 404 });
   }
-  if (sessionRecord.userId !== session.user.id) {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
+  try {
+    await requireSessionAccess({ kind: "user", userId: session.user.id }, sessionId, "write");
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      return Response.json({ error: "Forbidden" }, { status: error.status });
+    }
+    throw error;
   }
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     return Response.json({ error: "Sandbox not initialized" }, { status: 400 });

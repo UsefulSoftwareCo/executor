@@ -20,6 +20,7 @@ export async function POST(_req: Request, context: RouteContext) {
     userId: authResult.userId,
     sessionId,
     chatId,
+    verb: "read",
   });
   if (!chatContext.ok) {
     return chatContext.response;

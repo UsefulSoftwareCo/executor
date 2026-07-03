@@ -10,7 +10,7 @@ function getHeader(request: Request, name: string): string | undefined {
   return value ? value : undefined;
 }
 
-function withOpenAgentsRequestAttributes(
+export function withOpenAgentsRequestAttributes(
   auth: AuthFn<Request>,
   options: { trustOpenAgentsUserHeader?: boolean } = {},
 ): AuthFn<Request> {
@@ -21,14 +21,25 @@ function withOpenAgentsRequestAttributes(
     }
 
     const openAgentsUserId = getHeader(request, "x-open-agents-user-id");
+    const authenticatedUserId = sessionAuth.subject ?? sessionAuth.principalId;
+    if (
+      openAgentsUserId &&
+      !options.trustOpenAgentsUserHeader &&
+      openAgentsUserId !== authenticatedUserId
+    ) {
+      return null;
+    }
+    const actorUserId =
+      options.trustOpenAgentsUserHeader && openAgentsUserId
+        ? openAgentsUserId
+        : authenticatedUserId;
 
     return {
       ...sessionAuth,
-      ...(options.trustOpenAgentsUserHeader && openAgentsUserId
-        ? { subject: openAgentsUserId }
-        : {}),
+      subject: actorUserId,
       attributes: {
         ...sessionAuth.attributes,
+        openAgentsUserId: actorUserId,
         ...(getHeader(request, "x-open-agents-session-id")
           ? { openAgentsSessionId: getHeader(request, "x-open-agents-session-id")! }
           : {}),

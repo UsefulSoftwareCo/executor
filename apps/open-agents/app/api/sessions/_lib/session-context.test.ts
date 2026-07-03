@@ -13,6 +13,16 @@ type ChatRecord = {
   sessionId: string;
 };
 
+class MockAuthzError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 403) {
+    super(message);
+    this.name = "AuthzError";
+    this.status = status;
+  }
+}
+
 let authSession: AuthSession = { user: { id: "user-1" } };
 let sessionRecord: SessionRecord | null = {
   id: "session-1",
@@ -23,6 +33,7 @@ let chatRecord: ChatRecord | null = {
   id: "chat-1",
   sessionId: "session-1",
 };
+let sharedAccessGranted = false;
 
 mock.module("@/lib/session/get-server-session", () => ({
   getServerSession: async () => authSession,
@@ -33,11 +44,31 @@ mock.module("@/lib/db/sessions", () => ({
   getChatById: async () => chatRecord,
 }));
 
+mock.module("@open-agents/authz", () => ({
+  AuthzError: MockAuthzError,
+  requireSessionAccess: async (actor: { userId: string }) => {
+    if (!sessionRecord) {
+      throw new MockAuthzError("Session not found", 404);
+    }
+    if (!sharedAccessGranted && sessionRecord.userId !== actor.userId) {
+      throw new MockAuthzError("Session access denied");
+    }
+    return { scopeKind: "user", scopeId: actor.userId };
+  },
+  requireChatAccess: async (actor: { userId: string }) => {
+    if (!chatRecord) {
+      throw new MockAuthzError("Chat not found", 404);
+    }
+    if (!sessionRecord || (!sharedAccessGranted && sessionRecord.userId !== actor.userId)) {
+      throw new MockAuthzError("Chat access denied");
+    }
+    return { scopeKind: "user", scopeId: actor.userId };
+  },
+}));
+
 const sessionContextModulePromise = import("./session-context");
 
-async function getErrorMessage(
-  response: Response,
-): Promise<string | undefined> {
+async function getErrorMessage(response: Response): Promise<string | undefined> {
   const body = (await response.json()) as { error?: string };
   return body.error;
 }
@@ -54,6 +85,7 @@ describe("session context guards", () => {
       id: "chat-1",
       sessionId: "session-1",
     };
+    sharedAccessGranted = false;
   });
 
   test("requireAuthenticatedUser returns 401 when unauthenticated", async () => {
@@ -148,10 +180,30 @@ describe("session context guards", () => {
     }
   });
 
+  test("requireOwnedSession allows a non-creator when authz grants shared access", async () => {
+    sharedAccessGranted = true;
+    sessionRecord = {
+      id: "session-1",
+      userId: "creator-user",
+      sandboxState: { type: "vercel" },
+    };
+    const { requireOwnedSession } = await sessionContextModulePromise;
+
+    const result = await requireOwnedSession({
+      userId: "user-1",
+      sessionId: "session-1",
+      verb: "read",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sessionRecord.userId).toBe("creator-user");
+    }
+  });
+
   test("requireOwnedSessionWithSandboxGuard forwards ownership errors", async () => {
     sessionRecord = null;
-    const { requireOwnedSessionWithSandboxGuard } =
-      await sessionContextModulePromise;
+    const { requireOwnedSessionWithSandboxGuard } = await sessionContextModulePromise;
 
     const result = await requireOwnedSessionWithSandboxGuard({
       userId: "user-1",
@@ -167,8 +219,7 @@ describe("session context guards", () => {
   });
 
   test("requireOwnedSessionWithSandboxGuard returns sandbox error when guard fails", async () => {
-    const { requireOwnedSessionWithSandboxGuard } =
-      await sessionContextModulePromise;
+    const { requireOwnedSessionWithSandboxGuard } = await sessionContextModulePromise;
 
     const result = await requireOwnedSessionWithSandboxGuard({
       userId: "user-1",
@@ -179,9 +230,7 @@ describe("session context guards", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.response.status).toBe(400);
-      expect(await getErrorMessage(result.response)).toBe(
-        "Sandbox not initialized",
-      );
+      expect(await getErrorMessage(result.response)).toBe("Sandbox not initialized");
     }
   });
 

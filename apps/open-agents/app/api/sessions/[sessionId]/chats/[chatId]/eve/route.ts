@@ -97,6 +97,7 @@ export async function POST(req: Request, context: RouteContext) {
     userId: authResult.userId,
     sessionId,
     chatId,
+    verb: "write",
   });
   if (!chatContext.ok) {
     return chatContext.response;

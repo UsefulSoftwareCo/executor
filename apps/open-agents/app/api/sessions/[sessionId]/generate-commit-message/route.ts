@@ -1,8 +1,8 @@
 import { languageModelSettings } from "@open-agents/model-settings";
 import { connectSandbox } from "@open-agents/sandbox";
 import { generateText } from "ai";
+import { requireOwnedSession } from "@/app/api/sessions/_lib/session-context";
 import { checkBotProtection } from "@/lib/botid";
-import { getSessionById } from "@/lib/db/sessions";
 import { checkRateLimit, rateLimitKey } from "@/lib/rate-limit";
 import { isSandboxActive } from "@/lib/sandbox/utils";
 import { getServerSession } from "@/lib/session/get-server-session";
@@ -11,10 +11,7 @@ export const maxDuration = 30;
 
 const commitMessageModel = languageModelSettings("anthropic/claude-haiku-4.5");
 
-export async function POST(
-  _req: Request,
-  { params }: { params: Promise<{ sessionId: string }> },
-) {
+export async function POST(_req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
   const session = await getServerSession();
   if (!session?.user) {
     return Response.json({ error: "Not authenticated" }, { status: 401 });
@@ -35,10 +32,16 @@ export async function POST(
   }
 
   const { sessionId } = await params;
-  const dbSession = await getSessionById(sessionId);
-  if (!dbSession || dbSession.userId !== session.user.id) {
-    return Response.json({ error: "Session not found" }, { status: 404 });
+  const sessionContext = await requireOwnedSession({
+    userId: session.user.id,
+    sessionId,
+    forbiddenMessage: "Session not found",
+    verb: "write",
+  });
+  if (!sessionContext.ok) {
+    return sessionContext.response;
   }
+  const dbSession = sessionContext.sessionRecord;
 
   if (!isSandboxActive(dbSession.sandboxState)) {
     return Response.json({ error: "No active sandbox" }, { status: 400 });
@@ -73,9 +76,7 @@ Respond with ONLY the commit message, nothing else.`,
 
   const generated = result.text.trim().split("\n")[0]?.trim();
   const message =
-    generated && generated.length > 0
-      ? generated.slice(0, 72)
-      : "chore: update repository changes";
+    generated && generated.length > 0 ? generated.slice(0, 72) : "chore: update repository changes";
 
   return Response.json({ message });
 }

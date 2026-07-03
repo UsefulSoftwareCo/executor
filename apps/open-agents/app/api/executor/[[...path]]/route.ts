@@ -1,3 +1,4 @@
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { getSessionById } from "@/lib/db/sessions";
 import { handleExecutorApiRequest } from "@/lib/executor/runtime";
 import { getServerSession } from "@/lib/session/get-server-session";
@@ -79,8 +80,13 @@ async function handler(request: Request, context: RouteContext) {
     if (!sessionRecord) {
       return respond(Response.json({ error: "Session not found" }, { status: 404 }));
     }
-    if (sessionRecord.userId !== authSession.user.id) {
-      return respond(Response.json({ error: "Forbidden" }, { status: 403 }));
+    try {
+      await requireSessionAccess({ kind: "user", userId: authSession.user.id }, sessionId, "write");
+    } catch (error) {
+      if (error instanceof AuthzError) {
+        return respond(Response.json({ error: "Forbidden" }, { status: error.status }));
+      }
+      throw error;
     }
     sessionTitle = sessionRecord.title;
   }

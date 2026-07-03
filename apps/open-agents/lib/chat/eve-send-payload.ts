@@ -30,6 +30,7 @@ type OpenAgentsClientContextParams = {
   sessionId: string;
   chatId: string;
   contextLimit: number | null;
+  actorUserId: string;
   metadata?: Record<string, unknown>;
   toolProfile?: readonly string[];
 };
@@ -42,11 +43,13 @@ export type OpenAgentsSendTurnPayload = Omit<SendTurnPayload, "clientContext"> &
 export function openAgentsEveHeaders(params: {
   sessionId: string;
   chatId: string;
+  actorUserId: string;
   toolProfile?: readonly string[];
 }): Record<string, string> {
   return {
     "x-open-agents-session-id": params.sessionId,
     "x-open-agents-chat-id": params.chatId,
+    "x-open-agents-user-id": params.actorUserId,
     ...(params.toolProfile && params.toolProfile.length > 0
       ? { "x-open-agents-tool-profile": params.toolProfile.join(",") }
       : {}),
@@ -160,6 +163,7 @@ export function withOpenAgentsClientContext(
       ...openAgentsEveHeaders({
         sessionId: params.sessionId,
         chatId: params.chatId,
+        actorUserId: params.actorUserId,
         ...(params.toolProfile ? { toolProfile: params.toolProfile } : {}),
       }),
       ...(payload.headers ?? {}),

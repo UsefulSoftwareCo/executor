@@ -67,6 +67,7 @@ export async function runEveChatMessageTurn(input: {
   message: WebAgentUIMessage;
   requestUrl: string;
   sessionId: string;
+  actorUserId?: string;
   signal?: AbortSignal;
   toolProfile?: readonly string[];
 }): Promise<EveChatMessageTurnResult> {
@@ -75,6 +76,7 @@ export async function runEveChatMessageTurn(input: {
     contextLimit: null,
     metadata: input.clientContext,
     sessionId: input.sessionId,
+    actorUserId: input.actorUserId ?? (await getSessionActorUserId(input.sessionId)),
     ...(input.toolProfile ? { toolProfile: input.toolProfile } : {}),
   });
   const turn = await createEveChatTurnEvents({
@@ -97,6 +99,16 @@ export async function runEveChatMessageTurn(input: {
     messages: toWebAgentMessages(data.messages),
     sessionId: turn.sessionId,
   };
+}
+
+async function getSessionActorUserId(sessionId: string): Promise<string> {
+  const [session] = await db
+    .select({ userId: sessions.userId })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+
+  return session!.userId;
 }
 
 async function createEveChatTurnEvents(input: {

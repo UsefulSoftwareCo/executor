@@ -56,6 +56,7 @@ type UseSessionChatRuntimeParams = {
   initialEveEvents: HandleMessageStreamEvent[];
   initialEveSession: SessionState;
   contextLimit: number | null;
+  actorUserId: string;
 };
 
 type UseSessionChatRuntimeReturn = {
@@ -81,6 +82,7 @@ export function useSessionChatRuntime({
   initialEveEvents,
   initialEveSession,
   contextLimit,
+  actorUserId,
 }: UseSessionChatRuntimeParams): UseSessionChatRuntimeReturn {
   const contextLimitRef = useRef<number | null>(contextLimit);
   const initialPersistedMessages = initialEveEvents.length > 0 ? [] : initialMessages;
@@ -113,8 +115,7 @@ export function useSessionChatRuntime({
   }, [chatId, initialEveEvents.length]);
 
   const evePersistenceEndpoint = useMemo(
-    () =>
-      `/api/sessions/${encodeURIComponent(sessionId)}/chats/${encodeURIComponent(chatId)}/eve`,
+    () => `/api/sessions/${encodeURIComponent(sessionId)}/chats/${encodeURIComponent(chatId)}/eve`,
     [chatId, sessionId],
   );
 
@@ -147,8 +148,9 @@ export function useSessionChatRuntime({
         sessionId,
         chatId,
         contextLimit: contextLimitRef.current,
+        actorUserId,
       }),
-    [chatId, sessionId],
+    [actorUserId, chatId, sessionId],
   );
 
   const agent = useEveAgent({

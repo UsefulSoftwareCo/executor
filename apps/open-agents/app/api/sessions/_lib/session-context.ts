@@ -1,12 +1,9 @@
+import { AuthzError, requireChatAccess, requireSessionAccess, type Verb } from "@open-agents/authz";
 import * as sessionsDb from "@/lib/db/sessions";
 import { getServerSession } from "@/lib/session/get-server-session";
 
-export type SessionRecord = NonNullable<
-  Awaited<ReturnType<typeof sessionsDb.getSessionById>>
->;
-export type ChatRecord = NonNullable<
-  Awaited<ReturnType<typeof sessionsDb.getChatById>>
->;
+export type SessionRecord = NonNullable<Awaited<ReturnType<typeof sessionsDb.getSessionById>>>;
+export type ChatRecord = NonNullable<Awaited<ReturnType<typeof sessionsDb.getChatById>>>;
 
 type AuthenticatedUserResult =
   | {
@@ -43,6 +40,7 @@ interface RequireOwnedSessionParams {
   userId: string;
   sessionId: string;
   forbiddenMessage?: string;
+  verb?: Verb;
 }
 
 interface RequireOwnedSessionChatParams {
@@ -50,6 +48,7 @@ interface RequireOwnedSessionChatParams {
   sessionId: string;
   chatId: string;
   forbiddenMessage?: string;
+  verb?: Verb;
 }
 
 interface RequireOwnedSessionWithSandboxGuardParams extends RequireOwnedSessionParams {
@@ -60,6 +59,10 @@ interface RequireOwnedSessionWithSandboxGuardParams extends RequireOwnedSessionP
 
 function toErrorResponse(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
+}
+
+function authzErrorResponse(error: AuthzError, forbiddenMessage: string): Response {
+  return toErrorResponse(error.status === 403 ? forbiddenMessage : error.message, error.status);
 }
 
 export async function requireAuthenticatedUser(): Promise<AuthenticatedUserResult> {
@@ -80,7 +83,7 @@ export async function requireAuthenticatedUser(): Promise<AuthenticatedUserResul
 export async function requireOwnedSession(
   params: RequireOwnedSessionParams,
 ): Promise<OwnedSessionResult> {
-  const { userId, sessionId, forbiddenMessage = "Forbidden" } = params;
+  const { userId, sessionId, forbiddenMessage = "Forbidden", verb = "write" } = params;
 
   const sessionRecord = await sessionsDb.getSessionById(sessionId);
   if (!sessionRecord) {
@@ -90,11 +93,16 @@ export async function requireOwnedSession(
     };
   }
 
-  if (sessionRecord.userId !== userId) {
-    return {
-      ok: false,
-      response: toErrorResponse(forbiddenMessage, 403),
-    };
+  try {
+    await requireSessionAccess({ kind: "user", userId }, sessionId, verb);
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      return {
+        ok: false,
+        response: authzErrorResponse(error, forbiddenMessage),
+      };
+    }
+    throw error;
   }
 
   return {
@@ -113,12 +121,14 @@ export async function requireOwnedSessionWithSandboxGuard(
     sandboxGuard,
     sandboxErrorMessage = "Sandbox not initialized",
     sandboxErrorStatus = 400,
+    verb,
   } = params;
 
   const ownedSessionResult = await requireOwnedSession({
     userId,
     sessionId,
     forbiddenMessage,
+    verb,
   });
   if (!ownedSessionResult.ok) {
     return ownedSessionResult;
@@ -137,7 +147,7 @@ export async function requireOwnedSessionWithSandboxGuard(
 export async function requireOwnedSessionChat(
   params: RequireOwnedSessionChatParams,
 ): Promise<OwnedSessionChatResult> {
-  const { userId, sessionId, chatId, forbiddenMessage = "Forbidden" } = params;
+  const { userId, sessionId, chatId, forbiddenMessage = "Forbidden", verb = "write" } = params;
 
   const [sessionRecord, chat] = await Promise.all([
     sessionsDb.getSessionById(sessionId),
@@ -151,18 +161,23 @@ export async function requireOwnedSessionChat(
     };
   }
 
-  if (sessionRecord.userId !== userId) {
-    return {
-      ok: false,
-      response: toErrorResponse(forbiddenMessage, 403),
-    };
-  }
-
   if (!chat || chat.sessionId !== sessionId) {
     return {
       ok: false,
       response: toErrorResponse("Chat not found", 404),
     };
+  }
+
+  try {
+    await requireChatAccess({ kind: "user", userId }, chatId, verb);
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      return {
+        ok: false,
+        response: authzErrorResponse(error, forbiddenMessage),
+      };
+    }
+    throw error;
   }
 
   return {

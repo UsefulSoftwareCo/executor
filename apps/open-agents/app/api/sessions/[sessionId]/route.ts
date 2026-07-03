@@ -1,12 +1,11 @@
 import { after } from "next/server";
 import {
-  deleteSession,
-  getSessionById,
-  updateSession,
-} from "@/lib/db/sessions";
+  requireAuthenticatedUser,
+  requireOwnedSession,
+} from "@/app/api/sessions/_lib/session-context";
+import { deleteSession, updateSession } from "@/lib/db/sessions";
 import { archiveSession } from "@/lib/sandbox/archive-session";
 import { hasRuntimeSandboxState } from "@/lib/sandbox/utils";
-import { getServerSession } from "@/lib/session/get-server-session";
 
 interface UpdateSessionRequest {
   title?: string;
@@ -17,48 +16,41 @@ interface UpdateSessionRequest {
   prStatus?: "open" | "merged" | "closed";
 }
 
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ sessionId: string }> },
-) {
-  const session = await getServerSession();
-  if (!session?.user) {
-    return Response.json({ error: "Not authenticated" }, { status: 401 });
+export async function GET(_req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
+  const authResult = await requireAuthenticatedUser();
+  if (!authResult.ok) {
+    return authResult.response;
   }
 
   const { sessionId } = await params;
-  const existingSession = await getSessionById(sessionId);
-
-  if (!existingSession) {
-    return Response.json({ error: "Session not found" }, { status: 404 });
+  const sessionContext = await requireOwnedSession({
+    userId: authResult.userId,
+    sessionId,
+    verb: "read",
+  });
+  if (!sessionContext.ok) {
+    return sessionContext.response;
   }
 
-  if (existingSession.userId !== session.user.id) {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  return Response.json({ session: existingSession });
+  return Response.json({ session: sessionContext.sessionRecord });
 }
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: Promise<{ sessionId: string }> },
-) {
-  const session = await getServerSession();
-  if (!session?.user) {
-    return Response.json({ error: "Not authenticated" }, { status: 401 });
+export async function PATCH(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
+  const authResult = await requireAuthenticatedUser();
+  if (!authResult.ok) {
+    return authResult.response;
   }
 
   const { sessionId } = await params;
-  const existingSession = await getSessionById(sessionId);
-
-  if (!existingSession) {
-    return Response.json({ error: "Session not found" }, { status: 404 });
+  const sessionContext = await requireOwnedSession({
+    userId: authResult.userId,
+    sessionId,
+    verb: "write",
+  });
+  if (!sessionContext.ok) {
+    return sessionContext.response;
   }
-
-  if (existingSession.userId !== session.user.id) {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const existingSession = sessionContext.sessionRecord;
 
   let body: UpdateSessionRequest;
   try {
@@ -70,13 +62,9 @@ export async function PATCH(
   const shouldStopSandboxAfterArchive =
     body.status === "archived" && existingSession.status !== "archived";
 
-  const shouldUnarchive =
-    body.status === "running" && existingSession.status === "archived";
+  const shouldUnarchive = body.status === "running" && existingSession.status === "archived";
 
-  if (
-    shouldUnarchive &&
-    hasRuntimeSandboxState(existingSession.sandboxState)
-  ) {
+  if (shouldUnarchive && hasRuntimeSandboxState(existingSession.sandboxState)) {
     return Response.json(
       {
         error:
@@ -95,8 +83,6 @@ export async function PATCH(
     }> = { ...body };
 
   if (shouldUnarchive) {
-    // Reset lifecycle state so the session can be resumed normally.
-    // If there is saved sandbox state, the client will surface Resume again.
     updatePayload.lifecycleState = null;
     updatePayload.lifecycleError = null;
   }
@@ -123,20 +109,19 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  const session = await getServerSession();
-  if (!session?.user) {
-    return Response.json({ error: "Not authenticated" }, { status: 401 });
+  const authResult = await requireAuthenticatedUser();
+  if (!authResult.ok) {
+    return authResult.response;
   }
 
   const { sessionId } = await params;
-  const existingSession = await getSessionById(sessionId);
-
-  if (!existingSession) {
-    return Response.json({ error: "Session not found" }, { status: 404 });
-  }
-
-  if (existingSession.userId !== session.user.id) {
-    return Response.json({ error: "Forbidden" }, { status: 403 });
+  const sessionContext = await requireOwnedSession({
+    userId: authResult.userId,
+    sessionId,
+    verb: "admin",
+  });
+  if (!sessionContext.ok) {
+    return sessionContext.response;
   }
 
   await deleteSession(sessionId);

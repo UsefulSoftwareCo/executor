@@ -1,3 +1,4 @@
+import { canAccess } from "@open-agents/authz";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
@@ -110,8 +111,12 @@ export default async function SessionChatPage({
     notFound();
   }
 
-  // Check ownership
-  if (sessionRecord.userId !== session.user.id) {
+  const canReadSession = await canAccess(
+    { kind: "user", userId: session.user.id },
+    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
+    "read",
+  );
+  if (!canReadSession) {
     redirect("/");
   }
 
@@ -191,6 +196,7 @@ export default async function SessionChatPage({
         initialEveEvents={eveChatSnapshot.events}
         initialEveSession={eveChatSnapshot.session}
         initialModelOptions={initialModelOptions}
+        actorUserId={session.user.id}
       >
         <SessionChatContent
           initialIsOnlyChatInSession={initialIsOnlyChatInSession}

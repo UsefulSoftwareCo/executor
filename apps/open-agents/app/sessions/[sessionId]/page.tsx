@@ -1,3 +1,4 @@
+import { canAccess } from "@open-agents/authz";
 import { notFound, redirect } from "next/navigation";
 import { getChatsBySessionId } from "@/lib/db/sessions";
 import { getSessionByIdCached } from "@/lib/db/sessions-cache";
@@ -23,7 +24,12 @@ export default async function SessionPage({ params }: SessionPageProps) {
     notFound();
   }
 
-  if (sessionRecord.userId !== session.user.id) {
+  const canReadSession = await canAccess(
+    { kind: "user", userId: session.user.id },
+    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
+    "read",
+  );
+  if (!canReadSession) {
     redirect("/");
   }
 

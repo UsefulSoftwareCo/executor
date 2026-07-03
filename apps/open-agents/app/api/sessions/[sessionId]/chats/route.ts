@@ -28,6 +28,7 @@ export async function GET(req: Request, context: RouteContext) {
   const sessionContext = await requireOwnedSession({
     userId: authResult.userId,
     sessionId,
+    verb: "read",
   });
   if (!sessionContext.ok) {
     return sessionContext.response;
@@ -57,6 +58,7 @@ export async function POST(req: Request, context: RouteContext) {
   const sessionContext = await requireOwnedSession({
     userId: authResult.userId,
     sessionId,
+    verb: "write",
   });
   if (!sessionContext.ok) {
     return sessionContext.response;

@@ -46,6 +46,7 @@ export async function GET(req: Request, context: RouteContext) {
     userId: authResult.userId,
     sessionId,
     chatId,
+    verb: "read",
   });
   if (!chatContext.ok) {
     return chatContext.response;
@@ -88,6 +89,7 @@ export async function PATCH(req: Request, context: RouteContext) {
     userId: authResult.userId,
     sessionId,
     chatId,
+    verb: "write",
   });
   if (!chatContext.ok) {
     return chatContext.response;
@@ -157,6 +159,7 @@ export async function DELETE(_req: Request, context: RouteContext) {
     userId: authResult.userId,
     sessionId,
     chatId,
+    verb: "admin",
   });
   if (!chatContext.ok) {
     return chatContext.response;

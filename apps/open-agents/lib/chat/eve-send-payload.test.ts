@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  toEveSendPayload,
-  withOpenAgentsClientContext,
-} from "./eve-send-payload";
+import { toEveSendPayload, withOpenAgentsClientContext } from "./eve-send-payload";
 import type { WebAgentUIMessage } from "@/app/types";
 
 describe("toEveSendPayload", () => {
@@ -30,6 +27,7 @@ describe("toEveSendPayload", () => {
       sessionId: "session-1",
       chatId: "chat-1",
       contextLimit: 200_000,
+      actorUserId: "user-1",
     });
 
     expect(prepared.message).toEqual([
@@ -63,6 +61,7 @@ describe("toEveSendPayload", () => {
     expect(prepared.headers).toEqual({
       "x-open-agents-chat-id": "chat-1",
       "x-open-agents-session-id": "session-1",
+      "x-open-agents-user-id": "user-1",
     });
   });
 });

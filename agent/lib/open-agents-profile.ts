@@ -1,3 +1,4 @@
+import { createOpenAgentsAuthz, type Actor, type Scope } from "@open-agents/authz";
 import type { DynamicResolveContext } from "eve/tools";
 import postgres from "postgres";
 import type { WorkspaceRepo } from "../../apps/open-agents/lib/workspace-repos";
@@ -31,7 +32,7 @@ export type OpenAgentsSessionProfile = {
   workspaceRepos: WorkspaceRepo[];
 };
 
-type AgentLibraryScopeKind = "user" | "org";
+type AgentLibraryScopeKind = "user" | "group" | "org";
 
 type AgentLibraryAgentJson = {
   slug: string;
@@ -54,13 +55,16 @@ type OpenAgentsSessionRow = {
   userId: string;
   agentName: string | null;
   workspaceRepos: WorkspaceRepo[];
+  scopeKind: Scope["scopeKind"];
+  scopeId: string;
+  chatScopeKind: Scope["scopeKind"] | null;
+  chatScopeId: string | null;
 };
 type AgentLibraryItemRow<TItemJson> = {
   itemId: string;
   itemJson: TItemJson;
 };
 
-const DEFAULT_ORG_SCOPE_ID = "default";
 const OPEN_AGENTS_PROFILE_TOOL_SET = new Set<string>(OPEN_AGENTS_PROFILE_TOOLS);
 const DB_POOL_MAX_CONNECTIONS = 1;
 const DB_IDLE_TIMEOUT_SECONDS = 10;
@@ -74,10 +78,6 @@ function getOpenAgentsProfileSql(): OpenAgentsProfileSql {
     idle_timeout: DB_IDLE_TIMEOUT_SECONDS,
     max: DB_POOL_MAX_CONNECTIONS,
   }));
-}
-
-function getAgentLibraryOrgScopeId(): string {
-  return process.env.OPEN_AGENTS_ORG_SCOPE_ID?.trim() || DEFAULT_ORG_SCOPE_ID;
 }
 
 function getStringAttribute(
@@ -96,6 +96,16 @@ function getOpenAgentsUserId(ctx: DynamicResolveContext): string | undefined {
 function getOpenAgentsSessionId(ctx: DynamicResolveContext): string | undefined {
   const attributes = ctx.session.auth.initiator?.attributes ?? ctx.session.auth.current?.attributes;
   return getStringAttribute(attributes, "openAgentsSessionId");
+}
+
+function getOpenAgentsChatId(ctx: DynamicResolveContext): string | undefined {
+  const attributes = ctx.session.auth.initiator?.attributes ?? ctx.session.auth.current?.attributes;
+  return getStringAttribute(attributes, "openAgentsChatId");
+}
+
+function getOpenAgentsActor(ctx: DynamicResolveContext): Actor | undefined {
+  const userId = getOpenAgentsUserId(ctx);
+  return userId ? { kind: "user", userId } : undefined;
 }
 
 function getOpenAgentsToolProfile(ctx: DynamicResolveContext): OpenAgentsProfileTool[] | undefined {
@@ -127,11 +137,47 @@ function normalizeProfileTools(
   return [...tools];
 }
 
-function databaseScopesForRead(userId?: string) {
-  return [
-    ...(userId ? ([{ kind: "user" as const, id: userId }] as const) : []),
-    { kind: "org" as const, id: getAgentLibraryOrgScopeId() },
+function getEffectiveSessionScope(session: OpenAgentsSessionRow): Scope {
+  return {
+    scopeKind: session.chatScopeKind ?? session.scopeKind,
+    scopeId: session.chatScopeId ?? session.scopeId,
+  };
+}
+
+async function getGroupOrgScope(groupId: string): Promise<{ kind: "org"; id: string } | undefined> {
+  const sql = getOpenAgentsProfileSql();
+  const [group] = await sql<{ orgId: string }[]>`
+    select org_id as "orgId"
+    from groups
+    where id = ${groupId}
+    limit 1
+  `;
+  return group ? { kind: "org", id: group.orgId } : undefined;
+}
+
+async function databaseScopesForSession(session: OpenAgentsSessionRow) {
+  const effectiveScope = getEffectiveSessionScope(session);
+  const scopes: { kind: AgentLibraryScopeKind; id: string }[] = [
+    { kind: "user", id: session.userId },
   ];
+
+  if (effectiveScope.scopeKind === "user") {
+    const defaultOrgId = await createOpenAgentsAuthz({
+      sql: getOpenAgentsProfileSql(),
+    }).getDefaultOrgId();
+    scopes.push({ kind: "org", id: defaultOrgId });
+    return scopes;
+  }
+
+  scopes.push({ kind: effectiveScope.scopeKind, id: effectiveScope.scopeId });
+  if (effectiveScope.scopeKind === "group") {
+    const orgScope = await getGroupOrgScope(effectiveScope.scopeId);
+    if (orgScope) {
+      scopes.push(orgScope);
+    }
+  }
+
+  return scopes;
 }
 
 async function getDatabaseItem<TItemJson>(
@@ -158,9 +204,9 @@ async function getDatabaseItem<TItemJson>(
 
 async function getDatabaseAgent(
   agentName: string,
-  userId?: string,
+  scopes: readonly { kind: AgentLibraryScopeKind; id: string }[],
 ): Promise<AgentLibraryAgentJson | null> {
-  for (const scope of databaseScopesForRead(userId)) {
+  for (const scope of scopes) {
     const row = await getDatabaseItem<AgentLibraryAgentJson>(scope, "agent", agentName);
     if (row) {
       return row.itemJson;
@@ -170,30 +216,33 @@ async function getDatabaseAgent(
   return null;
 }
 
-async function getOpenAgentsSession(sessionId: string, userId?: string) {
+async function getOpenAgentsSession(sessionId: string, chatId?: string) {
   const sql = getOpenAgentsProfileSql();
   const [session] = await sql<OpenAgentsSessionRow[]>`
     select
-      user_id as "userId",
-      agent_name as "agentName",
-      workspace_repos as "workspaceRepos"
+      sessions.user_id as "userId",
+      sessions.agent_name as "agentName",
+      sessions.workspace_repos as "workspaceRepos",
+      sessions.scope_kind as "scopeKind",
+      sessions.scope_id as "scopeId",
+      chats.scope_kind as "chatScopeKind",
+      chats.scope_id as "chatScopeId"
     from sessions
-    where id = ${sessionId}
+    left join chats on chats.session_id = sessions.id and chats.id = ${chatId ?? null}
+    where sessions.id = ${sessionId}
     limit 1
   `;
 
-  if (!session || (userId && session.userId !== userId)) {
-    return null;
-  }
-
-  return session;
+  return session ?? null;
 }
 
-async function listDatabaseSkills(userId?: string): Promise<OpenAgentsSkillProfile[]> {
+async function listDatabaseSkills(
+  scopes: readonly { kind: AgentLibraryScopeKind; id: string }[],
+): Promise<OpenAgentsSkillProfile[]> {
   const skills = new Map<string, OpenAgentsSkillProfile>();
   const sql = getOpenAgentsProfileSql();
 
-  for (const scope of [...databaseScopesForRead(userId)].reverse()) {
+  for (const scope of [...scopes].reverse()) {
     const rows = await sql<AgentLibraryItemRow<AgentLibrarySkillJson>[]>`
       select
         item_id as "itemId",
@@ -264,25 +313,52 @@ function filterSkillsForAgent(
 
 async function resolveSkillProfiles(
   patterns: readonly string[] | undefined,
-  userId?: string,
+  scopes: readonly { kind: AgentLibraryScopeKind; id: string }[],
 ): Promise<OpenAgentsSkillProfile[]> {
   if (!patterns || patterns.length === 0) {
     return [];
   }
 
-  return filterSkillsForAgent(await listDatabaseSkills(userId), patterns);
+  return filterSkillsForAgent(await listDatabaseSkills(scopes), patterns);
 }
 
 export async function resolveOpenAgentsProfile(
   ctx: DynamicResolveContext,
 ): Promise<OpenAgentsSessionProfile> {
-  const userId = getOpenAgentsUserId(ctx);
+  const actor = getOpenAgentsActor(ctx);
   const sessionId = getOpenAgentsSessionId(ctx);
-  const session = sessionId ? await getOpenAgentsSession(sessionId, userId) : null;
+  const chatId = getOpenAgentsChatId(ctx);
+  const session = sessionId ? await getOpenAgentsSession(sessionId, chatId) : null;
+
+  if (session) {
+    if (!actor) {
+      return {
+        tools: defaultTools(),
+        skills: [],
+        workspaceRepos: [],
+      };
+    }
+
+    const authz = createOpenAgentsAuthz({ sql: getOpenAgentsProfileSql() });
+    const canWriteSession = await authz.canAccess(
+      actor,
+      getEffectiveSessionScope(session),
+      "write",
+    );
+    if (!canWriteSession) {
+      return {
+        tools: defaultTools(),
+        skills: [],
+        workspaceRepos: [],
+      };
+    }
+  }
+
+  const scopes = session ? await databaseScopesForSession(session) : [];
   const agentName = session?.agentName ?? undefined;
-  const agent = agentName ? await getDatabaseAgent(agentName, userId) : null;
+  const agent = agentName ? await getDatabaseAgent(agentName, scopes) : null;
   const headerToolProfile = getOpenAgentsToolProfile(ctx);
-  const skills = await resolveSkillProfiles(agent?.skills, userId);
+  const skills = await resolveSkillProfiles(agent?.skills, scopes);
 
   return {
     ...(agentName ? { agentName } : {}),

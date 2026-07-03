@@ -295,6 +295,7 @@ type SessionChatProviderProps = {
   initialEveEvents: HandleMessageStreamEvent[];
   initialEveSession: SessionState;
   initialModelOptions: ModelOption[];
+  actorUserId: string;
   children: ReactNode;
 };
 
@@ -309,6 +310,7 @@ export function SessionChatProvider({
   initialEveEvents,
   initialEveSession,
   initialModelOptions,
+  actorUserId,
   children,
 }: SessionChatProviderProps) {
   const { mutate } = useSWRConfig();
@@ -359,6 +361,7 @@ export function SessionChatProvider({
     initialEveEvents,
     initialEveSession,
     contextLimit,
+    actorUserId,
   });
 
   const [sandboxInfo, setSandboxInfoState] = useState<SandboxInfo | null>(
