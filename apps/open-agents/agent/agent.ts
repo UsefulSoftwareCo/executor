@@ -15,6 +15,6 @@ export default defineAgent({
     thresholdPercent: 0.75,
   },
   build: {
-    externalDependencies: ["postgres"],
+    externalDependencies: ["@vercel/oidc", "@vercel/sandbox", "postgres"],
   },
 });

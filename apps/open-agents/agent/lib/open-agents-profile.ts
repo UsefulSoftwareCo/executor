@@ -1,7 +1,7 @@
 import { createOpenAgentsAuthz, parseActor, type Actor, type Scope } from "@open-agents/authz";
 import type { DynamicResolveContext } from "eve/tools";
 import postgres from "postgres";
-import type { WorkspaceRepo } from "../../apps/open-agents/lib/workspace-repos";
+import type { WorkspaceRepo } from "../../lib/workspace-repos";
 
 export const OPEN_AGENTS_PROFILE_TOOLS = [
   "todo",

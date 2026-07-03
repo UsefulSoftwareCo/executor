@@ -53,12 +53,6 @@ const nextConfig: NextConfig = {
   webpack(config) {
     const workflowGeneratedRoutePattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
 
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      "@streamdown/code$": resolve(appRoot, "node_modules/@streamdown/code/dist/index.js"),
-      streamdown$: resolve(appRoot, "node_modules/streamdown/dist/index.js"),
-    };
-
     config.watchOptions = {
       ...config.watchOptions,
       ignored: workflowGeneratedRoutePattern,
@@ -69,7 +63,7 @@ const nextConfig: NextConfig = {
 };
 
 export default withEve(withWorkflow(withBotId(nextConfig)), {
-  eveRoot: workspaceRoot,
+  eveRoot: appRoot,
   eveBuildCommand:
-    "bun run apps/open-agents/scripts/verify-eve-vercel-output-patch.ts && eve build && bun run apps/open-agents/scripts/patch-eve-vercel-output.ts",
+    "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts",
 });

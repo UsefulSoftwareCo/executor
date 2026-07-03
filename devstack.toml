@@ -30,6 +30,7 @@ capture_api = false
 init = ["local-env", "datastores-up", "bun-install"]
 readiness = { http = { path = "/api/health", expect_status = [200, 399] }, timeout_ms = 120000 }
 watch = [
+  "agent/**",
   "app/**",
   "components/**",
   "hooks/**",

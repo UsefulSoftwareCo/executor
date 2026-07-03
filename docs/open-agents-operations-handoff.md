@@ -15,7 +15,7 @@ The production app is:
 The deployment is a Vercel Services project. `vercel.json` defines two services:
 
 - `web`: `apps/open-agents`, framework `nextjs`, build command `bun run build`.
-- `eve`: repo root, framework `eve`, build command `bun run apps/open-agents/scripts/verify-eve-vercel-output-patch.ts && eve build && bun run apps/open-agents/scripts/patch-eve-vercel-output.ts`.
+- `eve`: `apps/open-agents`, framework `eve`, build command `bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts`.
 
 Public routing is:
 
@@ -27,7 +27,7 @@ The Next config wraps the app with `withBotId`, `withWorkflow`, and `withEve` in
 
 The main source areas are:
 
-- `agent/`: Eve-authored agent, channels, tools, instructions, and dynamic capabilities.
+- `apps/open-agents/agent/`: Eve-authored agent, channels, tools, instructions, and dynamic capabilities.
 - `apps/open-agents/`: Next.js UI, auth, session DB, sandbox APIs, and Eve chat persistence.
 - `packages/open-agents/sandbox`: Vercel Sandbox adapter and repo clone logic.
 - `packages/plugins/*`, `packages/react`, `packages/core/*`: Executor runtime, plugins, and embedded admin UI.
@@ -36,7 +36,7 @@ The main source areas are:
 
 Use Eve primitives as the source of truth:
 
-- Static agent slots are loaded by file convention from `agent/`.
+- Static agent slots are loaded by file convention from `apps/open-agents/agent/`.
 - Dynamic session capabilities use `defineDynamic`.
 - UI chat uses `eve/react` and `useEveAgent`.
 - Server-side Slack continuation uses `eve/client` `Client`.
@@ -53,13 +53,13 @@ The key DB tables are:
 
 Important implementation files:
 
-- `agent/agent.ts`: model, compaction, Eve build externals.
-- `agent/channels/eve.ts`: web/local/OIDC auth for Eve HTTP requests.
-- `agent/channels/slack.ts`: Slack app mentions and direct messages.
-- `agent/lib/open-agents-slack-session.ts`: Slack thread session creation, sandbox init, Eve client turns, DB persistence.
-- `agent/tools/open_agents_profile.ts`: dynamic tools loaded at `session.started`.
-- `agent/instructions/open_agents_profile.ts`: dynamic instructions loaded at `session.started`.
-- `agent/lib/open-agents-profile.ts`: DB-backed agent/skill/tool profile resolution.
+- `apps/open-agents/agent/agent.ts`: model, compaction, Eve build externals.
+- `apps/open-agents/agent/channels/eve.ts`: web/local/OIDC auth for Eve HTTP requests.
+- `apps/open-agents/agent/channels/slack.ts`: Slack app mentions and direct messages.
+- `apps/open-agents/agent/lib/open-agents-slack-session.ts`: Slack thread session creation, sandbox init, Eve client turns, DB persistence.
+- `apps/open-agents/agent/tools/open_agents_profile.ts`: dynamic tools loaded at `session.started`.
+- `apps/open-agents/agent/instructions/open_agents_profile.ts`: dynamic instructions loaded at `session.started`.
+- `apps/open-agents/agent/lib/open-agents-profile.ts`: DB-backed agent/skill/tool profile resolution.
 - `apps/open-agents/app/sessions/[sessionId]/chats/[chatId]/hooks/use-session-chat-runtime.ts`: browser Eve runtime and persistence queue.
 - `apps/open-agents/lib/db/eve-chat-sessions.ts`: Eve state/event persistence helpers.
 
@@ -407,7 +407,7 @@ Interpretation:
 
 ## Logs That Matter
 
-Slack logs from `agent/channels/slack.ts`:
+Slack logs from `apps/open-agents/agent/channels/slack.ts`:
 
 - `[slack] received message`
 - `[slack] started Open Agents session`
@@ -415,7 +415,7 @@ Slack logs from `agent/channels/slack.ts`:
 - `[slack] failed to initialize Open Agents sandbox`
 - `[slack] Open Agents turn failed`
 
-Slack/Eve persistence logs from `agent/lib/open-agents-slack-session.ts`:
+Slack/Eve persistence logs from `apps/open-agents/agent/lib/open-agents-slack-session.ts`:
 
 - `[slack-session] initializing sandbox`
 - `[slack-session] sandbox initialized`
@@ -512,7 +512,7 @@ Default listed agent errors:
 
 - Reproduce with the real UI and browser, not a token assertion.
 - Check the selected `sessions.agent_name` and matching `agent_library_items` row.
-- Dynamic profile resolution is in `agent/lib/open-agents-profile.ts`.
+- Dynamic profile resolution is in `apps/open-agents/agent/lib/open-agents-profile.ts`.
 
 Sonnet sessions error:
 

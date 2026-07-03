@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { invalidateMembership } from "@open-agents/authz";
 import type { DynamicResolveContext } from "eve/tools";
 import postgres from "postgres";
+import type { WorkspaceRepo } from "../../lib/workspace-repos";
 import { resolveOpenAgentsProfile } from "./open-agents-profile";
 
 const databaseUrl = process.env.POSTGRES_URL;
@@ -85,7 +86,7 @@ describe("resolveOpenAgentsProfile", () => {
 
     expect(profile.agentName).toBe("shared-agent");
     expect(profile.agentDisplayName).toBe("Creator Shared Agent");
-    expect(profile.workspaceRepos).toEqual([
+    expect(workspaceRepoSummaries(profile.workspaceRepos)).toEqual([
       {
         owner: "GoAugment",
         repo: "augment-web",
@@ -108,7 +109,7 @@ describe("resolveOpenAgentsProfile", () => {
     expect(profile.agentDisplayName).toBe("Creator Shared Agent");
     expect(profile.customInstructions).toBe("creator instructions");
     expect(profile.tools).toEqual(["bash"]);
-    expect(profile.workspaceRepos).toEqual([
+    expect(workspaceRepoSummaries(profile.workspaceRepos)).toEqual([
       {
         owner: "GoAugment",
         repo: "augment-web",
@@ -119,15 +120,40 @@ describe("resolveOpenAgentsProfile", () => {
   });
 });
 
+function workspaceRepoSummaries(repos: WorkspaceRepo[]) {
+  return repos.map(({ branch, directory, owner, repo }) => ({
+    branch,
+    directory,
+    owner,
+    repo,
+  }));
+}
+
 function contextFor(userId: string): DynamicResolveContext {
   return contextForActor(userId);
 }
 
 function contextForActor(actorId: string): DynamicResolveContext {
   return {
+    channel: {},
+    messages: [],
     session: {
+      id: "eve-session-test",
       auth: {
+        current: {
+          authenticator: "test",
+          principalType: "test",
+          subject: actorId,
+          principalId: actorId,
+          attributes: {
+            openAgentsActor: actorId,
+            openAgentsSessionId: ids.session,
+            openAgentsChatId: ids.chat,
+          },
+        },
         initiator: {
+          authenticator: "test",
+          principalType: "test",
           subject: actorId,
           principalId: actorId,
           attributes: {
@@ -138,7 +164,7 @@ function contextForActor(actorId: string): DynamicResolveContext {
         },
       },
     },
-  } as DynamicResolveContext;
+  };
 }
 
 async function seedProfileFixture(): Promise<void> {

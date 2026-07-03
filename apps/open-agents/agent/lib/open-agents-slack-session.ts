@@ -14,7 +14,7 @@ import postgres from "postgres";
 import {
   getDefaultHookWorkspaceRepos,
   type WorkspaceRepo,
-} from "../../apps/open-agents/lib/workspace-repos";
+} from "../../lib/workspace-repos";
 
 export type OpenAgentsSlackSession = {
   chatId: string;
@@ -584,7 +584,7 @@ async function initializeSandbox(input: {
 
   const sandbox = await connectSandbox(sandboxState, {
     baseSnapshotId: process.env.VERCEL_SANDBOX_BASE_SNAPSHOT_ID,
-    createIfMissing: true,
+    create: true,
     githubToken: process.env.OPEN_AGENTS_GITHUB_TOKEN,
     gitUser: {
       name: "Open Agents",
@@ -610,7 +610,7 @@ async function initializeSandbox(input: {
   await sql`
     update sessions
     set
-      sandbox_state = ${sql.json(nextState)},
+      sandbox_state = ${sql.json(nextState as unknown as postgres.JSONValue)},
       lifecycle_state = 'active',
       lifecycle_error = null,
       last_activity_at = ${now},
@@ -689,7 +689,7 @@ async function persistEveChatSessionProgress(input: {
             chat_id: input.chatId,
             stream_index: input.firstStreamIndex + offset,
             event_type: event.type,
-            event: tx.json(event),
+            event: tx.json(event as unknown as postgres.JSONValue),
             created_at: now,
           })),
         )}
@@ -717,7 +717,7 @@ async function persistEveChatSessionProgress(input: {
         )
         values (
           ${input.chatId},
-          ${tx.json(input.session)},
+          ${tx.json(input.session as unknown as postgres.JSONValue)},
           ${now}
         )
         on conflict (chat_id)

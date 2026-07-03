@@ -22,7 +22,6 @@ import {
 import { SelectionPopover } from "@/components/selection-popover";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { defaultFileOptions } from "@/lib/diffs-config";
-import { streamdownPlugins } from "@/lib/streamdown-config";
 import { fetcherNoStore } from "@/lib/swr";
 import { cn } from "@/lib/utils";
 
@@ -47,7 +46,10 @@ type PrettyViewKind = "markdown" | "text";
 const wrappedFileExtensions = new Set([".md", ".mdx", ".markdown", ".txt"]);
 const markdownExtensions = new Set([".md", ".mdx", ".markdown"]);
 const plainTextExtensions = new Set([".txt"]);
-const Streamdown = dynamic(() => import("streamdown").then((m) => m.Streamdown), { ssr: false });
+const StreamdownRenderer = dynamic(
+  () => import("@/components/streamdown-renderer").then((m) => m.StreamdownRenderer),
+  { ssr: false },
+);
 
 function getFileExtension(filePath: string) {
   const normalizedPath = filePath.toLowerCase();
@@ -144,9 +146,9 @@ function stripMarkdownFrontmatter(content: string) {
 function PrettyMarkdown({ content }: { content: string }) {
   return (
     <div className="p-6">
-      <Streamdown mode="static" isAnimating={false} plugins={streamdownPlugins}>
+      <StreamdownRenderer mode="static" isAnimating={false}>
         {stripMarkdownFrontmatter(content)}
-      </Streamdown>
+      </StreamdownRenderer>
     </div>
   );
 }

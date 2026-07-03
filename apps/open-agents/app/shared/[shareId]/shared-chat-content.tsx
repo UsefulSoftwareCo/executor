@@ -8,9 +8,9 @@ import {
   GitBranch,
   GitPullRequest,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useMemo } from "react";
-import { Streamdown } from "streamdown";
 import type {
   WebAgentUIMessage,
   WebAgentUIMessagePart,
@@ -27,10 +27,8 @@ import { ToolCall } from "@/components/tool-call";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { Chat } from "@/lib/db/schema";
-import { streamdownPlugins } from "@/lib/streamdown-config";
 import { cn } from "@/lib/utils";
 import { SharedChatStatus } from "./shared-chat-status";
-import "streamdown/styles.css";
 
 export type MessageWithTiming = {
   message: WebAgentUIMessage;
@@ -57,6 +55,11 @@ type SharedBy = {
   name: string | null;
   avatarUrl: string | null;
 } | null;
+
+const StreamdownRenderer = dynamic(
+  () => import("@/components/streamdown-renderer").then((m) => m.StreamdownRenderer),
+  { ssr: false },
+);
 
 type ReasoningMessagePart = Extract<
   WebAgentUIMessagePart,
@@ -440,14 +443,13 @@ function SharedMessage({
               </div>
             ) : (
               <div className="min-w-0 w-full overflow-hidden">
-                <Streamdown
+                <StreamdownRenderer
                   mode="static"
                   isAnimating={false}
                   components={streamdownComponents}
-                  plugins={streamdownPlugins}
                 >
                   {p.text}
-                </Streamdown>
+                </StreamdownRenderer>
               </div>
             )}
           </div>

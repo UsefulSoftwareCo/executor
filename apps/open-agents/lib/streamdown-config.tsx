@@ -1,16 +1,20 @@
-import { createCodePlugin } from "@streamdown/code";
-import { vercelDark, vercelLight } from "./vercel-themes";
+type StreamdownHighlightToken = {
+  bgColor?: string;
+  color?: string;
+  content?: string;
+  htmlStyle?: Record<string, string | undefined>;
+  offset?: number;
+};
 
-const baseCodePlugin = createCodePlugin({
-  themes: [vercelLight, vercelDark],
-});
+type StreamdownHighlightLine = StreamdownHighlightToken[];
 
-type HighlightOptions = Parameters<typeof baseCodePlugin.highlight>[0];
-type HighlightResult = NonNullable<ReturnType<typeof baseCodePlugin.highlight>>;
-type HighlightCallback = (result: HighlightResult) => void;
-type HighlightLine = HighlightResult["tokens"][number];
-type HighlightToken = HighlightLine[number];
-type TokenHtmlStyle = NonNullable<HighlightToken["htmlStyle"]>;
+export type StreamdownHighlightResult = {
+  bg?: string;
+  fg?: string;
+  rootStyle?: string;
+  tokens: StreamdownHighlightLine[];
+  [key: string]: unknown;
+};
 
 type CssDeclarations = Record<string, string>;
 
@@ -48,7 +52,7 @@ function parseCssValue(value: string): {
 }
 
 function mergeDeclarations(
-  target: CssDeclarations,
+  target: Record<string, string | undefined>,
   source: CssDeclarations,
 ): void {
   for (const [property, propertyValue] of Object.entries(source)) {
@@ -71,7 +75,7 @@ function consumeThemeValue(
 }
 
 function normalizeTokenStyleProperty(
-  htmlStyle: TokenHtmlStyle,
+  htmlStyle: NonNullable<StreamdownHighlightToken["htmlStyle"]>,
   property: "color" | "background-color",
 ): string | undefined {
   const value = htmlStyle[property];
@@ -86,7 +90,9 @@ function normalizeTokenStyleProperty(
   return baseValue;
 }
 
-function normalizeHighlightToken(token: HighlightToken): HighlightToken {
+function normalizeHighlightToken(
+  token: StreamdownHighlightToken,
+): StreamdownHighlightToken {
   const htmlStyle = token.htmlStyle ? { ...token.htmlStyle } : undefined;
   if (!htmlStyle) {
     return token;
@@ -125,18 +131,13 @@ function mergeRootStyle(
   return rootStyleParts.join(";");
 }
 
-export function normalizeStreamdownHighlightResult(
-  result: HighlightResult,
-): HighlightResult {
-  // Shiki dual-theme output can encode dark-mode overrides in semicolon-delimited
-  // values. Streamdown expects base colors in fg/bg + token color/bgColor, with
-  // dark variants left in CSS variables on styles.
+export function normalizeStreamdownHighlightResult<
+  Result extends StreamdownHighlightResult,
+>(result: Result): Result {
   const rootDeclarations: CssDeclarations = {};
   const fg = consumeThemeValue(result.fg, rootDeclarations);
   const bg = consumeThemeValue(result.bg, rootDeclarations);
-  const tokens: HighlightResult["tokens"] = result.tokens.map(
-    (line: HighlightLine) => line.map(normalizeHighlightToken),
-  );
+  const tokens = result.tokens.map((line) => line.map(normalizeHighlightToken));
   const rootStyle = mergeRootStyle(result.rootStyle, rootDeclarations);
 
   return {
@@ -147,21 +148,3 @@ export function normalizeStreamdownHighlightResult(
     tokens,
   };
 }
-
-const codePlugin = {
-  ...baseCodePlugin,
-  highlight(options: HighlightOptions, callback?: HighlightCallback) {
-    const normalizedCallback: HighlightCallback | undefined = callback
-      ? (result) => {
-          callback(normalizeStreamdownHighlightResult(result));
-        }
-      : undefined;
-
-    const result = baseCodePlugin.highlight(options, normalizedCallback);
-    return result ? normalizeStreamdownHighlightResult(result) : null;
-  },
-};
-
-export const streamdownPlugins = {
-  code: codePlugin,
-};

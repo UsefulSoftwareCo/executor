@@ -13,9 +13,7 @@ const titleModel = languageModelSettings("anthropic/claude-haiku-4.5");
  * Can be called directly as a POST endpoint or used internally via
  * `generateSessionTitle()` for non-blocking server-side usage.
  */
-export async function generateSessionTitle(
-  message: string,
-): Promise<string | null> {
+async function generateSessionTitle(message: string): Promise<string | null> {
   const trimmed = message.trim().slice(0, 2000);
   if (trimmed.length === 0) return null;
 

@@ -86,8 +86,8 @@ The load-bearing facts:
   `requireOwnedSessionWithSandboxGuard`) — all `userId` equality. Pages gate in
   layouts + the session chat page. No middleware file exists.
 - Two code paths bypass Drizzle with raw `postgres` (`max: 1` pools, 10s idle
-  timeout): `agent/lib/open-agents-profile.ts` and
-  `agent/lib/open-agents-slack-session.ts` (the Eve service side). This is a
+  timeout): `apps/open-agents/agent/lib/open-agents-profile.ts` and
+  `apps/open-agents/agent/lib/open-agents-slack-session.ts` (the Eve service side). This is a
   deliberate bundle boundary: the Eve agent build externalizes `postgres` and does
   not import the Next app's module graph (Drizzle client, `@/app` types).
 - The web send path does **not** transmit an actor identity to Eve:
@@ -96,9 +96,9 @@ The load-bearing facts:
   *stored thread creator*, not the current author.
 
 **Eve runtime**
-- Single root agent (`agent/agent.ts`). DB-backed "agents" are dynamic
+- Single root agent (`apps/open-agents/agent/agent.ts`). DB-backed "agents" are dynamic
   tools/instructions resolved at `session.started` from `agent_library_items`
-  (`agent/tools/open_agents_profile.ts`, `agent/instructions/open_agents_profile.ts`).
+  (`apps/open-agents/agent/tools/open_agents_profile.ts`, `apps/open-agents/agent/instructions/open_agents_profile.ts`).
   Per Eve's types, **dynamic tool resolvers also run at `turn.started` and
   `step.started`; instructions at `session.started` and `turn.started`** — the current
   code just happens to only use `session.started`.
@@ -327,7 +327,7 @@ re-check on attach, never on a stale grant.
 - `session-context.ts` helpers keep their call-site API but delegate to authz. Every
   `userId === session.userId` check in routes migrates to `requireSessionAccess`
   (the web-ui briefing has the exhaustive route list).
-- `agent/lib/open-agents-profile.ts` needs **two distinct changes** (review: this is
+- `apps/open-agents/agent/lib/open-agents-profile.ts` needs **two distinct changes** (review: this is
   the code path multiplayer actually runs through, and one line under-sells it):
   1. The ownership guard (`session.userId !== userId → null`, line 185) becomes
      `canAccess(actorId, session.scope, 'write')`.
@@ -671,7 +671,7 @@ principal must not launder privileges through the shared GitHub bot token.
 
 - Browser-side Eve event persistence queue (`use-session-chat-runtime.ts`) — after
   the drain window (§4.2g).
-- Raw-SQL persistence loop in `agent/lib/open-agents-slack-session.ts` — in the
+- Raw-SQL persistence loop in `apps/open-agents/agent/lib/open-agents-slack-session.ts` — in the
   flagged Slack-convergence step (§4.2h), not Phase 1.
 - Hardcoded `OPEN_AGENTS_ORG_SCOPE_ID` scope probing in `open-agents-profile.ts`
   and the env indirection itself (org id becomes a migration invariant).

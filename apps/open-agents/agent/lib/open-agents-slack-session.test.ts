@@ -103,12 +103,20 @@ const slackSessionModulePromise = import("./open-agents-slack-session");
 function slackMessage(slackUserId: string) {
   return {
     attachments: [],
-    author: { userId: slackUserId },
+    author: {
+      fullName: undefined,
+      isBot: false,
+      isMe: false,
+      userId: slackUserId,
+      userName: undefined,
+    },
     channelId: "C123",
     markdown: "do the thing",
+    raw: {},
     teamId: "T123",
     text: "do the thing",
     threadTs: "1710000000.000000",
+    ts: "1710000000.000000",
   };
 }
 

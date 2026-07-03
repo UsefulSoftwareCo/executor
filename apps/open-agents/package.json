@@ -33,6 +33,7 @@
     "@executor-js/sdk": "workspace:*",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
+    "@open-agents/authz": "workspace:*",
     "@open-agents/model-settings": "workspace:*",
     "@open-agents/sandbox": "workspace:*",
     "@open-agents/shared": "workspace:*",

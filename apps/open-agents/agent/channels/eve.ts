@@ -2,7 +2,7 @@ import { parseActor, serializeActor } from "@open-agents/authz";
 import type { SessionAuthContext } from "eve/context";
 import { type AuthFn, localDev, vercelOidc } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
-import { auth } from "../../apps/open-agents/lib/auth/config";
+import { auth } from "../../lib/auth/config";
 
 const localDevAuth = localDev();
 

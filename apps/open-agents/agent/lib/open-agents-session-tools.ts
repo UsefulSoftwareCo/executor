@@ -445,4 +445,4 @@ export const OPEN_AGENTS_SESSION_TOOLS = {
   grep: grepTool,
   read_file: readFileTool,
   write_file: writeFileTool,
-} satisfies Partial<Record<string, ToolDefinition>>;
+};

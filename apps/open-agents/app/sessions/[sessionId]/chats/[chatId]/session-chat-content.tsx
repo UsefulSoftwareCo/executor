@@ -95,7 +95,6 @@ import {
 } from "@/lib/models";
 import { getPrDeploymentRefreshInterval } from "@/lib/pr-deployment-polling";
 
-import { streamdownPlugins } from "@/lib/streamdown-config";
 import { cn } from "@/lib/utils";
 import {
   type SandboxInfo,
@@ -114,7 +113,6 @@ import {
 } from "./sandbox-create";
 import { SandboxCreateErrorBanner } from "./sandbox-create-error-banner";
 import { WorkspaceFileViewer } from "./workspace-file-viewer";
-import "streamdown/styles.css";
 
 /** Minimum interval between textarea-focus activity pings (5 minutes). */
 const ACTIVITY_PING_THROTTLE_MS = 5 * 60 * 1000;
@@ -135,7 +133,10 @@ const CreateRepoDialog = dynamic(
   () => import("@/components/create-repo-dialog").then((m) => m.CreateRepoDialog),
   { ssr: false },
 );
-const Streamdown = dynamic(() => import("streamdown").then((m) => m.Streamdown), { ssr: false });
+const StreamdownRenderer = dynamic(
+  () => import("@/components/streamdown-renderer").then((m) => m.StreamdownRenderer),
+  { ssr: false },
+);
 const DiffTabView = dynamic(() => import("./diff-tab-view").then((m) => m.DiffTabView), {
   ssr: false,
 });
@@ -2643,7 +2644,7 @@ export function SessionChatContent({
                                         </div>
                                       ) : (
                                         <div className="group min-w-0 w-full overflow-hidden">
-                                          <Streamdown
+                                          <StreamdownRenderer
                                             animated={
                                               isMessageStreaming
                                                 ? {
@@ -2656,10 +2657,9 @@ export function SessionChatContent({
                                             mode={isMessageStreaming ? "streaming" : "static"}
                                             isAnimating={isMessageStreaming}
                                             components={streamdownComponents}
-                                            plugins={streamdownPlugins}
                                           >
                                             {p.text}
-                                          </Streamdown>
+                                          </StreamdownRenderer>
                                           {(canCopyAssistantMessage ||
                                             (!isMessageStreaming &&
                                               isFinalAssistantTextPart &&
