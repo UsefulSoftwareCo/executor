@@ -1,5 +1,7 @@
 # @executor-js/desktop
 
+## 1.5.28
+
 ## 1.5.27
 
 ### Patch Changes

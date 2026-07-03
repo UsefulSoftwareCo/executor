@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/execution",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/execution",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"

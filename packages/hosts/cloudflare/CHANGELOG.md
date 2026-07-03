@@ -1,5 +1,17 @@
 # @executor-js/cloudflare
 
+## 0.0.27
+
+### Patch Changes
+
+- [#1257](https://github.com/UsefulSoftwareCo/executor/pull/1257) [`747f4e1`](https://github.com/UsefulSoftwareCo/executor/commit/747f4e190a4821dc942b739b354e0b099d4b284d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Upgrade `agents` to 0.17.3 and patch its MCP SSE forwarder to bound undrained frames per connection. A slow or stalled streamable-http client previously caused forwarded frames and keepalives to accumulate unboundedly in the shared front-worker isolate, OOMing it and dropping every co-tenant on that isolate. The patch caps per-connection undrained data at 8 MiB and closes the offending stream instead of buffering without limit.
+
+- Updated dependencies [[`1c48182`](https://github.com/UsefulSoftwareCo/executor/commit/1c4818254e71dc4ee27ff95f489e2c5cf330a450)]:
+  - @executor-js/sdk@1.5.28
+  - @executor-js/api@1.4.48
+  - @executor-js/execution@1.5.28
+  - @executor-js/host-mcp@1.4.4
+
 ## 0.0.26
 
 ### Patch Changes
