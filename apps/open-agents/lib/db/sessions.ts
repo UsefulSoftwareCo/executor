@@ -174,6 +174,44 @@ type GetSessionsWithUnreadByUserIdOptions = {
   offset?: number;
 };
 
+function readableEffectiveChatScopeByUser(userId: string) {
+  const effectiveScopeKind = sql`COALESCE(${chats.scopeKind}, ${sessions.scopeKind})`;
+  const effectiveScopeId = sql`COALESCE(${chats.scopeId}, ${sessions.scopeId})`;
+
+  return sql<boolean>`(
+    (${effectiveScopeKind} = 'user' AND ${effectiveScopeId} = ${userId})
+    OR (
+      ${effectiveScopeKind} = 'org'
+      AND EXISTS (
+        SELECT 1
+        FROM organization_members
+        WHERE organization_members.user_id = ${userId}
+          AND organization_members.org_id = ${effectiveScopeId}
+      )
+    )
+    OR (
+      ${effectiveScopeKind} = 'group'
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM group_members
+          WHERE group_members.user_id = ${userId}
+            AND group_members.group_id = ${effectiveScopeId}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM groups
+          INNER JOIN organization_members
+            ON organization_members.org_id = groups.org_id
+          WHERE groups.id = ${effectiveScopeId}
+            AND organization_members.user_id = ${userId}
+            AND organization_members.role = 'admin'
+        )
+      )
+    )
+  )`;
+}
+
 /**
  * Returns sessions for a user, each annotated with a `hasUnread` flag
  * that is true when any chat in the session has unread assistant messages.
@@ -328,6 +366,27 @@ export async function getChatsBySessionId(sessionId: string) {
   });
 }
 
+export async function getAccessibleChatsBySessionId(sessionId: string, userId: string) {
+  const rows = await db
+    .select({
+      id: chats.id,
+      sessionId: chats.sessionId,
+      title: chats.title,
+      scopeKind: chats.scopeKind,
+      scopeId: chats.scopeId,
+      modelId: chats.modelId,
+      lastAssistantMessageAt: chats.lastAssistantMessageAt,
+      createdAt: chats.createdAt,
+      updatedAt: chats.updatedAt,
+    })
+    .from(chats)
+    .innerJoin(sessions, eq(sessions.id, chats.sessionId))
+    .where(and(eq(chats.sessionId, sessionId), readableEffectiveChatScopeByUser(userId)))
+    .orderBy(desc(chats.updatedAt), desc(chats.createdAt));
+
+  return rows;
+}
+
 export type ChatSummary = typeof chats.$inferSelect & {
   hasUnread: boolean;
   isStreaming: boolean;
@@ -361,8 +420,9 @@ export async function getChatSummariesBySessionId(
       `,
     })
     .from(chats)
+    .innerJoin(sessions, eq(sessions.id, chats.sessionId))
     .leftJoin(chatReads, and(eq(chatReads.chatId, chats.id), eq(chatReads.userId, userId)))
-    .where(eq(chats.sessionId, sessionId))
+    .where(and(eq(chats.sessionId, sessionId), readableEffectiveChatScopeByUser(userId)))
     .orderBy(chats.createdAt);
 
   const streamingStatuses = await getEveChatStreamingStatuses(rows.map((row) => row.id));

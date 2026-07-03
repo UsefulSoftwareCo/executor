@@ -1,6 +1,6 @@
-import { canAccess } from "@open-agents/authz";
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { notFound, redirect } from "next/navigation";
-import { getChatsBySessionId } from "@/lib/db/sessions";
+import { getAccessibleChatsBySessionId } from "@/lib/db/sessions";
 import { getSessionByIdCached } from "@/lib/db/sessions-cache";
 import { getServerSession } from "@/lib/session/get-server-session";
 
@@ -24,21 +24,21 @@ export default async function SessionPage({ params }: SessionPageProps) {
     notFound();
   }
 
-  const canReadSession = await canAccess(
-    { kind: "user", userId: session.user.id },
-    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
-    "read",
-  );
-  if (!canReadSession) {
-    redirect("/");
-  }
-
-  const chats = await getChatsBySessionId(sessionId);
+  const chats = await getAccessibleChatsBySessionId(sessionId, session.user.id);
   const targetChat = chats[0];
 
-  if (!targetChat) {
-    notFound();
+  if (targetChat) {
+    redirect(`/sessions/${sessionId}/chats/${targetChat.id}`);
   }
 
-  redirect(`/sessions/${sessionId}/chats/${targetChat.id}`);
+  try {
+    await requireSessionAccess({ kind: "user", userId: session.user.id }, sessionId, "read");
+  } catch (error) {
+    if (error instanceof AuthzError && error.status === 403) {
+      redirect("/");
+    }
+    throw error;
+  }
+
+  notFound();
 }

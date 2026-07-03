@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import {
   requireAuthenticatedUser,
   requireOwnedSession,
+  requireOwnedSessionChat,
 } from "@/app/api/sessions/_lib/session-context";
 import {
   createChat,
@@ -30,16 +31,19 @@ export async function GET(req: Request, context: RouteContext) {
     sessionId,
     verb: "read",
   });
-  if (!sessionContext.ok) {
+
+  if (!sessionContext.ok && sessionContext.response.status !== 403) {
     return sessionContext.response;
   }
 
-  const [chats, rawPreferences] = await Promise.all([
-    getChatSummariesBySessionId(sessionId, authResult.userId),
-    getUserPreferences(authResult.userId),
-  ]);
+  const chats = await getChatSummariesBySessionId(sessionId, authResult.userId);
+
+  if (!sessionContext.ok && chats.length === 0) {
+    return sessionContext.response;
+  }
+
   const preferences = sanitizeUserPreferencesForSession(
-    rawPreferences,
+    await getUserPreferences(authResult.userId),
     session,
     req.url,
   );
@@ -88,7 +92,16 @@ export async function POST(req: Request, context: RouteContext) {
       if (existing.sessionId !== sessionId) {
         return Response.json({ error: "Chat ID conflict" }, { status: 409 });
       }
-      return Response.json({ chat: existing });
+      const chatContext = await requireOwnedSessionChat({
+        userId: authResult.userId,
+        sessionId,
+        chatId: existing.id,
+        verb: "write",
+      });
+      if (!chatContext.ok) {
+        return chatContext.response;
+      }
+      return Response.json({ chat: chatContext.chat });
     }
   }
 

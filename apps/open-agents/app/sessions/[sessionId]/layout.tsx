@@ -1,4 +1,3 @@
-import { canAccess } from "@open-agents/authz";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
@@ -7,6 +6,7 @@ import { getSessionByIdCached } from "@/lib/db/sessions-cache";
 import { getUserPreferences } from "@/lib/db/user-preferences";
 import { sanitizeUserPreferencesForSession } from "@/lib/model-access";
 import { getServerSession } from "@/lib/session/get-server-session";
+import { canRenderSessionShell } from "./_lib/session-route-context";
 import { SessionLayoutShell } from "./session-layout-shell";
 
 interface SessionLayoutProps {
@@ -30,12 +30,14 @@ export default async function SessionLayout({ params, children }: SessionLayoutP
     notFound();
   }
 
-  const canReadSession = await canAccess(
-    { kind: "user", userId: session.user.id },
-    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
-    "read",
-  );
-  if (!canReadSession) {
+  const chats = await getChatSummariesBySessionId(sessionId, session.user.id);
+  if (
+    !(await canRenderSessionShell({
+      userId: session.user.id,
+      sessionId,
+      accessibleChats: chats,
+    }))
+  ) {
     redirect("/");
   }
 
@@ -48,10 +50,7 @@ export default async function SessionLayout({ params, children }: SessionLayoutP
 
   try {
     const requestHost = (await headers()).get("host") ?? "";
-    const [chats, rawPreferences] = await Promise.all([
-      getChatSummariesBySessionId(sessionId, session.user.id),
-      getUserPreferences(session.user.id),
-    ]);
+    const rawPreferences = await getUserPreferences(session.user.id);
     const preferences = sanitizeUserPreferencesForSession(rawPreferences, session, requestHost);
     initialChatsData = {
       chats,

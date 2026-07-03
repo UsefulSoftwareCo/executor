@@ -1,4 +1,3 @@
-import { canAccess } from "@open-agents/authz";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
@@ -9,7 +8,6 @@ import {
   getChatSummariesBySessionId,
   getEveChatSessionSnapshot,
 } from "@/lib/db/sessions";
-import { getSessionByIdCached } from "@/lib/db/sessions-cache";
 import { getUserPreferences } from "@/lib/db/user-preferences";
 import {
   buildSessionChatModelOptions,
@@ -28,6 +26,7 @@ import {
 import { getAllVariants } from "@/lib/model-variants";
 import { fetchAvailableLanguageModelsWithContext } from "@/lib/models-with-context";
 import { getServerSession } from "@/lib/session/get-server-session";
+import { getReadableChatPageContext } from "../../_lib/session-route-context";
 import { getInitialIsOnlyChatInSession } from "./only-chat-in-session";
 import { SessionChatContent } from "./session-chat-content";
 import { SessionChatProvider } from "./session-chat-context";
@@ -81,11 +80,27 @@ async function getChatByIdWithRetry(
 export async function generateMetadata({
   params,
 }: SessionChatPageProps): Promise<Metadata> {
-  const { sessionId } = await params;
-  const sessionRecord = await getSessionByIdCached(sessionId);
+  const { sessionId, chatId } = await params;
+  const session = await getServerSession();
+  if (!session?.user) {
+    return {
+      title: `Session ${sessionId}`,
+      description: "Review session progress, chats, and outputs.",
+    };
+  }
+
+  const pageContext = await getReadableChatPageContext({
+    userId: session.user.id,
+    sessionId,
+    chatId,
+    loadChat: async (chatIdToLoad) => {
+      const chat = await getChatById(chatIdToLoad);
+      return chat && chat.sessionId === sessionId ? chat : undefined;
+    },
+  });
 
   return {
-    title: sessionRecord?.title ?? `Session ${sessionId}`,
+    title: pageContext.ok ? pageContext.sessionRecord.title : `Session ${sessionId}`,
     description: "Review session progress, chats, and outputs.",
   };
 }
@@ -95,55 +110,41 @@ export default async function SessionChatPage({
 }: SessionChatPageProps) {
   const { sessionId, chatId } = await params;
 
-  // Start independent fetches in parallel
-  const sessionPromise = getServerSession();
-  const sessionRecordPromise = getSessionByIdCached(sessionId);
-
-  // Server-side auth check
-  const session = await sessionPromise;
+  const session = await getServerSession();
   if (!session?.user) {
     redirect("/");
   }
 
-  // Fetch session record
-  const sessionRecord = await sessionRecordPromise;
-  if (!sessionRecord) {
-    notFound();
-  }
+  const pageContext = await getReadableChatPageContext({
+    userId: session.user.id,
+    sessionId,
+    chatId,
+    loadChat: getChatByIdWithRetry,
+  });
 
-  const canReadSession = await canAccess(
-    { kind: "user", userId: session.user.id },
-    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
-    "read",
-  );
-  if (!canReadSession) {
+  if (!pageContext.ok) {
+    if (pageContext.reason === "session-not-found") {
+      notFound();
+    }
+    if (pageContext.reason === "chat-not-found") {
+      if (isOptimisticChatId(chatId)) {
+        redirect(`/sessions/${sessionId}`);
+      }
+      notFound();
+    }
     redirect("/");
   }
 
+  const { sessionRecord, chat } = pageContext;
   const requestHost = (await headers()).get("host") ?? "";
 
-  // Fetch chat, Eve snapshot, models, and preferences in parallel
-  const [
-    chat,
-    eveChatSnapshot,
-    initialModels,
-    rawPreferences,
-    sessionChats,
-  ] =
+  const [eveChatSnapshot, initialModels, rawPreferences, sessionChats] =
     await Promise.all([
-      getChatByIdWithRetry(chatId, sessionId),
       getEveChatSessionSnapshot(chatId),
       getInitialModels(),
       getUserPreferences(session.user.id),
       getChatSummariesBySessionId(sessionId, session.user.id),
     ]);
-
-  if (!chat) {
-    if (isOptimisticChatId(chatId)) {
-      redirect(`/sessions/${sessionId}`);
-    }
-    notFound();
-  }
 
   const initialMessages = toWebAgentMessagesFromEvents(eveChatSnapshot.events);
   const messageDurationMap: Record<string, number> = {};

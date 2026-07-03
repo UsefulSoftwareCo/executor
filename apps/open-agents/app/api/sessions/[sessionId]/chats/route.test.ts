@@ -20,6 +20,17 @@ type OwnedSessionResult =
       response: Response;
     };
 
+type OwnedSessionChatResult =
+  | {
+      ok: true;
+      sessionRecord: { id: string };
+      chat: ChatRecord;
+    }
+  | {
+      ok: false;
+      response: Response;
+    };
+
 type ChatSummary = {
   id: string;
   title: string;
@@ -43,6 +54,7 @@ let currentSession: {
 } | null = {
   user: { id: "user-1" },
 };
+let ownedSessionChatResult: OwnedSessionChatResult | null = null;
 
 let chatSummaries: ChatSummary[] = [{ id: "chat-1", title: "Chat 1" }];
 let existingChat: ChatRecord | null = null;
@@ -64,6 +76,12 @@ const createChatCalls: Array<{
 mock.module("@/app/api/sessions/_lib/session-context", () => ({
   requireAuthenticatedUser: async () => authResult,
   requireOwnedSession: async () => ownedSessionResult,
+  requireOwnedSessionChat: async () =>
+    ownedSessionChatResult ?? {
+      ok: true,
+      sessionRecord: { id: "session-1" },
+      chat: existingChat,
+    },
 }));
 
 mock.module("nanoid", () => ({
@@ -75,6 +93,8 @@ mock.module("@/lib/session/get-server-session", () => ({
 }));
 
 mock.module("@/lib/db/sessions", () => ({
+  getSessionById: async () => ({ id: "session-1", userId: "creator-user" }),
+  updateSession: async () => undefined,
   getChatSummariesBySessionId: async (sessionId: string, userId: string) => {
     getSummaryCalls.push({ sessionId, userId });
     return chatSummaries;
@@ -132,6 +152,7 @@ describe("/api/sessions/[sessionId]/chats", () => {
       sessionRecord: { id: "session-1" },
     };
     currentSession = { user: { id: "user-1" } };
+    ownedSessionChatResult = null;
     chatSummaries = [{ id: "chat-1", title: "Chat 1" }];
     existingChat = null;
     createdChat = {
@@ -160,11 +181,12 @@ describe("/api/sessions/[sessionId]/chats", () => {
     expect(getSummaryCalls).toHaveLength(0);
   });
 
-  test("GET returns ownership error from session guard", async () => {
+  test("GET returns ownership error when no chats are readable through overrides", async () => {
     ownedSessionResult = {
       ok: false,
       response: Response.json({ error: "Forbidden" }, { status: 403 }),
     };
+    chatSummaries = [];
     const { GET } = await routeModulePromise;
 
     const response = await GET(
@@ -173,7 +195,34 @@ describe("/api/sessions/[sessionId]/chats", () => {
     );
 
     expect(response.status).toBe(403);
-    expect(getSummaryCalls).toHaveLength(0);
+    expect(getSummaryCalls).toEqual([
+      { sessionId: "session-1", userId: "user-1" },
+    ]);
+  });
+
+  test("GET returns readable chat overrides when session scope is denied", async () => {
+    ownedSessionResult = {
+      ok: false,
+      response: Response.json({ error: "Forbidden" }, { status: 403 }),
+    };
+    chatSummaries = [{ id: "chat-shared", title: "Shared chat" }];
+    const { GET } = await routeModulePromise;
+
+    const response = await GET(
+      new Request("http://localhost/api/sessions/session-1/chats"),
+      createContext(),
+    );
+    const body = (await response.json()) as {
+      chats: ChatSummary[];
+      defaultModelId: string;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.chats).toEqual(chatSummaries);
+    expect(body.defaultModelId).toBe("model-default");
+    expect(getSummaryCalls).toEqual([
+      { sessionId: "session-1", userId: "user-1" },
+    ]);
   });
 
   test("GET returns chats and default model id", async () => {
@@ -224,6 +273,30 @@ describe("/api/sessions/[sessionId]/chats", () => {
 
     expect(response.status).toBe(200);
     expect(body.chat.id).toBe("chat-existing");
+    expect(createChatCalls).toHaveLength(0);
+  });
+
+  test("POST returns chat auth error when requested id exists but is not writable", async () => {
+    existingChat = {
+      id: "chat-existing",
+      sessionId: "session-1",
+      title: "Existing",
+      modelId: "model-existing",
+    };
+    ownedSessionChatResult = {
+      ok: false,
+      response: Response.json({ error: "Forbidden" }, { status: 403 }),
+    };
+    const { POST } = await routeModulePromise;
+
+    const response = await POST(
+      createJsonRequest({ id: "chat-existing" }),
+      createContext(),
+    );
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe("Forbidden");
     expect(createChatCalls).toHaveLength(0);
   });
 

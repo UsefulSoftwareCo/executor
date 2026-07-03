@@ -1,5 +1,6 @@
 "use server";
 
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox } from "@open-agents/sandbox";
 import { getSessionById } from "@/lib/db/sessions";
 import { isSafeBranchName } from "@/lib/git/helpers";
@@ -84,13 +85,19 @@ async function requireAuth() {
   return session;
 }
 
-async function requireOwnedSession(userId: string, sessionId: string) {
+async function requireAccessibleSession(userId: string, sessionId: string) {
+  try {
+    await requireSessionAccess({ kind: "user", userId }, sessionId, "read");
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      throw new Error(error.status === 404 ? "Session not found" : "Forbidden");
+    }
+    throw error;
+  }
+
   const sessionRecord = await getSessionById(sessionId);
   if (!sessionRecord) {
     throw new Error("Session not found");
-  }
-  if (sessionRecord.userId !== userId) {
-    throw new Error("Forbidden");
   }
   return sessionRecord;
 }
@@ -103,7 +110,7 @@ export async function getGitStatus(params: {
   const { sessionId } = params;
 
   const session = await requireAuth();
-  const sessionRecord = await requireOwnedSession(session.user.id, sessionId);
+  const sessionRecord = await requireAccessibleSession(session.user.id, sessionId);
 
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     throw new Error("Sandbox not initialized");

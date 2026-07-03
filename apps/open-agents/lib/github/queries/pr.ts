@@ -1,5 +1,6 @@
 "use server";
 
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox } from "@open-agents/sandbox";
 import { getSessionById, updateSession } from "@/lib/db/sessions";
 import {
@@ -53,13 +54,19 @@ async function requireAuth() {
   return session;
 }
 
-async function requireOwnedSession(userId: string, sessionId: string) {
+async function requireAccessibleSession(userId: string, sessionId: string, verb: "read" | "write") {
+  try {
+    await requireSessionAccess({ kind: "user", userId }, sessionId, verb);
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      throw new Error(error.status === 404 ? "Session not found" : "Forbidden");
+    }
+    throw error;
+  }
+
   const sessionRecord = await getSessionById(sessionId);
   if (!sessionRecord) {
     throw new Error("Session not found");
-  }
-  if (sessionRecord.userId !== userId) {
-    throw new Error("Forbidden");
   }
   return sessionRecord;
 }
@@ -114,7 +121,7 @@ export async function checkPullRequest(params: { sessionId: string }): Promise<{
   const { sessionId } = params;
 
   const session = await requireAuth();
-  const sessionRecord = await requireOwnedSession(session.user.id, sessionId);
+  const sessionRecord = await requireAccessibleSession(session.user.id, sessionId, "write");
 
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     return {
@@ -214,7 +221,7 @@ export async function getMergeReadiness(params: {
   const { sessionId } = params;
 
   const session = await requireAuth();
-  const sessionRecord = await requireOwnedSession(session.user.id, sessionId);
+  const sessionRecord = await requireAccessibleSession(session.user.id, sessionId, "read");
 
   const repoIdentifier =
     sessionRecord.repoOwner && sessionRecord.repoName
