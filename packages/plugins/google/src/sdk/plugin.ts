@@ -25,6 +25,7 @@ import {
   listHealthCheckCandidatesOpenApi,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
+  OpenApiParseError,
   openApiStoredOperationsFromCompiled,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
@@ -46,18 +47,31 @@ import {
   googlePhotosOpenApiPresets,
 } from "./presets";
 
-/** The default health check for a Google bundle: the People API identity call
- *  (`people.get` with the required `resourceName`/`personFields` pinned), when
- *  the bundle includes the People API. People API is the canonical Google
- *  identity endpoint; if it isn't bundled, no default is written (the editor
- *  remains available). The user can adjust the identity field via the editor. */
-const defaultGoogleHealthCheck = (
+const GOOGLE_OAUTH2_DISCOVERY_URL = "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest";
+
+/** The default health check for a Google bundle: prefer the lightweight
+ *  OAuth2 userinfo identity call, which every new Google bundle includes.
+ *  Older bundles may only have People API, so keep that fallback. */
+export const defaultGoogleHealthCheck = (
   urls: readonly string[],
   definitions: readonly {
     readonly toolPath: string;
     readonly operation: { readonly method: string; readonly pathTemplate: string };
   }[],
 ): HealthCheckSpec | undefined => {
+  const userinfoGet = definitions.find(
+    (def) =>
+      def.operation.method.toLowerCase() === "get" &&
+      (def.toolPath === "oauth2.userinfo.get" ||
+        def.operation.pathTemplate === "/oauth2/v2/userinfo"),
+  );
+  if (userinfoGet) {
+    return {
+      operation: userinfoGet.toolPath,
+      identityField: "email",
+    };
+  }
+
   const hasPeopleApi = urls.some((url) => url.includes("/people/"));
   if (!hasPeopleApi) return undefined;
   const peopleGet = definitions.find(
@@ -149,6 +163,24 @@ const uniqueUrls = (urls: readonly string[]): readonly string[] => [
   ...new Set(urls.flatMap((url) => normalizeGoogleDiscoveryUrl(url) ?? [])),
 ];
 
+const googleBundleUrlsWithIdentity = (
+  urls: readonly string[],
+): Effect.Effect<readonly string[], OpenApiParseError> =>
+  Effect.gen(function* () {
+    const normalized: string[] = [];
+    for (const url of urls) {
+      const discoveryUrl = normalizeGoogleDiscoveryUrl(url);
+      if (!discoveryUrl) {
+        return yield* new OpenApiParseError({
+          message:
+            "Google Discovery document URL must be a supported googleapis.com HTTPS Discovery endpoint",
+        });
+      }
+      normalized.push(discoveryUrl);
+    }
+    return uniqueUrls([...normalized, GOOGLE_OAUTH2_DISCOVERY_URL]);
+  });
+
 const describeGoogleAuthMethods = (record: IntegrationRecord): readonly AuthMethodDescriptor[] => {
   const config = decodeGoogleIntegrationConfig(record.config);
   if (!config) return [];
@@ -185,7 +217,7 @@ const makeGooglePluginExtension = (
 
   const addBundle = (config: GoogleBundleConfig) =>
     Effect.gen(function* () {
-      const urls = uniqueUrls(config.urls);
+      const urls = yield* googleBundleUrlsWithIdentity(config.urls);
       const conversion = yield* fetchGoogleBundleConversion(urls, httpClientLayer);
       const compiled = yield* compileOpenApiSpec(conversion.specText);
       const slug = IntegrationSlug.make(config.slug?.trim() || DEFAULT_GOOGLE_SLUG);
@@ -225,10 +257,9 @@ const makeGooglePluginExtension = (
         }),
       );
 
-      // Default the health check to the People API identity call (`people.get`
-      // with `resourceName=people/me`) when the bundle includes the People API,
-      // so connections report alive/expired + identity out of the box. Declared
-      // through core's own storage; the user can adjust it via the editor.
+      // Default the health check to the light OAuth2 userinfo identity call
+      // added to every new bundle. Older bundles without oauth2/v2 can still
+      // fall back to the People API identity operation.
       const defaultHealthCheck = defaultGoogleHealthCheck(urls, compiled.definitions);
       if (defaultHealthCheck) {
         yield* ctx.core.integrations.setHealthCheck(slug, defaultHealthCheck);
@@ -246,7 +277,9 @@ const makeGooglePluginExtension = (
         return yield* new IntegrationNotFoundError({ slug });
       }
 
-      const urls = uniqueUrls(input?.urls ?? current.googleDiscoveryUrls ?? []);
+      const urls = yield* googleBundleUrlsWithIdentity(
+        input?.urls ?? current.googleDiscoveryUrls ?? [],
+      );
       const conversion = yield* fetchGoogleBundleConversion(urls, httpClientLayer);
       const compiled = yield* compileOpenApiSpec(conversion.specText);
 

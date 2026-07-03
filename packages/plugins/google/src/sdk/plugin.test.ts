@@ -23,7 +23,8 @@ import {
 } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
-import { googlePlugin } from "./plugin";
+import { defaultGoogleHealthCheck, googlePlugin } from "./plugin";
+import { googleOpenApiPresets, type GoogleOpenApiPreset } from "./presets";
 
 // --- Canned Discovery documents -------------------------------------------
 // Each carries one method. Calendar and Gmail BOTH expose a generic `list`
@@ -33,10 +34,18 @@ import { googlePlugin } from "./plugin";
 
 const CALENDAR_URL = "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest";
 const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
+const SHEETS_URL = "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest";
 const DRIVE_URL = "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest";
+const DOCS_URL = "https://www.googleapis.com/discovery/v1/apis/docs/v1/rest";
 const PHOTOS_LIBRARY_URL = "https://www.googleapis.com/discovery/v1/apis/photoslibrary/v1/rest";
 const PHOTOS_PICKER_URL = "https://photospicker.googleapis.com/$discovery/rest?version=v1";
 const PEOPLE_URL = "https://www.googleapis.com/discovery/v1/apis/people/v1/rest";
+const OAUTH2_URL = "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest";
+const OAUTH2_USERINFO_SCOPES = [
+  "openid",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+] as const;
 
 const calendarDoc = {
   name: "calendar",
@@ -141,6 +150,72 @@ const driveDoc = {
   },
   schemas: {
     File: { id: "File", type: "object", properties: { id: { type: "string" } } },
+  },
+};
+
+const sheetsDoc = {
+  name: "sheets",
+  version: "v4",
+  title: "Google Sheets API",
+  rootUrl: "https://sheets.googleapis.com/",
+  servicePath: "v4/",
+  auth: {
+    oauth2: {
+      scopes: {
+        "https://www.googleapis.com/auth/spreadsheets": { description: "Manage spreadsheets" },
+      },
+    },
+  },
+  resources: {
+    spreadsheets: {
+      methods: {
+        get: {
+          id: "sheets.spreadsheets.get",
+          httpMethod: "GET",
+          path: "spreadsheets/{spreadsheetId}",
+          scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+          parameters: {
+            spreadsheetId: { location: "path", required: true, type: "string" },
+          },
+        },
+      },
+    },
+  },
+  schemas: {
+    Spreadsheet: { id: "Spreadsheet", type: "object", properties: { id: { type: "string" } } },
+  },
+};
+
+const docsDoc = {
+  name: "docs",
+  version: "v1",
+  title: "Google Docs API",
+  rootUrl: "https://docs.googleapis.com/",
+  servicePath: "v1/",
+  auth: {
+    oauth2: {
+      scopes: {
+        "https://www.googleapis.com/auth/documents": { description: "Manage documents" },
+      },
+    },
+  },
+  resources: {
+    documents: {
+      methods: {
+        get: {
+          id: "docs.documents.get",
+          httpMethod: "GET",
+          path: "documents/{documentId}",
+          scopes: ["https://www.googleapis.com/auth/documents"],
+          parameters: {
+            documentId: { location: "path", required: true, type: "string" },
+          },
+        },
+      },
+    },
+  },
+  schemas: {
+    Document: { id: "Document", type: "object", properties: { documentId: { type: "string" } } },
   },
 };
 
@@ -256,15 +331,104 @@ const peopleDoc = {
   },
 };
 
+const oauth2Doc = {
+  name: "oauth2",
+  version: "v2",
+  title: "Google OAuth2 API",
+  rootUrl: "https://www.googleapis.com/",
+  servicePath: "",
+  auth: {
+    oauth2: {
+      scopes: {
+        openid: { description: "Associate you with your personal info on Google" },
+        "https://www.googleapis.com/auth/userinfo.email": {
+          description: "See your primary Google Account email address",
+        },
+        "https://www.googleapis.com/auth/userinfo.profile": {
+          description: "See your personal info",
+        },
+      },
+    },
+  },
+  methods: {
+    tokeninfo: {
+      id: "oauth2.tokeninfo",
+      httpMethod: "POST",
+      path: "oauth2/v2/tokeninfo",
+      response: { $ref: "Tokeninfo" },
+    },
+  },
+  resources: {
+    userinfo: {
+      methods: {
+        get: {
+          id: "oauth2.userinfo.get",
+          httpMethod: "GET",
+          path: "oauth2/v2/userinfo",
+          scopes: OAUTH2_USERINFO_SCOPES,
+          response: { $ref: "Userinfo" },
+        },
+      },
+      resources: {
+        v2: {
+          resources: {
+            me: {
+              methods: {
+                get: {
+                  id: "oauth2.userinfo.v2.me.get",
+                  httpMethod: "GET",
+                  path: "userinfo/v2/me",
+                  scopes: OAUTH2_USERINFO_SCOPES,
+                  response: { $ref: "Userinfo" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  schemas: {
+    Tokeninfo: {
+      id: "Tokeninfo",
+      type: "object",
+      properties: {
+        audience: { type: "string" },
+        scope: { type: "string" },
+      },
+    },
+    Userinfo: {
+      id: "Userinfo",
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        family_name: { type: "string" },
+        gender: { type: "string" },
+        given_name: { type: "string" },
+        hd: { type: "string" },
+        id: { type: "string" },
+        link: { type: "string" },
+        locale: { type: "string" },
+        name: { type: "string" },
+        picture: { type: "string" },
+        verified_email: { type: "boolean" },
+      },
+    },
+  },
+};
+
 const toJson = (value: unknown): string => JSON.stringify(value);
 
 const DISCOVERY_BODIES: Readonly<Record<string, string>> = {
   [CALENDAR_URL]: toJson(calendarDoc),
   [GMAIL_URL]: toJson(gmailDoc),
+  [SHEETS_URL]: toJson(sheetsDoc),
   [DRIVE_URL]: toJson(driveDoc),
+  [DOCS_URL]: toJson(docsDoc),
   [PHOTOS_LIBRARY_URL]: toJson(photosLibraryDoc),
   [PHOTOS_PICKER_URL]: toJson(photosPickerDoc),
   [PEOPLE_URL]: toJson(peopleDoc),
+  [OAUTH2_URL]: toJson(oauth2Doc),
 };
 
 // A stub HTTP client that serves the canned Discovery document for whichever
@@ -360,17 +524,27 @@ describe("Google bundle add flow", () => {
           expect(integration?.slug).toBe(IntegrationSlug.make("google"));
 
           // The stored oauth template carries the COMPACTED union of every API's
-          // scopes - the same set the picker previews and `oauth.start` requests.
+          // scopes plus the hidden OAuth2 identity scopes that `oauth.start`
+          // requests.
           // `calendar.readonly` collapses under `calendar`, and `gmail.readonly`
           // collapses under `https://mail.google.com/`, so the requested consent
           // is clean rather than the raw per-method union.
           const config = yield* executor.google.getConfig("google");
+          expect(config?.googleDiscoveryUrls).toEqual([
+            CALENDAR_URL,
+            GMAIL_URL,
+            DRIVE_URL,
+            OAUTH2_URL,
+          ]);
           const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
           expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
             [
+              "email",
               "https://mail.google.com/",
               "https://www.googleapis.com/auth/calendar",
               "https://www.googleapis.com/auth/drive",
+              "openid",
+              "profile",
             ].sort(),
           );
 
@@ -415,9 +589,12 @@ describe("Google bundle add flow", () => {
         const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
         expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
           [
+            "email",
             "https://www.googleapis.com/auth/photoslibrary.appendonly",
             "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
             "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+            "openid",
+            "profile",
           ].sort(),
         );
 
@@ -453,10 +630,13 @@ describe("Google bundle add flow", () => {
         const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
         expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
           [
+            "email",
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/photoslibrary.appendonly",
             "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
             "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+            "openid",
+            "profile",
           ].sort(),
         );
 
@@ -493,9 +673,12 @@ describe("Google bundle add flow", () => {
         const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
         expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
           [
+            "email",
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/photoslibrary.appendonly",
             "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+            "openid",
+            "profile",
           ].sort(),
         );
 
@@ -519,7 +702,61 @@ describe("Google bundle add flow", () => {
 });
 
 describe("Google health-check default", () => {
-  it.effect("addBundle with the People API auto-configures the identity health check", () =>
+  it.effect("default featured bundle auto-configures OAuth2 userinfo identity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+        const defaultUrls = googleOpenApiPresets
+          .filter((preset: GoogleOpenApiPreset) => preset.featured)
+          .flatMap((preset: GoogleOpenApiPreset) => (preset.url ? [preset.url] : []));
+
+        expect(defaultUrls).toEqual([CALENDAR_URL, GMAIL_URL, SHEETS_URL, DRIVE_URL, DOCS_URL]);
+
+        yield* executor.google.addBundle({
+          urls: defaultUrls,
+          slug: "google_default",
+          description: "Google",
+        });
+
+        const stored = yield* executor.integrations.healthCheck.get(
+          IntegrationSlug.make("google_default"),
+        );
+        expect(stored?.operation, "the default check targets OAuth2 userinfo").toBe(
+          "oauth2.userinfo.get",
+        );
+        expect(stored?.args, "userinfo needs no args").toBeUndefined();
+        expect(stored?.identityField, "the default reads the account email").toBe("email");
+
+        const config = yield* executor.google.getConfig("google_default");
+        expect(config?.googleDiscoveryUrls).toEqual([...defaultUrls, OAUTH2_URL]);
+        const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+        expect(oauth?.kind === "oauth2" ? [...oauth.scopes].sort() : undefined).toEqual(
+          [
+            "email",
+            "https://mail.google.com/",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "openid",
+            "profile",
+          ].sort(),
+        );
+
+        const candidates = yield* executor.integrations.healthCheck.candidates(
+          IntegrationSlug.make("google_default"),
+        );
+        const userinfo = candidates.find((c) => c.operation === "oauth2.userinfo.get");
+        expect(userinfo, "OAuth2 userinfo is a ranked candidate").toBeDefined();
+        expect(
+          (userinfo?.responseFields ?? []).map((field) => field.path),
+          "the email identity field is projected from the response schema",
+        ).toContain("email");
+      }),
+    ),
+  );
+
+  it.effect("addBundle with People still prefers OAuth2 userinfo", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
@@ -530,52 +767,33 @@ describe("Google health-check default", () => {
           description: "Google",
         });
 
-        // The default probe is the People identity call with its required args
-        // pinned and the account email as the identity field - the zero-config
-        // answer to "has this Google connection expired?".
         const stored = yield* executor.integrations.healthCheck.get(
           IntegrationSlug.make("google_people"),
         );
-        expect(stored?.operation, "the default check targets the People identity call").toBe(
-          "people.people.get",
+        expect(stored?.operation, "OAuth2 userinfo beats the People identity call").toBe(
+          "oauth2.userinfo.get",
         );
-        expect(stored?.args, "the People call's required args are pinned").toEqual({
-          resourceName: "people/me",
-          personFields: "names,emailAddresses",
-        });
-        expect(stored?.identityField, "the default reads the account email").toBe(
-          "emailAddresses.0.value",
-        );
-
-        // The check is offered as a candidate with typed response fields, so
-        // the editor's identity picker lists the email path.
-        const candidates = yield* executor.integrations.healthCheck.candidates(
-          IntegrationSlug.make("google_people"),
-        );
-        const peopleGet = candidates.find((c) => c.operation === "people.people.get");
-        expect(peopleGet, "the People call is a ranked candidate").toBeDefined();
-        expect(
-          (peopleGet?.responseFields ?? []).map((field) => field.path),
-          "the email identity field is projected from the response schema",
-        ).toContain("emailAddresses.0.value");
+        expect(stored?.args).toBeUndefined();
+        expect(stored?.identityField).toBe("email");
       }),
     ),
   );
 
-  it.effect("addBundle without the People API leaves the health check unset", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
-        yield* executor.google.addBundle({
-          urls: [CALENDAR_URL],
-          slug: "google_cal_only",
-          description: "Google",
-        });
-        const stored = yield* executor.integrations.healthCheck.get(
-          IntegrationSlug.make("google_cal_only"),
-        );
-        expect(stored, "no People API in the bundle means no default check").toBeNull();
-      }),
-    ),
-  );
+  it("falls back to People when OAuth2 userinfo is absent", () => {
+    expect(
+      defaultGoogleHealthCheck(
+        [PEOPLE_URL],
+        [
+          {
+            toolPath: "people.people.get",
+            operation: { method: "get", pathTemplate: "/v1/{+resourceName}" },
+          },
+        ],
+      ),
+    ).toEqual({
+      operation: "people.people.get",
+      args: { resourceName: "people/me", personFields: "names,emailAddresses" },
+      identityField: "emailAddresses.0.value",
+    });
+  });
 });

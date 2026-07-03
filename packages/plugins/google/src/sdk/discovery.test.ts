@@ -46,6 +46,105 @@ const ConvertedSpec = Schema.Struct({
 
 const decodeConvertedSpec = Schema.decodeUnknownSync(Schema.fromJsonString(ConvertedSpec));
 
+const OAUTH2_URL = "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest";
+const OAUTH2_USERINFO_SCOPES = [
+  "openid",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+] as const;
+
+const oauth2DiscoveryDoc = {
+  name: "oauth2",
+  version: "v2",
+  title: "Google OAuth2 API",
+  rootUrl: "https://www.googleapis.com/",
+  servicePath: "",
+  auth: {
+    oauth2: {
+      scopes: {
+        openid: { description: "Associate you with your personal info on Google" },
+        "https://www.googleapis.com/auth/userinfo.email": {
+          description: "See your primary Google Account email address",
+        },
+        "https://www.googleapis.com/auth/userinfo.profile": {
+          description: "See your personal info",
+        },
+      },
+    },
+  },
+  methods: {
+    tokeninfo: {
+      id: "oauth2.tokeninfo",
+      httpMethod: "POST",
+      path: "oauth2/v2/tokeninfo",
+      parameters: {
+        access_token: {
+          location: "query",
+          type: "string",
+        },
+      },
+      response: { $ref: "Tokeninfo" },
+    },
+  },
+  resources: {
+    userinfo: {
+      methods: {
+        get: {
+          id: "oauth2.userinfo.get",
+          httpMethod: "GET",
+          path: "oauth2/v2/userinfo",
+          scopes: OAUTH2_USERINFO_SCOPES,
+          response: { $ref: "Userinfo" },
+        },
+      },
+      resources: {
+        v2: {
+          resources: {
+            me: {
+              methods: {
+                get: {
+                  id: "oauth2.userinfo.v2.me.get",
+                  httpMethod: "GET",
+                  path: "userinfo/v2/me",
+                  scopes: OAUTH2_USERINFO_SCOPES,
+                  response: { $ref: "Userinfo" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  schemas: {
+    Tokeninfo: {
+      id: "Tokeninfo",
+      type: "object",
+      properties: {
+        audience: { type: "string" },
+        scope: { type: "string" },
+      },
+    },
+    Userinfo: {
+      id: "Userinfo",
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        family_name: { type: "string" },
+        gender: { type: "string" },
+        given_name: { type: "string" },
+        hd: { type: "string" },
+        id: { type: "string" },
+        link: { type: "string" },
+        locale: { type: "string" },
+        name: { type: "string" },
+        picture: { type: "string" },
+        verified_email: { type: "boolean" },
+      },
+    },
+  },
+};
+
 it("accepts only supported HTTPS Google Discovery endpoints", () => {
   expect(
     normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest/"),
@@ -291,6 +390,46 @@ it.effect("converts Google Discovery documents into Executor-preserving OpenAPI 
     // OAuth2SourceConfig slot model, which no longer exists in v2.
     const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
     expect(oauthTemplate).toBeDefined();
+  }),
+);
+
+it.effect("converts Google OAuth2 v2 top-level and aliased userinfo methods", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryToOpenApi({
+      discoveryUrl: OAUTH2_URL,
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      documentText: JSON.stringify(oauth2DiscoveryDoc),
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const userinfo = spec.paths["/oauth2/v2/userinfo"]?.get;
+    const userinfoMe = spec.paths["/userinfo/v2/me"]?.get;
+    const tokeninfo = spec.paths["/oauth2/v2/tokeninfo"]?.post;
+
+    expect(userinfo).toMatchObject({
+      operationId: "userinfo.get",
+      "x-executor-toolPath": "userinfo.get",
+      "x-google-scopes": [...OAUTH2_USERINFO_SCOPES],
+    });
+    expect(userinfo?.security).toEqual([{ googleOAuth2: [...OAUTH2_USERINFO_SCOPES] }]);
+    expect(userinfo?.responses).toMatchObject({
+      "200": {
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/Userinfo" },
+          },
+        },
+      },
+    });
+    expect(userinfoMe).toMatchObject({
+      operationId: "userinfo.v2.me.get",
+      "x-executor-toolPath": "userinfo.v2.me.get",
+      "x-google-scopes": [...OAUTH2_USERINFO_SCOPES],
+    });
+    expect(tokeninfo).toMatchObject({
+      operationId: "tokeninfo",
+      "x-executor-toolPath": "tokeninfo",
+    });
   }),
 );
 
