@@ -21,7 +21,13 @@ const EVE_FUNCTION_MAX_DURATION_SECONDS = 300;
 const VERCEL_NAMED_CAPTURE_GROUP = /\(\?<[^>]+>/g;
 
 export function normalizeVercelRouteSource(source: string): string {
-  return source.replace(VERCEL_NAMED_CAPTURE_GROUP, "(");
+  const normalizedSource = source.replace(VERCEL_NAMED_CAPTURE_GROUP, "(");
+
+  if (!normalizedSource.startsWith("/") || !normalizedSource.includes("(")) {
+    return normalizedSource;
+  }
+
+  return `^${normalizedSource}$`;
 }
 
 export function normalizeVercelOutputRoutes(config: VercelOutputConfig): {

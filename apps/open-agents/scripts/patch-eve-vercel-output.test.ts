@@ -4,13 +4,13 @@ import { normalizeVercelOutputRoutes, normalizeVercelRouteSource } from "./patch
 describe("normalizeVercelRouteSource", () => {
   test("removes named capture groups from Eve dynamic Vercel routes", () => {
     expect(normalizeVercelRouteSource("/eve/v1/session/(?<sessionId>[^/]+)/stream")).toBe(
-      "/eve/v1/session/([^/]+)/stream",
+      "^/eve/v1/session/([^/]+)/stream$",
     );
     expect(
       normalizeVercelRouteSource(
         "/eve/v1/connections/(?<name>[^/]+)/callback/(?<token>[^/]+)",
       ),
-    ).toBe("/eve/v1/connections/([^/]+)/callback/([^/]+)");
+    ).toBe("^/eve/v1/connections/([^/]+)/callback/([^/]+)$");
   });
 });
 
@@ -27,7 +27,7 @@ describe("normalizeVercelOutputRoutes", () => {
     expect(result.normalizedRouteCount).toBe(1);
     expect(result.config.routes).toEqual([
       { src: "/eve/v1/session" },
-      { src: "/eve/v1/session/([^/]+)", dest: "/eve/__server" },
+      { src: "^/eve/v1/session/([^/]+)$", dest: "/eve/__server" },
       { handle: "filesystem" },
     ]);
   });
