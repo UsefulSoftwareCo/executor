@@ -9,19 +9,7 @@ export interface McpRemotePreset {
   readonly transport?: undefined;
 }
 
-export interface McpStdioPreset {
-  readonly id: string;
-  readonly name: string;
-  readonly summary: string;
-  readonly icon?: string;
-  readonly featured?: boolean;
-  readonly transport: "stdio";
-  readonly command: string;
-  readonly args?: readonly string[];
-  readonly env?: Readonly<Record<string, string>>;
-}
-
-export type McpPreset = McpRemotePreset | McpStdioPreset;
+export type McpPreset = McpRemotePreset;
 
 export const mcpPresets: readonly McpPreset[] = [
   {
@@ -105,6 +93,15 @@ export const mcpPresets: readonly McpPreset[] = [
     featured: true,
   },
   {
+    id: "slack",
+    name: "Slack",
+    summary: "Search Slack, retrieve conversations, send messages, and manage canvases via MCP.",
+    url: "https://mcp.slack.com/mcp",
+    endpoint: "https://mcp.slack.com/mcp",
+    icon: "https://integrations.sh/logo/slack.com",
+    featured: true,
+  },
+  {
     id: "notion",
     name: "Notion",
     summary: "Databases, pages, blocks, and search via MCP.",
@@ -112,6 +109,23 @@ export const mcpPresets: readonly McpPreset[] = [
     endpoint: "https://mcp.notion.com/mcp",
     icon: "https://integrations.sh/logo/notion.com",
     featured: true,
+  },
+  {
+    id: "datadog",
+    name: "Datadog",
+    summary: "Logs, metrics, traces, incidents, monitors, and platform tools via MCP.",
+    url: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=all",
+    endpoint: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=all",
+    icon: "https://integrations.sh/logo/datadoghq.com",
+    featured: true,
+  },
+  {
+    id: "braintrust",
+    name: "Braintrust",
+    summary: "Projects, logs, traces, prompts, and evals via MCP.",
+    url: "https://api.braintrust.dev/mcp",
+    endpoint: "https://api.braintrust.dev/mcp",
+    icon: "https://integrations.sh/logo/braintrust.dev",
   },
   {
     id: "sentry",
@@ -128,15 +142,5 @@ export const mcpPresets: readonly McpPreset[] = [
     url: "https://mcp.cloudflare.com/mcp",
     endpoint: "https://mcp.cloudflare.com/mcp",
     icon: "https://integrations.sh/logo/cloudflare.com",
-  },
-  {
-    id: "chrome-devtools",
-    name: "Chrome DevTools",
-    summary: "Debug a live Chrome browser session via local stdio.",
-    icon: "https://www.google.com/chrome/static/images/favicons/favicon-32x32.png",
-    featured: true,
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "chrome-devtools-mcp@latest"],
   },
 ];

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeAll, describe, expect, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
@@ -25,8 +25,13 @@ const makeTestInvoker = (
 });
 
 const executor = makeQuickJsExecutor({ timeoutMs: 5_000 });
+const warmupExecutor = makeQuickJsExecutor({ timeoutMs: 30_000 });
 
 describe("quickjs executor", () => {
+  beforeAll(async () => {
+    await Effect.runPromise(warmupExecutor.execute(`return undefined`, makeTestInvoker({})));
+  }, 30_000);
+
   it.effect("runs plain code", () =>
     Effect.gen(function* () {
       const result = yield* executor.execute(`return 1 + 2`, makeTestInvoker({}));

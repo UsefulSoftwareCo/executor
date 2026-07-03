@@ -114,13 +114,27 @@ const createAnotherOrg = (target: TargetShape, identity: Identity, name: string)
     return withRefreshedSession(identity, response);
   });
 
-/** Switch this account's active org; returns the identity bound to it. */
-const switchOrg = (target: TargetShape, identity: Identity, organizationId: string) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/switch-organization", identity, {
-      organizationId,
-    });
-    return withRefreshedSession(identity, response);
+// `/api/auth/switch-organization` (session-cookie-based org switching) was
+// removed in #1000 (commit 1f9bfe06b): the URL is now the scope authority, not
+// the session. A request picks its active org via the `x-executor-organization`
+// header (apps/cloud/src/auth/organization.ts's `ORG_SELECTOR_HEADER`,
+// `EXECUTOR_ORG_SELECTOR_HEADER = "x-executor-organization"` in
+// packages/core/sdk/src/server-connection.ts), falling back to the session's
+// own org when absent. The header is a SELECTOR, not a trust boundary — the
+// server re-checks live membership — so attaching it directly to the identity
+// here is exactly what the real web client does from the console URL's slug.
+const ORG_SELECTOR_HEADER = "x-executor-organization";
+
+/** Switch this account's active org; returns the identity scoped to it via
+ *  the per-request org-selector header (no session mutation involved). */
+const switchOrg = (
+  _target: TargetShape,
+  identity: Identity,
+  organizationId: string,
+): Effect.Effect<Identity> =>
+  Effect.succeed({
+    ...identity,
+    headers: { ...identity.headers, [ORG_SELECTOR_HEADER]: organizationId },
   });
 
 /** The org this identity's session is currently bound to. */

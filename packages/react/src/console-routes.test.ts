@@ -46,10 +46,10 @@ describe("console route contract", () => {
     const children = (scope as { children?: ReadonlyArray<unknown> }).children ?? [];
     expect(children).toHaveLength(CONSOLE_ROUTE_PATHS.length);
 
-    const [withoutSecrets] = consoleRoutes({ dir: "shared", exclude: ["/secrets"] });
-    const remaining = (withoutSecrets as { children?: ReadonlyArray<unknown> }).children ?? [];
+    const [withoutCredentials] = consoleRoutes({ dir: "shared", exclude: ["/credentials"] });
+    const remaining = (withoutCredentials as { children?: ReadonlyArray<unknown> }).children ?? [];
     expect(remaining).toHaveLength(CONSOLE_ROUTE_PATHS.length - 1);
-    expect(JSON.stringify(withoutSecrets)).not.toContain("secrets.tsx");
+    expect(JSON.stringify(withoutCredentials)).not.toContain("credentials.tsx");
   });
 
   it("orgScoped extras mount inside the org scope", () => {

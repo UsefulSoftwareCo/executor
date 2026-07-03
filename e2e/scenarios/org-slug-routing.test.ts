@@ -45,10 +45,17 @@ scenario(
         await page.getByText("Policies").first().waitFor();
       });
 
-      await step("An unknown org slug is a wrong address, not a redirect", async () => {
-        await page.goto("/zz-no-such-org/policies", { waitUntil: "networkidle" });
-        await page.getByText("Page not found").waitFor({ timeout: 30_000 });
-      });
+      // The "unknown slug is a 404" contract is multi-tenant only. Selfhost is
+      // single-tenant: /account/me always returns the instance org regardless of
+      // the URL segment, so the slug is cosmetic and an unknown one canonicalizes
+      // onto the shell rather than 404ing. Cloud enforces the not-found; selfhost
+      // legitimately does not.
+      if (target.name !== "selfhost") {
+        await step("An unknown org slug is a wrong address, not a redirect", async () => {
+          await page.goto("/zz-no-such-org/policies", { waitUntil: "networkidle" });
+          await page.getByText("Page not found").waitFor({ timeout: 30_000 });
+        });
+      }
 
       await step("In-shell navigation keeps the slug prefix", async () => {
         await page.goto(`/${slug}`, { waitUntil: "networkidle" });

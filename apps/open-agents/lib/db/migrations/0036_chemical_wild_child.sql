@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "workspace_repos" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -17,7 +17,7 @@ const TEST_USER_AGENT = "executor/dev/test/cli";
 
 // Records every outgoing request so tests can assert on URL + headers.
 const makeRecordingHttpClient = (
-  body: () => string = () => `{}`,
+  body: () => string = () => `{"version":1,"generatedAt":"2026-01-01T00:00:00.000Z","data":[]}`,
 ): Effect.Effect<{
   readonly layer: Layer.Layer<HttpClient.HttpClient>;
   readonly requests: Ref.Ref<ReadonlyArray<{ url: string; userAgent: string }>>;
@@ -107,7 +107,7 @@ describe("IntegrationsRegistry", () => {
           ),
         );
 
-        expect(result).toBeUndefined();
+        expect(result).toEqual([]);
         const sent = yield* Ref.get(requests);
         expect(sent).toHaveLength(0);
       }),
@@ -117,7 +117,26 @@ describe("IntegrationsRegistry", () => {
   it.effect("happy path — fetches, parses, sends User-Agent header", () =>
     withTempCache((cacheDir) =>
       Effect.gen(function* () {
-        const payload = { providers: { acme: { name: "Acme" } } };
+        const payload = {
+          version: 1,
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          data: [
+            {
+              id: "mcp/acme",
+              kind: "mcp",
+              slug: "acme",
+              name: "Acme",
+              description: "Acme tools.",
+              url: "https://acme.test/mcp",
+              icon: "https://acme.test/icon.png",
+              domain: "acme.test",
+              categories: ["productivity"],
+              feeds: ["test"],
+              popularity: 1,
+              devtool: true,
+            },
+          ],
+        };
         const { layer: httpLayer, requests } = yield* makeRecordingHttpClient(() =>
           JSON.stringify(payload),
         );
@@ -137,7 +156,7 @@ describe("IntegrationsRegistry", () => {
           ),
         );
 
-        expect(result).toEqual(payload);
+        expect(result).toEqual(payload.data);
         const sent = yield* Ref.get(requests);
         expect(sent).toHaveLength(1);
         expect(sent[0]?.url).toBe("https://integrations.test/api.json");
@@ -150,7 +169,7 @@ describe("IntegrationsRegistry", () => {
     withTempCache((cacheDir) =>
       Effect.gen(function* () {
         const { layer: httpLayer, requests } = yield* makeRecordingHttpClient(() =>
-          JSON.stringify({ ok: true }),
+          JSON.stringify({ version: 1, generatedAt: "2026-01-01T00:00:00.000Z", data: [] }),
         );
 
         const program = Effect.gen(function* () {
@@ -170,8 +189,8 @@ describe("IntegrationsRegistry", () => {
           ),
         );
 
-        expect(first).toEqual({ ok: true });
-        expect(second).toEqual({ ok: true });
+        expect(first).toEqual([]);
+        expect(second).toEqual([]);
         const sent = yield* Ref.get(requests);
         // Either 0 (disk hit) or 1 (network), but never 2 — the second
         // `get()` is served by the in-memory cached effect.

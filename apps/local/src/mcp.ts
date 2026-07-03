@@ -1,6 +1,5 @@
 import { Effect, type Cause } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import {
@@ -25,8 +24,6 @@ import {
   type ExecutionEngine,
   type ResumeResponse,
 } from "@executor-js/execution";
-
-import { startIntegrationsRefresh } from "./integrations";
 
 type AnyExecutionEngine = ExecutionEngine<Cause.YieldableError>;
 
@@ -276,39 +273,4 @@ export const createMcpRequestHandler = (
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };
-};
-
-// ---------------------------------------------------------------------------
-// Stdio transport
-// ---------------------------------------------------------------------------
-
-export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
-  startIntegrationsRefresh();
-
-  const server = await Effect.runPromise(createExecutorMcpServer(config));
-  const transport = new StdioServerTransport();
-
-  const waitForExit = () =>
-    new Promise<void>((resolve) => {
-      const finish = () => {
-        process.off("SIGINT", finish);
-        process.off("SIGTERM", finish);
-        process.stdin.off("end", finish);
-        process.stdin.off("close", finish);
-        resolve();
-      };
-      process.once("SIGINT", finish);
-      process.once("SIGTERM", finish);
-      process.stdin.once("end", finish);
-      process.stdin.once("close", finish);
-    });
-
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: stdio server lifetime uses Promise-based SDK/process APIs and always closes resources
-  try {
-    await server.connect(transport);
-    await waitForExit();
-  } finally {
-    await ignoreClose(() => transport.close());
-    await ignoreClose(() => server.close());
-  }
 };

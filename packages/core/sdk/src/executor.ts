@@ -263,6 +263,10 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly detect: (
       url: string,
     ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
+    readonly presets: () => Effect.Effect<
+      readonly IntegrationPresetCatalogEntry[],
+      StorageFailure
+    >;
   };
 
   readonly connections: {
@@ -389,6 +393,10 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
     readonly orgSlug?: string;
     readonly includeProviders?: boolean;
   };
+  readonly integrationPresets?: () => Effect.Effect<
+    readonly IntegrationPresetCatalogEntry[],
+    StorageFailure
+  >;
   /**
    * How long a connection's persisted tool catalog stays fresh when its plugin
    * lists a live remote catalog (`plugin.remoteToolCatalog`, e.g. MCP servers,
@@ -1878,6 +1886,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (result) results.push(result);
         }
         return results;
+      });
+
+    const pluginIntegrationPresets = (): readonly IntegrationPresetCatalogEntry[] =>
+      Array.from(runtimes.values()).flatMap(({ plugin }) =>
+        (plugin.integrationPresets ?? []).map((preset) => ({
+          ...preset,
+          pluginId: plugin.id,
+        })),
+      );
+
+    const integrationsPresets = (): Effect.Effect<
+      readonly IntegrationPresetCatalogEntry[],
+      StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const entries = new Map<string, IntegrationPresetCatalogEntry>();
+        for (const preset of pluginIntegrationPresets()) {
+          entries.set(`${preset.pluginId}:${preset.id}`, preset);
+        }
+        if (config.integrationPresets) {
+          const externalPresets = yield* config.integrationPresets();
+          for (const preset of externalPresets) {
+            const key = `${preset.pluginId}:${preset.id}`;
+            if (!entries.has(key)) entries.set(key, preset);
+          }
+        }
+        return Array.from(entries.values());
       });
 
     // ------------------------------------------------------------------
@@ -3411,13 +3446,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     : undefined,
                 )
                 .filter(Predicate.isNotUndefined),
-            presets: (): readonly IntegrationPresetCatalogEntry[] =>
-              Array.from(runtimes.values()).flatMap(({ plugin }) =>
-                (plugin.integrationPresets ?? []).map((preset) => ({
-                  ...preset,
-                  pluginId: plugin.id,
-                })),
-              ),
+            presets: pluginIntegrationPresets,
           },
           policies: {
             list: () => policiesList(),
@@ -3547,6 +3576,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         update: integrationsUpdatePublic,
         remove: integrationsRemove,
         detect: integrationsDetect,
+        presets: integrationsPresets,
       },
       connections: {
         create: connectionsCreate,

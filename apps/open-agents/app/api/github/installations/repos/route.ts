@@ -1,0 +1,107 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getInstallationByUserAndId } from "@/lib/db/installations";
+import {
+  listGhCliRepositories,
+  listUserInstallationRepositories,
+} from "@/lib/github/repos";
+import {
+  getUserGitHubToken,
+  isGhCliAuthEnabled,
+  isGlobalGitHubTokenEnabled,
+} from "@/lib/github/token";
+import { getServerSession } from "@/lib/session/get-server-session";
+
+function parseInstallationId(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export async function GET(request: NextRequest) {
+  const session = await getServerSession();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(request.url);
+  const installationId = parseInstallationId(
+    searchParams.get("installation_id"),
+  );
+  const owner = searchParams.get("owner")?.trim() || undefined;
+  const query = searchParams.get("query")?.trim() || undefined;
+  const limitParam = searchParams.get("limit");
+  const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+  const limit =
+    typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
+      ? parsedLimit
+      : undefined;
+
+  if (!installationId) {
+    return NextResponse.json(
+      { error: "installation_id is required" },
+      { status: 400 },
+    );
+  }
+
+  const installation =
+    installationId > 0
+      ? await getInstallationByUserAndId(session.user.id, installationId)
+      : null;
+  if (installationId > 0 && !installation) {
+    return NextResponse.json(
+      { error: "Installation not found" },
+      { status: 403 },
+    );
+  }
+
+  if (
+    installationId <= 0 &&
+    ((!isGhCliAuthEnabled() && !isGlobalGitHubTokenEnabled()) || !owner)
+  ) {
+    return NextResponse.json(
+      { error: "Local gh CLI owner is required" },
+      { status: 400 },
+    );
+  }
+
+  const userToken = await getUserGitHubToken(session.user.id);
+  if (!userToken) {
+    return NextResponse.json(
+      { error: "GitHub not connected" },
+      { status: 401 },
+    );
+  }
+
+  try {
+    const repos = installation
+      ? await listUserInstallationRepositories({
+          installationId,
+          userToken,
+          owner: installation.accountLogin,
+          query,
+          limit,
+        })
+      : await listGhCliRepositories({
+          token: userToken,
+          owner: owner as string,
+          query,
+          limit,
+        });
+
+    return NextResponse.json(repos);
+  } catch (error) {
+    console.error("Failed to fetch installation repositories:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch repositories" },
+      { status: 500 },
+    );
+  }
+}

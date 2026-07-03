@@ -47,8 +47,6 @@ export const SetupMcpPage = () => {
     : "";
   const command = origin
     ? buildMcpInstallCommand({
-        mode: "http",
-        isDev: false,
         origin,
         elicitationMode,
         organizationSlug,

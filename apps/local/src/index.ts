@@ -12,7 +12,7 @@ export {
   type ExecutorHandle,
   type LocalExecutor,
 } from "./executor";
-export { createMcpRequestHandler, runMcpStdioServer, type McpRequestHandler } from "./mcp";
+export { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 export { startServer, type StartServerOptions, type ServerInstance } from "./serve";
 export {
   DataDirOwnershipHeld,

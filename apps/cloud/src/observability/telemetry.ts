@@ -45,6 +45,13 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 
+import {
+  CountingSpanExporter,
+  CountingSpanProcessor,
+  OTEL_MAX_SPAN_QUEUE_SIZE,
+  recordForceFlush,
+} from "./memory-metrics";
+
 const SERVICE_NAME = "executor-cloud";
 const SERVICE_VERSION = "1.0.0";
 
@@ -60,14 +67,9 @@ const ensureGlobalTracerProvider = (): boolean => {
       [ATTR_SERVICE_NAME]: SERVICE_NAME,
       [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
     }),
-    spanProcessors: [
-      // Batch, not Simple: SimpleSpanProcessor issues one synchronous fetch
-      // per span END — a busy MCP request emits dozens of spans, and the
-      // serialized export fetches add seconds of latency inside the request
-      // (enough to flip pause/resume timing in e2e). Batch buffers and
-      // ships on a timer; `ctx.waitUntil(flushTracerProvider())` at the end
-      // of each request still drains the buffer before the isolate exits.
-      new BatchSpanProcessor(
+    spanProcessors: (() => {
+      let countingProcessor: CountingSpanProcessor;
+      const exporter = new CountingSpanExporter(
         new OTLPTraceExporter({
           url: env.AXIOM_TRACES_URL ?? "https://api.axiom.co/v1/traces",
           headers: {
@@ -75,9 +77,24 @@ const ensureGlobalTracerProvider = (): boolean => {
             "X-Axiom-Dataset": env.AXIOM_DATASET ?? "executor-cloud",
           },
         }),
-        { scheduledDelayMillis: 1_000, maxExportBatchSize: 512 },
-      ),
-    ],
+        (spans) => countingProcessor.recordExportAttempt(spans),
+      );
+      // Batch, not Simple: SimpleSpanProcessor issues one synchronous fetch
+      // per span END — a busy MCP request emits dozens of spans, and the
+      // serialized export fetches add seconds of latency inside the request
+      // (enough to flip pause/resume timing in e2e). Batch buffers and
+      // ships on a timer; `ctx.waitUntil(flushTracerProvider())` at the end
+      // of each request still drains the buffer before the isolate exits.
+      countingProcessor = new CountingSpanProcessor(
+        new BatchSpanProcessor(exporter, {
+          scheduledDelayMillis: 1_000,
+          maxExportBatchSize: 512,
+          maxQueueSize: OTEL_MAX_SPAN_QUEUE_SIZE,
+        }),
+        OTEL_MAX_SPAN_QUEUE_SIZE,
+      );
+      return [countingProcessor];
+    })(),
   });
   // Skip `provider.register()` — its StackContextManager / W3C propagator
   // setup wires the global OTel context API, but Effect's tracer goes
@@ -92,8 +109,19 @@ const ensureGlobalTracerProvider = (): boolean => {
 // `ctx.waitUntil(flushTracerProvider())` so SimpleSpanProcessor exports
 // survive request termination.
 export const installTracerProvider = (): boolean => ensureGlobalTracerProvider();
-export const flushTracerProvider = (): Promise<void> =>
-  provider ? provider.forceFlush() : Promise.resolve();
+export const flushTracerProvider = async (): Promise<void> => {
+  if (!provider) return;
+  const startedAt = Date.now();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- observability boundary; preserve forceFlush failure behavior while counting it
+  try {
+    await provider.forceFlush();
+    recordForceFlush(Date.now() - startedAt, false);
+  } catch (error) {
+    recordForceFlush(Date.now() - startedAt, true);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- preserve original rejection for waitUntil diagnostics
+    throw error;
+  }
+};
 
 const makeTelemetryLive = (): Layer.Layer<never> =>
   Layer.unwrap(

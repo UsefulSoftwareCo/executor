@@ -14,7 +14,7 @@ import {
   type OAuthPopupResult,
 } from "../api/oauth-popup";
 import { connectionWriteKeys } from "../api/reactivity-keys";
-import { getActiveOrgSlug } from "../api/server-connection";
+import { getActiveOrgSlug, getExecutorApiBaseUrl } from "../api/server-connection";
 
 type DesktopBridge = {
   readonly openExternal: (url: string) => Promise<void>;
@@ -96,14 +96,28 @@ export type StartOAuthAuthorizationInput<TPayload extends OAuthCompletionPayload
   readonly reportMetadata?: Record<string, string | number | boolean | null | undefined>;
 };
 
-export function oauthCallbackUrl(path = "/api/oauth/callback"): string {
-  if (typeof window === "undefined") return path;
-  return new URL(path, window.location.origin).toString();
+const OAUTH_CALLBACK_API_PATH = "/oauth/callback" as const;
+const DEFAULT_EXECUTOR_API_BASE_PATH = "/api" as const;
+
+const executorApiUrl = (path: `/${string}`): string => {
+  if (typeof window === "undefined") return `${DEFAULT_EXECUTOR_API_BASE_PATH}${path}`;
+  return `${getExecutorApiBaseUrl()}${path}`;
+};
+
+const usesOrgScopedMetadataDocument = (): boolean =>
+  new URL(getExecutorApiBaseUrl()).pathname === DEFAULT_EXECUTOR_API_BASE_PATH;
+
+const oauthClientIdMetadataOrgDocumentPath = (orgSlug: string): `/${string}` =>
+  `/oauth/client-id-metadata/${encodeURIComponent(orgSlug)}.json`;
+
+export function oauthCallbackUrl(path: `/${string}` = OAUTH_CALLBACK_API_PATH): string {
+  return executorApiUrl(path);
 }
 
-export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH = "/api/oauth/client-id-metadata/default.json";
+export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH =
+  "/oauth/client-id-metadata/default.json" as const;
 export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH =
-  "/api/oauth/client-id-metadata/local.json";
+  "/api/oauth/client-id-metadata/local.json" as const;
 
 const configuredClientIdMetadataBaseUrl = (): string | undefined => {
   const env = (
@@ -117,7 +131,7 @@ const configuredClientIdMetadataBaseUrl = (): string | undefined => {
 
 export function oauthClientIdMetadataDocumentUrl(options?: {
   readonly hostedBaseUrl?: string | null;
-  readonly path?: string;
+  readonly path?: `/${string}`;
 }): string {
   const hostedBaseUrl = options?.hostedBaseUrl ?? configuredClientIdMetadataBaseUrl();
   if (hostedBaseUrl) {
@@ -125,20 +139,17 @@ export function oauthClientIdMetadataDocumentUrl(options?: {
   }
 
   const defaultPath = options?.path ?? OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH;
-  if (typeof window === "undefined") return defaultPath;
-  const orgSlug = getActiveOrgSlug();
-  const metadataPath = orgSlug
-    ? `/api/oauth/client-id-metadata/${encodeURIComponent(orgSlug)}.json`
-    : defaultPath;
-  const url = new URL(metadataPath, window.location.origin);
-  return url.toString();
+  if (typeof window === "undefined") return executorApiUrl(defaultPath);
+  const orgSlug = usesOrgScopedMetadataDocument() ? getActiveOrgSlug() : null;
+  const metadataPath = orgSlug ? oauthClientIdMetadataOrgDocumentPath(orgSlug) : defaultPath;
+  return executorApiUrl(metadataPath);
 }
 
 export function useOAuthPopupFlow<
   TPayload extends OAuthCompletionPayload = OAuthCompletionPayload,
 >(options: {
   readonly popupName: string;
-  readonly callbackPath?: string;
+  readonly callbackPath?: `/${string}`;
   readonly noAuthorizationUrlMessage?: string;
   readonly popupBlockedMessage?: string;
   readonly popupClosedMessage?: string;

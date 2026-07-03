@@ -84,6 +84,11 @@ export interface MicrosoftUpdateResult {
 
 export interface MicrosoftPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
+  /**
+   * Allows `addGraph` to point spec/base/OAuth URLs at a trusted https host
+   * other than the pinned Microsoft Graph endpoints, or at plain http on
+   * loopback for local Graph emulators.
+   */
   readonly allowUnsafeUrlOverrides?: boolean;
 }
 

@@ -461,6 +461,7 @@ export interface IntegrationPreset {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
+  readonly namespace?: string;
   readonly url?: string;
   readonly endpoint?: string;
   readonly icon?: string;

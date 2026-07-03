@@ -1,0 +1,27 @@
+{
+  "name": "@open-agents/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./lib/*": "./lib/*.ts",
+    "./hooks/*": "./hooks/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "catalog:"
+  },
+  "devDependencies": {
+    "@open-agents/tsconfig": "workspace:*",
+    "@types/bun": "1.3.12",
+    "@types/node": "^22",
+    "@types/react": "catalog:"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

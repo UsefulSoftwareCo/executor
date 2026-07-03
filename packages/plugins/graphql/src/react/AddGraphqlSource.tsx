@@ -39,14 +39,17 @@ import type { GraphqlAuthMethodInput } from "../sdk/types";
 const NO_SEEDS: readonly AuthMethodSeed[] = [];
 
 export default function AddGraphqlSource(props: {
-  onComplete: (slug?: string) => void;
+  basePath: string;
+  onComplete: (slug: string) => void;
   onCancel: () => void;
   initialUrl?: string;
+  initialNamespace?: string;
 }) {
   const [endpoint, setEndpoint] = useState(props.initialUrl ?? "");
   const [description, setDescription] = useState("");
   const identity = useIntegrationIdentity({
     fallbackName: integrationDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
+    fallbackNamespace: props.initialNamespace,
   });
   const authMethodList = useAuthMethodList(NO_SEEDS);
   const [adding, setAdding] = useState(false);
@@ -147,7 +150,9 @@ export default function AddGraphqlSource(props: {
         footerHint="Every method here is registered with the source. Connect an account from the integration page after adding."
       />
 
-      {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSlug} />}
+      {slugAlreadyExists && !adding && (
+        <SlugCollisionAlert basePath={props.basePath} slug={resolvedSlug} />
+      )}
 
       {addError && <FormErrorAlert message={addError} />}
 

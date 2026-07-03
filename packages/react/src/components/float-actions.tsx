@@ -1,5 +1,4 @@
 import * as React from "react";
-import { useRouterState } from "@tanstack/react-router";
 
 import { cn } from "../lib/utils";
 import { CardStack } from "./card-stack";
@@ -15,16 +14,8 @@ import { CardStack } from "./card-stack";
  * flex column filling the scroll container (so `mt-auto` pushes the actions
  * down). `sticky bottom-4` also keeps it visible while scrolling long content.
  *
- * Hidden while the router is navigating/loading so the actions don't flash
- * on top of a loading state.
  */
 function FloatActions({ className, children }: { className?: string; children: React.ReactNode }) {
-  const isLoading = useRouterState({ select: (s) => s.isLoading });
-
-  if (isLoading) {
-    return null;
-  }
-
   return (
     // `transform-gpu` promotes the bar to its own compositing layer. Without it,
     // when an action button changes width (e.g. "Add integration" -> "Adding...")

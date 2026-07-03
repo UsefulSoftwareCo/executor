@@ -14,6 +14,7 @@ import {
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
 
+import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { cloudMcpAuth } from "./auth-provider";
 import { McpSessionDOSqlite } from "./session-durable-object";
 
@@ -111,13 +112,17 @@ const propsForPrincipal = (
   });
 
 export const makeCloudMcpAgentHandler = () => {
-  const serve = McpSessionDOSqlite.serve("/mcp", {
-    binding: "MCP_SESSION",
-    transport: "streamable-http",
-  });
+  const serveOptions = { binding: "MCP_SESSION", transport: "streamable-http" } as const;
+  const serve = McpSessionDOSqlite.serve("/mcp", serveOptions);
+  const serveToolkit = McpSessionDOSqlite.serve("/mcp/toolkits/:slug", serveOptions);
+
+  const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
   return async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
+    if (!ALLOWED_METHODS.has(request.method)) {
+      return jsonRpcResponse(405, -32001, "Method not allowed");
+    }
     const sessionId = request.headers.get("mcp-session-id");
 
     const { auth, outcome } = await Effect.runPromise(authenticate(request));
@@ -131,7 +136,7 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     if (!sessionId && request.method === "DELETE") {
-      return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } });
+      return new Response(null, { status: 200, headers: { "access-control-allow-origin": "*" } });
     }
 
     if (sessionId) {
@@ -158,6 +163,22 @@ export const makeCloudMcpAgentHandler = () => {
       },
       resource,
     );
-    return serve.fetch(forwarded, env, ctx);
+    const target = resource.kind === "toolkit" ? serveToolkit : serve;
+    let response: Response;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the agents SDK aborts the isolate instead of returning a response for a condemned session
+    try {
+      response = await target.fetch(forwarded, env, ctx);
+    } catch (error) {
+      // oxlint-disable-next-line executor/no-unknown-error-message -- adapter boundary: the abort reason is a plain runtime Error whose message is the signal
+      if (Predicate.isError(error) && error.message === "destroyed") {
+        return jsonRpcResponse(404, -32001, "Session timed out, please reconnect");
+      }
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: preserve unexpected Workers runtime failures
+      throw error;
+    }
+    if (request.method === "DELETE" && response.status === 204) {
+      return new Response(null, { status: 200, headers: response.headers });
+    }
+    return wrapMcpSseResponse(request, env, response);
   };
 };

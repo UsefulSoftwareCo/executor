@@ -29,7 +29,7 @@ export default defineExecutorConfig({
       openApiHttpPlugin(),
       googleHttpPlugin(),
       microsoftHttpPlugin(),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
+      mcpHttpPlugin(),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       keychainPlugin(),

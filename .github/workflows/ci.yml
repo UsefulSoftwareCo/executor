@@ -74,12 +74,77 @@ jobs:
 
       - run: bun run test
 
+  e2e:
+    name: E2E (${{ matrix.target }}${{ matrix['shard-name'] && format(' {0}', matrix['shard-name']) || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Cloud is SHARDED: each shard boots its own fresh dev stack. The
+          # cloud dev server degrades after a few minutes of sustained suite
+          # load on 2-core runners (the SSE/OTel memory growth being
+          # instrumented on main) — requests start failing partway through and
+          # everything after dies with connection errors. Short shards on
+          # fresh boots stay under that threshold; re-merge into fewer jobs
+          # once the degradation is fixed.
+          - { target: cloud, shard: 1/8, shard-name: 1of8 }
+          - { target: cloud, shard: 2/8, shard-name: 2of8 }
+          - { target: cloud, shard: 3/8, shard-name: 3of8 }
+          - { target: cloud, shard: 4/8, shard-name: 4of8 }
+          - { target: cloud, shard: 5/8, shard-name: 5of8 }
+          - { target: cloud, shard: 6/8, shard-name: 6of8 }
+          - { target: cloud, shard: 7/8, shard-name: 7of8 }
+          - { target: cloud, shard: 8/8, shard-name: 8of8 }
+          - target: selfhost
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      # The dev stacks spawn Node sidecars (vite/workerd tooling); pin the
+      # same known-good runtime the unit-test job uses.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      # Install from e2e so bunx resolves ITS pinned playwright (the version
+      # the tests run against) rather than floating to the latest.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium chromium-headless-shell
+        working-directory: e2e
+
+      # The globalsetup boots the target's own dev server (ports are claimed
+      # per checkout, so this is hermetic) and tears it down after the run.
+      # --retry=2: browser scenarios time out sporadically on 2-core runners
+      # (single-test waitFor timeouts, not systemic failures); a retry on the
+      # same booted stack clears them.
+      - name: Run ${{ matrix.target }} scenarios
+        run: bunx vitest run --project ${{ matrix.target }} --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        working-directory: e2e
+
+      # Failed runs keep their trace.zip / session.mp4 / step screenshots in
+      # runs/<target>/<slug>/ — surface them instead of a bare red X.
+      - name: Upload run artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-runs-${{ matrix.target }}${{ matrix['shard-name'] && format('-{0}', matrix['shard-name']) || '' }}
+          path: e2e/runs/
+          retention-days: 7
+
   e2e-local:
     name: E2E (stdio MCP)
     # Skipped on pull_request: the local scenario boots a real `executor web`
     # plus a browser and is currently flaky on PRs. Still runs on push to main.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

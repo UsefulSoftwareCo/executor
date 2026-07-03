@@ -102,6 +102,8 @@ export interface IntegrationPreset {
   readonly id: string;
   readonly name: string;
   readonly summary: string;
+  /** Suggested catalog slug for the add flow. */
+  readonly namespace?: string;
   /** URL passed as `initialUrl` to the add form. Omit for presets that
    *  don't use a URL (e.g. stdio MCP presets). */
   readonly url?: string;
@@ -112,6 +114,10 @@ export interface IntegrationPreset {
   readonly icon?: string;
   /** Shown in the top-level grid on the integrations page when true. */
   readonly featured?: boolean;
+}
+
+export interface IntegrationPresetCatalogEntry extends IntegrationPreset {
+  readonly pluginId: string;
 }
 
 export interface IntegrationAccountHandoff {
@@ -154,15 +160,14 @@ export interface IntegrationPlugin {
   readonly key: string;
   readonly label: string;
   readonly add: ComponentType<{
-    /** Called when the integration has been registered. Receives the slug of
-     *  the just-registered integration, so the host can route to its detail
-     *  hub (`/integrations/<slug>`). Optional so existing no-arg calls still
-     *  typecheck while plugins are threading the slug through. */
-    readonly onComplete: (slug?: string) => void;
+    readonly basePath: string;
+    readonly onComplete: (slug: string) => void;
     readonly onCancel: () => void;
     readonly initialUrl?: string;
     readonly initialPreset?: string;
     readonly initialNamespace?: string;
+    readonly initialName?: string;
+    readonly initialDescription?: string;
   }>;
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */

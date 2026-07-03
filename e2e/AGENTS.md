@@ -14,9 +14,18 @@ produce a Playwright trace, video, and step screenshots for debugging.
 
 ## File placement
 
-- `scenarios/*.test.ts` — runs on every target (cloud + selfhost)
-- `cloud/*.test.ts` — cloud-only (e.g. billing, WorkOS-session UI)
-- `selfhost/*.test.ts` — selfhost-only
+Scenario directories map to vitest projects (`vitest.config.ts` is the
+authoritative list of targets and what each one includes):
+
+- `scenarios/*.test.ts` — cross-target; runs on cloud + selfhost by default,
+  and selected files also run on selfhost-docker and cloudflare
+- `cloud/*.test.ts` — cloud-only (e.g. billing, WorkOS-session UI, telemetry)
+- `selfhost/*.test.ts` — selfhost-only (also runs on selfhost-docker)
+- `cloudflare/*.test.ts` — the Cloudflare self-host worker
+- `local/*.test.ts` — the single-user local app; each scenario boots its own
+  `executor web`
+- `cli/*.test.ts` — the supervised CLI daemon inside guest VMs
+- `desktop/`, `desktop-packaged/`, `desktop-vm/` — see Desktop targets below
 
 ## Anatomy
 
@@ -25,32 +34,47 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { scenario } from "../src/scenario";
+import { Api, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const); // tools/integrations/connections/providers/executions/oauth/policies
 
-scenario("Tools · a fresh workspace advertises the built-in tools", { needs: ["api"] }, (ctx) =>
+scenario(
+  "Tools · a fresh workspace advertises the built-in tools",
+  {}, // options: { timeout?: number; skip?: string (reason — registers as skipped) }
   Effect.gen(function* () {
-    const identity = yield* ctx.target.newIdentity(); // fresh isolated user+org
-    const client = yield* ctx.api.client(coreApi, identity); // typed HttpApiClient
-    const tools = yield* client.tools.list();
+    const target = yield* Target;
+    const { client } = yield* Api;
+    const identity = yield* target.newIdentity(); // fresh isolated user+org
+    const api = yield* client(coreApi, identity); // typed HttpApiClient
+    const tools = yield* api.tools.list({ query: {} });
     expect(tools.length, "at least one tool is exposed").toBeGreaterThan(0);
   }),
 );
 ```
 
-- Capabilities (`needs`): `api`, `browser` (cloud only today), `mcp-oauth`
-  (selfhost only today), `billing` (cloud only).
+- A scenario declares what it needs by **yielding services** from
+  `src/services.ts` (`Target`, `Api`, `Browser`, `Mcp`, `Billing`, `Cli`,
+  `Telemetry`, …). There is no `needs` list: yielding a service the current
+  target can't provide skips the test and records why in `skipped.json`.
+- Which target provides what (from `targets/*.ts`): `api` — everything except
+  local and the desktop targets; `browser` — cloud, selfhost, selfhost-docker,
+  cloudflare, local; `mcp-oauth` — cloud, selfhost, selfhost-docker,
+  cloudflare (dev-auth on cloudflare, so no real consent hop); `billing` —
+  cloud only. `Telemetry` and `Autumn` appear when the suite booted motel /
+  the Autumn emulator (cloud).
 - Resources created in a test must be cleaned up with `Effect.ensuring` (a
   finalizer), not trailing statements — a mid-test failure must not leak state
   into the shared instance.
 
-## Browser scenarios (cloud)
+## Browser scenarios
 
 ```ts
-const identity = yield * ctx.target.newIdentity(); // logged in, has an org
+const target = yield * Target;
+const browser = yield * Browser;
+const identity = yield * target.newIdentity(); // logged in, has an org
 // or newIdentity({ org: false }) for the onboarding flow
 yield *
-  ctx.browser.session(identity, async ({ page, step }) => {
+  browser.session(identity, async ({ page, step }) => {
     await step("A fresh user lands on the integrations page", async () => {
       await page.goto("/", { waitUntil: "networkidle" });
       await page.getByText("Integrations").first().waitFor();
@@ -68,10 +92,11 @@ yield *
   opening menus: `await page.waitForLoadState("networkidle")`.
 - The stub user renders as "Test User" / `test@example.com`.
 
-## MCP scenarios (selfhost)
+## MCP scenarios
 
 ```ts
-const session = ctx.mcp.session(identity);
+const mcp = yield * Mcp;
+const session = mcp.session(identity);
 const tools = yield * session.listTools(); // OAuth happens headlessly here
 const r = yield * session.call("execute", { code: "return 1 + 1;" });
 // human-in-the-loop: session.approvePaused(r.text) resumes a paused execution
@@ -97,6 +122,8 @@ expect(span.span.tags["executor.tool.outcome"]).toBe("fail");
 
 - `expectSpan` polls (~20s): exporters batch, so arrival is
   eventually-consistent — "the span reaches the store, soon" IS the contract.
+- The cloud globalsetup boots motel automatically; `bun run motel` runs the
+  same store standalone (browse it, or point a dev server's exporter at it).
 - Spec gotcha for fixtures: give operations explicit `tags` — tool addresses
   are `group.leaf`, and an untagged op derives its group from the URL path,
   so `/fail` does NOT produce a `.fail`-suffixed address.
@@ -106,13 +133,19 @@ expect(span.span.tags["executor.tool.outcome"]).toBe("fail");
 
 ```sh
 cd e2e
-bun run test               # boots both dev servers, runs everything
-bun run test:cloud         # one target
+bun run test               # boots both dev servers, runs cloud + selfhost
+bun run test:cloud         # one target (also: test:selfhost, test:selfhost-docker,
+                           #   test:cloudflare, test:local, test:desktop, test:watch)
 bun run ports              # print THIS checkout's derived ports
+bun run summary            # pass/fail digest per target from runs/
 # attach to an already-running server while iterating (use `bun run ports` URLs):
 E2E_CLOUD_URL=http://127.0.0.1:<port> ../node_modules/.bin/vitest run --project cloud <file>
 E2E_SELFHOST_URL=http://localhost:<port> ../node_modules/.bin/vitest run --project selfhost <file>
 ```
+
+For interactive work against a live instance (boot, mint identities, typed API
+calls, MCP calls, emulator ledger) use the dev CLI: `bun run cli` — full
+command list in [RUNNING.md](../RUNNING.md).
 
 Ports are claimed at boot (see `src/ports.ts`): each checkout hashes its repo
 root to a preferred block, atomically locks it (a held lock port makes races
@@ -124,7 +157,10 @@ if a suite moved. `E2E_*_PORT` env vars pin ports explicitly (no probing) and
 
 Each run writes `runs/<target>/<slug>/result.json` plus any browser artifacts
 (trace.zip / session.mp4 / screenshots). `bun run serve` hosts the scenario ×
-target matrix; a run page links the trace into Playwright's trace viewer.
+target matrix; a run page links the trace into Playwright's trace viewer. The
+viewer itself is a Vite/React SPA in `viewer/` (rebuilt into `runs/` by
+`bun run viewer:build`); `bun e2e/scripts/pr-media.ts runs/<target>/<slug>`
+turns a run's recording into PR-ready markdown.
 
 When handing results to the user, follow the evidence contract in the root
 [AGENTS.md](../AGENTS.md) (direct run links + a live instance + what to try);
@@ -149,6 +185,19 @@ project + globalsetup per guest OS.
   ```sh
   vitest run --project desktop-macos      # or desktop-linux
   ```
+
+- **`desktop-windows`** — same scenario, but ATTACHES to a long-lived dockur
+  Windows guest over an SSH jump instead of provisioning one (no bundle build).
+
+There are also **`cli-macos` / `cli-linux` / `cli-windows`** projects (the
+supervised CLI daemon inside a guest VM, `cli/*.test.ts` +
+`scenarios/restart-persistence.test.ts`): the globalsetup provisions the VM
+and `executor service install`s the daemon; `restart()` reboots the guest for
+real, proving the boot-time auto-start path. tart for macOS/Linux, EC2 for
+Windows.
+
+macOS-guest gotchas (VNC login first, single-instance lock vs a host
+Executor.app, guest log paths): see [notes/testing-on-mac.md](notes/testing-on-mac.md).
 
 The guests run tart `--no-graphics` (no host window, never steals focus) but
 still have a usable display:

@@ -18,9 +18,9 @@ import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 // rather than at module-eval time.
 //
 // The in-process `/mcp` surface stays local-platform: a single-engine handler
-// over the SAME boot executor with a browser-approval store + stdio transport
-// (not the shared multi-user `McpServingRoutes` envelope), built here and routed
-// by the Bun shell in `serve.ts`.
+// over the SAME boot executor with a browser-approval store (not the shared
+// multi-user `McpServingRoutes` envelope), built here and routed by the Bun
+// shell in `serve.ts`.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -78,9 +78,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     apiHandler = await makeLocalApiHandler(token);
 
     // The in-process MCP server runs over the SAME boot executor, with its own
-    // engine instance (the browser-approval + stdio surface is local-only and not
-    // part of the shared API). Reuse the shared boot bundle so the MCP executor is
-    // byte-identical to the one the API serves.
+    // engine instance for browser approval. Reuse the shared boot bundle so the
+    // MCP executor is byte-identical to the one the API serves.
     const { executor } = await getExecutorBundle();
     const engine = createExecutionEngine({
       executor,

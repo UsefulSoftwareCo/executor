@@ -78,7 +78,7 @@ interface Harness {
 
 const startHarness = async (tmpDir: string): Promise<Harness> => {
   const plugins = [
-    mcpPlugin({ dangerouslyAllowStdioMCP: false }),
+    mcpPlugin(),
     fileSecretsPlugin({ directory: tmpDir }),
   ] as const;
   const sqlite = await createSqliteFumaDb({

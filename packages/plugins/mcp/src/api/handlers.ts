@@ -27,33 +27,8 @@ const ExecutorApiWithMcp = addGroup(McpGroup);
 // ---------------------------------------------------------------------------
 
 const toServerInput = (
-  payload: { transport?: "remote" | "stdio" } & Record<string, unknown>,
+  payload: { transport?: "remote" } & Record<string, unknown>,
 ): McpServerInput => {
-  if (payload.transport === "stdio") {
-    const p = payload as {
-      transport: "stdio";
-      name: string;
-      description?: string;
-      command: string;
-      args?: readonly string[];
-      envVars?: readonly string[];
-      env?: Record<string, string>;
-      cwd?: string;
-      slug?: string;
-    };
-    return {
-      transport: "stdio",
-      name: p.name,
-      description: p.description,
-      command: p.command,
-      args: p.args ? [...p.args] : undefined,
-      envVars: p.envVars ? [...p.envVars] : undefined,
-      env: p.env,
-      cwd: p.cwd,
-      slug: p.slug,
-    };
-  }
-
   const p = payload as {
     transport?: "remote";
     name: string;

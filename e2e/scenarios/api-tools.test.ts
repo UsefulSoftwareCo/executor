@@ -31,7 +31,13 @@ scenario(
     const { client } = yield* Api;
     const identity = yield* target.newIdentity();
     const api = yield* client(coreApi, identity);
+    // The list call itself exercises the endpoint on every target (a failure
+    // fails the test). Only isolated-identity targets (a fresh org per identity)
+    // can additionally guarantee the list is empty. Selfhost shares one
+    // bootstrap admin, so other scenarios' connections legitimately appear here;
+    // asserting a global count there is exactly what e2e/AGENTS.md forbids.
     const connections = yield* api.connections.list({ query: {} });
-    expect(connections.length, "no connections leak across identities").toBe(0);
+    if (target.name === "selfhost") return;
+    expect(connections.length, "a fresh org starts with no connections").toBe(0);
   }),
 );

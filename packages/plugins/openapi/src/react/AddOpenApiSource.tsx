@@ -81,7 +81,8 @@ export const baseUrlFromSpecInput = (input: string): string => {
 // ---------------------------------------------------------------------------
 
 export default function AddOpenApiSource(props: {
-  onComplete: (slug?: string) => void;
+  basePath: string;
+  onComplete: (slug: string) => void;
   onCancel: () => void;
   initialUrl?: string;
   initialPreset?: string;
@@ -367,7 +368,9 @@ export default function AddOpenApiSource(props: {
         />
       )}
 
-      {preview && slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
+      {preview && slugAlreadyExists && !adding && (
+        <SlugCollisionAlert basePath={props.basePath} slug={resolvedSourceId} />
+      )}
 
       {addError && <FormErrorAlert message={addError} />}
 

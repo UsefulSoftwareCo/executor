@@ -42,6 +42,7 @@ export const makeCloudflarePluginsProvider = (
       makeCloudflarePlugins(config.secretKey, {
         activeToolkitSlug:
           context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
+        allowLocalNetwork: config.allowLocalNetwork,
       }),
   });
 

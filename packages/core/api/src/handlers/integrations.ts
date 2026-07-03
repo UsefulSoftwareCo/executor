@@ -1,6 +1,10 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import { IntegrationNotFoundError, type Integration } from "@executor-js/sdk";
+import {
+  IntegrationNotFoundError,
+  type Integration,
+  type IntegrationPresetCatalogEntry,
+} from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -15,6 +19,22 @@ const toResponse = (i: Integration) => ({
   canRefresh: i.canRefresh,
   authMethods: i.authMethods,
   ...(i.displayUrl ? { displayUrl: i.displayUrl } : {}),
+});
+
+const toPresetResponse = (preset: IntegrationPresetCatalogEntry) => ({
+  pluginId: preset.pluginId,
+  id: preset.id,
+  name: preset.name,
+  summary: preset.summary,
+  ...(preset.namespace ? { namespace: preset.namespace } : {}),
+  ...(preset.url ? { url: preset.url } : {}),
+  ...(preset.endpoint ? { endpoint: preset.endpoint } : {}),
+  ...(preset.icon ? { icon: preset.icon } : {}),
+  ...(preset.featured !== undefined ? { featured: preset.featured } : {}),
+  ...(preset.transport ? { transport: preset.transport } : {}),
+  ...(preset.command ? { command: preset.command } : {}),
+  ...(preset.args ? { args: preset.args } : {}),
+  ...(preset.env ? { env: preset.env } : {}),
 });
 
 export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrations", (handlers) =>
@@ -37,6 +57,15 @@ export const IntegrationsHandlers = HttpApiBuilder.group(ExecutorApi, "integrati
             return yield* new IntegrationNotFoundError({ slug: path.slug });
           }
           return toResponse(integration);
+        }),
+      ),
+    )
+    .handle("presets", () =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const presets = yield* executor.integrations.presets();
+          return presets.map(toPresetResponse);
         }),
       ),
     )

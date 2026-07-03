@@ -153,8 +153,8 @@ const methodFromSingleAuth = (auth: typeof LegacySingleAuth.Type): McpAuthMethod
 
 /** Rewrite a stored MCP integration config blob into the canonical shape.
  *  Returns the rewritten config, or `null` when no rewrite is needed (already
- *  canonical, a stdio config, or not this plugin's shape at all). Throws
- *  nothing: an unmigratable blob also returns `null` and stays untouched.
+ *  canonical, non-remote, or not this plugin's shape at all). Throws nothing:
+ *  an unmigratable blob also returns `null` and stays untouched.
  *  Idempotent — feeding the output back returns `null`. */
 export const migrateMcpAuthConfig = (config: unknown): unknown | null => {
   if (typeof config !== "object" || config === null) return null;

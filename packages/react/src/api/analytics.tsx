@@ -126,11 +126,10 @@ export interface AnalyticsEvents {
 
   // ── MCP install / onboarding ─────────────────────────────────────────────
   mcp_install_command_copied: {
-    transport: "http" | "stdio";
+    transport: "http";
     elicitation_mode?: string;
     surface: "integrations" | "setup_mcp";
   };
-  mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
 
   // ── Command palette ──────────────────────────────────────────────────────

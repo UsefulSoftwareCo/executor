@@ -12,8 +12,8 @@ import { Route as rootRouteImport } from './__root'
 import { Route as DotIndexRouteImport } from './index'
 import { Route as DotToolsRouteImport } from './tools'
 import { Route as DotToolkitsRouteImport } from './toolkits'
-import { Route as DotSecretsRouteImport } from './secrets'
 import { Route as DotPoliciesRouteImport } from './policies'
+import { Route as DotCredentialsRouteImport } from './credentials'
 import { Route as DotToolkitsDottoolkitSlugRouteImport } from './toolkits.$toolkitSlug'
 import { Route as DotResumeDotexecutionIdRouteImport } from './resume.$executionId'
 import { Route as DotIntegrationsDotnamespaceRouteImport } from './integrations.$namespace'
@@ -35,14 +35,14 @@ const DotToolkitsRoute = DotToolkitsRouteImport.update({
   path: '/{-$orgSlug}/toolkits',
   getParentRoute: () => rootRouteImport,
 } as any)
-const DotSecretsRoute = DotSecretsRouteImport.update({
-  id: '/{-$orgSlug}/secrets',
-  path: '/{-$orgSlug}/secrets',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DotPoliciesRoute = DotPoliciesRouteImport.update({
   id: '/{-$orgSlug}/policies',
   path: '/{-$orgSlug}/policies',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DotCredentialsRoute = DotCredentialsRouteImport.update({
+  id: '/{-$orgSlug}/credentials',
+  path: '/{-$orgSlug}/credentials',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DotToolkitsDottoolkitSlugRoute =
@@ -76,8 +76,8 @@ const DotIntegrationsDotaddDotpluginKeyRoute =
   } as any)
 
 export interface FileRoutesByFullPath {
+  '/{-$orgSlug}/credentials': typeof DotCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}/': typeof DotIndexRoute
@@ -88,8 +88,8 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/plugins/$pluginId/$': typeof DotPluginsDotpluginIdDotsplatRoute
 }
 export interface FileRoutesByTo {
+  '/{-$orgSlug}/credentials': typeof DotCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}': typeof DotIndexRoute
@@ -101,8 +101,8 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/{-$orgSlug}/credentials': typeof DotCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}/': typeof DotIndexRoute
@@ -115,8 +115,8 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
@@ -127,8 +127,8 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/plugins/$pluginId/$'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}'
@@ -139,8 +139,8 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/plugins/$pluginId/$'
   id:
     | '__root__'
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
@@ -152,8 +152,8 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  DotCredentialsRoute: typeof DotCredentialsRoute
   DotPoliciesRoute: typeof DotPoliciesRoute
-  DotSecretsRoute: typeof DotSecretsRoute
   DotToolkitsRoute: typeof DotToolkitsRouteWithChildren
   DotToolsRoute: typeof DotToolsRoute
   DotIndexRoute: typeof DotIndexRoute
@@ -186,18 +186,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotToolkitsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/{-$orgSlug}/secrets': {
-      id: '/{-$orgSlug}/secrets'
-      path: '/{-$orgSlug}/secrets'
-      fullPath: '/{-$orgSlug}/secrets'
-      preLoaderRoute: typeof DotSecretsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/{-$orgSlug}/policies': {
       id: '/{-$orgSlug}/policies'
       path: '/{-$orgSlug}/policies'
       fullPath: '/{-$orgSlug}/policies'
       preLoaderRoute: typeof DotPoliciesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/credentials': {
+      id: '/{-$orgSlug}/credentials'
+      path: '/{-$orgSlug}/credentials'
+      fullPath: '/{-$orgSlug}/credentials'
+      preLoaderRoute: typeof DotCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/toolkits/$toolkitSlug': {
@@ -251,8 +251,8 @@ const DotToolkitsRouteWithChildren = DotToolkitsRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
+  DotCredentialsRoute: DotCredentialsRoute,
   DotPoliciesRoute: DotPoliciesRoute,
-  DotSecretsRoute: DotSecretsRoute,
   DotToolkitsRoute: DotToolkitsRouteWithChildren,
   DotToolsRoute: DotToolsRoute,
   DotIndexRoute: DotIndexRoute,

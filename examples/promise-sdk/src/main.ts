@@ -72,16 +72,6 @@ await executor.connections.create({
   value: "",
 });
 
-// Stdio server (disabled by default — pass `dangerouslyAllowStdioMCP: true` to
-// mcpPlugin() to enable, only for trusted local contexts):
-// await executor.mcp.addServer({
-//   transport: "stdio",
-//   name: "My Server",
-//   command: "npx",
-//   args: ["-y", "@my/mcp-server"],
-//   slug: "my-server",
-// });
-
 // ---------------------------------------------------------------------------
 // 3. OpenAPI — load a spec by URL as an integration, then connect.
 //

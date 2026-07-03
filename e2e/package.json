@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",
-    "@executor-js/emulate": "^0.9.0",
+    "@executor-js/emulate": "^0.10.0",
     "@executor-js/mcporter": "^0.11.4",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",

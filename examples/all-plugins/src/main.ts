@@ -80,7 +80,7 @@ const plugins = [
   // `addIntegration`), and produce tools per connection.
   googlePlugin(),
   graphqlPlugin(),
-  mcpPlugin({ dangerouslyAllowStdioMCP: false }),
+  mcpPlugin(),
   openApiPlugin(),
 
   // workos-vault is a cloud-hosted credential provider. It would contribute a

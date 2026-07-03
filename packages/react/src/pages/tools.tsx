@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { ToolAddress, effectivePolicyFromSorted } from "@executor-js/sdk/shared";
@@ -25,7 +24,7 @@ type ToolRow = {
 const policyId = (tool: ToolRow): string =>
   tool.static ? String(tool.address) : `${tool.integration}.${tool.name}`;
 
-export function ToolsPage() {
+export function ToolsPage(props: { basePath: string }) {
   // Merged across BOTH owners (omit-owner read). The page dedupes to one row per
   // `<integration>.<tool>` policy id, so owner is irrelevant here — the global
   // Tools page is a flat policy tree, not an account-grouped view. Policy writes
@@ -107,7 +106,7 @@ export function ToolsPage() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button asChild variant="outline" size="sm">
-            <Link to="/{-$orgSlug}/policies">Manage policies</Link>
+            <a href={`${props.basePath}/policies`}>Manage policies</a>
           </Button>
         </div>
       </div>

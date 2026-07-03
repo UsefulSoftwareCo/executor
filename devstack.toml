@@ -9,7 +9,7 @@ cmd = "bash -lc 'set -euo pipefail; env_file=apps/open-agents/.env.development.l
 cmd = "docker compose up --wait --wait-timeout 60"
 
 [tasks.bun-install]
-cmd = "bun install --frozen-lockfile"
+cmd = "bun install --frozen-lockfile --minimum-release-age=0"
 watch = [
   "bun.lock",
   "package.json",
@@ -26,6 +26,7 @@ cmd = "bun run db:migrate:apply && bun run dev --hostname 0.0.0.0 --port $PORT"
 cwd = "apps/open-agents"
 env_file = ".env.development.local"
 port = 3000
+capture_api = false
 init = ["local-env", "datastores-up", "bun-install"]
 readiness = { http = { path = "/api/health", expect_status = [200, 399] }, timeout_ms = 120000 }
 watch = [

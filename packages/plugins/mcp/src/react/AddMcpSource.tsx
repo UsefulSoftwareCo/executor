@@ -10,19 +10,10 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntryField,
-} from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
-import { Input } from "@executor-js/react/components/input";
-import { TagInput } from "@executor-js/react/components/tag-input";
 import {
-  integrationDisplayNameFromStdio,
   integrationDisplayNameFromUrl,
   slugifyNamespace,
-  IntegrationIdentityFields,
   useIntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 import {
@@ -55,19 +46,6 @@ import { mcpPresets, type McpPreset } from "../sdk/presets";
 function findPreset(id: string | undefined): McpPreset | undefined {
   if (!id) return undefined;
   return mcpPresets.find((p) => p.id === id);
-}
-
-// Splits the raw args field into tokens, honoring double-quoted groups so an
-// argument with spaces stays intact.
-function parseStdioArgs(raw: string): string[] {
-  if (!raw.trim()) return [];
-  const args: string[] = [];
-  const regex = /[^\s"]+|"([^"]*)"/g;
-  let match;
-  while ((match = regex.exec(raw)) !== null) {
-    args.push(match[1] ?? match[0]);
-  }
-  return args;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,44 +140,19 @@ function reducer(state: State, action: Action): State {
 // ---------------------------------------------------------------------------
 
 export default function AddMcpSource(props: {
-  onComplete: (slug?: string) => void;
+  basePath: string;
+  onComplete: (slug: string) => void;
   onCancel: () => void;
   initialUrl?: string;
   initialPreset?: string;
-  /** Whether the stdio transport is enabled on the server. */
-  allowStdio?: boolean;
+  initialNamespace?: string;
+  initialName?: string;
+  initialDescription?: string;
 }) {
-  const allowStdio = props.allowStdio ?? false;
-  const rawPreset = findPreset(props.initialPreset);
-  // Drop stdio presets when stdio is disabled — the caller should have
-  // already filtered these out, but defence-in-depth.
-  const preset = rawPreset?.transport === "stdio" && !allowStdio ? undefined : rawPreset;
-  const isStdioPreset = preset?.transport === "stdio";
-
-  const [transport, setTransport] = useState<"remote" | "stdio">(
-    isStdioPreset && allowStdio ? "stdio" : "remote",
-  );
-
-  // --- Stdio state ---
-  const [stdioCommand, setStdioCommand] = useState(isStdioPreset ? preset.command : "");
-  const [stdioArgs, setStdioArgs] = useState(
-    isStdioPreset && preset.args ? preset.args.join(" ") : "",
-  );
-  const [stdioEnvVars, setStdioEnvVars] = useState<string[]>([]);
-  const stdioIdentity = useIntegrationIdentity({
-    fallbackName: isStdioPreset
-      ? preset.name
-      : (integrationDisplayNameFromStdio(stdioCommand, parseStdioArgs(stdioArgs), "MCP") ??
-        stdioCommand),
-  });
-  const [stdioAdding, setStdioAdding] = useState(false);
-  const [stdioError, setStdioError] = useState<string | null>(null);
-
-  // --- Remote state ---
-  const remoteUrl =
-    !isStdioPreset && preset?.transport === undefined && preset?.url
-      ? preset.url
-      : (props.initialUrl ?? "");
+  const preset = findPreset(props.initialPreset);
+  const remoteUrl = preset?.url ?? props.initialUrl ?? "";
+  const presetName = props.initialName ?? preset?.name;
+  const presetDescription = props.initialDescription ?? preset?.summary;
 
   const [state, dispatch] = useReducer(
     reducer,
@@ -241,12 +194,17 @@ export default function AddMcpSource(props: {
 
   const remoteIdentity = useIntegrationIdentity({
     fallbackName:
-      integrationDisplayNameFromUrl(state.url, "MCP") ?? probe?.serverName ?? probe?.name ?? "",
+      presetName ??
+      integrationDisplayNameFromUrl(state.url, "MCP") ??
+      probe?.serverName ??
+      probe?.name ??
+      "",
+    fallbackNamespace: props.initialNamespace,
   });
   // Agent-visible description: prefilled from the server's `instructions`
   // until the user types (null = untouched, keep deriving from the probe).
   const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
-  const resolvedDescription = descriptionDraft ?? probe?.instructions ?? "";
+  const resolvedDescription = descriptionDraft ?? presetDescription ?? probe?.instructions ?? "";
   const isProbing = state.step === "probing";
   const isAdding = state.step === "adding";
 
@@ -256,9 +214,7 @@ export default function AddMcpSource(props: {
   // A blank derived namespace lets the server assign the slug, so only flag a
   // collision when the user-derived slug is non-empty.
   const remoteSlug = slugifyNamespace(remoteIdentity.namespace);
-  const stdioSlug = slugifyNamespace(stdioIdentity.namespace);
   const remoteSlugExists = useSlugAlreadyExists(remoteSlug);
-  const stdioSlugExists = useSlugAlreadyExists(stdioSlug);
 
   const canAdd = Boolean(probe) && !isAdding && !remoteSlugExists;
   // Probe failures are shown inline on the URL field; other failures
@@ -289,9 +245,8 @@ export default function AddMcpSource(props: {
   handleProbeRef.current = handleProbe;
 
   // Auto-probe whenever the URL changes (debounced) while we're on the
-  // remote transport and not already probing/probed.
+  // URL step and not already probing/probed.
   useEffect(() => {
-    if (transport !== "remote") return;
     if (state.step !== "url") return;
     const trimmed = state.url.trim();
     if (!trimmed) return;
@@ -299,7 +254,7 @@ export default function AddMcpSource(props: {
       handleProbeRef.current();
     }, 400);
     return () => clearTimeout(handle);
-  }, [transport, state.step, state.url]);
+  }, [state.step, state.url]);
 
   // Register the integration with the declared auth methods, returning the
   // assigned slug (or null on failure — an error is dispatched in that case).
@@ -347,34 +302,6 @@ export default function AddMcpSource(props: {
     props.onComplete(slug);
   }, [probe, authMethodList.rows, registerIntegration, props]);
 
-  // ---- Stdio actions ----
-
-  const handleAddStdio = useCallback(async () => {
-    const cmd = stdioCommand.trim();
-    if (!cmd) return;
-    setStdioAdding(true);
-    setStdioError(null);
-    const displayName = stdioIdentity.name.trim() || cmd;
-    const slug = slugifyNamespace(stdioIdentity.namespace) || undefined;
-    const exit = await doAddServer({
-      payload: {
-        transport: "stdio" as const,
-        name: displayName,
-        ...(slug ? { slug } : {}),
-        command: cmd,
-        args: parseStdioArgs(stdioArgs),
-        envVars: stdioEnvVars.length > 0 ? stdioEnvVars : undefined,
-      },
-      reactivityKeys: integrationWriteKeys,
-    });
-    if (Exit.isFailure(exit)) {
-      setStdioError(addIntegrationErrorMessage(exit, slug ?? displayName, "Failed to add server"));
-      setStdioAdding(false);
-      return;
-    }
-    props.onComplete(exit.value.slug);
-  }, [stdioCommand, stdioArgs, stdioEnvVars, stdioIdentity, doAddServer, props]);
-
   // ---- Render ----
 
   return (
@@ -386,167 +313,62 @@ export default function AddMcpSource(props: {
         </p>
       </div>
 
-      {/* Transport toggle — only shown when stdio is enabled server-side */}
-      {allowStdio && (
-        <div className="flex gap-1 rounded-lg border border-border bg-muted/30 p-1">
+      <McpRemoteSourceFields
+        url={state.url}
+        onUrlChange={(url) => dispatch({ type: "set-url", url })}
+        identity={remoteIdentity}
+        description={resolvedDescription}
+        onDescriptionChange={setDescriptionDraft}
+        preview={probe}
+        probing={isProbing}
+        error={probeError}
+        onRetry={handleProbe}
+      />
+
+      {/* Authentication — declares the auth methods to register through the
+          shared list editor. The credentials themselves (API key value /
+          OAuth sign-in) are added from the integration's detail hub after
+          adding. */}
+      {probe && (
+        <AuthMethodListEditor
+          list={authMethodList}
+          title="How does this server authenticate?"
+          oauthMetadata="discovered"
+          emptyHint="No methods declared. Add a method, or add the server without auth and connect from the integration page later."
+          footerHint="Every method here is registered with the server. Connect an account from the integration page after adding."
+        />
+      )}
+
+      {/* Error (add server). Probe errors show inline on the field. */}
+      {otherError && (
+        <div className="space-y-2">
+          <FormErrorAlert message={otherError} />
           <Button
-            variant="ghost"
             type="button"
-            onClick={() => setTransport("remote")}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-              transport === "remote"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
+            variant="outline"
+            size="sm"
+            onClick={() => dispatch({ type: "retry" })}
+            className="text-xs"
           >
-            Remote
-          </Button>
-          <Button
-            variant="ghost"
-            type="button"
-            onClick={() => setTransport("stdio")}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-              transport === "stdio"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Stdio
+            Try again
           </Button>
         </div>
       )}
 
-      {transport === "remote" ? (
-        <>
-          <McpRemoteSourceFields
-            url={state.url}
-            onUrlChange={(url) => dispatch({ type: "set-url", url })}
-            identity={remoteIdentity}
-            description={resolvedDescription}
-            onDescriptionChange={setDescriptionDraft}
-            preview={probe}
-            probing={isProbing}
-            error={probeError}
-            onRetry={handleProbe}
-          />
-
-          {/* Authentication — declares the auth methods to register through the
-              shared list editor. The credentials themselves (API key value /
-              OAuth sign-in) are added from the integration's detail hub after
-              adding. */}
-          {probe && (
-            <AuthMethodListEditor
-              list={authMethodList}
-              title="How does this server authenticate?"
-              oauthMetadata="discovered"
-              emptyHint="No methods declared. Add a method, or add the server without auth and connect from the integration page later."
-              footerHint="Every method here is registered with the server. Connect an account from the integration page after adding."
-            />
-          )}
-
-          {/* Error (add server). Probe errors show inline on the field. */}
-          {otherError && (
-            <div className="space-y-2">
-              <FormErrorAlert message={otherError} />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => dispatch({ type: "retry" })}
-                className="text-xs"
-              >
-                Try again
-              </Button>
-            </div>
-          )}
-
-          {remoteSlugExists && !isAdding && <SlugCollisionAlert slug={remoteSlug} />}
-
-          <FloatActions>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => props.onCancel()}
-              disabled={isAdding}
-            >
-              Cancel
-            </Button>
-            {(probe || isProbing) && (
-              <Button type="button" onClick={handleAddRemote} disabled={!canAdd} loading={isAdding}>
-                Add source
-              </Button>
-            )}
-          </FloatActions>
-        </>
-      ) : (
-        <>
-          {/* Stdio form */}
-          <CardStack>
-            <CardStackContent className="border-t-0">
-              <CardStackEntryField
-                label="Command"
-                description="- The executable to run (e.g. npx, uvx, node)."
-              >
-                <Input
-                  value={stdioCommand}
-                  onChange={(e) => setStdioCommand((e.target as HTMLInputElement).value)}
-                  placeholder="npx"
-                  className="font-mono text-sm"
-                />
-              </CardStackEntryField>
-
-              <CardStackEntryField
-                label="Arguments"
-                description="- Space-separated arguments passed to the command."
-              >
-                <Input
-                  value={stdioArgs}
-                  onChange={(e) => setStdioArgs((e.target as HTMLInputElement).value)}
-                  placeholder="-y chrome-devtools-mcp@latest"
-                  className="font-mono text-sm"
-                />
-              </CardStackEntryField>
-
-              <CardStackEntryField
-                label="Environment variables"
-                description="- Names only; secret values are entered when you connect."
-              >
-                <TagInput
-                  values={stdioEnvVars}
-                  onChange={setStdioEnvVars}
-                  placeholder="Add an env var, e.g. GITHUB_TOKEN"
-                />
-              </CardStackEntryField>
-            </CardStackContent>
-          </CardStack>
-
-          <IntegrationIdentityFields identity={stdioIdentity} namePlaceholder="My MCP Server" />
-
-          {/* Stdio error */}
-          {stdioError && <FormErrorAlert message={stdioError} />}
-
-          {stdioSlugExists && !stdioAdding && <SlugCollisionAlert slug={stdioSlug} />}
-
-          <FloatActions>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => props.onCancel()}
-              disabled={stdioAdding}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={handleAddStdio}
-              disabled={!stdioCommand.trim() || stdioSlugExists}
-              loading={stdioAdding}
-            >
-              Add source
-            </Button>
-          </FloatActions>
-        </>
+      {remoteSlugExists && !isAdding && (
+        <SlugCollisionAlert basePath={props.basePath} slug={remoteSlug} />
       )}
+
+      <FloatActions>
+        <Button type="button" variant="ghost" onClick={() => props.onCancel()} disabled={isAdding}>
+          Cancel
+        </Button>
+        {(probe || isProbing) && (
+          <Button type="button" onClick={handleAddRemote} disabled={!canAdd} loading={isAdding}>
+            Add source
+          </Button>
+        )}
+      </FloatActions>
     </div>
   );
 }

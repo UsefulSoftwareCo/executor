@@ -66,7 +66,14 @@ scenario(
     expect(endpoint!, "…and not the desktop/CLI default that used to flash").not.toContain(
       "127.0.0.1:4000",
     );
-    // It's still the org-scoped path the user actually needs.
-    expect(endpoint!, "the install URL stays org-scoped").toMatch(/\/org_[^/]+\/mcp$/);
+    // It's still the org-scoped path the user actually needs. Since #974
+    // ("Org-slug console URLs across cloud, self-host, and cloudflare hosts"),
+    // the install card prints the org's URL SLUG (e.g. /org-user-xxx/mcp), not
+    // the legacy WorkOS org_<id> form — mount.ts's classifyMcpPath still
+    // accepts either shape, but the slug form is what ships, so accept both
+    // rather than pinning on the retired id-only shape.
+    expect(endpoint!, "the install URL stays org-scoped").toMatch(
+      /\/(?:org_[^/]+|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\/mcp$/,
+    );
   }),
 );

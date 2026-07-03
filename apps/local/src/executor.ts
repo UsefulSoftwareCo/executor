@@ -14,7 +14,6 @@ import {
 } from "@executor-js/sdk";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
-import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
 import executorConfig from "../executor.config";
 import { localDataMigrations } from "./db/data-migrations";
@@ -211,26 +210,6 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
         for (const warning of migration.warnings) {
           console.warn(`[executor] local v2 migration: ${warning}`);
         }
-      }
-
-      // Heal stdio MCP integrations added before auto-connect existed (they
-      // landed with zero connections ⇒ zero tools) and move any legacy inline
-      // env into the secret store. No-op on a fresh install; never fails boot.
-      // Local is the only app that enables stdio, so this only runs here.
-      // oxlint-disable-next-line executor/no-double-cast -- typed boundary: the executor IS its own plugin-extension map (executor[pluginId]) but LocalExecutor doesn't surface per-plugin extensions statically
-      const mcpExtension = (executor as unknown as { readonly mcp?: McpPluginExtension }).mcp;
-      if (mcpExtension) {
-        yield* mcpExtension
-          .reconcileStdioConnections()
-          .pipe(
-            Effect.catch(() =>
-              Effect.sync(() =>
-                console.warn(
-                  "[executor] stdio connection reconcile failed; existing stdio servers may show no tools until re-added",
-                ),
-              ),
-            ),
-          );
       }
 
       return { executor, plugins };

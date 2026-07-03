@@ -164,13 +164,6 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("returns [] for a stdio transport", () => {
-    const methods = describeMcpAuthMethods(
-      recordWith({ transport: "stdio", command: "run-server" }),
-    );
-    expect(methods).toEqual([]);
-  });
-
   it("returns [] for a malformed / foreign / pre-migration config blob", () => {
     expect(describeMcpAuthMethods(recordWith({ not: "an mcp config" }))).toEqual([]);
     expect(describeMcpAuthMethods(recordWith(null))).toEqual([]);
@@ -199,10 +192,7 @@ describe("describeMcpAuthMethods", () => {
     ).toEqual({ url: "https://mcp.posthog.com/mcp" });
   });
 
-  it("does not expose display metadata for stdio or malformed configs", () => {
-    expect(
-      describeMcpIntegrationDisplay(recordWith({ transport: "stdio", command: "run" })),
-    ).toEqual({});
+  it("does not expose display metadata for malformed configs", () => {
     expect(describeMcpIntegrationDisplay(recordWith({ not: "mcp" }))).toEqual({});
   });
 });

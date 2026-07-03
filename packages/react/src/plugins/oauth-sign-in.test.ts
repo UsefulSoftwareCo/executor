@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
+import { setExecutorServerConnection } from "../api/server-connection";
 import { oauthCallbackUrl, oauthClientIdMetadataDocumentUrl } from "./oauth-sign-in";
 
 // The legacy query-param org selector the metadata-document URL must NOT use
@@ -15,7 +16,21 @@ const setLocation = (href: string): void => {
   });
 };
 
+const setBrowserConnection = (href: string, apiBaseUrl?: string): void => {
+  setLocation(href);
+  const origin = new URL(href).origin;
+  setExecutorServerConnection({
+    kind: "http",
+    origin,
+    apiBaseUrl: apiBaseUrl ?? `${origin}/api`,
+  });
+};
+
 afterEach(() => {
+  setExecutorServerConnection({
+    kind: "http",
+    origin: "http://127.0.0.1:4000",
+  });
   if (originalWindow) {
     Object.defineProperty(globalThis, "window", {
       configurable: true,
@@ -33,7 +48,7 @@ describe("oauthClientIdMetadataDocumentUrl", () => {
   });
 
   it("carries the active org slug from the console URL", () => {
-    setLocation("https://executor.sh/acme/integrations/posthog");
+    setBrowserConnection("https://executor.sh/acme/integrations/posthog");
 
     const url = new URL(oauthClientIdMetadataDocumentUrl());
 
@@ -42,13 +57,24 @@ describe("oauthClientIdMetadataDocumentUrl", () => {
   });
 
   it("uses the hosted local document when configured", () => {
-    setLocation("http://localhost:4788/integrations/posthog");
+    setBrowserConnection("http://localhost:4788/integrations/posthog");
 
     expect(
       oauthClientIdMetadataDocumentUrl({
         hostedBaseUrl: "https://executor.sh",
       }),
     ).toBe("https://executor.sh/api/oauth/client-id-metadata/local.json");
+  });
+
+  it("uses the active executor API base path for metadata", () => {
+    setBrowserConnection(
+      "https://openagents-one.vercel.app/sessions/session_123/executor",
+      "https://openagents-one.vercel.app/api/executor/session/session_123",
+    );
+
+    expect(oauthClientIdMetadataDocumentUrl()).toBe(
+      "https://openagents-one.vercel.app/api/executor/session/session_123/oauth/client-id-metadata/default.json",
+    );
   });
 });
 
@@ -59,7 +85,7 @@ describe("oauthCallbackUrl", () => {
   });
 
   it("keeps the callback URL static from an org console URL", () => {
-    setLocation("https://executor.sh/acme/integrations/posthog");
+    setBrowserConnection("https://executor.sh/acme/integrations/posthog");
 
     const url = new URL(oauthCallbackUrl());
 
@@ -68,9 +94,31 @@ describe("oauthCallbackUrl", () => {
   });
 
   it("does not add an org selector on bare app routes", () => {
-    setLocation("https://executor.sh/login");
+    setBrowserConnection("https://executor.sh/login");
 
     expect(oauthCallbackUrl()).toBe("https://executor.sh/api/oauth/callback");
+  });
+
+  it("uses the active executor API base path", () => {
+    setBrowserConnection(
+      "https://openagents-one.vercel.app/settings/executor",
+      "https://openagents-one.vercel.app/api/executor",
+    );
+
+    expect(oauthCallbackUrl()).toBe(
+      "https://openagents-one.vercel.app/api/executor/oauth/callback",
+    );
+  });
+
+  it("uses the active session executor API base path", () => {
+    setBrowserConnection(
+      "https://openagents-one.vercel.app/sessions/session_123/executor",
+      "https://openagents-one.vercel.app/api/executor/session/session_123",
+    );
+
+    expect(oauthCallbackUrl()).toBe(
+      "https://openagents-one.vercel.app/api/executor/session/session_123/oauth/callback",
+    );
   });
 });
 
@@ -81,7 +129,7 @@ describe("oauthClientIdMetadataDocumentUrl", () => {
   });
 
   it("carries the active org slug from the console URL", () => {
-    setLocation("https://executor.sh/acme/integrations/posthog");
+    setBrowserConnection("https://executor.sh/acme/integrations/posthog");
 
     const url = new URL(oauthClientIdMetadataDocumentUrl());
 

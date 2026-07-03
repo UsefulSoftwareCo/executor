@@ -62,6 +62,10 @@ export interface MicrosoftGraphSpecBuild {
 }
 
 export interface MicrosoftGraphUrlPolicy {
+  /**
+   * When true, spec/base/OAuth endpoint URLs may point anywhere a trusted
+   * https URL could, plus plain http on loopback for local Graph emulators.
+   */
   readonly allowUnsafeUrlOverrides?: boolean;
 }
 
@@ -193,13 +197,27 @@ const parseTrustedHttpsUrl = (value: string): URL | null => {
   return parsed;
 };
 
+const isLoopbackHostname = (hostname: string): boolean => {
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower === "[::1]";
+};
+
+const parseTrustedLoopbackHttpUrl = (value: string): URL | null => {
+  if (!URL.canParse(value)) return null;
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.hash) {
+    return null;
+  }
+  return isLoopbackHostname(parsed.hostname) ? parsed : null;
+};
+
 const allowUnsafeUrl = (
   value: string | undefined,
   policy: MicrosoftGraphUrlPolicy | undefined,
 ): string | undefined | null => {
   if (!value) return undefined;
   if (policy?.allowUnsafeUrlOverrides !== true) return null;
-  return parseTrustedHttpsUrl(value) ? value : null;
+  return parseTrustedHttpsUrl(value) || parseTrustedLoopbackHttpUrl(value) ? value : null;
 };
 
 const normalizeMicrosoftGraphSpecUrl = (

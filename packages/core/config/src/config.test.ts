@@ -55,13 +55,6 @@ describe("ExecutorFileConfig schema", () => {
           name: "Remote MCP",
           endpoint: "https://mcp.example.com/sse",
         },
-        {
-          kind: "mcp",
-          transport: "stdio",
-          name: "Local MCP",
-          command: "npx",
-          args: ["-y", "some-server"],
-        },
       ],
       secrets: {
         "my-token": {
@@ -73,7 +66,7 @@ describe("ExecutorFileConfig schema", () => {
     };
 
     const result = decodeExecutorFileConfig(raw);
-    expect(result.sources).toHaveLength(4);
+    expect(result.sources).toHaveLength(3);
     expect(result.name).toBe("test");
     expect(result.secrets!["my-token"]!.name).toBe("My Token");
   });

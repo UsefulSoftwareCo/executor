@@ -16,6 +16,7 @@
 import { fileURLToPath } from "node:url";
 
 import {
+  Headers as EffectHeaders,
   HttpMiddleware,
   HttpRouter,
   HttpServerRequest,
@@ -32,14 +33,15 @@ import {
   OAUTH_CALLBACK_PATH,
   oauthCallbackSignInRedirectLocation,
 } from "./auth/oauth-callback-login";
-import { stripMcpOrgSegment } from "./mcp/org-path";
+import { MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./mcp/org-path";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const assetsDir = fileURLToPath(new URL("../dist/assets/", import.meta.url));
 
 // Rewrite `/<org>/mcp` (and its OAuth discovery path) to the bare path before
 // routing, so the "Connect an agent" card's org-pinned URL reaches the real
-// `/mcp` route — see ./mcp/org-path. A no-op for every other request.
+// `/mcp` route — see ./mcp/org-path. Scrubs client-supplied original-path
+// headers and sets its own only when the rewrite happened here.
 const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
   HttpMiddleware.make((httpApp) =>
     Effect.gen(function* () {
@@ -58,11 +60,24 @@ const selfHostHttpMiddleware = (betterAuth: BetterAuthHandle) =>
       }
 
       const rewritten = stripMcpOrgSegment(url.pathname);
-      if (rewritten === null) return yield* httpApp;
+      if (rewritten === null) {
+        if (!EffectHeaders.has(request.headers, MCP_ORIGINAL_PATH_HEADER)) return yield* httpApp;
+        return yield* httpApp.pipe(
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            request.modify({
+              headers: EffectHeaders.remove(request.headers, MCP_ORIGINAL_PATH_HEADER),
+            }),
+          ),
+        );
+      }
       return yield* httpApp.pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,
-          request.modify({ url: `${rewritten}${url.search}` }),
+          request.modify({
+            url: `${rewritten}${url.search}`,
+            headers: EffectHeaders.set(request.headers, MCP_ORIGINAL_PATH_HEADER, url.pathname),
+          }),
         ),
       );
     }),

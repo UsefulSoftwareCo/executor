@@ -151,8 +151,7 @@ describe("migrateMcpAuthConfig", () => {
     expect(migrateMcpAuthConfig(lifted)).toBeNull();
   });
 
-  it("leaves stdio, foreign, and unmigratable blobs untouched", () => {
-    expect(migrateMcpAuthConfig({ transport: "stdio", command: "run" })).toBeNull();
+  it("leaves foreign and unmigratable blobs untouched", () => {
     expect(migrateMcpAuthConfig({ not: "mcp" })).toBeNull();
     expect(migrateMcpAuthConfig(null)).toBeNull();
     expect(

@@ -21,26 +21,7 @@ import type {
   McpAuthMethod,
   McpAuthMethodInput,
   McpCanonicalAuthMethodInput,
-  McpStdioEnvMethod,
 } from "../sdk/types";
-
-/** Stdio env method → generic hub `AuthMethod`: one `env`-carrier placement per
- *  declared var, so the account form collects one secret per env var. Mirrors
- *  the server's `describeMcpAuthMethods`. */
-const stdioEnvAuthMethod = (method: McpStdioEnvMethod): AuthMethod => ({
-  id: method.slug,
-  label: "Environment variables",
-  kind: "apikey",
-  source: "spec",
-  template: AuthTemplateSlug.make(method.slug),
-  placements: method.vars.map((name) => ({ carrier: "env", name, prefix: "", variable: name })),
-});
-
-/** Stdio env method → editor value (apikey over env placements). */
-const stdioEnvEditorValue = (method: McpStdioEnvMethod): AuthTemplateEditorValue => ({
-  kind: "apikey",
-  placements: method.vars.map((name) => ({ carrier: "env", name, prefix: "", variable: name })),
-});
 
 /** Serialize a canonical method into the wire input union (apikey → the
  *  request-shaped dialect; none/oauth2 pass through). */
@@ -76,7 +57,6 @@ export function editorValueFromMcpAuthMethod(method: McpAuthMethod): AuthTemplat
   if (method.kind === "oauth2") {
     return { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] };
   }
-  if (method.kind === "stdio_env") return stdioEnvEditorValue(method);
   return editorValueFromSharedMethod(method);
 }
 
@@ -90,7 +70,6 @@ export function authMethodsFromConfig(
 ): AuthMethod[] {
   return methods.map((method: McpAuthMethod): AuthMethod => {
     if (method.kind === "oauth2") return oauthAuthMethod(method.slug, endpoint);
-    if (method.kind === "stdio_env") return stdioEnvAuthMethod(method);
     return authMethodFromSharedTemplate(method);
   });
 }

@@ -12,20 +12,17 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 // master key arrives via `env` at request time (no process.env on a Worker), so
 // the plugin set is constructed per app-build with the resolved key. The tuple
 // SHAPE (which drives the API + table set) is independent of the key value.
-//
-// `dangerouslyAllowStdioMCP` is false: a multi-user instance must not let a user
-// spawn arbitrary stdio MCP processes.
 // ---------------------------------------------------------------------------
 
 export const makeCloudflarePlugins = (
   secretKey: string,
-  options: { readonly activeToolkitSlug?: string } = {},
+  options: { readonly activeToolkitSlug?: string; readonly allowLocalNetwork?: boolean } = {},
 ) =>
   [
     openApiHttpPlugin(),
     googleHttpPlugin(),
-    microsoftHttpPlugin(),
-    mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
+    microsoftHttpPlugin({ allowUnsafeUrlOverrides: options.allowLocalNetwork === true }),
+    mcpHttpPlugin(),
     graphqlHttpPlugin(),
     toolkitsPlugin({ activeToolkitSlug: options.activeToolkitSlug }),
     encryptedSecretsPlugin({ key: secretKey }),

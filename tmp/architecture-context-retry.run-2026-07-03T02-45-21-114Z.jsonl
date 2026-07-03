@@ -1,0 +1,8 @@
+{"ts":"2026-07-03T02:45:21.884Z","type":"spawn","sessionId":"session-019f25dd-ce80-7ad2-a03c-e2057cce8d58","agentHandle":"oa-arch-eve-runtime-2","workerId":"worker-019f25dd-ce80-7ad2-a03c-e22a3cd436ca","preset":"scout","seeded":false,"contextMode":"fresh"}
+{"ts":"2026-07-03T02:45:29.860Z","type":"spawn","sessionId":"session-019f25dd-eda8-7480-b94b-cc74638ab94e","agentHandle":"oa-arch-automations-2","workerId":"worker-019f25dd-eda8-7480-b94b-cc9f677ebda6","preset":"scout","seeded":false,"contextMode":"fresh"}
+{"ts":"2026-07-03T02:45:39.076Z","type":"spawn","sessionId":"session-019f25de-0ce9-7ba0-ae0c-ec5f1dd718c1","agentHandle":"oa-arch-web-ui-2","workerId":"worker-019f25de-0ce9-7ba0-ae0c-ec7526c3b10d","preset":"scout","seeded":false,"contextMode":"fresh"}
+{"ts":"2026-07-03T02:45:46.565Z","type":"spawn","sessionId":"session-019f25de-2d1d-7822-a05b-03ef0b967d9e","agentHandle":"oa-arch-platform-research-2","workerId":"worker-019f25de-2d1d-7822-a05b-0409b814f1a6","preset":"scout","seeded":false,"contextMode":"fresh"}
+{"ts":"2026-07-03T02:46:16.710Z","type":"stop","sessionId":"session-019f25dd-ce80-7ad2-a03c-e2057cce8d58"}
+{"ts":"2026-07-03T02:46:16.710Z","type":"stop","sessionId":"session-019f25dd-eda8-7480-b94b-cc74638ab94e"}
+{"ts":"2026-07-03T02:46:16.710Z","type":"stop","sessionId":"session-019f25de-0ce9-7ba0-ae0c-ec5f1dd718c1"}
+{"ts":"2026-07-03T02:46:16.710Z","type":"stop","sessionId":"session-019f25de-2d1d-7822-a05b-03ef0b967d9e"}

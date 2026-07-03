@@ -1,5 +1,4 @@
 import { Suspense, useCallback, useMemo, useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
@@ -8,9 +7,13 @@ import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/s
 import {
   useIntegrationPlugins,
   type IntegrationPlugin,
-  type IntegrationPreset,
+  type IntegrationPresetCatalogEntry,
 } from "@executor-js/sdk/client";
-import { detectIntegration, integrationsOptimisticAtom } from "../api/atoms";
+import {
+  detectIntegration,
+  integrationPresetsAtom,
+  integrationsOptimisticAtom,
+} from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { McpInstallCard } from "../components/mcp-install-card";
 import { Button } from "../components/button";
@@ -59,11 +62,35 @@ const bestDetection = (
 ): IntegrationDetectionResult | undefined =>
   [...results].sort((a, b) => detectionRank[b.confidence] - detectionRank[a.confidence])[0];
 
+type IntegrationAddHrefInput = {
+  pluginKey: string;
+  url?: string;
+  preset?: string;
+  namespace?: string;
+  name?: string;
+  description?: string;
+};
+
+const integrationDetailHref = (basePath: string, namespace: string): string =>
+  `${basePath}/integrations/${encodeURIComponent(namespace)}`;
+
+const integrationAddHref = (basePath: string, input: IntegrationAddHrefInput): string => {
+  const params = new URLSearchParams();
+  if (input.url) params.set("url", input.url);
+  if (input.preset) params.set("preset", input.preset);
+  if (input.namespace) params.set("namespace", input.namespace);
+  if (input.name) params.set("name", input.name);
+  if (input.description) params.set("description", input.description);
+  const query = params.toString();
+  const href = `${basePath}/integrations/add/${encodeURIComponent(input.pluginKey)}`;
+  return query.length === 0 ? href : `${href}?${query}`;
+};
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
-export function IntegrationsPage() {
+export function IntegrationsPage(props: { basePath: string }) {
   const integrations = useAtomValue(integrationsOptimisticAtom);
   const [connectOpen, setConnectOpen] = useState(false);
 
@@ -110,13 +137,17 @@ export function IntegrationsPage() {
 
           return (
             <div className="mb-8 space-y-3">
-              <IntegrationGrid integrations={value} />
+              <IntegrationGrid basePath={props.basePath} integrations={value} />
             </div>
           );
         },
       })}
 
-      <ConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
+      <ConnectDialog
+        basePath={props.basePath}
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+      />
     </PageContainer>
   );
 }
@@ -137,10 +168,14 @@ const looksLikeUrl = (raw: string): boolean => {
   return false;
 };
 
-function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function ConnectDialog(props: {
+  basePath: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const integrationPlugins = useIntegrationPlugins();
+  const integrationPresets = useAtomValue(integrationPresetsAtom);
   const doDetect = useAtomSet(detectIntegration, { mode: "promiseExit" });
-  const navigate = useNavigate();
 
   const [query, setQuery] = useState("");
   const [detecting, setDetecting] = useState(false);
@@ -196,16 +231,18 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
     if (integrationPlugins.some((p) => p.key === pluginKey)) {
       trackEvent("integration_add_started", { plugin_key: pluginKey, via: "detect" });
       closeAndReset();
-      void navigate({
-        to: "/{-$orgSlug}/integrations/add/$pluginKey",
-        params: { pluginKey },
-        search: { url: trimmed, namespace: detected.slug },
-      });
+      window.location.assign(
+        integrationAddHref(props.basePath, {
+          pluginKey,
+          url: trimmed,
+          namespace: detected.slug,
+        }),
+      );
     } else {
       setError(`Detected integration type "${detected.kind}" but no plugin is available for it.`);
       setDetecting(false);
     }
-  }, [query, doDetect, navigate, integrationPlugins, closeAndReset]);
+  }, [query, doDetect, integrationPlugins, closeAndReset, props.basePath]);
 
   return (
     <Dialog
@@ -253,10 +290,9 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
             <p className="text-xs font-medium text-foreground/80">Or add manually</p>
             <div className="flex flex-wrap gap-2">
               {integrationPlugins.map((p) => (
-                <Link
+                <a
                   key={p.key}
-                  to="/{-$orgSlug}/integrations/add/$pluginKey"
-                  params={{ pluginKey: p.key }}
+                  href={integrationAddHref(props.basePath, { pluginKey: p.key })}
                   onClick={() => {
                     trackEvent("integration_add_started", { plugin_key: p.key, via: "manual" });
                     closeAndReset();
@@ -264,13 +300,15 @@ function ConnectDialog(props: { open: boolean; onOpenChange: (open: boolean) => 
                   className="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
                 >
                   {p.label}
-                </Link>
+                </a>
               ))}
             </div>
           </div>
 
           <PresetGrid
+            basePath={props.basePath}
             plugins={integrationPlugins}
+            presets={integrationPresets}
             onPick={closeAndReset}
             searchQuery={presetSearch}
           />
@@ -307,31 +345,36 @@ function EmptyIntegrations(props: { onConnect: () => void }) {
 // ---------------------------------------------------------------------------
 
 type PresetEntry = {
-  preset: IntegrationPreset;
+  preset: IntegrationPresetCatalogEntry;
   pluginKey: string;
   pluginLabel: string;
 };
 
 function PresetGrid(props: {
+  basePath: string;
   plugins: readonly IntegrationPlugin[];
+  presets: AsyncResult.AsyncResult<readonly IntegrationPresetCatalogEntry[], unknown>;
   onPick: () => void;
   /** Controlled filter query forwarded from the dialog's unified
    *  search/URL input. Empty string disables filtering. */
   searchQuery?: string;
 }) {
   const allPresets = useMemo(() => {
+    if (!AsyncResult.isSuccess(props.presets)) return [];
+    const pluginByKey = new Map(props.plugins.map((plugin) => [plugin.key, plugin] as const));
     const entries: PresetEntry[] = [];
-    for (const plugin of props.plugins) {
-      for (const preset of plugin.presets ?? []) {
-        entries.push({
-          preset,
-          pluginKey: plugin.key,
-          pluginLabel: plugin.label,
-        });
-      }
+    for (const preset of props.presets.value) {
+      const pluginKey = KIND_TO_PLUGIN_KEY[preset.pluginId] ?? preset.pluginId;
+      const plugin = pluginByKey.get(pluginKey);
+      if (!plugin) continue;
+      entries.push({
+        preset,
+        pluginKey,
+        pluginLabel: plugin.label,
+      });
     }
     return entries;
-  }, [props.plugins]);
+  }, [props.plugins, props.presets]);
 
   const filtered = useMemo(() => {
     const q = (props.searchQuery ?? "").trim().toLowerCase();
@@ -341,6 +384,21 @@ function PresetGrid(props: {
       return corpus.includes(q);
     });
   }, [allPresets, props.searchQuery]);
+
+  if (!AsyncResult.isSuccess(props.presets)) {
+    return (
+      <div className="flex min-w-0 flex-col gap-2">
+        <p className="text-xs font-medium text-foreground/80">Popular integrations</p>
+        <CardStack className="min-w-0">
+          <CardStackContent className="h-64 overflow-y-auto">
+            <div className="flex h-full flex-col items-center justify-center gap-1 px-4 py-6 text-center">
+              <p className="text-sm text-muted-foreground">Loading catalog</p>
+            </div>
+          </CardStackContent>
+        </CardStack>
+      </div>
+    );
+  }
 
   if (allPresets.length === 0) return null;
 
@@ -361,14 +419,18 @@ function PresetGrid(props: {
             </div>
           ) : (
             filtered.map(({ preset, pluginKey, pluginLabel }) => {
-              const search: Record<string, string> = { preset: preset.id };
-              if (preset.url) search.url = preset.url;
+              const href = integrationAddHref(props.basePath, {
+                pluginKey,
+                preset: preset.id,
+                namespace: preset.namespace ?? preset.id,
+                name: preset.name,
+                description: preset.summary,
+                ...(preset.url ? { url: preset.url } : {}),
+              });
               return (
                 <CardStackEntry key={`${pluginKey}-${preset.id}`} asChild>
-                  <Link
-                    to="/{-$orgSlug}/integrations/add/$pluginKey"
-                    params={{ pluginKey }}
-                    search={search}
+                  <a
+                    href={href}
                     onClick={() => {
                       trackEvent("integration_add_started", {
                         plugin_key: pluginKey,
@@ -399,7 +461,7 @@ function PresetGrid(props: {
                     <CardStackEntryActions>
                       <Badge variant="secondary">{pluginLabel}</Badge>
                     </CardStackEntryActions>
-                  </Link>
+                  </a>
                 </CardStackEntry>
               );
             })
@@ -414,7 +476,7 @@ function PresetGrid(props: {
 // Integration grid — flat list of catalog integrations, click-through to detail
 // ---------------------------------------------------------------------------
 
-function IntegrationGrid(props: { integrations: readonly Integration[] }) {
+function IntegrationGrid(props: { basePath: string; integrations: readonly Integration[] }) {
   const integrationPlugins = useIntegrationPlugins();
   const pluginByKind = useMemo(() => {
     const out = new Map<string, IntegrationPlugin>();
@@ -433,7 +495,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
           const name = integration.name || slug;
           return (
             <CardStackEntry key={slug} asChild searchText={`${name} ${slug} ${integration.kind}`}>
-              <Link to="/{-$orgSlug}/integrations/$namespace" params={{ namespace: slug }}>
+              <a href={integrationDetailHref(props.basePath, slug)}>
                 <IntegrationIconWithAccount
                   icon={integrationPresetIconUrl(
                     { id: slug, kind: integration.kind, name, url: integration.displayUrl },
@@ -457,7 +519,7 @@ function IntegrationGrid(props: { integrations: readonly Integration[] }) {
                     </Suspense>
                   )}
                 </CardStackEntryActions>
-              </Link>
+              </a>
             </CardStackEntry>
           );
         })}

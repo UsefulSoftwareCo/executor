@@ -107,10 +107,14 @@ scenario(
         },
       });
 
-      const toolkitUrl = new URL(
-        `/e2e-org/mcp/toolkits/${toolkit.slug}`,
-        target.baseUrl,
-      ).toString();
+      // Self-host advertises the BARE MCP path (no org prefix — see the
+      // host-selfhost __root shell and `toolkitUrlFor`, which only prefixes a
+      // slug when one is present, i.e. on cloud). A made-up `/e2e-org` prefix is
+      // a cloud-shaped URL self-host never serves as canonical: the server's
+      // RFC 9728 protected-resource doc reports the bare resource, and MCP SDK
+      // 1.29's `selectResourceURL` rejects the prefix/bare mismatch. Connect to
+      // the URL self-host actually publishes.
+      const toolkitUrl = new URL(`/mcp/toolkits/${toolkit.slug}`, target.baseUrl).toString();
       const toolkitSession = mcp.session(identity, { url: toolkitUrl });
       const toolkitTools = yield* toolkitSession.listTools();
       expect(toolkitTools, "the toolkit endpoint still advertises execute").toContain("execute");

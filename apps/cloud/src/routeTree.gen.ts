@@ -15,9 +15,9 @@ import { Route as CreateOrgRouteImport } from './routes/bare/create-org'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport } from './../../../packages/react/src/routes/index'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRouteImport } from './../../../packages/react/src/routes/tools'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteImport } from './../../../packages/react/src/routes/toolkits'
-import { Route as SecretsRouteImport } from './routes/app/secrets'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport } from './../../../packages/react/src/routes/policies'
 import { Route as OrgRouteImport } from './routes/app/org'
+import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRouteImport } from './../../../packages/react/src/routes/credentials'
 import { Route as BillingRouteImport } from './routes/app/billing'
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolkitSlugRouteImport } from './../../../packages/react/src/routes/toolkits.$toolkitSlug'
@@ -59,11 +59,6 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute =
     path: '/{-$orgSlug}/toolkits',
     getParentRoute: () => rootRouteImport,
   } as any)
-const SecretsRoute = SecretsRouteImport.update({
-  id: '/{-$orgSlug}/secrets',
-  path: '/{-$orgSlug}/secrets',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport.update({
     id: '/{-$orgSlug}/policies',
@@ -75,6 +70,12 @@ const OrgRoute = OrgRouteImport.update({
   path: '/{-$orgSlug}/org',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute =
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRouteImport.update({
+    id: '/{-$orgSlug}/credentials',
+    path: '/{-$orgSlug}/credentials',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const BillingRoute = BillingRouteImport.update({
   id: '/{-$orgSlug}/billing',
   path: '/{-$orgSlug}/billing',
@@ -127,9 +128,9 @@ export interface FileRoutesByFullPath {
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof SecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
@@ -145,9 +146,9 @@ export interface FileRoutesByTo {
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof SecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
@@ -164,9 +165,9 @@ export interface FileRoutesById {
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
-  '/{-$orgSlug}/secrets': typeof SecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   '/{-$orgSlug}/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
@@ -184,9 +185,9 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
@@ -202,9 +203,9 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}'
@@ -220,9 +221,9 @@ export interface FileRouteTypes {
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
-    | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/'
@@ -239,9 +240,9 @@ export interface RootRouteChildren {
   SetupMcpRoute: typeof SetupMcpRoute
   ApiKeysRoute: typeof ApiKeysRoute
   BillingRoute: typeof BillingRoute
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute
   OrgRoute: typeof OrgRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
-  SecretsRoute: typeof SecretsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
@@ -295,13 +296,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/{-$orgSlug}/secrets': {
-      id: '/{-$orgSlug}/secrets'
-      path: '/{-$orgSlug}/secrets'
-      fullPath: '/{-$orgSlug}/secrets'
-      preLoaderRoute: typeof SecretsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/{-$orgSlug}/policies': {
       id: '/{-$orgSlug}/policies'
       path: '/{-$orgSlug}/policies'
@@ -314,6 +308,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/org'
       fullPath: '/{-$orgSlug}/org'
       preLoaderRoute: typeof OrgRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/credentials': {
+      id: '/{-$orgSlug}/credentials'
+      path: '/{-$orgSlug}/credentials'
+      fullPath: '/{-$orgSlug}/credentials'
+      preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/billing': {
@@ -389,10 +390,11 @@ const rootRouteChildren: RootRouteChildren = {
   SetupMcpRoute: SetupMcpRoute,
   ApiKeysRoute: ApiKeysRoute,
   BillingRoute: BillingRoute,
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute:
+    DotDotDotDotDotDotDotDotPackagesReactSrcRoutesCredentialsRoute,
   OrgRoute: OrgRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute,
-  SecretsRoute: SecretsRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute:

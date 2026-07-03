@@ -154,7 +154,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
 
 function SidebarContent(props: { pathname: string; onNavigate?: () => void; showBrand?: boolean }) {
   const isHome = props.pathname === "/";
-  const isSecrets = props.pathname === "/secrets";
+  const isCredentials = props.pathname === "/credentials";
   const isPolicies = props.pathname === "/policies";
   const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
 
@@ -179,9 +179,9 @@ function SidebarContent(props: { pathname: string; onNavigate?: () => void; show
           onNavigate={props.onNavigate}
         />
         <NavItem
-          to="/{-$orgSlug}/secrets"
-          label="Secrets"
-          active={isSecrets}
+          to="/{-$orgSlug}/credentials"
+          label="Credentials"
+          active={isCredentials}
           onNavigate={props.onNavigate}
         />
         <NavItem

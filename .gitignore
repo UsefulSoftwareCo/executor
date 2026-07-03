@@ -75,12 +75,16 @@ playwright-report/
 !.claude/skills/
 .nitro/
 .output/
+.eve/
 .tanstack/
 .env*
 !.env.example
 
 # local user config
 executor.jsonc
+.executor-data/
+.open-agents-executor/
+apps/open-agents/.open-agents-executor/
 
 # VS Code (per-workspace user settings)
 .vscode/mcp.json
@@ -114,4 +118,4 @@ scratch/
 
 # Throwaway UX prototype (not part of the app)
 ux-demo/
-
+.vercel

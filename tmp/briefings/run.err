@@ -1,0 +1,29 @@
+[oa-arch] FAIL eve-runtime Error: devstack agent-session request failed (500): worker unit devstack-agent-session-worker-worker-019f25dc-9c5d-71d2-a99f-1eb293b63670.service exited before writing manifest /home/dana/.local/share/devstack/agent-sessions/session-019f25dc-9c5d-71d2-a99f-1e707095967b/launches/launch-019f25dc-9c5d-71d2-a99f-1ea3875a40d4/workers/worker-019f25dc-9c5d-71d2-a99f-1eb293b63670/manifest.json: active_state=inactive, sub_state=dead, result=success
+[oa-arch] FAIL web-ui Error: devstack agent-session request failed (500): worker unit devstack-agent-session-worker-worker-019f25dc-9c66-71a0-a68e-5462b2ef51bd.service exited before writing manifest /home/dana/.local/share/devstack/agent-sessions/session-019f25dc-9c64-7921-a794-1f32fb60800b/launches/launch-019f25dc-9c66-71a0-a68e-545f6b513cf9/workers/worker-019f25dc-9c66-71a0-a68e-5462b2ef51bd/manifest.json: active_state=inactive, sub_state=dead, result=success
+[oa-arch] FAIL automations Error: devstack agent-session request failed (500): worker unit devstack-agent-session-worker-worker-019f25dc-9c65-7190-b098-c3b6b12ec125.service exited before writing manifest /home/dana/.local/share/devstack/agent-sessions/session-019f25dc-9c63-73d0-94c9-d7d634e40bf5/launches/launch-019f25dc-9c65-7190-b098-c3a02f06dfb8/workers/worker-019f25dc-9c65-7190-b098-c3b6b12ec125/manifest.json: active_state=inactive, sub_state=dead, result=success
+[oa-arch] FAIL platform-research Error: devstack agent-session request failed (500): worker unit devstack-agent-session-worker-worker-019f25dc-9c66-71a0-a68e-5485a811e250.service exited before writing manifest /home/dana/.local/share/devstack/agent-sessions/session-019f25dc-9c64-7921-a794-1f458312708d/launches/launch-019f25dc-9c66-71a0-a68e-5470b8003016/workers/worker-019f25dc-9c66-71a0-a68e-5485a811e250/manifest.json: active_state=inactive, sub_state=dead, result=success
+[oa-arch] FAIL data-model Error: devstack agent-session request failed (500): IO error for operation on /home/dana/.local/share/devstack/agent-sessions/session-019f25dc-9c5d-71d2-a99f-1e680fef3997/launches/launch-019f25dc-9c5d-71d2-a99f-1e82a3f89ca5/workers/worker-019f25dc-9c5d-71d2-a99f-1e93356f8480: Too many open files (os error 24)
+
+[oa-arch] ledger:
+worker                          msgs        tokens         cost
+TOTAL                              0            0      $0.0000
+ve-runtime Error: devstack agent-session request failed (500): IO error for operation on /home/dana/.local/share/devstack/agent-sessions/session-019f25dd-ce80-7ad2-a03c-e2057cce8d58: Too many open files (os error 24)
+[oa-arch] FAIL automations Error: devstack agent-session request failed (500): IO error for operation on /home/dana/.local/share/devstack/agent-sessions/session-019f25dd-eda8-7480-b94b-cc74638ab94e: Too many open files (os error 24)
+
+[oa-arch] ledger:
+worker                          msgs        tokens         cost
+TOTAL                              0            0      $0.0000
+[oa-arch] DONE data-model chars=13618 pins=4
+[oa-arch] DONE eve-runtime chars=16315 pins=20
+[oa-arch] DONE platform-research chars=9675 pins=12
+[oa-arch] DONE web-ui chars=13895 pins=26
+[oa-arch] FAIL automations Error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()
+
+[oa-arch] ledger:
+worker                          msgs        tokens         cost
+oa-arch-platform-research-3       15      624,998      $0.8015
+oa-arch-automations-3             16      896,929      $0.9857
+oa-arch-data-model-2              19    1,241,918      $1.1237
+oa-arch-eve-runtime-3              9      553,648      $0.9130
+oa-arch-web-ui-3                  15    1,161,058      $1.2592
+TOTAL                             74    4,478,551      $5.0832

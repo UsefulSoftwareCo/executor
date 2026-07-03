@@ -4,7 +4,6 @@ export type {
   McpPluginExtension,
   McpServerInput,
   McpRemoteServerInput,
-  McpStdioServerInput,
   McpProbeResult,
   McpProbeEndpointInput,
 } from "./sdk/plugin";

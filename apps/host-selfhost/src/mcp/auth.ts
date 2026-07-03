@@ -12,6 +12,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { BetterAuth } from "../auth/better-auth";
+import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
 // ---------------------------------------------------------------------------
 // Self-host McpAuthProvider adapter, backed by Better Auth's mcp() plugin.
@@ -68,8 +69,16 @@ const userRole = (user: object): string | null => {
 const hasBearer = (request: Request): boolean =>
   (request.headers.get("authorization") ?? "").startsWith("Bearer ");
 
+const originalOrgScopedPathFor = (request: Request): string | null => {
+  const header = request.headers.get(MCP_ORIGINAL_PATH_HEADER);
+  return header ? mcpResourcePathFromOriginalPath(header) : null;
+};
+
+const effectivePathnameFor = (request: Request): string =>
+  originalOrgScopedPathFor(request) ?? new URL(request.url).pathname;
+
 const toolkitSlugFromRequest = (request: Request): string | null => {
-  const pathname = new URL(request.url).pathname;
+  const pathname = effectivePathnameFor(request);
   const index = pathname.indexOf(TOOLKIT_MCP_SEGMENT);
   if (index < 0) return null;
   const slug = pathname.slice(index + TOOLKIT_MCP_SEGMENT.length).split("/", 1)[0];
@@ -77,6 +86,8 @@ const toolkitSlugFromRequest = (request: Request): string | null => {
 };
 
 const mcpResourcePathFor = (request: Request): string => {
+  const orgScoped = originalOrgScopedPathFor(request);
+  if (orgScoped) return orgScoped;
   const toolkitSlug = toolkitSlugFromRequest(request);
   return toolkitSlug ? `/mcp/toolkits/${toolkitSlug}` : "/mcp";
 };
@@ -88,6 +99,8 @@ const mcpResourcePathFor = (request: Request): string => {
  */
 const resourceMetadataUrlFor = (baseURL: string | undefined, request: Request): string => {
   const origin = baseURL && baseURL.length > 0 ? baseURL : new URL(request.url).origin;
+  const orgScoped = originalOrgScopedPathFor(request);
+  if (orgScoped) return `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${orgScoped}`;
   const toolkitSlug = toolkitSlugFromRequest(request);
   return toolkitSlug
     ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/${toolkitSlug}`

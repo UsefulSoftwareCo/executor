@@ -21,7 +21,7 @@ export const ReactivityKey = {
   /** The integration catalog (was `sources`). */
   integrations: "integrations",
   tools: "tools",
-  /** Owner-scoped credentials (was `secrets` + `connections`). */
+  /** Owner-scoped credentials. */
   connections: "connections",
   /** Credential-provider discovery. */
   providers: "providers",

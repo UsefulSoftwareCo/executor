@@ -8,8 +8,7 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 // Shared console routes come from @executor-js/react (see its
 // console-routes.ts); cloud owns its root (WorkOS auth + billing shell) and
 // the cloud-specific routes under src/routes/app. Excluded shared paths are
-// intentional divergence: cloud's /secrets redirects to / (credential storage
-// is product plumbing here), its /resume page is the cloud variant, and
+// intentional divergence: cloud's /resume page is the cloud variant, and
 // client plugin pages aren't wired up on cloud.
 //
 // Org-scoped vs bare: console routes and most app routes live INSIDE the
@@ -19,7 +18,7 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 export const routes = rootRoute("__root.tsx", [
   ...consoleRoutes({
     dir: "../../../../packages/react/src/routes",
-    exclude: ["/secrets", "/resume/$executionId", "/plugins/$pluginId/$"],
+    exclude: ["/resume/$executionId", "/plugins/$pluginId/$"],
     orgScoped: [physical("", "app")],
   }),
   physical("", "bare"),

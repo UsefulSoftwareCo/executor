@@ -1,5 +1,4 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useAtomSet, useAtomRefresh } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import { trackEvent } from "../api/analytics";
@@ -49,8 +48,10 @@ type ToolRow = {
   readonly static?: boolean;
 };
 
-export function IntegrationDetailPage(props: { namespace: string }) {
-  const { namespace } = props;
+const integrationsHref = (basePath: string): string => basePath || "/";
+
+export function IntegrationDetailPage(props: { basePath: string; namespace: string }) {
+  const { basePath, namespace } = props;
   const slug = IntegrationSlug.make(namespace);
   const integrationPlugins = useIntegrationPlugins();
   const integration = useAtomValue(integrationAtom(slug));
@@ -66,7 +67,6 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   // Policies are owner-partitioned on write; the integration policy menu writes
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
-  const navigate = useNavigate();
 
   // HMR: refresh integration tools when the backend is hot-reloaded
   useEffect(() => {
@@ -307,7 +307,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       setConfirmDelete(false);
       return;
     }
-    void navigate({ to: "/{-$orgSlug}" });
+    window.location.assign(integrationsHref(basePath));
   };
 
   const handleRefresh = async () => {

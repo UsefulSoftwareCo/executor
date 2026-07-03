@@ -45,7 +45,8 @@ const googleBundleUrls = (
 };
 
 export default function AddGoogleSource(props: {
-  onComplete: (slug?: string) => void;
+  basePath: string;
+  onComplete: (slug: string) => void;
   onCancel: () => void;
   initialPreset?: string;
   initialNamespace?: string;
@@ -161,7 +162,9 @@ export default function AddGoogleSource(props: {
         faviconUrl={baseUrl}
       />
 
-      {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
+      {slugAlreadyExists && !adding && (
+        <SlugCollisionAlert basePath={props.basePath} slug={resolvedSourceId} />
+      )}
 
       {addError && <FormErrorAlert message={addError} />}
 

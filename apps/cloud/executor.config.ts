@@ -24,7 +24,7 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 // it has; all fields are optional so `plugins({})` keeps working.
 //
 // Cloud only ships plugins safe to run in a multi-tenant setting — no
-// stdio MCP, no keychain/file-secrets/1password.
+// keychain/file-secrets/1password.
 // ---------------------------------------------------------------------------
 
 interface CloudPluginDeps {
@@ -42,17 +42,21 @@ interface CloudPluginDeps {
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
   readonly activeToolkitSlug?: string;
+  readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
+  plugins: ({
+    workosCredentials,
+    workosVaultClient,
+    activeToolkitSlug,
+    allowLocalNetwork,
+  }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin(),
       googleHttpPlugin(),
-      microsoftHttpPlugin(),
-      mcpHttpPlugin({
-        dangerouslyAllowStdioMCP: false,
-      }),
+      microsoftHttpPlugin({ allowUnsafeUrlOverrides: allowLocalNetwork === true }),
+      mcpHttpPlugin(),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({

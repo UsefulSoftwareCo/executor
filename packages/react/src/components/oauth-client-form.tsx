@@ -9,6 +9,7 @@ import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
+import { useExecutorServerConnection } from "../api/server-connection";
 import { uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
@@ -129,12 +130,8 @@ export function OAuthClientForm(props: {
     [organizationId],
   );
 
-  // The browser-facing callback the OAuth flow uses (this host's
-  // `${origin}/api/oauth/callback`). It is the SAME value handed to `oauth.start`
-  // and to DCR registration below, so showing it here is exactly the redirect a
-  // user must allow-list on their OAuth app. Resolved from `window.location` so
-  // it is automatically correct per platform (cloud / self-host / local).
-  const callbackUrl = useMemo(() => oauthCallbackUrl(), []);
+  const executorConnection = useExecutorServerConnection();
+  const callbackUrl = useMemo(() => oauthCallbackUrl(), [executorConnection.apiBaseUrl]);
 
   // Explicit create-time choice (no ambient owner). Default Workspace (`org`) on
   // an org host, Local (`org`) on a non-org host, or the locked owner when

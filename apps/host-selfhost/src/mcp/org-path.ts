@@ -7,8 +7,9 @@
 // card per host, both self-host front-ends (the prod Bun server and the vite
 // dev middleware) strip a single leading segment so the card's URL reaches the
 // real route — mirroring cloud's edge rewrite, but accepting ANY segment (a
-// Better Auth org id is not the `org_…` shape cloud keys on) and setting no
-// header.
+// Better Auth org id is not the `org_…` shape cloud keys on). The rewrite
+// carries the original org-scoped pathname in `MCP_ORIGINAL_PATH_HEADER` so
+// protected-resource metadata can echo the resource the client actually dialed.
 //
 // Pure + Effect-free on purpose: the vite config imports it too.
 
@@ -44,4 +45,14 @@ export const stripMcpOrgSegment = (pathname: string): string | null => {
     return `/mcp/toolkits/${segments[3]}`;
   }
   return null;
+};
+
+export const MCP_ORIGINAL_PATH_HEADER = "x-executor-mcp-original-path";
+
+export const isRecognizedMcpOrgPath = (pathname: string): boolean =>
+  stripMcpOrgSegment(pathname) !== null;
+
+export const mcpResourcePathFromOriginalPath = (pathname: string): string | null => {
+  if (!isRecognizedMcpOrgPath(pathname)) return null;
+  return pathname.startsWith(`${PRM_PREFIX}/`) ? pathname.slice(PRM_PREFIX.length) : pathname;
 };

@@ -49,7 +49,7 @@ export type ShellNavItem = { readonly to: string; readonly label: string };
  *  them in Access, so it omits the link). */
 export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
-  { to: "/secrets", label: "Providers" },
+  { to: "/credentials", label: "Credentials" },
   { to: "/policies", label: "Policies" },
   { to: "/toolkits", label: "Toolkits" },
 ];

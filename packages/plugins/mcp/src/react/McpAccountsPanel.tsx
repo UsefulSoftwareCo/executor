@@ -31,8 +31,7 @@ import type { McpAuthMethod } from "../sdk/types";
 // method" row. The custom-method create/remove is the shared skeleton
 // (`useCustomMethodActions`) parameterized by the MCP codec and the
 // merge-append `configureAuth` endpoint, so adding an API key method never
-// displaces a declared OAuth method. Stdio servers have no remote credential
-// to configure — no methods, no custom-method affordance.
+// displaces a declared OAuth method.
 // ---------------------------------------------------------------------------
 
 export default function McpAccountsPanel(props: {
@@ -47,19 +46,15 @@ export default function McpAccountsPanel(props: {
 
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
   const config = server?.config ?? null;
-  const remote = config !== null && config.transport === "remote" ? config : null;
 
   const existingTemplate = useMemo<readonly McpAuthMethod[]>(
     () => config?.authenticationTemplate ?? [],
     [config],
   );
 
-  // Stdio servers declare a `stdio_env` / `none` method too, so their
-  // auto-created connection and its env credentials surface here. The endpoint
-  // only feeds remote oauth methods' probe URL; stdio has none.
   const methods = useMemo<readonly AuthMethod[]>(
-    () => (config ? authMethodsFromConfig(existingTemplate, remote?.endpoint ?? "") : []),
-    [existingTemplate, config, remote],
+    () => (config ? authMethodsFromConfig(existingTemplate, config.endpoint) : []),
+    [existingTemplate, config],
   );
 
   const configure = useCallback<ConfigureAuthMethods<McpAuthMethod>>(
@@ -80,14 +75,14 @@ export default function McpAccountsPanel(props: {
   const codec = useMemo<AuthMethodsCodec<McpAuthMethod>>(
     () => ({
       toAuthMethods: (templates: readonly McpAuthMethod[]) =>
-        authMethodsFromConfig(templates, remote?.endpoint ?? ""),
+        authMethodsFromConfig(templates, config?.endpoint ?? ""),
       // MCP custom methods are header credentials; the inputs omit slugs and
       // the backend merge backfills `custom_<id>`.
       templatesFromPlacements: (placements: readonly Placement[]) =>
         mcpAuthMethodInputsFromPlacements(placements) as readonly McpAuthMethod[],
       slugOf: (template: McpAuthMethod) => template.slug,
     }),
-    [remote?.endpoint],
+    [config?.endpoint],
   );
 
   const { createCustomMethod, removeCustomMethod } = useCustomMethodActions({
@@ -96,7 +91,7 @@ export default function McpAccountsPanel(props: {
     configure,
   });
 
-  const canConfigureAuth = remote !== null;
+  const canConfigureAuth = config !== null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">

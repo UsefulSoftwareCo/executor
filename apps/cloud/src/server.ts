@@ -97,11 +97,9 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // its own tracing for the same reason).
     const browserTraces = browserTracesResponse(request, env);
     if (browserTraces) return browserTraces;
-    if (!installTracerProvider()) {
-      return fetchHandler(request, env, ctx);
-    }
     const url = new URL(request.url);
     const mcpRoute = classifyMcpPath(url.pathname);
+    const tracingInstalled = installTracerProvider();
     if (mcpRoute?.kind === "mcp") {
       // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
       // to pass authenticated session props into the hibernatable DO.
@@ -110,8 +108,11 @@ const cloudflareHandler: ExportedHandler<Env> = {
       try {
         return await mcpAgentHandler(prepareMcpOrgScope(request), env, ctx);
       } finally {
-        ctx.waitUntil(flushTracerProvider());
+        if (tracingInstalled) ctx.waitUntil(flushTracerProvider());
       }
+    }
+    if (!tracingInstalled) {
+      return fetchHandler(request, env, ctx);
     }
     // Effect-served paths bring their own http.server span (with traceparent
     // join) — opening one here too would duplicate it. See the header note.

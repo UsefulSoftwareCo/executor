@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { trackEvent } from "../api/analytics";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
 import OpenCodeIcon from "@lobehub/icons/es/OpenCode/components/Mono";
 import { ChevronDown } from "lucide-react";
 import { CodeBlock } from "./code-block";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import { NativeSelect, NativeSelectOption } from "./native-select";
@@ -16,7 +15,6 @@ import {
   useExecutorServerConnection,
 } from "../api/server-connection";
 
-type TransportMode = "stdio" | "http";
 export type McpElicitationMode = "browser" | "model" | "native";
 
 const SUPPORTED_AGENTS = [
@@ -25,21 +23,9 @@ const SUPPORTED_AGENTS = [
   { key: "opencode", label: "OpenCode", Icon: OpenCodeIcon },
 ] as const;
 
-const isDev = import.meta.env.DEV;
-const devCliCwd = import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD as string | undefined;
-const currentLocation = globalThis.window?.location;
-const isLocal =
-  currentLocation?.hostname === "localhost" ||
-  currentLocation?.hostname === "127.0.0.1" ||
-  currentLocation?.hostname.endsWith(".localhost") === true;
-
 export const shellQuoteWord = (value: string): string => {
   if (/^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)) return value;
   return `'${value.replace(/'/g, `'"'"'`)}'`;
-};
-
-const hasDesktopConnectionBridge = (): boolean => {
-  return Boolean(globalThis.window?.executor?.getServerConnection);
 };
 
 export const buildMcpHttpEndpoint = (input: {
@@ -71,106 +57,46 @@ export const buildMcpHttpEndpoint = (input: {
 };
 
 export const buildMcpInstallCommand = (input: {
-  readonly mode: TransportMode;
-  readonly isDev: boolean;
   readonly origin: string | null;
-  readonly scopeDir?: string;
   readonly desktop?: {
     readonly port: number;
   } | null;
   readonly authorizationHeader?: string | null;
   readonly elicitationMode?: McpElicitationMode;
-  readonly devCliCwd?: string;
   readonly organizationSlug?: string | null;
 }): string => {
-  if (input.mode === "http") {
-    const endpoint = buildMcpHttpEndpoint({
-      origin: input.origin,
-      desktop: input.desktop ? { port: input.desktop.port } : null,
-      elicitationMode: input.elicitationMode,
-      organizationSlug: input.organizationSlug,
-    });
-    const headerFlags: string[] = [];
-    if (input.authorizationHeader) {
-      headerFlags.push(`--header ${shellQuoteWord(`Authorization: ${input.authorizationHeader}`)}`);
-    }
-    const parts = [
-      `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
-      ...headerFlags,
-    ];
-    return parts.join(" ");
+  const endpoint = buildMcpHttpEndpoint({
+    origin: input.origin,
+    desktop: input.desktop ? { port: input.desktop.port } : null,
+    elicitationMode: input.elicitationMode,
+    organizationSlug: input.organizationSlug,
+  });
+  const headerFlags: string[] = [];
+  if (input.authorizationHeader) {
+    headerFlags.push(`--header ${shellQuoteWord(`Authorization: ${input.authorizationHeader}`)}`);
   }
-
-  const innerArgs = input.isDev
-    ? input.devCliCwd
-      ? ["bun", "run", "--cwd", input.devCliCwd, "dev:cli", "mcp"]
-      : ["bun", "run", "dev:cli", "mcp"]
-    : ["executor", "mcp"];
-  if (input.scopeDir) {
-    innerArgs.push("--scope", input.scopeDir);
-  }
-  if (input.elicitationMode && input.elicitationMode !== "model") {
-    innerArgs.push("--elicitation-mode", input.elicitationMode);
-  }
-  return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
+  return [
+    `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
+    ...headerFlags,
+  ].join(" ");
 };
 
 export function McpInstallCard(props: { className?: string }) {
-  const [mode, setMode] = useState<TransportMode>("http");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
   const organizationSlug = useOrganizationSlug();
   const serverConnection = useExecutorServerConnection();
-  // Desktop hosts ship Electron without putting an `executor` binary on
-  // PATH, and the bundled sidecar is locked to the running app. Force the
-  // HTTP path there; it routes through the active sidecar connection.
-  const showStdio =
-    isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
 
-  const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
-
-  // The desktop renderer's connection carries no auth (the main process injects
-  // the bearer at the session layer). For the install command — which an
-  // EXTERNAL agent runs and therefore needs the token in plaintext — fetch it
-  // on demand from the bridge.
-  const [desktopAuthToken, setDesktopAuthToken] = useState<string | null>(null);
-  useEffect(() => {
-    if (serverConnection.kind !== "desktop-sidecar") {
-      setDesktopAuthToken(null);
-      return;
-    }
-    let cancelled = false;
-    void globalThis.window?.executor?.getServerAuthToken?.().then(
-      (token) => {
-        if (!cancelled) setDesktopAuthToken(token);
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [serverConnection.kind]);
-
-  const authorizationHeader =
-    getExecutorServerAuthorizationHeader(serverConnection) ??
-    (desktopAuthToken ? `Bearer ${desktopAuthToken}` : null);
+  const authorizationHeader = getExecutorServerAuthorizationHeader(serverConnection);
 
   const command = buildMcpInstallCommand({
-    mode,
-    isDev,
     origin: serverConnection.origin,
     authorizationHeader,
-    elicitationMode,
-    devCliCwd,
+    elicitationMode: httpElicitationMode,
     organizationSlug,
   });
 
-  const subtitle =
-    mode === "stdio"
-      ? isDev
-        ? "Uses the repo-local dev CLI from any agent working directory."
-        : "Requires the executor CLI on your PATH."
-      : "Connect to executor as a remote MCP server over streamable HTTP.";
+  const subtitle = "Connect to executor as a remote MCP server over streamable HTTP.";
 
   const advancedControls = (
     <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -186,14 +112,12 @@ export function McpInstallCard(props: { className?: string }) {
           <div className="min-w-0">
             <div className="text-xs font-medium text-foreground">Resume approvals</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {mode === "http"
-                ? "Select how tool approvals are handled for this Remote HTTP connection."
-                : "Standard I/O exposes a resume tool to the model. Use Remote HTTP for browser approvals."}
+              Select how tool approvals are handled for this Remote HTTP connection.
             </div>
           </div>
           <NativeSelect
             size="sm"
-            value={elicitationMode}
+            value={httpElicitationMode}
             onChange={(event) => {
               const next = event.target.value as McpElicitationMode;
               setHttpElicitationMode(next);
@@ -202,13 +126,9 @@ export function McpInstallCard(props: { className?: string }) {
             aria-label="Elicitation mode"
             className="min-w-44"
           >
-            {mode === "http" && (
-              <NativeSelectOption value="browser">Browser approval</NativeSelectOption>
-            )}
+            <NativeSelectOption value="browser">Browser approval</NativeSelectOption>
             <NativeSelectOption value="model">Model resume tool</NativeSelectOption>
-            {mode === "http" && (
-              <NativeSelectOption value="native">Native elicitation</NativeSelectOption>
-            )}
+            <NativeSelectOption value="native">Native elicitation</NativeSelectOption>
           </NativeSelect>
         </div>
       </CollapsibleContent>
@@ -241,14 +161,7 @@ export function McpInstallCard(props: { className?: string }) {
   const header = (
     <CardStackHeader
       className="items-start py-4"
-      rightSlot={
-        showStdio ? (
-          <TabsList>
-            <TabsTrigger value="http">Remote HTTP</TabsTrigger>
-            <TabsTrigger value="stdio">Standard I/O</TabsTrigger>
-          </TabsList>
-        ) : undefined
-      }
+      rightSlot={<span className="text-xs font-medium text-muted-foreground">Remote HTTP</span>}
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-sm font-semibold text-foreground">Connect an agent</span>
@@ -265,8 +178,8 @@ export function McpInstallCard(props: { className?: string }) {
           lang="bash"
           onCopy={() =>
             trackEvent("mcp_install_command_copied", {
-              transport: mode,
-              elicitation_mode: elicitationMode,
+              transport: "http",
+              elicitation_mode: httpElicitationMode,
               surface: "integrations",
             })
           }
@@ -279,25 +192,8 @@ export function McpInstallCard(props: { className?: string }) {
 
   return (
     <CardStack className={props.className}>
-      {showStdio ? (
-        <Tabs
-          value={mode}
-          onValueChange={(v) => {
-            const next = v as TransportMode;
-            setMode(next);
-            trackEvent("mcp_install_transport_switched", { transport: next });
-          }}
-        >
-          {header}
-          <TabsContent value="http">{body}</TabsContent>
-          <TabsContent value="stdio">{body}</TabsContent>
-        </Tabs>
-      ) : (
-        <>
-          {header}
-          {body}
-        </>
-      )}
+      {header}
+      {body}
     </CardStack>
   );
 }

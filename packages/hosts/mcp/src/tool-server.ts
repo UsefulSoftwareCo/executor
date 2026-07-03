@@ -260,14 +260,6 @@ const makeMcpElicitationHandler =
           error,
           clientCapabilities: server.server.getClientCapabilities() ?? null,
         });
-        console.error(
-          "[executor] elicitInput failed - falling back to cancel.",
-          JSON.stringify({
-            error,
-            requestTag,
-            ...capabilitySnapshot(server),
-          }),
-        );
         return { action: "cancel" as const } as ElicitationResponse;
       }
     });

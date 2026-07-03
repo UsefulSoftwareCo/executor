@@ -8,6 +8,8 @@ export {
   isFetchDisabled,
   DEFAULT_INTEGRATIONS_URL,
   type IntegrationsRegistryData,
+  IntegrationCatalogEntry,
+  type IntegrationCatalogEntry as IntegrationCatalogEntryType,
   type InstallationChannel,
   type SurfaceClient,
 } from "./registry";

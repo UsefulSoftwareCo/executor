@@ -81,6 +81,22 @@ const IntegrationResponse = Schema.Struct({
   displayUrl: Schema.optional(Schema.String),
 });
 
+const IntegrationPresetResponse = Schema.Struct({
+  pluginId: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  summary: Schema.String,
+  namespace: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+  endpoint: Schema.optional(Schema.String),
+  icon: Schema.optional(Schema.String),
+  featured: Schema.optional(Schema.Boolean),
+  transport: Schema.optional(Schema.Literals(["remote", "stdio"])),
+  command: Schema.optional(Schema.String),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+
 const UpdateIntegrationPayload = Schema.Struct({
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
@@ -107,6 +123,12 @@ export const IntegrationsApi = HttpApiGroup.make("integrations")
   .add(
     HttpApiEndpoint.get("list", "/integrations", {
       success: Schema.Array(IntegrationResponse),
+      error: InternalError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("presets", "/integrations/presets", {
+      success: Schema.Array(IntegrationPresetResponse),
       error: InternalError,
     }),
   )

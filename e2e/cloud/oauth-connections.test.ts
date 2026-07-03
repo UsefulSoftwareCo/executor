@@ -194,9 +194,18 @@ scenario(
       );
       expect(consent.status, "granting consent redirects back to the product").toBe(302);
       const callback = new URL(consent.headers.get("location") ?? "");
-      expect(callback.searchParams.get("state"), "the callback carries the session's state").toBe(
+      // Since #1235 ("preserve OAuth popup session state", commit 1d6363f8) the
+      // provider-facing state is a base64url JSON envelope
+      // ({ state, orgSlug } — packages/core/sdk/src/oauth.ts) so the callback
+      // edge can pick the right organization before completing the flow; the
+      // raw session state lives inside it, not on the wire directly.
+      const envelope = JSON.parse(
+        Buffer.from(callback.searchParams.get("state") ?? "", "base64url").toString("utf8"),
+      ) as { state: string; orgSlug: string };
+      expect(envelope.state, "the callback's envelope carries the session's state").toBe(
         String(started.state),
       );
+      expect(envelope.orgSlug, "the envelope carries the org the flow started in").toBeTruthy();
       const code = callback.searchParams.get("code");
       expect(code, "the callback carries an authorization code").not.toBeNull();
 

@@ -77,7 +77,7 @@ export const integrationAtom = (slug: IntegrationSlug) =>
   );
 
 // ---------------------------------------------------------------------------
-// Connections — owner-scoped credentials (was `secrets` + `connections`).
+// Connections — owner-scoped credentials.
 // ---------------------------------------------------------------------------
 
 export const connectionsAtom = (owner: Owner) =>
@@ -152,6 +152,10 @@ export const updateIntegration = ExecutorApiClient.mutation("integrations", "upd
 export const removeIntegration = ExecutorApiClient.mutation("integrations", "remove");
 
 export const detectIntegration = ExecutorApiClient.mutation("integrations", "detect");
+
+export const integrationPresetsAtom = ExecutorApiClient.query("integrations", "presets", {
+  timeToLive: "12 hours",
+});
 
 // ---------------------------------------------------------------------------
 // OAuth — v2 flow. `start` runs a registered client to mint a connection for an

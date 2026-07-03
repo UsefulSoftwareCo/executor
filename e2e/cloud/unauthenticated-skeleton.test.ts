@@ -162,15 +162,20 @@ scenario(
         await page.goto("/this-page-does-not-exist", { waitUntil: "commit" });
         await page.getByText("Page not found").waitFor();
       });
-      // The 404 renders INSIDE the real shell (nav + identity), not as a
-      // text-free full-page silhouette. Per-section skeletons in the sidebar
-      // (the integration list mid-fetch) are honest loading states and fine.
+      // An unmatched path renders the ROOT route's `notFoundComponent`
+      // (apps/cloud/src/routes/__root.tsx's `NotFoundPage`), which TanStack
+      // Router mounts standalone — outside AuthGate's Shell tree entirely, by
+      // design (see AuthGate's own `urlOrgSlug ? <NotFoundPage /> : ...`
+      // comment: "framed by nothing — the user isn't 'in' any org here"). It
+      // was never shell-framed; assert its actual bare shape instead of a
+      // "Policies" link and shell chrome that no code path has produced since
+      // NotFoundPage was introduced (#986, commit 5c21c8f9).
       expect(
-        await page.getByRole("link", { name: "Policies" }).isVisible(),
-        "the real shell frames the 404",
-      ).toBe(true);
+        await page.locator('[data-slot="skeleton"]').count(),
+        "the real 404 page, not a loading skeleton",
+      ).toBe(0);
       expect(
-        await page.getByText("Go home").isVisible(),
+        await page.getByRole("link", { name: "Go home" }).isVisible(),
         "with the 404 page's action, not a dead end",
       ).toBe(true);
     });

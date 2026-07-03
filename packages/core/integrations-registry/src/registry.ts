@@ -11,7 +11,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 // ---------------------------------------------------------------------------
 
 export type InstallationChannel = "stable" | "beta" | "dev";
-export type SurfaceClient = "cli" | "local" | "desktop";
+export type SurfaceClient = "cli" | "local" | "desktop" | "open-agents";
 
 export const DEFAULT_INTEGRATIONS_URL = "https://integrations.sh/api.json";
 
@@ -41,7 +41,29 @@ export const isFetchDisabled = (
 // Service
 // ---------------------------------------------------------------------------
 
-export type IntegrationsRegistryData = unknown;
+export const IntegrationCatalogEntry = Schema.Struct({
+  id: Schema.String,
+  kind: Schema.String,
+  slug: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+  url: Schema.optional(Schema.NullOr(Schema.String)),
+  icon: Schema.optional(Schema.NullOr(Schema.String)),
+  domain: Schema.optional(Schema.NullOr(Schema.String)),
+  categories: Schema.optional(Schema.Array(Schema.String)),
+  feeds: Schema.optional(Schema.Array(Schema.String)),
+  popularity: Schema.optional(Schema.NullOr(Schema.Number)),
+  devtool: Schema.optional(Schema.NullOr(Schema.Boolean)),
+});
+export type IntegrationCatalogEntry = typeof IntegrationCatalogEntry.Type;
+
+const IntegrationsRegistryPayload = Schema.Struct({
+  version: Schema.Number,
+  generatedAt: Schema.String,
+  data: Schema.Array(IntegrationCatalogEntry),
+});
+
+export type IntegrationsRegistryData = readonly IntegrationCatalogEntry[];
 
 export interface IntegrationsRegistryService {
   readonly get: () => Effect.Effect<IntegrationsRegistryData>;
@@ -104,13 +126,13 @@ const cacheFileFor = (cacheDir: string, source: string): string => {
 // Layer
 // ---------------------------------------------------------------------------
 
-const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
-const decodeJsonOption = Schema.decodeUnknownOption(UnknownFromJsonString);
+const RegistryPayloadFromJsonString = Schema.fromJsonString(IntegrationsRegistryPayload);
+const decodeJsonOption = Schema.decodeUnknownOption(RegistryPayloadFromJsonString);
 
-const parseJson = (text: string): IntegrationsRegistryData => {
+const parseJson = (text: string): IntegrationsRegistryData | undefined => {
   const decoded = decodeJsonOption(text);
   if (Option.isNone(decoded)) return undefined;
-  return decoded.value;
+  return decoded.value.data;
 };
 
 export const layer = (
@@ -186,23 +208,23 @@ export const layer = (
       });
 
       const populate = Effect.gen(function* () {
-        if (disabled) return undefined as IntegrationsRegistryData;
+        if (disabled) return [] as IntegrationsRegistryData;
 
         const fromDisk = yield* readFromDisk;
-        if (fromDisk) return fromDisk;
+        if (fromDisk !== undefined) return fromDisk;
 
         const text = yield* withWriteLock(fetchAndWrite);
         if (Option.isSome(text)) {
-          return parseJson(text.value);
+          return parseJson(text.value) ?? [];
         }
         // Another process held the lock. Try to read what they wrote.
         const settled = yield* readFromDisk;
-        return settled ?? (undefined as IntegrationsRegistryData);
+        return settled ?? [];
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logDebug("IntegrationsRegistry.populate failed").pipe(
             Effect.annotateLogs("cause", cause),
-            Effect.as(undefined as IntegrationsRegistryData),
+            Effect.as([] as IntegrationsRegistryData),
           ),
         ),
         Effect.withSpan("IntegrationsRegistry.populate"),

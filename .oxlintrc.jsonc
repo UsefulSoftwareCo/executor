@@ -113,6 +113,31 @@
       },
     },
     {
+      // OpenAgents is an upstream Next/AI SDK app integrated as its own
+      // workspace package boundary. Keep normal TypeScript/React linting, but
+      // do not force executor's Effect-first domain rules or design-system
+      // element restrictions onto the upstream app surface.
+      "files": ["apps/open-agents/**/*.{ts,tsx}", "packages/open-agents/**/*.{ts,tsx}"],
+      "rules": {
+        "react/forbid-elements": "off",
+        "executor/no-conditional-tests": "off",
+        "executor/no-double-cast": "off",
+        "executor/no-effect-escape-hatch": "off",
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-instanceof-tagged-error": "off",
+        "executor/no-json-parse": "off",
+        "executor/no-manual-tag-check": "off",
+        "executor/no-promise-catch": "off",
+        "executor/no-promise-reject": "off",
+        "executor/no-raw-fetch": "off",
+        "executor/no-redundant-primitive-cast": "off",
+        "executor/no-switch-statement": "off",
+        "executor/no-try-catch-or-throw": "off",
+        "executor/no-unknown-error-message": "off",
+      },
+    },
+    {
       "files": ["packages/core/vite-plugin/src/**/*.{ts,tsx}"],
       "rules": {
         "executor/no-try-catch-or-throw": "off",

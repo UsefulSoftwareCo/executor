@@ -13,7 +13,6 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
-import { Badge } from "@executor-js/react/components/badge";
 import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
 import { configureMcpAuth, mcpServerAtom } from "./atoms";
@@ -174,35 +173,6 @@ function RemoteEdit(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Stdio read-only view
-// ---------------------------------------------------------------------------
-
-function StdioReadOnly(props: {
-  server: McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> };
-}) {
-  const { command, args } = props.server.config;
-  return (
-    <div className="space-y-3 border-t border-border/60 pt-5">
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">Server command</p>
-        <p className="text-xs text-muted-foreground">
-          Stdio MCP sources cannot be edited. Remove and recreate the source with the updated
-          command.
-        </p>
-      </div>
-      <div className="flex items-center gap-3 rounded-md border border-border/60 bg-muted/40 px-3 py-2">
-        <p className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-          {command} {(args ?? []).join(" ")}
-        </p>
-        <Badge variant="secondary" className="text-xs">
-          stdio
-        </Badge>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main component — the mcp plugin's section of the integration Edit sheet.
 // `sourceId` is the integration slug (v2).
 // ---------------------------------------------------------------------------
@@ -213,16 +183,6 @@ export default function EditMcpSource({ sourceId, onPendingChange }: EditSheetSe
   const server = AsyncResult.isSuccess(serverResult) ? serverResult.value : null;
 
   if (!AsyncResult.isSuccess(serverResult) || server === null) return null;
-
-  if (server.config.transport === "stdio") {
-    return (
-      <StdioReadOnly
-        server={
-          server as McpServer & { config: Extract<McpIntegrationConfig, { transport: "stdio" }> }
-        }
-      />
-    );
-  }
 
   return (
     <RemoteEdit

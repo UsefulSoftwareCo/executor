@@ -1,0 +1,37 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "apps/open-agents",
+      "framework": "nextjs",
+      "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
+      "buildCommand": "bun run build"
+    },
+    "eve": {
+      "root": ".",
+      "framework": "eve",
+      "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
+      "buildCommand": "bun run apps/open-agents/scripts/verify-eve-vercel-output-patch.ts && eve build && bun run apps/open-agents/scripts/patch-eve-vercel-output.ts"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/eve/v1/(.*)",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/.well-known/workflow/(.*)",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ]
+}

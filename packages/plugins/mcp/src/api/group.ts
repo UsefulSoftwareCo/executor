@@ -23,9 +23,9 @@ const SlugParams = { slug: IntegrationSlug };
 const StringMap = Schema.Record(Schema.String, Schema.String);
 
 // ---------------------------------------------------------------------------
-// Add server — discriminated union on transport. An MCP server is registered
-// as an integration; connections (credentials) are created separately through
-// the core connections / oauth surface.
+// Add server. An MCP server is registered as an integration; connections
+// (credentials) are created separately through the core connections / oauth
+// surface.
 // ---------------------------------------------------------------------------
 
 const AddRemoteServerPayload = Schema.Struct({
@@ -45,22 +45,7 @@ const AddRemoteServerPayload = Schema.Struct({
   auth: Schema.optional(McpAuthShorthand),
 });
 
-const AddStdioServerPayload = Schema.Struct({
-  transport: Schema.Literal("stdio"),
-  name: Schema.String,
-  description: Schema.optional(Schema.String),
-  command: Schema.String,
-  args: Schema.optional(Schema.Array(Schema.String)),
-  /** Declare the secret env vars this server needs, by name. Their values are
-   *  supplied as the connection's secrets (the connect step), not here. */
-  envVars: Schema.optional(Schema.Array(Schema.String)),
-  /** One-shot secret env values (programmatic). The UI sends `envVars`. */
-  env: Schema.optional(StringMap),
-  cwd: Schema.optional(Schema.String),
-  slug: Schema.optional(Schema.String),
-});
-
-const AddServerPayload = Schema.Union([AddRemoteServerPayload, AddStdioServerPayload]);
+const AddServerPayload = AddRemoteServerPayload;
 
 const ProbeEndpointPayload = Schema.Struct({
   endpoint: Schema.String,

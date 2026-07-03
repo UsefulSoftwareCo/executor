@@ -22,7 +22,7 @@ export default defineExecutorConfig({
       openApiHttpPlugin(),
       googleHttpPlugin(),
       microsoftHttpPlugin(),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
+      mcpHttpPlugin(),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       encryptedSecretsPlugin({ key: process.env.EXECUTOR_SECRET_KEY ?? "build-time-placeholder" }),

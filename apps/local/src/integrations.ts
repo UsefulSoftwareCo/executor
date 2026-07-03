@@ -11,9 +11,8 @@ import { USER_AGENT } from "./installation";
 
 // Module-singleton runtime for the integrations.sh registry. The layer's
 // scoped fork fetches the registry at startup and refreshes on a 12-hour
-// cadence for the runtime's lifetime. Shared across every long-running
-// apps/local surface (HTTP server, stdio MCP) so concurrent surfaces don't
-// each spin up their own refresh fork.
+// cadence for the runtime's lifetime. Shared across long-running apps/local
+// surfaces so concurrent handlers don't each spin up their own refresh fork.
 const integrationsRuntime = ManagedRuntime.make(
   integrationsRegistryLayer({ userAgent: USER_AGENT }).pipe(
     Layer.provide(FetchHttpClient.layer),

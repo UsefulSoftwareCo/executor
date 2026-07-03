@@ -9,6 +9,7 @@ import {
   StorageError,
   type CredentialProvider,
 } from "@executor-js/sdk";
+import { migratedItemId } from "@executor-js/sdk/migration";
 
 // ---------------------------------------------------------------------------
 // XDG data dir resolution
@@ -43,7 +44,13 @@ const authFilePath = (overrideDir?: string): string => path.join(authDir(overrid
 // ---------------------------------------------------------------------------
 
 const FlatAuthFile = Schema.Record(Schema.String, Schema.String);
+const ScopedAuthFile = Schema.Record(
+  Schema.String,
+  Schema.Union([Schema.String, Schema.Record(Schema.String, Schema.String)]),
+);
+type ScopedAuthFile = typeof ScopedAuthFile.Type;
 const decodeFlatAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(FlatAuthFile));
+const decodeScopedAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(ScopedAuthFile));
 
 // ---------------------------------------------------------------------------
 // File I/O with restricted permissions
@@ -62,6 +69,35 @@ const toStorageError =
   (cause: unknown): StorageError =>
     new StorageError({ message, cause });
 
+const normalizeScopedAuthFile = (auth: ScopedAuthFile): Record<string, string> => {
+  const migrated: Record<string, string> = {};
+  const current: Record<string, string> = {};
+  for (const [scopeId, value] of Object.entries(auth)) {
+    if (typeof value === "string") {
+      current[scopeId] = value;
+      continue;
+    }
+    for (const [secretId, secret] of Object.entries(value)) {
+      migrated[migratedItemId(scopeId, secretId)] = secret;
+    }
+  }
+  return { ...migrated, ...current };
+};
+
+const decodeAuthFile = (
+  filePath: string,
+  raw: string,
+): Effect.Effect<Record<string, string>, StorageError> =>
+  decodeFlatAuthFile(raw).pipe(
+    Effect.catch((flatCause: unknown) =>
+      decodeScopedAuthFile(raw).pipe(
+        Effect.map(normalizeScopedAuthFile),
+        Effect.mapError(() => toStorageError("Failed to parse auth file")(flatCause)),
+        Effect.flatMap((data) => writeAll(filePath, data).pipe(Effect.as(data))),
+      ),
+    ),
+  );
+
 const readAll = (filePath: string): Effect.Effect<Record<string, string>, StorageError> => {
   if (!fs.existsSync(filePath)) return Effect.succeed({});
   return Effect.try({
@@ -75,9 +111,7 @@ const readAll = (filePath: string): Effect.Effect<Record<string, string>, Storag
     Effect.flatMap((raw: string) =>
       raw === ""
         ? Effect.succeed<Record<string, string>>({})
-        : decodeFlatAuthFile(raw).pipe(
-            Effect.mapError(toStorageError("Failed to parse auth file")),
-          ),
+        : decodeAuthFile(filePath, raw),
     ),
   );
 };

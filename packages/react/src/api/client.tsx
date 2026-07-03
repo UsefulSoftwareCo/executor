@@ -67,14 +67,17 @@ const handleApiClientCause = (cause: Cause.Cause<unknown>) =>
 // FetchHttpClient.layer: no tracing code in the hot path.
 // ---------------------------------------------------------------------------
 
-// Plain member access — vite `define` rewrites the exact expression
-// `import.meta.env.VITE_PUBLIC_OTLP_TRACES_URL`; optional chaining would
-// dodge the replacement and always read undefined.
-const otlpTracesUrl = import.meta.env.VITE_PUBLIC_OTLP_TRACES_URL as string | undefined;
+const publicEnv = import.meta.env;
+const otlpTracesUrl =
+  typeof publicEnv?.VITE_PUBLIC_OTLP_TRACES_URL === "string"
+    ? publicEnv.VITE_PUBLIC_OTLP_TRACES_URL
+    : undefined;
 // Per-SESSION sampling for production: a page either traces everything it
 // does or nothing (per-span sampling would shred the waterfalls). Unset = 1.
 const otlpSampleRatio = Number(
-  (import.meta.env.VITE_PUBLIC_OTLP_SAMPLE_RATIO as string | undefined) ?? "1",
+  (typeof publicEnv?.VITE_PUBLIC_OTLP_SAMPLE_RATIO === "string"
+    ? publicEnv.VITE_PUBLIC_OTLP_SAMPLE_RATIO
+    : undefined) ?? "1",
 );
 
 // The tracer must reach the runtime context the atom effects EXECUTE in.
@@ -112,7 +115,7 @@ if (otlpTracesUrl && typeof document !== "undefined" && Math.random() < otlpSamp
 }
 
 // ---------------------------------------------------------------------------
-// Core API client — tools + secrets
+// Core API client — integrations, credentials, tools, policies
 // ---------------------------------------------------------------------------
 
 const ExecutorApiClient = AtomHttpApi.Service<"ExecutorApiClient">()("ExecutorApiClient", {

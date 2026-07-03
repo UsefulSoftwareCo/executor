@@ -30,7 +30,8 @@ const MICROSOFT_FAVICON = "https://www.microsoft.com/favicon.ico";
 const defaultPresetIds: ReadonlySet<string> = new Set(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
 
 export default function AddMicrosoftSource(props: {
-  onComplete: (slug?: string) => void;
+  basePath: string;
+  onComplete: (slug: string) => void;
   onCancel: () => void;
   initialNamespace?: string;
 }) {
@@ -138,7 +139,9 @@ export default function AddMicrosoftSource(props: {
         faviconUrl={baseUrl || MICROSOFT_GRAPH_BASE_URL}
       />
 
-      {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
+      {slugAlreadyExists && !adding && (
+        <SlugCollisionAlert basePath={props.basePath} slug={resolvedSourceId} />
+      )}
 
       {addError && <FormErrorAlert message={addError} />}
 

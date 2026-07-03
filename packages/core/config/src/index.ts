@@ -5,7 +5,6 @@ export {
   OpenApiSourceConfig,
   GraphqlSourceConfig,
   McpRemoteSourceConfig,
-  McpStdioSourceConfig,
   McpAuthConfig,
   SecretMetadata,
   ConfigHeaderValue,

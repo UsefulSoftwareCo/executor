@@ -9,7 +9,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
 
 import { routes } from "./tsr.routes";
-import { stripMcpOrgSegment } from "./src/mcp/org-path";
+import { MCP_ORIGINAL_PATH_HEADER, stripMcpOrgSegment } from "./src/mcp/org-path";
 
 // The real release version (matches the published `executor` dist-tags the
 // update card compares against), read from the CLI package the same way
@@ -71,10 +71,13 @@ function executorApiPlugin(): Plugin {
         // serve.ts) — otherwise this org-pinned path isn't recognized as an MCP
         // path and falls through to the SPA as a 404. Mirrors ./src/mcp/org-path.
         const devOrigin = `http://${req.headers.host ?? `localhost:${DEV_PORT}`}`;
-        const pathname = stripMcpOrgSegment(new URL(rawUrl, devOrigin).pathname) ?? "";
+        const originalPathname = new URL(rawUrl, devOrigin).pathname;
+        const pathname = stripMcpOrgSegment(originalPathname) ?? "";
+        let originalPathHeader: string | null = null;
         if (pathname !== "") {
           const original = new URL(rawUrl, devOrigin);
           rawUrl = `${pathname}${original.search}`;
+          originalPathHeader = originalPathname;
         }
         // Match on PATHNAME, not a raw-URL prefix: `/mcp` must NOT swallow the
         // SPA route `/mcp-consent`, or the dev server misroutes it to the API
@@ -131,6 +134,11 @@ function executorApiPlugin(): Plugin {
           const headers = new Headers();
           for (const [key, value] of Object.entries(req.headers)) {
             if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+          }
+          if (originalPathHeader) {
+            headers.set(MCP_ORIGINAL_PATH_HEADER, originalPathHeader);
+          } else {
+            headers.delete(MCP_ORIGINAL_PATH_HEADER);
           }
           const hasBody = req.method !== "GET" && req.method !== "HEAD";
           const webRequest = new Request(new URL(rawUrl, origin), {

@@ -34,10 +34,10 @@ export const ORG_SLUG_SEGMENT = "{-$orgSlug}";
  *  are these paths prefixed with `/{-$orgSlug}`. */
 export const CONSOLE_ROUTE_PATHS = [
   "/",
+  "/credentials",
   "/integrations/$namespace",
   "/integrations/add/$pluginKey",
   "/policies",
-  "/secrets",
   "/tools",
   "/toolkits",
   "/toolkits/$toolkitSlug",
@@ -62,6 +62,7 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
   const file = (name: string): string => `${options.dir}/${name}`;
   const entries: ReadonlyArray<readonly [ConsoleRoutePath, VirtualRouteNode]> = [
     ["/", index(file("index.tsx"))],
+    ["/credentials", route("/credentials", file("credentials.tsx"))],
     [
       "/integrations/$namespace",
       route("/integrations/$namespace", file("integrations.$namespace.tsx")),
@@ -71,7 +72,6 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
       route("/integrations/add/$pluginKey", file("integrations.add.$pluginKey.tsx")),
     ],
     ["/policies", route("/policies", file("policies.tsx"))],
-    ["/secrets", route("/secrets", file("secrets.tsx"))],
     ["/tools", route("/tools", file("tools.tsx"))],
     ["/toolkits", route("/toolkits", file("toolkits.tsx"))],
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],

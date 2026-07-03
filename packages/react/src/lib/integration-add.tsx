@@ -7,7 +7,6 @@
 
 import { useMemo } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -72,19 +71,18 @@ export function FormErrorAlert(props: { readonly message: string }) {
 
 /** The slug-collision alert with a link to the existing integration. Render
  *  gated by the caller (typically `show && !adding`). */
-export function SlugCollisionAlert(props: { readonly slug: string }) {
+export function SlugCollisionAlert(props: { readonly basePath: string; readonly slug: string }) {
   return (
     <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
       <p className="text-[12px] text-destructive">
         An integration named &quot;{props.slug}&quot; already exists. To add more authentication,
         update your existing integration.{" "}
-        <Link
-          to="/{-$orgSlug}/integrations/$namespace"
-          params={{ namespace: props.slug }}
+        <a
+          href={`${props.basePath}/integrations/${encodeURIComponent(props.slug)}`}
           className="font-medium underline underline-offset-2"
         >
           Open it
-        </Link>
+        </a>
       </p>
     </div>
   );
