@@ -16,11 +16,5 @@
       "mount": "/_eve_internal/eve",
       "buildCommand": "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts"
     }
-  },
-  "rewrites": [
-    {
-      "source": "/.well-known/workflow/(.*)",
-      "destination": "/.well-known/workflow/$1"
-    }
-  ]
+  }
 }
