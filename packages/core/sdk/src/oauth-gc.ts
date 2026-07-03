@@ -62,15 +62,6 @@ export const registrableHostname = (hostname: string): string => {
   return getDomain(host) ?? host;
 };
 
-/** The registrable host (incl. port when the hostname is registered verbatim)
- *  of a URL, or null when the value is not a URL. */
-export const registrableHostOfUrl = (value: string): string | null => {
-  const url = parseUrl(value);
-  if (url === null) return null;
-  const hostname = registrableHostname(url.hostname);
-  return hostname === url.hostname.toLowerCase() ? url.host.toLowerCase() : hostname;
-};
-
 /** The registrable ORIGIN of a URL: its scheme + the registrable host (dropping
  *  any subdomain). Used to backfill a legacy DCR row's `origin_issuer` from its
  *  `token_url`, so the per-AS reuse lookup can find it. Null when not a URL.
@@ -93,14 +84,10 @@ export const registrableOriginOfUrl = (value: string): string | null => {
  *  field is optional/unknown so it applies equally to a fuma row, a raw SQL
  *  row, or a hand-built test fixture. */
 export interface OAuthClientGcRow {
-  readonly slug?: unknown;
   readonly grant?: unknown;
   readonly resource?: unknown;
   readonly origin_kind?: unknown;
 }
-
-const legacyMcpSlug = (slug: string): boolean => /(^|[-_])mcp($|[-_])/.test(slug);
-const legacyMcpResource = (resource: string): boolean => /(^|\/)mcp($|[/?#])/.test(resource);
 
 /**
  * Is this `oauth_client` row a Dynamic Client Registration client?
@@ -108,22 +95,33 @@ const legacyMcpResource = (resource: string): boolean => /(^|\/)mcp($|[/?#])/.te
  * True when EITHER:
  *  - it carries the explicit `origin_kind = 'dynamic_client_registration'`
  *    stamp (rows minted after Part A), OR
- *  - it is a legacy null-origin row that matches the MCP heuristic: an
- *    `authorization_code` grant whose slug and resource both look MCP-shaped
- *    (`…mcp…`). This is the same heuristic `parseOAuthClientOrigin` applies to
- *    classify pre-Part-A rows, kept in ONE place so the runtime and the GC
- *    migrations agree exactly.
+ *  - it is a legacy null-origin row with an `authorization_code` grant AND a
+ *    non-empty `resource`.
  *
- * A row that does not match either arm is treated as manual and is NEVER a GC
- * candidate — the conservative default that protects hand-registered apps.
+ * The `resource` parameter (RFC 8707) is only ever set by the DCR/MCP connect
+ * path, never by the manual app form: a hand-registered app has no resource.
+ * So on a legacy (null origin_kind) row, an auth-code grant carrying a resource
+ * is a DCR client. This was validated against the production database: of the
+ * 394 rows that carry an explicit origin_kind stamp, `grant =
+ * 'authorization_code' AND resource IS NOT NULL` matches all 329 stamped DCR
+ * rows and zero stamped-manual rows (100% recall, no false positives). The
+ * earlier slug/resource `…mcp…` regex heuristic had bad recall (it missed
+ * legacy rows whose slug was a bare provider name like `linear` / `notion` /
+ * `cloudflare`), so it is gone; the resource presence check subsumes it.
+ *
+ * Explicit stamps always win (arm 1): a stamped `manual` BYO row keeps its
+ * classification even when it carries a resource, and a stamped DCR row is DCR
+ * even with no resource. The resource heuristic only decides legacy null-origin
+ * rows. A legacy row that does not match either arm is treated as manual and is
+ * NEVER a GC candidate — the conservative default that protects hand-registered
+ * apps.
  */
 export const isDcrClassifiedRow = (row: OAuthClientGcRow): boolean => {
   if (row.origin_kind === "dynamic_client_registration") return true;
   if (row.origin_kind != null) return false;
   if (row.grant !== "authorization_code") return false;
-  const slug = row.slug == null ? "" : String(row.slug);
   const resource = row.resource == null ? "" : String(row.resource);
-  return legacyMcpSlug(slug) && legacyMcpResource(resource);
+  return resource.length > 0;
 };
 
 /** The GC decision for one `oauth_client` row. */

@@ -13,22 +13,19 @@ import {
 // connections. Everything else is kept.
 
 const explicitDcr: OAuthClientGcRow = {
-  slug: "dcr-cloudflare-com",
   grant: "authorization_code",
   resource: "https://cloudflare.example/mcp",
   origin_kind: "dynamic_client_registration",
 };
 
 const legacyDcr: OAuthClientGcRow = {
-  // Pre-Part-A row: null origin_kind, MCP-shaped slug + resource.
-  slug: "cloudflare-mcp-2",
+  // Pre-Part-A row: null origin_kind, auth-code grant, carries a resource.
   grant: "authorization_code",
   resource: "https://cloudflare.example/mcp",
   origin_kind: null,
 };
 
 const manual: OAuthClientGcRow = {
-  slug: "my-github-app",
   grant: "authorization_code",
   resource: null,
   origin_kind: "manual",
@@ -39,24 +36,43 @@ describe("isDcrClassifiedRow", () => {
     expect(isDcrClassifiedRow(explicitDcr)).toBe(true);
   });
 
-  test("classifies a legacy null-origin MCP-shaped row as DCR via the heuristic", () => {
+  test("classifies a legacy null-origin auth-code row with a resource as DCR", () => {
+    // The resource parameter (RFC 8707) is only ever set by the DCR/MCP connect
+    // path, so an auth-code legacy row carrying one is a DCR client.
     expect(isDcrClassifiedRow(legacyDcr)).toBe(true);
-    expect(isDcrClassifiedRow({ ...legacyDcr, slug: "cloudflare-mcp" })).toBe(true);
+    // The prod-shaped case the old `…mcp…` slug regex misclassified as manual:
+    // a bare provider-name slug (`cloudflare`) with an MCP resource. The slug no
+    // longer participates in classification; the resource alone makes it DCR.
     expect(
       isDcrClassifiedRow({
-        slug: "mcp",
         grant: "authorization_code",
-        resource: "https://x.example/mcp?foo=1",
+        resource: "https://mcp.cloudflare.com/mcp",
+        origin_kind: null,
+      }),
+    ).toBe(true);
+    // Other bare-slug providers the old regex missed (linear, notion): their
+    // MCP resources classify them as DCR regardless of slug.
+    expect(
+      isDcrClassifiedRow({
+        grant: "authorization_code",
+        resource: "https://mcp.linear.app/mcp",
+        origin_kind: null,
+      }),
+    ).toBe(true);
+    expect(
+      isDcrClassifiedRow({
+        grant: "authorization_code",
+        resource: "https://mcp.notion.com/mcp",
         origin_kind: null,
       }),
     ).toBe(true);
   });
 
-  test("an explicit manual row is never DCR, even if MCP-shaped", () => {
+  test("an explicit manual stamp wins even when the row carries a resource", () => {
     expect(isDcrClassifiedRow(manual)).toBe(false);
+    // Stamped-manual BYO row WITH a resource: the stamp wins, stays manual.
     expect(
       isDcrClassifiedRow({
-        slug: "cloudflare-mcp",
         grant: "authorization_code",
         resource: "https://cloudflare.example/mcp",
         origin_kind: "manual",
@@ -64,49 +80,42 @@ describe("isDcrClassifiedRow", () => {
     ).toBe(false);
   });
 
-  test("a null-origin row that is not MCP-shaped is NOT DCR (ambiguous stays manual)", () => {
-    // Non-MCP slug.
+  test("an explicit DCR stamp wins even with no resource", () => {
     expect(
       isDcrClassifiedRow({
-        slug: "notion",
         grant: "authorization_code",
-        resource: "https://notion.example/mcp",
-        origin_kind: null,
+        resource: null,
+        origin_kind: "dynamic_client_registration",
       }),
-    ).toBe(false);
-    // MCP slug but non-MCP resource.
+    ).toBe(true);
+  });
+
+  test("a legacy null-origin row with no resource is NOT DCR (ambiguous stays manual)", () => {
+    // No resource: a hand-registered app never sets one, so this is manual.
     expect(
       isDcrClassifiedRow({
-        slug: "cloudflare-mcp",
-        grant: "authorization_code",
-        resource: "https://cloudflare.example/oauth",
-        origin_kind: null,
-      }),
-    ).toBe(false);
-    // MCP-shaped but wrong grant.
-    expect(
-      isDcrClassifiedRow({
-        slug: "cloudflare-mcp",
-        grant: "client_credentials",
-        resource: "https://cloudflare.example/mcp",
-        origin_kind: null,
-      }),
-    ).toBe(false);
-    // Null resource can never match the resource arm of the heuristic.
-    expect(
-      isDcrClassifiedRow({
-        slug: "cloudflare-mcp",
         grant: "authorization_code",
         resource: null,
         origin_kind: null,
       }),
     ).toBe(false);
-    // A word merely containing "mcp" (not a bounded segment) does not match.
+    // Empty-string resource is treated the same as null.
     expect(
       isDcrClassifiedRow({
-        slug: "mcphaven",
         grant: "authorization_code",
-        resource: "https://x.example/mcphaven",
+        resource: "",
+        origin_kind: null,
+      }),
+    ).toBe(false);
+  });
+
+  test("a legacy client_credentials row with a resource is NOT DCR", () => {
+    // Only the auth-code grant path mints DCR clients; client_credentials with a
+    // resource is a manual BYO app.
+    expect(
+      isDcrClassifiedRow({
+        grant: "client_credentials",
+        resource: "https://cloudflare.example/mcp",
         origin_kind: null,
       }),
     ).toBe(false);
@@ -144,9 +153,9 @@ describe("classifyOAuthClientGc decision matrix", () => {
     expect(classifyOAuthClientGc(manual, 5)).toEqual({ action: "keep", reason: "not-dcr" });
   });
 
-  test("legacy-heuristic-classified DCR is treated exactly like an explicit DCR row", () => {
+  test("legacy resource-classified DCR is treated exactly like an explicit DCR row", () => {
     // Same (row-shape, count) inputs produce the same decision whether the DCR
-    // classification came from origin_kind or the heuristic.
+    // classification came from origin_kind or the resource heuristic.
     expect(classifyOAuthClientGc(legacyDcr, 0).action).toBe(
       classifyOAuthClientGc(explicitDcr, 0).action,
     );
