@@ -74,6 +74,27 @@ describe("resolveOpenAgentsProfile", () => {
     expect(profile.agentDisplayName).toBeUndefined();
   });
 
+  test("resolves org-scoped sessions for anonymous Slack principals", async () => {
+    await sql`
+      update sessions
+      set scope_kind = 'org', scope_id = ${goaugmentOrgId}
+      where id = ${ids.session}
+    `;
+
+    const profile = await resolveOpenAgentsProfile(contextForActor("slack:T123:UUNLINKED"));
+
+    expect(profile.agentName).toBe("shared-agent");
+    expect(profile.agentDisplayName).toBe("Creator Shared Agent");
+    expect(profile.workspaceRepos).toEqual([
+      {
+        owner: "GoAugment",
+        repo: "augment-web",
+        branch: "staging",
+        directory: "augment-web",
+      },
+    ]);
+  });
+
   test("resolves the creator's agent profile for a non-creator group member", async () => {
     await sql`
       update sessions
@@ -99,13 +120,18 @@ describe("resolveOpenAgentsProfile", () => {
 });
 
 function contextFor(userId: string): DynamicResolveContext {
+  return contextForActor(userId);
+}
+
+function contextForActor(actorId: string): DynamicResolveContext {
   return {
     session: {
       auth: {
         initiator: {
-          subject: userId,
-          principalId: userId,
+          subject: actorId,
+          principalId: actorId,
           attributes: {
+            openAgentsActor: actorId,
             openAgentsSessionId: ids.session,
             openAgentsChatId: ids.chat,
           },

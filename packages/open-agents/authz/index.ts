@@ -73,6 +73,7 @@ const DB_POOL_MAX_CONNECTIONS = 1;
 const DB_IDLE_TIMEOUT_SECONDS = 10;
 const MEMBERSHIP_CACHE_TTL_MS = 60_000;
 const DEFAULT_ORG_SLUG = "goaugment";
+const OPEN_AGENTS_SYSTEM_USER_ID = "open-agents-system";
 
 const membershipCache = new Map<string, CacheEntry>();
 let defaultOrgCache: { expiresAt: number; id: string } | undefined;
@@ -91,6 +92,45 @@ export function getOpenAgentsAuthzSql(): OpenAgentsAuthzSql {
 export function invalidateMembership(_userId?: string): void {
   membershipCache.clear();
   defaultOrgCache = undefined;
+}
+
+export function serializeActor(actor: Actor): string {
+  if (actor.kind === "user") {
+    return `user:${actor.userId}`;
+  }
+  if (actor.kind === "slack") {
+    return `slack:${actor.teamId}:${actor.slackUserId}`;
+  }
+  return `service:${actor.automationId}`;
+}
+
+export function parseActor(value: string): Actor {
+  const normalized = value.trim();
+  if (normalized.startsWith("user:")) {
+    const userId = normalized.slice("user:".length);
+    if (!userId) {
+      throw new AuthzError("Invalid user actor header", 400);
+    }
+    return { kind: "user", userId };
+  }
+  if (normalized.startsWith("slack:")) {
+    const [teamId, slackUserId] = normalized.slice("slack:".length).split(":", 2);
+    if (!teamId || !slackUserId) {
+      throw new AuthzError("Invalid Slack actor header", 400);
+    }
+    return { kind: "slack", teamId, slackUserId };
+  }
+  if (normalized.startsWith("service:")) {
+    const automationId = normalized.slice("service:".length);
+    if (!automationId) {
+      throw new AuthzError("Invalid service actor header", 400);
+    }
+    return { kind: "service", automationId };
+  }
+  if (!normalized) {
+    throw new AuthzError("Invalid actor header", 400);
+  }
+  return { kind: "user", userId: normalized };
 }
 
 export class OpenAgentsAuthz {
@@ -188,7 +228,8 @@ export class OpenAgentsAuthz {
     `;
 
     if (!organization) {
-      throw new AuthzError("Default organization is not configured", 500);
+      await this.ensureDefaultOrganization();
+      return this.getDefaultOrgId();
     }
 
     defaultOrgCache = {
@@ -198,8 +239,72 @@ export class OpenAgentsAuthz {
     return organization.id;
   }
 
+  private async ensureDefaultOrganization(): Promise<void> {
+    await this.sql`
+      insert into users (
+        id,
+        username,
+        email_verified,
+        name,
+        is_admin,
+        created_at,
+        updated_at,
+        last_login_at
+      )
+      values (
+        ${OPEN_AGENTS_SYSTEM_USER_ID},
+        ${OPEN_AGENTS_SYSTEM_USER_ID},
+        true,
+        'Open Agents System',
+        true,
+        now(),
+        now(),
+        now()
+      )
+      on conflict (id) do update set
+        username = excluded.username,
+        email_verified = true,
+        name = excluded.name,
+        is_admin = true,
+        updated_at = now()
+    `;
+
+    await this.sql`
+      insert into organizations (id, slug, name, created_by)
+      values (
+        'org_' || substr(md5('goaugment:' || clock_timestamp()::text || ':' || random()::text), 1, 18),
+        ${DEFAULT_ORG_SLUG},
+        'GoAugment',
+        ${OPEN_AGENTS_SYSTEM_USER_ID}
+      )
+      on conflict (slug) do update set
+        name = excluded.name,
+        updated_at = now()
+    `;
+
+    const [organization] = await this.sql<OrganizationRow[]>`
+      select id
+      from organizations
+      where slug = ${DEFAULT_ORG_SLUG}
+      limit 1
+    `;
+
+    if (organization) {
+      await this.sql`
+        insert into organization_members (org_id, user_id, role, added_by)
+        values (${organization.id}, ${OPEN_AGENTS_SYSTEM_USER_ID}, 'admin', ${OPEN_AGENTS_SYSTEM_USER_ID})
+        on conflict (org_id, user_id) do update set
+          role = 'admin',
+          updated_at = now()
+      `;
+    }
+  }
+
   private async canAccessScope(actor: Actor, scope: Scope, verb: Verb): Promise<boolean> {
-    if ((actor.kind === "slack" || actor.kind === "service") && (verb === "manage" || verb === "admin")) {
+    if (
+      (actor.kind === "slack" || actor.kind === "service") &&
+      (verb === "manage" || verb === "admin")
+    ) {
       return false;
     }
 
@@ -290,7 +395,9 @@ export class OpenAgentsAuthz {
     });
   }
 
-  private async loadSlackMembership(actor: Extract<Actor, { kind: "slack" }>): Promise<ResolvedMembership> {
+  private async loadSlackMembership(
+    actor: Extract<Actor, { kind: "slack" }>,
+  ): Promise<ResolvedMembership> {
     const [linkedUser] = await this.sql<SlackUserLinkRow[]>`
       select user_id as "userId"
       from slack_user_links

@@ -1,3 +1,4 @@
+import { getDefaultOrgId, serializeActor } from "@open-agents/authz";
 import { connectSandbox, type SandboxState } from "@open-agents/sandbox";
 import { installConfiguredSessionClis } from "@open-agents/sandbox/session-clis.js";
 import { getVercelOidcToken } from "@vercel/oidc";
@@ -40,10 +41,19 @@ type SlackUserLinkRow = {
   userId: string;
 };
 
-type SlackTurnActor = {
-  headerValue: string;
-  linkedUserId: string | null;
-};
+type SlackTurnActor =
+  | {
+      actorId: string;
+      kind: "linked";
+      ownerUserId: string;
+      scope: { kind: "user"; id: string };
+    }
+  | {
+      actorId: string;
+      kind: "anonymous";
+      ownerUserId: string;
+      scope: { kind: "org"; id: string };
+    };
 
 type SlackThreadSessionRow = {
   chatId: string;
@@ -188,9 +198,22 @@ async function resolveSlackTurnActor(input: {
     slackUserId,
   });
 
+  if (linkedUserId) {
+    return {
+      actorId: serializeActor({ kind: "user", userId: linkedUserId }),
+      kind: "linked",
+      ownerUserId: linkedUserId,
+      scope: { kind: "user", id: linkedUserId },
+    };
+  }
+
+  const slackActor = { kind: "slack", teamId: input.slackTeamId, slackUserId } as const;
+  const actorId = serializeActor(slackActor);
   return {
-    headerValue: linkedUserId ?? `slack:${input.slackTeamId}:${slackUserId}`,
-    linkedUserId,
+    actorId,
+    kind: "anonymous",
+    ownerUserId: actorId,
+    scope: { kind: "org", id: await getDefaultOrgId({ sql: getSql() }) },
   };
 }
 
@@ -263,6 +286,19 @@ async function getSlackThreadSession(input: {
     : null;
 }
 
+async function ensureSlackPrincipalOwnerUser(userId: string): Promise<void> {
+  if (!userId.startsWith("slack:")) {
+    return;
+  }
+
+  const sql = getSql();
+  await sql`
+    insert into users (id, username, email_verified, name, is_admin)
+    values (${userId}, ${userId.replace(/[^A-Za-z0-9_-]+/g, "_")}, false, 'Slack participant', false)
+    on conflict (id) do nothing
+  `;
+}
+
 async function createSlackThreadSession(input: {
   slackChannelId: string;
   slackTeamId: string;
@@ -270,6 +306,7 @@ async function createSlackThreadSession(input: {
   text: string;
   turnActorId: string;
   userId: string;
+  scope: SlackTurnActor["scope"];
 }): Promise<OpenAgentsSlackSession> {
   const sql = getSql();
   const sessionId = nanoid();
@@ -278,11 +315,15 @@ async function createSlackThreadSession(input: {
   const workspaceRepos = repoTarget ? [] : getDefaultHookWorkspaceRepos();
   const sessionSources = getSessionSources({ repoTarget, workspaceRepos });
 
+  await ensureSlackPrincipalOwnerUser(input.userId);
+
   await sql.begin(async (tx) => {
     await tx`
       insert into sessions (
         id,
         user_id,
+        scope_kind,
+        scope_id,
         title,
         status,
         repo_owner,
@@ -297,6 +338,8 @@ async function createSlackThreadSession(input: {
       values (
         ${sessionId},
         ${input.userId},
+        ${input.scope.kind},
+        ${input.scope.id},
         ${cleanTitle(input.text)},
         'running',
         ${sessionSources.repoOwner},
@@ -373,23 +416,20 @@ export async function getOrCreateOpenAgentsSlackSession(input: {
     slackChannelId: input.slackChannelId,
     slackTeamId,
     slackThreadTs: input.slackThreadTs,
-    turnActorId: turnActor.headerValue,
+    turnActorId: turnActor.actorId,
   });
   if (existing) {
     return existing;
   }
 
-  if (!turnActor.linkedUserId) {
-    return null;
-  }
-
   return createSlackThreadSession({
+    scope: turnActor.scope,
     slackChannelId: input.slackChannelId,
     slackTeamId,
     slackThreadTs: input.slackThreadTs,
     text: input.text,
-    turnActorId: turnActor.headerValue,
-    userId: turnActor.linkedUserId,
+    turnActorId: turnActor.actorId,
+    userId: turnActor.ownerUserId,
   });
 }
 

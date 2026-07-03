@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { requireSessionAccess } from "@open-agents/authz";
+import { createOpenAgentsAuthz, parseActor, type Actor } from "@open-agents/authz";
 import { connectSandbox, type Sandbox, type SandboxState } from "@open-agents/sandbox";
 import { installConfiguredSessionClis } from "@open-agents/sandbox/session-clis.js";
 import type { ToolContext, ToolDefinition } from "eve/tools";
@@ -120,14 +120,11 @@ function getStringAttribute(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function getOpenAgentsUserId(ctx: ToolContext): string | undefined {
+function getOpenAgentsActor(ctx: ToolContext): Actor | undefined {
   const auth = ctx.session.auth.initiator ?? ctx.session.auth.current;
   const actorId =
     getStringAttribute(auth?.attributes, "openAgentsActor") ?? auth?.subject ?? auth?.principalId;
-  if (!actorId) {
-    return undefined;
-  }
-  return actorId.startsWith("user:") ? actorId.slice("user:".length) : actorId;
+  return actorId ? parseActor(actorId) : undefined;
 }
 
 function getOpenAgentsSessionId(ctx: ToolContext): string {
@@ -141,7 +138,7 @@ function getOpenAgentsSessionId(ctx: ToolContext): string {
 
 async function getOpenAgentsSessionSandbox(ctx: ToolContext): Promise<Sandbox> {
   const sessionId = getOpenAgentsSessionId(ctx);
-  const userId = getOpenAgentsUserId(ctx);
+  const actor = getOpenAgentsActor(ctx);
   const sql = getOpenAgentsSessionToolSql();
   const [session] = await sql<OpenAgentsSessionSandboxRow[]>`
     select
@@ -156,11 +153,15 @@ async function getOpenAgentsSessionSandbox(ctx: ToolContext): Promise<Sandbox> {
     throw new Error(`Open Agents session ${sessionId} was not found`);
   }
 
-  if (!userId) {
-    throw new Error("Open Agents user id is required for workspace tools");
+  if (!actor) {
+    throw new Error("Open Agents actor is required for workspace tools");
   }
 
-  await requireSessionAccess({ kind: "user", userId }, sessionId, "write", { sql });
+  const authz = createOpenAgentsAuthz({ sql });
+  await createOpenAgentsAuthz({
+    anonymousSlackOrgId: await authz.getDefaultOrgId(),
+    sql,
+  }).requireSessionAccess(actor, sessionId, "write");
 
   if (!session.sandboxState || session.sandboxState.type !== "vercel") {
     throw new Error(`Open Agents session ${sessionId} does not have an active Vercel sandbox`);

@@ -1,3 +1,4 @@
+import { parseActor, serializeActor } from "@open-agents/authz";
 import type { SessionAuthContext } from "eve/context";
 import { type AuthFn, localDev, vercelOidc } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
@@ -20,26 +21,31 @@ export function withOpenAgentsRequestAttributes(
       return null;
     }
 
-    const openAgentsUserId = getHeader(request, "x-open-agents-user-id");
+    const openAgentsActorHeader = getHeader(request, "x-open-agents-user-id");
     const authenticatedUserId = sessionAuth.subject ?? sessionAuth.principalId;
+    const authenticatedActorId = serializeActor({ kind: "user", userId: authenticatedUserId });
+    const requestedActor = openAgentsActorHeader ? parseActor(openAgentsActorHeader) : undefined;
+
     if (
-      openAgentsUserId &&
+      requestedActor &&
       !options.trustOpenAgentsUserHeader &&
-      openAgentsUserId !== authenticatedUserId
+      (requestedActor.kind !== "user" || requestedActor.userId !== authenticatedUserId)
     ) {
       return null;
     }
-    const actorUserId =
-      options.trustOpenAgentsUserHeader && openAgentsUserId
-        ? openAgentsUserId
-        : authenticatedUserId;
+
+    const actorId =
+      options.trustOpenAgentsUserHeader && requestedActor
+        ? serializeActor(requestedActor)
+        : authenticatedActorId;
 
     return {
       ...sessionAuth,
-      subject: actorUserId,
+      subject: actorId,
       attributes: {
         ...sessionAuth.attributes,
-        openAgentsUserId: actorUserId,
+        openAgentsActor: actorId,
+        openAgentsUserId: actorId,
         ...(getHeader(request, "x-open-agents-session-id")
           ? { openAgentsSessionId: getHeader(request, "x-open-agents-session-id")! }
           : {}),

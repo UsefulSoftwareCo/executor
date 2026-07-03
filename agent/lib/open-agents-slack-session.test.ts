@@ -8,6 +8,9 @@ const existingThreadSession = {
   userId: "creator-user",
 };
 const sentHeaders: Array<Record<string, string>> = [];
+const insertedSessions: Array<Record<string, unknown>> = [];
+const insertedUsers: Array<Record<string, unknown>> = [];
+let threadExists = true;
 
 function linkKey(teamId: string, userId: string) {
   return `${teamId}:${userId}`;
@@ -23,8 +26,27 @@ function sqlTag(strings: TemplateStringsArray, ...values: unknown[]) {
     return Promise.resolve(userId ? [{ userId }] : []);
   }
 
+  if (query.includes("from organizations")) {
+    return Promise.resolve([{ id: "org_8e4d1c1bf18f697072" }]);
+  }
+
   if (query.includes("from slack_thread_sessions")) {
-    return Promise.resolve([existingThreadSession]);
+    return Promise.resolve(threadExists ? [existingThreadSession] : []);
+  }
+
+  if (query.includes("insert into users")) {
+    insertedUsers.push({ id: values[0], username: values[1] });
+    return Promise.resolve([]);
+  }
+
+  if (query.includes("insert into sessions")) {
+    insertedSessions.push({
+      id: values[0],
+      userId: values[1],
+      scopeKind: values[2],
+      scopeId: values[3],
+    });
+    return Promise.resolve([]);
   }
 
   if (query.includes("from eve_chat_events")) {
@@ -94,6 +116,9 @@ describe("Open Agents Slack actor attribution", () => {
   beforeEach(() => {
     slackLinks.clear();
     sentHeaders.length = 0;
+    insertedSessions.length = 0;
+    insertedUsers.length = 0;
+    threadExists = true;
     slackLinks.set(linkKey("T123", "UCREATOR"), "creator-user");
     slackLinks.set(linkKey("T123", "UOTHER"), "other-user");
   });
@@ -109,11 +134,11 @@ describe("Open Agents Slack actor attribution", () => {
       slackUserId: "UCREATOR",
       text: "do the thing",
     });
-    expect(session?.turnActorId).toBe("creator-user");
+    expect(session?.turnActorId).toBe("user:creator-user");
 
     await runOpenAgentsSlackTurn({ message: slackMessage("UCREATOR"), session: session! });
 
-    expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("creator-user");
+    expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("user:creator-user");
   });
 
   test("existing thread from another linked user acts as that user, not the creator", async () => {
@@ -128,12 +153,12 @@ describe("Open Agents Slack actor attribution", () => {
       text: "do the thing",
     });
     expect(session?.userId).toBe("creator-user");
-    expect(session?.turnActorId).toBe("other-user");
+    expect(session?.turnActorId).toBe("user:other-user");
 
     await runOpenAgentsSlackTurn({ message: slackMessage("UOTHER"), session: session! });
 
-    expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("other-user");
-    expect(sentHeaders[0]?.["x-open-agents-user-id"]).not.toBe("creator-user");
+    expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("user:other-user");
+    expect(sentHeaders[0]?.["x-open-agents-user-id"]).not.toBe("user:creator-user");
   });
 
   test("existing thread from an unlinked user acts as a Slack principal, not the creator", async () => {
@@ -153,6 +178,36 @@ describe("Open Agents Slack actor attribution", () => {
     await runOpenAgentsSlackTurn({ message: slackMessage("UUNLINKED"), session: session! });
 
     expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("slack:T123:UUNLINKED");
-    expect(sentHeaders[0]?.["x-open-agents-user-id"]).not.toBe("creator-user");
+    expect(sentHeaders[0]?.["x-open-agents-user-id"]).not.toBe("user:creator-user");
+  });
+
+  test("new thread from an unlinked user creates an org-scoped Slack principal session", async () => {
+    threadExists = false;
+    const { getOrCreateOpenAgentsSlackSession, runOpenAgentsSlackTurn } =
+      await slackSessionModulePromise;
+
+    const session = await getOrCreateOpenAgentsSlackSession({
+      slackChannelId: "C123",
+      slackTeamId: "T123",
+      slackThreadTs: "1710000000.000000",
+      slackUserId: "UUNLINKED",
+      text: "do the thing",
+    });
+
+    expect(session).not.toBeNull();
+    expect(session?.userId).toBe("slack:T123:UUNLINKED");
+    expect(session?.turnActorId).toBe("slack:T123:UUNLINKED");
+    expect(insertedUsers).toEqual([
+      { id: "slack:T123:UUNLINKED", username: "slack_T123_UUNLINKED" },
+    ]);
+    expect(insertedSessions[0]).toMatchObject({
+      userId: "slack:T123:UUNLINKED",
+      scopeKind: "org",
+      scopeId: "org_8e4d1c1bf18f697072",
+    });
+
+    await runOpenAgentsSlackTurn({ message: slackMessage("UUNLINKED"), session: session! });
+
+    expect(sentHeaders[0]?.["x-open-agents-user-id"]).toBe("slack:T123:UUNLINKED");
   });
 });

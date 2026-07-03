@@ -1,4 +1,4 @@
-import { createOpenAgentsAuthz, type Actor, type Scope } from "@open-agents/authz";
+import { createOpenAgentsAuthz, parseActor, type Actor, type Scope } from "@open-agents/authz";
 import type { DynamicResolveContext } from "eve/tools";
 import postgres from "postgres";
 import type { WorkspaceRepo } from "../../apps/open-agents/lib/workspace-repos";
@@ -88,11 +88,6 @@ function getStringAttribute(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function getOpenAgentsUserId(ctx: DynamicResolveContext): string | undefined {
-  const auth = ctx.session.auth.initiator ?? ctx.session.auth.current;
-  return auth?.subject ?? auth?.principalId;
-}
-
 function getOpenAgentsSessionId(ctx: DynamicResolveContext): string | undefined {
   const attributes = ctx.session.auth.initiator?.attributes ?? ctx.session.auth.current?.attributes;
   return getStringAttribute(attributes, "openAgentsSessionId");
@@ -104,8 +99,10 @@ function getOpenAgentsChatId(ctx: DynamicResolveContext): string | undefined {
 }
 
 function getOpenAgentsActor(ctx: DynamicResolveContext): Actor | undefined {
-  const userId = getOpenAgentsUserId(ctx);
-  return userId ? { kind: "user", userId } : undefined;
+  const auth = ctx.session.auth.initiator ?? ctx.session.auth.current;
+  const actorId =
+    getStringAttribute(auth?.attributes, "openAgentsActor") ?? auth?.subject ?? auth?.principalId;
+  return actorId ? parseActor(actorId) : undefined;
 }
 
 function getOpenAgentsToolProfile(ctx: DynamicResolveContext): OpenAgentsProfileTool[] | undefined {
@@ -340,7 +337,12 @@ export async function resolveOpenAgentsProfile(
     }
 
     const authz = createOpenAgentsAuthz({ sql: getOpenAgentsProfileSql() });
-    const canWriteSession = await authz.canAccess(
+    const anonymousSlackOrgId = await authz.getDefaultOrgId();
+    const scopedAuthz = createOpenAgentsAuthz({
+      anonymousSlackOrgId,
+      sql: getOpenAgentsProfileSql(),
+    });
+    const canWriteSession = await scopedAuthz.canAccess(
       actor,
       getEffectiveSessionScope(session),
       "write",

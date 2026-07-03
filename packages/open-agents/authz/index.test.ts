@@ -6,8 +6,10 @@ import {
   getDefaultOrgId,
   invalidateMembership,
   requireChatAccess,
+  parseActor,
   requireSessionAccess,
   resolveMembership,
+  serializeActor,
   type Actor,
   type OpenAgentsAuthzSql,
   type Scope,
@@ -55,6 +57,18 @@ afterAll(async () => {
 
 beforeEach(() => {
   invalidateMembership();
+});
+
+describe("actor header serialization", () => {
+  test("round trips canonical user, Slack, and service actors", () => {
+    expect(parseActor(serializeActor(actors.member))).toEqual(actors.member);
+    expect(parseActor(serializeActor(actors.anonymousSlack))).toEqual(actors.anonymousSlack);
+    expect(parseActor(serializeActor(actors.serviceOrg))).toEqual(actors.serviceOrg);
+  });
+
+  test("parses legacy bare user ids as user actors", () => {
+    expect(parseActor("user_member")).toEqual(actors.member);
+  });
 });
 
 describe("canAccess", () => {
