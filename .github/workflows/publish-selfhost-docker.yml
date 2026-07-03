@@ -22,6 +22,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -57,6 +59,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner}/executor-selfhost"
+          legacy_image="ghcr.io/rhyssullivan/executor-selfhost"
           revision="$(git rev-parse HEAD)"
 
           if [[ "$version" == *-* ]]; then
@@ -73,6 +76,11 @@ jobs:
             echo "${image}:${RELEASE_TAG}"
             echo "${image}:${version}"
             echo "${image}:${channel}"
+            echo "TAGS"
+            echo "legacy_tags<<TAGS"
+            echo "${legacy_image}:${RELEASE_TAG}"
+            echo "${legacy_image}:${version}"
+            echo "${legacy_image}:${channel}"
             echo "TAGS"
             echo "labels<<LABELS"
             echo "org.opencontainers.image.title=Executor self-host"
@@ -97,6 +105,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push self-host image
+        id: build
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
@@ -105,3 +114,32 @@ jobs:
           push: true
           tags: ${{ steps.image.outputs.tags }}
           labels: ${{ steps.image.outputs.labels }}
+
+      - name: Skip legacy GHCR mirror (GHCR_LEGACY_TOKEN not configured)
+        if: env.HAS_LEGACY_TOKEN != 'true'
+        run: echo "GHCR_LEGACY_TOKEN is not configured; skipping legacy GHCR mirror."
+
+      - name: Log in to legacy GHCR namespace
+        if: env.HAS_LEGACY_TOKEN == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: rhyssullivan
+          password: ${{ secrets.GHCR_LEGACY_TOKEN }}
+
+      - name: Mirror self-host image to legacy GHCR namespace
+        if: env.HAS_LEGACY_TOKEN == 'true'
+        shell: bash
+        env:
+          SOURCE_IMAGE: ${{ steps.image.outputs.image }}@${{ steps.build.outputs.digest }}
+          LEGACY_TAGS: ${{ steps.image.outputs.legacy_tags }}
+        run: |
+          set -euo pipefail
+
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            tag_args+=("-t" "$tag")
+          done <<< "$LEGACY_TAGS"
+
+          docker buildx imagetools create "${tag_args[@]}" "$SOURCE_IMAGE"
