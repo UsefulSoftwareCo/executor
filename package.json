@@ -69,6 +69,7 @@
     "prepare": "effect-language-service patch && effect-tsgo patch && bun run --cwd packages/core/vite-plugin build:bundle && bun run --cwd packages/react build"
   },
   "dependencies": {
+    "@open-agents/authz": "workspace:*",
     "@open-agents/sandbox": "workspace:*",
     "@vercel/oidc": "^3.8.0",
     "@vercel/sandbox": "^2.3.0",

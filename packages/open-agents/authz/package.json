@@ -1,0 +1,25 @@
+{
+  "name": "@open-agents/authz",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "postgres": "^3.4.8"
+  },
+  "devDependencies": {
+    "@open-agents/tsconfig": "workspace:*",
+    "@types/bun": "1.3.12",
+    "@types/node": "^22"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
