@@ -162,10 +162,12 @@ mock.module("@vercel/sandbox", () => ({
 
 let sandboxModule: typeof import("./sandbox");
 let connectModule: typeof import("./connect");
+let setupModule: typeof import("./setup");
 
 beforeAll(async () => {
   sandboxModule = await import("./sandbox");
   connectModule = await import("./connect");
+  setupModule = await import("./setup");
 });
 
 beforeEach(() => {
@@ -446,6 +448,101 @@ describe("GitHub setup credential brokering", () => {
       remainingTimeout: 0,
     });
 
+    expect(updateNetworkPolicyCalls).toEqual(["allow-all"]);
+  });
+});
+
+describe("Vercel sandbox setup pipeline", () => {
+  test("clears GitHub setup auth once when workspace branch checkout fails", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    runCommandMock = async (params) => {
+      if (params?.cmd === "git" && params.args?.[0] === "checkout") {
+        return {
+          exitCode: 1,
+          cmdId: "cmd-checkout-failed",
+          stdout: async () => "",
+          stderr: async () => "fatal: branch exists",
+        };
+      }
+
+      return {
+        exitCode: 0,
+        cmdId: "cmd-ok",
+        stdout: async () => "",
+        stderr: async () => "",
+      };
+    };
+
+    await expect(
+      setupModule.prepareVercelSandboxSetup({
+        githubToken: "github-token",
+        baseSnapshotId: "snap-base-1",
+        sources: [
+          {
+            url: "https://github.com/GoAugment/augment-web",
+            branch: "staging",
+            directory: "augment-web",
+          },
+          {
+            url: "https://github.com/GoAugment/augment-services",
+            branch: "main",
+            directory: "augment-services",
+            newBranch: "linear/voi-123",
+          },
+        ],
+        onSetupEvent: (event) => {
+          events.push(event);
+        },
+      }),
+    ).rejects.toThrow("Failed to create branch 'linear/voi-123'");
+
+    expect(events).toEqual([
+      {
+        phase: "sdk-create-start",
+        runtime: "node22",
+        baseSnapshotId: "snap-base-1",
+      },
+      {
+        phase: "sdk-create-complete",
+        sandboxName: "generated-sandbox",
+        runtime: "node22",
+        baseSnapshotId: "snap-base-1",
+      },
+      {
+        phase: "clone-workspace-source-start",
+        sandboxName: "generated-sandbox",
+        sourceUrl: "https://github.com/GoAugment/augment-web",
+        directory: "augment-web",
+        branch: "staging",
+      },
+      {
+        phase: "clone-workspace-source-complete",
+        sandboxName: "generated-sandbox",
+        sourceUrl: "https://github.com/GoAugment/augment-web",
+        directory: "augment-web",
+        branch: "staging",
+      },
+      {
+        phase: "clone-workspace-source-start",
+        sandboxName: "generated-sandbox",
+        sourceUrl: "https://github.com/GoAugment/augment-services",
+        directory: "augment-services",
+        branch: "main",
+      },
+      {
+        phase: "clone-workspace-source-complete",
+        sandboxName: "generated-sandbox",
+        sourceUrl: "https://github.com/GoAugment/augment-services",
+        directory: "augment-services",
+        branch: "main",
+      },
+      {
+        phase: "branch-checkout-start",
+        sandboxName: "generated-sandbox",
+        directory: "augment-services",
+        branch: "linear/voi-123",
+      },
+    ]);
     expect(updateNetworkPolicyCalls).toEqual(["allow-all"]);
   });
 });
