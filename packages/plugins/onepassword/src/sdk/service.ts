@@ -53,8 +53,10 @@ const SERVICE_ACCOUNT_TOKEN_RE = /ops_[A-Za-z0-9_-]+/g;
 type OnePasswordSdkModule = typeof import("@1password/sdk");
 
 const formatCause = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: normalizing untyped op-js/SDK throwables into OnePasswordError.message
   const maybeMessage = (cause as { readonly message?: unknown } | null | undefined)?.message;
   const raw =
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: last-resort stringification of a non-Error throwable
     typeof maybeMessage === "string" && maybeMessage.length > 0 ? maybeMessage : String(cause);
   return raw
     .replace(SERVICE_ACCOUNT_TOKEN_RE, "[redacted 1Password token]")
@@ -207,6 +209,7 @@ export const makeCliService = (
 // ---------------------------------------------------------------------------
 
 const isCliUnavailable = (error: OnePasswordError): boolean => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OnePasswordError carries a typed `message`
   const message = error.message.toLowerCase();
   return (
     message.includes("enoent") ||

@@ -44,6 +44,7 @@ import type { RedactedOnePasswordConfig } from "../sdk/types";
 const VAULT_LIST_ERROR_FALLBACK = "Failed to list vaults";
 
 const formatVaultListError = (error: Error): string => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OnePasswordError carries a typed `message`
   const message = error.message.trim();
   return message ? `${VAULT_LIST_ERROR_FALLBACK}: ${message}` : VAULT_LIST_ERROR_FALLBACK;
 };

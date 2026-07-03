@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+// oxlint-disable-next-line executor/no-vitest-import -- boundary: vi.mock/vi.hoisted must come from vitest itself for mock hoisting to resolve
 import { vi } from "vitest";
 
 import { OnePasswordError } from "./errors";
@@ -48,6 +49,7 @@ describe("makeOnePasswordService", () => {
     Effect.gen(function* () {
       const sdkVaultsList = vi.fn(async () => [{ id: "sdk-vault", title: "SDK Vault" }]);
       opMocks.vaultList.mockImplementation(() => {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: simulates the untyped op-js CLI wrapper throwing
         throw new Error("spawn op ENOENT");
       });
       sdkMocks.createClient.mockResolvedValue({
@@ -71,12 +73,14 @@ describe("makeOnePasswordService", () => {
   it.effect("includes the backend cause when both vault listing backends fail", () =>
     Effect.gen(function* () {
       opMocks.vaultList.mockImplementation(() => {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: simulates the untyped op-js CLI wrapper throwing
         throw new Error("spawn op ENOENT");
       });
       sdkMocks.createClient.mockResolvedValue({
         secrets: { resolve: vi.fn(async () => "secret") },
         vaults: {
           list: vi.fn(async () => {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: simulates the untyped 1Password SDK rejecting
             throw new Error("desktop approval refused for account");
           }),
         },
@@ -92,9 +96,11 @@ describe("makeOnePasswordService", () => {
       );
 
       expect(error).toBeInstanceOf(OnePasswordError);
+      // oxlint-disable executor/no-unknown-error-message -- boundary: OnePasswordError carries a typed message; asserting its contents
       expect(error.message).toContain("1Password SDK vault listing failed:");
       expect(error.message).toContain("desktop approval refused for account");
       expect(error.message).not.toBe("1Password CLI vault listing failed");
+      // oxlint-enable executor/no-unknown-error-message
     }),
   );
 });
