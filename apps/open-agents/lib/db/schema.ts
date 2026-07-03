@@ -420,7 +420,17 @@ export const automationDefinitions = pgTable(
     id: text("id").primaryKey(),
     currentVersionId: text("current_version_id"),
     scopeKind: text("scope_kind", {
-      enum: ["system", "user", "group", "org", "thread", "session", "repo", "automation", "external-thread"],
+      enum: [
+        "system",
+        "user",
+        "group",
+        "org",
+        "thread",
+        "session",
+        "repo",
+        "automation",
+        "external-thread",
+      ],
     }).notNull(),
     scopeId: text("scope_id").notNull(),
     ownerKind: text("owner_kind", {
@@ -822,7 +832,7 @@ export const agentLibraryItems = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    scopeKind: text("scope_kind", { enum: ["user", "org"] })
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] })
       .notNull()
       .default("user"),
     scopeId: text("scope_id").notNull(),

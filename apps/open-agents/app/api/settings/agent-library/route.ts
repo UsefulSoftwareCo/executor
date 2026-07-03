@@ -1,3 +1,4 @@
+import { canAccess, getDefaultOrgId, type Scope } from "@open-agents/authz";
 import { getServerSession } from "@/lib/session/get-server-session";
 import { getUserPreferences, updateUserPreferences } from "@/lib/db/user-preferences";
 import {
@@ -15,8 +16,14 @@ import {
 } from "@/lib/agents/repository";
 
 type SaveRequest =
-  | { kind: "agent"; item: unknown; setDefault?: boolean; scope?: AgentLibrarySaveScope }
-  | { kind: "skill"; item: unknown; scope?: AgentLibrarySaveScope };
+  | {
+      kind: "agent";
+      item: unknown;
+      setDefault?: boolean;
+      scope?: AgentLibrarySaveScope;
+      scopeId?: string;
+    }
+  | { kind: "skill"; item: unknown; scope?: AgentLibrarySaveScope; scopeId?: string };
 
 type PatchRequest = {
   defaultAgentName?: string | null;
@@ -26,7 +33,35 @@ function parseSaveScope(value: unknown): AgentLibrarySaveScope | null {
   if (value === undefined) {
     return "user";
   }
-  return value === "user" || value === "org" ? value : null;
+  return value === "user" || value === "group" || value === "org" ? value : null;
+}
+
+function parseGroupScopeId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function resolveLibraryScope(
+  userId: string,
+  scopeKind: AgentLibrarySaveScope,
+  providedScopeId: unknown,
+): Promise<Scope | null> {
+  if (scopeKind === "user") {
+    return { scopeKind, scopeId: userId };
+  }
+
+  if (scopeKind === "org") {
+    return { scopeKind, scopeId: await getDefaultOrgId() };
+  }
+
+  const scopeId = parseGroupScopeId(providedScopeId);
+  return scopeId ? { scopeKind, scopeId } : null;
+}
+
+async function requireManageLibraryScope(userId: string, scope: Scope): Promise<Response | null> {
+  const allowed = await canAccess({ kind: "user", userId }, scope, "manage");
+  return allowed
+    ? null
+    : Response.json({ error: "You do not have permission to manage this scope." }, { status: 403 });
 }
 
 async function requireUser() {
@@ -74,7 +109,17 @@ export async function POST(req: Request) {
         return Response.json({ error: "Invalid scope" }, { status: 400 });
       }
 
-      const item = await saveAgentDefinition(parsed.data, user.id, scope);
+      const targetScope = await resolveLibraryScope(user.id, scope, body.scopeId);
+      if (!targetScope) {
+        return Response.json({ error: "Group scopeId is required" }, { status: 400 });
+      }
+
+      const forbidden = await requireManageLibraryScope(user.id, targetScope);
+      if (forbidden) {
+        return forbidden;
+      }
+
+      const item = await saveAgentDefinition(parsed.data, user.id, scope, targetScope.scopeId);
       const preferences = body.setDefault
         ? await updateUserPreferences(user.id, { defaultAgentName: item.slug })
         : await getUserPreferences(user.id);
@@ -95,7 +140,17 @@ export async function POST(req: Request) {
         return Response.json({ error: "Invalid scope" }, { status: 400 });
       }
 
-      const item = await saveSkillDocument(parsed.data, user.id, scope);
+      const targetScope = await resolveLibraryScope(user.id, scope, body.scopeId);
+      if (!targetScope) {
+        return Response.json({ error: "Group scopeId is required" }, { status: 400 });
+      }
+
+      const forbidden = await requireManageLibraryScope(user.id, targetScope);
+      if (forbidden) {
+        return forbidden;
+      }
+
+      const item = await saveSkillDocument(parsed.data, user.id, scope, targetScope.scopeId);
       const preferences = await getUserPreferences(user.id);
       return Response.json({
         item,
@@ -165,9 +220,19 @@ export async function DELETE(req: Request) {
     return Response.json({ error: "kind and id are required" }, { status: 400 });
   }
 
+  const targetScope = await resolveLibraryScope(user.id, scope, url.searchParams.get("scopeId"));
+  if (!targetScope) {
+    return Response.json({ error: "Group scopeId is required" }, { status: 400 });
+  }
+
+  const forbidden = await requireManageLibraryScope(user.id, targetScope);
+  if (forbidden) {
+    return forbidden;
+  }
+
   try {
     if (kind === "agent") {
-      await deleteAgentDefinition(id, user.id, scope);
+      await deleteAgentDefinition(id, user.id, scope, targetScope.scopeId);
       const preferences = await getUserPreferences(user.id);
       const defaultAgentName =
         preferences.defaultAgentName === id ? null : preferences.defaultAgentName;
@@ -179,7 +244,7 @@ export async function DELETE(req: Request) {
       });
     }
 
-    await deleteSkillDocument(id, user.id, scope);
+    await deleteSkillDocument(id, user.id, scope, targetScope.scopeId);
     const preferences = await getUserPreferences(user.id);
     return Response.json({
       library: await listAgentLibrary(preferences.defaultAgentName, user.id),

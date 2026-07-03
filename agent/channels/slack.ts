@@ -76,6 +76,7 @@ async function handleSlackMessage(ctx: SlackContext, message: SlackMessage) {
     created: session.created,
     sessionId: session.sessionId,
     teamId: message.teamId ?? null,
+    turnActorId: session.turnActorId,
     userId: message.author.userId,
   });
 
@@ -128,7 +129,9 @@ async function handleSlackMessage(ctx: SlackContext, message: SlackMessage) {
     return null;
   }
 
-  await ctx.thread.post(turn.message ?? "I finished the turn, but did not produce a text response.");
+  await ctx.thread.post(
+    turn.message ?? "I finished the turn, but did not produce a text response.",
+  );
 
   return null;
 }

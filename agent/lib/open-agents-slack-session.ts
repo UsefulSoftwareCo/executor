@@ -22,6 +22,7 @@ export type OpenAgentsSlackSession = {
   sandboxSources: Array<{ repo: string; branch?: string; directory?: string }>;
   sessionId: string;
   sessionUrl: string;
+  turnActorId: string;
   userId: string;
 };
 
@@ -37,6 +38,11 @@ export type OpenAgentsSlackTurnResult =
 
 type SlackUserLinkRow = {
   userId: string;
+};
+
+type SlackTurnActor = {
+  headerValue: string;
+  linkedUserId: string | null;
 };
 
 type SlackThreadSessionRow = {
@@ -172,6 +178,22 @@ async function getLinkedOpenAgentsUserId(input: {
   return defaultTeamLink?.userId ?? null;
 }
 
+async function resolveSlackTurnActor(input: {
+  slackTeamId: string;
+  slackUserId: string;
+}): Promise<SlackTurnActor> {
+  const slackUserId = normalizeSlackUserId(input.slackUserId);
+  const linkedUserId = await getLinkedOpenAgentsUserId({
+    slackTeamId: input.slackTeamId,
+    slackUserId,
+  });
+
+  return {
+    headerValue: linkedUserId ?? `slack:${input.slackTeamId}:${slackUserId}`,
+    linkedUserId,
+  };
+}
+
 function getSessionSources(input: {
   repoTarget: RepoTarget | null;
   workspaceRepos: WorkspaceRepo[];
@@ -214,6 +236,7 @@ async function getSlackThreadSession(input: {
   slackChannelId: string;
   slackTeamId: string;
   slackThreadTs: string;
+  turnActorId: string;
 }): Promise<OpenAgentsSlackSession | null> {
   const sql = getSql();
   const [row] = await sql<SlackThreadSessionRow[]>`
@@ -235,6 +258,7 @@ async function getSlackThreadSession(input: {
         created: false,
         sandboxSources: [],
         sessionUrl: sessionUrl(row.sessionId, row.chatId),
+        turnActorId: input.turnActorId,
       }
     : null;
 }
@@ -244,6 +268,7 @@ async function createSlackThreadSession(input: {
   slackTeamId: string;
   slackThreadTs: string;
   text: string;
+  turnActorId: string;
   userId: string;
 }): Promise<OpenAgentsSlackSession> {
   const sql = getSql();
@@ -327,6 +352,7 @@ async function createSlackThreadSession(input: {
     sandboxSources: sessionSources.sandboxSources,
     sessionId,
     sessionUrl: sessionUrl(sessionId, chatId),
+    turnActorId: input.turnActorId,
     userId: input.userId,
   };
 }
@@ -339,20 +365,21 @@ export async function getOrCreateOpenAgentsSlackSession(input: {
   text: string;
 }): Promise<OpenAgentsSlackSession | null> {
   const slackTeamId = normalizeSlackTeamId(input.slackTeamId);
+  const turnActor = await resolveSlackTurnActor({
+    slackTeamId,
+    slackUserId: input.slackUserId,
+  });
   const existing = await getSlackThreadSession({
     slackChannelId: input.slackChannelId,
     slackTeamId,
     slackThreadTs: input.slackThreadTs,
+    turnActorId: turnActor.headerValue,
   });
   if (existing) {
     return existing;
   }
 
-  const userId = await getLinkedOpenAgentsUserId({
-    slackTeamId,
-    slackUserId: input.slackUserId,
-  });
-  if (!userId) {
+  if (!turnActor.linkedUserId) {
     return null;
   }
 
@@ -361,7 +388,8 @@ export async function getOrCreateOpenAgentsSlackSession(input: {
     slackTeamId,
     slackThreadTs: input.slackThreadTs,
     text: input.text,
-    userId,
+    turnActorId: turnActor.headerValue,
+    userId: turnActor.linkedUserId,
   });
 }
 
@@ -435,7 +463,7 @@ export async function runOpenAgentsSlackTurn(input: {
     headers: {
       "x-open-agents-chat-id": input.session.chatId,
       "x-open-agents-session-id": input.session.sessionId,
-      "x-open-agents-user-id": input.session.userId,
+      "x-open-agents-user-id": input.session.turnActorId,
     },
     message: slackMessageText(input.message),
   });

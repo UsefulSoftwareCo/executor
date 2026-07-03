@@ -2,6 +2,7 @@ import "server-only";
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { getDefaultOrgId, resolveMembership } from "@open-agents/authz";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { parse, stringify } from "yaml";
@@ -32,12 +33,6 @@ type MarkdownParts = {
 
 type AgentLibraryKind = "agent" | "skill";
 type DatabaseAgentLibraryScope = Exclude<AgentLibraryItemScope, "bundled">;
-
-const DEFAULT_ORG_SCOPE_ID = "default";
-
-function getAgentLibraryOrgScopeId(): string {
-  return process.env.OPEN_AGENTS_ORG_SCOPE_ID?.trim() || DEFAULT_ORG_SCOPE_ID;
-}
 
 type AgentLibraryRow = typeof agentLibraryItems.$inferSelect;
 
@@ -254,7 +249,11 @@ function skillFromEditorInput(
   };
 }
 
-function dbItemPath(kind: AgentLibraryKind, itemId: string, scope: DatabaseAgentLibraryScope): string {
+function dbItemPath(
+  kind: AgentLibraryKind,
+  itemId: string,
+  scope: DatabaseAgentLibraryScope,
+): string {
   return `db:${scope}:${kind}:${itemId}`;
 }
 
@@ -284,17 +283,38 @@ function isDatabaseBackedPath(itemPath: string): boolean {
   return itemPath.startsWith("db:");
 }
 
-function databaseScopeForSave(userId: string, scope: AgentLibrarySaveScope) {
-  return {
-    kind: scope,
-    id: scope === "user" ? userId : getAgentLibraryOrgScopeId(),
-  } as const;
+async function databaseScopeForSave(
+  userId: string,
+  scope: AgentLibrarySaveScope,
+  scopeId?: string,
+): Promise<{ kind: DatabaseAgentLibraryScope; id: string }> {
+  if (scope === "user") {
+    return { kind: scope, id: userId };
+  }
+
+  if (scope === "org") {
+    return { kind: scope, id: scopeId ?? (await getDefaultOrgId()) };
+  }
+
+  if (!scopeId) {
+    throw new Error("Group scopeId is required.");
+  }
+
+  return { kind: scope, id: scopeId };
 }
 
-function databaseScopesForRead(userId?: string) {
+async function databaseScopesForRead(
+  userId?: string,
+): Promise<Array<{ kind: DatabaseAgentLibraryScope; id: string }>> {
+  if (!userId) {
+    return [{ kind: "org", id: await getDefaultOrgId() }];
+  }
+
+  const membership = await resolveMembership({ kind: "user", userId });
   return [
-    { kind: "org", id: getAgentLibraryOrgScopeId() } as const,
-    ...(userId ? ([{ kind: "user", id: userId } as const] as const) : []),
+    ...Array.from(membership.orgIds, (id) => ({ kind: "org" as const, id })),
+    ...Array.from(membership.groupIds, (id) => ({ kind: "group" as const, id })),
+    { kind: "user", id: userId },
   ];
 }
 
@@ -445,7 +465,7 @@ export async function listAgentDefinitions(userId?: string): Promise<AgentDefini
     }
   }
 
-  for (const scope of databaseScopesForRead(userId)) {
+  for (const scope of await databaseScopesForRead(userId)) {
     const databaseAgents = await listDatabaseItems(scope, "agent");
     for (const row of databaseAgents) {
       const agent = toDatabaseAgent(row);
@@ -464,7 +484,7 @@ export async function getAgentDefinition(
 ): Promise<AgentDefinition | null> {
   const normalizedSlug = assertAgentSlug(slug);
 
-  for (const scope of [...databaseScopesForRead(userId)].reverse()) {
+  for (const scope of (await databaseScopesForRead(userId)).reverse()) {
     const row = await getDatabaseItem(scope, "agent", normalizedSlug);
     const databaseAgent = row ? toDatabaseAgent(row) : null;
     if (databaseAgent) {
@@ -488,12 +508,13 @@ export async function saveAgentDefinition(
   input: AgentEditorInput,
   userId?: string,
   scope: AgentLibrarySaveScope = "user",
+  scopeId?: string,
 ): Promise<AgentDefinition> {
   const parsed = agentEditorInputSchema.parse(input);
   const slug = assertAgentSlug(parsed.slug);
 
   if (userId) {
-    const databaseScope = databaseScopeForSave(userId, scope);
+    const databaseScope = await databaseScopeForSave(userId, scope, scopeId);
     await saveDatabaseItem({
       userId,
       scopeKind: databaseScope.kind,
@@ -534,11 +555,16 @@ export async function deleteAgentDefinition(
   slug: string,
   userId?: string,
   scope: AgentLibrarySaveScope = "user",
+  scopeId?: string,
 ): Promise<void> {
   const normalizedSlug = assertAgentSlug(slug);
 
   if (userId) {
-    await deleteDatabaseItem(databaseScopeForSave(userId, scope), "agent", normalizedSlug);
+    await deleteDatabaseItem(
+      await databaseScopeForSave(userId, scope, scopeId),
+      "agent",
+      normalizedSlug,
+    );
     return;
   }
 
@@ -565,7 +591,7 @@ export async function listSkillDocuments(userId?: string): Promise<SkillDocument
     }
   }
 
-  for (const scope of databaseScopesForRead(userId)) {
+  for (const scope of await databaseScopesForRead(userId)) {
     const databaseSkills = await listDatabaseItems(scope, "skill");
     for (const row of databaseSkills) {
       const skill = toDatabaseSkill(row);
@@ -578,13 +604,10 @@ export async function listSkillDocuments(userId?: string): Promise<SkillDocument
   return Array.from(byId.values()).sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export async function getSkillDocument(
-  id: string,
-  userId?: string,
-): Promise<SkillDocument | null> {
+export async function getSkillDocument(id: string, userId?: string): Promise<SkillDocument | null> {
   const skillId = normalizeSkillId(id);
 
-  for (const scope of [...databaseScopesForRead(userId)].reverse()) {
+  for (const scope of (await databaseScopesForRead(userId)).reverse()) {
     const row = await getDatabaseItem(scope, "skill", skillId);
     const databaseSkill = row ? toDatabaseSkill(row) : null;
     if (databaseSkill) {
@@ -608,13 +631,14 @@ export async function saveSkillDocument(
   input: SkillEditorInput,
   userId?: string,
   scope: AgentLibrarySaveScope = "user",
+  scopeId?: string,
 ): Promise<SkillDocument> {
   const parsed = skillEditorInputSchema.parse(input);
   const skillId = normalizeSkillId(parsed.id);
   const normalized = { ...parsed, id: skillId };
 
   if (userId) {
-    const databaseScope = databaseScopeForSave(userId, scope);
+    const databaseScope = await databaseScopeForSave(userId, scope, scopeId);
     await saveDatabaseItem({
       userId,
       scopeKind: databaseScope.kind,
@@ -623,7 +647,11 @@ export async function saveSkillDocument(
       itemId: skillId,
       itemJson: normalized as unknown as Record<string, unknown>,
     });
-    return skillFromEditorInput(normalized, dbItemPath("skill", skillId, databaseScope.kind), scope);
+    return skillFromEditorInput(
+      normalized,
+      dbItemPath("skill", skillId, databaseScope.kind),
+      scope,
+    );
   }
 
   const skillsDir = await getSkillsDirectory();
@@ -659,11 +687,12 @@ export async function deleteSkillDocument(
   id: string,
   userId?: string,
   scope: AgentLibrarySaveScope = "user",
+  scopeId?: string,
 ): Promise<void> {
   const skillId = normalizeSkillId(id);
 
   if (userId) {
-    await deleteDatabaseItem(databaseScopeForSave(userId, scope), "skill", skillId);
+    await deleteDatabaseItem(await databaseScopeForSave(userId, scope, scopeId), "skill", skillId);
     return;
   }
 

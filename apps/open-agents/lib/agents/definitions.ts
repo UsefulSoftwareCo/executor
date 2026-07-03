@@ -161,7 +161,7 @@ export const agentFrontmatterSchema = z
 
 export type AgentFrontmatter = z.infer<typeof agentFrontmatterSchema>;
 
-export type AgentLibrarySaveScope = "user" | "org";
+export type AgentLibrarySaveScope = "user" | "group" | "org";
 export type AgentLibraryItemScope = AgentLibrarySaveScope | "bundled";
 
 export interface AgentDefinition {
