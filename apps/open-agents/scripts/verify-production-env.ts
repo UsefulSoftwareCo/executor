@@ -11,14 +11,14 @@ const EXPECTED_PROJECT = {
 const EXPECTED_SERVICE_CONFIG = {
   web: {
     type: "web",
-    root: "apps/open-agents",
+    entrypoint: "apps/open-agents",
     framework: "nextjs",
     mount: "/",
     buildCommand: "bun run build",
   },
   eve: {
     type: "web",
-    root: "apps/open-agents",
+    entrypoint: "apps/open-agents",
     framework: "eve",
     mount: "/_eve_internal/eve",
     buildCommand:
