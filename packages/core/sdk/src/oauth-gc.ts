@@ -104,10 +104,12 @@ export interface OAuthClientGcRow {
  * is a DCR client. This was validated against the production database: of the
  * 394 rows that carry an explicit origin_kind stamp, `grant =
  * 'authorization_code' AND resource IS NOT NULL` matches all 329 stamped DCR
- * rows and zero stamped-manual rows (100% recall, no false positives). The
- * earlier slug/resource `…mcp…` regex heuristic had bad recall (it missed
- * legacy rows whose slug was a bare provider name like `linear` / `notion` /
- * `cloudflare`), so it is gone; the resource presence check subsumes it.
+ * rows (100% recall). It also matches a handful of stamped-manual BYO rows
+ * that point at MCP servers, but those never reach this arm: an explicit
+ * stamp always wins. The earlier slug/resource `…mcp…` regex heuristic had
+ * bad recall (it missed legacy rows whose slug was a bare provider name like
+ * `linear` / `notion` / `cloudflare`), so it is gone; the resource presence
+ * check subsumes it.
  *
  * Explicit stamps always win (arm 1): a stamped `manual` BYO row keeps its
  * classification even when it carries a resource, and a stamped DCR row is DCR

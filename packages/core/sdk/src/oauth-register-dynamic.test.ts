@@ -252,9 +252,14 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
-  it.effect("reuses legacy DCR-looking rows with no stored issuer by token host", () =>
+  it.effect("does NOT reuse a legacy DCR row with no stored issuer (mints fresh)", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        // Post-migration, the reuse lookup keys strictly on a non-null
+        // origin_issuer: the fuzzy token-host fallback is gone. A legacy row that
+        // has not yet been backfilled (null origin_issuer) is therefore NOT
+        // reused, so a fresh DCR registration happens. The GC migration then
+        // backfills/GCs any duplicate this transient window mints.
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
         yield* executor.acme.seed();
@@ -275,6 +280,64 @@ describe("oauth.registerDynamicClient", () => {
           config.db.updateMany("oauth_client", {
             where: (b) => b("slug", "=", String(legacySlug)),
             set: { origin_kind: null, origin_integration: null, origin_issuer: null },
+          }),
+        );
+        yield* server.clearRequests;
+
+        const registered = yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("new-attempt"),
+          issuer: probe.issuer,
+          registrationEndpoint: probe.registrationEndpoint!,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: server.mcpResourceUrl,
+          scopes: ["read"],
+          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+          clientName: "Acme DCR",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+
+        // A fresh client is registered, not the null-issuer legacy row.
+        expect(registered).not.toBe(legacySlug);
+        const requests = yield* server.requests;
+        expect(registerRequestCount(requests)).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("reuses a legacy DCR row once its origin_issuer is backfilled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The post-backfill counterpart: after the GC migration stamps a legacy
+        // row's origin_issuer, the reuse lookup keys on it and mints no
+        // duplicate. This is the steady state the migration establishes.
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+        const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: legacySlug,
+          authorizationUrl: probe.authorizationUrl,
+          tokenUrl: probe.tokenUrl,
+          resource: server.mcpResourceUrl,
+          grant: "authorization_code",
+          clientId: "legacy-dcr-client",
+          clientSecret: "",
+        });
+        // Simulate the migration's backfill: legacy DCR stamp + issuer set.
+        yield* Effect.promise(() =>
+          config.db.updateMany("oauth_client", {
+            where: (b) => b("slug", "=", String(legacySlug)),
+            set: {
+              origin_kind: "dynamic_client_registration",
+              origin_integration: null,
+              origin_issuer: probe.issuer,
+            },
           }),
         );
         yield* server.clearRequests;

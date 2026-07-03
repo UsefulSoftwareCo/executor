@@ -70,13 +70,7 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { OAUTH2_SESSION_TTL_MS, encodeOAuthCallbackState } from "./oauth";
-import {
-  canonicalIssuerUrl,
-  hostOfUrl,
-  isDcrClassifiedRow,
-  parseUrl,
-  registrableHostOfUrl,
-} from "./oauth-gc";
+import { canonicalIssuerUrl, hostOfUrl, isDcrClassifiedRow, parseUrl } from "./oauth-gc";
 
 /** Connection-minting input for the OAuth flow — extends a connection create
  *  with the OAuth lifecycle fields (client slug, refresh material, expiry,
@@ -677,7 +671,6 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const dcrCandidatesForIssuer = (
     owner: Owner,
     issuer: string | null,
-    tokenUrl: string,
   ): Effect.Effect<readonly DcrReuseCandidate[], StorageFailure> =>
     deps.fuma
       .use("oauth_client.findMany", (db) =>
@@ -687,17 +680,18 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       )
       .pipe(
         Effect.map((rows) => {
-          const inputTokenHost = registrableHostOfUrl(tokenUrl);
           const matches = rows.flatMap(
             (row): readonly (DcrReuseCandidate & { readonly createdAt: number })[] => {
               if (parseOAuthClientOrigin(row).kind !== "dynamic_client_registration") return [];
+              // A candidate matches only via a non-null, canonicalized stored
+              // issuer. The GC migration backfills origin_issuer on every
+              // surviving DCR row, so post-migration a null-issuer row is a
+              // transient (unmigrated) row; skipping it just mints one duplicate
+              // the migration then GCs, rather than reusing on a fuzzy token-host
+              // guess.
               const rowIssuer =
                 row.origin_issuer == null ? null : canonicalIssuerUrl(String(row.origin_issuer));
-              const issuerMatches =
-                rowIssuer !== null
-                  ? dcrIssuerMatches(rowIssuer, issuer)
-                  : inputTokenHost !== null &&
-                    registrableHostOfUrl(String(row.token_url)) === inputTokenHost;
+              const issuerMatches = rowIssuer !== null && dcrIssuerMatches(rowIssuer, issuer);
               if (!issuerMatches) return [];
               return [
                 {
@@ -733,7 +727,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     StorageFailure
   > =>
     Effect.gen(function* () {
-      const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer, input.tokenUrl);
+      const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
       const resource = input.resource ?? null;
       if (resource !== null) {
         const matchingResource = candidates.find((client) => client.resource === resource);
