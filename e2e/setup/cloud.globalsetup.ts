@@ -3,7 +3,7 @@
 // (cloud.boot.ts — emulated WorkOS + Autumn + the app's real dev stack, the
 // same recipe the dev CLI uses). Set E2E_CLOUD_URL to attach to a running
 // stack instead.
-import { claimPorts } from "../src/ports";
+import { claimAndBoot } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
 import { waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
@@ -15,54 +15,62 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     return;
   }
 
-  // Claim a free port block (preferred block first, walk forward past
-  // squatters/colliding checkouts) and publish via env so the test workers —
-  // spawned after this — derive the same URLs. The imported targets/cloud
-  // constants were computed BEFORE the claim, so use the claimed values here.
-  const { ports, release } = await claimPorts([
-    { envVar: "E2E_CLOUD_PORT", offset: 0, label: "cloud vite dev" },
-    { envVar: "E2E_CLOUD_DB_PORT", offset: 1, label: "cloud dev-db (PGlite)" },
-    { envVar: "E2E_WORKOS_EMULATOR_PORT", offset: 2, label: "WorkOS emulator" },
-    { envVar: "E2E_AUTUMN_EMULATOR_PORT", offset: 3, label: "Autumn emulator" },
-  ]);
-
-  // Suite-owned trace store — every run captures distributed traces.
+  // Suite-owned trace store — every run captures distributed traces. Booted
+  // once outside the retry: it binds its own OS-assigned port (not a claimed
+  // one), so an EADDRINUSE on the claimed block doesn't implicate it.
   const motel = await bootMotel();
   // Publish to the test workers (they inherit this process's env): scenarios
   // that assert on exported spans yield the Telemetry service, which exists
   // only when this is set. No motel → those scenarios skip, never fail.
   if (motel) process.env.E2E_MOTEL_URL = motel.url;
 
-  const publicUrl = `http://localhost:${ports.E2E_CLOUD_PORT!}`;
+  // Claim a free port block (preferred block first, walk forward past
+  // squatters/colliding checkouts), boot the stack, and retry on EADDRINUSE —
+  // on Linux CI an ephemeral outbound socket can still grab a claimed port
+  // between probe and bind, so re-claim the next block and retry. claimAndBoot
+  // publishes the claimed ports via env (E2E_*_PORT) so the test workers —
+  // spawned after this — derive the same URLs; the imported targets/cloud
+  // constants were computed BEFORE the claim, so use the claimed values here.
   let booted;
   try {
-    booted = await bootCloud({
-      cloudPort: ports.E2E_CLOUD_PORT!,
-      dbPort: ports.E2E_CLOUD_DB_PORT!,
-      workosPort: ports.E2E_WORKOS_EMULATOR_PORT!,
-      autumnPort: ports.E2E_AUTUMN_EMULATOR_PORT!,
-      workosClientId: E2E_WORKOS_CLIENT_ID,
-      cookiePassword: E2E_COOKIE_PASSWORD,
-      publicUrl,
-      // Server + browser spans → the suite's motel. The app's exporter is
-      // endpoint-agnostic, so the same layer that ships prod traces to
-      // Axiom ships e2e traces to the suite store — "why was that page
-      // slow" gets a span waterfall, not a guess.
-      extraEnv: motelExporterEnv(motel, publicUrl),
-    });
+    booted = await claimAndBoot(
+      [
+        { envVar: "E2E_CLOUD_PORT", offset: 0, label: "cloud vite dev" },
+        { envVar: "E2E_CLOUD_DB_PORT", offset: 1, label: "cloud dev-db (PGlite)" },
+        { envVar: "E2E_WORKOS_EMULATOR_PORT", offset: 2, label: "WorkOS emulator" },
+        { envVar: "E2E_AUTUMN_EMULATOR_PORT", offset: 3, label: "Autumn emulator" },
+      ],
+      async (ports) => {
+        const publicUrl = `http://localhost:${ports.E2E_CLOUD_PORT!}`;
+        const cloud = await bootCloud({
+          cloudPort: ports.E2E_CLOUD_PORT!,
+          dbPort: ports.E2E_CLOUD_DB_PORT!,
+          workosPort: ports.E2E_WORKOS_EMULATOR_PORT!,
+          autumnPort: ports.E2E_AUTUMN_EMULATOR_PORT!,
+          workosClientId: E2E_WORKOS_CLIENT_ID,
+          cookiePassword: E2E_COOKIE_PASSWORD,
+          publicUrl,
+          // Server + browser spans → the suite's motel. The app's exporter is
+          // endpoint-agnostic, so the same layer that ships prod traces to
+          // Axiom ships e2e traces to the suite store — "why was that page
+          // slow" gets a span waterfall, not a guess.
+          extraEnv: motelExporterEnv(motel, publicUrl),
+        });
+        return { teardown: cloud.teardown, value: cloud };
+      },
+      { label: "cloud" },
+    );
     // Publish the Autumn emulator URL to the test workers (they inherit this
     // process's env): scenarios that assert on tracked usage yield the Autumn
     // service, which exists only when this is set. No emulator → those scenarios
     // skip, never fail. (Cloud-only; selfhost never boots Autumn.)
-    process.env.E2E_AUTUMN_URL = booted.autumnUrl;
+    process.env.E2E_AUTUMN_URL = booted.value.autumnUrl;
   } catch (error) {
     await motel?.teardown();
-    await release();
     throw error;
   }
   return async () => {
     await booted.teardown();
     await motel?.teardown();
-    await release();
   };
 }

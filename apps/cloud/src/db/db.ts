@@ -67,18 +67,53 @@ const makeSql = (): Sql =>
     onnotice: () => undefined,
   });
 
+/**
+ * Graceful drain window (seconds) handed to `postgres`'s `sql.end`. Small but
+ * non-zero: `timeout: 0` closes immediately without waiting for a clean
+ * Terminate, which leaves the socket half-closed for the server to reap on its
+ * own schedule. A short drain lets postgres.js finish the wire teardown.
+ *
+ * This is a `Promise.race` CEILING, not a fixed wait: postgres.js races
+ * `end({ timeout })` against the actual teardown, and an idle connection's
+ * `end()` calls `terminate()` immediately and resolves as soon as the socket
+ * closes (sub-millisecond). Awaiting it in the request scope therefore adds no
+ * meaningful latency on the common path; the 5s only bounds how long a
+ * connection still mid-query can hold the scope open.
+ */
+export const POSTGRES_END_TIMEOUT_SECONDS = 5;
+
+/**
+ * Close a postgres pool and AWAIT its teardown.
+ *
+ * The `DbService` layers ({@link DbService.Live}, {@link makeDbLayer}) run this
+ * as their `acquireRelease` finalizer. The MCP auth seam
+ * (`makeMcpOrganizationAuthServices`) builds a FRESH pool on EVERY `/mcp`
+ * request, so this finalizer runs per request under sustained load.
+ *
+ * It used to be fire-and-forget (`Effect.runFork(sql.end({ timeout: 0 }))`),
+ * which returned before the connection was actually torn down. The abandoned
+ * sockets piled up against the dev PGlite server (effectively single-connection)
+ * faster than it reaped them; new connects then queued behind the backlog, so
+ * request latency climbed into the tens of seconds and the stack eventually
+ * hung — the CI e2e "cloud dev stack degrades after minutes of sustained load"
+ * cascade. Awaiting the close bounds the number of live-plus-closing sockets to
+ * what is actually in flight. It runs inside the request's own Effect scope, so
+ * it respects workerd's per-request I/O rule.
+ */
+export const closePostgres = (sql: Pick<Sql, "end">): Effect.Effect<void> =>
+  Effect.ignore(
+    Effect.tryPromise({
+      try: () => sql.end({ timeout: POSTGRES_END_TIMEOUT_SECONDS }),
+      catch: (cause) => cause,
+    }),
+  );
+
 const makePostgresResource = (): DbResource => {
   const sql = makeSql();
   return {
     sql,
     db: drizzle(sql, { schema: combinedSchema }) as DrizzleDb,
-    close: () =>
-      Effect.ignore(
-        Effect.tryPromise({
-          try: () => sql.end({ timeout: 0 }),
-          catch: (cause) => cause,
-        }),
-      ),
+    close: () => closePostgres(sql),
   };
 };
 

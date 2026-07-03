@@ -1213,6 +1213,7 @@
     },
   },
   "patchedDependencies": {
+    "@electric-sql/pglite-socket@0.1.4": "patches/@electric-sql%2Fpglite-socket@0.1.4.patch",
     "libsql@0.5.29": "patches/libsql@0.5.29.patch",
     "agents@0.17.3": "patches/agents@0.17.3.patch",
     "postgres@3.4.9": "patches/postgres@3.4.9.patch",

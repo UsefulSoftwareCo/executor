@@ -82,10 +82,41 @@ const db = await PGlite.create(DB_PATH);
 console.log(`[dev-db] Running migrations from ${MIGRATIONS_FOLDER}`);
 await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 
+// `PGLiteSocketServer` defaults to `maxConnections: 1` and answers every extra
+// concurrent connection with "Too many connections" + an immediate socket
+// close. (pglite-socket 0.1.4's published index.d.ts documents "default: 100",
+// but the shipped runtime JS is `maxConnections ?? 1`, verified in the shipped
+// chunk, so the runtime default really is 1.) The cloud worker opens a fresh
+// postgres pool per request (the MCP auth seam rebuilds one on EVERY `/mcp`
+// request, see apps/cloud/src/mcp/auth.ts), so under concurrent load, exactly
+// what the e2e suite generates against one shared dev stack, the
+// second-and-later connects were rejected, and postgres.js reconnected in a
+// tight loop against the closed socket. That reconnect storm piled up
+// thousands of half-closed sockets, starved real queries, drove request
+// latency into the tens of seconds, and eventually hung the stack: the CI e2e
+// "cloud dev stack degrades after minutes of sustained load" cascade flake.
+// PGlite runs queries serially (its internal QueryQueueManager executes each
+// under `runExclusive`), so allowing many connections means they queue instead
+// of being rejected. One caveat makes that safe: stock pglite-socket 0.1.4
+// enqueues each wire FRAME separately, so two connections' extended-protocol
+// pipelines (Parse/Bind/Execute/Sync) would interleave inside the one shared
+// PGlite session and corrupt each other ("bind message supplies N parameters,
+// but prepared statement requires M" -> random 500s on whichever request lost
+// the race). The patch in patches/@electric-sql%2Fpglite-socket@0.1.4.patch
+// batches each socket data event into one queue entry and holds handler
+// affinity while a pipeline is open;
+// src/db/dev-db-socket-concurrency.node.test.ts is the regression test.
 const server = new PGLiteSocketServer({
   db,
   port: PORT,
   host: "127.0.0.1",
+  maxConnections: Number(process.env.DEV_DB_MAX_CONNECTIONS ?? 1000),
+  // Backstop for pipeline affinity: a client that stalls mid-pipeline (Parse
+  // sent, no Sync) with its socket still OPEN would hold the queue's handler
+  // affinity forever and starve every other connection, since affinity only
+  // releases on detach and detach needs close/error/idle-timeout. In ms; the
+  // timer resets on every data event, so only a genuinely dead client trips it.
+  idleTimeout: Number(process.env.DEV_DB_IDLE_TIMEOUT_MS ?? 30_000),
 });
 
 await server.start();
