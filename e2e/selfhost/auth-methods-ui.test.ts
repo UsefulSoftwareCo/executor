@@ -49,7 +49,10 @@ scenario(
           await page.goto(`/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`, {
             waitUntil: "networkidle",
           });
-          await page.getByText("How does this server authenticate?").waitFor();
+          // Generous timeout: the debounced probe request can queue behind a
+          // busy dev server under CI load, and there is no clean client-side
+          // re-trigger to poke it mid-flight.
+          await page.getByText("How does this server authenticate?").waitFor({ timeout: 90_000 });
         });
 
         await step("The probe detected OAuth", async () => {

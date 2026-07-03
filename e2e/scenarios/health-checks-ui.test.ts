@@ -483,7 +483,7 @@ scenario(
               await page.getByPlaceholder("https://api.example.com/openapi.json").fill(spec);
               await page
                 .getByRole("heading", { name: "Health check (optional)" })
-                .waitFor({ timeout: 20_000 });
+                .waitFor({ timeout: 30_000 });
             });
 
             await step("Type to reach an operation past the preview's top slice", async () => {

@@ -32,8 +32,12 @@ const cookiePair = (response: Response, name: string): string | undefined => {
 const signIn = async (email: string): Promise<string> => {
   const login = await fetch(new URL("/api/auth/login", CLOUD_BASE_URL), { redirect: "manual" });
   const stateCookie = cookiePair(login, "wos-login-state");
-  const authorizeUrl = new URL(login.headers.get("location") ?? "");
-  if (!stateCookie || !authorizeUrl.searchParams.get("state")) {
+  const location = login.headers.get("location");
+  if (!stateCookie || !location) {
+    throw new Error(`cloud signIn: login did not redirect to AuthKit (${login.status})`);
+  }
+  const authorizeUrl = new URL(location);
+  if (!authorizeUrl.searchParams.get("state")) {
     throw new Error(`cloud signIn: login did not redirect to AuthKit (${login.status})`);
   }
   // The emulator's hosted login signs in headlessly via login_hint (creating
