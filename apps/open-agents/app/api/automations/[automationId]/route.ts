@@ -1,4 +1,5 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: Next route handlers translate request parsing and repository failures into HTTP responses */
+import { AuthzError } from "@open-agents/authz";
 import { getAutomationForUser, upsertAutomationDefinition } from "@/lib/automation/store";
 import type { AutomationDefinitionInput } from "@/lib/automation/types";
 import { getServerSession } from "@/lib/session/get-server-session";
@@ -77,7 +78,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },
-      { status: 400 },
+      { status: error instanceof AuthzError ? error.status : 400 },
     );
   }
 }

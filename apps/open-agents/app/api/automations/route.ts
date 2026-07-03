@@ -1,4 +1,5 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: Next route handlers translate request parsing and repository failures into HTTP responses */
+import { AuthzError } from "@open-agents/authz";
 import { z } from "zod";
 import {
   listAutomationsForUser,
@@ -87,7 +88,7 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },
-      { status: 400 },
+      { status: error instanceof AuthzError ? error.status : 400 },
     );
   }
 }

@@ -1,6 +1,7 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: Drizzle repository functions reject to route/workflow adapters, and transaction callbacks rely on thrown rollback failures */
 import "server-only";
 
+import { canAccess, resolveMembership, AuthzError, type Scope } from "@open-agents/authz";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getAgentDefinition, listLocalSkillFilesForPatterns } from "@/lib/agents/repository";
@@ -25,6 +26,7 @@ import {
   automationTimelineEvents,
   automationVersions,
   chats,
+  groups,
   type AutomationDefinition as AutomationDefinitionRow,
   type AutomationEvent as AutomationEventRow,
   type AutomationInvocation,
@@ -254,21 +256,11 @@ export function getAutomationScheduleStateKey(
 export async function listAutomationsForUser(
   userId: string,
 ): Promise<AutomationListItem[]> {
+  const readableScopes = await getReadableAutomationScopeConditions(userId);
   const definitions = await db
     .select()
     .from(automationDefinitions)
-    .where(
-      or(
-        and(
-          eq(automationDefinitions.scopeKind, "user"),
-          eq(automationDefinitions.scopeId, userId),
-        ),
-        and(
-          eq(automationDefinitions.ownerKind, "user"),
-          eq(automationDefinitions.ownerId, userId),
-        ),
-      ),
-    )
+    .where(or(...readableScopes))
     .orderBy(desc(automationDefinitions.updatedAt));
 
   if (definitions.length === 0) {
@@ -372,7 +364,7 @@ export async function getAutomationForUser(params: {
     .where(eq(automationDefinitions.id, params.automationId))
     .limit(1);
 
-  if (!definition || !canReadAutomation(definition, params.userId)) {
+  if (!definition || !(await canReadAutomation(definition, params.userId))) {
     return null;
   }
 
@@ -427,7 +419,7 @@ export async function getAutomationRunForUser(params: {
     .from(automationDefinitions)
     .where(eq(automationDefinitions.id, run.automationId))
     .limit(1);
-  if (automation && !canReadAutomation(automation, params.userId)) {
+  if (automation && !(await canReadAutomation(automation, params.userId))) {
     return null;
   }
 
@@ -554,15 +546,13 @@ export async function upsertAutomationDefinition(params: {
     where: eq(automationDefinitions.id, automationId),
   });
 
-  if (existing && !canWriteAutomation(existing, params.userId)) {
-    throw new Error("Unauthorized automation update");
+  const scope = normalizeRequestedAutomationScope(parsed.scope, params.userId);
+  await requireAutomationScopeManage(params.userId, scope);
+  if (existing) {
+    await requireAutomationScopeManage(params.userId, automationRowScope(existing));
   }
 
   const versionNumber = await getNextVersionNumber(automationId);
-  const scope =
-    parsed.scope.kind === "user"
-      ? { kind: "user" as const, id: params.userId }
-      : parsed.scope;
   const definition: AutomationDefinition = {
     ...parsed,
     id: automationId,
@@ -646,21 +636,77 @@ async function getNextVersionNumber(automationId: string): Promise<number> {
   return (result?.maxVersion ?? 0) + 1;
 }
 
-function canReadAutomation(
-  definition: AutomationDefinitionRow,
-  userId: string,
-): boolean {
-  return (
-    (definition.scopeKind === "user" && definition.scopeId === userId) ||
-    (definition.ownerKind === "user" && definition.ownerId === userId)
-  );
+async function getReadableAutomationScopeConditions(userId: string) {
+  const membership = await resolveMembership({ kind: "user", userId });
+  const orgIds = [...new Set([...membership.orgIds, ...membership.adminOrgIds])];
+  const groupIds = [...new Set([...membership.groupIds, ...membership.managerGroupIds])];
+  const adminOrgIds = [...membership.adminOrgIds];
+
+  if (adminOrgIds.length > 0) {
+    const adminGroupRows = await db
+      .select({ id: groups.id })
+      .from(groups)
+      .where(inArray(groups.orgId, adminOrgIds));
+    groupIds.push(...adminGroupRows.map((group) => group.id));
+  }
+
+  const readableGroupIds = [...new Set(groupIds)];
+  return [
+    and(
+      eq(automationDefinitions.scopeKind, "user"),
+      eq(automationDefinitions.scopeId, userId),
+    ),
+    orgIds.length > 0
+      ? and(
+          eq(automationDefinitions.scopeKind, "org"),
+          inArray(automationDefinitions.scopeId, orgIds),
+        )
+      : undefined,
+    readableGroupIds.length > 0
+      ? and(
+          eq(automationDefinitions.scopeKind, "group"),
+          inArray(automationDefinitions.scopeId, readableGroupIds),
+        )
+      : undefined,
+  ];
 }
 
-function canWriteAutomation(
+function normalizeRequestedAutomationScope(
+  scope: AutomationDefinition["scope"],
+  userId: string,
+): AutomationDefinition["scope"] {
+  return scope.kind === "user" ? { kind: "user", id: userId } : scope;
+}
+
+function automationRowScope(definition: AutomationDefinitionRow): Scope {
+  return {
+    scopeKind: definition.scopeKind,
+    scopeId: definition.scopeId,
+  };
+}
+
+function automationDefinitionScope(scope: AutomationDefinition["scope"]): Scope {
+  return {
+    scopeKind: scope.kind,
+    scopeId: scope.id,
+  };
+}
+
+async function canReadAutomation(
   definition: AutomationDefinitionRow,
   userId: string,
-): boolean {
-  return definition.ownerKind === "user" && definition.ownerId === userId;
+): Promise<boolean> {
+  return canAccess({ kind: "user", userId }, automationRowScope(definition), "read");
+}
+
+async function requireAutomationScopeManage(
+  userId: string,
+  scope: AutomationDefinition["scope"] | Scope,
+): Promise<void> {
+  const targetScope = "scopeKind" in scope ? scope : automationDefinitionScope(scope);
+  if (!(await canAccess({ kind: "user", userId }, targetScope, "manage"))) {
+    throw new AuthzError("You do not have permission to manage this automation scope.");
+  }
 }
 
 export async function emitAutomationEvent(input: AutomationEventInput): Promise<{
@@ -1490,7 +1536,7 @@ export async function getAutomationApprovalForUser(params: {
   const automation = await db.query.automationDefinitions.findFirst({
     where: eq(automationDefinitions.id, run.automationId),
   });
-  if (!automation || !canReadAutomation(automation, params.userId)) {
+  if (!automation || !(await canReadAutomation(automation, params.userId))) {
     return null;
   }
 
