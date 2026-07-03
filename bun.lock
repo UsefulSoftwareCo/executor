@@ -7,6 +7,7 @@
       "dependencies": {
         "@babel/parser": "^7.29.7",
         "@cfworker/json-schema": "^4.1.1",
+        "@executor-js/api": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@open-agents/authz": "workspace:*",
         "@open-agents/sandbox": "workspace:*",

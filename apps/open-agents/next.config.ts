@@ -53,6 +53,12 @@ const nextConfig: NextConfig = {
   webpack(config) {
     const workflowGeneratedRoutePattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
 
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "@streamdown/code$": resolve(appRoot, "node_modules/@streamdown/code/dist/index.js"),
+      streamdown$: resolve(appRoot, "node_modules/streamdown/dist/index.js"),
+    };
+
     config.watchOptions = {
       ...config.watchOptions,
       ignored: workflowGeneratedRoutePattern,

@@ -2,8 +2,8 @@
 
 import { File as DiffsFile } from "@pierre/diffs/react";
 import { Check, CodeXml, Copy, Loader2, RefreshCw } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Streamdown } from "streamdown";
 import useSWR from "swr";
 import type { WorkspaceFileContentResponse } from "@/app/api/sessions/[sessionId]/files/content/route";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,7 @@ type PrettyViewKind = "markdown" | "text";
 const wrappedFileExtensions = new Set([".md", ".mdx", ".markdown", ".txt"]);
 const markdownExtensions = new Set([".md", ".mdx", ".markdown"]);
 const plainTextExtensions = new Set([".txt"]);
+const Streamdown = dynamic(() => import("streamdown").then((m) => m.Streamdown), { ssr: false });
 
 function getFileExtension(filePath: string) {
   const normalizedPath = filePath.toLowerCase();
