@@ -278,6 +278,11 @@ function PasteCredentialInputs(props: {
                 data-lpignore="true"
                 data-bwignore
                 data-form-type="other"
+                // No visible label or placeholder here (the affix carries the
+                // instruction visually), so the accessible name comes from
+                // aria-label instead — matches the multi-input grid's Label
+                // text one-for-one.
+                aria-label={input.label}
                 value={props.values[input.variable] ?? ""}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   props.onChange({ ...props.values, [input.variable]: e.target.value })
@@ -296,6 +301,10 @@ function PasteCredentialInputs(props: {
                 data-lpignore="true"
                 data-bwignore
                 data-form-type="other"
+                // The Label above (when labelled) has no htmlFor, so it isn't
+                // programmatically associated with this input; aria-label is
+                // the only accessible name in either case.
+                aria-label={input.label}
                 value={props.values[input.variable] ?? ""}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   props.onChange({

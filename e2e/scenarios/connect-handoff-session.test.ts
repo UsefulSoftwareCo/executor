@@ -152,12 +152,23 @@ scenario(
                   .waitFor({ timeout: 15_000 });
               });
               await step("Paste the Resend API key and connect", async () => {
-                // Affixed single-input bearer field: value input placeholder is
-                // "token" (scoped to the dialog to stay unique).
-                const credential = page.getByRole("dialog").getByPlaceholder("token");
+                // Affixed single-input bearer field: no placeholder, so its
+                // accessible name is the placement name ("Authorization"),
+                // scoped to the dialog to stay unique.
+                const credential = page
+                  .getByRole("dialog")
+                  .getByRole("textbox", { name: "Authorization" });
                 await credential.waitFor({ timeout: 15_000 });
                 await credential.fill(apiKey);
-                await page.getByRole("button", { name: "Add connection", exact: true }).click();
+                // The credential wizard is two steps: Continue (validate) then
+                // Add connection (name + place). Scope the submit click to the
+                // dialog, since the page also has its own "Add connection"
+                // trigger button.
+                await page.getByRole("button", { name: "Continue" }).click();
+                await page
+                  .getByRole("dialog")
+                  .getByRole("button", { name: "Add connection", exact: true })
+                  .click();
                 await page
                   .getByRole("heading", { name: /Add connection/ })
                   .waitFor({ state: "hidden", timeout: 20_000 });
