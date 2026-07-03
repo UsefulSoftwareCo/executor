@@ -21,6 +21,7 @@ import type * as Cause from "effect/Cause";
 import type { ExecutionEngine } from "@executor-js/execution";
 
 import { withPreExecutionGate, type GateDecision } from "./execution-gate";
+import { RATE_LIMIT_BLOCKED_MESSAGE } from "./execution-limit-messages";
 
 // Fixed window: all executions in the same clock hour share one counter.
 export const RATE_LIMIT_WINDOW_MS = 3_600_000;
@@ -36,8 +37,7 @@ const RATE_LIMIT_CHECK_TIMEOUT_MS = 2_000;
 // cost nothing. Two windows: long enough that an active window never purges.
 const COUNTER_PURGE_AFTER_MS = 2 * RATE_LIMIT_WINDOW_MS;
 
-export const RATE_LIMIT_BLOCKED_MESSAGE =
-  "Rate limit exceeded: too many executions this hour. This is an abuse backstop — contact support if you hit this legitimately.";
+export { RATE_LIMIT_BLOCKED_MESSAGE };
 
 export class ExecutionRateLimitExceededError extends Data.TaggedError(
   "ExecutionRateLimitExceededError",
@@ -100,7 +100,6 @@ export type RateLimitIncrement = (
 ) => Effect.Effect<number, unknown>;
 
 export type ExecutionRateLimiter = {
-  readonly check: (organizationId: string) => Effect.Effect<void, ExecutionRateLimitExceededError>;
   readonly decorate: <E extends Cause.YieldableError>(
     organizationId: string,
     engine: ExecutionEngine<E>,
@@ -109,7 +108,9 @@ export type ExecutionRateLimiter = {
 
 /**
  * Build a rate limiter around an increment function (in production: the
- * counter DO; in tests: an in-memory fake). `options` exist for tests.
+ * counter DO). `options.limit` is the per-org hourly cap (production sets it
+ * from the env override in `makeCloudExecutionRateLimiter`); the rest tune the
+ * window and time budget.
  */
 export const makeExecutionRateLimiter = (
   increment: RateLimitIncrement,
@@ -158,17 +159,6 @@ export const makeExecutionRateLimiter = (
     });
 
   return {
-    check: (organizationId) =>
-      Effect.flatMap(decide(organizationId), (decision) =>
-        decision.blocked
-          ? Effect.fail(
-              new ExecutionRateLimitExceededError({
-                organizationId,
-                message: RATE_LIMIT_BLOCKED_MESSAGE,
-              }),
-            )
-          : Effect.void,
-      ),
     decorate: (organizationId, engine) => withPreExecutionGate(engine, decide(organizationId)),
   };
 };
@@ -195,6 +185,7 @@ type RateLimiterNamespace = {
  * limiter is disabled: every check passes, logged once at construction.
  */
 export const makeCloudExecutionRateLimiter = (): ExecutionRateLimiter => {
+  const limit = resolveRateLimit();
   const namespace = (env as { EXECUTION_RATE_LIMITER?: RateLimiterNamespace })
     .EXECUTION_RATE_LIMITER;
   if (!namespace) {
@@ -203,10 +194,27 @@ export const makeCloudExecutionRateLimiter = (): ExecutionRateLimiter => {
     );
     return makeExecutionRateLimiter(() => Effect.succeed(0));
   }
-  return makeExecutionRateLimiter((organizationId, windowId) =>
-    Effect.tryPromise(() => {
-      const stub = namespace.get(namespace.idFromName(organizationId)) as ExecutionRateLimiterStub;
-      return stub.increment(windowId);
-    }),
+  return makeExecutionRateLimiter(
+    (organizationId, windowId) =>
+      Effect.tryPromise(() => {
+        const stub = namespace.get(
+          namespace.idFromName(organizationId),
+        ) as ExecutionRateLimiterStub;
+        return stub.increment(windowId);
+      }),
+    { limit },
   );
+};
+
+/**
+ * The per-org hourly cap: the `EXECUTION_RATE_LIMIT_PER_HOUR` env override
+ * (parsed as a positive integer) or `EXECUTIONS_PER_ORG_PER_HOUR` when it's
+ * unset or unparseable. The override exists so e2e can drive the backstop with
+ * a small number of real executions; production leaves the var unset.
+ */
+const resolveRateLimit = (): number => {
+  const raw = (env as { EXECUTION_RATE_LIMIT_PER_HOUR?: string }).EXECUTION_RATE_LIMIT_PER_HOUR;
+  if (raw === undefined) return EXECUTIONS_PER_ORG_PER_HOUR;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : EXECUTIONS_PER_ORG_PER_HOUR;
 };

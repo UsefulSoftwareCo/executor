@@ -30,6 +30,8 @@ import type * as Cause from "effect/Cause";
 
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
+import { EXECUTION_LIMIT_BLOCKED_MESSAGE } from "./execution-limit-messages";
+
 // The engine's completed-result payload (`ExecuteResult` in codemode-core),
 // derived from the public execution types so this app package doesn't need a
 // direct dependency on the kernel package that declares it.
@@ -45,8 +47,7 @@ const BALANCE_CHECK_TIMEOUT_MS = 2_000;
 // cache map unbounded.
 const BALANCE_CACHE_MAX_ENTRIES = 10_000;
 
-export const EXECUTION_LIMIT_BLOCKED_MESSAGE =
-  "Execution limit reached: your plan's included executions for this billing period are used up. Upgrade your plan or wait for the reset to continue.";
+export { EXECUTION_LIMIT_BLOCKED_MESSAGE };
 
 export class ExecutionLimitReachedError extends Data.TaggedError("ExecutionLimitReachedError")<{
   readonly organizationId: string;
@@ -118,14 +119,9 @@ export type ExecutionBalanceCheck = (
  * `AutumnService.checkExecutionBalance`). One gate instance holds one
  * per-organization outcome cache; the metered decorator layer creates a single
  * instance so all engines it decorates share it.
- *
- * `options.timeoutMs` exists for tests; production uses the default budget.
  */
-export const makeExecutionLimitGate = (
-  checkBalance: ExecutionBalanceCheck,
-  options?: { readonly timeoutMs?: number },
-) => {
-  const timeoutMs = options?.timeoutMs ?? BALANCE_CHECK_TIMEOUT_MS;
+export const makeExecutionLimitGate = (checkBalance: ExecutionBalanceCheck) => {
+  const timeoutMs = BALANCE_CHECK_TIMEOUT_MS;
   const cache = new Map<string, { readonly allowed: boolean; readonly expiresAtMs: number }>();
 
   const writeCache = (organizationId: string, allowed: boolean, nowMs: number): void => {
@@ -180,22 +176,6 @@ export const makeExecutionLimitGate = (
     });
 
   return {
-    /**
-     * Test/diagnostic surface: succeeds when the execution is allowed (or the
-     * check failed open), fails with the typed `ExecutionLimitReachedError`
-     * when the organization is out of executions.
-     */
-    check: (organizationId: string): Effect.Effect<void, ExecutionLimitReachedError> =>
-      Effect.flatMap(decide(organizationId), (decision) =>
-        decision.blocked
-          ? Effect.fail(
-              new ExecutionLimitReachedError({
-                organizationId,
-                message: EXECUTION_LIMIT_BLOCKED_MESSAGE,
-              }),
-            )
-          : Effect.void,
-      ),
     /** Wrap an engine so the balance gate runs before each new execution. */
     decorate: <E extends Cause.YieldableError>(
       organizationId: string,
