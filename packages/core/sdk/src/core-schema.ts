@@ -212,6 +212,14 @@ export const coreTables = defineTables({
       // "manual" by the service layer.
       origin_kind: nullableTextColumn("origin_kind"),
       origin_integration: nullableTextColumn("origin_integration"),
+      // Authorization-server issuer that owns a DCR client, keying per-AS reuse.
+      // For a NEW DCR registration this is the DISCOVERED OIDC issuer (real
+      // information from the AS metadata, which can legitimately differ from what
+      // token_url would suggest). For a BACKFILLED legacy row it is instead a
+      // derived registrable-origin of token_url (a cache of the pure
+      // `registrableOriginOfUrl`, since no discovered issuer was ever recorded).
+      // Null for manual clients and legacy rows not yet backfilled.
+      origin_issuer: nullableTextColumn("origin_issuer"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "slug"],

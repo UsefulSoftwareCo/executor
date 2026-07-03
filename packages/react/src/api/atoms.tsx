@@ -460,6 +460,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly grant: OAuthGrant;
           readonly clientId: string;
           readonly resource?: string | null;
+          readonly originIntegration?: IntegrationSlug | null;
         };
       },
     ) =>
@@ -472,7 +473,9 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           tokenUrl: arg.payload.tokenUrl,
           resource: arg.payload.resource ?? null,
           clientId: arg.payload.clientId,
-          origin: { kind: "manual" },
+          // Mirror the server's stamp so the just-registered app matches its
+          // integration in the picker immediately (before the refetch lands).
+          origin: { kind: "manual", integration: arg.payload.originIntegration ?? null },
         };
         const index = rows.findIndex(
           (client) => client.owner === summary.owner && client.slug === summary.slug,

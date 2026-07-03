@@ -96,7 +96,8 @@
     "@executor-js/fumadb": "workspace:*",
     "@standard-schema/spec": "^1.1.0",
     "fractional-indexing": "^3.2.0",
-    "oauth4webapi": "^3.8.5"
+    "oauth4webapi": "^3.8.5",
+    "tldts": "^7.0.28"
   },
   "devDependencies": {
     "@effect/atom-react": "catalog:",

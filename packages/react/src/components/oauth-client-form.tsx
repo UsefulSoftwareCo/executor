@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
-import { OAuthClientSlug, type OAuthGrant, type Owner } from "@executor-js/sdk/shared";
+import {
+  OAuthClientSlug,
+  type IntegrationSlug,
+  type OAuthGrant,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
 import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } from "../api/atoms";
@@ -9,7 +14,7 @@ import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
-import { uniqueClientSlug } from "../plugins/use-effective-oauth-client";
+import { optimisticDcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
@@ -36,6 +41,7 @@ import { RadioGroup, RadioGroupItem } from "./radio-group";
 // ---------------------------------------------------------------------------
 
 export interface OAuthClientFormPrefill {
+  readonly issuer?: string | null;
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
   readonly resource?: string | null;
@@ -70,6 +76,19 @@ export const registrationScopes = (
   discoveredScopes: readonly string[],
 ): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
 
+/** The `originIntegration` to send with a `createClient` payload. When the
+ *  caller passes an explicit `intentIntegration` (edit flow: the app's
+ *  preserved recorded intent, which may legitimately be `null`), it wins
+ *  verbatim — editing must never silently overwrite a stamp. Otherwise this is
+ *  a fresh registration from an integration's dialog, which stamps the current
+ *  integration as recorded intent (or `null` outside any integration
+ *  context). */
+export const resolveOriginIntegration = (
+  intentIntegration: IntegrationSlug | null | undefined,
+  integrationSlug: IntegrationSlug | undefined,
+): IntegrationSlug | null =>
+  intentIntegration !== undefined ? intentIntegration : (integrationSlug ?? null);
+
 export const canSubmitOAuthClientForm = (input: {
   readonly submitting: boolean;
   readonly name: string;
@@ -89,6 +108,19 @@ export const canSubmitOAuthClientForm = (input: {
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
   readonly integrationName: string;
+  /** Slug of the integration whose dialog this form is registering from, when
+   *  known. Stamped onto the created MANUAL app as recorded intent so the picker
+   *  matches it to this integration exactly (not by root-domain guess). Omitted
+   *  when editing (an existing app's origin is fixed) or when there is no single
+   *  integration context. */
+  readonly integrationSlug?: IntegrationSlug;
+  /** Explicit recorded-intent stamp to send verbatim, overriding the default
+   *  derivation from `integrationSlug`. Set this when editing an existing app
+   *  so its ALREADY-recorded origin (which may be `null`) is preserved rather
+   *  than re-derived from the current dialog's integration context. Omit for a
+   *  fresh registration, where the default (stamp `integrationSlug`, or `null`
+   *  outside an integration context) is correct. */
+  readonly intentIntegration?: IntegrationSlug | null;
   /** Existing client slugs, so the generated slug stays unique across apps. */
   readonly existingSlugs: readonly string[];
   /** Endpoints/scopes declared by the integration's OAuth method. */
@@ -112,6 +144,8 @@ export function OAuthClientForm(props: {
 }) {
   const {
     integrationName,
+    integrationSlug,
+    intentIntegration,
     existingSlugs,
     prefill,
     fixedSlug,
@@ -147,6 +181,7 @@ export function OAuthClientForm(props: {
   const [clientId, setClientId] = useState(prefill?.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
   const [issuerUrl, setIssuerUrl] = useState("");
+  const [discoveredIssuer, setDiscoveredIssuer] = useState<string | null>(prefill?.issuer ?? null);
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
   const [resource, setResource] = useState(prefill?.resource ?? null);
@@ -226,6 +261,7 @@ export function OAuthClientForm(props: {
       return;
     }
     const result = exit.value;
+    setDiscoveredIssuer(result.issuer ?? null);
     setAuthorizationUrl(result.authorizationUrl);
     setTokenUrl(result.tokenUrl);
     setResource(result.resource ?? null);
@@ -247,11 +283,13 @@ export function OAuthClientForm(props: {
   const handleRegisterDynamic = async () => {
     if (!canRegisterDynamic || registering) return;
     setRegistering(true);
-    const slug = fixedSlug ?? uniqueClientSlug(name, existingSlugs);
+    const slug =
+      fixedSlug ?? optimisticDcrClientSlug(discoveredIssuer ?? registrationEndpoint.trim());
     const exit = await doRegisterDynamic({
       payload: {
         owner,
         slug,
+        issuer: discoveredIssuer,
         registrationEndpoint: registrationEndpoint.trim(),
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
@@ -273,7 +311,7 @@ export function OAuthClientForm(props: {
     }
     trackEvent("oauth_client_registered", { owner, grant, via_dcr: true, success: true });
     toast.success(`Registered ${integrationName} OAuth app`);
-    onCreated({ owner, slug });
+    onCreated({ owner, slug: exit.value.client });
   };
 
   const handleSubmit = async () => {
@@ -290,6 +328,10 @@ export function OAuthClientForm(props: {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         resource,
+        // Editing preserves the app's already-recorded origin (via
+        // `intentIntegration`, passed verbatim by the caller); a fresh
+        // registration from an integration's dialog stamps recorded intent.
+        originIntegration: resolveOriginIntegration(intentIntegration, integrationSlug),
       },
       reactivityKeys: oauthClientWriteKeys,
     });

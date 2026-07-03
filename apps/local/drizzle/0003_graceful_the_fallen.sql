@@ -1,0 +1,1 @@
+ALTER TABLE `oauth_client` ADD `origin_issuer` text;

@@ -5,7 +5,12 @@
 // renamed.
 // ---------------------------------------------------------------------------
 
-import { Effect, sqliteDataMigration, type SqliteDataMigration } from "@executor-js/sdk";
+import {
+  Effect,
+  oauthClientGcSqliteMigration,
+  sqliteDataMigration,
+  type SqliteDataMigration,
+} from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import {
   openApiOutputSchemaDataMigration,
@@ -37,4 +42,7 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   openApiSpecBlobDataMigration,
   graphqlIntrospectionBlobDataMigration,
   googleOpenApiOwnershipDataMigration,
+  // GC dead DCR oauth_client rows (old always-register duplicates) and backfill
+  // the surviving DCR rows' origin_issuer from token_url (issue #1120, Part C).
+  oauthClientGcSqliteMigration,
 ];

@@ -243,6 +243,9 @@ const OAuthCreateClientInput = Schema.Struct({
   grant: OAuthGrantSchema,
   clientId: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Integration whose connect dialog registered this manual app. Recorded so
+   *  the picker can match it by intent (exact) instead of by root domain. */
+  originIntegration: Schema.optional(Schema.NullOr(Schema.String)),
 });
 // Browser-handoff for a CONFIDENTIAL OAuth app: carries only the NON-secret
 // fields the form pre-fills. The client secret is typed by the human in the web
@@ -269,6 +272,7 @@ const OAuthClientOutputRef = Schema.Struct({
 const OAuthRegisterDynamicInput = Schema.Struct({
   owner: OwnerSchema,
   slug: Schema.String,
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   registrationEndpoint: Schema.String,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
@@ -287,6 +291,7 @@ const OAuthProbeInput = Schema.Struct({
   url: Schema.String,
 });
 const OAuthProbeOutput = Schema.Struct({
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -711,6 +716,13 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 // `oauth.clients.createHandoff`.
                 clientSecret: "",
                 resource: input.resource ?? null,
+                origin: {
+                  kind: "manual",
+                  integration:
+                    input.originIntegration == null
+                      ? null
+                      : IntegrationSlug.make(input.originIntegration),
+                },
               }),
               (client) => ({ client: String(client) }),
             ),
@@ -748,6 +760,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
               ctx.oauth.registerDynamicClient({
                 owner: input.owner as Owner,
                 slug: OAuthClientSlug.make(input.slug),
+                issuer: input.issuer ?? null,
                 registrationEndpoint: input.registrationEndpoint,
                 authorizationUrl: input.authorizationUrl,
                 tokenUrl: input.tokenUrl,
@@ -789,6 +802,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           outputSchema: OAuthProbeOutputStd,
           execute: (input: typeof OAuthProbeInput.Type, { ctx }) =>
             Effect.map(ctx.oauth.probe({ url: input.url }), (result) => ({
+              issuer: result.issuer ?? null,
               authorizationUrl: result.authorizationUrl,
               tokenUrl: result.tokenUrl,
               resource: result.resource ?? null,

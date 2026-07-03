@@ -64,7 +64,15 @@ export interface OAuthClient {
 }
 
 export type OAuthClientOrigin =
-  | { readonly kind: "manual" }
+  | {
+      readonly kind: "manual";
+      /** Integration whose connect dialog registered this manual app, when the
+       *  registration happened from within one. Lets the picker match a BYO app
+       *  to its integration by recorded intent (exact) instead of guessing by
+       *  root domain. Null for apps registered outside any integration context
+       *  (and for legacy rows predating the stamp). */
+      readonly integration?: IntegrationSlug | null;
+    }
   | {
       readonly kind: "dynamic_client_registration";
       readonly integration?: IntegrationSlug | null;
@@ -72,6 +80,7 @@ export type OAuthClientOrigin =
 
 export type CreateOAuthClientInput = OAuthClient & {
   readonly origin?: OAuthClientOrigin;
+  readonly originIssuer?: string | null;
 };
 
 /** Metadata-only projection of a registered client for listing in the UI.
@@ -134,6 +143,8 @@ export interface OAuthProbeInput {
 }
 
 export interface OAuthProbeResult {
+  /** RFC 8414 authorization-server issuer. Used to key DCR clients per AS. */
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   /** RFC 8707 resource indicator discovered from protected-resource metadata.
@@ -157,6 +168,8 @@ export interface OAuthProbeResult {
 export interface RegisterDynamicClientInput {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  /** RFC 8414 authorization-server issuer, when discovered before DCR. */
+  readonly issuer?: string | null;
   /** RFC 7591 registration endpoint advertised by the authorization server. */
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;

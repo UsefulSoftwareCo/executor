@@ -75,6 +75,7 @@ export const oauth_client = sqliteTable(
     resource: text("resource"),
     origin_kind: text("origin_kind"),
     origin_integration: text("origin_integration"),
+    origin_issuer: text("origin_issuer"),
     created_at: integer("created_at").notNull(),
     row_id: text("row_id").primaryKey().notNull(),
     tenant: text("tenant").notNull(),

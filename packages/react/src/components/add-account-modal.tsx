@@ -47,6 +47,8 @@ import {
 import {
   clientDisplayName,
   clientHost,
+  optimisticDcrClientSlug,
+  selectDcrClientsForIntegration,
   uniqueClientSlug,
   useOAuthClientsForIntegration,
   type OAuthClientOption,
@@ -64,13 +66,14 @@ import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
 import { Button } from "./button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
-import { PlusIcon, XIcon } from "lucide-react";
+import { ChevronDown, PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -613,6 +616,7 @@ export async function runCimdConnect(
 
 /** Discovery result from the probe step (subset of the `probeOAuth` response). */
 type DcrProbeResult = {
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly resource?: string | null;
@@ -624,6 +628,7 @@ type DcrProbeResult = {
 type DcrRegisterArgs = {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  readonly issuer?: string | null;
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
@@ -684,8 +689,6 @@ type RunDcrConnectInput = {
   readonly resourceFallback?: string;
   readonly owner: Owner;
   readonly integrationName: string;
-  /** The owner's existing client slugs, so the minted slug stays unique. */
-  readonly existingSlugs: readonly string[];
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
@@ -718,11 +721,12 @@ export async function runDcrConnect(
   const registrationEndpoint = probe.registrationEndpoint;
   if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint", probe };
 
-  const slug = uniqueClientSlug(input.integrationName, input.existingSlugs);
+  const slug = optimisticDcrClientSlug(probe.issuer ?? registrationEndpoint);
   const scopes = registrationScopes(input.declaredScopes ?? [], probe.scopesSupported ?? []);
   const minted = await deps.register({
     owner: input.owner,
     slug,
+    issuer: probe.issuer ?? null,
     registrationEndpoint,
     authorizationUrl: probe.authorizationUrl,
     tokenUrl: probe.tokenUrl,
@@ -898,6 +902,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // FIX 3 escape hatch: when no registered app matched the integration's
   // endpoints, the unmatched apps are collapsed behind an opt-in expander.
   const [showOtherApps, setShowOtherApps] = useState(false);
+  // Auto-registered (DCR) clients are plumbing, not pickable apps: they live in a
+  // collapsed management section at the bottom of the OAuth tab, revealed on
+  // demand so they can be inspected and deleted without cluttering the picker.
+  const [showAutoRegistered, setShowAutoRegistered] = useState(false);
   // Inline OAuth app management — edit re-opens the registration form for an
   // existing app (upsert by owner+slug); remove confirms before deleting. Both
   // hold the FULL app summary (with endpoints + resource) so the edit prefill
@@ -1076,6 +1084,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // unconditionally; in DCR mode the result is ignored until/unless we fall back.
   const {
     clients: oauthApps,
+    nearMatches: oauthNearApps,
     otherClients: oauthOtherApps,
     loading: oauthLoading,
     endpointMatched: oauthEndpointMatched,
@@ -1088,8 +1097,29 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // unrelated provider's app.
     tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
     authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
+    // Recorded intent: a manual app registered from THIS integration's dialog is
+    // a tier-1 match regardless of host.
+    integration,
     requireEndpointMatch: isDcr,
   });
+  // Auto-registered (DCR) clients for THIS integration. Excluded from the picker
+  // above, but surfaced in a collapsed management section so they stay
+  // deletable. Reads the same optimistic list the picker does.
+  const dcrClients = useMemo(
+    () =>
+      selectDcrClientsForIntegration(clientSummaries as readonly OAuthClientOption[], {
+        integration,
+        tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
+        authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
+      }),
+    [
+      clientSummaries,
+      integration,
+      method?.oauth?.tokenUrl,
+      method?.oauth?.authorizationUrl,
+      oauthFallbackProbe,
+    ],
+  );
   const oauthPopup = useOAuthPopupFlow({
     popupName: "add-account-oauth",
     detectPopupClosed: false,
@@ -1106,8 +1136,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // Editing reuses the registration form (createClient upserts by owner+slug),
   // so it occupies the same full-bleed sub-view as registering.
   const oauthEditing = isOAuth && editingClient !== null;
+  // Resolve the picked slug across every PICKABLE tier: exact matches, the
+  // subdued near-match tier, and the unrelated escape-hatch apps. All three are
+  // selectable (only the default auto-selection is restricted to tier 1), so the
+  // connect button must resolve a client from any of them. DCR clients are not
+  // in these lists, so they can never be chosen as the connect app.
   const chosenClient: OAuthClientOption | null =
-    oauthApps.find((c: OAuthClientOption) => String(c.slug) === selectedApp) ?? null;
+    [...oauthApps, ...oauthNearApps, ...oauthOtherApps].find(
+      (c: OAuthClientOption) => String(c.slug) === selectedApp,
+    ) ?? null;
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
@@ -1444,6 +1481,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             payload: {
               owner: args.owner,
               slug: args.slug,
+              issuer: args.issuer ?? null,
               registrationEndpoint: args.registrationEndpoint,
               authorizationUrl: args.authorizationUrl,
               tokenUrl: args.tokenUrl,
@@ -1491,9 +1529,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
         resourceFallback: method.oauth?.discoveryUrl,
         owner: dcrOwner,
         integrationName,
-        existingSlugs: [...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-          String(app.slug),
-        ),
+        // DCR slugs are server-keyed (Part A): the connect path no longer depends
+        // on the picker's app list, so it need not be threaded here.
         declaredScopes: method.oauth?.scopes,
         redirectUri: oauthCallbackUrl(),
         integration,
@@ -1553,11 +1590,18 @@ function AddAccountModalView(props: AddAccountModalProps) {
             <div className="px-5 py-5">
               <OAuthClientForm
                 integrationName={integrationName}
-                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-                  String(app.slug),
-                )}
+                existingSlugs={clientSummaries.map((c: OAuthClientSummary) => String(c.slug))}
                 fixedSlug={editingClient.slug}
                 fixedOwner={editingClient.owner}
+                // Preserve the app's already-recorded origin verbatim (only a
+                // "manual" origin carries a recorded integration; DCR apps
+                // aren't edited through this form). Editing must never
+                // re-derive this from the current dialog's integration.
+                intentIntegration={
+                  editingClient.origin.kind === "manual"
+                    ? (editingClient.origin.integration ?? null)
+                    : null
+                }
                 prefill={{
                   authorizationUrl: editingClient.authorizationUrl,
                   tokenUrl: editingClient.tokenUrl,
@@ -1582,9 +1626,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
             <div className="px-5 py-5">
               <OAuthClientForm
                 integrationName={integrationName}
-                existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-                  String(app.slug),
-                )}
+                integrationSlug={integration}
+                existingSlugs={clientSummaries.map((c: OAuthClientSummary) => String(c.slug))}
                 autoRegisterRejectedReason={dcrFallbackMessage}
                 prefill={{
                   authorizationUrl:
@@ -1602,6 +1645,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     null,
                   scopes: method.oauth?.scopes,
                   discoveredScopes: oauthFallbackProbe?.scopesSupported,
+                  issuer: oauthFallbackProbe?.issuer ?? null,
                   registrationEndpoint:
                     method.oauth?.registrationEndpoint ??
                     oauthFallbackProbe?.registrationEndpoint ??
@@ -1874,6 +1918,107 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                       Register a new app
                                     </Button>
                                   </RadioGroup>
+                                )}
+
+                                {/* Tier 2 — apps that only match by root domain (a
+                        near-miss, e.g. the same provider's MCP app for a REST
+                        integration). Visually separated and subdued so they are
+                        never mistaken for the integration's own app, but still
+                        selectable as an escape hatch. Shown alongside tier 1, not
+                        mixed into it. */}
+                                {oauthNearApps.length > 0 && (
+                                  <div className="space-y-2 border-t border-border/60 pt-3">
+                                    <p className="text-xs font-medium text-muted-foreground">
+                                      Other apps on this provider
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      These share {integrationName}&apos;s domain but weren&apos;t
+                                      registered for it. Pick one only if you know it applies.
+                                    </p>
+                                    <RadioGroup
+                                      value={selectedApp}
+                                      onValueChange={setPickedApp}
+                                      className="gap-2 pt-1"
+                                    >
+                                      {oauthNearApps.map((app: OAuthClientOption) => (
+                                        <OAuthAppRadioRow
+                                          key={String(app.slug)}
+                                          app={app}
+                                          idPrefix="near-app"
+                                          variant="other"
+                                          showOwnerLabel={ownerDisplay.showOwnerLabels}
+                                          onManage={manageHandlersFor(app)}
+                                        />
+                                      ))}
+                                    </RadioGroup>
+                                  </div>
+                                )}
+
+                                {/* Auto-registered (DCR) clients: plumbing, never
+                        pickable. Kept here, collapsed, so they can be reviewed
+                        and deleted without cluttering the picker. */}
+                                {dcrClients.length > 0 && (
+                                  <div className="border-t border-border/60 pt-3">
+                                    <Collapsible
+                                      open={showAutoRegistered}
+                                      onOpenChange={setShowAutoRegistered}
+                                    >
+                                      <CollapsibleTrigger className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+                                        <span>Auto-registered clients ({dcrClients.length})</span>
+                                        <ChevronDown
+                                          className={cn(
+                                            "size-3.5 transition-transform",
+                                            showAutoRegistered && "rotate-180",
+                                          )}
+                                          aria-hidden="true"
+                                        />
+                                      </CollapsibleTrigger>
+                                      <CollapsibleContent>
+                                        <div className="space-y-2 pt-2">
+                                          <p className="text-xs text-muted-foreground">
+                                            Created automatically when connecting. Reused across
+                                            connections, not selectable as your app.
+                                          </p>
+                                          {dcrClients.map((app: OAuthClientOption) => (
+                                            <div
+                                              key={String(app.slug)}
+                                              className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5"
+                                            >
+                                              <span className="min-w-0 flex-1">
+                                                <span className="block text-sm font-medium">
+                                                  {clientDisplayName(String(app.slug))}
+                                                </span>
+                                                <span className="block truncate text-xs text-muted-foreground">
+                                                  {clientHost(app.tokenUrl)}
+                                                </span>
+                                              </span>
+                                              {ownerDisplay.showOwnerLabels ? (
+                                                <Badge variant="outline">
+                                                  {ownerLabel(app.owner)}
+                                                </Badge>
+                                              ) : null}
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="shrink-0 text-destructive hover:text-destructive"
+                                                onClick={() => {
+                                                  const summary = clientSummaries.find(
+                                                    (c: OAuthClientSummary) =>
+                                                      c.owner === app.owner &&
+                                                      String(c.slug) === String(app.slug),
+                                                  );
+                                                  if (summary) setRemovingClient(summary);
+                                                }}
+                                              >
+                                                Remove
+                                              </Button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </CollapsibleContent>
+                                    </Collapsible>
+                                  </div>
                                 )}
                               </div>
                             )

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import { IntegrationSlug } from "@executor-js/sdk/shared";
 
-import { canSubmitOAuthClientForm, registrationScopes } from "./oauth-client-form";
+import {
+  canSubmitOAuthClientForm,
+  registrationScopes,
+  resolveOriginIntegration,
+} from "./oauth-client-form";
 
 const validBase = {
   submitting: false,
@@ -33,6 +38,29 @@ describe("registrationScopes", () => {
 
   it("returns empty when nothing is declared or discovered", () => {
     expect(registrationScopes([], [])).toEqual([]);
+  });
+});
+
+describe("resolveOriginIntegration", () => {
+  const INTEG = IntegrationSlug.make("linear_mcp");
+  const OTHER = IntegrationSlug.make("github");
+
+  it("stamps the current integration for a fresh registration (no explicit intent)", () => {
+    expect(resolveOriginIntegration(undefined, INTEG)).toBe(INTEG);
+  });
+
+  it("stamps null for a fresh registration outside any integration context", () => {
+    expect(resolveOriginIntegration(undefined, undefined)).toBeNull();
+  });
+
+  it("preserves an explicit null intent when editing — does NOT re-stamp the current integration", () => {
+    // Regression: editing used to send `fixedSlug ? null : integrationSlug`,
+    // which clobbered an app's recorded origin with null on every edit.
+    expect(resolveOriginIntegration(null, INTEG)).toBeNull();
+  });
+
+  it("preserves an explicit non-null intent when editing, even if it differs from the current integration", () => {
+    expect(resolveOriginIntegration(OTHER, INTEG)).toBe(OTHER);
   });
 });
 

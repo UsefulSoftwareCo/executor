@@ -110,6 +110,7 @@ export {
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,
+  type OAuthClientOrigin,
   type OAuthClientSummary,
   type CreateOAuthClientInput,
   type RegisterDynamicClientInput,

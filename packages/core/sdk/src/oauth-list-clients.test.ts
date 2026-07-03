@@ -91,7 +91,9 @@ describe("oauth.listClients", () => {
           tokenUrl: "https://acme.test/token",
           resource: null,
           clientId: "org-client-id",
-          origin: { kind: "manual" },
+          // Manual apps carry a nullable recorded-intent integration; a client
+          // created outside any integration dialog stamps null.
+          origin: { kind: "manual", integration: null },
         });
         expect(user!.owner).toBe("user");
         expect(user!.grant).toBe("client_credentials");
