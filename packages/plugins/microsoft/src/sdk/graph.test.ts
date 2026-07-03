@@ -174,8 +174,55 @@ components:
             $ref: '#/components/schemas/microsoft.graph.ODataErrors.ODataError'
 `;
 
+const identityPathFixture = `
+openapi: 3.0.4
+info:
+  title: Microsoft Graph Fixture
+  version: v1.0
+servers:
+  - url: https://graph.microsoft.com/v1.0
+paths:
+  /me:
+    get:
+      operationId: me.GetUser
+      security:
+        - azureAdDelegated:
+            - User.Read
+      responses:
+        "200":
+          description: OK
+  /me/photo:
+    get:
+      operationId: me.photo.GetProfilePhoto
+      security:
+        - azureAdDelegated:
+            - User.Read
+      responses:
+        "200":
+          description: OK
+  /me/messages:
+    get:
+      operationId: me.messages.ListMessages
+      security:
+        - azureAdDelegated:
+            - Mail.ReadWrite
+      responses:
+        "200":
+          description: OK
+components: {}
+`;
+
 const fullGraphSelection = {
   coversFullGraph: true,
+  presetIds: [],
+  customScopes: [],
+  exactPaths: [],
+  pathPrefixes: [],
+  tagPrefixes: [],
+} as const;
+
+const noWorkloadSelection = {
+  coversFullGraph: false,
   presetIds: [],
   customScopes: [],
   exactPaths: [],
@@ -237,6 +284,24 @@ const responseFileHintKind = (
   const hint = Option.flatMap(match!.binding.responseBody, (body) => body.fileHint);
   return Option.getOrUndefined(hint)?.kind;
 };
+
+it("keeps bare /me for identity health checks without keeping /me child paths", () => {
+  const structure = structuralSplit(identityPathFixture);
+  expect(structure).not.toBeNull();
+  const keepPathItem = microsoftGraphKeepPathItem(noWorkloadSelection);
+  const kept = new Map<string, Record<string, unknown>>();
+
+  for (const range of structure!.pathItems) {
+    const entry = parseEntry(structure!.text, range, 2);
+    expect(entry).not.toBeNull();
+    const [path, rawPathItem] = entry!;
+    const pathItem = keepPathItem(path, rawPathItem as Record<string, unknown>);
+    if (pathItem) kept.set(path, pathItem as Record<string, unknown>);
+  }
+
+  expect([...kept.keys()]).toEqual(["/me"]);
+  expect(kept.get("/me")?.get).toMatchObject({ operationId: "me.GetUser" });
+});
 
 it("keeps already-binary drive content responses untouched", () => {
   const pathItem = keptPathItem(driveContentFixture);

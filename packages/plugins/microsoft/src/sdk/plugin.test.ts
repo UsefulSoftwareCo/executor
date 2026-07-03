@@ -621,6 +621,51 @@ describe("Microsoft Graph provider", () => {
 });
 
 describe("Microsoft Graph health-check default", () => {
+  it.effect("addGraph without profile still auto-configures the /me identity check", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        yield* executor.microsoft.addGraph({
+          presetIds: ["mail"],
+          slug: "microsoft_graph_mail_hc",
+          description: "Microsoft Graph",
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_mail_hc");
+        expect(config?.microsoftGraphExactPaths).toEqual([]);
+        expect(config?.microsoftGraphScopes).toEqual([
+          "offline_access",
+          "User.Read",
+          "Mail.ReadWrite",
+          "Mail.Send",
+          "MailboxSettings.ReadWrite",
+        ]);
+
+        const stored = yield* executor.integrations.healthCheck.get(
+          IntegrationSlug.make("microsoft_graph_mail_hc"),
+        );
+        expect(stored?.operation, "the default check targets GET /me").toBe("me.getUser");
+        expect(stored?.identityField, "the default reads the principal name").toBe(
+          "userPrincipalName",
+        );
+
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("mail"),
+          integration: IntegrationSlug.make("microsoft_graph_mail_hc"),
+          template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+          value: "token-xyz",
+        });
+
+        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+        expect(toolNames).toContain("me.getUser");
+        expect(toolNames).toContain("me.messagesListMessages");
+        expect(toolNames).not.toContain("me.eventsListEvents");
+      }),
+    ),
+  );
+
   it.effect("addGraph with a /me workload auto-configures the identity health check", () =>
     Effect.scoped(
       Effect.gen(function* () {
