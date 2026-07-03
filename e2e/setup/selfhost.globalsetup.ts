@@ -18,7 +18,7 @@ import { RUNS_DIR } from "../src/scenario";
 // E2E_VERBOSE).
 const bootLogFile = process.env.E2E_VERBOSE
   ? undefined
-  : resolve(RUNS_DIR, "selfhost", ".server", "boot.log");
+  : resolve(RUNS_DIR, "selfhost", "server-logs", "boot.log");
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_SELFHOST_URL) {

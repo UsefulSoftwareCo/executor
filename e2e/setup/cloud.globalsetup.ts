@@ -22,7 +22,7 @@ import { RUNS_DIR } from "../src/scenario";
 // passing both would silently swallow the verbose stream into the file).
 const bootLogFile = process.env.E2E_VERBOSE
   ? undefined
-  : resolve(RUNS_DIR, "cloud", ".server", "boot.log");
+  : resolve(RUNS_DIR, "cloud", "server-logs", "boot.log");
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_CLOUD_URL) {
