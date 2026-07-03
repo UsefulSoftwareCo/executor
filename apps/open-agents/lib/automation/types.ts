@@ -1,9 +1,13 @@
 import { z } from "zod";
 import { AGENT_TOOL_NAMES } from "@/lib/agents/definitions";
 
+export const resourceScopeKindSchema = z.enum(["user", "group", "org"]);
+
 export const automationScopeKindSchema = z.enum([
   "system",
   "user",
+  "group",
+  "org",
   "thread",
   "session",
   "repo",
@@ -14,6 +18,8 @@ export const automationScopeKindSchema = z.enum([
 export const eventScopeKindSchema = z.enum([
   "system",
   "user",
+  "group",
+  "org",
   "thread",
   "session",
   "repo",

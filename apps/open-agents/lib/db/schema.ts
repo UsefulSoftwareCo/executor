@@ -4,6 +4,7 @@ import type { ModelVariant } from "@/lib/model-variants";
 import type { GlobalSkillRef } from "@/lib/skills/global-skill-refs";
 import type { WorkspaceRepo } from "@/lib/workspace-repos";
 import { users } from "./auth-schema";
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -18,6 +19,87 @@ import {
 
 export * from "../executor/schema";
 export { accounts, authSessions, users, verification } from "./auth-schema";
+
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("organizations_slug_idx").on(table.slug)],
+);
+
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["admin", "member"] }).notNull(),
+    addedBy: text("added_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.orgId, table.userId] }),
+    index("organization_members_user_idx").on(table.userId),
+  ],
+);
+
+export const groups = pgTable(
+  "groups",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    source: text("source", { enum: ["manual", "slack_channel"] }).notNull(),
+    slackTeamId: text("slack_team_id"),
+    slackChannelId: text("slack_channel_id"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("groups_org_idx").on(table.orgId),
+    uniqueIndex("groups_slack_channel_idx")
+      .on(table.orgId, table.slackTeamId, table.slackChannelId)
+      .where(sql`${table.source} = 'slack_channel'`),
+  ],
+);
+
+export const groupMembers = pgTable(
+  "group_members",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["member", "manager"] }).notNull(),
+    source: text("source", { enum: ["manual", "slack_sync"] }).notNull(),
+    addedBy: text("added_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.groupId, table.userId] }),
+    index("group_members_user_idx").on(table.userId),
+  ],
+);
 
 export const githubInstallations = pgTable(
   "github_installations",
@@ -123,6 +205,8 @@ export const sessions = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] }).notNull(),
+    scopeId: text("scope_id").notNull(),
     title: text("title").notNull(),
     status: text("status", {
       enum: ["running", "completed", "failed", "archived"],
@@ -184,7 +268,10 @@ export const sessions = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
-  (table) => [index("sessions_user_id_idx").on(table.userId)],
+  (table) => [
+    index("sessions_user_id_idx").on(table.userId),
+    index("sessions_scope_idx").on(table.scopeKind, table.scopeId),
+  ],
 );
 
 export const chats = pgTable(
@@ -195,12 +282,17 @@ export const chats = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] }),
+    scopeId: text("scope_id"),
     modelId: text("model_id").default("anthropic/claude-haiku-4.5"),
     lastAssistantMessageAt: timestamp("last_assistant_message_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
-  (table) => [index("chats_session_id_idx").on(table.sessionId)],
+  (table) => [
+    index("chats_session_id_idx").on(table.sessionId),
+    index("chats_scope_idx").on(table.scopeKind, table.scopeId),
+  ],
 );
 
 export const eveChatSessionStates = pgTable("eve_chat_session_states", {
@@ -258,6 +350,29 @@ export const chatReads = pgTable(
   ],
 );
 
+export const docs = pgTable(
+  "docs",
+  {
+    id: text("id").primaryKey(),
+    scopeKind: text("scope_kind", { enum: ["user", "group", "org"] }).notNull(),
+    scopeId: text("scope_id").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    kind: text("kind").notNull().default("design_doc"),
+    markdownCache: text("markdown_cache"),
+    markdownCacheSeq: integer("markdown_cache_seq").notNull().default(0),
+    archivedAt: timestamp("archived_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("docs_scope_idx").on(table.scopeKind, table.scopeId),
+    index("docs_created_by_idx").on(table.createdBy),
+  ],
+);
+
 export type AutomationDefinitionJson = {
   id?: string;
   version?: number;
@@ -265,7 +380,16 @@ export type AutomationDefinitionJson = {
   description?: string;
   enabled?: boolean;
   scope: {
-    kind: "system" | "user" | "thread" | "session" | "repo" | "automation" | "external-thread";
+    kind:
+      | "system"
+      | "user"
+      | "group"
+      | "org"
+      | "thread"
+      | "session"
+      | "repo"
+      | "automation"
+      | "external-thread";
     id: string;
   };
   owner: {
@@ -296,7 +420,7 @@ export const automationDefinitions = pgTable(
     id: text("id").primaryKey(),
     currentVersionId: text("current_version_id"),
     scopeKind: text("scope_kind", {
-      enum: ["system", "user", "thread", "session", "repo", "automation", "external-thread"],
+      enum: ["system", "user", "group", "org", "thread", "session", "repo", "automation", "external-thread"],
     }).notNull(),
     scopeId: text("scope_id").notNull(),
     ownerKind: text("owner_kind", {
@@ -344,7 +468,7 @@ export const automationEvents = pgTable(
     type: text("type").notNull(),
     version: integer("version").notNull().default(1),
     scopeKind: text("scope_kind", {
-      enum: ["system", "user", "thread", "session", "repo", "automation"],
+      enum: ["system", "user", "group", "org", "thread", "session", "repo", "automation"],
     }).notNull(),
     scopeId: text("scope_id").notNull(),
     subjectKind: text("subject_kind").notNull(),
@@ -646,6 +770,14 @@ export const automationMessageQueue = pgTable(
   ],
 );
 
+export type Organization = typeof organizations.$inferSelect;
+export type NewOrganization = typeof organizations.$inferInsert;
+export type OrganizationMember = typeof organizationMembers.$inferSelect;
+export type NewOrganizationMember = typeof organizationMembers.$inferInsert;
+export type Group = typeof groups.$inferSelect;
+export type NewGroup = typeof groups.$inferInsert;
+export type GroupMember = typeof groupMembers.$inferSelect;
+export type NewGroupMember = typeof groupMembers.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
 export type VercelProjectLink = typeof vercelProjectLinks.$inferSelect;
@@ -660,6 +792,8 @@ export type Share = typeof shares.$inferSelect;
 export type NewShare = typeof shares.$inferInsert;
 export type ChatRead = typeof chatReads.$inferSelect;
 export type NewChatRead = typeof chatReads.$inferInsert;
+export type Doc = typeof docs.$inferSelect;
+export type NewDoc = typeof docs.$inferInsert;
 export type GitHubInstallation = typeof githubInstallations.$inferSelect;
 export type NewGitHubInstallation = typeof githubInstallations.$inferInsert;
 export type SlackUserLink = typeof slackUserLinks.$inferSelect;

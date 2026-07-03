@@ -365,6 +365,13 @@
       "when": 1783038353286,
       "tag": "0051_quick_professor_monster",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1783053456081,
+      "tag": "0052_steady_shiver_man",
+      "breakpoints": true
     }
   ]
 }
