@@ -120,7 +120,15 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
           options.host ?? "127.0.0.1",
         ],
         cwd: cloudDir,
-        env,
+        // Mitigation, not a fix (the real per-request OOM growth is what the
+        // spec-compile LRU addresses): CI runners have 7GB, well above the
+        // default ~2GB V8 old-space ceiling, so give the dev server room
+        // before it hits the limit and starts 500ing. Scoped to this child
+        // only; dev-db does not need it.
+        env: {
+          ...env,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --max-old-space-size=3072`.trim(),
+        },
         logFile: options.logFile,
       },
     ],
