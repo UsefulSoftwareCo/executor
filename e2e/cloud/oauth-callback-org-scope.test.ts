@@ -223,12 +223,35 @@ scenario(
       });
 
       await step("Start OAuth from the original organization's add-connection flow", async () => {
-        await page.goto(`/${orgA.slug}/integrations/${String(integration)}?addAccount=1`, {
+        // Land WITHOUT ?addAccount=1 and let the org scope settle first. The
+        // session cookie still points at org B, so this navigation bounces:
+        // first paint under the cookie's org B, OrgSlugGate canonicalizes,
+        // then the URL-scoped /account/me settles auth back on org A. A modal
+        // auto-opened by the deep link would fire its /api/oauth/clients fetch
+        // DURING that transient org-B scope, get org B's empty app list, never
+        // refetch, and leave "Connect with OAuth" disabled forever (the flake
+        // this step used to have). Waiting for org A's shell before opening
+        // the modal makes every modal fetch run under the settled org A scope.
+        await page.goto(`/${orgA.slug}/integrations/${String(integration)}`, {
           waitUntil: "networkidle",
         });
+        await page.getByRole("button", { name: new RegExp(escapeRegExp(orgA.name)) }).waitFor({
+          timeout: 30_000,
+        });
+        await page.waitForURL((url) => url.pathname.startsWith(`/${orgA.slug}/`), {
+          timeout: 30_000,
+        });
+        await page.getByRole("button", { name: "Add connection" }).click();
         await page.getByRole("heading", { name: /Add connection/ }).waitFor({
           timeout: 30_000,
         });
+        // The footer button enables once the registered OAuth app has loaded
+        // and is selected; wait for that state instead of racing the click
+        // against the apps fetch.
+        await page
+          .getByRole("button", { name: "Connect with OAuth", disabled: false })
+          .waitFor({ timeout: 30_000 });
+        // Armed BEFORE the click so the navigation can never outrun the wait.
         const authorizeRequest = page.waitForRequest(
           (request) => {
             const url = new URL(request.url());
@@ -236,6 +259,12 @@ scenario(
           },
           { timeout: 30_000 },
         );
+        // If the click throws first (e.g. the button never enables), the armed
+        // wait would otherwise time out later as an UNHANDLED rejection and
+        // pollute the run with phantom errors. Mark it handled here; the
+        // `await authorizeRequest` below still surfaces its failure on the
+        // success path.
+        authorizeRequest.catch(() => {});
         await page.getByRole("button", { name: "Connect with OAuth" }).click();
         providerAuthorizeUrl = new URL((await authorizeRequest).url());
         await page.waitForURL(

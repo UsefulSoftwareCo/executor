@@ -395,6 +395,195 @@ it.effect("supplies documented scopes when Picker Discovery omits auth metadata"
   }),
 );
 
+it.effect(
+  "generates a separate media-upload operation for Google Discovery methods with supportsMediaUpload",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* convertGoogleDiscoveryToOpenApi({
+        discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        documentText: JSON.stringify({
+          name: "drive",
+          version: "v3",
+          title: "Drive API",
+          rootUrl: "https://www.googleapis.com/",
+          servicePath: "drive/v3/",
+          resources: {
+            files: {
+              methods: {
+                create: {
+                  id: "drive.files.create",
+                  httpMethod: "POST",
+                  path: "files",
+                  request: { $ref: "File" },
+                  response: { $ref: "File" },
+                  supportsMediaUpload: true,
+                  mediaUpload: {
+                    accept: ["*/*"],
+                    maxSize: "5497558138880",
+                    protocols: {
+                      simple: {
+                        multipart: true,
+                        path: "/upload/drive/v3/files",
+                      },
+                      resumable: {
+                        multipart: true,
+                        path: "/resumable/upload/drive/v3/files",
+                      },
+                    },
+                  },
+                  scopes: ["https://www.googleapis.com/auth/drive.file"],
+                  parameters: {
+                    enforceSingleParent: {
+                      location: "query",
+                      type: "boolean",
+                    },
+                  },
+                },
+                update: {
+                  id: "drive.files.update",
+                  httpMethod: "PATCH",
+                  path: "files/{fileId}",
+                  request: { $ref: "File" },
+                  response: { $ref: "File" },
+                  supportsMediaUpload: true,
+                  mediaUpload: {
+                    accept: ["*/*"],
+                    protocols: {
+                      simple: {
+                        multipart: true,
+                        path: "/upload/drive/v3/files/{fileId}",
+                      },
+                    },
+                  },
+                  scopes: ["https://www.googleapis.com/auth/drive.file"],
+                  parameters: {
+                    fileId: { location: "path", required: true, type: "string" },
+                  },
+                },
+                export: {
+                  id: "drive.files.export",
+                  httpMethod: "GET",
+                  path: "files/{fileId}/export",
+                  supportsMediaDownload: true,
+                  useMediaDownloadService: true,
+                  parameters: {
+                    fileId: { location: "path", required: true, type: "string" },
+                    mimeType: { location: "query", required: true, type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          schemas: {
+            File: {
+              id: "File",
+              type: "object",
+              properties: {
+                name: { type: "string" },
+              },
+            },
+          },
+        }),
+      });
+
+      const spec = decodeConvertedSpec(result.specText);
+      // The metadata-only operation should keep the original JSON behavior.
+      const createMetadata = spec.paths["/files"]?.post;
+      expect(createMetadata).toMatchObject({
+        operationId: "files.create",
+        "x-executor-toolPath": "files.create",
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/File" },
+            },
+          },
+        },
+      });
+
+      // A separate media-upload operation should be emitted with the simple upload path.
+      const createMedia = spec.paths["/upload/drive/v3/files"]?.post;
+      expect(createMedia).toMatchObject({
+        operationId: "files.createMedia",
+        "x-executor-toolPath": "files.createMedia",
+        "x-executor-pathTemplate": "/upload/drive/v3/files",
+      });
+      expect(createMedia?.parameters).toContainEqual(
+        expect.objectContaining({
+          name: "uploadType",
+          in: "query",
+          required: true,
+          schema: {
+            type: "string",
+            description: "The upload type for the media upload.",
+            enum: ["media"],
+            default: "media",
+          },
+        }),
+      );
+      expect(createMedia?.requestBody).toMatchObject({
+        content: {
+          "application/octet-stream": {
+            schema: { type: "string", format: "binary" },
+          },
+        },
+      });
+
+      // The updateMedia operation should preserve path parameters from the original method.
+      const updateMedia = spec.paths["/upload/drive/v3/files/{fileId}"]?.patch;
+      expect(updateMedia).toMatchObject({
+        operationId: "files.updateMedia",
+        "x-executor-toolPath": "files.updateMedia",
+        "x-executor-pathTemplate": "/upload/drive/v3/files/{fileId}",
+      });
+      expect(updateMedia?.parameters).toContainEqual(
+        expect.objectContaining({
+          name: "fileId",
+          in: "path",
+          required: true,
+        }),
+      );
+      expect(updateMedia?.parameters).toContainEqual(
+        expect.objectContaining({
+          name: "uploadType",
+          in: "query",
+          required: true,
+          schema: {
+            type: "string",
+            description: "The upload type for the media upload.",
+            enum: ["media"],
+            default: "media",
+          },
+        }),
+      );
+
+      // Extraction should produce a usable input schema that includes bodyBase64.
+      const parsed = yield* parse(result.specText);
+      const extracted = yield* extract(parsed);
+      const createMediaOp = extracted.operations.find(
+        (candidate) => candidate.operationId === "files.createMedia",
+      );
+      expect(createMediaOp?.operationId).toBe("files.createMedia");
+      const inputSchema = createMediaOp
+        ? (Option.getOrUndefined(createMediaOp.inputSchema) as
+            | {
+                properties?: Record<string, unknown>;
+                required?: string[];
+              }
+            | undefined)
+        : undefined;
+      expect(inputSchema).toBeDefined();
+      expect(inputSchema?.properties?.bodyBase64).toMatchObject({
+        type: "string",
+        contentEncoding: "base64",
+        contentMediaType: "application/octet-stream",
+      });
+      expect(inputSchema?.required).toContain("bodyBase64");
+      expect(inputSchema?.properties?.body).toBeUndefined();
+    }),
+);
+
 it.effect("bundles Google Discovery documents into one Google OpenAPI source", () =>
   Effect.gen(function* () {
     const result = yield* convertGoogleDiscoveryBundleToOpenApi({
@@ -629,6 +818,91 @@ const ConvertedSpecSecurity = Schema.Struct({
 });
 const decodeConvertedSpecSecurity = Schema.decodeUnknownSync(
   Schema.fromJsonString(ConvertedSpecSecurity),
+);
+
+it.effect("generates media-upload operations for bundled Google Discovery documents", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryBundleToOpenApi({
+      documents: [
+        {
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          documentText: JSON.stringify({
+            name: "drive",
+            version: "v3",
+            title: "Drive API",
+            rootUrl: "https://www.googleapis.com/",
+            servicePath: "drive/v3/",
+            auth: {
+              oauth2: {
+                scopes: {
+                  "https://www.googleapis.com/auth/drive.file": {
+                    description: "Drive file access",
+                  },
+                },
+              },
+            },
+            resources: {
+              files: {
+                methods: {
+                  create: {
+                    id: "drive.files.create",
+                    httpMethod: "POST",
+                    path: "files",
+                    request: { $ref: "File" },
+                    response: { $ref: "File" },
+                    supportsMediaUpload: true,
+                    mediaUpload: {
+                      accept: ["*/*"],
+                      protocols: {
+                        simple: {
+                          multipart: true,
+                          path: "/upload/drive/v3/files",
+                        },
+                      },
+                    },
+                    scopes: ["https://www.googleapis.com/auth/drive.file"],
+                    parameters: {},
+                  },
+                },
+              },
+            },
+            schemas: {
+              File: {
+                id: "File",
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                },
+              },
+            },
+          }),
+        },
+      ],
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const createMedia = spec.paths["/upload/drive/v3/files"]?.post;
+    expect(createMedia).toMatchObject({
+      operationId: "drive.files.createMedia",
+      "x-executor-toolPath": "drive.files.createMedia",
+      "x-executor-pathTemplate": "/upload/drive/v3/files",
+    });
+    expect(createMedia?.parameters).toContainEqual(
+      expect.objectContaining({
+        name: "uploadType",
+        in: "query",
+        required: true,
+      }),
+    );
+    expect(createMedia?.requestBody).toMatchObject({
+      content: {
+        "application/octet-stream": {
+          schema: { type: "string", format: "binary" },
+        },
+      },
+    });
+  }),
 );
 
 it.effect("compacts and filters the merged bundle scope set into a clean consent set", () =>

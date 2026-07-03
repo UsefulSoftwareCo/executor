@@ -56,7 +56,17 @@ scenario(
       });
 
       await step("Create the first org → canonical dashboard at /<slug>", async () => {
-        await page.getByPlaceholder("Northwind Labs").fill("Flow Test Org");
+        const orgName = "Flow Test Org";
+        const orgNameInput = page.getByPlaceholder("Northwind Labs");
+        await page.waitForLoadState("networkidle");
+        await orgNameInput.fill(orgName);
+        await page.waitForTimeout(250);
+        if ((await orgNameInput.inputValue()) !== orgName) {
+          await orgNameInput.fill(orgName);
+        }
+        expect(await orgNameInput.inputValue(), "org name survives create-org hydration").toBe(
+          orgName,
+        );
         await page.getByRole("button", { name: "Create organization" }).click();
         await page.getByText("Connect your MCP client").waitFor({ timeout: 30_000 });
         await page.getByRole("button", { name: "Continue to app" }).click();

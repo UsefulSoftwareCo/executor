@@ -233,9 +233,13 @@ const extractResponseBody = (
 ): OperationResponseBody | undefined => {
   if (!operation.responses) return undefined;
 
+  // Success responses may use exact codes ("200"), the OpenAPI wildcard status
+  // key ("2XX" — Microsoft Graph declares every success response this way), or
+  // fall through to "default". Prefer exact codes, then the wildcard, then default.
   const entries = Object.entries(operation.responses);
   const preferred = [
     ...entries.filter(([s]) => /^2\d\d$/.test(s)).sort(([a], [b]) => a.localeCompare(b)),
+    ...entries.filter(([s]) => /^2xx$/i.test(s)),
     ...entries.filter(([s]) => s === "default"),
   ];
 

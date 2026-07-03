@@ -1,5 +1,6 @@
+import { createConnection } from "node:net";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Context, Data, Effect, Layer, Predicate, Scope as EffectScope } from "effect";
+import { Context, Data, Effect, Layer, Predicate, Schedule, Scope as EffectScope } from "effect";
 import {
   HttpClient,
   HttpRouter,
@@ -109,6 +110,16 @@ const makeTestHttpServer = (
       return yield* new TestHttpServerAddressError({ address });
     }
     const client = Context.get(context, HttpClient.HttpClient);
+    // Under a loaded machine the listen callback can fire before the socket
+    // reliably accepts; probe at the TCP level (no HTTP request, so handlers
+    // that record requests never see it) until a connect succeeds.
+    yield* Effect.callback<void, TestHttpServerServeError>((resume) => {
+      const socket = createConnection({ host: "127.0.0.1", port: address.port }, () => {
+        socket.end();
+        resume(Effect.void);
+      });
+      socket.on("error", (cause) => resume(Effect.fail(new TestHttpServerServeError({ cause }))));
+    }).pipe(Effect.retry(Schedule.both(Schedule.spaced("10 millis"), Schedule.recurs(100))));
     const baseUrl = `http://127.0.0.1:${address.port}`;
     return {
       baseUrl,

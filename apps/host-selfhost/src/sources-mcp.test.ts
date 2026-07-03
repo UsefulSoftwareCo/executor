@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect, Layer } from "effect";
-import { afterAll, expect, test } from "@effect/vitest";
+import { afterAll, beforeAll, expect, test } from "@effect/vitest";
 
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk";
 import { makeScopedExecutor } from "@executor-js/api/server";
@@ -50,8 +50,15 @@ const TINY_SPEC = JSON.stringify({
   },
 });
 
-const { makeSelfHostApiHandler } = await import("./app");
-const { handler, dispose } = await makeSelfHostApiHandler({ dbPath });
+let handler!: (request: Request) => Promise<Response>;
+let dispose: () => Promise<void> = async () => {};
+
+beforeAll(async () => {
+  const { makeSelfHostApiHandler } = await import("./app");
+  const app = await makeSelfHostApiHandler({ dbPath });
+  handler = app.handler;
+  dispose = app.dispose;
+});
 afterAll(() => dispose());
 
 const BASE = "http://localhost:4788";

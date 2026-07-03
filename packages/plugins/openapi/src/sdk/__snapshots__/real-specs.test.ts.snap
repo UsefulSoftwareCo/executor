@@ -4,7 +4,7 @@ exports[`Real specs: Cloudflare API > preserves extraction baseline for represen
 {
   "inputSchemaOperationCount": 2715,
   "operationCount": 2726,
-  "outputSchemaOperationCount": 2669,
+  "outputSchemaOperationCount": 2670,
   "selectedOperations": [
     {
       "hasInputSchema": true,

@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, expect, test } from "@effect/vitest";
+import { afterAll, beforeAll, expect, test } from "@effect/vitest";
 import { connectionIdentifier } from "@executor-js/sdk/shared";
 
 process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-iso-"));
@@ -13,10 +13,16 @@ process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-iso-"));
 // request-scoped. Each identity is its own (org, user): in v2 the org is the
 // tenant (catalog partition) and the user is the acting subject (drives
 // `owner: "user"` rows).
-const { makeSelfHostTestApp, headerIdentityLayer } = await import("./testing/test-app");
+let handler!: (request: Request) => Promise<Response>;
+let dispose: () => Promise<void> = async () => {};
 
-const { handler, dispose } = await makeSelfHostTestApp({
-  identity: headerIdentityLayer,
+beforeAll(async () => {
+  const { makeSelfHostTestApp, headerIdentityLayer } = await import("./testing/test-app");
+  const app = await makeSelfHostTestApp({
+    identity: headerIdentityLayer,
+  });
+  handler = app.handler;
+  dispose = app.dispose;
 });
 afterAll(() => dispose());
 
@@ -135,7 +141,7 @@ test("concurrent requests with distinct identities get disjoint, correct executo
       expect(addresses.some((a) => a.includes(connectionNameForUser(other)))).toBe(false);
     }
   });
-}, 30_000);
+});
 
 test("a request with no identity is rejected", async () => {
   const res = await handler(new Request("http://localhost/api/connections"));

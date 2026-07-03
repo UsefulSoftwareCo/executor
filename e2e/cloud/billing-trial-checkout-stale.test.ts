@@ -44,9 +44,17 @@ scenario(
       await step("A fresh org is offered the Team free trial", async () => {
         // Billing requests are org-scoped via the URL slug header, so reach the
         // plans page through the org-scoped URL (a bare /billing/plans would fire
-        // the first fetch before the slug resolves and 401). Land on "/" to
-        // canonicalize, then open the slug-scoped plans page.
+        // the first fetch before the slug resolves and 401). Land on "/" and WAIT
+        // for the shell to canonicalize onto the slug before reading it:
+        // networkidle only proves the network went quiet, not that the client-side
+        // redirect ran, and reading too early navigates to the literal
+        // "/undefined/billing/plans" — the billing fetches fire under the bogus
+        // slug, fail, and are never refetched (autumn-js staleTime 60s), leaving
+        // the plans grid empty forever.
         await page.goto("/", { waitUntil: "networkidle" });
+        await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
+          timeout: 30_000,
+        });
         const slug = new URL(page.url()).pathname.split("/").filter(Boolean)[0];
         await page.goto(`/${slug}/billing/plans`, { waitUntil: "networkidle" });
         await page.getByRole("heading", { name: "Choose a plan" }).waitFor();

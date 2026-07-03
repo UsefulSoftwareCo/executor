@@ -44,8 +44,8 @@ scenario(
           await page.getByText("Method 1 · Detected").waitFor();
         });
 
-        await step("Add the source", async () => {
-          await page.getByRole("button", { name: "Add source" }).click();
+        await step("Add the integration", async () => {
+          await page.getByRole("button", { name: "Add integration" }).click();
           await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, { timeout: 30_000 });
           await page.getByText("Connections").first().waitFor();
         });

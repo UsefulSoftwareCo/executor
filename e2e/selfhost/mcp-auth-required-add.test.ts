@@ -67,9 +67,9 @@ scenario(
             await page.getByText("Auth required").first().waitFor();
           });
 
-          await step("Add the source with the declared method", async () => {
+          await step("Add the integration with the declared method", async () => {
             await page.getByPlaceholder("e.g. Linear").fill(name);
-            await page.getByRole("button", { name: "Add source" }).click();
+            await page.getByRole("button", { name: "Add integration" }).click();
             // onComplete routes to the new integration's detail hub.
             await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, { timeout: 30_000 });
             const landedSlug = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);

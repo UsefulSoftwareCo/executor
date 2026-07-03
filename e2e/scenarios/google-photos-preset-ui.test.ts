@@ -26,7 +26,7 @@ scenario(
         const dialog = page.getByRole("dialog", { name: "Connect an integration" });
         await dialog.getByRole("link", { name: /^Google Photos\b/ }).click();
         await page.waitForURL(/\/integrations\/add\/google/);
-        await page.getByRole("heading", { name: "Add Google" }).waitFor();
+        await page.getByRole("heading", { name: "Add Google integration" }).waitFor();
       });
 
       await step("The Photos preset defaults to the focused namespace and products", async () => {

@@ -45,7 +45,7 @@ scenario(
         await page.goto("/integrations/add/google", {
           waitUntil: "domcontentloaded",
         });
-        await page.getByRole("heading", { name: "Add Google" }).waitFor();
+        await page.getByRole("heading", { name: "Add Google integration" }).waitFor();
         await page.getByText("Customize your Google connection").waitFor();
         await page.getByText("Gmail").first().waitFor();
         await page.getByText("Google Calendar").first().waitFor();
@@ -55,7 +55,7 @@ scenario(
         await page.goto("/integrations/add/microsoft", {
           waitUntil: "domcontentloaded",
         });
-        await page.getByRole("heading", { name: "Add Microsoft Graph" }).waitFor();
+        await page.getByRole("heading", { name: "Add Microsoft integration" }).waitFor();
         await page.getByText("Customize Microsoft Graph").waitFor();
         expect(await page.getByText("All Microsoft Graph", { exact: true }).count()).toBe(0);
         await page.getByText("Productivity").waitFor();

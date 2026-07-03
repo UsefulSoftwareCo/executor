@@ -1,8 +1,33 @@
+diff --git a/dist/mcp/index.d.ts b/dist/mcp/index.d.ts
+index c8fad44..439da01 100644
+--- a/dist/mcp/index.d.ts
++++ b/dist/mcp/index.d.ts
+@@ -29,6 +29,7 @@ import {
+   xt as MCPClientOAuthCallbackConfig,
+   zt as ElicitResult
+ } from "../agent-tool-types-CNyE1iz_.js";
++declare const MAX_SSE_AGE_MS = 300000;
+ export {
+   type ClearableEventStore,
+   type CreateMcpHandlerOptions,
+@@ -41,6 +42,7 @@ export {
+   type MCPConnectionResult,
+   type MCPDiscoverResult,
+   type MCPServerOptions,
++  MAX_SSE_AGE_MS,
+   MCP_SERVER_ID_MAX_LENGTH,
+   McpAgent,
+   type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8..e65cd346 100644
+index 1edcf0c..707f1cf 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
-@@ -32,9 +32,9 @@ const KEEPALIVE_FRAME = ": keepalive\n\n";
+@@ -28,13 +28,14 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
+ const KEEPALIVE_INTERVAL_MS = 25e3;
+ /** SSE comment frame the parser drops before any event dispatch. */
+ const KEEPALIVE_FRAME = ": keepalive\n\n";
++const MAX_SSE_AGE_MS = 300_000;
+ /**
  * Start an SSE keepalive on `writer`. Returns a `clearInterval` handle
  * that the stream cleanup must invoke when the stream closes.
  */
@@ -14,7 +39,7 @@ index 1edcf0c8..e65cd346 100644
  	}, KEEPALIVE_INTERVAL_MS);
  	return handle;
  }
-@@ -180,10 +180,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -180,10 +181,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  					});
  					return new Response(body, { status: 404 });
  				}
@@ -34,7 +59,7 @@ index 1edcf0c8..e65cd346 100644
  				request.headers.forEach((value, key) => {
  					existingHeaders[key] = value;
  				});
-@@ -206,45 +211,68 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -206,45 +212,71 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  						jsonrpc: "2.0"
  					});
  					return new Response(body, { status: 500 });
@@ -45,17 +70,20 @@ index 1edcf0c8..e65cd346 100644
 -					return new Response(null, {
 +					}
 +					ws.accept();
++					const __closeSse = () => {
++						__sseClosed = true;
++						try {
++							clearInterval(keepAlive);
++						} catch {}
++						try {
++							ws.close(1013, "SSE client not draining");
++						} catch {}
++						writer.abort(new Error("SSE client not draining")).catch(() => {});
++					};
 +					const __forwardSse = (frame) => {
 +						if (__sseClosed) return __writeChain;
 +						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
-+							__sseClosed = true;
-+							try {
-+								clearInterval(keepAlive);
-+							} catch {}
-+							try {
-+								ws.close(1013, "SSE client not draining");
-+							} catch {}
-+							writer.abort(new Error("SSE client not draining")).catch(() => {});
++							__closeSse();
 +							return Promise.resolve();
 +						}
 +						__pendingBytes += frame.byteLength;
@@ -129,7 +157,7 @@ index 1edcf0c8..e65cd346 100644
  					}
  					onClose().catch(console.error);
  				});
-@@ -279,10 +307,15 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -279,10 +311,16 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  					id: null,
  					jsonrpc: "2.0"
  				}), { status: 400 });
@@ -140,6 +168,7 @@ index 1edcf0c8..e65cd346 100644
 +					const { readable, writable } = new TransformStream();
 +					const writer = writable.getWriter();
 +					const encoder = new TextEncoder();
++					const __openedAt = Date.now();
 +					const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
 +					let __pendingBytes = 0;
 +					let __writeChain = Promise.resolve();
@@ -149,7 +178,7 @@ index 1edcf0c8..e65cd346 100644
  					props: ctx.props,
  					jurisdiction: options.jurisdiction
  				});
-@@ -306,27 +339,51 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+@@ -306,27 +344,66 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
  				if (!ws) {
  					await writer.close();
  					return new Response("Failed to establish WS to DO", { status: 500 });
@@ -158,17 +187,32 @@ index 1edcf0c8..e65cd346 100644
 -				ws.addEventListener("message", (event) => {
 +					}
 +					ws.accept();
++					const __closeSse = () => {
++						__sseClosed = true;
++						try {
++							clearInterval(keepAlive);
++						} catch {}
++						try {
++							ws.close(1013, "SSE client not draining");
++						} catch {}
++						writer.abort(new Error("SSE client not draining")).catch(() => {});
++					};
 +					const __forwardSse = (frame) => {
 +						if (__sseClosed) return __writeChain;
++						const ageMs = Date.now() - __openedAt;
++						if (ageMs > MAX_SSE_AGE_MS) {
++							console.error(JSON.stringify({
++								event: "sse_max_age_close",
++								sessionId,
++								variant: "streamable-get",
++								ageMs,
++								pendingBytes: __pendingBytes
++							}));
++							__closeSse();
++							return Promise.resolve();
++						}
 +						if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
-+							__sseClosed = true;
-+							try {
-+								clearInterval(keepAlive);
-+							} catch {}
-+							try {
-+								ws.close(1013, "SSE client not draining");
-+							} catch {}
-+							writer.abort(new Error("SSE client not draining")).catch(() => {});
++							__closeSse();
 +							return Promise.resolve();
 +						}
 +						__pendingBytes += frame.byteLength;
@@ -216,7 +260,7 @@ index 1edcf0c8..e65cd346 100644
  				return new Response(readable, {
  					headers: {
  						"Cache-Control": "no-cache",
-@@ -389,10 +446,15 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -389,10 +466,16 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  		const url = new URL(request.url);
  		if (request.method === "GET" && basePattern.test(url)) {
  			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
@@ -227,6 +271,7 @@ index 1edcf0c8..e65cd346 100644
 +				const { readable, writable } = new TransformStream();
 +				const writer = writable.getWriter();
 +				const encoder = new TextEncoder();
++				const __openedAt = Date.now();
 +				const MAX_PENDING_SSE_BYTES = 8 * 1024 * 1024;
 +				let __pendingBytes = 0;
 +				let __writeChain = Promise.resolve();
@@ -236,7 +281,7 @@ index 1edcf0c8..e65cd346 100644
  			endpointUrl.pathname = encodeURI(`${basePath}/message`);
  			endpointUrl.searchParams.set("sessionId", sessionId);
  			const endpointMessage = `event: endpoint\ndata: ${endpointUrl.pathname + endpointUrl.search + endpointUrl.hash}\n\n`;
-@@ -414,35 +476,59 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+@@ -414,35 +497,74 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
  				console.error("Failed to establish WebSocket connection");
  				await writer.close();
  				return new Response("Failed to establish WebSocket connection", { status: 500 });
@@ -245,17 +290,32 @@ index 1edcf0c8..e65cd346 100644
 -			ws.addEventListener("message", (event) => {
 +				}
 +				ws.accept();
++				const __closeSse = () => {
++					__sseClosed = true;
++					try {
++						clearInterval(keepAlive);
++					} catch {}
++					try {
++						ws.close(1013, "SSE client not draining");
++					} catch {}
++					writer.abort(new Error("SSE client not draining")).catch(() => {});
++				};
 +				const __forwardSse = (frame) => {
 +					if (__sseClosed) return __writeChain;
++					const ageMs = Date.now() - __openedAt;
++					if (ageMs > MAX_SSE_AGE_MS) {
++						console.error(JSON.stringify({
++							event: "sse_max_age_close",
++							sessionId,
++							variant: "legacy-sse",
++							ageMs,
++							pendingBytes: __pendingBytes
++						}));
++						__closeSse();
++						return Promise.resolve();
++					}
 +					if (__pendingBytes + frame.byteLength > MAX_PENDING_SSE_BYTES) {
-+						__sseClosed = true;
-+						try {
-+							clearInterval(keepAlive);
-+						} catch {}
-+						try {
-+							ws.close(1013, "SSE client not draining");
-+						} catch {}
-+						writer.abort(new Error("SSE client not draining")).catch(() => {});
++						__closeSse();
 +						return Promise.resolve();
 +					}
 +					__pendingBytes += frame.byteLength;
@@ -314,9 +374,12 @@ index 1edcf0c8..e65cd346 100644
  						console.error("Error closing SSE connection:", error);
  					}
  				}
-@@ -1700,4 +1786,4 @@ McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
+@@ -1698,6 +1820,6 @@ var McpAgent = class McpAgent extends Agent {
+ };
+ McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
  //#endregion
- export { DurableObjectEventStore, ElicitRequestSchema, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
+-export { DurableObjectEventStore, ElicitRequestSchema, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
++export { DurableObjectEventStore, ElicitRequestSchema, MAX_SSE_AGE_MS, MCP_SERVER_ID_MAX_LENGTH, McpAgent, RPCClientTransport, RPCServerTransport, RPC_DO_PREFIX, SSEEdgeClientTransport, StreamableHTTPEdgeClientTransport, WorkerTransport, createMcpHandler, experimental_createMcpHandler, getMcpAuthContext, normalizeServerId };
  
 -//# sourceMappingURL=index.js.map
 \ No newline at end of file
