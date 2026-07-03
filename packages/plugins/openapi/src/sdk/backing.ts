@@ -248,6 +248,56 @@ export const compileOpenApiSpec = (
     return yield* compileOpenApiDocument(doc);
   });
 
+/**
+ * Bounded reuse of compiled specs for the serve-side fallback paths (health
+ * checks, candidate listing, tools/invoke legacy fallbacks). These paths run
+ * per request, and the UI auto-fires the health endpoints on every page mount,
+ * so recompiling a multi-MB spec on each call grows the dev server heap until
+ * the process hits the V8 limit. The stored spec is content-addressed: the
+ * config's `specHash` keys the blob the text is loaded from, so the hash is a
+ * free, already-computed identity (same hash means byte-identical text means
+ * identical compile output), and a spec update writes a new hash so stale
+ * entries age out naturally.
+ *
+ * An insertion-ordered Map serves as a tiny LRU: hits are re-inserted to
+ * refresh recency and the oldest entry is evicted past capacity. Capacity 4
+ * covers the handful of integrations a page's probes touch at once while
+ * keeping worst-case retention to a few compiled documents.
+ */
+const COMPILED_SPEC_CACHE_CAPACITY = 4;
+const compiledSpecCache = new Map<string, CompiledOpenApiSpec>();
+
+/** Test-only reset so unit tests can observe cold-cache behavior. */
+export const clearCompiledOpenApiSpecCache = (): void => {
+  compiledSpecCache.clear();
+};
+
+/** Compile through the module-level LRU. `specHash` is the content hash the
+ *  spec text was loaded by (`OpenApiIntegrationConfig.specHash`). A missing
+ *  hash (legacy config shape) bypasses the cache rather than paying to hash
+ *  multi-MB text on the request path. */
+export const compileOpenApiSpecCached = (
+  specHash: string | null | undefined,
+  specText: string,
+): Effect.Effect<CompiledOpenApiSpec, OpenApiParseError | OpenApiExtractionError> =>
+  Effect.gen(function* () {
+    if (specHash == null) return yield* compileOpenApiSpec(specText);
+    const hit = compiledSpecCache.get(specHash);
+    if (hit !== undefined) {
+      compiledSpecCache.delete(specHash);
+      compiledSpecCache.set(specHash, hit);
+      return hit;
+    }
+    const compiled = yield* compileOpenApiSpec(specText);
+    compiledSpecCache.set(specHash, compiled);
+    while (compiledSpecCache.size > COMPILED_SPEC_CACHE_CAPACITY) {
+      const oldest = compiledSpecCache.keys().next().value;
+      if (oldest === undefined) break;
+      compiledSpecCache.delete(oldest);
+    }
+    return compiled;
+  });
+
 export const openApiToolDefsFromCompiled = (compiled: CompiledOpenApiSpec): readonly ToolDef[] =>
   compiled.definitions.map((def): ToolDef => {
     const returnsFile = Option.match(def.operation.responseBody, {
@@ -543,7 +593,7 @@ export const resolveOpenApiBackedTools = ({
     }
     const specText = yield* loadOpenApiSpecText(storage, openApiConfig);
     if (specText == null) return { tools: [], definitions: {} };
-    const compiled = yield* compileOpenApiSpec(specText).pipe(
+    const compiled = yield* compileOpenApiSpecCached(openApiConfig.specHash, specText).pipe(
       Effect.catch(() => Effect.succeed(null)),
     );
     if (!compiled) return { tools: [], definitions: {} };
@@ -577,7 +627,9 @@ export const invokeOpenApiBackedTool = (input: {
       const compiled =
         specText == null
           ? null
-          : yield* compileOpenApiSpec(specText).pipe(Effect.catch(() => Effect.succeed(null)));
+          : yield* compileOpenApiSpecCached(config.specHash, specText).pipe(
+              Effect.catch(() => Effect.succeed(null)),
+            );
       binding = compiled
         ? openApiStoredOperationsFromCompiled(integration, compiled).find(
             (op) => op.toolName === input.toolRow.name,
@@ -716,7 +768,7 @@ const resolveHealthCheckBinding = (
       Effect.catch(() => Effect.succeed(null)),
     );
     if (specText == null) return undefined;
-    const compiled = yield* compileOpenApiSpec(specText).pipe(
+    const compiled = yield* compileOpenApiSpecCached(config.specHash, specText).pipe(
       Effect.catch(() => Effect.succeed(null)),
     );
     if (!compiled) return undefined;
@@ -878,7 +930,9 @@ export const listHealthCheckCandidatesOpenApi = (input: {
       const compiled =
         specText == null
           ? null
-          : yield* compileOpenApiSpec(specText).pipe(Effect.catch(() => Effect.succeed(null)));
+          : yield* compileOpenApiSpecCached(config.specHash, specText).pipe(
+              Effect.catch(() => Effect.succeed(null)),
+            );
       if (compiled) {
         for (const def of compiled.definitions) {
           const summary =
