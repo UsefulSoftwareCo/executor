@@ -6,7 +6,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { claimPorts } from "../src/ports";
+import { claimAndBoot } from "../src/ports";
 import { SELFHOST_ADMIN } from "../targets/selfhost";
 import { waitForHttp } from "./boot";
 import { bootSelfhostDocker } from "./selfhost-docker.boot";
@@ -17,25 +17,24 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     return;
   }
 
-  const { ports, release } = await claimPorts([
-    { envVar: "E2E_SELFHOST_DOCKER_PORT", offset: 5, label: "selfhost docker" },
-  ]);
-  const port = ports.E2E_SELFHOST_DOCKER_PORT!;
-
-  let procs;
-  try {
-    procs = await bootSelfhostDocker({
-      port,
-      webBaseUrl: `http://localhost:${port}`,
-      admin: SELFHOST_ADMIN,
-      logFile: resolve(fileURLToPath(new URL("../", import.meta.url)), "selfhost-docker.boot.log"),
-    });
-  } catch (error) {
-    await release();
-    throw error;
-  }
-  return async () => {
-    await procs.teardown();
-    await release();
-  };
+  // Claim, boot, and retry on EADDRINUSE (Linux-CI ephemeral squatter between
+  // probe and bind); the claimed port is published via env for the workers.
+  const { teardown } = await claimAndBoot(
+    [{ envVar: "E2E_SELFHOST_DOCKER_PORT", offset: 5, label: "selfhost docker" }],
+    async (ports) => {
+      const port = ports.E2E_SELFHOST_DOCKER_PORT!;
+      const procs = await bootSelfhostDocker({
+        port,
+        webBaseUrl: `http://localhost:${port}`,
+        admin: SELFHOST_ADMIN,
+        logFile: resolve(
+          fileURLToPath(new URL("../", import.meta.url)),
+          "selfhost-docker.boot.log",
+        ),
+      });
+      return { teardown: procs.teardown, value: procs };
+    },
+    { label: "selfhost-docker" },
+  );
+  return teardown;
 }
