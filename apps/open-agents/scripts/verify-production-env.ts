@@ -16,11 +16,11 @@ const EXPECTED_SERVICE_CONFIG = {
     buildCommand: "bun run build",
   },
   eve: {
-    root: ".",
+    root: "apps/open-agents",
     framework: "eve",
     installCommand: "bun install --frozen-lockfile --minimum-release-age=0",
     buildCommand:
-      "bun run apps/open-agents/scripts/verify-eve-vercel-output-patch.ts && eve build && bun run apps/open-agents/scripts/patch-eve-vercel-output.ts",
+      "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts",
   },
 };
 
