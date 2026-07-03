@@ -51,7 +51,7 @@ const officialRemoteMcpEndpoints: Readonly<
     summary: "Search, read, and update Notion workspace content via MCP.",
   },
   "discovered/datadoghq-com-mcp": {
-    endpoint: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=all",
+    endpoint: "https://mcp.datadoghq.com/v1/mcp?toolsets=all",
     id: "datadog",
     name: "Datadog",
     namespace: "datadog",

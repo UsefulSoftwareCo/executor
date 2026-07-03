@@ -1,6 +1,39 @@
 import type { SandboxHooks } from "../interface";
 
+export type VercelSandboxSetupPhase =
+  | "sdk-create-start"
+  | "sdk-create-complete"
+  | "clone-source-start"
+  | "clone-source-complete"
+  | "clone-workspace-source-start"
+  | "clone-workspace-source-complete"
+  | "git-bootstrap-start"
+  | "git-bootstrap-complete"
+  | "git-user-start"
+  | "git-user-complete"
+  | "branch-checkout-start"
+  | "branch-checkout-complete"
+  | "github-auth-clear-start"
+  | "github-auth-clear-complete"
+  | "after-start-hook-start"
+  | "after-start-hook-complete";
+
+export interface VercelSandboxSetupEvent {
+  phase: VercelSandboxSetupPhase;
+  sandboxName?: string;
+  sourceUrl?: string;
+  directory?: string;
+  branch?: string;
+  runtime?: VercelSandboxConfig["runtime"];
+  baseSnapshotId?: string;
+  restoreSnapshotId?: string;
+}
+
 export interface VercelSandboxConfig {
+  /** Abort signal for create/setup operations. */
+  signal?: AbortSignal;
+  /** Setup progress callback for long-running provider operations. */
+  onSetupEvent?: (event: VercelSandboxSetupEvent) => void | Promise<void>;
   /**
    * Optional persistent sandbox name.
    * When provided, repeated creates are expected to target the same durable sandbox.
@@ -112,6 +145,8 @@ export interface VercelSandboxConfig {
 }
 
 export interface VercelSandboxConnectConfig {
+  /** Abort signal for connect/setup operations. */
+  signal?: AbortSignal;
   /** The persistent sandbox name to reconnect to */
   sandboxName: string;
   /** Environment variables to make available to commands */

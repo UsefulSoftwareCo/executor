@@ -40,5 +40,7 @@ export {
   VercelSandbox,
   type VercelSandboxConfig,
   type VercelSandboxConnectConfig,
+  type VercelSandboxSetupEvent,
+  type VercelSandboxSetupPhase,
   type VercelState,
 } from "./vercel/index";

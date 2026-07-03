@@ -1,6 +1,7 @@
 import type { Sandbox, SandboxHooks } from "./interface";
 import type { SandboxStatus } from "./types";
 import { connectVercel } from "./vercel/connect";
+import type { VercelSandboxSetupEvent } from "./vercel/config";
 import type { VercelState } from "./vercel/state";
 
 // Re-export SandboxStatus from types for convenience
@@ -16,6 +17,10 @@ export type SandboxState = { type: "vercel" } & VercelState;
  * Base connect options for all sandbox types.
  */
 export interface ConnectOptions {
+  /** Abort signal for setup operations such as sandbox create/resume and initial commands */
+  signal?: AbortSignal;
+  /** Provider setup progress callback for create-time operations */
+  onSetupEvent?: (event: VercelSandboxSetupEvent) => void | Promise<void>;
   /** Environment variables available to sandbox commands */
   env?: Record<string, string>;
   /** GitHub token used only during setup clone/fetch, then cleared */
@@ -34,8 +39,8 @@ export interface ConnectOptions {
   baseSnapshotId?: string;
   /** Whether to resume a stopped persistent sandbox session */
   resume?: boolean;
-  /** Whether to create the named sandbox when it does not already exist */
-  createIfMissing?: boolean;
+  /** Whether to create a named sandbox instead of reconnecting to it */
+  create?: boolean;
   /** Whether new sandboxes should persist filesystem state between sessions */
   persistent?: boolean;
   /** Default expiration for automatic persistent-sandbox snapshots */

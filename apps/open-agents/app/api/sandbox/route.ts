@@ -1,4 +1,8 @@
-import { connectSandbox, type SandboxState } from "@open-agents/sandbox";
+import {
+  connectSandbox,
+  type SandboxState,
+  type VercelSandboxSetupEvent,
+} from "@open-agents/sandbox";
 import { installConfiguredSessionClis } from "@open-agents/sandbox/session-clis.js";
 import {
   requireAuthenticatedUser,
@@ -67,6 +71,32 @@ type SetupTokenResult =
       ok: false;
       response: Response;
     };
+
+const SANDBOX_CREATE_ROUTE_TIMEOUT_MS = 240_000;
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+function formatSetupEvent(event: VercelSandboxSetupEvent): string {
+  const details = [
+    event.sandboxName ? `sandbox=${event.sandboxName}` : undefined,
+    event.sourceUrl ? `source=${event.sourceUrl}` : undefined,
+    event.directory ? `directory=${event.directory}` : undefined,
+    event.branch ? `branch=${event.branch}` : undefined,
+    event.runtime ? `runtime=${event.runtime}` : undefined,
+    event.baseSnapshotId ? `baseSnapshot=${event.baseSnapshotId}` : undefined,
+    event.restoreSnapshotId ? `restoreSnapshot=${event.restoreSnapshotId}` : undefined,
+  ].filter((detail): detail is string => detail !== undefined);
+
+  return details.length
+    ? `[sandbox-create] ${event.phase} (${details.join(", ")})`
+    : `[sandbox-create] ${event.phase}`;
+}
 
 function getWorkspaceSources(workspaceRepos: WorkspaceRepo[]): SandboxSource[] {
   return workspaceRepos.map((repo) => ({
@@ -335,8 +365,11 @@ export async function POST(req: Request) {
   // CREATE OR RESUME: Create a named persistent sandbox for this session.
   // ============================================
   const startTime = Date.now();
+  const sandboxCreateTimeoutSignal = AbortSignal.timeout(SANDBOX_CREATE_ROUTE_TIMEOUT_MS);
+  const sandboxCreateSignal = AbortSignal.any([req.signal, sandboxCreateTimeoutSignal]);
 
   let sandbox: Awaited<ReturnType<typeof connectSandbox>>;
+  let latestSetupMessage = "[sandbox-create] connect start";
   try {
     const ghProfile = await getGitHubUserProfile(session.user.id);
     const githubNoreplyEmail =
@@ -356,8 +389,12 @@ export async function POST(req: Request) {
       sessionId,
       sandboxName,
       persistent: !!sandboxName,
-      resume: !!sandboxName,
-      createIfMissing: !!sandboxName,
+      create: !!sandboxName,
+      routeTimeoutMs: SANDBOX_CREATE_ROUTE_TIMEOUT_MS,
+    });
+
+    await updateSession(sessionId, {
+      lifecycleError: latestSetupMessage,
     });
 
     sandbox = await connectSandbox(
@@ -368,6 +405,18 @@ export async function POST(req: Request) {
         ...(sources ? { sources } : {}),
       },
       {
+        signal: sandboxCreateSignal,
+        onSetupEvent: async (event) => {
+          const message = formatSetupEvent(event);
+          latestSetupMessage = message;
+          console.info("[sandbox-create] setup event", {
+            sessionId,
+            ...event,
+          });
+          await updateSession(sessionId, {
+            lifecycleError: message,
+          });
+        },
         githubToken: setupToken?.token ?? setupGithubToken,
         gitUser,
         timeout: DEFAULT_SANDBOX_TIMEOUT_MS,
@@ -375,8 +424,7 @@ export async function POST(req: Request) {
         ports: DEFAULT_SANDBOX_PORTS,
         baseSnapshotId: DEFAULT_SANDBOX_BASE_SNAPSHOT_ID,
         persistent: !!sandboxName,
-        resume: !!sandboxName,
-        createIfMissing: !!sandboxName,
+        create: !!sandboxName,
         hooks: {
           afterStart: installConfiguredSessionClis,
         },
@@ -391,16 +439,41 @@ export async function POST(req: Request) {
       hasState: !!sandbox.getState,
     });
   } catch (error) {
+    const message = getErrorMessage(error);
+    const failureMessage =
+      latestSetupMessage === "[sandbox-create] connect start"
+        ? message
+        : `${message} while ${latestSetupMessage}`;
     console.error(
       "[sandbox-create] connect failed",
       {
         sessionId,
         sandboxName,
         durationMs: Date.now() - startTime,
+        timeoutAborted: sandboxCreateTimeoutSignal.aborted,
+        requestAborted: req.signal.aborted,
+        message: failureMessage,
       },
       error,
     );
-    throw error;
+
+    await updateSession(sessionId, {
+      lifecycleState: "failed",
+      lifecycleError: failureMessage,
+      lifecycleVersion: getNextLifecycleVersion(sessionRecord?.lifecycleVersion),
+      sandboxExpiresAt: null,
+      hibernateAfter: null,
+      lifecycleRunId: null,
+    });
+
+    return Response.json(
+      {
+        error: "Failed to create sandbox",
+        reason: failureMessage,
+        timeout: sandboxCreateTimeoutSignal.aborted,
+      },
+      { status: sandboxCreateTimeoutSignal.aborted ? 504 : 500 },
+    );
   } finally {
     if (setupToken) {
       await revokeInstallationToken(setupToken.token);

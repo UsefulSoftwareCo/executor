@@ -2,7 +2,11 @@ import { Sandbox as VercelSandboxSDK, type NetworkPolicy } from "@vercel/sandbox
 import type { Dirent } from "fs";
 import type { ExecResult, Sandbox, SandboxHooks, SandboxStats, SnapshotResult } from "../interface";
 import type { SandboxStatus } from "../types";
-import type { VercelSandboxConfig, VercelSandboxConnectConfig } from "./config";
+import type {
+  VercelSandboxConfig,
+  VercelSandboxConnectConfig,
+  VercelSandboxSetupEvent,
+} from "./config";
 import type { VercelState } from "./state";
 
 const MAX_OUTPUT_LENGTH = 50_000;
@@ -12,8 +16,22 @@ const MAX_SDK_TIMEOUT_MS = 18_000_000; // Vercel API limit: 5 hours
 const MAX_PROACTIVE_TIMEOUT_MS = MAX_SDK_TIMEOUT_MS - TIMEOUT_BUFFER_MS;
 const DEFAULT_RECONNECT_TIMEOUT_MS = 300_000; // 5 minutes default timeout for reconnected sandboxes
 const DETACHED_QUICK_FAILURE_WINDOW_MS = 2_000;
+const GIT_CLONE_TIMEOUT_MS = 180_000;
 
 const DEFAULT_NETWORK_POLICY: NetworkPolicy = "allow-all";
+
+type SetupEventHandler = NonNullable<VercelSandboxConfig["onSetupEvent"]>;
+
+async function emitSetupEvent(
+  onSetupEvent: SetupEventHandler | undefined,
+  event: VercelSandboxSetupEvent,
+): Promise<void> {
+  if (!onSetupEvent) {
+    return;
+  }
+
+  await onSetupEvent(event);
+}
 
 function buildGitHubCredentialBrokeringPolicy(token?: string): NetworkPolicy {
   if (!token) {
@@ -49,19 +67,56 @@ function buildGitHubCredentialBrokeringPolicy(token?: string): NetworkPolicy {
   };
 }
 
-async function syncGitHubCredentialBrokering(sdk: VercelSandboxSDK, token?: string): Promise<void> {
-  await sdk.update({
-    networkPolicy: buildGitHubCredentialBrokeringPolicy(token),
-  });
+function buildGitCloneEnv(token?: string): Record<string, string> {
+  if (!token) {
+    return {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_LFS_SKIP_SMUDGE: "1",
+    };
+  }
+
+  const basicAuthToken = Buffer.from(`x-access-token:${token}`, "utf-8").toString("base64");
+
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_LFS_SKIP_SMUDGE: "1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: Basic ${basicAuthToken}`,
+  };
 }
 
-async function clearGitHubCredentialBrokering(sdk: VercelSandboxSDK): Promise<void> {
-  await syncGitHubCredentialBrokering(sdk, undefined);
+function buildSetupCommandSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
-async function clearGitHubCredentialBrokeringBestEffort(sdk: VercelSandboxSDK): Promise<void> {
+async function syncGitHubCredentialBrokering(
+  sdk: VercelSandboxSDK,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await sdk.update(
+    {
+      networkPolicy: buildGitHubCredentialBrokeringPolicy(token),
+    },
+    signal ? { signal } : undefined,
+  );
+}
+
+async function clearGitHubCredentialBrokering(
+  sdk: VercelSandboxSDK,
+  signal?: AbortSignal,
+): Promise<void> {
+  await syncGitHubCredentialBrokering(sdk, undefined, signal);
+}
+
+async function clearGitHubCredentialBrokeringBestEffort(
+  sdk: VercelSandboxSDK,
+  signal?: AbortSignal,
+): Promise<void> {
   try {
-    await clearGitHubCredentialBrokering(sdk);
+    await clearGitHubCredentialBrokering(sdk, signal);
   } catch (error) {
     console.warn("[VercelSandbox] failed to clear GitHub setup auth:", error);
   }
@@ -99,16 +154,19 @@ async function configureGitUser(
   sdk: VercelSandboxSDK,
   cwd: string,
   gitUser: NonNullable<VercelSandboxConfig["gitUser"]>,
+  signal?: AbortSignal,
 ): Promise<void> {
   await sdk.runCommand({
     cmd: "git",
     args: ["config", "user.name", gitUser.name],
     cwd,
+    ...(signal ? { signal } : {}),
   });
   await sdk.runCommand({
     cmd: "git",
     args: ["config", "user.email", gitUser.email],
     cwd,
+    ...(signal ? { signal } : {}),
   });
 }
 
@@ -117,8 +175,10 @@ async function cloneSourceIntoDirectory(params: {
   source: VercelSandboxGitSource;
   workingDirectory: string;
   directory: string;
+  githubToken?: string;
+  signal?: AbortSignal;
 }): Promise<void> {
-  const cloneArgs = ["clone"];
+  const cloneArgs = ["clone", "--depth", "1", "--single-branch"];
   if (params.source.branch) {
     cloneArgs.push("--branch", params.source.branch);
   }
@@ -128,11 +188,14 @@ async function cloneSourceIntoDirectory(params: {
     cmd: "git",
     args: cloneArgs,
     cwd: params.workingDirectory,
+    env: buildGitCloneEnv(params.githubToken),
+    signal: buildSetupCommandSignal(params.signal, GIT_CLONE_TIMEOUT_MS),
   });
 
   if (cloneResult.exitCode !== 0) {
+    const stderr = await cloneResult.stderr();
     throw new Error(
-      `Failed to clone repository '${params.source.url}' into '${params.directory}' (exit code ${cloneResult.exitCode})`,
+      `Failed to clone repository '${params.source.url}' into '${params.directory}' (exit code ${cloneResult.exitCode}): ${stderr.trim()}`,
     );
   }
 }
@@ -499,6 +562,8 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
    */
   static async create(config: VercelSandboxConfig = {}): Promise<VercelSandbox> {
     const {
+      signal,
+      onSetupEvent,
       name,
       source,
       sources = [],
@@ -538,6 +603,7 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
       timeout: sdkTimeout,
       persistent,
       networkPolicy: buildGitHubCredentialBrokeringPolicy(githubToken),
+      ...(signal ? { signal } : {}),
       ...(ports && { ports }),
       ...(snapshotExpiration !== undefined && { snapshotExpiration }),
     };
@@ -547,6 +613,13 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
     };
 
     let sdk: VercelSandboxSDK;
+    await emitSetupEvent(onSetupEvent, {
+      phase: "sdk-create-start",
+      ...(name ? { sandboxName: name } : {}),
+      runtime,
+      ...(baseSnapshotId ? { baseSnapshotId } : {}),
+      ...(restoreSnapshotId ? { restoreSnapshotId } : {}),
+    });
     if (restoreSnapshotId) {
       sdk = await VercelSandboxSDK.create({
         ...createBaseConfig,
@@ -557,18 +630,16 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
         ...createBaseConfig,
         source: { type: "snapshot", snapshotId: baseSnapshotId },
       });
-    } else if (source) {
-      sdk = await VercelSandboxSDK.create({
-        ...createRuntimeConfig,
-        source: {
-          type: "git",
-          url: source.url,
-          ...(source.branch && { revision: source.branch }),
-        },
-      });
     } else {
       sdk = await VercelSandboxSDK.create(createRuntimeConfig);
     }
+    await emitSetupEvent(onSetupEvent, {
+      phase: "sdk-create-complete",
+      sandboxName: sdk.name,
+      runtime,
+      ...(baseSnapshotId ? { baseSnapshotId } : {}),
+      ...(restoreSnapshotId ? { restoreSnapshotId } : {}),
+    });
 
     const workingDirectory = DEFAULT_WORKING_DIRECTORY;
     const clonedSourceDirectories: string[] = [];
@@ -577,8 +648,14 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
     // snapshot has files in /vercel/sandbox (dotfiles, tool configs, etc.), the
     // clone will fail. Consider using git init + remote add + fetch + checkout
     // instead, which works regardless of existing directory contents.
-    if (source && baseSnapshotId) {
-      const cloneArgs = ["clone"];
+    if (source) {
+      await emitSetupEvent(onSetupEvent, {
+        phase: "clone-source-start",
+        sandboxName: sdk.name,
+        sourceUrl: source.url,
+        ...(source.branch ? { branch: source.branch } : {}),
+      });
+      const cloneArgs = ["clone", "--depth", "1", "--single-branch"];
       if (source.branch) {
         cloneArgs.push("--branch", source.branch);
       }
@@ -588,33 +665,58 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
         cmd: "git",
         args: cloneArgs,
         cwd: workingDirectory,
+        env: buildGitCloneEnv(githubToken),
+        signal: buildSetupCommandSignal(signal, GIT_CLONE_TIMEOUT_MS),
       });
 
       if (cloneResult.exitCode !== 0) {
         if (githubToken) {
-          await clearGitHubCredentialBrokeringBestEffort(sdk);
+          await clearGitHubCredentialBrokeringBestEffort(sdk, signal);
         }
+        const stderr = await cloneResult.stderr();
         throw new Error(
-          `Failed to clone repository '${source.url}' (exit code ${cloneResult.exitCode})`,
+          `Failed to clone repository '${source.url}' (exit code ${cloneResult.exitCode}): ${stderr.trim()}`,
         );
       }
+      await emitSetupEvent(onSetupEvent, {
+        phase: "clone-source-complete",
+        sandboxName: sdk.name,
+        sourceUrl: source.url,
+        ...(source.branch ? { branch: source.branch } : {}),
+      });
     }
 
     if (sources.length > 0) {
       try {
         for (const [index, sourceConfig] of sources.entries()) {
           const directory = normalizeWorkspaceDirectory(sourceConfig, index);
+          await emitSetupEvent(onSetupEvent, {
+            phase: "clone-workspace-source-start",
+            sandboxName: sdk.name,
+            sourceUrl: sourceConfig.url,
+            directory,
+            ...(sourceConfig.branch ? { branch: sourceConfig.branch } : {}),
+          });
           await cloneSourceIntoDirectory({
             sdk,
             source: sourceConfig,
             workingDirectory,
             directory,
+            githubToken,
+            signal,
           });
           clonedSourceDirectories.push(directory);
+          await emitSetupEvent(onSetupEvent, {
+            phase: "clone-workspace-source-complete",
+            sandboxName: sdk.name,
+            sourceUrl: sourceConfig.url,
+            directory,
+            ...(sourceConfig.branch ? { branch: sourceConfig.branch } : {}),
+          });
         }
       } catch (error) {
         if (githubToken) {
-          await clearGitHubCredentialBrokeringBestEffort(sdk);
+          await clearGitHubCredentialBrokeringBestEffort(sdk, signal);
         }
         throw error;
       }
@@ -623,20 +725,47 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
     // Initialize git repo for empty sandboxes (no source provided)
     // This ensures git commands work consistently (e.g., for diff viewing)
     if (!source && sources.length === 0 && !restoreSnapshotId && !skipGitWorkspaceBootstrap) {
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-bootstrap-start",
+        sandboxName: sdk.name,
+      });
       await sdk.runCommand({
         cmd: "git",
         args: ["init"],
         cwd: workingDirectory,
+        ...(signal ? { signal } : {}),
+      });
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-bootstrap-complete",
+        sandboxName: sdk.name,
       });
     }
 
     // Configure git user for commits if provided (skip when no repo was created)
     if (gitUser && (source || (!skipGitWorkspaceBootstrap && sources.length === 0))) {
-      await configureGitUser(sdk, workingDirectory, gitUser);
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-user-start",
+        sandboxName: sdk.name,
+      });
+      await configureGitUser(sdk, workingDirectory, gitUser, signal);
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-user-complete",
+        sandboxName: sdk.name,
+      });
     }
     if (gitUser && clonedSourceDirectories.length > 0) {
       for (const directory of clonedSourceDirectories) {
-        await configureGitUser(sdk, `${workingDirectory}/${directory}`, gitUser);
+        await emitSetupEvent(onSetupEvent, {
+          phase: "git-user-start",
+          sandboxName: sdk.name,
+          directory,
+        });
+        await configureGitUser(sdk, `${workingDirectory}/${directory}`, gitUser, signal);
+        await emitSetupEvent(onSetupEvent, {
+          phase: "git-user-complete",
+          sandboxName: sdk.name,
+          directory,
+        });
       }
     }
 
@@ -650,10 +779,19 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
       gitUser &&
       !skipGitWorkspaceBootstrap
     ) {
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-bootstrap-start",
+        sandboxName: sdk.name,
+      });
       await sdk.runCommand({
         cmd: "git",
         args: ["commit", "--allow-empty", "-m", "Initial commit"],
         cwd: workingDirectory,
+        ...(signal ? { signal } : {}),
+      });
+      await emitSetupEvent(onSetupEvent, {
+        phase: "git-bootstrap-complete",
+        sandboxName: sdk.name,
       });
     }
 
@@ -662,15 +800,21 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
 
     // Create and checkout a new branch if specified
     if (source?.newBranch) {
+      await emitSetupEvent(onSetupEvent, {
+        phase: "branch-checkout-start",
+        sandboxName: sdk.name,
+        branch: source.newBranch,
+      });
       const checkoutResult = await sdk.runCommand({
         cmd: "git",
         args: ["checkout", "-b", source.newBranch],
         cwd: workingDirectory,
+        ...(signal ? { signal } : {}),
       });
 
       if (checkoutResult.exitCode !== 0) {
         if (githubToken) {
-          await clearGitHubCredentialBrokeringBestEffort(sdk);
+          await clearGitHubCredentialBrokeringBestEffort(sdk, signal);
         }
         throw new Error(
           `Failed to create branch '${source.newBranch}': ${await checkoutResult.stderr()}`,
@@ -678,6 +822,11 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
       }
 
       currentBranch = source.newBranch;
+      await emitSetupEvent(onSetupEvent, {
+        phase: "branch-checkout-complete",
+        sandboxName: sdk.name,
+        branch: source.newBranch,
+      });
     } else if (source?.branch) {
       currentBranch = source.branch;
     }
@@ -690,10 +839,17 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
           }
           const directory =
             clonedSourceDirectories[index] ?? normalizeWorkspaceDirectory(sourceConfig, index);
+          await emitSetupEvent(onSetupEvent, {
+            phase: "branch-checkout-start",
+            sandboxName: sdk.name,
+            directory,
+            branch: sourceConfig.newBranch,
+          });
           const checkoutResult = await sdk.runCommand({
             cmd: "git",
             args: ["checkout", "-b", sourceConfig.newBranch],
             cwd: `${workingDirectory}/${directory}`,
+            ...(signal ? { signal } : {}),
           });
 
           if (checkoutResult.exitCode !== 0) {
@@ -701,17 +857,31 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
               `Failed to create branch '${sourceConfig.newBranch}' in '${directory}': ${await checkoutResult.stderr()}`,
             );
           }
+          await emitSetupEvent(onSetupEvent, {
+            phase: "branch-checkout-complete",
+            sandboxName: sdk.name,
+            directory,
+            branch: sourceConfig.newBranch,
+          });
         }
       } catch (error) {
         if (githubToken) {
-          await clearGitHubCredentialBrokeringBestEffort(sdk);
+          await clearGitHubCredentialBrokeringBestEffort(sdk, signal);
         }
         throw error;
       }
     }
 
     if (githubToken) {
-      await clearGitHubCredentialBrokering(sdk);
+      await emitSetupEvent(onSetupEvent, {
+        phase: "github-auth-clear-start",
+        sandboxName: sdk.name,
+      });
+      await clearGitHubCredentialBrokering(sdk, signal);
+      await emitSetupEvent(onSetupEvent, {
+        phase: "github-auth-clear-complete",
+        sandboxName: sdk.name,
+      });
     }
 
     // Capture startTime AFTER all setup operations so users get their full timeout duration.
@@ -733,7 +903,15 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
 
     // Call afterStart hook if provided
     if (hooks?.afterStart) {
+      await emitSetupEvent(onSetupEvent, {
+        phase: "after-start-hook-start",
+        sandboxName: sdk.name,
+      });
       await hooks.afterStart(sandbox);
+      await emitSetupEvent(onSetupEvent, {
+        phase: "after-start-hook-complete",
+        sandboxName: sdk.name,
+      });
     }
 
     return sandbox;
@@ -757,13 +935,15 @@ ${hostLine}${portLines}${runtimeEnvLine}`;
       ports?: number[];
       /** Whether to explicitly resume a stopped sandbox */
       resume?: boolean;
+      signal?: AbortSignal;
     } = {},
   ): Promise<VercelSandbox> {
     const sdk = await VercelSandboxSDK.get({
       name: sandboxName,
       resume: options.resume ?? false,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
-    await syncGitHubCredentialBrokering(sdk, undefined);
+    await syncGitHubCredentialBrokering(sdk, undefined, options.signal);
     const session = sdk.currentSession();
 
     // Use provided remainingTimeout when available; otherwise derive it from the
@@ -1139,6 +1319,7 @@ export async function connectVercelSandbox(
       remainingTimeout: config.remainingTimeout,
       ports: config.ports,
       resume: config.resume,
+      signal: config.signal,
     });
   }
 

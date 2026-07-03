@@ -63,7 +63,9 @@ interface ConnectConfig {
     };
     persistent?: boolean;
     resume?: boolean;
-    createIfMissing?: boolean;
+    create?: boolean;
+    signal?: AbortSignal;
+    onSetupEvent?: (event: { phase: string }) => void | Promise<void>;
     timeout?: number;
     vcpus?: number;
   };
@@ -100,6 +102,17 @@ mock.module("@/lib/github/users", () => ({
     externalUserId: "12345",
     username: "nico-gh",
   }),
+}));
+
+mock.module("@/app/api/sessions/_lib/session-context", () => ({
+  requireAuthenticatedUser: async () => ({ ok: true, userId: "user-1" }),
+  requireOwnedSession: async ({ userId, sessionId }: { userId: string; sessionId: string }) =>
+    userId === sessionRecord.userId && sessionId === sessionRecord.id
+      ? { ok: true, sessionRecord }
+      : {
+          ok: false,
+          response: Response.json({ error: "Session not found" }, { status: 404 }),
+        },
 }));
 
 mock.module("@/lib/github/urls", () => ({
@@ -322,8 +335,7 @@ describe("/api/sandbox lifecycle kicks", () => {
         timeout: DEFAULT_SANDBOX_TIMEOUT_MS,
         vcpus: DEFAULT_SANDBOX_VCPUS,
         persistent: true,
-        resume: true,
-        createIfMissing: true,
+        create: true,
       },
     });
     expect(dotenvSyncCalls).toHaveLength(0);

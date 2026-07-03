@@ -34,6 +34,7 @@ function resolveExecutorRoute(pathname: string, basePath: string): ExecutorRoute
   const [section, action, value] = segments;
 
   if (segments.length === 0) return { kind: "integrations" };
+  if (segments.length === 1 && section === "integrations") return { kind: "integrations" };
   if (segments.length === 1 && section === "tools") return { kind: "tools" };
   if (segments.length === 1 && section === "credentials") return { kind: "credentials" };
   if (segments.length === 1 && section === "policies") return { kind: "policies" };
@@ -185,6 +186,8 @@ function ExecutorAdminBrowserRuntime({
     ) : route.kind === "integration-add" ? (
       <AddIntegrationPage
         basePath={basePath}
+        description={searchParams.get("description") ?? undefined}
+        name={searchParams.get("name") ?? undefined}
         namespace={searchParams.get("namespace") ?? undefined}
         pluginKey={route.pluginKey}
         preset={searchParams.get("preset") ?? undefined}

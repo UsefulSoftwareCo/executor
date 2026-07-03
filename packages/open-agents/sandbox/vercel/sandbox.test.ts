@@ -25,13 +25,7 @@ type MockRunCommandParams = {
 
 type MockSessionState = {
   sessionId?: string;
-  status?:
-    | "running"
-    | "stopped"
-    | "stopping"
-    | "snapshotting"
-    | "aborted"
-    | "failed";
+  status?: "running" | "stopped" | "stopping" | "snapshotting" | "aborted" | "failed";
   timeout?: number;
   requestedAt?: Date;
   startedAt?: Date;
@@ -44,9 +38,7 @@ const runCommandCalls: MockRunCommandParams[] = [];
 const writeFilesCalls: Array<{ path: string; content: Buffer }[]> = [];
 let readFileToBufferResult: Buffer | null = Buffer.from("");
 
-let runCommandMock = async (
-  _params?: MockRunCommandParams,
-): Promise<MockRunCommandResult> => ({
+let runCommandMock = async (_params?: MockRunCommandParams): Promise<MockRunCommandResult> => ({
   exitCode: 0,
   cmdId: "cmd-1",
   stdout: async () => "",
@@ -74,6 +66,23 @@ function buildRoutes() {
     const subdomain = new URL(domain).host.replace(".vercel.run", "");
     return { port, subdomain };
   });
+}
+
+function buildExpectedGitCloneEnv(token?: string): Record<string, string> {
+  if (!token) {
+    return { GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_SMUDGE: "1" };
+  }
+
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_LFS_SKIP_SMUDGE: "1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: Basic ${Buffer.from(
+      `x-access-token:${token}`,
+      "utf-8",
+    ).toString("base64")}`,
+  };
 }
 
 function buildMockSession(name: string, state: MockSessionState = {}) {
@@ -145,17 +154,18 @@ mock.module("@vercel/sandbox", () => ({
     },
     get: async (params: Record<string, unknown>) => {
       getCalls.push(params);
-      const sandboxName =
-        typeof params.name === "string" ? params.name : "loaded-sandbox";
+      const sandboxName = typeof params.name === "string" ? params.name : "loaded-sandbox";
       return createMockSandboxSdk(sandboxName);
     },
   },
 }));
 
 let sandboxModule: typeof import("./sandbox");
+let connectModule: typeof import("./connect");
 
 beforeAll(async () => {
   sandboxModule = await import("./sandbox");
+  connectModule = await import("./connect");
 });
 
 beforeEach(() => {
@@ -232,9 +242,7 @@ describe("VercelSandbox.environmentDetails", () => {
     });
 
     expect(sandbox.host).toBe("sbx-3000.vercel.run");
-    expect(sandbox.environmentDetails).toContain(
-      "Sandbox host: sbx-3000.vercel.run",
-    );
+    expect(sandbox.environmentDetails).toContain("Sandbox host: sbx-3000.vercel.run");
   });
 
   test("injects runtime preview env vars into command execution", async () => {
@@ -249,9 +257,7 @@ describe("VercelSandbox.environmentDetails", () => {
     await sandbox.exec("echo test", "/vercel/sandbox", 5_000);
 
     expect(lastRunCommandEnv?.SANDBOX_HOST).toBe("sbx-3000.vercel.run");
-    expect(lastRunCommandEnv?.SANDBOX_URL_3000).toBe(
-      "https://sbx-3000.vercel.run",
-    );
+    expect(lastRunCommandEnv?.SANDBOX_URL_3000).toBe("https://sbx-3000.vercel.run");
   });
 });
 
@@ -269,11 +275,7 @@ describe("VercelSandbox.exec", () => {
       remainingTimeout: 0,
     });
 
-    const result = await sandbox.exec(
-      "git fetch origin feature",
-      "/vercel/sandbox",
-      5_000,
-    );
+    const result = await sandbox.exec("git fetch origin feature", "/vercel/sandbox", 5_000);
 
     expect(result).toEqual({
       success: false,
@@ -375,10 +377,9 @@ describe("VercelSandbox persistence", () => {
 
 describe("GitHub setup credential brokering", () => {
   test("applies setup GitHub auth when creating a sandbox and then clears it", async () => {
-    const basicAuthToken = Buffer.from(
-      "x-access-token:github-user-token",
-      "utf-8",
-    ).toString("base64");
+    const basicAuthToken = Buffer.from("x-access-token:github-user-token", "utf-8").toString(
+      "base64",
+    );
 
     await sandboxModule.VercelSandbox.create({
       githubToken: "github-user-token",
@@ -392,23 +393,17 @@ describe("GitHub setup credential brokering", () => {
       allow: {
         "api.github.com": [
           {
-            transform: [
-              { headers: { Authorization: "Bearer github-user-token" } },
-            ],
+            transform: [{ headers: { Authorization: "Bearer github-user-token" } }],
           },
         ],
         "uploads.github.com": [
           {
-            transform: [
-              { headers: { Authorization: "Bearer github-user-token" } },
-            ],
+            transform: [{ headers: { Authorization: "Bearer github-user-token" } }],
           },
         ],
         "codeload.github.com": [
           {
-            transform: [
-              { headers: { Authorization: "Bearer github-user-token" } },
-            ],
+            transform: [{ headers: { Authorization: "Bearer github-user-token" } }],
           },
         ],
         "github.com": [
@@ -425,10 +420,22 @@ describe("GitHub setup credential brokering", () => {
         "*": [],
       },
     });
-    expect(createCalls[0]?.source).toEqual({
-      type: "git",
-      url: "https://github.com/open-agents/example",
-      revision: "main",
+    expect(createCalls[0]?.source).toBeUndefined();
+    expect(runCommandCalls[0]).toEqual({
+      cmd: "git",
+      args: [
+        "clone",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--branch",
+        "main",
+        "https://github.com/open-agents/example",
+        ".",
+      ],
+      cwd: "/vercel/sandbox",
+      env: buildExpectedGitCloneEnv("github-user-token"),
+      signal: expect.any(AbortSignal),
     });
     expect(updateNetworkPolicyCalls).toEqual(["allow-all"]);
   });
@@ -444,6 +451,112 @@ describe("GitHub setup credential brokering", () => {
 });
 
 describe("VercelSandbox.create", () => {
+  test("forwards abort signal to sandbox create and setup commands", async () => {
+    const controller = new AbortController();
+
+    await sandboxModule.VercelSandbox.create({
+      signal: controller.signal,
+      source: {
+        url: "https://github.com/open-agents/private-example",
+        branch: "main",
+      },
+    });
+
+    expect(createCalls[0]?.signal).toBe(controller.signal);
+    const commandSignal = runCommandCalls[0]?.signal;
+    expect(commandSignal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+    expect(commandSignal?.aborted).toBe(true);
+  });
+
+  test("forwards abort signal when reconnecting to a sandbox", async () => {
+    const controller = new AbortController();
+
+    await sandboxModule.VercelSandbox.connect("session_123", {
+      signal: controller.signal,
+      remainingTimeout: 0,
+    });
+
+    expect(getCalls[0]?.signal).toBe(controller.signal);
+  });
+
+  test("emits setup events while creating and cloning", async () => {
+    const phases: string[] = [];
+
+    await sandboxModule.VercelSandbox.create({
+      source: {
+        url: "https://github.com/open-agents/private-example",
+        branch: "main",
+      },
+      onSetupEvent: (event) => {
+        phases.push(event.phase);
+      },
+    });
+
+    expect(phases).toEqual([
+      "sdk-create-start",
+      "sdk-create-complete",
+      "clone-source-start",
+      "clone-source-complete",
+    ]);
+  });
+
+  test("creates runtime sandbox and manually clones git source without base snapshot", async () => {
+    await sandboxModule.VercelSandbox.create({
+      source: {
+        url: "https://github.com/open-agents/private-example",
+        branch: "main",
+      },
+      githubToken: "github-token",
+    });
+
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0]?.source).toBeUndefined();
+    expect(createCalls[0]?.networkPolicy).toEqual({
+      allow: {
+        "api.github.com": [
+          {
+            transform: [{ headers: { Authorization: "Bearer github-token" } }],
+          },
+        ],
+        "uploads.github.com": [
+          {
+            transform: [{ headers: { Authorization: "Bearer github-token" } }],
+          },
+        ],
+        "codeload.github.com": [
+          {
+            transform: [{ headers: { Authorization: "Bearer github-token" } }],
+          },
+        ],
+        "github.com": [
+          {
+            transform: [
+              { headers: { Authorization: "Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViLXRva2Vu" } },
+            ],
+          },
+        ],
+        "*": [],
+      },
+    });
+    expect(runCommandCalls[0]).toEqual({
+      cmd: "git",
+      args: [
+        "clone",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--branch",
+        "main",
+        "https://github.com/open-agents/private-example",
+        ".",
+      ],
+      cwd: "/vercel/sandbox",
+      env: buildExpectedGitCloneEnv("github-token"),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   test("creates from base snapshot and clones git source", async () => {
     await sandboxModule.VercelSandbox.create({
       baseSnapshotId: "snap-base-1",
@@ -462,12 +575,17 @@ describe("VercelSandbox.create", () => {
       cmd: "git",
       args: [
         "clone",
+        "--depth",
+        "1",
+        "--single-branch",
         "--branch",
         "main",
         "https://github.com/open-agents/example",
         ".",
       ],
       cwd: "/vercel/sandbox",
+      env: buildExpectedGitCloneEnv(),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -499,23 +617,33 @@ describe("VercelSandbox.create", () => {
         cmd: "git",
         args: [
           "clone",
+          "--depth",
+          "1",
+          "--single-branch",
           "--branch",
           "staging",
           "https://github.com/GoAugment/augment-web",
           "augment-web",
         ],
         cwd: "/vercel/sandbox",
+        env: buildExpectedGitCloneEnv(),
+        signal: expect.any(AbortSignal),
       },
       {
         cmd: "git",
         args: [
           "clone",
+          "--depth",
+          "1",
+          "--single-branch",
           "--branch",
           "main",
           "https://github.com/GoAugment/augment-services",
           "augment-services",
         ],
         cwd: "/vercel/sandbox",
+        env: buildExpectedGitCloneEnv(),
+        signal: expect.any(AbortSignal),
       },
       {
         cmd: "git",
@@ -557,6 +685,81 @@ describe("VercelSandbox.create", () => {
   });
 });
 
+describe("connectVercel", () => {
+  test("creates named source sandboxes without reconnecting first", async () => {
+    await connectModule.connectVercel(
+      {
+        sandboxName: "session_123",
+        source: {
+          repo: "https://github.com/open-agents/private-example",
+          branch: "main",
+        },
+      },
+      {
+        githubToken: "github-token",
+        persistent: true,
+      },
+    );
+
+    expect(getCalls).toEqual([]);
+    expect(createCalls[0]).toEqual(
+      expect.objectContaining({
+        name: "session_123",
+        persistent: true,
+      }),
+    );
+    expect(runCommandCalls[0]).toEqual({
+      cmd: "git",
+      args: [
+        "clone",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--branch",
+        "main",
+        "https://github.com/open-agents/private-example",
+        ".",
+      ],
+      cwd: "/vercel/sandbox",
+      env: buildExpectedGitCloneEnv("github-token"),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test("creates named empty sandboxes when requested explicitly", async () => {
+    await connectModule.connectVercel(
+      {
+        sandboxName: "session_123",
+      },
+      {
+        create: true,
+        persistent: true,
+      },
+    );
+
+    expect(getCalls).toEqual([]);
+    expect(createCalls[0]).toEqual(
+      expect.objectContaining({
+        name: "session_123",
+        persistent: true,
+      }),
+    );
+  });
+
+  test("reconnects named runtime state without creation inputs", async () => {
+    await connectModule.connectVercel({
+      sandboxName: "session_123",
+      expiresAt: Date.now() + 120_000,
+    });
+
+    expect(createCalls).toEqual([]);
+    expect(getCalls[0]).toEqual({
+      name: "session_123",
+      resume: false,
+    });
+  });
+});
+
 describe("VercelSandbox.execDetached", () => {
   test("returns commandId when quick-failure timer elapses before command exits", async () => {
     runCommandMock = async () => ({
@@ -584,10 +787,7 @@ describe("VercelSandbox.execDetached", () => {
         remainingTimeout: 0,
       });
 
-      const result = await sandbox.execDetached(
-        "bun run dev",
-        "/vercel/sandbox",
-      );
+      const result = await sandbox.execDetached("bun run dev", "/vercel/sandbox");
 
       expect(result).toEqual({ commandId: "cmd-detached-running" });
     } finally {
@@ -610,9 +810,7 @@ describe("VercelSandbox.execDetached", () => {
       remainingTimeout: 0,
     });
 
-    expect(
-      sandbox.execDetached("bun run dev", "/vercel/sandbox"),
-    ).rejects.toThrow("wait failed");
+    expect(sandbox.execDetached("bun run dev", "/vercel/sandbox")).rejects.toThrow("wait failed");
   });
 
   test("throws with stderr when command exits quickly with non-zero code", async () => {
@@ -632,9 +830,9 @@ describe("VercelSandbox.execDetached", () => {
       remainingTimeout: 0,
     });
 
-    expect(
-      sandbox.execDetached("npm run dev", "/vercel/sandbox"),
-    ).rejects.toThrow("npm ERR! code ENOENT");
+    expect(sandbox.execDetached("npm run dev", "/vercel/sandbox")).rejects.toThrow(
+      "npm ERR! code ENOENT",
+    );
   });
 });
 
@@ -660,9 +858,9 @@ describe("VercelSandbox.readFile", () => {
       remainingTimeout: 0,
     });
 
-    expect(
-      sandbox.readFile("/vercel/sandbox/missing.txt", "utf-8"),
-    ).rejects.toThrow("Failed to read file");
+    expect(sandbox.readFile("/vercel/sandbox/missing.txt", "utf-8")).rejects.toThrow(
+      "Failed to read file",
+    );
   });
 
   test("preserves multi-byte UTF-8 content", async () => {
@@ -691,9 +889,7 @@ describe("VercelSandbox.writeFile", () => {
 
     expect(writeFilesCalls.length).toBe(1);
     expect(writeFilesCalls[0]?.[0]?.path).toBe("/vercel/sandbox/out.txt");
-    expect(writeFilesCalls[0]?.[0]?.content.toString("utf-8")).toBe(
-      "file content",
-    );
+    expect(writeFilesCalls[0]?.[0]?.content.toString("utf-8")).toBe("file content");
   });
 
   test("creates parent directory via mkdir before writing", async () => {
@@ -702,17 +898,11 @@ describe("VercelSandbox.writeFile", () => {
       remainingTimeout: 0,
     });
 
-    await sandbox.writeFile(
-      "/vercel/sandbox/deep/nested/file.txt",
-      "nested",
-      "utf-8",
-    );
+    await sandbox.writeFile("/vercel/sandbox/deep/nested/file.txt", "nested", "utf-8");
 
     // mkdir should have been called (via runCommand) for the parent dir
     const mkdirCall = runCommandCalls.find(
-      (c) =>
-        c.cmd === "mkdir" ||
-        (c.cmd === "bash" && c.args?.some((a) => a.includes("mkdir"))),
+      (c) => c.cmd === "mkdir" || (c.cmd === "bash" && c.args?.some((a) => a.includes("mkdir"))),
     );
     expect(mkdirCall).toBeDefined();
 

@@ -1,9 +1,11 @@
 import type { Sandbox, SandboxHooks } from "../interface";
-import type { VercelSandboxConfig } from "./config";
+import type { VercelSandboxConfig, VercelSandboxSetupEvent } from "./config";
 import { VercelSandbox } from "./sandbox";
 import type { VercelState } from "./state";
 
 interface ConnectOptions {
+  signal?: AbortSignal;
+  onSetupEvent?: (event: VercelSandboxSetupEvent) => void | Promise<void>;
   env?: Record<string, string>;
   githubToken?: string;
   gitUser?: { name: string; email: string };
@@ -13,15 +15,13 @@ interface ConnectOptions {
   ports?: number[];
   baseSnapshotId?: string;
   resume?: boolean;
-  createIfMissing?: boolean;
+  create?: boolean;
   persistent?: boolean;
   snapshotExpiration?: number;
   skipGitWorkspaceBootstrap?: boolean;
 }
 
-function getRemainingTimeout(
-  expiresAt: number | undefined,
-): number | undefined {
+function getRemainingTimeout(expiresAt: number | undefined): number | undefined {
   if (!expiresAt) {
     return undefined;
   }
@@ -38,23 +38,7 @@ function getSandboxName(state: VercelState): string | undefined {
   return undefined;
 }
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-}
-
-function isSandboxNotFoundError(error: unknown): boolean {
-  const message = toErrorMessage(error).toLowerCase();
-  return message.includes("status code 404") || message.includes("not found");
-}
-
-function buildCreateConfig(
-  state: VercelState,
-  options?: ConnectOptions,
-): VercelSandboxConfig {
+function buildCreateConfig(state: VercelState, options?: ConnectOptions): VercelSandboxConfig {
   const sandboxName = getSandboxName(state);
 
   return {
@@ -79,6 +63,8 @@ function buildCreateConfig(
         }
       : {}),
     env: options?.env,
+    signal: options?.signal,
+    onSetupEvent: options?.onSetupEvent,
     githubToken: options?.githubToken,
     gitUser: options?.gitUser,
     hooks: options?.hooks,
@@ -100,10 +86,11 @@ function buildCreateConfig(
   };
 }
 
-async function connectNamedSandbox(
-  state: VercelState,
-  options?: ConnectOptions,
-): Promise<Sandbox> {
+function hasCreationSource(state: VercelState): boolean {
+  return !!state.source || !!state.sources?.length;
+}
+
+async function connectNamedSandbox(state: VercelState, options?: ConnectOptions): Promise<Sandbox> {
   const sandboxName = getSandboxName(state);
   if (!sandboxName) {
     throw new Error("Persistent sandbox name is required");
@@ -111,22 +98,15 @@ async function connectNamedSandbox(
 
   const remainingTimeout = getRemainingTimeout(state.expiresAt);
 
-  try {
-    return await VercelSandbox.connect(sandboxName, {
-      env: options?.env,
-      githubToken: options?.githubToken,
-      hooks: options?.hooks,
-      remainingTimeout,
-      ports: options?.ports,
-      resume: options?.resume,
-    });
-  } catch (error) {
-    if (!options?.createIfMissing || !isSandboxNotFoundError(error)) {
-      throw error;
-    }
-  }
-
-  return VercelSandbox.create(buildCreateConfig(state, options));
+  return VercelSandbox.connect(sandboxName, {
+    env: options?.env,
+    signal: options?.signal,
+    githubToken: options?.githubToken,
+    hooks: options?.hooks,
+    remainingTimeout,
+    ports: options?.ports,
+    resume: options?.resume,
+  });
 }
 
 /**
@@ -142,7 +122,7 @@ export async function connectVercel(
 ): Promise<Sandbox> {
   const sandboxName = getSandboxName(state);
 
-  if (sandboxName) {
+  if (sandboxName && !options?.create && !hasCreationSource(state)) {
     return connectNamedSandbox(state, options);
   }
 

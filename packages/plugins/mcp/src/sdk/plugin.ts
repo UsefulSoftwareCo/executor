@@ -86,6 +86,12 @@ const legacyOAuthClientSlugCandidates = (
 
 const oauthClientKey = (owner: Owner, slug: OAuthClientSlug): string => `${owner}:${String(slug)}`;
 
+const safeEndpointForLog = (endpoint: string): string => {
+  if (!URL.canParse(endpoint)) return endpoint;
+  const url = new URL(endpoint);
+  return `${url.origin}${url.pathname}`;
+};
+
 const legacyMcpClientMatches = (
   client: OAuthClientSummary,
   candidates: ReadonlySet<string>,
@@ -905,10 +911,28 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           Effect.result,
         );
 
+        if (Result.isFailure(built)) {
+          console.warn("[executor:mcp] connector build failed", {
+            connection: String(connection.name),
+            integration: String(connection.integration),
+            endpoint: safeEndpointForLog(parsed.endpoint),
+          });
+        }
+
         const manifest = Result.isSuccess(built)
           ? yield* discoverTools(built.success).pipe(
               Effect.map((m) => ({ ok: true as const, manifest: m })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
+              Effect.catch((error) =>
+                Effect.sync(() => {
+                  console.warn("[executor:mcp] tool discovery failed", {
+                    connection: String(connection.name),
+                    integration: String(connection.integration),
+                    endpoint: safeEndpointForLog(parsed.endpoint),
+                    stage: error.stage,
+                    message: error.message,
+                  });
+                }).pipe(Effect.as({ ok: false as const, manifest: null })),
+              ),
               Effect.withSpan("mcp.plugin.discover_tools", {
                 attributes: { "mcp.connection.name": String(connection.name) },
               }),
