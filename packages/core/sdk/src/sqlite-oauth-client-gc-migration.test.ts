@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 
 import { collectTables } from "./executor";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
@@ -289,6 +289,63 @@ describe("runSqliteOAuthClientGcMigration", () => {
         withDb((db) => Effect.runPromise(runSqliteOAuthClientGcMigration(db.client))),
       );
       expect(applied).toEqual({ deleted: 0, backfilled: 0, stampedDcr: 0, stampedManual: 0 });
+    }),
+  );
+
+  it.effect("rolls back the transaction when the migration fiber is interrupted mid-run", () =>
+    Effect.gen(function* () {
+      const surviving = yield* Effect.promise(() =>
+        withDb(async (db) => {
+          // Orphaned DCR row: without rollback-on-interrupt, an interruption
+          // landing after its DELETE (but before COMMIT) can still leave the
+          // transaction committed by a later statement, or the DELETE alone
+          // holding an open transaction — either way the row's fate becomes
+          // implementation-dependent instead of "the whole run never happened."
+          await insertOAuthClient(db, {
+            slug: "dcr-cloudflare-com",
+            tokenUrl: "https://oauth.cloudflare.com/token",
+            resource: "https://cloudflare.example/mcp",
+            originKind: "dynamic_client_registration",
+            originIssuer: "https://cloudflare.com",
+          });
+
+          // Interrupt the migration's fiber right after its DELETE statement
+          // executes (i.e. mid-transaction, well before COMMIT), by wrapping
+          // the client so the DELETE's returned promise resolves only after
+          // the outer fiber has been asked to interrupt.
+          const realExecute = db.client.execute.bind(db.client);
+          let releaseInterrupt: (() => void) | null = null;
+          const interruptSignal = new Promise<void>((resolve) => {
+            releaseInterrupt = resolve;
+          });
+          const wrappedClient: typeof db.client = new Proxy(db.client, {
+            get(target, prop, receiver) {
+              if (prop !== "execute") return Reflect.get(target, prop, receiver);
+              return async (stmt: unknown) => {
+                const sql = typeof stmt === "string" ? stmt : (stmt as { sql: string }).sql;
+                const result = await realExecute(stmt as never);
+                if (typeof sql === "string" && sql.startsWith("DELETE FROM oauth_client")) {
+                  // Let the test's interrupt fire, then hand control back so the
+                  // fiber observes the interruption as its very next step.
+                  releaseInterrupt?.();
+                  await new Promise((r) => setTimeout(r, 20));
+                }
+                return result;
+              };
+            },
+          });
+
+          const fiber = Effect.runFork(runSqliteOAuthClientGcMigration(wrappedClient));
+          await interruptSignal;
+          await Effect.runPromise(Fiber.interrupt(fiber));
+
+          return slugs(db);
+        }),
+      );
+
+      // Rolled back: the orphaned row is exactly as it was before the run, not
+      // deleted (proving ROLLBACK ran) and not left half-mutated.
+      expect(surviving).toEqual(["dcr-cloudflare-com"]);
     }),
   );
 });

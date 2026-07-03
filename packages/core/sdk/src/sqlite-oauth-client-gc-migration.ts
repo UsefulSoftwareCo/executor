@@ -171,6 +171,12 @@ export const runSqliteOAuthClientGcMigration = (
     yield* execute(client, "BEGIN");
     return yield* applyAll.pipe(
       Effect.tapError(() => execute(client, "ROLLBACK").pipe(Effect.ignore)),
+      // `tapError` only fires on a typed failure, not on fiber interruption
+      // (e.g. the boot sequence timing out or the process shutting down
+      // mid-migration) — so without this, an interrupted run can leave the
+      // transaction open. Roll back explicitly on interrupt too; never on
+      // success (COMMIT already ran by then, so this is a no-op there).
+      Effect.onInterrupt(() => execute(client, "ROLLBACK").pipe(Effect.ignore)),
     );
   });
 
