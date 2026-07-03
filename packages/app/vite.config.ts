@@ -13,7 +13,9 @@ export default defineConfig({
   plugins: [appPlugin({ executorConfigPath: LOCAL_CONFIG, executorJsoncPath: LOCAL_JSONC })],
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify("0.0.0-dev"),
-    "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
+    "import.meta.env.VITE_GITHUB_URL": JSON.stringify(
+      "https://github.com/UsefulSoftwareCo/executor",
+    ),
     "import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD": JSON.stringify(REPO_ROOT),
   },
 });

@@ -126,7 +126,7 @@ console.log(await executor.secrets.get("api-token")); // "sk_live_xxx"
 await executor.close();
 ```
 
-The same pattern is what every shipped `@executor-js/plugin-*` package does internally. See [`packages/plugins/file-secrets`](https://github.com/RhysSullivan/executor/tree/main/packages/plugins/file-secrets) for a production example that backs `secretProviders` with an XDG-located JSON file.
+The same pattern is what every shipped `@executor-js/plugin-*` package does internally. See [`packages/plugins/file-secrets`](https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/file-secrets) for a production example that backs `secretProviders` with an XDG-located JSON file.
 
 ## Plugins
 
@@ -165,7 +165,7 @@ Plugins that need a token — HTTP-backed sources, OAuth flows, etc. — accept 
 
 ## Status
 
-Pre-`1.0`. APIs may still change between beta releases. See the [executor monorepo](https://github.com/RhysSullivan/executor) for the current development branch and roadmap.
+Pre-`1.0`. APIs may still change between beta releases. See the [executor monorepo](https://github.com/UsefulSoftwareCo/executor) for the current development branch and roadmap.
 
 ## License
 

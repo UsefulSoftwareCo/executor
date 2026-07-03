@@ -8,7 +8,7 @@ const REFERENCE_DIR = join(import.meta.dirname, "../.reference");
 const repos = [
   { name: "effect", url: "https://github.com/Effect-TS/effect.git" },
   { name: "effect-atom", url: "https://github.com/tim-smart/effect-atom.git" },
-  { name: "executor", url: "https://github.com/RhysSullivan/executor.git" },
+  { name: "executor", url: "https://github.com/UsefulSoftwareCo/executor.git" },
   {
     name: "tanstack-router",
     url: "https://github.com/TanStack/router.git",

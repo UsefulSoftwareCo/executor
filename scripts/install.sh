@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 APP=executor
-REPO=RhysSullivan/executor
+REPO=UsefulSoftwareCo/executor
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'

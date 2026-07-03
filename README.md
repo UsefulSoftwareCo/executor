@@ -225,7 +225,7 @@ The browser e2e scenarios need Playwright's Chromium once per machine:
 ## Community
 
 Join the [Discord](https://discord.gg/eF29HBHwM6). To learn more, visit
-[executor.sh](https://executor.sh) or [Ask DeepWiki](https://deepwiki.com/RhysSullivan/executor).
+[executor.sh](https://executor.sh) or [Ask DeepWiki](https://deepwiki.com/UsefulSoftwareCo/executor).
 
 ## License
 

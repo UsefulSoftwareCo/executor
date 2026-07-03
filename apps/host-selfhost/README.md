@@ -14,7 +14,7 @@ docker run -d \
   --name executor-selfhost \
   -p 4788:4788 \
   -v executor-data:/data \
-  ghcr.io/rhyssullivan/executor-selfhost:latest
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
 ```
 
 Or build from a repository clone:

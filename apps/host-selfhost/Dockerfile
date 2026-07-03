@@ -23,7 +23,7 @@ RUN cd apps/host-selfhost && bun run build
 
 FROM gcr.io/distroless/cc-debian12 AS runtime
 WORKDIR /app
-LABEL org.opencontainers.image.source="https://github.com/RhysSullivan/executor" \
+LABEL org.opencontainers.image.source="https://github.com/UsefulSoftwareCo/executor" \
       org.opencontainers.image.description="Single-container self-hosted Executor" \
       org.opencontainers.image.licenses="MIT"
 ENV NODE_ENV=production \

@@ -2,7 +2,7 @@
   "name": "@executor-js/desktop",
   "version": "1.5.27",
   "private": true,
-  "homepage": "https://github.com/RhysSullivan/executor",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor",
   "license": "MIT",
   "type": "module",
   "main": "./out/main/index.js",

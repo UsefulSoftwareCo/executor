@@ -57,7 +57,7 @@ const config: Configuration = {
   },
   publish: {
     provider: "github",
-    owner: "RhysSullivan",
+    owner: "UsefulSoftwareCo",
     repo: "executor",
   },
 };

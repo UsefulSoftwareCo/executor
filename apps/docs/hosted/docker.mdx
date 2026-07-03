@@ -17,10 +17,10 @@ docker run -d \
   --name executor-selfhost \
   -p 4788:4788 \
   -v executor-data:/data \
-  ghcr.io/rhyssullivan/executor-selfhost:latest
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
 ```
 
-Or build from a clone of the [repo](https://github.com/RhysSullivan/executor),
+Or build from a clone of the [repo](https://github.com/UsefulSoftwareCo/executor),
 from `apps/host-selfhost`:
 
 ```bash
@@ -81,7 +81,7 @@ docker run -d \
   -p 4788:4788 \
   -v executor-data:/data \
   -e EXECUTOR_WEB_BASE_URL=https://executor.example.com \
-  ghcr.io/rhyssullivan/executor-selfhost:latest
+  ghcr.io/usefulsoftwareco/executor-selfhost:latest
 ```
 
 For a headless deploy (CI or infra-as-code), set `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`

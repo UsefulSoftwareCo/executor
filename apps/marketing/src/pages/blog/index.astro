@@ -3,7 +3,7 @@ export const prerender = true;
 import Layout from "../../layouts/Layout.astro";
 import { getCollection } from "astro:content";
 
-const GH = "https://github.com/RhysSullivan/executor";
+const GH = "https://github.com/UsefulSoftwareCo/executor";
 
 const posts = (await getCollection("blog", ({ data }) => !data.draft)).sort(
   (a, b) => b.data.date.getTime() - a.data.date.getTime(),

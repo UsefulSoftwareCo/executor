@@ -11,7 +11,7 @@
 //   - resolve to null on any failure, in which case the nav simply drops the
 //     count and keeps the link.
 
-const REPO = "RhysSullivan/executor";
+const REPO = "UsefulSoftwareCo/executor";
 
 export const GITHUB_REPO_URL = `https://github.com/${REPO}`;
 
