@@ -67,13 +67,25 @@ function getOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function joinSandboxCreateMessage(message: string, reason: string | undefined): string {
+  if (!reason || reason === message) {
+    return message;
+  }
+
+  if (reason.startsWith(message)) {
+    return reason;
+  }
+
+  return `${message}: ${reason}`;
+}
+
 export function getSandboxCreateErrorDetails(
   error: unknown,
 ): SandboxCreateErrorDetails {
   if (error instanceof SandboxCreateRequestError) {
     return {
-      message: error.message,
-      actionUrl: error.actionUrl,
+      message: joinSandboxCreateMessage(error.message, error.reason),
+      ...(error.actionUrl ? { actionUrl: error.actionUrl } : {}),
     };
   }
 
