@@ -220,17 +220,11 @@ function assertServiceConfig(config: Record<string, unknown>): void {
     fail("vercel.json rewrites[0] must be an object");
   }
 
-  const destination = (workflowRewrite as Record<string, unknown>).destination;
-  const service =
-    destination && typeof destination === "object" && !Array.isArray(destination)
-      ? (destination as Record<string, unknown>).service
-      : undefined;
-
   if (
     (workflowRewrite as Record<string, unknown>).source !== "/.well-known/workflow/(.*)" ||
-    service !== "web"
+    (workflowRewrite as Record<string, unknown>).destination !== "/.well-known/workflow/$1"
   ) {
-    fail("vercel.json must route /.well-known/workflow/(.*) to the web service, not Eve");
+    fail("vercel.json must preserve /.well-known/workflow/(.*) on the web mount, not route it to Eve");
   }
 }
 

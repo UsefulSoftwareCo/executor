@@ -20,9 +20,7 @@
   "rewrites": [
     {
       "source": "/.well-known/workflow/(.*)",
-      "destination": {
-        "service": "web"
-      }
+      "destination": "/.well-known/workflow/$1"
     }
   ]
 }
