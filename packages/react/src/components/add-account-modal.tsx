@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import {
   addConnectionOptimistic,
+  checkConnectionHealth,
   connectionsAllAtom,
   createOAuthClientOptimistic,
   integrationHealthCheckAtom,
@@ -33,9 +34,11 @@ import {
   removeOAuthClientOptimistic,
   setIntegrationHealthCheck,
   startOAuth,
+  updateConnection,
   validateConnection,
 } from "../api/atoms";
 import {
+  connectionCheckKeys,
   connectionWriteKeys,
   healthCheckWriteKeys,
   oauthClientWriteKeys,
@@ -58,6 +61,7 @@ import {
   oauthCallbackUrl,
   oauthClientIdMetadataDocumentUrl,
   useOAuthPopupFlow,
+  type OAuthCompletionPayload,
 } from "../plugins/oauth-sign-in";
 import {
   clientDisplayName,
@@ -566,6 +570,20 @@ export const connectionNameFrom = (
   organizationId: string | null,
 ): ConnectionName =>
   connectionIdentifier(connectionLabelForHost(label, owner, integrationName, organizationId));
+
+export const oauthIdentityLabelFromHealth = (input: {
+  readonly result: HealthCheckResult;
+  readonly typedLabel: string;
+  readonly storedIdentityLabel?: string | null;
+  readonly defaultIdentityLabel: string;
+}): string | null => {
+  const identity = input.result.identity?.trim();
+  if (input.result.status !== "healthy" || !identity) return null;
+  if (input.typedLabel.trim().length > 0) return null;
+  const defaultLabel = input.defaultIdentityLabel.trim();
+  const storedLabel = (input.storedIdentityLabel ?? defaultLabel).trim();
+  return storedLabel === defaultLabel ? identity : null;
+};
 
 // ---------------------------------------------------------------------------
 // Transparent CIMD connect orchestration.
@@ -1186,6 +1204,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
   });
   const doRemoveOAuthClient = useAtomSet(removeOAuthClientOptimistic, { mode: "promise" });
   const doValidate = useAtomSet(validateConnection, { mode: "promiseExit" });
+  const doCheckConnectionHealth = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
+  const doUpdateConnection = useAtomSet(updateConnection, { mode: "promiseExit" });
   const doSetHealthCheck = useAtomSet(setIntegrationHealthCheck, { mode: "promiseExit" });
 
   // The integration's declared health check + its candidate operations. When a
@@ -1585,6 +1605,42 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // OAuth popup flow's busy state die with this instance.
   const close = () => onOpenChange(false);
 
+  const probeAndAutoNameOAuthConnection = async (
+    connection: OAuthCompletionPayload,
+    typedLabel: string,
+    defaultIdentityLabel: string,
+  ): Promise<void> => {
+    const check = await doCheckConnectionHealth({
+      params: {
+        owner: connection.owner,
+        integration: connection.integration,
+        name: connection.name,
+      },
+      query: {},
+      reactivityKeys: connectionCheckKeys,
+    });
+    if (Exit.isFailure(check)) return;
+    const nextIdentityLabel = oauthIdentityLabelFromHealth({
+      result: check.value,
+      typedLabel,
+      storedIdentityLabel: connection.identityLabel,
+      defaultIdentityLabel,
+    });
+    if (nextIdentityLabel === null) return;
+    const updated = await doUpdateConnection({
+      params: {
+        owner: connection.owner,
+        integration: connection.integration,
+        name: connection.name,
+      },
+      payload: { identityLabel: nextIdentityLabel },
+      reactivityKeys: connectionWriteKeys,
+    });
+    if (Exit.isFailure(updated)) {
+      toast.error(messageFromExit(updated, "Couldn't update connection name"));
+    }
+  };
+
   const credentialPayloadOrigin = createCredentialPayloadOrigin({
     origin: credentialOrigin,
     inputs: credentialInputs,
@@ -1767,6 +1823,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // backend resolves the app own→shared from the slug, so the payload carries
     // only the host-resolved connection owner.
     const connectionOwner = oauthConnectionOwner;
+    const identityLabel = connectionLabelForHost(
+      label,
+      connectionOwner,
+      integrationName,
+      organizationId,
+    );
     const payload = {
       client: chosenClient.slug,
       clientOwner: chosenClient.owner,
@@ -1774,12 +1836,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       name: connectionNameFrom(label, connectionOwner, integrationName, organizationId),
       integration,
       template: method.template,
-      identityLabel: connectionLabelForHost(
-        label,
-        connectionOwner,
-        integrationName,
-        organizationId,
-      ),
+      identityLabel,
     };
     // client_credentials mints inline (no redirect); authorization_code runs the popup.
     if (chosenClient.grant === "client_credentials") {
@@ -1788,7 +1845,6 @@ function AddAccountModalView(props: AddAccountModalProps) {
         payload,
         reactivityKeys: connectionWriteKeys,
       });
-      setCcBusy(false);
       trackEvent("connection_oauth_started", {
         integration_slug: String(integration),
         owner: connectionOwner,
@@ -1796,9 +1852,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
         success: Exit.isSuccess(exit),
       });
       if (Exit.isFailure(exit)) {
+        setCcBusy(false);
         toast.error(messageFromExit(exit, "Failed to connect"));
         return;
       }
+      if (exit.value.status === "connected") {
+        await probeAndAutoNameOAuthConnection(exit.value.connection, label, identityLabel);
+      }
+      setCcBusy(false);
       toast.success("Connection added");
       close();
       return;
@@ -1828,7 +1889,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
           success: false,
         });
       },
-      onSuccess: () => {
+      onSuccess: async (connection: OAuthCompletionPayload) => {
+        await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
         toast.success("Connection added");
         close();
       },
@@ -1878,7 +1940,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
               template: method.template,
               identityLabel,
             },
-            onSuccess: () => {
+            onSuccess: async (connection: OAuthCompletionPayload) => {
+              await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
               toast.success("Connection added");
               close();
             },
@@ -1968,7 +2031,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
               template: method.template,
               identityLabel,
             },
-            onSuccess: () => {
+            onSuccess: async (connection: OAuthCompletionPayload) => {
+              await probeAndAutoNameOAuthConnection(connection, label, identityLabel);
               toast.success("Connection added");
               close();
             },

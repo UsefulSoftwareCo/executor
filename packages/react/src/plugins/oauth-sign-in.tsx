@@ -52,7 +52,10 @@ import {
 // ---------------------------------------------------------------------------
 
 export type OAuthCompletionPayload = {
-  readonly connection: ConnectionName;
+  readonly owner: Owner;
+  readonly integration: IntegrationSlug;
+  readonly name: ConnectionName;
+  readonly identityLabel?: string | null;
 };
 
 export type OAuthStartPayload = {
