@@ -33,6 +33,8 @@ type MockSessionState = {
 
 const createCalls: Array<Record<string, unknown>> = [];
 const getCalls: Array<Record<string, unknown>> = [];
+const getOrCreateCalls: Array<Record<string, unknown>> = [];
+const deleteCalls: string[] = [];
 const updateNetworkPolicyCalls: unknown[] = [];
 const runCommandCalls: MockRunCommandParams[] = [];
 const writeFilesCalls: Array<{ path: string; content: Buffer }[]> = [];
@@ -46,6 +48,7 @@ let runCommandMock = async (_params?: MockRunCommandParams): Promise<MockRunComm
 });
 let lastRunCommandEnv: Record<string, string> | undefined;
 let currentSessionStateFactory = (_name: string): MockSessionState => ({});
+let getOrCreateReturnsExisting = false;
 
 function domainForPort(port: number): string {
   if (missingPorts.has(port)) {
@@ -107,6 +110,9 @@ function buildMockSession(name: string, state: MockSessionState = {}) {
     },
     snapshot: async () => ({ snapshotId: "snap-created" }),
     stop: async () => {},
+    delete: async () => {
+      deleteCalls.push(name);
+    },
     extendTimeout: async () => {},
   };
 }
@@ -140,6 +146,9 @@ function createMockSandboxSdk(name: string) {
     },
     snapshot: async () => ({ snapshotId: "snap-created" }),
     stop: async () => {},
+    delete: async () => {
+      deleteCalls.push(name);
+    },
     extendTimeout: async () => {},
   };
 }
@@ -157,6 +166,19 @@ mock.module("@vercel/sandbox", () => ({
       const sandboxName = typeof params.name === "string" ? params.name : "loaded-sandbox";
       return createMockSandboxSdk(sandboxName);
     },
+    getOrCreate: async (params: Record<string, unknown>) => {
+      getOrCreateCalls.push(params);
+      const sandboxName = typeof params.name === "string" ? params.name : "loaded-sandbox";
+      const sdk = createMockSandboxSdk(sandboxName);
+      if (!getOrCreateReturnsExisting) {
+        createCalls.push(params);
+        const onCreate = params.onCreate;
+        if (typeof onCreate === "function") {
+          await onCreate(sdk);
+        }
+      }
+      return sdk;
+    },
   },
 }));
 
@@ -173,6 +195,8 @@ beforeAll(async () => {
 beforeEach(() => {
   createCalls.length = 0;
   getCalls.length = 0;
+  getOrCreateCalls.length = 0;
+  deleteCalls.length = 0;
   updateNetworkPolicyCalls.length = 0;
   runCommandCalls.length = 0;
   writeFilesCalls.length = 0;
@@ -188,6 +212,7 @@ beforeEach(() => {
   });
   lastRunCommandEnv = undefined;
   currentSessionStateFactory = () => ({});
+  getOrCreateReturnsExisting = false;
 });
 
 describe("VercelSandbox.environmentDetails", () => {
@@ -453,6 +478,122 @@ describe("GitHub setup credential brokering", () => {
 });
 
 describe("Vercel sandbox setup pipeline", () => {
+  test("deletes an incomplete named sandbox after setup failure so retry starts clean", async () => {
+    let failClone = true;
+    runCommandMock = async (params) => {
+      if (failClone && params?.cmd === "git" && params.args?.[0] === "clone") {
+        return {
+          exitCode: 128,
+          cmdId: "cmd-clone-failed",
+          stdout: async () => "",
+          stderr: async () => "fatal: transient clone failure",
+        };
+      }
+
+      return {
+        exitCode: 0,
+        cmdId: "cmd-ok",
+        stdout: async () => "",
+        stderr: async () => "",
+      };
+    };
+
+    await expect(
+      sandboxModule.VercelSandbox.create({
+        name: "session_retry",
+        source: {
+          url: "https://github.com/open-agents/example",
+          branch: "main",
+        },
+      }),
+    ).rejects.toThrow("fatal: transient clone failure");
+
+    expect(deleteCalls).toEqual(["session_retry"]);
+
+    failClone = false;
+    const sandbox = await sandboxModule.VercelSandbox.create({
+      name: "session_retry",
+      source: {
+        url: "https://github.com/open-agents/example",
+        branch: "main",
+      },
+    });
+
+    expect(sandbox.getState()).toEqual(
+      expect.objectContaining({
+        type: "vercel",
+        sandboxName: "session_retry",
+      }),
+    );
+    expect(createCalls).toHaveLength(2);
+    expect(deleteCalls).toEqual(["session_retry"]);
+  });
+
+  test("replaces stale existing named sandboxes before retrying setup", async () => {
+    getOrCreateReturnsExisting = true;
+    runCommandMock = async (params) => {
+      if (params?.cmd === "test") {
+        return {
+          exitCode: 1,
+          cmdId: "cmd-workspace-missing",
+          stdout: async () => "",
+          stderr: async () => "",
+        };
+      }
+
+      return {
+        exitCode: 0,
+        cmdId: "cmd-ok",
+        stdout: async () => "",
+        stderr: async () => "",
+      };
+    };
+
+    const sandbox = await sandboxModule.VercelSandbox.create({
+      name: "session_stale",
+      sources: [
+        {
+          url: "https://github.com/GoAugment/augment-web",
+          branch: "staging",
+          directory: "augment-web",
+        },
+        {
+          url: "https://github.com/GoAugment/augment-services",
+          branch: "main",
+          directory: "augment-services",
+        },
+      ],
+    });
+
+    expect(sandbox.getState()).toEqual(
+      expect.objectContaining({
+        type: "vercel",
+        sandboxName: "session_stale",
+      }),
+    );
+    expect(getOrCreateCalls).toHaveLength(1);
+    expect(deleteCalls).toEqual(["session_stale"]);
+    expect(createCalls).toHaveLength(1);
+    expect(runCommandCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ cmd: "test", args: ["-d", "augment-web/.git"] }),
+        expect.objectContaining({
+          cmd: "git",
+          args: [
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            "staging",
+            "https://github.com/GoAugment/augment-web",
+            "augment-web",
+          ],
+        }),
+      ]),
+    );
+  });
+
   test("clears GitHub setup auth once when workspace branch checkout fails", async () => {
     const events: Array<Record<string, unknown>> = [];
     runCommandMock = async (params) => {

@@ -22,6 +22,14 @@ export type PreparedVercelSandboxSetup = {
   startTime: number;
 };
 
+type VercelSandboxCreateConfig = Parameters<typeof VercelSandboxSDK.create>[0];
+type VercelSandboxGetOrCreateConfig = Parameters<typeof VercelSandboxSDK.getOrCreate>[0];
+
+type AcquiredVercelSandbox = {
+  sdk: VercelSandboxSDKInstance;
+  created: boolean;
+};
+
 export async function emitSetupEvent(
   onSetupEvent: SetupEventHandler | undefined,
   event: VercelSandboxSetupEvent,
@@ -148,6 +156,127 @@ function normalizeWorkspaceDirectory(source: VercelSandboxGitSource, index: numb
   return directory;
 }
 
+async function directoryExists(params: {
+  sdk: VercelSandboxSDKInstance;
+  cwd: string;
+  directory: string;
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  const result = await params.sdk.runCommand({
+    cmd: "test",
+    args: ["-d", params.directory],
+    cwd: params.cwd,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+
+  return result.exitCode === 0;
+}
+
+async function isExistingWorkspaceReady(params: {
+  sdk: VercelSandboxSDKInstance;
+  source?: VercelSandboxGitSource;
+  sources: VercelSandboxGitSource[];
+  restoreSnapshotId?: string;
+  skipGitWorkspaceBootstrap: boolean;
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  if (params.source) {
+    return directoryExists({
+      sdk: params.sdk,
+      cwd: DEFAULT_WORKING_DIRECTORY,
+      directory: ".git",
+      signal: params.signal,
+    });
+  }
+
+  if (params.sources.length > 0) {
+    for (const [index, sourceConfig] of params.sources.entries()) {
+      const directory = normalizeWorkspaceDirectory(sourceConfig, index);
+      const exists = await directoryExists({
+        sdk: params.sdk,
+        cwd: DEFAULT_WORKING_DIRECTORY,
+        directory: `${directory}/.git`,
+        signal: params.signal,
+      });
+      if (!exists) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  if (params.restoreSnapshotId || params.skipGitWorkspaceBootstrap) {
+    return true;
+  }
+
+  return directoryExists({
+    sdk: params.sdk,
+    cwd: DEFAULT_WORKING_DIRECTORY,
+    directory: ".git",
+    signal: params.signal,
+  });
+}
+
+async function deleteSandboxBestEffort(
+  sdk: VercelSandboxSDKInstance,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await sdk.delete(signal && !signal.aborted ? { signal } : undefined);
+  } catch (error) {
+    console.warn("[VercelSandbox] failed to delete incomplete sandbox:", error);
+  }
+}
+
+async function acquireSandboxForSetup(params: {
+  createConfig: VercelSandboxCreateConfig;
+  source?: VercelSandboxGitSource;
+  sources: VercelSandboxGitSource[];
+  restoreSnapshotId?: string;
+  skipGitWorkspaceBootstrap: boolean;
+  signal?: AbortSignal;
+}): Promise<AcquiredVercelSandbox> {
+  if (!params.createConfig?.name) {
+    return {
+      sdk: await VercelSandboxSDK.create(params.createConfig),
+      created: true,
+    };
+  }
+
+  let created = false;
+  const sdk = await VercelSandboxSDK.getOrCreate({
+    ...(params.createConfig as VercelSandboxGetOrCreateConfig),
+    onCreate: async () => {
+      created = true;
+    },
+  });
+
+  if (created) {
+    return { sdk, created };
+  }
+
+  const workspaceReady = await isExistingWorkspaceReady({
+    sdk,
+    source: params.source,
+    sources: params.sources,
+    restoreSnapshotId: params.restoreSnapshotId,
+    skipGitWorkspaceBootstrap: params.skipGitWorkspaceBootstrap,
+    signal: params.signal,
+  });
+
+  if (workspaceReady) {
+    return { sdk, created: false };
+  }
+
+  await sdk.delete(params.signal ? { signal: params.signal } : undefined);
+
+  return {
+    sdk: await VercelSandboxSDK.create(params.createConfig),
+    created: true,
+  };
+}
+
 async function configureGitUser(
   sdk: VercelSandboxSDKInstance,
   cwd: string,
@@ -255,20 +384,30 @@ export async function prepareVercelSandboxSetup(
     ...(restoreSnapshotId ? { restoreSnapshotId } : {}),
   });
 
-  let sdk: VercelSandboxSDKInstance;
-  if (restoreSnapshotId) {
-    sdk = await VercelSandboxSDK.create({
-      ...createBaseConfig,
-      source: { type: "snapshot", snapshotId: restoreSnapshotId },
-    });
-  } else if (baseSnapshotId) {
-    sdk = await VercelSandboxSDK.create({
-      ...createBaseConfig,
-      source: { type: "snapshot", snapshotId: baseSnapshotId },
-    });
-  } else {
-    sdk = await VercelSandboxSDK.create(createRuntimeConfig);
-  }
+  const createConfig = restoreSnapshotId
+    ? {
+        ...createBaseConfig,
+        source: { type: "snapshot" as const, snapshotId: restoreSnapshotId },
+      }
+    : baseSnapshotId
+      ? {
+          ...createBaseConfig,
+          source: { type: "snapshot" as const, snapshotId: baseSnapshotId },
+        }
+      : createRuntimeConfig;
+
+  let sdk: VercelSandboxSDKInstance | undefined;
+  let createdSandboxForThisSetup = false;
+  const acquiredSandbox = await acquireSandboxForSetup({
+    createConfig,
+    source,
+    sources,
+    restoreSnapshotId,
+    skipGitWorkspaceBootstrap,
+    signal,
+  });
+  sdk = acquiredSandbox.sdk;
+  createdSandboxForThisSetup = acquiredSandbox.created;
 
   let githubAuthClearStarted = false;
   let githubAuthCleared = false;
@@ -282,6 +421,36 @@ export async function prepareVercelSandboxSetup(
     });
 
     const workingDirectory = DEFAULT_WORKING_DIRECTORY;
+
+    if (!createdSandboxForThisSetup) {
+      if (githubToken) {
+        githubAuthClearStarted = true;
+        await emitSetupEvent(onSetupEvent, {
+          phase: "github-auth-clear-start",
+          sandboxName: sdk.name,
+        });
+        await clearGitHubCredentialBrokering(sdk, signal);
+        githubAuthCleared = true;
+        await emitSetupEvent(onSetupEvent, {
+          phase: "github-auth-clear-complete",
+          sandboxName: sdk.name,
+        });
+      }
+
+      const startTime = Date.now();
+      const session = sdk.currentSession();
+      const currentBranch = source?.newBranch ?? source?.branch;
+
+      return {
+        sdk,
+        session,
+        workingDirectory,
+        currentBranch,
+        effectiveTimeout,
+        startTime,
+      };
+    }
+
     const clonedSourceDirectories: string[] = [];
 
     if (source) {
@@ -502,8 +671,11 @@ export async function prepareVercelSandboxSetup(
       startTime,
     };
   } catch (error) {
-    if (githubToken && !githubAuthCleared && !githubAuthClearStarted) {
+    if (githubToken && !githubAuthCleared && !githubAuthClearStarted && sdk) {
       await clearGitHubCredentialBrokeringBestEffort(sdk, signal);
+    }
+    if (createdSandboxForThisSetup && sdk) {
+      await deleteSandboxBestEffort(sdk, signal);
     }
     throw error;
   }
