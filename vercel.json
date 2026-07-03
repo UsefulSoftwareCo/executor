@@ -4,23 +4,19 @@
     "web": {
       "root": "apps/open-agents",
       "framework": "nextjs",
+      "mount": "/",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run build"
     },
     "eve": {
       "root": "apps/open-agents",
       "framework": "eve",
+      "mount": "/eve/v1",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts"
     }
   },
   "rewrites": [
-    {
-      "source": "/eve/v1/(.*)",
-      "destination": {
-        "service": "eve"
-      }
-    },
     {
       "source": "/.well-known/workflow/(.*)",
       "destination": {
