@@ -4,14 +4,14 @@
     "web": {
       "root": "apps/open-agents",
       "framework": "nextjs",
-      "mount": "/",
+      "routePrefix": "/",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run build"
     },
     "eve": {
       "root": "apps/open-agents",
       "framework": "eve",
-      "mount": "/eve/v1",
+      "routePrefix": "/eve/v1",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts"
     }
