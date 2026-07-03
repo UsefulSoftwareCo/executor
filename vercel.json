@@ -4,19 +4,47 @@
     "web": {
       "root": "apps/open-agents",
       "framework": "nextjs",
-      "routePrefix": "/",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run build"
     },
     "eve": {
       "root": "apps/open-agents",
       "framework": "eve",
-      "routePrefix": "/eve/v1",
       "installCommand": "bun install --frozen-lockfile --minimum-release-age=0",
       "buildCommand": "bun run scripts/verify-eve-vercel-output-patch.ts && eve build && bun run scripts/patch-eve-vercel-output.ts"
     }
   },
   "rewrites": [
+    {
+      "source": "/eve/v1/session/:sessionId/stream",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/eve/v1/session/:sessionId",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/eve/v1/connections/:name/callback/:token",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/eve/v1/callback/:token",
+      "destination": {
+        "service": "eve"
+      }
+    },
+    {
+      "source": "/eve/v1/(.*)",
+      "destination": {
+        "service": "eve"
+      }
+    },
     {
       "source": "/.well-known/workflow/(.*)",
       "destination": {
