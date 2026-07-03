@@ -49,3 +49,21 @@ const toSeed = (plan: AtmnPlan): AutumnSeedPlan => ({
 export const AUTUMN_PLAN_SEED: AutumnSeedPlan[] = [free, team, enterprise].map((p) =>
   toSeed(p as AtmnPlan),
 );
+
+/**
+ * The "executions" allotment a fresh org has on the auto-enabled default plan
+ * (Free): the exact number of executions it takes to exhaust the quota. Read
+ * from the same seed the emulator is booted with, so a plan change in
+ * autumn.config.ts flows straight into the balance-gate scenarios rather than
+ * drifting against a hardcoded magic number.
+ */
+export const DEFAULT_PLAN_EXECUTIONS_INCLUDED: number = (() => {
+  const defaultPlan = AUTUMN_PLAN_SEED.find((plan) => plan.auto_enable);
+  const executions = defaultPlan?.items.find((item) => item.feature_id === "executions");
+  if (executions?.included === undefined) {
+    throw new Error(
+      "autumn-plans: the auto-enabled default plan has no included 'executions' amount to exhaust",
+    );
+  }
+  return executions.included;
+})();

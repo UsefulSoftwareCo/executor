@@ -93,6 +93,12 @@ export const createSqliteFumaDb = async <const TTables extends FumaTables>(
   ) {
     await client.execute("ALTER TABLE oauth_client ADD COLUMN origin_integration TEXT");
   }
+  if (
+    oauthClientColumns.rows.length > 0 &&
+    !oauthClientColumns.rows.some((column) => column["name"] === "origin_issuer")
+  ) {
+    await client.execute("ALTER TABLE oauth_client ADD COLUMN origin_issuer TEXT");
+  }
 
   const { db, fuma } = createExecutorFumaDb(drizzleDb, {
     tables: options.tables,

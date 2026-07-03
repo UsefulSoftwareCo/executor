@@ -75,7 +75,7 @@ import { graphqlPlugin } from "@executor-js/plugin-graphql/core";
 
 ## Status
 
-Pre-`1.0`. APIs may still change between beta releases. Part of the [executor monorepo](https://github.com/RhysSullivan/executor).
+Pre-`1.0`. APIs may still change between beta releases. Part of the [executor monorepo](https://github.com/UsefulSoftwareCo/executor).
 
 ## License
 

@@ -259,7 +259,7 @@ export const reportAProblem = async () => {
     "",
     "_A diagnostics zip was saved to your Downloads folder — please drag it into this issue._",
   ].join("\n");
-  const url = new URL("https://github.com/RhysSullivan/executor/issues/new");
+  const url = new URL("https://github.com/UsefulSoftwareCo/executor/issues/new");
   url.searchParams.set("title", "[desktop] ");
   url.searchParams.set("body", body);
   await shell.openExternal(url.toString());

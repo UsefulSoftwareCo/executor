@@ -1,14 +1,14 @@
 {
   "name": "@executor-js/vite-plugin",
   "version": "0.0.44",
-  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/vite-plugin",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/vite-plugin",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/core/vite-plugin"
   },
   "files": [

@@ -27,13 +27,20 @@ jobs:
   deploy:
     name: Deploy preview
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
+      # builds it from source via node-gyp, whose undici needs Node 22.10+
+      # (webidl.markAsUncloneable). Pin the same runtime the CI jobs use.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - run: bun install --frozen-lockfile
 
@@ -82,7 +89,7 @@ jobs:
   teardown:
     name: Tear down preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 

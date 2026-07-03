@@ -55,6 +55,11 @@ export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
 // (with a `deleted_classes: ["McpSessionDO"]` migration) now that nothing binds it.
 export class McpSessionDO extends DurableObject {}
 
+// Per-org execution rate-limit counter DO (abuse backstop; migration v3,
+// `EXECUTION_RATE_LIMITER` binding). Plain counter, no Sentry wrapper needed:
+// its callers already fail open and report errors themselves.
+export { ExecutionRateLimiterDO } from "./engine/execution-rate-limit";
+
 // ---------------------------------------------------------------------------
 // Worker fetch handler
 //

@@ -70,6 +70,7 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { OAUTH2_SESSION_TTL_MS, encodeOAuthCallbackState } from "./oauth";
+import { canonicalIssuerUrl, hostOfUrl, isDcrClassifiedRow, parseUrl } from "./oauth-gc";
 
 /** Connection-minting input for the OAuth flow — extends a connection create
  *  with the OAuth lifecycle fields (client slug, refresh material, expiry,
@@ -239,6 +240,68 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
 const parseGrant = (grant: unknown): OAuthGrant | null =>
   grant === "client_credentials" || grant === "authorization_code" ? grant : null;
 
+const canonicalDcrIssuer = (
+  issuer: string | null | undefined,
+  registrationEndpoint: string,
+): string | null => {
+  const discovered = canonicalIssuerUrl(issuer);
+  if (discovered !== null) return discovered;
+  const endpoint = parseUrl(registrationEndpoint);
+  return endpoint === null ? null : endpoint.origin;
+};
+
+const issuerOrigin = (issuer: string): string | null => parseUrl(issuer)?.origin ?? null;
+
+const issuerIsOriginOnly = (issuer: string): boolean => issuerOrigin(issuer) === issuer;
+
+const dcrIssuerMatches = (rowIssuer: string, inputIssuer: string | null): boolean =>
+  inputIssuer !== null &&
+  (rowIssuer === inputIssuer ||
+    (issuerIsOriginOnly(inputIssuer) && issuerOrigin(rowIssuer) === inputIssuer));
+
+const slugifyOAuthKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const shortStableHash = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const dcrClientSlug = (
+  issuer: string | null,
+  resource: string | null,
+  fallback: OAuthClientSlug,
+): OAuthClientSlug => {
+  if (issuer === null) return fallback;
+  const issuerHost = hostOfUrl(issuer);
+  if (issuerHost === null) return fallback;
+  const base = `dcr-${slugifyOAuthKey(issuerHost) || "authorization-server"}`;
+  if (resource === null) return OAuthClientSlug.make(base);
+  const resourceUrl = parseUrl(resource);
+  const resourceSource =
+    resourceUrl === null ? resource : `${resourceUrl.host}${resourceUrl.pathname}`;
+  const resourcePart = slugifyOAuthKey(resourceSource).slice(0, 60) || "resource";
+  return OAuthClientSlug.make(`${base}-${resourcePart}-${shortStableHash(resource)}`.slice(0, 240));
+};
+
+/** Dedupe a freshly-minted DCR slug against slugs already held by an owner's
+ *  DCR candidates, appending `-2`, `-3`, … so a new client never collides with
+ *  (and clobbers, via createClient's delete-then-create) an existing one. */
+const uniqueDcrSlug = (slug: OAuthClientSlug, taken: ReadonlySet<string>): OAuthClientSlug => {
+  const base = String(slug);
+  if (!taken.has(base)) return slug;
+  let suffix = 2;
+  while (taken.has(`${base}-${suffix}`)) suffix += 1;
+  return OAuthClientSlug.make(`${base}-${suffix}`);
+};
+
 const parseOAuthClientOrigin = (row: {
   readonly slug?: unknown;
   readonly grant?: unknown;
@@ -246,26 +309,27 @@ const parseOAuthClientOrigin = (row: {
   readonly origin_kind?: unknown;
   readonly origin_integration?: unknown;
 }): OAuthClientOrigin => {
-  if (row.origin_kind === "dynamic_client_registration") {
+  // Shared DCR classification (explicit origin_kind OR the legacy MCP-shaped
+  // heuristic) lives in `oauth-gc` so the runtime and the GC/backfill
+  // migrations agree exactly on what counts as a DCR row.
+  if (!isDcrClassifiedRow(row)) {
     return {
-      kind: "dynamic_client_registration",
+      kind: "manual",
       integration:
         row.origin_integration == null
           ? null
           : IntegrationSlug.make(String(row.origin_integration)),
     };
   }
-  const slug = row.slug == null ? "" : String(row.slug);
-  const resource = row.resource == null ? "" : String(row.resource);
-  if (
-    row.origin_kind == null &&
-    row.grant === "authorization_code" &&
-    /(^|[-_])mcp($|[-_])/.test(slug) &&
-    /(^|\/)mcp($|[/?#])/.test(resource)
-  ) {
-    return { kind: "dynamic_client_registration", integration: null };
-  }
-  return { kind: "manual" };
+  // An explicit-origin DCR row carries its requesting integration; a
+  // heuristic-classified legacy row (null origin_kind) has none.
+  return {
+    kind: "dynamic_client_registration",
+    integration:
+      row.origin_kind === "dynamic_client_registration" && row.origin_integration != null
+        ? IntegrationSlug.make(String(row.origin_integration))
+        : null,
+  };
 };
 
 interface LoadedOAuthClient {
@@ -512,11 +576,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           client_secret_item_id: clientSecretItemIdValue,
           resource: input.resource ?? null,
           origin_kind: input.origin?.kind ?? "manual",
+          // Recorded intent, kept for BOTH origins: a manual app registered from
+          // an integration's dialog stamps its integration so the picker can
+          // match it exactly, the same way a DCR client records the integration
+          // that requested it.
           origin_integration:
+            input.origin?.integration == null ? null : String(input.origin.integration),
+          origin_issuer:
             input.origin?.kind === "dynamic_client_registration"
-              ? input.origin.integration == null
-                ? null
-                : String(input.origin.integration)
+              ? (canonicalIssuerUrl(input.originIssuer) ?? null)
               : null,
           created_at: now,
         }),
@@ -578,10 +646,128 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       ? "none"
       : "client_secret_post";
 
+  type DcrReuseCandidate = {
+    readonly slug: OAuthClientSlug;
+    readonly resource: string | null;
+  };
+
+  // `oauth_client.created_at` is a date column that surfaces as a Date, an ISO
+  // string, or an epoch number depending on the storage backend. Normalize to
+  // epoch ms for deterministic oldest-first ordering; an unparseable/missing
+  // value sorts as 0 (oldest), so slug then breaks the tie stably.
+  const candidateCreatedAt = (value: unknown): number => {
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    if (typeof value === "string") {
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    return 0;
+  };
+
+  const dcrCandidatesForIssuer = (
+    owner: Owner,
+    issuer: string | null,
+  ): Effect.Effect<readonly DcrReuseCandidate[], StorageFailure> =>
+    deps.fuma
+      .use("oauth_client.findMany", (db) =>
+        looseDb(db).findMany("oauth_client", {
+          where: (b: any) => b("owner", "=", owner),
+        }),
+      )
+      .pipe(
+        Effect.map((rows) => {
+          const matches = rows.flatMap(
+            (row): readonly (DcrReuseCandidate & { readonly createdAt: number })[] => {
+              if (parseOAuthClientOrigin(row).kind !== "dynamic_client_registration") return [];
+              // A candidate matches only via a non-null, canonicalized stored
+              // issuer. The GC migration backfills origin_issuer on every
+              // surviving DCR row, so post-migration a null-issuer row is a
+              // transient (unmigrated) row; skipping it just mints one duplicate
+              // the migration then GCs, rather than reusing on a fuzzy token-host
+              // guess.
+              const rowIssuer =
+                row.origin_issuer == null ? null : canonicalIssuerUrl(String(row.origin_issuer));
+              const issuerMatches = rowIssuer !== null && dcrIssuerMatches(rowIssuer, issuer);
+              if (!issuerMatches) return [];
+              return [
+                {
+                  slug: OAuthClientSlug.make(String(row.slug)),
+                  resource: row.resource == null ? null : String(row.resource),
+                  createdAt: candidateCreatedAt(row.created_at),
+                },
+              ];
+            },
+          );
+          // Deterministic reuse order: oldest first, slug as a stable tiebreak
+          // when timestamps collide or are missing. Without this, which of
+          // several live duplicates sharing an (owner, issuer) gets reused is
+          // whatever order the storage backend returned rows in — the reuse
+          // pick must be stable across boots and backends.
+          return [...matches]
+            .sort(
+              (a, b) =>
+                a.createdAt - b.createdAt || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0),
+            )
+            .map(({ slug, resource }): DcrReuseCandidate => ({ slug, resource }));
+        }),
+      );
+
+  const decideDcrClientReuse = (
+    input: RegisterDynamicClientInput,
+    issuer: string | null,
+  ): Effect.Effect<
+    {
+      readonly existingSlug: OAuthClientSlug | null;
+      readonly registrationSlug: OAuthClientSlug;
+    },
+    StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
+      const resource = input.resource ?? null;
+      if (resource !== null) {
+        const matchingResource = candidates.find((client) => client.resource === resource);
+        if (matchingResource) {
+          return { existingSlug: matchingResource.slug, registrationSlug: matchingResource.slug };
+        }
+        const slug = dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug);
+        return {
+          existingSlug: null,
+          registrationSlug: slug,
+        };
+      }
+
+      // Resource-less request: only reuse a resource-LESS candidate. A client
+      // minted for a specific RFC 8707 resource must NOT be reused for a
+      // resource-less flow (its tokens are bound to that resource), so when only
+      // resource-scoped candidates exist we register a fresh resource-less client
+      // rather than silently borrowing one (the old `?? candidates[0]` bug).
+      const reusable = candidates.find((client) => client.resource === null);
+      if (reusable) return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
+      // Fresh resource-less client. Its slug is the bare `dcr-<host>` base, but
+      // the FIRST resource-scoped registration for an issuer also takes that base
+      // (dcrClientSlug only suffixes once candidates exist). `createClient`
+      // deletes any row with a colliding (owner, slug) first, so reusing the base
+      // here would silently clobber that resource-scoped client. Dedupe against
+      // the existing candidate slugs so the resource-less client keeps its own row.
+      const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
+      const slug = uniqueDcrSlug(dcrClientSlug(issuer, null, input.slug), takenSlugs);
+      return { existingSlug: null, registrationSlug: slug };
+    });
+
   const registerDynamicClient = (
     input: RegisterDynamicClientInput,
   ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
     Effect.gen(function* () {
+      const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
+      const reuse = yield* decideDcrClientReuse(input, issuer);
+      if (reuse.existingSlug !== null) return reuse.existingSlug;
+
+      const slug = reuse.registrationSlug;
       const flowRedirectUri = input.redirectUri ?? redirectUri;
       // DCR registers our callback as the client's redirect_uri — fail loudly
       // if the executor has none rather than registering a localhost URL.
@@ -633,7 +819,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // stored client carries no scope set (the integration drives requests).
       yield* createClient({
         owner: input.owner,
-        slug: input.slug,
+        slug,
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         resource: input.resource ?? null,
@@ -644,8 +830,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           kind: "dynamic_client_registration",
           integration: input.originIntegration ?? null,
         },
+        originIssuer: issuer,
       });
-      return input.slug;
+      return slug;
     });
 
   // -----------------------------------------------------------------------
@@ -1158,6 +1345,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       return {
+        issuer: as.metadata.issuer,
         authorizationUrl: as.metadata.authorization_endpoint,
         tokenUrl: as.metadata.token_endpoint,
         resource: resource?.metadata.resource ?? null,

@@ -195,7 +195,9 @@ export default defineConfig({
     // Self-host upgrades by pulling/rebuilding the image (or git + rebuild), not
     // npm, so the update card links to the upgrade guide instead of a command.
     "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("selfhost"),
-    "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
+    "import.meta.env.VITE_GITHUB_URL": JSON.stringify(
+      "https://github.com/UsefulSoftwareCo/executor",
+    ),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
   server: {

@@ -1,14 +1,14 @@
 {
   "name": "@executor-js/sdk",
   "version": "1.5.27",
-  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/sdk",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/sdk",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/core/sdk"
   },
   "files": [
@@ -96,7 +96,8 @@
     "@executor-js/fumadb": "workspace:*",
     "@standard-schema/spec": "^1.1.0",
     "fractional-indexing": "^3.2.0",
-    "oauth4webapi": "^3.8.5"
+    "oauth4webapi": "^3.8.5",
+    "tldts": "^7.0.28"
   },
   "devDependencies": {
     "@effect/atom-react": "catalog:",

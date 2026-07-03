@@ -13,7 +13,7 @@ const supportLinks = [
   { label: "Discord", href: "https://discord.gg/eF29HBHwM6", icon: DiscordMark },
   {
     label: "GitHub Issues",
-    href: "https://github.com/RhysSullivan/executor/issues",
+    href: "https://github.com/UsefulSoftwareCo/executor/issues",
     icon: GitHubMark,
   },
   { label: "Email", href: "mailto:rhys@executor.sh?subject=Executor%20support", icon: MailMark },

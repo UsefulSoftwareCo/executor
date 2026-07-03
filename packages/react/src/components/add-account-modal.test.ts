@@ -31,6 +31,7 @@ const apiKeyMethod = (id: string, source: "spec" | "custom", template = id): Aut
 });
 
 type ProbeResult = {
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly resource?: string | null;
@@ -42,6 +43,7 @@ type ProbeResult = {
 type RegisterArgs = {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  readonly issuer?: string | null;
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
@@ -306,6 +308,7 @@ describe("runDcrConnect", () => {
     const probe = (_url: string): Promise<ProbeResult | null> => {
       calls.push("probe");
       return Promise.resolve({
+        issuer: "https://auth.example.com",
         authorizationUrl: "https://auth.example.com/authorize",
         tokenUrl: "https://auth.example.com/token",
         resource: "https://mcp.example.com/mcp",
@@ -330,7 +333,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "Linear MCP",
-        existingSlugs: [],
         redirectUri: "https://localhost:5394/api/oauth/callback",
         integration: TEST_INTEGRATION,
       },
@@ -342,6 +344,8 @@ describe("runDcrConnect", () => {
     // DCR always mints an authorization-code/PKCE client; callers do not choose
     // a grant here.
     expect(registerArgs).not.toBeNull();
+    expect(String(registerArgs!.slug)).toBe("dcr-auth-example-com");
+    expect(registerArgs!.issuer).toBe("https://auth.example.com");
     expect(registerArgs!.registrationEndpoint).toBe("https://auth.example.com/register");
     expect(registerArgs!.authorizationUrl).toBe("https://auth.example.com/authorize");
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
@@ -379,7 +383,6 @@ describe("runDcrConnect", () => {
         resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         declaredScopes: ["declared.scope"],
         integration: TEST_INTEGRATION,
       },
@@ -416,7 +419,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://auth.example.com/token",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -448,7 +450,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -483,7 +484,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -513,7 +513,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -552,7 +551,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -569,5 +567,38 @@ describe("runDcrConnect", () => {
       message,
     });
     expect(started).toBe(false);
+  });
+
+  it("mints a deterministic server-keyed slug WITHOUT the picker's slug list", async () => {
+    // Part B removed the DCR connect path's dependency on the picker's app list:
+    // the slug is derived from the authorization server (Part A), so callers no
+    // longer thread `existingSlugs`. This omits it entirely and still succeeds.
+    let registerArgs: RegisterArgs | null = null;
+    const outcome = await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> =>
+          Promise.resolve({
+            issuer: "https://auth.example.com",
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            registrationEndpoint: "https://auth.example.com/register",
+          }),
+        register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
+          registerArgs = args;
+          return Promise.resolve(OAuthClientSlug.make("app"));
+        },
+        start: (): void => {},
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        owner: "user",
+        integrationName: "App",
+        integration: TEST_INTEGRATION,
+      },
+    );
+    expect(outcome.kind).toBe("started");
+    expect(registerArgs).not.toBeNull();
+    // Slug comes from the issuer host, independent of any picker state.
+    expect(String(registerArgs!.slug)).toBe("dcr-auth-example-com");
   });
 });

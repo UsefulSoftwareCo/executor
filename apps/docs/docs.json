@@ -45,7 +45,7 @@
     "links": [
       {
         "label": "GitHub",
-        "href": "https://github.com/RhysSullivan/executor"
+        "href": "https://github.com/UsefulSoftwareCo/executor"
       }
     ],
     "primary": {
@@ -56,7 +56,7 @@
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/RhysSullivan/executor"
+      "github": "https://github.com/UsefulSoftwareCo/executor"
     }
   }
 }

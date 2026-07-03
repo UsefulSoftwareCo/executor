@@ -24,7 +24,7 @@ the self-host Docker image.
      - creates or updates the GitHub release with build artifacts
      - dispatches `.github/workflows/publish-desktop.yml`
      - dispatches `.github/workflows/publish-selfhost-docker.yml`
-6. The self-host Docker workflow publishes `ghcr.io/rhyssullivan/executor-selfhost`
+6. The self-host Docker workflow publishes `ghcr.io/usefulsoftwareco/executor-selfhost`
    for `linux/amd64` and `linux/arm64`:
    - stable releases get `vX.Y.Z`, `X.Y.Z`, and `latest`
    - prereleases get `vX.Y.Z-...`, `X.Y.Z-...`, and `beta`

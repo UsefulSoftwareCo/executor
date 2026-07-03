@@ -53,7 +53,9 @@ export default defineConfig({
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(
         process.env.npm_package_version ?? "0.0.0",
       ),
-      "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
+      "import.meta.env.VITE_GITHUB_URL": JSON.stringify(
+        "https://github.com/UsefulSoftwareCo/executor",
+      ),
       "import.meta.env.VITE_EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL": JSON.stringify(
         process.env.EXECUTOR_CIMD_CLIENT_ID_METADATA_BASE_URL ?? "https://executor.sh",
       ),

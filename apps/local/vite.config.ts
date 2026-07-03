@@ -34,7 +34,7 @@ const EXECUTOR_VERSION = cliPackage.version ?? rootPackage.version;
 const EXECUTOR_GITHUB_URL = (
   rootPackage.homepage ??
   repositoryUrl ??
-  "https://github.com/RhysSullivan/executor"
+  "https://github.com/UsefulSoftwareCo/executor"
 )
   .replace(/^git\+/, "")
   .replace(/\.git$/, "");

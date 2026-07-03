@@ -4,7 +4,7 @@
   "version": "1.5.7",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/core/fumadb"
   },
   "author": "Fuma Nama",

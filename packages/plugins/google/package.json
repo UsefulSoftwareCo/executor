@@ -1,14 +1,14 @@
 {
   "name": "@executor-js/plugin-google",
   "version": "1.5.26",
-  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/plugins/google",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/google",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/plugins/google"
   },
   "files": [

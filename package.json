@@ -11,14 +11,14 @@
     "executor",
     "local-first"
   ],
-  "homepage": "https://github.com/RhysSullivan/executor",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git"
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git"
   },
   "workspaces": [
     "packages/*/*",

@@ -104,7 +104,7 @@ Identical to beta except skip `release:beta:start`/`stop`. Changesets produce a 
 - **Never commit until the owner explicitly says so.** Set everything up in the working tree, run `git status`, and stop.
 - **No AI / Claude / Anthropic / Co-Authored-By trailers** in commits, commit messages, PRs, or any generated file. This is in `CLAUDE.md` — do not violate.
 - **Branch naming**: `rs/<short-topic>` for Rhys's branches. Beta-start branch: `rs/beta-v<version>-start`.
-- **Remote**: `origin` = `https://github.com/RhysSullivan/executor.git`. If another remote appears (e.g. a fork remote), ask whether to remove it.
+- **Remote**: `origin` = `https://github.com/UsefulSoftwareCo/executor.git`. If another remote appears (e.g. a fork remote), ask whether to remove it.
 - **Dirty working tree**: if there are uncommitted changes when starting a release, ask whether to include them, stash them, or commit separately first. Don't sweep them into the release commit silently.
 - **Don't estimate time** — code is cheap to write. Focus on what to do, not how long it takes.
 - **Fact-check scope claims** before publishing. If release notes say "does not affect X", verify by reading the diff.

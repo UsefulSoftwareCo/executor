@@ -22,6 +22,9 @@ export class AutumnError extends Data.TaggedError("AutumnError")<{
 
 export type IAutumnService = Readonly<{
   use: <A>(fn: (client: Autumn) => Promise<A>) => Effect.Effect<A, AutumnError, never>;
+  checkExecutionBalance: (
+    organizationId: string,
+  ) => Effect.Effect<{ readonly allowed: boolean }, AutumnError, never>;
   /**
    * Fire-and-forget-safe execution usage tracker. Errors are caught and
    * logged; the returned Effect never fails. Callers typically
@@ -44,6 +47,7 @@ const make = Effect.sync(() => {
     );
     return {
       use: () => notConfigured,
+      checkExecutionBalance: () => notConfigured,
       trackExecution: () => Effect.void,
     } satisfies IAutumnService;
   }
@@ -80,7 +84,16 @@ const make = Effect.sync(() => {
       );
     }).pipe(Effect.withSpan("autumn.trackExecution"));
 
-  return { use, trackExecution } satisfies IAutumnService;
+  const checkExecutionBalance = (organizationId: string) =>
+    Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan({ "autumn.customer.id": organizationId });
+      const check = yield* use((c) =>
+        c.check({ customerId: organizationId, featureId: "executions" }),
+      );
+      return { allowed: check.allowed };
+    }).pipe(Effect.withSpan("autumn.checkExecutionBalance"));
+
+  return { use, checkExecutionBalance, trackExecution } satisfies IAutumnService;
 });
 
 export class AutumnService extends Context.Service<AutumnService, IAutumnService>()(

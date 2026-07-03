@@ -12,6 +12,7 @@ import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForHttp } from "./boot";
 import { AUTUMN_PLAN_SEED } from "./autumn-plans";
+import { E2E_EXECUTION_RATE_LIMIT } from "./execution-limits";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -90,6 +91,12 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_AUTHKIT_DOMAIN: workosUrl,
     MCP_RESOURCE_ORIGIN: options.publicUrl,
     ALLOW_LOCAL_NETWORK: "true",
+    // Shrink the per-org hourly execution cap (prod default 1000) to a number
+    // the rate-limit-backstop scenario can actually exhaust with real
+    // executions — but see execution-limits.ts: it must stay above every other
+    // scenario's per-org execute count. Reaches the worker via
+    // CLOUDFLARE_INCLUDE_PROCESS_ENV, same as ALLOW_LOCAL_NETWORK.
+    EXECUTION_RATE_LIMIT_PER_HOUR: String(E2E_EXECUTION_RATE_LIMIT),
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(options.dbPort),
     DEV_DB_PATH: dbPath,

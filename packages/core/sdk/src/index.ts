@@ -363,6 +363,19 @@ export {
   runSqliteConfigBlobMigration,
   type SqliteConfigBlobMigrationOptions,
 } from "./sqlite-config-blob-migration";
+// DCR oauth_client GC + issuer backfill: shared classification predicates and
+// the libSQL boot-migration body (issue #1120, Part C).
+export {
+  classifyOAuthClientGc,
+  isDcrClassifiedRow,
+  registrableOriginOfUrl,
+  type OAuthClientGcDecision,
+  type OAuthClientGcRow,
+} from "./oauth-gc";
+export {
+  oauthClientGcSqliteMigration,
+  runSqliteOAuthClientGcMigration,
+} from "./sqlite-oauth-client-gc-migration";
 export {
   authToolFailure,
   type AuthToolFailureCode,

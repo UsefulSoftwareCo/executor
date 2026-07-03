@@ -55,20 +55,30 @@ const waitFor = async (predicate: () => boolean): Promise<void> => {
   expect(predicate()).toBe(true);
 };
 
-const drainResponse = (response: Response): Promise<void> => {
-  return Effect.runPromise(
+const drainResponse = async (response: Response): Promise<string> => {
+  const decoder = new TextDecoder();
+  let body = "";
+
+  await Effect.runPromise(
     Effect.ignore(
       Effect.tryPromise({
         try: () =>
           response.body?.pipeTo(
             new WritableStream<Uint8Array>({
-              write: () => {},
+              close: () => {
+                body += decoder.decode();
+              },
+              write: (chunk) => {
+                body += decoder.decode(chunk, { stream: true });
+              },
             }),
           ) ?? Promise.resolve(),
         catch: () => undefined,
       }),
     ),
   );
+
+  return body;
 };
 
 const installStallingTransformStream = () => {
@@ -233,13 +243,18 @@ const rotationLogs = (logs: ReadonlyArray<string>): ReadonlyArray<RotationLog> =
 
 describe("agents SSE max-age rotation", () => {
   let errorLogs: string[] = [];
+  let infoLogs: string[] = [];
 
   beforeEach(() => {
     errorLogs = [];
+    infoLogs = [];
     vi.useFakeTimers();
     vi.setSystemTime(0);
     vi.spyOn(console, "error").mockImplementation((line) => {
       errorLogs.push(String(line));
+    });
+    vi.spyOn(console, "log").mockImplementation((line) => {
+      infoLogs.push(String(line));
     });
   });
 
@@ -254,17 +269,18 @@ describe("agents SSE max-age rotation", () => {
     const drained = drainResponse(response);
 
     await vi.advanceTimersByTimeAsync(MAX_SSE_AGE_MS + KEEPALIVE_INTERVAL_MS);
-    await waitFor(() => ws.closeCode === 1013);
+    await waitFor(() => ws.closeCode === 1000);
 
-    expect(ws.closeReason).toBe("SSE client not draining");
-    const [rotationLog] = rotationLogs(errorLogs);
+    expect(ws.closeReason).toBe("sse_max_age_rotation");
+    const [rotationLog] = rotationLogs(infoLogs);
     expect(rotationLog?.event).toBe("sse_max_age_close");
     expect(rotationLog?.ageMs).toBeGreaterThan(MAX_SSE_AGE_MS);
     expect(rotationLog?.ageMs).toBeLessThanOrEqual(MAX_SSE_AGE_MS + KEEPALIVE_INTERVAL_MS);
     expect(rotationLog?.pendingBytes).toBeGreaterThanOrEqual(0);
+    expect(errorLogs).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
 
-    await drained;
+    await expect(drained).resolves.toContain(": max-age rotation, reconnect\n\n");
   });
 
   it("does not rotate an in-flight POST response past max age", async () => {
@@ -277,7 +293,7 @@ describe("agents SSE max-age rotation", () => {
 
     expect(ws.closeCode).toBeUndefined();
     expect(ws.closeReason).toBeUndefined();
-    expect(rotationLogs(errorLogs)).toEqual([]);
+    expect(rotationLogs(infoLogs)).toEqual([]);
 
     emitAgentEvent(
       ws,
@@ -299,7 +315,7 @@ describe("agents SSE max-age rotation", () => {
     await flushMicrotasks();
 
     expect(ws.closeCode).toBeUndefined();
-    expect(rotationLogs(errorLogs)).toEqual([]);
+    expect(rotationLogs(infoLogs)).toEqual([]);
 
     emitClose(ws);
     await drained;
@@ -325,7 +341,7 @@ describe("agents SSE max-age rotation", () => {
     expect(ws.closeCode).toBe(1013);
     expect(ws.closeReason).toBe("SSE client not draining");
     expect(transform.abortReason()).toBeInstanceOf(Error);
-    expect(rotationLogs(errorLogs)).toEqual([]);
+    expect(rotationLogs(infoLogs)).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -338,7 +354,7 @@ describe("agents SSE max-age rotation", () => {
     await drained;
 
     expect(ws.closeCode).toBeUndefined();
-    expect(rotationLogs(errorLogs)).toEqual([]);
+    expect(rotationLogs(infoLogs)).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

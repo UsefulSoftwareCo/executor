@@ -2,14 +2,14 @@
   "name": "@executor-js/cli",
   "version": "0.2.34",
   "description": "CLI for the executor SDK — schema generation, migrations",
-  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/cli",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/cli",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/core/cli"
   },
   "bin": {

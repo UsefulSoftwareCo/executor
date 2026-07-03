@@ -1,14 +1,14 @@
 {
   "name": "@executor-js/codemode-core",
   "version": "1.5.27",
-  "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/kernel/core",
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/kernel/core",
   "bugs": {
-    "url": "https://github.com/RhysSullivan/executor/issues"
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RhysSullivan/executor.git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
     "directory": "packages/kernel/core"
   },
   "files": [
