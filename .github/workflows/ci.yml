@@ -13,7 +13,7 @@ concurrency:
 jobs:
   format:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +35,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +57,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +79,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       TURBO_TEST_CONCURRENCY: 3
     steps:
@@ -130,7 +130,7 @@ jobs:
           - { target: cloud, shard: 7/8, shard-name: 7of8 }
           - { target: cloud, shard: 8/8, shard-name: 8of8 }
           - target: selfhost
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -191,7 +191,7 @@ jobs:
     # Skipped on pull_request: the local scenario boots a real `executor web`
     # plus a browser and is currently flaky on PRs. Still runs on push to main.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -244,7 +244,7 @@ jobs:
 
   desktop-smoke:
     name: Desktop smoke build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
@@ -277,19 +277,17 @@ jobs:
 
   selfhost-docker-smoke:
     name: Self-host Docker image
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build self-host image
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: apps/host-selfhost/Dockerfile
           push: false
           tags: executor-selfhost:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
