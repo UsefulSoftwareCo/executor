@@ -12,7 +12,7 @@
 // instead of one clear bind error. Individual E2E_*_PORT env vars still
 // override everything, and E2E_<TARGET>_URL still attaches to a running
 // instance.
-import { createServer, type Server } from "node:net";
+import { connect, createServer, type Server } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,37 +55,70 @@ export const e2ePort = (envVar: string, offset: number): number => {
   return fromEnv ? Number(fromEnv) : portBlock + offset;
 };
 
-const listenOn = (port: number, host: string): Promise<Server | undefined> =>
+const listenOn = (options: {
+  readonly port: number;
+  readonly host: string;
+  readonly ipv6Only?: boolean;
+}): Promise<Server | undefined> =>
   new Promise((done) => {
     const server = createServer();
     server.once("error", () => done(undefined));
-    server.listen(port, host, () => done(server));
+    server.listen(options, () => done(server));
   });
 
 const closeServer = (server: Server): Promise<void> =>
   new Promise((done) => server.close(() => done()));
 
-// Bind-probe a single port on BOTH address families and hold both listeners.
-// Node's default `listen(port)` binds only `::` (IPv6), and an IPv4 `0.0.0.0`
-// listener on the same port coexists with it — so a single-family probe misses
-// a squatter on the other family (and our services bind a mix: the WorkOS
-// emulator on `::`, vite/dev-db on 127.0.0.1). Binding 0.0.0.0 AND :: means the
-// port is only "free" if NEITHER family is taken, and holding both listeners
-// keeps it that way until the caller closes them the instant before the real
-// services bind. A bind (unlike a connect-probe) also detects an ephemeral
-// outbound socket squatting the port. Resolves the held servers on success, or
-// undefined if either family was taken (partial binds are closed on failure).
-// This shrinks the time-of-check/time-of-use window from seconds (probe, then
-// boot) to microseconds (close, then boot).
+const isListening = (port: number, host: string): Promise<boolean> =>
+  new Promise((done) => {
+    const socket = connect({ port, host });
+    socket.once("connect", () => {
+      socket.destroy();
+      done(true);
+    });
+    socket.once("error", () => done(false));
+    socket.setTimeout(1_000, () => {
+      socket.destroy();
+      done(false);
+    });
+  });
+
+// Bind-probe a single port and hold the listeners: resolves the held servers
+// when the port is provably free, or undefined when anything squats it. Three
+// checks, in a deliberate order:
+//
+// 1. Connect-probe the loopbacks (127.0.0.1 and ::1). On macOS a specific-
+//    address listener (a leaked vite dev server on 127.0.0.1, or selfhost's
+//    ::1) coexists with a wildcard bind, so the bind-probes below can't see
+//    it — but a connect can. Runs FIRST because once our own wildcard probes
+//    are up they would answer loopback connects themselves. Persistent
+//    listeners are what this catches, so its check-vs-use gap is harmless.
+// 2. Bind 0.0.0.0 — catches v4 squatters, including ephemeral OUTBOUND
+//    sockets, which no connect-probe can see (nothing is listening).
+// 3. Bind :: with ipv6Only — catches v6 squatters. ipv6Only is load-bearing:
+//    a plain `::` bind is DUAL-STACK on Linux (ipv6Only defaults to false),
+//    so it also claims the v4 side and EADDRINUSEs against our OWN 0.0.0.0
+//    probe from step 2, rejecting every block; the v6-ONLY side never
+//    overlaps the v4 side, so this pair coexists on both Linux and macOS
+//    (verified empirically on both). Sequential on purpose: the second bind
+//    must observe the first, not race it.
+//
+// The caller holds every probe server until the whole block is proven free,
+// then closes them the instant before the real services bind — shrinking the
+// time-of-check/time-of-use window from seconds (probe, then boot) to
+// microseconds (close, then boot). Services bind 127.0.0.1 or dual-stack `::`,
+// both of which succeed once the probes are released.
 const bindProbe = async (port: number): Promise<ReadonlyArray<Server> | undefined> => {
-  const wanted = ["0.0.0.0", "::"];
-  const held = await Promise.all(wanted.map((host) => listenOn(port, host)));
-  const ok = held.filter((server): server is Server => server !== undefined);
-  if (ok.length !== wanted.length) {
-    await Promise.all(ok.map(closeServer));
+  const loopbacks = await Promise.all(["127.0.0.1", "::1"].map((host) => isListening(port, host)));
+  if (loopbacks.some(Boolean)) return undefined;
+  const v4 = await listenOn({ port, host: "0.0.0.0" });
+  if (!v4) return undefined;
+  const v6 = await listenOn({ port, host: "::", ipv6Only: true });
+  if (!v6) {
+    await closeServer(v4);
     return undefined;
   }
-  return ok;
+  return [v4, v6];
 };
 
 export interface PortClaim {
