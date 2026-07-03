@@ -1,6 +1,7 @@
 /* oxlint-disable executor/no-try-catch-or-throw, executor/no-promise-catch -- boundary: commit server action coordinates sandbox and GitHub Promise APIs into CommitResult envelopes */
 "use server";
 
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import {
   connectSandbox,
   stageAll,
@@ -142,8 +143,17 @@ export async function commitChanges(params: {
   if (!sessionRecord) {
     return { committed: false, pushed: false, error: "Session not found" };
   }
-  if (sessionRecord.userId !== session.user.id) {
-    return { committed: false, pushed: false, error: "Forbidden" };
+  try {
+    await requireSessionAccess({ kind: "user", userId: session.user.id }, sessionId, "write");
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      return {
+        committed: false,
+        pushed: false,
+        error: error.status === 404 ? "Session not found" : "Forbidden",
+      };
+    }
+    throw error;
   }
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     return {

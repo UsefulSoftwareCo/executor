@@ -1,5 +1,6 @@
 "use server";
 
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox } from "@open-agents/sandbox";
 import {
   openPullRequest as openPullRequestOnGitHub,
@@ -94,6 +95,17 @@ function buildGitHubCompareUrl(params: {
   return compareUrl.toString();
 }
 
+async function requireWritableSessionAccess(userId: string, sessionId: string): Promise<void> {
+  try {
+    await requireSessionAccess({ kind: "user", userId }, sessionId, "write");
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      throw new Error(error.status === 404 ? "Session not found" : "Forbidden");
+    }
+    throw error;
+  }
+}
+
 function buildManualPullRequestResponse(params: {
   owner: string;
   repo: string;
@@ -141,9 +153,7 @@ export async function generatePrContent(params: {
   if (!sessionRecord) {
     throw new Error("Session not found");
   }
-  if (sessionRecord.userId !== session.user.id) {
-    throw new Error("Forbidden");
-  }
+  await requireWritableSessionAccess(session.user.id, sessionId);
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     throw new Error("Sandbox not initialized");
   }
@@ -305,9 +315,7 @@ export async function openPullRequest(params: {
   if (!sessionRecord) {
     throw new Error("Session not found");
   }
-  if (sessionRecord.userId !== session.user.id) {
-    throw new Error("Forbidden");
-  }
+  await requireWritableSessionAccess(session.user.id, sessionId);
 
   const resolvedBranch = sessionRecord.branch ?? branchName;
   if (!resolvedBranch) {
@@ -486,9 +494,7 @@ export async function mergePr(params: {
   if (!sessionRecord) {
     throw new Error("Session not found");
   }
-  if (sessionRecord.userId !== session.user.id) {
-    throw new Error("Forbidden");
-  }
+  await requireWritableSessionAccess(session.user.id, sessionId);
 
   if (
     !sessionRecord.cloneUrl ||
@@ -671,9 +677,7 @@ export async function closePr(params: {
   if (!sessionRecord) {
     throw new Error("Session not found");
   }
-  if (sessionRecord.userId !== session.user.id) {
-    throw new Error("Forbidden");
-  }
+  await requireWritableSessionAccess(session.user.id, sessionId);
 
   if (
     !sessionRecord.cloneUrl ||

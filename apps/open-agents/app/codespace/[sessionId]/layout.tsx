@@ -1,3 +1,4 @@
+import { canAccess } from "@open-agents/authz";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
@@ -30,7 +31,12 @@ export default async function CodespaceLayout({
     notFound();
   }
 
-  if (sessionRecord.userId !== session.user.id) {
+  const canReadSession = await canAccess(
+    { kind: "user", userId: session.user.id },
+    { scopeKind: sessionRecord.scopeKind, scopeId: sessionRecord.scopeId },
+    "read",
+  );
+  if (!canReadSession) {
     redirect("/");
   }
 

@@ -1,5 +1,6 @@
 "use server";
 
+import { AuthzError, requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox } from "@open-agents/sandbox";
 import { getSessionById } from "@/lib/db/sessions";
 import { isSandboxActive } from "@/lib/sandbox/utils";
@@ -142,8 +143,13 @@ export async function discardChanges(params: {
   if (!sessionRecord) {
     throw new Error("Session not found");
   }
-  if (sessionRecord.userId !== session.user.id) {
-    throw new Error("Forbidden");
+  try {
+    await requireSessionAccess({ kind: "user", userId: session.user.id }, sessionId, "write");
+  } catch (error) {
+    if (error instanceof AuthzError) {
+      throw new Error(error.status === 404 ? "Session not found" : "Forbidden");
+    }
+    throw error;
   }
   if (!isSandboxActive(sessionRecord.sandboxState)) {
     throw new Error("Sandbox not initialized");

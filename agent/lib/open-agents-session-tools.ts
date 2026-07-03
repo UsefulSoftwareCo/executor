@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { requireSessionAccess } from "@open-agents/authz";
 import { connectSandbox, type Sandbox, type SandboxState } from "@open-agents/sandbox";
 import { installConfiguredSessionClis } from "@open-agents/sandbox/session-clis.js";
 import type { ToolContext, ToolDefinition } from "eve/tools";
@@ -121,7 +122,12 @@ function getStringAttribute(
 
 function getOpenAgentsUserId(ctx: ToolContext): string | undefined {
   const auth = ctx.session.auth.initiator ?? ctx.session.auth.current;
-  return auth?.subject ?? auth?.principalId;
+  const actorId =
+    getStringAttribute(auth?.attributes, "openAgentsActor") ?? auth?.subject ?? auth?.principalId;
+  if (!actorId) {
+    return undefined;
+  }
+  return actorId.startsWith("user:") ? actorId.slice("user:".length) : actorId;
 }
 
 function getOpenAgentsSessionId(ctx: ToolContext): string {
@@ -150,9 +156,11 @@ async function getOpenAgentsSessionSandbox(ctx: ToolContext): Promise<Sandbox> {
     throw new Error(`Open Agents session ${sessionId} was not found`);
   }
 
-  if (userId && session.userId !== userId) {
-    throw new Error(`Open Agents session ${sessionId} is not owned by this user`);
+  if (!userId) {
+    throw new Error("Open Agents user id is required for workspace tools");
   }
+
+  await requireSessionAccess({ kind: "user", userId }, sessionId, "write", { sql });
 
   if (!session.sandboxState || session.sandboxState.type !== "vercel") {
     throw new Error(`Open Agents session ${sessionId} does not have an active Vercel sandbox`);
