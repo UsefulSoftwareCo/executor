@@ -22,6 +22,7 @@ import {
 } from "../../apps/cloud/src/engine/execution-limit-messages";
 import { scenario } from "../src/scenario";
 import { Autumn, Billing, Mcp, Target } from "../src/services";
+import { E2E_EXECUTION_RATE_LIMIT } from "../setup/execution-limits";
 import type { Identity } from "../src/target";
 
 const emailOf = (identity: Identity): string => identity.credentials?.email ?? identity.label;
@@ -38,8 +39,9 @@ const orgIdOf = (bearer: string): string => {
 
 // The e2e worker is booted with a small EXECUTION_RATE_LIMIT_PER_HOUR so the
 // backstop is reachable with real executions (cloud.boot.ts). The prod cap of
-// 1000/hour can't be. Kept in sync with that env value.
-const RATE_LIMIT = 3;
+// 1000/hour can't be. One shared constant (setup/execution-limits.ts) keeps
+// this and the boot env from drifting apart.
+const RATE_LIMIT = E2E_EXECUTION_RATE_LIMIT;
 
 scenario(
   "Billing · an org out of executions is blocked before the code ever runs",
