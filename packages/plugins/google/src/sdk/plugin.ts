@@ -140,6 +140,7 @@ const googlePhotosBundleConsentScopes = (
 const fetchGoogleBundleConversion = (
   urls: readonly string[],
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
+  consentScopesOverride?: readonly string[],
 ) =>
   Effect.forEach(
     urls,
@@ -151,10 +152,10 @@ const fetchGoogleBundleConversion = (
     { concurrency: 4 },
   ).pipe(
     Effect.flatMap((documents) => {
-      const consentScopes = googlePhotosBundleConsentScopes(urls);
+      const consentScopes = consentScopesOverride ?? googlePhotosBundleConsentScopes(urls);
       return convertGoogleDiscoveryBundleToOpenApi({
         documents,
-        ...(consentScopes ? { consentScopes } : {}),
+        ...(consentScopes !== undefined ? { consentScopes } : {}),
       });
     }),
   );
@@ -215,12 +216,23 @@ const makeGooglePluginExtension = (
 ) => {
   const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
 
-  const addBundle = (config: GoogleBundleConfig) =>
+  const addGoogleOpenApiIntegration = (input: {
+    readonly urls: readonly string[];
+    readonly slug: IntegrationSlug;
+    readonly name: string;
+    readonly description: string;
+    readonly baseUrl?: string;
+    readonly consentScopes?: readonly string[];
+  }) =>
     Effect.gen(function* () {
-      const urls = yield* googleBundleUrlsWithIdentity(config.urls);
-      const conversion = yield* fetchGoogleBundleConversion(urls, httpClientLayer);
+      const urls = yield* googleBundleUrlsWithIdentity(input.urls);
+      const conversion = yield* fetchGoogleBundleConversion(
+        urls,
+        httpClientLayer,
+        input.consentScopes,
+      );
       const compiled = yield* compileOpenApiSpec(conversion.specText);
-      const slug = IntegrationSlug.make(config.slug?.trim() || DEFAULT_GOOGLE_SLUG);
+      const slug = input.slug;
 
       const existing = yield* ctx.core.integrations.get(slug);
       if (existing) {
@@ -231,7 +243,7 @@ const makeGooglePluginExtension = (
       const integrationConfig: GoogleIntegrationConfig = {
         specHash,
         googleDiscoveryUrls: urls,
-        ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
         ...(conversion.authenticationTemplate
           ? { authenticationTemplate: conversion.authenticationTemplate }
           : {}),
@@ -244,8 +256,8 @@ const makeGooglePluginExtension = (
         Effect.gen(function* () {
           yield* ctx.core.integrations.register({
             slug,
-            name: config.name?.trim() || "Google",
-            description: config.description ?? "Google APIs",
+            name: input.name,
+            description: input.description,
             config: integrationConfig satisfies GoogleIntegrationConfig as IntegrationConfig,
             canRemove: true,
             canRefresh: true,
@@ -266,6 +278,15 @@ const makeGooglePluginExtension = (
       }
 
       return { slug, toolCount: compiled.definitions.length };
+    });
+
+  const addBundle = (config: GoogleBundleConfig) =>
+    addGoogleOpenApiIntegration({
+      urls: config.urls,
+      slug: IntegrationSlug.make(config.slug?.trim() || DEFAULT_GOOGLE_SLUG),
+      name: config.name?.trim() || "Google",
+      description: config.description ?? "Google APIs",
+      baseUrl: config.baseUrl,
     });
 
   const updateBundle = (rawSlug: string, input?: GoogleUpdateInput) =>
