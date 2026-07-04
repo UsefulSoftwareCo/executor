@@ -4,6 +4,7 @@ import {
   planDownloadedUpdate,
   planFatalAutoInstallOnQuit,
   planUpdateCheck,
+  handleUpdateDownloadRejection,
   statusAfterUpdateError,
 } from "./updater-state";
 
@@ -77,6 +78,25 @@ describe("updater state decisions", () => {
     expect(statusAfterUpdateError({ state: "idle" }, "Download failed")).toEqual({
       state: "idle",
     });
+  });
+
+  it("handles auto-download promise rejections after update checks resolve", async () => {
+    const errors: unknown[] = [];
+    const failure = "bad signature";
+
+    // oxlint-disable-next-line executor/no-promise-reject -- boundary: simulates electron-updater's native rejected download promise
+    const handled = handleUpdateDownloadRejection(Promise.reject(failure), (error) => {
+      errors.push(error);
+    });
+
+    await Promise.resolve();
+
+    expect(handled).toBe(true);
+    expect(errors).toEqual([failure]);
+  });
+
+  it("ignores missing auto-download promises", () => {
+    expect(handleUpdateDownloadRejection(null, () => undefined)).toBe(false);
   });
 
   it("restores autoInstallOnAppQuit only when the fatal path recovers", () => {

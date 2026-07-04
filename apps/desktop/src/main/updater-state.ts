@@ -99,6 +99,16 @@ export const statusAfterUpdateError = (
   return status;
 };
 
+export const handleUpdateDownloadRejection = (
+  downloadPromise: Promise<unknown> | null | undefined,
+  onRejected: (error: unknown) => void,
+): boolean => {
+  if (!downloadPromise) return false;
+  // oxlint-disable-next-line executor/no-promise-catch -- boundary: electron-updater hands back a floating native promise; attaching a rejection handler is the whole point
+  void downloadPromise.catch(onRejected);
+  return true;
+};
+
 export const planFatalAutoInstallOnQuit = (input: {
   readonly packaged: boolean;
   readonly retryAfterReset: boolean;
