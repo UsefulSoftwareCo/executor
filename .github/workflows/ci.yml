@@ -299,6 +299,40 @@ jobs:
         run: bun ./scripts/build-sidecar.ts
         working-directory: apps/desktop
 
+      # Run the compiled sidecar in a clean container where the build
+      # workspace does not exist. bun --compile bakes build-machine paths
+      # into __dirname for runtime-loaded assets; running the binary on the
+      # build machine hides that entire failure class (this exact gap
+      # shipped a broken 1Password SDK: its sdk-core wasm was read from the
+      # CI runner's node_modules path at runtime, ENOENT on every user
+      # machine). Pass condition: the 1Password endpoint reaches real
+      # credential validation, not a module-load or empty-namespace error.
+      - name: Run sidecar outside the workspace
+        working-directory: apps/desktop
+        run: |
+          docker run --rm -d --name sidecar-smoke -p 45841:45841 -e HOME=/tmp \
+            -v "$PWD/resources/executor:/opt/executor:ro" \
+            debian:bookworm-slim /opt/executor/executor daemon run --foreground \
+            --port 45841 --hostname 0.0.0.0 --auth-token=ci-smoke
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ci-smoke" http://127.0.0.1:45841/api/onepassword/vaults || true)
+            [ "$code" != "000" ] && break
+            docker ps -q -f name=sidecar-smoke | grep -q . || { docker logs sidecar-smoke; exit 1; }
+            sleep 1
+          done
+          body=$(curl -s -H "Authorization: Bearer ci-smoke" \
+            "http://127.0.0.1:45841/api/onepassword/vaults?authKind=service-account&account=ops_ci_fake_token")
+          docker stop sidecar-smoke
+          echo "$body"
+          if echo "$body" | grep -qE "sdk module load|ENOENT|is not a function|not a constructor"; then
+            echo "::error::1Password SDK failed to load inside the compiled binary (baked build path or missing sibling asset)"
+            exit 1
+          fi
+          if ! echo "$body" | grep -q "invalid service account token"; then
+            echo "::error::sidecar did not reach 1Password credential validation; unexpected response above"
+            exit 1
+          fi
+
       - name: Build Electron main/preload/renderer
         run: bunx --bun electron-vite build
         working-directory: apps/desktop
