@@ -26,7 +26,13 @@ const bootLogFile = process.env.E2E_VERBOSE
   : resolve(RUNS_DIR, "cloud", "server-logs", "boot.log");
 
 const optionalCloudEnv = (): Record<string, string> => {
-  const env: Record<string, string> = {};
+  // The Sentry/OTel correlation scenario always runs in this suite, so the
+  // verification route and beforeSend payload logging default on here; the
+  // env vars remain overridable for local runs against a different setup.
+  const env: Record<string, string> = {
+    SENTRY_OTEL_VERIFY: "true",
+    SENTRY_OTEL_LOG_PAYLOAD: "true",
+  };
   for (const key of ["SENTRY_DSN", "SENTRY_OTEL_LOG_PAYLOAD", "SENTRY_OTEL_VERIFY"]) {
     const value = process.env[key];
     if (value) env[key] = value;
