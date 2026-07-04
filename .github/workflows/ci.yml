@@ -7,13 +7,58 @@ on:
       - main
 
 concurrency:
-  group: ci-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    outputs:
+      desktop_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop_smoke == 'true' }}
+      selfhost_docker_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.selfhost_docker_smoke == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            desktop_smoke:
+              - ".github/workflows/**"
+              - "bun.lock"
+              - "package.json"
+              - "turbo.json"
+              - "apps/desktop/**"
+              - "apps/local/**"
+              - "apps/cli/**"
+              - "packages/app/**"
+              - "packages/core/**"
+              - "packages/hosts/mcp/**"
+              - "packages/kernel/runtime-quickjs/**"
+              - "packages/plugins/**"
+              - "packages/react/**"
+            selfhost_docker_smoke:
+              - ".github/workflows/**"
+              - ".dockerignore"
+              - "bun.lock"
+              - "package.json"
+              - "turbo.json"
+              - "apps/host-selfhost/**"
+              - "packages/app/**"
+              - "packages/core/**"
+              - "packages/hosts/mcp/**"
+              - "packages/kernel/runtime-quickjs/**"
+              - "packages/plugins/**"
+              - "packages/react/**"
+
   format:
     name: Format
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -22,27 +67,21 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-1.3.11-
 
-      # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
-      # builds it from source via node-gyp, whose undici needs Node 22.10+
-      # (webidl.markAsUncloneable). Pin the same runtime the test/e2e jobs use.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
 
       - run: bun run format:check
 
   lint:
     name: Lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -51,27 +90,21 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-1.3.11-
 
-      # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
-      # builds it from source via node-gyp, whose undici needs Node 22.10+
-      # (webidl.markAsUncloneable). Pin the same runtime the test/e2e jobs use.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
 
       - run: bun run lint
 
   typecheck:
     name: Typecheck
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +113,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -89,10 +122,19 @@ jobs:
 
       # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
       # builds it from source via node-gyp, whose undici needs Node 22.10+
-      # (webidl.markAsUncloneable). Pin the same runtime the test/e2e jobs use.
+      # (webidl.markAsUncloneable). Pin the same Node 24 runtime used by release.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
+
+      - name: Cache Turbo task cache
+        uses: useblacksmith/cache@v5
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-typecheck-${{ hashFiles('bun.lock', 'turbo.json') }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-typecheck-
+            ${{ runner.os }}-turbo-
 
       - run: bun install --frozen-lockfile
 
@@ -101,8 +143,10 @@ jobs:
   test:
     name: Test
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    # Tuned for Blacksmith's 4 vCPU runners.
     env:
-      TURBO_TEST_CONCURRENCY: 3
+      TURBO_TEST_CONCURRENCY: 4
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +155,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -120,10 +164,19 @@ jobs:
 
       # apps/cloud's test script invokes `node` directly; undici 8.x (pulled
       # in by @cloudflare/vitest-pool-workers) calls webidl.markAsUncloneable
-      # which only exists in Node 22.10+. Pin a known-good runtime.
+      # which only exists in Node 22.10+. Pin the Node 24 CI runtime.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
+
+      - name: Cache Turbo task cache
+        uses: useblacksmith/cache@v5
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-test-${{ hashFiles('bun.lock', 'turbo.json') }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-test-
+            ${{ runner.os }}-turbo-
 
       - run: bun install --frozen-lockfile
 
@@ -135,24 +188,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Cloud is SHARDED: each shard boots its own fresh dev stack. The
-          # cloud dev server degrades after a few minutes of sustained suite
-          # load on 2-core runners (the SSE/OTel memory growth being
-          # instrumented on main) — requests start failing partway through and
-          # everything after dies with connection errors. Short shards on
-          # fresh boots stay under that threshold; re-merge into fewer jobs
-          # once the degradation is fixed.
-          - { target: cloud, shard: 1/8, shard-name: 1of8 }
-          - { target: cloud, shard: 2/8, shard-name: 2of8 }
-          - { target: cloud, shard: 3/8, shard-name: 3of8 }
-          - { target: cloud, shard: 4/8, shard-name: 4of8 }
-          - { target: cloud, shard: 5/8, shard-name: 5of8 }
-          - { target: cloud, shard: 6/8, shard-name: 6of8 }
-          - { target: cloud, shard: 7/8, shard-name: 7of8 }
-          - { target: cloud, shard: 8/8, shard-name: 8of8 }
+          # Each cloud shard boots its own fresh dev stack. On 4 vCPU runners,
+          # four fatter shards keep the longest shard below selfhost while saving
+          # four runner boots and four warm cache restores.
+          - { target: cloud, shard: 1/4, shard-name: 1of4 }
+          - { target: cloud, shard: 2/4, shard-name: 2of4 }
+          - { target: cloud, shard: 3/4, shard-name: 3of4 }
+          - { target: cloud, shard: 4/4, shard-name: 4of4 }
           - target: selfhost
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    env:
+      E2E_MCP_FAST_IDLE_TEARDOWN: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -161,7 +208,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -169,18 +216,20 @@ jobs:
             ${{ runner.os }}-bun-1.3.11-
 
       # The dev stacks spawn Node sidecars (vite/workerd tooling); pin the
-      # same known-good runtime the unit-test job uses.
+      # same Node 24 runtime the release and publish workflows use.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       # Install from e2e so bunx resolves ITS pinned playwright (the version
       # the tests run against) rather than floating to the latest.
@@ -190,7 +239,7 @@ jobs:
 
       # The globalsetup boots the target's own dev server (ports are claimed
       # per checkout, so this is hermetic) and tears it down after the run.
-      # --retry=2: browser scenarios time out sporadically on 2-core runners
+      # --retry=2: browser scenarios can still hit isolated waitFor timeouts
       # (single-test waitFor timeouts, not systemic failures); a retry on the
       # same booted stack clears them.
       - name: Run ${{ matrix.target }} scenarios
@@ -222,7 +271,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -230,18 +279,20 @@ jobs:
             ${{ runner.os }}-bun-1.3.11-
 
       # The local scenarios boot a real `executor web` (which spawns a Node
-      # sidecar) and some drive a browser, so pin Node 22 and install Chromium.
+      # sidecar) and some drive a browser, so pin Node 24 and install Chromium.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       # `chromium` and the new `chromium-headless-shell` ship as separate
       # downloads; the browser-driven scenarios launch the headless shell.
@@ -265,7 +316,10 @@ jobs:
 
   desktop-smoke:
     name: Desktop smoke build
+    needs: changes
+    if: needs.changes.outputs.desktop_smoke == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -274,7 +328,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: actions/cache@v4
+        uses: useblacksmith/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
@@ -283,10 +337,10 @@ jobs:
 
       # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
       # builds it from source via node-gyp, whose undici needs Node 22.10+
-      # (webidl.markAsUncloneable). Pin the same runtime the test/e2e jobs use.
+      # (webidl.markAsUncloneable). Pin the same Node 24 CI runtime.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - run: bun install --frozen-lockfile
 
@@ -305,7 +359,10 @@ jobs:
 
   selfhost-docker-smoke:
     name: Self-host Docker image
+    needs: changes
+    if: needs.changes.outputs.selfhost_docker_smoke == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

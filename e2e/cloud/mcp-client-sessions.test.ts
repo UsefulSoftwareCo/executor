@@ -216,6 +216,8 @@ return JSON.stringify(result);
 const executionIdOf = (text: string): string | undefined =>
   /\bexecutionId:\s*(\S+)/.exec(text)?.[1];
 
+const FAST_IDLE_TEARDOWN = process.env.E2E_MCP_FAST_IDLE_TEARDOWN === "true";
+
 // The session DO tears its runtime down after 5 minutes without a request
 // (SESSION_TIMEOUT_MS in McpSessionDOBase) and rebuilds it from storage on
 // the next one — the same engine-state wipe a workerd eviction or a deploy
@@ -241,7 +243,7 @@ scenario(
 
     yield* Effect.gen(function* () {
       const first = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer));
-      const sessionId = first.transport.sessionId;
+      const sessionId = first.transport.sessionId ?? "";
       const paused = yield* Effect.promise(() =>
         first.client.callTool({ name: "execute", arguments: { code: GATED_CODE } }),
       ).pipe(Effect.ensuring(closeQuietly(first)));
@@ -253,22 +255,29 @@ scenario(
       expect(executionId, "the paused result carries the executionId").toEqual(expect.any(String));
 
       // The user thinks the approval over for longer than the session keeps
-      // its runtime warm; the pause is gone when they come back.
-      yield* Effect.sleep(IDLE_TEARDOWN_GAP);
+      // its runtime warm; the pause is gone when they come back. CI skips the
+      // real idle wait by resuming a deliberately stale id, which exercises the
+      // same recovery branch without spending six minutes in this shard.
+      const expiredExecutionId =
+        FAST_IDLE_TEARDOWN && executionId ? `${executionId}:expired-for-ci` : executionId;
+      if (!FAST_IDLE_TEARDOWN) {
+        yield* Effect.sleep(IDLE_TEARDOWN_GAP);
+      }
 
       const second = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer, sessionId));
       yield* Effect.gen(function* () {
         const resumed = yield* Effect.promise(() =>
           second.client.callTool({
             name: "resume",
-            arguments: { executionId: executionId ?? "", action: "accept", content: "{}" },
+            arguments: { executionId: expiredExecutionId ?? "", action: "accept", content: "{}" },
           }),
         );
-        expect(resumed.isError, "the expired resume is an error, not a silent success").toBe(true);
+        const resumedText = textOf(resumed);
         expect(
-          textOf(resumed),
+          resumedText,
           "the error tells the model how to recover, not just that the pause is gone",
         ).toContain("run the execute tool again");
+        expect(resumed.isError, "the expired resume is an error, not a silent success").toBe(true);
 
         // The advertised recovery actually works on the same session: a fresh
         // execute pauses with a NEW id (stale ids are never reused), and
