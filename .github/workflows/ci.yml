@@ -180,9 +180,6 @@ jobs:
           - target: selfhost
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
-    env:
-      MCP_SESSION_TIMEOUT_MS: "3000"
-      MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
     steps:
       - uses: actions/checkout@v4
 
@@ -225,8 +222,17 @@ jobs:
       # --retry=2: browser scenarios can still hit isolated waitFor timeouts
       # (single-test waitFor timeouts, not systemic failures); a retry on the
       # same booted stack clears them.
-      - name: Run ${{ matrix.target }} scenarios
-        run: bunx vitest run --project ${{ matrix.target }} --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+      - name: Run cloud scenarios
+        if: matrix.target == 'cloud'
+        env:
+          MCP_SESSION_TIMEOUT_MS: "3000"
+          MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: "6000"
+        run: bunx vitest run --project cloud --retry=2 ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        working-directory: e2e
+
+      - name: Run selfhost scenarios
+        if: matrix.target == 'selfhost'
+        run: bunx vitest run --project selfhost --retry=2
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in
