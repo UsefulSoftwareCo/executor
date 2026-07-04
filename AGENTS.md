@@ -70,6 +70,11 @@ a given Git URL into `.reference` and pull latest before using it.
   vocabulary the HTTP protocol plugins compose (core never imports it, keeping it
   carrier-agnostic).
 - `packages/core/storage-*`: storage adapters and test support.
+- `packages/core/observability`: the shared structured-logging + OTLP layer
+  (`observabilityLayer`): JSON logs to stderr with trace correlation, plus
+  OTLP traces/logs/metrics export via `effect/unstable/observability` (works
+  on Bun and workerd). Every server app boots it; see RUNNING.md for the env
+  vars.
 - `packages/plugins/*`: protocol and provider plugins; their runtime, React, API,
   and testing helpers live with the owning plugin.
 - `packages/react`: shared React UI and atom/client integration.

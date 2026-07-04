@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Deferred, Effect } from "effect";
+import { Data, Deferred, Effect, Logger } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -1756,5 +1756,110 @@ describe("MCP host server — skills tool", () => {
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured tool-call logging
+// ---------------------------------------------------------------------------
+
+describe("MCP host server — structured tool-call logs", () => {
+  type CapturedLog = ReturnType<(typeof Logger.formatStructured)["log"]>;
+
+  /** Build the server with a capturing logger in the captured Effect context,
+   *  so SDK-callback tool calls (via `runToolEffect`) log into `records`. */
+  const withLoggingClient = async <E extends Cause.YieldableError>(
+    engine: ExecutionEngine<E>,
+    records: CapturedLog[],
+    fn: (client: Client) => Promise<void>,
+  ) => {
+    const captureLogger = Logger.make((options) => {
+      records.push(Logger.formatStructured.log(options));
+    });
+    const mcpServer = await Effect.runPromise(
+      createExecutorMcpServer({ engine }).pipe(
+        Effect.provide(Logger.layer([captureLogger], { mergeWithExisting: false })),
+      ),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
+    await mcpServer.connect(serverTransport);
+    await client.connect(clientTransport);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test helper must close MCP transports after async client assertions
+    try {
+      await fn(client);
+    } finally {
+      await clientTransport.close();
+      await serverTransport.close();
+      await mcpServer.close();
+    }
+  };
+
+  it("emits mcp.tool.start and mcp.tool.end with outcome and duration", async () => {
+    const records: CapturedLog[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: () => Effect.succeed({ status: "completed", result: { result: "ok" } }),
+    });
+
+    await withLoggingClient(engine, records, async (client) => {
+      await client.callTool({ name: "execute", arguments: { code: "1+1" } });
+    });
+
+    const start = records.find((record) => record.message === "mcp.tool.start");
+    expect(start).toBeDefined();
+    expect(start?.annotations).toMatchObject({
+      "mcp.tool.name": "execute",
+      "mcp.execute.code_length": 3,
+    });
+
+    const end = records.find((record) => record.message === "mcp.tool.end");
+    expect(end).toBeDefined();
+    expect(end?.annotations).toMatchObject({
+      "mcp.tool.name": "execute",
+      "mcp.tool.outcome": "success",
+    });
+    expect(typeof end?.annotations["mcp.tool.duration_ms"]).toBe("number");
+  });
+
+  it("classifies paused executions and logs the execution id", async () => {
+    const records: CapturedLog[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: () =>
+        Effect.succeed(
+          makePausedResult(
+            "exec-123",
+            FormElicitation.make({ message: "confirm?", requestedSchema: {} }),
+          ),
+        ),
+    });
+
+    await withLoggingClient(engine, records, async (client) => {
+      await client.callTool({ name: "execute", arguments: { code: "pause()" } });
+    });
+
+    const end = records.find((record) => record.message === "mcp.tool.end");
+    expect(end?.annotations).toMatchObject({
+      "mcp.tool.outcome": "paused",
+      "mcp.execution.id": "exec-123",
+    });
+  });
+
+  it("logs an internal error with a correlation id when the engine defects", async () => {
+    const records: CapturedLog[] = [];
+    const engine = makeStubEngine({
+      executeWithPause: () => Effect.die("boom"),
+    });
+
+    await withLoggingClient(engine, records, async (client) => {
+      const result = await client.callTool({ name: "execute", arguments: { code: "1+1" } });
+      expect(result.isError).toBe(true);
+    });
+
+    const end = records.find((record) => record.message === "mcp.tool.end");
+    expect(end?.annotations["mcp.tool.outcome"]).toBe("error");
+
+    const internal = records.find((record) => record.message === "mcp.tool.internal_error");
+    expect(internal).toBeDefined();
+    expect(typeof internal?.annotations["mcp.tool.correlation_id"]).toBe("string");
   });
 });

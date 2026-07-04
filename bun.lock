@@ -66,6 +66,7 @@
         "@executor-js/execution": "workspace:*",
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/observability": "workspace:*",
         "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
@@ -175,6 +176,7 @@
         "@executor-js/execution": "workspace:*",
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/observability": "workspace:*",
         "@executor-js/plugin-encrypted-secrets": "workspace:*",
         "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -224,6 +226,7 @@
         "@executor-js/execution": "workspace:*",
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/observability": "workspace:*",
         "@executor-js/plugin-encrypted-secrets": "workspace:*",
         "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -273,6 +276,7 @@
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
         "@executor-js/integrations-registry": "workspace:*",
+        "@executor-js/observability": "workspace:*",
         "@executor-js/plugin-desktop-settings": "workspace:*",
         "@executor-js/plugin-example": "workspace:*",
         "@executor-js/plugin-file-secrets": "workspace:*",
@@ -573,6 +577,21 @@
         "tsup": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
+      },
+    },
+    "packages/core/observability": {
+      "name": "@executor-js/observability",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "effect": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "catalog:",
       },
     },
     "packages/core/sdk": {
@@ -1215,9 +1234,9 @@
     },
   },
   "patchedDependencies": {
-    "@1password/sdk-core@0.4.1-beta.1": "patches/@1password%2Fsdk-core@0.4.1-beta.1.patch",
     "@electric-sql/pglite-socket@0.1.4": "patches/@electric-sql%2Fpglite-socket@0.1.4.patch",
     "libsql@0.5.29": "patches/libsql@0.5.29.patch",
+    "@1password/sdk-core@0.4.1-beta.1": "patches/@1password%2Fsdk-core@0.4.1-beta.1.patch",
     "agents@0.17.3": "patches/agents@0.17.3.patch",
     "postgres@3.4.9": "patches/postgres@3.4.9.patch",
   },
@@ -1775,6 +1794,8 @@
     "@executor-js/mcporter": ["@executor-js/mcporter@0.11.4", "", { "dependencies": { "@iarna/toml": "^2.2.5", "@modelcontextprotocol/sdk": "^1.29.0", "acorn": "^8.16.0", "commander": "^14.0.3", "es-toolkit": "^1.47.0", "jsonc-parser": "^3.3.1", "ora": "^9.4.0", "rolldown": "1.0.1", "zod": "^4.3.6" }, "bin": { "mcporter": "dist/cli.js" } }, "sha512-KewlNnqmzSkJAH7JS/2le9WxPWzL/ND7Pt/G5KGgfrSK9K9cE8UPIsEYZYZUJYoFnbCBzhlU9ugg59ptv1h3Ow=="],
 
     "@executor-js/motel": ["@executor-js/motel@0.2.5-executor.1", "", { "dependencies": { "@effect/atom-react": "^4.0.0-beta.49", "@effect/opentelemetry": "^4.0.0-beta.49", "@effect/platform-bun": "^4.0.0-beta.50", "@opentelemetry/api": "^1.9.0", "@opentelemetry/exporter-logs-otlp-http": "^0.214.0", "@opentelemetry/exporter-trace-otlp-http": "^0.211.0", "@opentelemetry/sdk-logs": "^0.214.0", "@opentelemetry/sdk-node": "^0.214.0", "@opentelemetry/sdk-trace-base": "^2.5.0", "@opentelemetry/sdk-trace-node": "^2.6.1", "@opentui/core": "^0.1.99", "@opentui/react": "^0.1.99", "effect": "^4.0.0-beta.49", "react": "^19.2.5", "scheduler": "^0.27.0" }, "bin": { "motel": "src/motel.ts", "motel-mcp": "src/mcp.ts" } }, "sha512-fLGJ5FIIBYd+4L2OurpYFjWzvcCbACvmdNofh6THXQJE1Gku93EKURtgn27/XddyM9SKGST6/znTRcmwKiYdXw=="],
+
+    "@executor-js/observability": ["@executor-js/observability@workspace:packages/core/observability"],
 
     "@executor-js/plugin-desktop-settings": ["@executor-js/plugin-desktop-settings@workspace:packages/plugins/desktop-settings"],
 

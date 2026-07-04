@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
 import { dbProviderLayer, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
@@ -12,7 +12,7 @@ import {
   makeCloudflareHostConfig,
   makeCloudflarePluginsProvider,
 } from "./execution";
-import { ErrorCaptureLive } from "./observability";
+import { ErrorCaptureLive, makeCloudflareObservabilityLayer } from "./observability";
 import { cloudflareAccountMiddleware } from "./account/account-provider";
 import { makeCloudflareApprovalHandler } from "./mcp";
 import { makeCloudflareMcpAgentHandler } from "./mcp/agent-handler";
@@ -73,7 +73,7 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },
-    boot: identityLayer,
+    boot: Layer.merge(identityLayer, makeCloudflareObservabilityLayer(env)),
   });
 
   return { appLayer, toWebHandler, mcpAgentHandler };

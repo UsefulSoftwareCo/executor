@@ -27,6 +27,7 @@ import {
 } from "@executor-js/execution";
 
 import { startIntegrationsRefresh } from "./integrations";
+import { disposeObservabilityRuntime, getObservabilityRuntime } from "./observability";
 
 type AnyExecutionEngine = ExecutionEngine<Cause.YieldableError>;
 
@@ -193,8 +194,21 @@ export const createMcpRequestHandler = (
           const engine = resourceConfig ? engineFromConfig(resourceConfig.config) : null;
           if (engine) sessionEngines.set(sid, engine);
           if (resourceConfig?.close) sessionClosers.set(sid, resourceConfig.close);
+          // SDK lifecycle callbacks run outside Effect; emit structured console
+          // lines so session lifecycle still reaches host logs.
+          console.info(
+            JSON.stringify({
+              event: "mcp.session.created",
+              sessionId: sid,
+              resourceKind: resource.kind,
+              elicitationMode: readElicitationMode(request),
+            }),
+          );
         },
-        onsessionclosed: (sid) => void dispose(sid, { server: true }),
+        onsessionclosed: (sid) => {
+          console.info(JSON.stringify({ event: "mcp.session.closed", sessionId: sid }));
+          void dispose(sid, { server: true });
+        },
       });
 
       transport.onclose = () => {
@@ -206,7 +220,7 @@ export const createMcpRequestHandler = (
       try {
         const elicitationMode = readElicitationMode(request);
         resourceConfig = await configForResource(resource);
-        created = await Effect.runPromise(
+        created = await getObservabilityRuntime().runPromise(
           createExecutorMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
@@ -231,7 +245,13 @@ export const createMcpRequestHandler = (
         }
         return response;
       } catch (error) {
-        console.error("[mcp] handleRequest error:", formatBoundaryError(error));
+        console.error(
+          JSON.stringify({
+            event: "mcp.session.handle_request_error",
+            sessionId: transport.sessionId ?? null,
+            error: formatBoundaryError(error),
+          }),
+        );
         if (!transport.sessionId) {
           await ignoreClose(() => transport.close());
           const server = created;
@@ -285,7 +305,7 @@ export const createMcpRequestHandler = (
 export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
-  const server = await Effect.runPromise(createExecutorMcpServer(config));
+  const server = await getObservabilityRuntime().runPromise(createExecutorMcpServer(config));
   const transport = new StdioServerTransport();
 
   const waitForExit = () =>
@@ -310,5 +330,6 @@ export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promis
   } finally {
     await ignoreClose(() => transport.close());
     await ignoreClose(() => server.close());
+    await ignoreClose(disposeObservabilityRuntime);
   }
 };

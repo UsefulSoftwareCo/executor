@@ -23,7 +23,7 @@ import {
   CloudHostConfig,
   CloudPluginsProvider,
 } from "./engine/execution-stack";
-import { WorkerTelemetryLive } from "./observability/telemetry";
+import { CloudObservabilityLive, WorkerTelemetryLive } from "./observability/telemetry";
 
 // ===========================================================================
 // The Executor CLOUD app, as ONE `ExecutorApp.make` call.
@@ -121,7 +121,12 @@ const { appLayer, toWebHandler, mcpExport } = ExecutorApp.make({
   // platform. A boot-time WorkOS misconfig is unrecoverable -> `orDie`.
   boot: controlPlane.pipe(
     Layer.merge(
-      Layer.mergeAll(WorkerTelemetryLive, HttpServer.layerServices, AutumnService.Default),
+      Layer.mergeAll(
+        WorkerTelemetryLive,
+        CloudObservabilityLive,
+        HttpServer.layerServices,
+        AutumnService.Default,
+      ),
     ),
     // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a boot-time WorkOS misconfiguration is unrecoverable
     Layer.orDie,

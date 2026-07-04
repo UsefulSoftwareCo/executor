@@ -10,6 +10,13 @@ declare global {
       AXIOM_DATASET?: string;
       AXIOM_TRACES_URL?: string;
       AXIOM_TRACES_SAMPLE_RATIO?: string;
+      /** OTLP/HTTP base endpoint for structured logs + metrics export (traces
+       *  keep flowing through the Axiom pipeline above); unset disables it. */
+      OTEL_EXPORTER_OTLP_ENDPOINT?: string;
+      /** OTLP export headers in the standard `key=value,key2=value2` format. */
+      OTEL_EXPORTER_OTLP_HEADERS?: string;
+      /** Minimum structured-log level (trace/debug/info/warn/error/fatal). */
+      LOG_LEVEL?: string;
       SENTRY_DSN?: string;
       SENTRY_OTEL_LOG_PAYLOAD?: string;
       SENTRY_OTEL_VERIFY?: string;

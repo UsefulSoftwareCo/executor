@@ -203,6 +203,28 @@ const mcpDispatch = (resource: McpResource) =>
     // resource; an auth-level Forbidden may not carry either.
     const outcome = yield* auth.authenticate(request);
     if (!Predicate.isTagged(outcome, "Authenticated")) {
+      // Unauthorized is expected background noise (unauthenticated probes,
+      // RFC 9728 discovery); Forbidden is an audit signal; Unavailable means
+      // the auth backend itself is degraded.
+      const [logAuthOutcome, authResult] = Match.value(outcome).pipe(
+        Match.tag(
+          "Unavailable",
+          () => [Effect.logWarning("mcp.auth.outcome"), "Unavailable"] as const,
+        ),
+        Match.tag("Forbidden", () => [Effect.logInfo("mcp.auth.outcome"), "Forbidden"] as const),
+        Match.tag(
+          "Unauthorized",
+          () => [Effect.logDebug("mcp.auth.outcome"), "Unauthorized"] as const,
+        ),
+        Match.exhaustive,
+      );
+      yield* logAuthOutcome.pipe(
+        Effect.annotateLogs({
+          "mcp.auth.result": authResult,
+          "mcp.session.id": sessionId ?? "",
+          "mcp.request.method": request.method,
+        }),
+      );
       return HttpServerResponse.raw(renderAuthError(auth, request, outcome));
     }
     const principal = outcome.principal;
@@ -231,6 +253,21 @@ const mcpDispatch = (resource: McpResource) =>
       sessionId,
       method: request.method,
     });
+    if (!(result instanceof Response)) {
+      // not-found is normal for stale session retries; forbidden means a
+      // cross-bearer access attempt on a live session.
+      yield* (
+        result === "forbidden"
+          ? Effect.logInfo("mcp.session.dispatch_result")
+          : Effect.logDebug("mcp.session.dispatch_result")
+      ).pipe(
+        Effect.annotateLogs({
+          "mcp.session.dispatch_result": result,
+          "mcp.session.id": sessionId ?? "",
+          "mcp.request.method": request.method,
+        }),
+      );
+    }
     return HttpServerResponse.raw(
       result instanceof Response ? result : renderDispatchError(result),
     );

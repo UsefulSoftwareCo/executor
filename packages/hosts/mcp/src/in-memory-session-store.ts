@@ -108,10 +108,6 @@ const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
     ? Effect.runPromise(Effect.ignore(Effect.tryPromise({ try: close, catch: () => undefined })))
     : Promise.resolve();
 
-const formatBoundaryError = (error: unknown): unknown =>
-  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: log unknown MCP SDK/runtime failures
-  error instanceof Error ? (error.stack ?? error.message) : error;
-
 // The store's error bodies are INNER responses (no CORS): the serving envelope
 // re-wraps the store `Response` with CORS before it leaves the origin, so the
 // canonical renderer is called with `cors: false` (content-type only).
@@ -185,11 +181,13 @@ export const makeInMemoryMcpSessionStore = (
     return Effect.promise(() => transport.handleRequest(request)).pipe(
       Effect.tap(() => Effect.sync(finish)),
       Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          console.error("[mcp] handleRequest error:", formatBoundaryError(cause));
-          finish();
-          return jsonRpcError(500, -32603, "Internal server error");
-        }),
+        Effect.logError("mcp.session.handle_request_error", cause).pipe(
+          Effect.annotateLogs({ "mcp.session.id": transport.sessionId ?? "" }),
+          Effect.map(() => {
+            finish();
+            return jsonRpcError(500, -32603, "Internal server error");
+          }),
+        ),
       ),
     );
   };
@@ -258,7 +256,12 @@ export const makeInMemoryMcpSessionStore = (
               owners.set(sid, { principal, resource });
               engines.set(sid, engine);
             },
-            onsessionclosed: (sid) => void dispose(sid, { server: true }),
+            // SDK lifecycle callbacks run outside Effect; emit structured
+            // console lines so session teardown still reaches host logs.
+            onsessionclosed: (sid) => {
+              console.info(JSON.stringify({ event: "mcp.session.closed", sessionId: sid }));
+              void dispose(sid, { server: true });
+            },
           });
           transport.onclose = () => {
             const sid = transport.sessionId;
@@ -267,10 +270,21 @@ export const makeInMemoryMcpSessionStore = (
           yield* Effect.promise(() => mcpServer.connect(transport));
           // The session id is minted on the first (initialize) request, so we
           // drive `handleRequest` here; if no id results we close eagerly.
-          return yield* runHandleRequest(transport, request, () => {
+          const response = yield* runHandleRequest(transport, request, () => {
             void ignoreClose(() => transport.close());
             void ignoreClose(() => mcpServer.close());
           });
+          if (createdSessionId !== null) {
+            yield* Effect.logInfo("mcp.session.created").pipe(
+              Effect.annotateLogs({
+                "mcp.session.id": createdSessionId,
+                "mcp.session.resource_kind": resource.kind,
+                "mcp.auth.organization_id": principal.organizationId,
+                "mcp.elicitation.mode": readElicitationMode(request),
+              }),
+            );
+          }
+          return response;
         }),
       ),
       // A build failure has nowhere typed to go in the envelope; render a 500.

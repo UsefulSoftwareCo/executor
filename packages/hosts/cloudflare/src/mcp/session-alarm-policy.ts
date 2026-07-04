@@ -42,16 +42,3 @@ export const decideSessionAlarm = (input: {
   }
   return { kind: "destroy_idle_session" };
 };
-
-export const pausedLeaseExtensionLog = (input: {
-  readonly sessionId: string;
-  readonly pausedExecutionCount: number;
-  readonly idleMs: number;
-  readonly leaseMs: number;
-}): Record<string, unknown> => ({
-  event: "mcp_session_paused_lease_extension",
-  sessionId: input.sessionId,
-  pausedExecutionCount: input.pausedExecutionCount,
-  idleMs: input.idleMs,
-  leaseMs: input.leaseMs,
-});

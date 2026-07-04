@@ -26,6 +26,7 @@
     "@executor-js/execution": "workspace:*",
     "@executor-js/fumadb": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/observability": "workspace:*",
     "@executor-js/plugin-encrypted-secrets": "workspace:*",
     "@executor-js/plugin-google": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",

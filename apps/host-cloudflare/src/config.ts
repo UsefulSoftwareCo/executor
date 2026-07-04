@@ -45,6 +45,12 @@ export interface CloudflareEnv {
   readonly EXECUTOR_SECRET_KEY?: string;
   readonly ALLOW_LOCAL_NETWORK?: string;
   readonly VITE_PUBLIC_SITE_URL?: string;
+  /** OTLP/HTTP base endpoint for traces/logs/metrics export; unset disables export. */
+  readonly OTEL_EXPORTER_OTLP_ENDPOINT?: string;
+  /** OTLP export headers in the standard `key=value,key2=value2` format. */
+  readonly OTEL_EXPORTER_OTLP_HEADERS?: string;
+  /** Minimum structured-log level (trace/debug/info/warn/error/fatal). */
+  readonly LOG_LEVEL?: string;
   /**
    * Dev/single-user escape hatch: when "true", skip Cloudflare Access entirely
    * and treat every request as a fixed admin. For local `wrangler dev` and

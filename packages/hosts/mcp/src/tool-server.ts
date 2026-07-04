@@ -1,4 +1,4 @@
-import { Duration, Effect, Match, Option, Schema } from "effect";
+import { Duration, Effect, Exit, Match, Metric, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
@@ -262,8 +262,8 @@ const makeMcpElicitationHandler =
       Match.exhaustive,
     );
 
-    return Effect.promise(async (): Promise<typeof ElicitationResponse.Type> => {
-      const requestTag = elicitationRequestTag(ctx.request);
+    const requestTag = elicitationRequestTag(ctx.request);
+    return Effect.gen(function* () {
       debugLog?.("elicitation.request", {
         requestTag,
         supportsUrl,
@@ -272,35 +272,59 @@ const makeMcpElicitationHandler =
         url: elicitationRequestUrl(ctx.request),
         clientCapabilities: server.server.getClientCapabilities() ?? null,
       });
+      yield* Effect.logDebug("mcp.tool.elicitation.request").pipe(
+        Effect.annotateLogs({
+          "mcp.elicitation.tag": requestTag,
+          "mcp.elicitation.supports_url": supportsUrl,
+          "mcp.elicitation.has_schema": requestedSchemaIsNonEmpty(ctx.request),
+        }),
+      );
 
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK elicitInput is a Promise API; failures become a cancel response
-      try {
-        const response = await server.server.elicitInput(
-          params as Parameters<typeof server.server.elicitInput>[0],
-        );
-
-        debugLog?.("elicitation.response", {
-          requestTag,
-          action: response.action,
-          hasContent:
-            typeof response.content === "object" &&
-            response.content !== null &&
-            Object.keys(response.content).length > 0,
-        });
-
-        return {
-          action: response.action as typeof ElicitationResponse.Type.action,
-          content: response.content,
-        };
-      } catch (err) {
-        const error = formatBoundaryError(err);
-        debugLog?.("elicitation.error", {
-          requestTag,
-          error,
-          clientCapabilities: server.server.getClientCapabilities() ?? null,
-        });
-        return { action: "cancel" as const } as ElicitationResponse;
-      }
+      return yield* Effect.tryPromise({
+        // The MCP SDK elicitInput is a Promise API; failures become a cancel response.
+        try: () =>
+          server.server.elicitInput(params as Parameters<typeof server.server.elicitInput>[0]),
+        catch: formatBoundaryError,
+      }).pipe(
+        Effect.matchEffect({
+          onSuccess: (response) =>
+            Effect.gen(function* () {
+              debugLog?.("elicitation.response", {
+                requestTag,
+                action: response.action,
+                hasContent:
+                  typeof response.content === "object" &&
+                  response.content !== null &&
+                  Object.keys(response.content).length > 0,
+              });
+              yield* Effect.logDebug("mcp.tool.elicitation.response").pipe(
+                Effect.annotateLogs({
+                  "mcp.elicitation.tag": requestTag,
+                  "mcp.elicitation.action": response.action,
+                }),
+              );
+              return {
+                action: response.action as typeof ElicitationResponse.Type.action,
+                content: response.content,
+              };
+            }),
+          onFailure: (error) =>
+            Effect.gen(function* () {
+              debugLog?.("elicitation.error", {
+                requestTag,
+                error,
+                clientCapabilities: server.server.getClientCapabilities() ?? null,
+              });
+              yield* Effect.logDebug("mcp.tool.elicitation.error").pipe(
+                Effect.annotateLogs({
+                  "mcp.elicitation.tag": requestTag,
+                  "mcp.elicitation.error_name": error.name ?? "unknown",
+                }),
+              );
+              return { action: "cancel" as const } as ElicitationResponse;
+            }),
+        }),
+      );
     });
   };
 
@@ -521,24 +545,78 @@ const formatResumeApprovalRequired = (input: {
   },
 });
 
-const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
+const toMcpFailureResult = (cause: Cause.Cause<unknown>): Effect.Effect<McpToolResult> => {
   const correlationId = newCorrelationId();
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort defect logging must tolerate non-serializable causes
-  try {
-    console.error(
-      `[executor:mcp] execute defect correlation_id=${correlationId}`,
-      Cause.pretty(cause),
-    );
-  } catch {
-    /* ignore logger failures */
-  }
   const text = `Internal tool error [${correlationId}]`;
-  return {
-    content: [{ type: "text", text: `Error: ${text}` }],
-    structuredContent: { status: "error", error: text },
-    isError: true,
-  };
+  return Effect.logError("mcp.tool.internal_error", cause).pipe(
+    Effect.annotateLogs({ "mcp.tool.correlation_id": correlationId }),
+    Effect.as({
+      content: [{ type: "text" as const, text: `Error: ${text}` }],
+      structuredContent: { status: "error", error: text },
+      isError: true,
+    } satisfies McpToolResult),
+  );
 };
+
+// ---------------------------------------------------------------------------
+// Tool-call telemetry: structured start/end logs plus call-count and duration
+// metrics, keyed by tool and outcome. Payloads stay out of the logs — code is
+// summarized as `mcp.execute.code_length` (the existing span convention).
+// ---------------------------------------------------------------------------
+
+type McpToolOutcome = "success" | "paused" | "approval_required" | "error";
+
+const classifyToolOutcome = (result: McpToolResult): McpToolOutcome => {
+  if (result.isError) return "error";
+  const status = result.structuredContent?.status;
+  if (status === "waiting_for_interaction") return "paused";
+  if (status === "user_approval_required") return "approval_required";
+  return "success";
+};
+
+const toolCallCounter = Metric.counter("mcp.tool.calls", {
+  description: "MCP tool invocations by tool and outcome",
+});
+
+const toolCallDurationMs = Metric.histogram("mcp.tool.duration_ms", {
+  description: "MCP tool call duration in milliseconds",
+  boundaries: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000],
+});
+
+/**
+ * Wrap a tool-call effect with `mcp.tool.start` / `mcp.tool.end` structured
+ * logs and the call metrics. Defects also emit a paired `mcp.tool.end` with
+ * outcome `error` before re-propagating to `runToolEffect`'s `catchCause`.
+ */
+const instrumentToolCall = <EffE>(
+  tool: "execute" | "resume",
+  annotations: Record<string, unknown>,
+  effect: Effect.Effect<McpToolResult, EffE>,
+): Effect.Effect<McpToolResult, EffE> =>
+  Effect.gen(function* () {
+    yield* Effect.logInfo("mcp.tool.start").pipe(
+      Effect.annotateLogs({ "mcp.tool.name": tool, ...annotations }),
+    );
+    const [duration, exit] = yield* Effect.timed(Effect.exit(effect));
+    const outcome = Exit.isSuccess(exit) ? classifyToolOutcome(exit.value) : "error";
+    const durationMs = Math.round(Duration.toMillis(duration));
+    const attributes = { "mcp.tool.name": tool, "mcp.tool.outcome": outcome };
+    yield* Metric.update(Metric.withAttributes(toolCallCounter, attributes), 1);
+    yield* Metric.update(Metric.withAttributes(toolCallDurationMs, attributes), durationMs);
+    const executionId = Exit.isSuccess(exit)
+      ? exit.value.structuredContent?.executionId
+      : undefined;
+    yield* Effect.logInfo("mcp.tool.end").pipe(
+      Effect.annotateLogs({
+        "mcp.tool.name": tool,
+        "mcp.tool.outcome": outcome,
+        "mcp.tool.duration_ms": durationMs,
+        ...annotations,
+        ...(typeof executionId === "string" ? { "mcp.execution.id": executionId } : {}),
+      }),
+    );
+    return Exit.isSuccess(exit) ? exit.value : yield* Effect.failCause(exit.cause);
+  });
 
 const recoveryText =
   "To recover, run the execute tool again with the original code; if it pauses, a fresh executionId will be issued.";
@@ -748,9 +826,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     };
     const runToolEffect = <EffE>(effect: Effect.Effect<McpToolResult, EffE>) =>
       Effect.runPromiseWith(context)(
-        anchor(effect).pipe(
-          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause))),
-        ),
+        anchor(effect).pipe(Effect.catchCause((cause) => toMcpFailureResult(cause))),
       );
 
     const server = yield* Effect.sync(
@@ -765,42 +841,46 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     ).pipe(Effect.withSpan("mcp.host.create_server"));
 
     const executeCode = (code: string): Effect.Effect<McpToolResult, E> =>
-      Effect.gen(function* () {
-        debugLog("execute.call", {
-          elicitationMode: elicitationMode.mode,
-          elicitationSupport: getElicitationSupport(server),
-          clientCapabilities: server.server.getClientCapabilities() ?? null,
-          codeLength: code.length,
-        });
-        if (elicitationMode.mode === "native") {
-          const result = yield* engine.execute(code, {
-            onElicitation: makeMcpElicitationHandler(server, debugLog),
+      instrumentToolCall(
+        "execute",
+        { "mcp.execute.code_length": code.length, "mcp.elicitation.mode": elicitationMode.mode },
+        Effect.gen(function* () {
+          debugLog("execute.call", {
+            elicitationMode: elicitationMode.mode,
+            elicitationSupport: getElicitationSupport(server),
+            clientCapabilities: server.server.getClientCapabilities() ?? null,
+            codeLength: code.length,
           });
-          return toMcpResult(result);
-        }
-        const outcome = yield* engine.executeWithPause(code);
-        debugLog("execute.paused_flow_result", {
-          status: outcome.status,
-          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
-          interactionKind:
-            outcome.status === "paused"
-              ? pausedInteractionKind(outcome.execution.elicitationContext.request)
-              : undefined,
-        });
-        if (outcome.status === "paused") {
-          const deadline = pauseDeadline();
-          yield* Effect.annotateCurrentSpan({
-            "mcp.execute.paused": true,
-            "mcp.execute.paused_execution_id": outcome.execution.id,
-            "mcp.execute.pause_source": "execute",
+          if (elicitationMode.mode === "native") {
+            const result = yield* engine.execute(code, {
+              onElicitation: makeMcpElicitationHandler(server, debugLog),
+            });
+            return toMcpResult(result);
+          }
+          const outcome = yield* engine.executeWithPause(code);
+          debugLog("execute.paused_flow_result", {
+            status: outcome.status,
+            executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+            interactionKind:
+              outcome.status === "paused"
+                ? pausedInteractionKind(outcome.execution.elicitationContext.request)
+                : undefined,
           });
-          yield* onExecutionPaused(outcome.execution.id, deadline);
-          return elicitationMode.mode === "browser"
-            ? yield* requireUserResumeApproval(outcome.execution.id)
-            : toMcpPausedResult(formatPausedExecution(outcome.execution, { deadline }));
-        }
-        return toMcpResult(outcome.result);
-      }).pipe(
+          if (outcome.status === "paused") {
+            const deadline = pauseDeadline();
+            yield* Effect.annotateCurrentSpan({
+              "mcp.execute.paused": true,
+              "mcp.execute.paused_execution_id": outcome.execution.id,
+              "mcp.execute.pause_source": "execute",
+            });
+            yield* onExecutionPaused(outcome.execution.id, deadline);
+            return elicitationMode.mode === "browser"
+              ? yield* requireUserResumeApproval(outcome.execution.id)
+              : toMcpPausedResult(formatPausedExecution(outcome.execution, { deadline }));
+          }
+          return toMcpResult(outcome.result);
+        }),
+      ).pipe(
         Effect.withSpan("mcp.host.tool.execute", {
           attributes: {
             "mcp.tool.name": "execute",
@@ -814,40 +894,44 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       action: "accept" | "decline" | "cancel",
       content: Record<string, unknown> | undefined,
     ): Effect.Effect<McpToolResult, E> =>
-      Effect.gen(function* () {
-        debugLog("resume.call", {
-          executionId,
-          action,
-          hasContent: content !== undefined,
-          clientCapabilities: server.server.getClientCapabilities() ?? null,
-        });
-        const outcome = yield* resumeWithLifecycle(executionId, { action, content });
-        if (!outcome) {
-          debugLog("resume.missing_execution", { executionId });
-          if (yield* localExecutionAlreadySettled(executionId)) {
-            return alreadySettledResult(executionId);
+      instrumentToolCall(
+        "resume",
+        { "mcp.execute.execution_id": executionId, "mcp.execute.resume.action": action },
+        Effect.gen(function* () {
+          debugLog("resume.call", {
+            executionId,
+            action,
+            hasContent: content !== undefined,
+            clientCapabilities: server.server.getClientCapabilities() ?? null,
+          });
+          const outcome = yield* resumeWithLifecycle(executionId, { action, content });
+          if (!outcome) {
+            debugLog("resume.missing_execution", { executionId });
+            if (yield* localExecutionAlreadySettled(executionId)) {
+              return alreadySettledResult(executionId);
+            }
+            const fallback = yield* resumeFallback(executionId, { action, content });
+            if (fallback) {
+              debugLog("resume.fallback_result", { executionId, status: fallback.status });
+              return fallbackOutcomeResult(executionId, fallback);
+            }
+            return missingExecutionResult(executionId);
           }
-          const fallback = yield* resumeFallback(executionId, { action, content });
-          if (fallback) {
-            debugLog("resume.fallback_result", { executionId, status: fallback.status });
-            return fallbackOutcomeResult(executionId, fallback);
+          debugLog("resume.result", {
+            executionId,
+            status: outcome.status,
+            nextExecutionId: outcome.status === "paused" ? outcome.execution.id : undefined,
+            interactionKind:
+              outcome.status === "paused"
+                ? pausedInteractionKind(outcome.execution.elicitationContext.request)
+                : undefined,
+          });
+          if (outcome.status === "paused") {
+            return yield* formatPausedModelResult(outcome.execution, "resume");
           }
-          return missingExecutionResult(executionId);
-        }
-        debugLog("resume.result", {
-          executionId,
-          status: outcome.status,
-          nextExecutionId: outcome.status === "paused" ? outcome.execution.id : undefined,
-          interactionKind:
-            outcome.status === "paused"
-              ? pausedInteractionKind(outcome.execution.elicitationContext.request)
-              : undefined,
-        });
-        if (outcome.status === "paused") {
-          return yield* formatPausedModelResult(outcome.execution, "resume");
-        }
-        return toMcpResult(outcome.result);
-      }).pipe(
+          return toMcpResult(outcome.result);
+        }),
+      ).pipe(
         Effect.withSpan("mcp.host.tool.resume", {
           attributes: {
             "mcp.tool.name": "resume",
@@ -899,27 +983,31 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     };
 
     const resumeAfterBrowserApproval = (executionId: string): Effect.Effect<McpToolResult, E> =>
-      Effect.gen(function* () {
-        const response = yield* waitForBrowserApprovalResponse(executionId);
-        if (!response) return yield* requireUserResumeApproval(executionId);
+      instrumentToolCall(
+        "resume",
+        { "mcp.execute.execution_id": executionId, "mcp.elicitation.mode": elicitationMode.mode },
+        Effect.gen(function* () {
+          const response = yield* waitForBrowserApprovalResponse(executionId);
+          if (!response) return yield* requireUserResumeApproval(executionId);
 
-        const outcome = yield* resumeWithLifecycle(executionId, response);
-        if (!outcome) {
-          return missingExecutionResult(executionId);
-        }
-        if (outcome.status === "paused") {
-          const deadline = pauseDeadline();
-          yield* Effect.annotateCurrentSpan({
-            "mcp.execute.paused": true,
-            "mcp.execute.paused_execution_id": outcome.execution.id,
-            "mcp.execute.pause_source": "browser_resume",
-          });
-          yield* onExecutionPaused(outcome.execution.id, deadline);
-        }
-        return outcome.status === "completed"
-          ? toMcpResult(outcome.result)
-          : yield* requireUserResumeApproval(outcome.execution.id);
-      }).pipe(
+          const outcome = yield* resumeWithLifecycle(executionId, response);
+          if (!outcome) {
+            return missingExecutionResult(executionId);
+          }
+          if (outcome.status === "paused") {
+            const deadline = pauseDeadline();
+            yield* Effect.annotateCurrentSpan({
+              "mcp.execute.paused": true,
+              "mcp.execute.paused_execution_id": outcome.execution.id,
+              "mcp.execute.pause_source": "browser_resume",
+            });
+            yield* onExecutionPaused(outcome.execution.id, deadline);
+          }
+          return outcome.status === "completed"
+            ? toMcpResult(outcome.result)
+            : yield* requireUserResumeApproval(outcome.execution.id);
+        }),
+      ).pipe(
         Effect.withSpan("mcp.host.tool.resume.browser_approval", {
           attributes: {
             "mcp.tool.name": "resume",
@@ -1018,22 +1106,22 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       }),
     );
 
-    yield* Effect.sync(() => {
-      console.error(
-        "[executor] MCP session mode",
-        JSON.stringify({
-          ...capabilitySnapshot(server),
-          elicitationMode: elicitationMode.mode,
-          resumeEnabled: elicitationMode.mode !== "native",
+    yield* Effect.logInfo("mcp.session.server_created").pipe(
+      Effect.annotateLogs({
+        "mcp.elicitation.mode": elicitationMode.mode,
+        "mcp.resume.enabled": elicitationMode.mode !== "native",
+      }),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          debugLog("tool.visibility", {
+            ...capabilitySnapshot(server),
+            elicitationMode: elicitationMode.mode,
+            resumeEnabled: elicitationMode.mode !== "native",
+          });
         }),
-      );
-      debugLog("tool.visibility", {
-        clientCapabilities: server.server.getClientCapabilities() ?? null,
-        elicitationSupport: getElicitationSupport(server),
-        elicitationMode: elicitationMode.mode,
-        resumeEnabled: elicitationMode.mode !== "native",
-      });
-    }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
+      ),
+      Effect.withSpan("mcp.host.sync_tool_availability"),
+    );
 
     return server;
   }).pipe(Effect.withSpan("mcp.host.create_executor_server"));

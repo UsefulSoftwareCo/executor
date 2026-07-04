@@ -12,7 +12,7 @@ import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 import { getExecutorBundle, type LocalExecutor } from "./executor";
 import { makeLocalIdentityLayer } from "./identity";
-import { ErrorCaptureLive } from "./observability";
+import { ErrorCaptureLive, LocalObservabilityLive } from "./observability";
 
 // ===========================================================================
 // The LOCAL Executor app, as ONE `ExecutorApp.make` call.
@@ -118,8 +118,9 @@ export const makeLocalApiHandler = async (token: string): Promise<LocalApiHandle
     config: { failure: textFailureStrategy },
     // The boot-scoped context provideMerge'd under everything: the identity
     // provider (captured once by the fixed-execution middleware) + the fixed
-    // execution seam (the one executor + engine + extension map).
-    boot: Layer.merge(identity, fixedExecution),
+    // execution seam (the one executor + engine + extension map) + structured
+    // logging / OTLP telemetry.
+    boot: Layer.mergeAll(identity, fixedExecution, LocalObservabilityLive),
   });
 
   const web = toWebHandler();

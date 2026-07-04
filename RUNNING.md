@@ -40,6 +40,42 @@ develop on its `main`, publish a bump, then bump the dependency here. The
 The e2e globalsetup files are the source of truth for "how do I boot a
 working instance of X" — read them before inventing a boot path.
 
+## Observability: structured logs + OTel
+
+Every server app (local, host-selfhost, host-cloudflare, cloud) boots the
+shared `@executor-js/observability` layer: structured JSON logging plus an
+optional OTLP traces/logs/metrics pipeline. Config is env-driven and inert
+when unset:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP/HTTP base URL (e.g.
+  `http://localhost:4318` or a Traceway/collector endpoint);
+  `/v1/{traces,logs,metrics}` are appended. Unset → no export, JSON logging
+  stays on.
+- `OTEL_EXPORTER_OTLP_HEADERS` — standard `key=value,key2=value2` format
+  (auth tokens etc.).
+- `LOG_LEVEL` — minimum level (`trace`/`debug`/`info`/`warn`/`error`),
+  default `info`. Applies to both the console lines and OTLP log records.
+
+Notes:
+
+- JSON log lines go to STDERR, never stdout — the MCP stdio transport owns
+  stdout as its JSON-RPC channel. Lines carry `trace_id`/`span_id` when a
+  span is active, so console logs correlate with exported traces.
+- On the Workers apps the vars are bindings (wrangler vars / `.dev.vars`),
+  not `process.env`. Cloud keeps its existing Axiom trace pipeline
+  (`AXIOM_TOKEN` etc.) and Sentry correlation; the OTLP endpoint there adds
+  logs + metrics only.
+- MCP protocol traffic is logged as structured events (`mcp.tool.start/end`
+  with outcome + duration, `mcp.session.*` lifecycle, `mcp.auth.outcome`,
+  elicitation at debug), and `mcp.tool.calls` / `mcp.tool.duration_ms`
+  metrics are emitted per tool call. `EXECUTOR_MCP_DEBUG=1` still enables
+  the verbose stderr debug hook.
+
+Quick local check: run an OTLP collector (or a stub printing posts to
+`/v1/*`), then
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 LOG_LEVEL=debug bun run start`
+in `apps/local` and drive an MCP `execute` call.
+
 ## E2E: running, viewing, sharing
 
 `e2e/AGENTS.md` covers writing scenarios. Operationally:

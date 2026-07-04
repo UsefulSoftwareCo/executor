@@ -30,7 +30,6 @@ import {
   MAX_PAUSED_SESSION_IDLE_MS,
   SESSION_TIMEOUT_MS,
   decideSessionAlarm,
-  pausedLeaseExtensionLog,
 } from "./session-alarm-policy";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
@@ -404,13 +403,14 @@ export abstract class McpAgentSessionDOBase<
     readonly idleMs: number;
     readonly pausedExecutionCount: number;
   }): Promise<void> {
-    console.info(
-      JSON.stringify({
-        event: "mcp_session_idle_runtime_dispose",
-        sessionId: this.sessionId,
-        idleMs: input.idleMs,
-        pausedExecutionCount: input.pausedExecutionCount,
-      }),
+    await Effect.runPromise(
+      Effect.logInfo("mcp.session.idle_expire").pipe(
+        Effect.annotateLogs({
+          "mcp.session.id": this.sessionId,
+          "mcp.session.idle_ms": input.idleMs,
+          "mcp.session.paused_execution_count": input.pausedExecutionCount,
+        }),
+      ),
     );
     await Effect.runPromise(this.closeRuntime());
     await Effect.runPromise(
@@ -454,16 +454,11 @@ export abstract class McpAgentSessionDOBase<
   }): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      const first = Cause.prettyErrors(input.cause)[0];
-      console.error(
-        JSON.stringify({
-          event: "mcp_execution_owner_directory_error",
-          operation: input.operation,
-          executionId: input.executionId,
-          sessionId: self.sessionId,
-          exceptionType: first?.name ?? "Error",
-          exceptionMessage: first?.message ?? "unknown",
-          cause: Cause.pretty(input.cause),
+      yield* Effect.logError("mcp.execution_owner.directory_error", input.cause).pipe(
+        Effect.annotateLogs({
+          "mcp.execution_owner.operation": input.operation,
+          "mcp.execution.id": input.executionId,
+          "mcp.session.id": self.sessionId,
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -480,16 +475,11 @@ export abstract class McpAgentSessionDOBase<
   }): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      const first = Cause.prettyErrors(input.cause)[0];
-      console.error(
-        JSON.stringify({
-          event: "mcp_model_resume_forward_error",
-          executionId: input.executionId,
-          sessionId: self.sessionId,
-          ownerSessionId: input.owner.sessionId,
-          exceptionType: first?.name ?? "Error",
-          exceptionMessage: first?.message ?? "unknown",
-          cause: Cause.pretty(input.cause),
+      yield* Effect.logError("mcp.execution_owner.forward_error", input.cause).pipe(
+        Effect.annotateLogs({
+          "mcp.execution.id": input.executionId,
+          "mcp.session.id": self.sessionId,
+          "mcp.execution_owner.owner_session_id": input.owner.sessionId,
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -506,14 +496,13 @@ export abstract class McpAgentSessionDOBase<
   }): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      console.error(
-        JSON.stringify({
-          event: "mcp_model_resume_forward_error",
-          reason: "timeout",
-          executionId: input.executionId,
-          sessionId: self.sessionId,
-          ownerSessionId: input.owner.sessionId,
-          timeoutMs: input.timeoutMs,
+      yield* Effect.logError("mcp.execution_owner.forward_error").pipe(
+        Effect.annotateLogs({
+          "mcp.execution_owner.forward.error": "timeout",
+          "mcp.execution.id": input.executionId,
+          "mcp.session.id": self.sessionId,
+          "mcp.execution_owner.owner_session_id": input.owner.sessionId,
+          "mcp.execution_owner.forward.timeout_ms": input.timeoutMs,
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -623,13 +612,26 @@ export abstract class McpAgentSessionDOBase<
       self.server = mcpServer;
       self.engine = engine;
       self.initialized = true;
+      yield* Effect.logInfo("mcp.session.created").pipe(
+        Effect.annotateLogs({
+          "mcp.session.id": self.sessionId,
+          "mcp.auth.organization_id": sessionMeta.organizationId,
+          "mcp.session.resource_kind": sessionMeta.resource.kind,
+          "mcp.elicitation.mode": sessionMeta.elicitationMode ?? "model",
+        }),
+      );
       yield* Effect.promise(() => self.markActivity()).pipe(
         Effect.withSpan("McpSessionDO.markActivity"),
       );
     }).pipe(
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
-          console.error("[mcp-session] init failed:", Cause.pretty(cause));
+          yield* Effect.logError("mcp.session.init_failed", cause).pipe(
+            Effect.annotateLogs({
+              "mcp.session.id": self.sessionId,
+              "mcp.auth.organization_id": props.session.organizationId,
+            }),
+          );
           yield* self.captureCauseEffect(cause);
           yield* self.recordCauseOnSpan(cause);
         }),
@@ -845,13 +847,13 @@ export abstract class McpAgentSessionDOBase<
     }
 
     if (decision.kind === "extend_paused_lease") {
-      console.info(
-        JSON.stringify(
-          pausedLeaseExtensionLog({
-            sessionId: this.sessionId,
-            pausedExecutionCount,
-            idleMs,
-            leaseMs: decision.leaseMs,
+      await Effect.runPromise(
+        Effect.logInfo("mcp.session.alarm.extend_lease").pipe(
+          Effect.annotateLogs({
+            "mcp.session.id": this.sessionId,
+            "mcp.session.paused_execution_count": pausedExecutionCount,
+            "mcp.session.idle_ms": idleMs,
+            "mcp.session.alarm.lease_ms": decision.leaseMs,
           }),
         ),
       );
@@ -1049,12 +1051,12 @@ export abstract class McpAgentSessionDOBase<
       }),
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
-          yield* Effect.sync(() => {
-            console.error(
-              "[mcp-session] pending approval lease start failed:",
-              Cause.pretty(cause),
-            );
-          });
+          yield* Effect.logError("mcp.approval.lease_start_failed", cause).pipe(
+            Effect.annotateLogs({
+              "mcp.session.id": self.sessionId,
+              "mcp.execution.id": executionId,
+            }),
+          );
           yield* self.captureCauseEffect(cause);
         }),
       ),
@@ -1076,12 +1078,12 @@ export abstract class McpAgentSessionDOBase<
         this.expirePendingApproval(executionId).pipe(
           Effect.tapCause((cause) =>
             Effect.gen(function* () {
-              yield* Effect.sync(() => {
-                console.error(
-                  "[mcp-session] pending approval lease expiration failed:",
-                  Cause.pretty(cause),
-                );
-              });
+              yield* Effect.logError("mcp.approval.lease_expiration_failed", cause).pipe(
+                Effect.annotateLogs({
+                  "mcp.session.id": self.sessionId,
+                  "mcp.execution.id": executionId,
+                }),
+              );
               yield* self.captureCauseEffect(cause);
             }),
           ),
@@ -1171,9 +1173,12 @@ export abstract class McpAgentSessionDOBase<
         action: "decline",
         content: { reason: "approval_timeout" },
       } satisfies ResumeResponse;
-      yield* Effect.sync(() => {
-        console.info(JSON.stringify({ event: "mcp_pending_approval_lease_expire", executionId }));
-      });
+      yield* Effect.logInfo("mcp.approval.expire").pipe(
+        Effect.annotateLogs({
+          "mcp.session.id": self.sessionId,
+          "mcp.execution.id": executionId,
+        }),
+      );
       yield* self.recordApprovalResponse(executionId, response);
       if (self.engine && !self.approvalWaiters.has(executionId)) {
         yield* self.engine.resume(executionId, response).pipe(Effect.ignore);

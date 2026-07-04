@@ -20,7 +20,7 @@ import {
 } from "./execution";
 import { makeSelfHostMcpSeams } from "./mcp";
 import { selfHostPlugins } from "./plugins";
-import { ErrorCaptureLive } from "./observability";
+import { ErrorCaptureLive, SelfHostObservabilityLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
 
 // ===========================================================================
@@ -126,8 +126,13 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     config: { mountPrefix: "/api", failure: textFailureStrategy },
     // The boot-scoped context provideMerge'd under everything: the long-lived DB
     // handle (read by the DbProvider seam, Better Auth, and the MCP store) + the
-    // resolved identity (captured once by the execution middleware + MCP auth).
-    boot: Layer.merge(Layer.succeed(SelfHostDb)(dbHandle), identityLayer),
+    // resolved identity (captured once by the execution middleware + MCP auth)
+    // + structured logging / OTLP telemetry.
+    boot: Layer.mergeAll(
+      Layer.succeed(SelfHostDb)(dbHandle),
+      identityLayer,
+      SelfHostObservabilityLive,
+    ),
   });
 
   return {

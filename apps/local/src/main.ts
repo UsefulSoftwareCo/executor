@@ -5,6 +5,7 @@ import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { makeLocalApiHandler } from "./app";
 import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
+import { disposeObservabilityRuntime } from "./observability";
 
 // ---------------------------------------------------------------------------
 // Local server handlers.
@@ -36,7 +37,12 @@ export type ServerHandlers = {
 };
 
 class ServerHandlersDisposeError extends Data.TaggedError("ServerHandlersDisposeError")<{
-  readonly operation: "api.dispose" | "mcp.close" | "disposeExecutor" | "runtime.dispose";
+  readonly operation:
+    | "api.dispose"
+    | "mcp.close"
+    | "disposeExecutor"
+    | "runtime.dispose"
+    | "observability.dispose";
   readonly cause: unknown;
 }> {}
 
@@ -63,6 +69,9 @@ const closeServerHandlers = async (handlers: ServerHandlers): Promise<void> => {
       // after the surfaces are closed so server shutdown (and failed startup
       // cleanup via disposeServerHandlers) releases the owned data-dir lock.
       yield* ignoreDisposeFailure("disposeExecutor", () => disposeExecutor());
+      // Flush buffered OTLP telemetry from the MCP surface's runtime last, so
+      // logs emitted during the disposals above still export.
+      yield* ignoreDisposeFailure("observability.dispose", () => disposeObservabilityRuntime());
     }),
   );
 };

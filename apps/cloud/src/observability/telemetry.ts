@@ -45,6 +45,8 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 
+import { observabilityLayer } from "@executor-js/observability";
+
 import {
   CountingSpanExporter,
   CountingSpanProcessor,
@@ -139,3 +141,21 @@ const makeTelemetryLive = (): Layer.Layer<never> =>
 export const WorkerTelemetryLive: Layer.Layer<never> = makeTelemetryLive();
 
 export const DoTelemetryLive: Layer.Layer<never> = makeTelemetryLive();
+
+// Structured JSON stdout logging + OTLP logs/metrics export. Traces are
+// deliberately NOT exported here (`traces: false`): they keep flowing through
+// the Axiom WebTracerProvider pipeline above, which the non-Effect fetch
+// paths (server.ts's raw `http.server` span) and Sentry correlation depend
+// on. `Layer.unwrap(Effect.sync(...))` defers the `env` read to layer build
+// time, matching `makeTelemetryLive`'s lazy gate.
+export const CloudObservabilityLive: Layer.Layer<never> = Layer.unwrap(
+  Effect.sync(() =>
+    observabilityLayer({
+      serviceName: SERVICE_NAME,
+      endpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      headers: env.OTEL_EXPORTER_OTLP_HEADERS,
+      logLevel: env.LOG_LEVEL,
+      traces: false,
+    }),
+  ),
+);
