@@ -22,6 +22,10 @@
         "name": "MCP_SESSION",
         "class_name": "McpSessionDOSqlite",
       },
+      {
+        "name": "MCP_EXECUTION_OWNER",
+        "class_name": "McpExecutionOwnerDirectoryDO",
+      },
       // Per-org execution rate-limit counter (abuse backstop). One instance
       // per organization via idFromName(orgId); a single { windowId, count }
       // record per instance, purged by alarm after inactivity.
@@ -52,6 +56,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["ExecutionRateLimiterDO"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["McpExecutionOwnerDirectoryDO"],
     },
   ],
   "services": [

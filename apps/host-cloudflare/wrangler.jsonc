@@ -40,9 +40,15 @@
   // isolate that never saw the session ("Not connected"). `new_sqlite_classes`
   // is the free-tier-eligible SQLite-backed DO storage.
   "durable_objects": {
-    "bindings": [{ "name": "MCP_SESSION", "class_name": "McpSessionDO" }],
+    "bindings": [
+      { "name": "MCP_SESSION", "class_name": "McpSessionDO" },
+      { "name": "MCP_EXECUTION_OWNER", "class_name": "McpExecutionOwnerDirectoryDO" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["McpSessionDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["McpSessionDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["McpExecutionOwnerDirectoryDO"] },
+  ],
   // Cloudflare Access is the entire auth layer: the Worker validates the
   // Cf-Access-Jwt-Assertion JWT against the team JWKS. Set these to your Zero
   // Trust team domain + the Access application's AUD tag. EXECUTOR_SECRET_KEY

@@ -13,6 +13,7 @@ import { makeAccessVerifier } from "../auth/cloudflare-access";
 
 export { cloudflareAccessMcpAuth } from "./auth";
 export { McpSessionDO } from "./session-durable-object";
+export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
 const toApprovalStub = (stub: unknown): McpApprovalStub => stub as McpApprovalStub;
 

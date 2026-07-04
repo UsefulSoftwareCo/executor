@@ -8,15 +8,24 @@ import { RequestOrgSlug, RequestWebOrigin } from "@executor-js/api/server";
 import {
   formatPausedExecution,
   type ExecutionEngine,
+  type ExecutionResult,
+  type PausedExecutionDeadline,
   type ResumeResponse,
 } from "@executor-js/execution";
 import {
   PAUSED_APPROVAL_TIMEOUT_MS,
+  formatMcpExecutionOutcome,
   type PausedExecutionHooks,
+  type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
 import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
+import type {
+  McpExecutionOwnerDirectory,
+  McpExecutionOwnerRecord,
+  McpExecutionOwnerRoute,
+} from "./execution-owner-directory";
 import {
   MAX_PAUSED_SESSION_IDLE_MS,
   SESSION_TIMEOUT_MS,
@@ -73,6 +82,8 @@ export type McpSessionResumeApprovalResult =
       readonly isError?: boolean;
     }
   | McpSessionApprovalErrorResult;
+
+export type McpSessionModelResumeResult = ResumeFallbackOutcome;
 
 export interface SessionDbHandle {
   readonly end: () => Promise<void> | void;
@@ -244,15 +255,45 @@ export abstract class McpAgentSessionDOBase<
     return MAX_PAUSED_SESSION_IDLE_MS;
   }
 
+  protected executionOwnerDirectory(): McpExecutionOwnerDirectory | null {
+    return null;
+  }
+
+  protected executionOwnerRoute(): McpExecutionOwnerRoute {
+    return { sessionId: this.sessionId };
+  }
+
+  protected sameExecutionOwnerRoute(a: McpExecutionOwnerRoute, b: McpExecutionOwnerRoute): boolean {
+    return a.sessionId === b.sessionId;
+  }
+
+  protected forwardModelResumeToOwner(
+    _owner: McpExecutionOwnerRoute,
+    _identity: McpApprovalOwner,
+    _executionId: string,
+    _response: ResumeResponse,
+  ): Effect.Effect<McpSessionModelResumeResult, unknown> {
+    return Effect.succeed({
+      status: "execution_expired",
+      ttlMs: PAUSED_APPROVAL_TIMEOUT_MS,
+    });
+  }
+
   protected readonly browserApprovalStore: BrowserApprovalStore = {
     takeResponse: (executionId) => this.takeApprovalResponse(executionId),
     waitForResponse: (executionId) => this.waitForApprovalResponse(executionId),
   };
 
+  protected readonly modelResumeFallback = (
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<ResumeFallbackOutcome | null> =>
+    this.resumeFromExecutionOwnerDirectory(executionId, response);
+
   protected readonly pausedExecutionHooks: PausedExecutionHooks = {
-    onExecutionPaused: (executionId) =>
+    onExecutionPaused: (executionId, deadline) =>
       Effect.sync(() => {
-        this.queuePendingApprovalLeaseStart(executionId);
+        this.queuePendingApprovalLeaseStart(executionId, deadline);
       }),
     onResumeStarted: (executionId) => this.beginPendingApprovalResume(executionId),
     onResumeSettled: (executionId) => this.finishPendingApprovalResume(executionId),
@@ -584,7 +625,8 @@ export abstract class McpAgentSessionDOBase<
         const paused = yield* self.engine.getPausedExecution(executionId);
         if (!paused) return { status: "not_found" } as const;
 
-        const formatted = formatPausedExecution(paused);
+        const deadline = yield* self.deadlineForExecution(executionId);
+        const formatted = formatPausedExecution(paused, { deadline });
         return {
           status: "ok" as const,
           text: formatted.text,
@@ -592,6 +634,63 @@ export abstract class McpAgentSessionDOBase<
         };
       }).pipe(
         Effect.withSpan("McpSessionDO.getPausedExecutionForApproval", {
+          attributes: { "mcp.execution.id": executionId },
+        }),
+        (eff) => this.withTelemetry(eff, incoming),
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results
+        Effect.orDie,
+        (eff) => self.withSpanFlush(eff),
+      ),
+    );
+  }
+
+  async resumeExecutionForModel(
+    executionId: string,
+    identity: McpApprovalOwner,
+    response: ResumeResponse,
+    incoming?: IncomingTraceHeaders,
+  ): Promise<McpSessionModelResumeResult> {
+    const self = this;
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const owner = yield* self.validateApprovalIdentity(identity);
+        if (owner === "forbidden") return { status: "execution_forbidden" } as const;
+        if (owner === "not_found") {
+          return { status: "execution_expired" as const, ttlMs: PAUSED_APPROVAL_TIMEOUT_MS };
+        }
+
+        const restored = yield* self.ensureRuntimeForApproval();
+        if (!restored || !self.engine) {
+          yield* self.deleteExecutionOwnerEntry(executionId);
+          return { status: "execution_expired" as const, ttlMs: PAUSED_APPROVAL_TIMEOUT_MS };
+        }
+
+        const outcome = yield* self.resumeEngineWithLifecycle(executionId, response);
+        if (!outcome) {
+          const alreadySettled = self.engine.isExecutionSettled
+            ? yield* self.engine.isExecutionSettled(executionId)
+            : false;
+          yield* self.deleteExecutionOwnerEntry(executionId);
+          return alreadySettled
+            ? ({ status: "execution_already_settled" } as const)
+            : ({ status: "execution_expired", ttlMs: PAUSED_APPROVAL_TIMEOUT_MS } as const);
+        }
+
+        if (outcome.status === "paused") {
+          const deadline = self.approvalDeadline();
+          yield* self.startPendingApprovalLease(outcome.execution.id, deadline);
+          return {
+            status: "result" as const,
+            result: formatMcpExecutionOutcome(outcome, { pausedDeadline: deadline }),
+          };
+        }
+
+        return {
+          status: "result" as const,
+          result: formatMcpExecutionOutcome(outcome),
+        };
+      }).pipe(
+        Effect.withSpan("McpSessionDO.resumeExecutionForModel", {
           attributes: { "mcp.execution.id": executionId },
         }),
         (eff) => this.withTelemetry(eff, incoming),
@@ -696,7 +795,121 @@ export abstract class McpAgentSessionDOBase<
     }).pipe(Effect.withSpan("mcp.session.validate_approval_identity"));
   }
 
-  private startPendingApprovalLease(executionId: string): Effect.Effect<void> {
+  private approvalDeadline(now = Date.now()): PausedExecutionDeadline {
+    return {
+      ttlMs: PAUSED_APPROVAL_TIMEOUT_MS,
+      expiresAt: new Date(now + PAUSED_APPROVAL_TIMEOUT_MS).toISOString(),
+    };
+  }
+
+  private deadlineForExecution(
+    executionId: string,
+  ): Effect.Effect<PausedExecutionDeadline | undefined> {
+    const directory = this.executionOwnerDirectory();
+    const noDeadline = Effect.sync((): PausedExecutionDeadline | undefined => undefined);
+    if (!directory) return noDeadline;
+    return directory.get(executionId).pipe(
+      Effect.map((record) =>
+        record ? { expiresAt: record.expiresAt, ttlMs: record.ttlMs } : undefined,
+      ),
+      Effect.catchCause(() => noDeadline),
+    );
+  }
+
+  private writeExecutionOwnerEntry(
+    executionId: string,
+    deadline: PausedExecutionDeadline | undefined,
+  ): Effect.Effect<void> {
+    const directory = this.executionOwnerDirectory();
+    if (!directory || !deadline) return Effect.void;
+    const self = this;
+    return Effect.gen(function* () {
+      const sessionMeta = yield* self.loadSessionMeta();
+      if (!sessionMeta) return;
+      const record: McpExecutionOwnerRecord = {
+        executionId,
+        owner: self.executionOwnerRoute(),
+        accountId: sessionMeta.userId,
+        organizationId: sessionMeta.organizationId,
+        expiresAt: deadline.expiresAt,
+        ttlMs: deadline.ttlMs,
+      };
+      yield* directory.put(record);
+    }).pipe(Effect.ignore);
+  }
+
+  private deleteExecutionOwnerEntry(executionId: string): Effect.Effect<void> {
+    const directory = this.executionOwnerDirectory();
+    return directory?.delete(executionId).pipe(Effect.ignore) ?? Effect.void;
+  }
+
+  private resumeEngineWithLifecycle(
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<ExecutionResult | null, Cause.YieldableError> {
+    const self = this;
+    return Effect.gen(function* () {
+      if (!self.engine) return null;
+      yield* self.beginPendingApprovalResume(executionId);
+      return yield* self.engine.resume(executionId, response);
+    }).pipe(Effect.ensuring(self.finishPendingApprovalResume(executionId)));
+  }
+
+  private resumeFromExecutionOwnerDirectory(
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<ResumeFallbackOutcome | null> {
+    const directory = this.executionOwnerDirectory();
+    if (!directory) return Effect.succeed(null);
+    const self = this;
+    return Effect.gen(function* () {
+      const record = yield* directory
+        .get(executionId)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      if (!record) return null;
+
+      const sessionMeta = yield* self.loadSessionMeta();
+      if (!sessionMeta) return { status: "execution_forbidden" } as const;
+      const identity: McpApprovalOwner = {
+        accountId: sessionMeta.userId,
+        organizationId: sessionMeta.organizationId,
+      };
+      if (
+        identity.accountId !== record.accountId ||
+        identity.organizationId !== record.organizationId
+      ) {
+        return { status: "execution_forbidden" } as const;
+      }
+
+      if (self.sameExecutionOwnerRoute(record.owner, self.executionOwnerRoute())) {
+        yield* self.deleteExecutionOwnerEntry(executionId);
+        return { status: "execution_expired", ttlMs: record.ttlMs } as const;
+      }
+
+      const forwarded = yield* self
+        .forwardModelResumeToOwner(record.owner, identity, executionId, response)
+        .pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({ status: "execution_expired" as const, ttlMs: record.ttlMs }),
+          ),
+        );
+      if (
+        forwarded.status === "execution_expired" ||
+        forwarded.status === "execution_not_found" ||
+        forwarded.status === "execution_already_settled"
+      ) {
+        yield* self.deleteExecutionOwnerEntry(executionId);
+      }
+      return forwarded.status === "execution_not_found"
+        ? ({ status: "execution_expired", ttlMs: record.ttlMs } as const)
+        : forwarded;
+    });
+  }
+
+  private startPendingApprovalLease(
+    executionId: string,
+    deadline: PausedExecutionDeadline | undefined,
+  ): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       if (self.pendingApprovalLeases.has(executionId)) return;
@@ -709,6 +922,7 @@ export abstract class McpAgentSessionDOBase<
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);
       self.pendingApprovalLeases.set(executionId, { disposeKeepAlive, timeout, expiring: false });
+      yield* self.writeExecutionOwnerEntry(executionId, deadline);
     }).pipe(
       Effect.withSpan("McpSessionDO.pending_approval_lease.start", {
         attributes: { "mcp.execution.id": executionId },
@@ -723,8 +937,11 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
-  private queuePendingApprovalLeaseStart(executionId: string): void {
-    this.ctx.waitUntil(Effect.runPromise(this.startPendingApprovalLease(executionId)));
+  private queuePendingApprovalLeaseStart(
+    executionId: string,
+    deadline: PausedExecutionDeadline | undefined,
+  ): void {
+    this.ctx.waitUntil(Effect.runPromise(this.startPendingApprovalLease(executionId, deadline)));
   }
 
   private queuePendingApprovalLeaseExpiration(executionId: string): void {
@@ -768,24 +985,36 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private releasePendingApprovalLease(executionId: string): Effect.Effect<void> {
-    return Effect.sync(() => {
-      const lease = this.pendingApprovalLeases.get(executionId);
-      if (!lease) return;
+    const self = this;
+    return Effect.gen(function* () {
+      const lease = self.pendingApprovalLeases.get(executionId);
+      if (!lease) {
+        yield* self.deleteExecutionOwnerEntry(executionId);
+        return;
+      }
       if (lease.timeout) clearTimeout(lease.timeout);
-      this.pendingApprovalLeases.delete(executionId);
+      self.pendingApprovalLeases.delete(executionId);
       lease.disposeKeepAlive();
+      yield* self.deleteExecutionOwnerEntry(executionId);
     });
   }
 
   private releaseAllPendingApprovalLeases(): Effect.Effect<void> {
-    return Effect.sync(() => {
-      for (const executionId of this.pendingApprovalLeases.keys()) {
-        const lease = this.pendingApprovalLeases.get(executionId);
-        if (!lease) continue;
-        if (lease.timeout) clearTimeout(lease.timeout);
-        lease.disposeKeepAlive();
+    const self = this;
+    return Effect.gen(function* () {
+      const executionIds = Array.from(self.pendingApprovalLeases.keys());
+      yield* Effect.sync(() => {
+        for (const executionId of executionIds) {
+          const lease = self.pendingApprovalLeases.get(executionId);
+          if (!lease) continue;
+          if (lease.timeout) clearTimeout(lease.timeout);
+          lease.disposeKeepAlive();
+        }
+        self.pendingApprovalLeases.clear();
+      });
+      for (const executionId of executionIds) {
+        yield* self.deleteExecutionOwnerEntry(executionId);
       }
-      this.pendingApprovalLeases.clear();
     });
   }
 

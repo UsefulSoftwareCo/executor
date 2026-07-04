@@ -60,6 +60,8 @@ export class McpSessionDO extends DurableObject {}
 // its callers already fail open and report errors themselves.
 export { ExecutionRateLimiterDO } from "./engine/execution-rate-limit";
 
+export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
+
 // ---------------------------------------------------------------------------
 // Worker fetch handler
 //

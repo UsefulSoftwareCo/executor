@@ -1,9 +1,9 @@
 import { makeCloudflareApp } from "./app";
 import type { CloudflareEnv } from "./config";
 
-// The MCP session Durable Object class, bound as `MCP_SESSION` in wrangler.jsonc.
-// Must be exported at the Worker entry module scope for the runtime to find it.
-export { McpSessionDO } from "./mcp";
+// The MCP Durable Object classes, bound in wrangler.jsonc. They must be exported
+// at the Worker entry module scope for the runtime to find them.
+export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web

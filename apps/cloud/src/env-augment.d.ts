@@ -38,6 +38,7 @@ declare global {
       // workers and older local setups run without the binding, and the
       // limiter degrades to disabled when absent.
       EXECUTION_RATE_LIMITER?: import("@cloudflare/workers-types").DurableObjectNamespace;
+      MCP_EXECUTION_OWNER?: import("@cloudflare/workers-types").DurableObjectNamespace;
 
       // Optional per-org hourly execution rate-limit override, parsed as an
       // integer (defaults to EXECUTIONS_PER_ORG_PER_HOUR = 1000 when unset or
