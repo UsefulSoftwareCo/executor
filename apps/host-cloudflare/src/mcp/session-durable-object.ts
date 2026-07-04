@@ -15,6 +15,7 @@ import {
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
 import {
+  mcpSessionDurableObjectName,
   mcpExecutionOwnerDirectoryFromNamespace,
   type McpExecutionOwnerDirectory,
   type McpExecutionOwnerRoute,
@@ -85,7 +86,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       try: () =>
         (
           this.cfEnv.MCP_SESSION.get(
-            this.cfEnv.MCP_SESSION.idFromName(`streamable-http:${owner.sessionId}`),
+            this.cfEnv.MCP_SESSION.idFromName(mcpSessionDurableObjectName(owner.sessionId)),
           ) as unknown as McpModelResumeStub
         ).resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),

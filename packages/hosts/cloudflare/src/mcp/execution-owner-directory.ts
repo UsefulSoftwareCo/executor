@@ -30,6 +30,9 @@ export interface McpExecutionOwnerDirectoryNamespace<Id> {
   readonly get: (id: Id) => unknown;
 }
 
+export const mcpSessionDurableObjectName = (sessionId: string): string =>
+  `streamable-http:${sessionId}`;
+
 class McpExecutionOwnerDirectoryRpcError extends Data.TaggedError(
   "McpExecutionOwnerDirectoryRpcError",
 )<{

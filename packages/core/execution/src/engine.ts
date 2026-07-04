@@ -196,7 +196,7 @@ export const formatPausedExecution = (
   };
 };
 
-const formatTtlDuration = (ttlMs: number): string => {
+export const formatTtlDuration = (ttlMs: number): string => {
   const seconds = Math.max(1, Math.round(ttlMs / 1000));
   if (seconds % 60 === 0) {
     const minutes = seconds / 60;

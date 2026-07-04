@@ -120,6 +120,7 @@ const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const ACTIVE_POST_RESPONSE_WAIT_POLL_MS = 25;
 const ACTIVE_POST_RESPONSE_WAIT_MAX_MS = PAUSED_APPROVAL_TIMEOUT_MS + 30_000;
+const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 
 type JsonRpcRequestId = string | number;
@@ -889,6 +890,11 @@ export abstract class McpAgentSessionDOBase<
       const forwarded = yield* self
         .forwardModelResumeToOwner(record.owner, identity, executionId, response)
         .pipe(
+          Effect.timeoutOrElse({
+            duration: `${MODEL_RESUME_FORWARD_TIMEOUT_MS} millis`,
+            orElse: () =>
+              Effect.succeed({ status: "execution_expired" as const, ttlMs: record.ttlMs }),
+          }),
           Effect.catchCause(() =>
             Effect.succeed({ status: "execution_expired" as const, ttlMs: record.ttlMs }),
           ),

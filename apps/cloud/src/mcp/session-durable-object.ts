@@ -36,6 +36,7 @@ import {
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
 import {
+  mcpSessionDurableObjectName,
   mcpExecutionOwnerDirectoryFromNamespace,
   type McpExecutionOwnerDirectory,
   type McpExecutionOwnerRoute,
@@ -212,7 +213,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       try: () =>
         (
           env.MCP_SESSION.get(
-            env.MCP_SESSION.idFromString(owner.sessionId),
+            env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(owner.sessionId)),
           ) as unknown as McpModelResumeStub
         ).resumeExecutionForModel(executionId, identity, response),
       catch: (cause) => new McpModelResumeForwardError({ cause }),

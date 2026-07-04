@@ -23,6 +23,7 @@ import {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  formatTtlDuration,
   findSkill,
   renderSkillsIndex,
   EXECUTE_SKILL,
@@ -537,19 +538,6 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
     structuredContent: { status: "error", error: text },
     isError: true,
   };
-};
-
-// A paused execution lives in the session runtime's memory: it expires when
-// the user takes too long to answer, and dies early when the runtime is
-// rebuilt (host restart, redeploy). Either way the recovery is the same and
-// the model should be told it, not just handed a miss.
-const formatTtlDuration = (ttlMs: number): string => {
-  const seconds = Math.max(1, Math.round(ttlMs / 1000));
-  if (seconds % 60 === 0) {
-    const minutes = seconds / 60;
-    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-  }
-  return `${seconds} second${seconds === 1 ? "" : "s"}`;
 };
 
 const recoveryText =

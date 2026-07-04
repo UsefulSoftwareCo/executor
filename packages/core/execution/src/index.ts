@@ -2,6 +2,7 @@ export {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  formatTtlDuration,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ExecutionResult,
