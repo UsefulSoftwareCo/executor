@@ -415,8 +415,10 @@ export abstract class McpAgentSessionDOBase<
       yield* self.releaseAllPendingApprovalLeases();
       if (self.server) {
         const server = self.server;
+        delete (self as { server?: McpServer }).server;
         yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
       }
+      Reflect.set(self, "_transport", undefined);
       self.engine = null;
       if (self.dbHandle) {
         const dbHandle = self.dbHandle;
@@ -447,6 +449,18 @@ export abstract class McpAgentSessionDOBase<
       );
       return true;
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
+  }
+
+  private restoreTransportRuntime(): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.closeRuntime();
+      const restored = yield* Effect.exit(Effect.promise(() => self.onStart()));
+      if (Exit.isFailure(restored)) {
+        yield* self.closeRuntime();
+        return yield* Effect.failCause(restored.cause);
+      }
+    });
   }
 
   async init(): Promise<void> {
@@ -511,9 +525,9 @@ export abstract class McpAgentSessionDOBase<
             Effect.withSpan("McpSessionDO.markActivity"),
           );
         } else {
-          yield* Effect.promise(() => self.onStart()).pipe(
-            Effect.withSpan("McpSessionDO.restore_transport_runtime"),
-          );
+          yield* self
+            .restoreTransportRuntime()
+            .pipe(Effect.withSpan("McpSessionDO.restore_transport_runtime"));
         }
         return identity.accountId === sessionMeta.userId &&
           identity.organizationId === sessionMeta.organizationId

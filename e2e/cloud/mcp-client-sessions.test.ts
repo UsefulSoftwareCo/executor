@@ -18,7 +18,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { scenario } from "../src/scenario";
 import { Api, Mcp, Target } from "../src/services";
 import type { Identity } from "../src/target";
-import { configuredMcpPausedSessionIdleTimeoutMs } from "../setup/mcp-session-timeouts";
+import {
+  configuredMcpPausedSessionIdleTimeoutMs,
+  configuredMcpSessionTimeoutMs,
+} from "../setup/mcp-session-timeouts";
 
 const coreApi = composePluginApi([] as const);
 
@@ -130,6 +133,45 @@ scenario(
       );
       expect(after.isError, "the resumed session executes code").not.toBe(true);
       expect(textOf(after), "the resumed session returns results").toContain("after");
+    }).pipe(Effect.ensuring(closeQuietly(second)));
+  }),
+);
+
+const IDLE_RUNTIME_DISPOSE_BUFFER_MS = 2_000;
+const IDLE_RUNTIME_DISPOSE_GAP_MS =
+  configuredMcpSessionTimeoutMs() + IDLE_RUNTIME_DISPOSE_BUFFER_MS;
+const IDLE_RUNTIME_DISPOSE_SCENARIO_TIMEOUT_MS = IDLE_RUNTIME_DISPOSE_GAP_MS + 120_000;
+
+scenario(
+  "MCP sessions · a resumed session after idle runtime disposal restores cleanly",
+  { timeout: IDLE_RUNTIME_DISPOSE_SCENARIO_TIMEOUT_MS },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const identity = yield* target.newIdentity();
+    const bearer = yield* mcp.mintBearer(emailOf(identity));
+
+    const first = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer));
+    const sessionId = first.transport.sessionId;
+    expect(sessionId, "the client got a session id").toEqual(expect.any(String));
+    if (sessionId === undefined) return yield* Effect.die("missing session id");
+
+    const before = yield* Effect.promise(() =>
+      first.client.callTool({ name: "execute", arguments: { code: 'return "before-idle";' } }),
+    ).pipe(Effect.ensuring(closeQuietly(first)));
+    expect(before.isError, "the pre-idle call succeeds").not.toBe(true);
+    expect(textOf(before), "the pre-idle call returns results").toContain("before-idle");
+
+    yield* Effect.sleep(IDLE_RUNTIME_DISPOSE_GAP_MS);
+
+    const second = yield* Effect.promise(() => connectClient(target.mcpUrl, bearer, sessionId));
+    yield* Effect.gen(function* () {
+      expect(second.transport.sessionId, "the session id is preserved").toBe(sessionId);
+      const after = yield* Effect.promise(() =>
+        second.client.callTool({ name: "execute", arguments: { code: 'return "after-idle";' } }),
+      );
+      expect(after.isError, "the post-idle call succeeds").not.toBe(true);
+      expect(textOf(after), "the post-idle call returns results").toContain("after-idle");
     }).pipe(Effect.ensuring(closeQuietly(second)));
   }),
 );

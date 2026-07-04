@@ -1,5 +1,6 @@
 const DEFAULT_E2E_MCP_SESSION_TIMEOUT_MS = 3_000;
 const DEFAULT_E2E_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS = 6_000;
+const PRODUCTION_MCP_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 const PRODUCTION_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS = 9 * 60 * 1000;
 
 export const MCP_SESSION_TIMEOUT_ENV = "MCP_SESSION_TIMEOUT_MS";
@@ -32,3 +33,6 @@ export const ensureE2eMcpSessionTimeoutEnv = (): {
 export const configuredMcpPausedSessionIdleTimeoutMs = (): number =>
   positiveMilliseconds(process.env[MCP_PAUSED_SESSION_IDLE_TIMEOUT_ENV]) ??
   PRODUCTION_MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS;
+
+export const configuredMcpSessionTimeoutMs = (): number =>
+  positiveMilliseconds(process.env[MCP_SESSION_TIMEOUT_ENV]) ?? PRODUCTION_MCP_SESSION_TIMEOUT_MS;
