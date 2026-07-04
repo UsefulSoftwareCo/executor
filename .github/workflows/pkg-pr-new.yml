@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pkg-pr-new-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   # Per-platform matrix: build the executor binary, tar it, upload to R2.
   # The wrapper npm package is built later by the `publish` job which just
@@ -20,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: blacksmith-4vcpu-ubuntu-2404
             target: executor-linux-x64
           - runner: macos-14
             target: executor-darwin-arm64
@@ -33,6 +37,24 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        if: runner.os == 'Linux'
+        uses: useblacksmith/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
+      - name: Cache Bun package cache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       - run: bun install --frozen-lockfile
 
@@ -76,6 +98,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: useblacksmith/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
       # builds it from source via node-gyp, whose undici needs Node 22.10+
