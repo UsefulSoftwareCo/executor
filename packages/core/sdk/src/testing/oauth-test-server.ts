@@ -53,6 +53,8 @@ export interface OAuthTestServerOptions {
   readonly scopes?: readonly string[];
   readonly omitTokenResponseScopes?: readonly string[];
   readonly supportRefresh?: boolean;
+  readonly tokenExpiresInSeconds?: number;
+  readonly invalidRefreshTokenDescription?: string;
   /** Gate Dynamic Client Registration on the requested redirect URIs. When set,
    *  `/register` returns `400 invalid_redirect_uri` unless every requested
    *  `redirect_uris` entry is approved. Mirrors authorization servers (e.g.
@@ -412,6 +414,9 @@ export const serveOAuthTestServer = (
       ...(options.users ?? {}),
     };
     const supportRefresh = options.supportRefresh ?? true;
+    const tokenExpiresInSeconds = options.tokenExpiresInSeconds ?? 3600;
+    const invalidRefreshTokenDescription =
+      options.invalidRefreshTokenDescription ?? "Unknown refresh token";
     const scopes = options.scopes ?? defaultScopes;
     const omittedTokenResponseScopes = new Set(options.omitTokenResponseScopes ?? []);
     const tokenResponseScope = (scope: string | null): string | undefined => {
@@ -645,7 +650,7 @@ export const serveOAuthTestServer = (
                 access_token: accessToken,
                 refresh_token: refreshToken,
                 token_type: "Bearer",
-                expires_in: 3600,
+                expires_in: tokenExpiresInSeconds,
                 ...(scope ? { scope } : {}),
               },
               { "cache-control": "no-store" },
@@ -656,7 +661,7 @@ export const serveOAuthTestServer = (
             const refreshToken = params.get("refresh_token");
             const record = refreshToken ? refreshTokens.get(refreshToken) : undefined;
             if (!supportRefresh || !refreshToken || !record || record.clientId !== clientId) {
-              return oauthError(400, "invalid_grant", "Unknown refresh token");
+              return oauthError(400, "invalid_grant", invalidRefreshTokenDescription);
             }
             const nextAccessToken = `at_${randomUUID()}`;
             const nextRefreshToken = `rt_${randomUUID()}`;
@@ -673,7 +678,7 @@ export const serveOAuthTestServer = (
                 access_token: nextAccessToken,
                 refresh_token: nextRefreshToken,
                 token_type: "Bearer",
-                expires_in: 3600,
+                expires_in: tokenExpiresInSeconds,
                 ...(scope ? { scope } : {}),
               },
               { "cache-control": "no-store" },
@@ -688,7 +693,7 @@ export const serveOAuthTestServer = (
               {
                 access_token: accessToken,
                 token_type: "Bearer",
-                expires_in: 3600,
+                expires_in: tokenExpiresInSeconds,
                 scope: params.get("scope") ?? scopes.join(" "),
               },
               { "cache-control": "no-store" },

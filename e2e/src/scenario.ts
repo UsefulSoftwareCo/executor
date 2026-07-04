@@ -58,6 +58,10 @@ export interface ScenarioOptions {
    *  body never runs. Use ONLY for a scenario blocked on a tracked, out-of-scope
    *  issue; state the reason here so the skip is self-documenting in the source. */
   readonly skip?: string;
+  /** When set, the scenario is registered as a Vitest expected failure. The body
+   *  still runs and records artifacts; Vitest keeps CI green only while the
+   *  tracked bug still reproduces. */
+  readonly expectedFailure?: string;
 }
 
 type AllServices =
@@ -129,8 +133,9 @@ export const scenario = (
   const dir = join(RUNS_DIR, target.name, slugify(name));
   const context = contextFor(target, dir);
   const testFile = captureTestFile();
+  const register = options.expectedFailure ? it.live.fails : it.live;
 
-  it.live(
+  register(
     name,
     (testCtx) =>
       Effect.gen(function* () {
