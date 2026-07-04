@@ -1,29 +1,23 @@
-// Cloud: regression test for the CONFIRMED production "session brick" failure (observed
-// 3/3 against executor.sh prod on 2026-07-04). The recipe:
+// Cloud: regression test for a session-DO startup race.
 //
-//   1. Open an MCP session (real SDK client init → mcp-session-id), make a
-//      call, close the client.
-//   2. Idle PAST the session timeout so the DO's alarm runs disposeIdleRuntime
+//   1. Open an MCP session (real SDK client init, capture mcp-session-id),
+//      make a call, close the client.
+//   2. Idle past the session timeout so the DO's alarm runs disposeIdleRuntime
 //      (runtime torn down, `initialized = false`, transport cleared).
-//   3. Fire an SSE GET (listen stream) and a POST (tools/list) CONCURRENTLY on
+//   3. Fire an SSE GET (listen stream) and a POST (tools/list) concurrently on
 //      the same session id.
-//   4. The session must survive: the concurrent pair and follow-up calls should
-//      succeed instead of leaving the DO permanently bricked.
+//   4. The session must survive: the concurrent pair and follow-up calls
+//      should succeed.
 //
-// Mechanism: after
-// idle-dispose, a request carrying a session id runs
-// validateMcpSessionOwner → onStart → server.connect(_transport). The SDK's
-// own serve() streaming handler then does its own agent.fetch(Upgrade:websocket),
-// waking the DO, whose Agent base ALSO drives onStart → a SECOND
-// server.connect on a server whose _transport is already set →
-// "Already connected to a transport. Call close() before connecting to a new
-// transport." Two concurrent GET+POST restores interleave and collide.
-//
-// Observed locally (workerd, MCP_SESSION_TIMEOUT_MS=3000): the concurrent pair
-// itself usually answers 200/200 — one restore wins the race — but the race
-// leaves the DO's McpServer half-connected, and EVERY subsequent request 500s
-// with the "Already connected" error. Same permanent grave as prod; prod's
-// slower timing surfaced the 500 on the pair itself.
+// Mechanism guarded against: a request carrying a session id runs
+// validateMcpSessionOwner, which restores via onStart when the runtime is
+// disposed. The SDK's serve() streaming handler separately wakes the DO
+// through agent.fetch, and the Agent base also drives onStart. Without
+// serialization across both entry paths, two onStart calls interleave and the
+// second server.connect throws "Already connected to a transport", after
+// which every request on the session fails the same way. The concurrent pair
+// itself can answer 200/200 (one restore wins the race), so the assertions
+// cover the follow-up calls, which is where the failure persists.
 //
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
