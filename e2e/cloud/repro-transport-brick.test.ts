@@ -1,4 +1,4 @@
-// Cloud: reproduce the CONFIRMED production "session brick" failure (observed
+// Cloud: regression test for the CONFIRMED production "session brick" failure (observed
 // 3/3 against executor.sh prod on 2026-07-04). The recipe:
 //
 //   1. Open an MCP session (real SDK client init → mcp-session-id), make a
@@ -7,14 +7,13 @@
 //      (runtime torn down, `initialized = false`, transport cleared).
 //   3. Fire an SSE GET (listen stream) and a POST (tools/list) CONCURRENTLY on
 //      the same session id.
-//   4. Prod result: both 500 (empty body); the session is permanently bricked —
-//      every later call 500s forever.
+//   4. The session must survive: the concurrent pair and follow-up calls should
+//      succeed instead of leaving the DO permanently bricked.
 //
 // Mechanism hypothesis (see REPRO.md for the file:line trace): after
 // idle-dispose, a request carrying a session id runs
-// validateMcpSessionOwner → restoreTransportRuntime (single-flight, this
-// branch) which calls onStart → server.connect(_transport). The SDK's own
-// serve() streaming handler then does its own agent.fetch(Upgrade:websocket),
+// validateMcpSessionOwner → onStart → server.connect(_transport). The SDK's
+// own serve() streaming handler then does its own agent.fetch(Upgrade:websocket),
 // waking the DO, whose Agent base ALSO drives onStart → a SECOND
 // server.connect on a server whose _transport is already set →
 // "Already connected to a transport. Call close() before connecting to a new
@@ -26,12 +25,6 @@
 // with the "Already connected" error. Same permanent grave as prod; prod's
 // slower timing surfaced the 500 on the pair itself.
 //
-// NOTE — repro, not regression gate (yet): the assertions PASS when the brick
-// reproduces (the session is permanently dead after the concurrent pair).
-// Once the underlying collision is fixed, flip the assertions: the follow-up
-// calls should SUCCEED, and this becomes a regression test. The `flip` comment
-// below marks exactly what to invert.
-
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -124,7 +117,7 @@ const isBrick = (r: RawResult): boolean =>
   r.status >= 500 || /"code"\s*:\s*-32603/.test(r.body) || /Already connected/i.test(r.body);
 
 scenario(
-  "REPRO · concurrent SSE GET + POST after idle-dispose bricks the session permanently",
+  "REGRESSION · concurrent SSE GET + POST after idle-dispose keeps the session alive",
   { timeout: SCENARIO_TIMEOUT_MS },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -175,16 +168,14 @@ scenario(
 
     const concurrentBricked = isBrick(getResult) || isBrick(postResult);
 
-    // 4. Prove PERMANENCE: subsequent SEQUENTIAL POSTs also fail. On a healthy
-    //    session these would succeed (the sequential path survives idle — the
-    //    #1302 control). On a bricked session they 500 forever.
+    // 4. Prove the session survives: subsequent SEQUENTIAL POSTs also succeed.
+    //    This is the same control path as the idle-restore scenario from #1302.
     //
     //    Observed locally: the concurrent pair frequently returns 200/200 (one
     //    of the two restores wins the race and answers), but the race leaves
     //    the DO's McpServer in the "Already connected to a transport" state, so
-    //    the very NEXT request 500s — and every request after that. The brick
-    //    is real either way: the session is permanently dead. We assert on the
-    //    permanent state, checking twice to rule out a one-off blip.
+    //    the very NEXT request 500s — and every request after that. The
+    //    regression gate checks the same two follow-up calls now stay healthy.
     const followUp = yield* Effect.promise(() =>
       rawPost(target.mcpUrl, bearer, sessionId, {
         ...toolsListMessage,
@@ -201,16 +192,27 @@ scenario(
 
     const permanentlyBricked = isBrick(followUp) && isBrick(followUp2);
 
-    // === REPRO ASSERTIONS (flip these once the collision is fixed) ===
-    // The brick is proven by a session that is permanently dead after the
-    // concurrent pair: every later call 500s with "Already connected to a
-    // transport". To convert this into a regression gate once the collision is
-    // fixed, assert `permanentlyBricked` is FALSE and the follow-up calls
-    // SUCCEED (isBrick === false) instead.
+    expect(getResult.status, "the concurrent SSE GET opens successfully").toBe(200);
+    expect(postResult.status, "the concurrent POST answers successfully").toBe(200);
+    expect(isBrick(getResult), "the concurrent SSE GET does not expose the transport brick").toBe(
+      false,
+    );
+    expect(isBrick(postResult), "the concurrent POST does not expose the transport brick").toBe(
+      false,
+    );
+    expect(followUp.status, "the first follow-up POST answers successfully").toBe(200);
+    expect(followUp2.status, "the second follow-up POST answers successfully").toBe(200);
+    expect(isBrick(followUp), "the first follow-up POST does not expose the transport brick").toBe(
+      false,
+    );
+    expect(
+      isBrick(followUp2),
+      "the second follow-up POST does not expose the transport brick",
+    ).toBe(false);
     expect(
       permanentlyBricked,
-      "after the concurrent SSE-GET + POST post-idle, the session is PERMANENTLY bricked (every later call 500s)",
-    ).toBe(true);
+      "after the concurrent SSE-GET + POST post-idle, the session remains usable",
+    ).toBe(false);
     // Diagnostic (not a gate): whether the collision surfaced on the concurrent
     // pair itself vs. only on the follow-up depends on which restore won the
     // race. Record it so the artifact shows the timing that occurred this run.

@@ -212,7 +212,7 @@ export abstract class McpAgentSessionDOBase<
   private dbHandle: TDbHandle | null = null;
   private sessionMeta: SessionMeta | null = null;
   private initialized = false;
-  private restoreTransportRuntimePromise: Promise<void> | null = null;
+  private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private approvalResponses = new Map<string, ResumeResponse>();
   private approvalWaiters = new Map<string, Deferred.Deferred<ResumeResponse>>();
@@ -556,55 +556,43 @@ export abstract class McpAgentSessionDOBase<
       const sessionMeta = yield* self.loadSessionMeta();
       if (!sessionMeta) return false;
 
-      yield* self.closeRuntime();
-      const dbHandle = yield* self.openSessionDbHandle();
-      const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
-      self.dbHandle = dbHandle;
-      self.server = mcpServer;
-      self.engine = engine;
-      self.initialized = true;
-      yield* Effect.promise(() => self.markActivity()).pipe(
-        Effect.withSpan("McpSessionDO.markActivity"),
+      yield* Effect.promise(() => self.onStart()).pipe(
+        Effect.withSpan("McpSessionDO.restore_runtime_for_approval"),
       );
-      return true;
+      return self.initialized && !!self.engine;
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
   }
 
-  private restoreTransportRuntimeOnce(): Effect.Effect<void> {
+  private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       yield* self.closeRuntime();
-      const restored = yield* Effect.exit(Effect.promise(() => self.onStart()));
-      if (Exit.isFailure(restored)) {
+      const started = yield* Effect.exit(Effect.promise(() => self.runMcpAgentOnStart(props)));
+      if (Exit.isFailure(started)) {
         yield* self.closeRuntime();
-        return yield* Effect.failCause(restored.cause);
+        return yield* Effect.failCause(started.cause);
       }
     });
   }
 
-  private restoreTransportRuntime(): Effect.Effect<void> {
-    const self = this;
-    return Effect.promise(() => {
-      if (self.restoreTransportRuntimePromise) return self.restoreTransportRuntimePromise;
+  protected runMcpAgentOnStart(props?: McpSessionProps): Promise<void> {
+    return super.onStart(props);
+  }
 
-      const restoring = Promise.resolve().then(() =>
-        Effect.runPromise(self.restoreTransportRuntimeOnce()),
-      );
-      self.restoreTransportRuntimePromise = restoring;
-      restoring.then(
-        () => {
-          if (self.restoreTransportRuntimePromise === restoring) {
-            self.restoreTransportRuntimePromise = null;
-          }
-        },
-        () => {
-          if (self.restoreTransportRuntimePromise === restoring) {
-            self.restoreTransportRuntimePromise = null;
-          }
-        },
-      );
-      return restoring;
-    });
+  override async onStart(props?: McpSessionProps): Promise<void> {
+    if (this.onStartPromise) return this.onStartPromise;
+
+    const starting = Effect.runPromise(this.startRuntimeFromOnStart(props));
+    this.onStartPromise = starting;
+    starting.then(
+      () => {
+        if (this.onStartPromise === starting) this.onStartPromise = null;
+      },
+      () => {
+        if (this.onStartPromise === starting) this.onStartPromise = null;
+      },
+    );
+    return starting;
   }
 
   async init(): Promise<void> {
@@ -669,9 +657,9 @@ export abstract class McpAgentSessionDOBase<
             Effect.withSpan("McpSessionDO.markActivity"),
           );
         } else {
-          yield* self
-            .restoreTransportRuntime()
-            .pipe(Effect.withSpan("McpSessionDO.restore_transport_runtime"));
+          yield* Effect.promise(() => self.onStart()).pipe(
+            Effect.withSpan("McpSessionDO.restore_transport_runtime"),
+          );
         }
         return identity.accountId === sessionMeta.userId &&
           identity.organizationId === sessionMeta.organizationId
