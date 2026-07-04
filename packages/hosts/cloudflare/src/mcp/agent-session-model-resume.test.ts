@@ -223,9 +223,7 @@ class InMemoryExecutionOwnerDirectoryNamespace implements McpExecutionOwnerDirec
   get(id: string): McpExecutionOwnerDirectoryDO {
     let directory = this.directories.get(id);
     if (!directory) {
-      directory = new McpExecutionOwnerDirectoryDO({
-        storage: new FakeStorage(),
-      });
+      directory = new McpExecutionOwnerDirectoryDO(new FakeDurableObjectState(id), {});
       this.directories.set(id, directory);
     }
     return directory;

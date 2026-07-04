@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { Data, Effect } from "effect";
 
 export type McpExecutionOwnerRoute = {
@@ -30,17 +31,7 @@ export interface McpExecutionOwnerDirectoryNamespace<Id> {
   readonly get: (id: Id) => unknown;
 }
 
-interface McpExecutionOwnerDirectoryStorage {
-  readonly get: <T>(key: string) => Promise<T | undefined>;
-  readonly put: <T>(key: string, value: T) => Promise<void>;
-  readonly delete: (key: string) => Promise<boolean>;
-  readonly setAlarm: (scheduledTime: number | Date) => Promise<void>;
-  readonly deleteAlarm: () => Promise<void>;
-}
-
-interface McpExecutionOwnerDirectoryState {
-  readonly storage: McpExecutionOwnerDirectoryStorage;
-}
+type McpExecutionOwnerDirectoryStorage = DurableObjectState["storage"];
 
 const toMcpExecutionOwnerDirectoryStub = (stub: unknown): McpExecutionOwnerDirectoryStub =>
   stub as McpExecutionOwnerDirectoryStub;
@@ -73,10 +64,11 @@ const isOwnerRecord = (value: unknown): value is McpExecutionOwnerRecord =>
 
 const expiryMs = (record: McpExecutionOwnerRecord): number => Date.parse(record.expiresAt);
 
-export class McpExecutionOwnerDirectoryDO {
+export class McpExecutionOwnerDirectoryDO extends DurableObject<unknown> {
   private readonly storage: McpExecutionOwnerDirectoryStorage;
 
-  constructor(ctx: McpExecutionOwnerDirectoryState) {
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
     this.storage = ctx.storage;
   }
 
@@ -104,7 +96,7 @@ export class McpExecutionOwnerDirectoryDO {
     await Promise.all([this.storage.delete(RECORD_KEY), this.storage.deleteAlarm()]);
   }
 
-  async alarm(): Promise<void> {
+  override async alarm(): Promise<void> {
     await Promise.all([this.storage.delete(RECORD_KEY), this.storage.deleteAlarm()]);
   }
 }
