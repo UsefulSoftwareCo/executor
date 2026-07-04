@@ -67,10 +67,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       - run: bun install --frozen-lockfile --ignore-scripts
 
@@ -88,10 +90,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       - run: bun install --frozen-lockfile --ignore-scripts
 
@@ -114,10 +118,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
       # builds it from source via node-gyp, whose undici needs Node 22.10+
@@ -149,10 +155,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # apps/cloud's test script invokes `node` directly; undici 8.x (pulled
       # in by @cloudflare/vitest-pool-workers) calls webidl.markAsUncloneable
@@ -189,10 +197,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # The dev stacks spawn Node sidecars (vite/workerd tooling); pin the
       # same Node 24 runtime the release and publish workflows use.
@@ -203,10 +213,12 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-playwright-cache
           path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       # Install from e2e so bunx resolves ITS pinned playwright (the version
       # the tests run against) rather than floating to the latest.
@@ -257,10 +269,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # The local scenarios boot a real `executor web` (which spawns a Node
       # sidecar) and some drive a browser, so pin Node 24 and install Chromium.
@@ -271,10 +285,12 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-playwright-cache
           path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.60.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       # `chromium` and the new `chromium-headless-shell` ship as separate
       # downloads; the browser-driven scenarios launch the headless shell.
@@ -310,10 +326,12 @@ jobs:
           bun-version: 1.3.11
 
       - name: Cache Bun package cache
-        uses: useblacksmith/stickydisk@v1
+        uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-bun-cache
           path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
 
       # No prebuilt better-sqlite3 binary matches this runner, so `bun install`
       # builds it from source via node-gyp, whose undici needs Node 22.10+
