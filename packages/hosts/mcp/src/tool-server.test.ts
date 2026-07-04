@@ -16,7 +16,11 @@ import {
 import type { ToolFileValue } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
-import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
+import {
+  createExecutorMcpServer,
+  formatMcpExecutionOutcome,
+  type ExecutorMcpServerConfig,
+} from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,6 +34,7 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   execute?: ExecutionEngine<E>["execute"];
   executeWithPause?: ExecutionEngine<E>["executeWithPause"];
   resume?: ExecutionEngine<E>["resume"];
+  isExecutionSettled?: ExecutionEngine<E>["isExecutionSettled"];
   description?: string;
 }): ExecutionEngine<E> => ({
   execute: overrides.execute ?? (() => Effect.succeed({ result: "default" })),
@@ -37,6 +42,7 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
     overrides.executeWithPause ??
     (() => Effect.succeed({ status: "completed", result: { result: "default" } })),
   resume: overrides.resume ?? (() => Effect.succeed(null)),
+  isExecutionSettled: overrides.isExecutionSettled,
   getPausedExecution: () => Effect.succeed(null),
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
@@ -50,7 +56,12 @@ const withClient = async <E extends Cause.YieldableError>(
   fn: (client: Client) => Promise<void>,
   config?: Pick<
     ExecutorMcpServerConfig<E>,
-    "debug" | "elicitationMode" | "browserApprovalStore" | "pausedExecutionHooks"
+    | "debug"
+    | "elicitationMode"
+    | "browserApprovalStore"
+    | "pausedExecutionHooks"
+    | "pausedExecutionLeaseMs"
+    | "resumeFallback"
   >,
 ) => {
   const mcpServer = await Effect.runPromise(createExecutorMcpServer({ engine, ...config }));
@@ -1100,6 +1111,7 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
   });
 
   it("resume tool completes a paused execution when model resume is explicitly enabled", async () => {
+    let fallbackCalled = false;
     const engine = makeStubEngine({
       resume: (executionId, response) =>
         Effect.succeed(
@@ -1119,8 +1131,97 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         });
         expect(result.content).toEqual([{ type: "text", text: "resumed-ok" }]);
         expect(result.isError).toBeFalsy();
+        expect(fallbackCalled).toBe(false);
       },
-      { elicitationMode: { mode: "model" } },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: () =>
+          Effect.sync(() => {
+            fallbackCalled = true;
+            return null;
+          }),
+      },
+    );
+  });
+
+  it("model resume can fall back to an owning session and return its resumed result", async () => {
+    const ownerEvents: string[] = [];
+    const ownerEngine = makeStubEngine({
+      resume: (executionId, response) =>
+        Effect.succeed(
+          executionId === "exec_owner" && response.action === "accept"
+            ? { status: "completed", result: { result: "owner-resumed" } }
+            : null,
+        ),
+    });
+    const engine = makeStubEngine({ resume: () => Effect.succeed(null) });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_owner", action: "accept", content: "{}" },
+        });
+
+        expect(result.content).toEqual([{ type: "text", text: "owner-resumed" }]);
+        expect(result.structuredContent).toMatchObject({
+          status: "completed",
+          result: "owner-resumed",
+        });
+        expect(result.isError).toBeFalsy();
+        expect(ownerEvents).toEqual(["resume-start:exec_owner", "resume-settle:exec_owner"]);
+      },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: (executionId, response) =>
+          Effect.gen(function* () {
+            ownerEvents.push(`resume-start:${executionId}`);
+            const outcome = yield* ownerEngine
+              .resume(executionId, response)
+              .pipe(
+                Effect.ensuring(
+                  Effect.sync(() => ownerEvents.push(`resume-settle:${executionId}`)),
+                ),
+              );
+            return outcome
+              ? { status: "result" as const, result: formatMcpExecutionOutcome(outcome) }
+              : { status: "execution_expired" as const, ttlMs: 240_000 };
+          }),
+      },
+    );
+  });
+
+  it("cross-session identity mismatch returns execution_forbidden and leaves owner pause untouched", async () => {
+    let ownerResumeCalled = false;
+    const engine = makeStubEngine({ resume: () => Effect.succeed(null) });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_owner", action: "accept", content: "{}" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_forbidden",
+          executionId: "exec_owner",
+        });
+        expect(textOf(result)).toContain("same account and organization");
+        expect(ownerResumeCalled).toBe(false);
+      },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: () =>
+          Effect.sync(() => {
+            ownerResumeCalled = false;
+            return { status: "execution_forbidden" as const };
+          }),
+      },
     );
   });
 
@@ -1236,8 +1337,160 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         });
         expect(result.isError).toBe(true);
         expect(textOf(result)).toContain("does-not-exist");
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_not_found",
+          executionId: "does-not-exist",
+        });
       },
       { elicitationMode: { mode: "model" } },
+    );
+  });
+
+  it("directory entry with a lost owner pause returns execution_expired", async () => {
+    const engine = makeStubEngine({ resume: () => Effect.succeed(null) });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_lost", action: "accept", content: "{}" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_expired",
+          executionId: "exec_lost",
+          ttlMs: 240_000,
+        });
+        expect(textOf(result)).toContain("Approval windows last 4 minutes");
+      },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: () =>
+          Effect.succeed({ status: "execution_expired" as const, ttlMs: 240_000 }),
+      },
+    );
+  });
+
+  it("directory mapping to the current session plus local miss returns execution_expired once", async () => {
+    let fallbackCalls = 0;
+    const engine = makeStubEngine({ resume: () => Effect.succeed(null) });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_current_lost", action: "accept", content: "{}" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_expired",
+          executionId: "exec_current_lost",
+        });
+        expect(fallbackCalls).toBe(1);
+      },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: () =>
+          Effect.sync(() => {
+            fallbackCalls += 1;
+            return { status: "execution_expired" as const, ttlMs: 240_000 };
+          }),
+      },
+    );
+  });
+
+  it("directory read failure degrades to execution_not_found", async () => {
+    const engine = makeStubEngine({ resume: () => Effect.succeed(null) });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_directory_down", action: "accept", content: "{}" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_not_found",
+          executionId: "exec_directory_down",
+        });
+      },
+      {
+        elicitationMode: { mode: "model" },
+        resumeFallback: () => Effect.fail("directory unavailable"),
+      },
+    );
+  });
+
+  it("local miss for a settled execution with no replay returns execution_already_settled", async () => {
+    const engine = makeStubEngine({
+      resume: () => Effect.succeed(null),
+      isExecutionSettled: () => Effect.succeed(true),
+    });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const result = await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_settled", action: "accept", content: "{}" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "execution_already_settled",
+          executionId: "exec_settled",
+        });
+        expect(textOf(result)).toContain("already settled");
+      },
+      { elicitationMode: { mode: "model" } },
+    );
+  });
+
+  it("pause payload includes expiresAt and ttlMs when the host supplies a lease duration", async () => {
+    const engine = makeStubEngine({
+      executeWithPause: () =>
+        Effect.succeed(
+          makePausedResult(
+            "exec_deadline",
+            FormElicitation.make({ message: "Approve soon", requestedSchema: {} }),
+          ),
+        ),
+    });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        const before = Date.now();
+        const result = await client.callTool({
+          name: "execute",
+          arguments: { code: "pause-with-deadline" },
+        });
+        const after = Date.now();
+        const structured = result.structuredContent as Record<string, unknown>;
+        const expiresAt = structured.expiresAt as string;
+
+        expect(structured.ttlMs).toBe(60_000);
+        expect(typeof expiresAt).toBe("string");
+        const expiresAtMs = Date.parse(expiresAt);
+        expect(expiresAtMs).toBeGreaterThanOrEqual(before + 60_000);
+        expect(expiresAtMs).toBeLessThanOrEqual(after + 60_000);
+        expect(textOf(result)).toContain("resumeDeadline");
+        expect(textOf(result)).toContain("1 minute approval window");
+        const interaction = structured.interaction as Record<string, unknown>;
+        expect(interaction.instructions).toContain("Resume before");
+      },
+      { elicitationMode: { mode: "model" }, pausedExecutionLeaseMs: 60_000 },
     );
   });
 

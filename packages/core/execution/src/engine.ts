@@ -41,6 +41,11 @@ export type PausedExecution = {
   readonly elicitationContext: ElicitationContext;
 };
 
+export type PausedExecutionDeadline = {
+  readonly expiresAt: string;
+  readonly ttlMs: number;
+};
+
 /** Internal representation with Effect runtime state for pause/resume. */
 type InternalPausedExecution<E> = PausedExecution & {
   readonly response: Deferred.Deferred<typeof ElicitationResponse.Type>;
@@ -127,22 +132,28 @@ export const formatExecuteResult = (
 
 export const formatPausedExecution = (
   paused: PausedExecution,
+  options?: { readonly deadline?: PausedExecutionDeadline },
 ): {
   text: string;
   structured: Record<string, unknown>;
 } => {
   const req = paused.elicitationContext.request;
   const lines: string[] = [`Execution paused: ${req.message}`];
+  const deadline = options?.deadline;
   const isUrlElicitation = Predicate.isTagged(req, "UrlElicitation");
   const isFormElicitation = Predicate.isTagged(req, "FormElicitation");
   const requestedSchema = isFormElicitation ? req.requestedSchema : undefined;
   const hasRequestedSchema =
     requestedSchema !== undefined && Object.keys(requestedSchema).length > 0;
-  const instructions = isUrlElicitation
+  const baseInstructions = isUrlElicitation
     ? `The user needs to open this URL in a browser and complete the flow. After the user finishes, call the resume tool with executionId "${paused.id}" and action "accept".`
     : hasRequestedSchema
       ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
       : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
+  const deadlineInstructions = deadline
+    ? ` Resume before ${deadline.expiresAt}; this approval window lasts ${formatTtlDuration(deadline.ttlMs)}.`
+    : "";
+  const instructions = `${baseInstructions}${deadlineInstructions}`;
 
   if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
@@ -159,6 +170,11 @@ export const formatPausedExecution = (
   }
 
   lines.push(`\nexecutionId: ${paused.id}`);
+  if (deadline) {
+    lines.push(
+      `\nresumeDeadline: ${deadline.expiresAt} (${formatTtlDuration(deadline.ttlMs)} approval window)`,
+    );
+  }
   lines.push(`\ninstructions: ${instructions}`);
 
   return {
@@ -166,6 +182,7 @@ export const formatPausedExecution = (
     structured: {
       status: "waiting_for_interaction",
       executionId: paused.id,
+      ...(deadline ? { expiresAt: deadline.expiresAt, ttlMs: deadline.ttlMs } : {}),
       interaction: {
         kind: isUrlElicitation ? "url" : "form",
         message: req.message,
@@ -177,6 +194,15 @@ export const formatPausedExecution = (
       },
     },
   };
+};
+
+const formatTtlDuration = (ttlMs: number): string => {
+  const seconds = Math.max(1, Math.round(ttlMs / 1000));
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -396,6 +422,12 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   ) => Effect.Effect<ExecutionResult | null, E>;
 
   /**
+   * True when the engine remembers that an executionId has already settled, even
+   * if the replayed outcome has rolled out of the bounded resume cache.
+   */
+  readonly isExecutionSettled?: (executionId: string) => Effect.Effect<boolean>;
+
+  /**
    * Inspect a paused execution without resuming it. Returns null if the id is
    * unknown or has already been resumed.
    */
@@ -426,6 +458,8 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   // volume is tiny (human approvals), so a small window is plenty.
   const settledOutcomes = new Map<string, Exit.Exit<ExecutionResult, E>>();
   const SETTLED_OUTCOME_LIMIT = 64;
+  const settledExecutionIds = new Set<string>();
+  const SETTLED_EXECUTION_ID_LIMIT = 1024;
   // Resumes whose outcome is still being computed, so a concurrent duplicate
   // awaits the same result instead of missing the (already-consumed) pause.
   const pendingResumes = new Map<string, Deferred.Deferred<ExecutionResult, E>>();
@@ -434,6 +468,12 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   // typed channel — hosts render engine failures opaquely, and a replay must
   // not bypass that by flattening the cause into result text.
   const recordSettledOutcome = (executionId: string, exit: Exit.Exit<ExecutionResult, E>): void => {
+    settledExecutionIds.add(executionId);
+    while (settledExecutionIds.size > SETTLED_EXECUTION_ID_LIMIT) {
+      const oldest = settledExecutionIds.keys().next().value;
+      if (oldest === undefined) break;
+      settledExecutionIds.delete(oldest);
+    }
     settledOutcomes.set(executionId, exit);
     while (settledOutcomes.size > SETTLED_OUTCOME_LIMIT) {
       const oldest = settledOutcomes.keys().next().value;
@@ -637,6 +677,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     execute: runInlineExecution,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
+    isExecutionSettled: (executionId) => Effect.sync(() => settledExecutionIds.has(executionId)),
     getPausedExecution: (executionId) =>
       Effect.sync(() => pausedExecutions.get(executionId) ?? null),
     pausedExecutionCount: () => Effect.sync(() => pausedExecutions.size),

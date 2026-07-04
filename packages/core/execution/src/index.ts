@@ -6,6 +6,7 @@ export {
   type ExecutionEngineConfig,
   type ExecutionResult,
   type PausedExecution,
+  type PausedExecutionDeadline,
   type ResumeResponse,
 } from "./engine";
 
