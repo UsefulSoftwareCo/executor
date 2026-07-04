@@ -17,13 +17,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  metadata:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
-      packages: write
-    env:
-      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
+    outputs:
+      release_tag: ${{ steps.validate.outputs.tag }}
+      image: ${{ steps.image.outputs.image }}
+      tags: ${{ steps.image.outputs.tags }}
+      legacy_tags: ${{ steps.image.outputs.legacy_tags }}
+      labels: ${{ steps.image.outputs.labels }}
 
     steps:
       - name: Checkout
@@ -38,9 +41,10 @@ jobs:
           bun-version: 1.3.11
 
       - name: Validate release tag
+        id: validate
         env:
           RAW_RELEASE_TAG: ${{ inputs.tag }}
-        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG
+        run: bun run scripts/validate-release-ref.ts --tag-env RAW_RELEASE_TAG --write-env RELEASE_TAG --output tag
 
       - name: Checkout release tag
         env:
@@ -91,8 +95,30 @@ jobs:
             echo "LABELS"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - arch: arm64
+            platform: linux/arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Blacksmith Builder
         uses: useblacksmith/setup-docker-builder@v1
@@ -104,16 +130,94 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push self-host image
+      - name: Build and push self-host image by digest
         id: build
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: apps/host-selfhost/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.image.outputs.tags }}
-          labels: ${{ steps.image.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ needs.metadata.outputs.labels }}
+          outputs: type=image,name=${{ needs.metadata.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$DIGEST" ]; then
+            echo "Build did not return a digest."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs:
+      - metadata
+      - build
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      packages: write
+    env:
+      HAS_LEGACY_TOKEN: ${{ secrets.GHCR_LEGACY_TOKEN != '' }}
+
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch self-host image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}
+          TAGS: ${{ needs.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          sources=()
+          while IFS= read -r digest_file; do
+            digest="$(basename "$digest_file")"
+            [[ -n "$digest" ]] || continue
+            sources+=("${IMAGE}@sha256:${digest}")
+          done < <(find "$RUNNER_TEMP/digests" -maxdepth 1 -type f | sort)
+
+          if [ "${#sources[@]}" -eq 0 ]; then
+            echo "No image digests were downloaded."
+            exit 1
+          fi
+
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            tag_args+=("-t" "$tag")
+          done <<< "$TAGS"
+
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
       - name: Skip legacy GHCR mirror (GHCR_LEGACY_TOKEN not configured)
         if: env.HAS_LEGACY_TOKEN != 'true'
@@ -131,8 +235,8 @@ jobs:
         if: env.HAS_LEGACY_TOKEN == 'true'
         shell: bash
         env:
-          SOURCE_IMAGE: ${{ steps.image.outputs.image }}@${{ steps.build.outputs.digest }}
-          LEGACY_TAGS: ${{ steps.image.outputs.legacy_tags }}
+          SOURCE_IMAGE: ${{ needs.metadata.outputs.image }}:${{ needs.metadata.outputs.release_tag }}
+          LEGACY_TAGS: ${{ needs.metadata.outputs.legacy_tags }}
         run: |
           set -euo pipefail
 

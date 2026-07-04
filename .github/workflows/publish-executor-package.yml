@@ -2,6 +2,8 @@ name: Publish Executor
 run-name: "${{ format('publish executor {0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}"
 
 on:
+  # Release pushes a validated v* tag and lets this trigger handle automatic
+  # publishing. workflow_dispatch stays available for explicit repair runs.
   push:
     tags:
       - "v*"
