@@ -143,6 +143,11 @@ scenario(
         expect(resumeResponse.status, `resume page approval POST response: ${resumeBody}`).toBe(
           200,
         );
+        expect(JSON.parse(resumeBody), "resume page approval POST body").toMatchObject({
+          status: "completed",
+          structured: { status: "approved", executionId: approval.executionId },
+          isError: false,
+        });
 
         const resumed = yield* Effect.promise(() =>
           session.client.callTool({
